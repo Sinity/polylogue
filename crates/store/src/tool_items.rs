@@ -565,8 +565,10 @@ fn verify_sources(
     reader: &ReadHandle,
     sources: &[Citation],
     verified: &mut Verification,
+    check: &mut dyn FnMut() -> Result<()>,
 ) -> Result<()> {
     for source in sources {
+        check()?;
         let expected = match &source.origin {
             ToolOrigin::Rollout { raw_hash, .. } => Some(*raw_hash),
             ToolOrigin::History { .. } => None,
@@ -610,12 +612,13 @@ fn verify_sources(
         let mut at = source.start;
         let mut hash = blake3::Hasher::new();
         while at < source.end {
-            let chunk = reader.read_source_range(
+            let chunk = reader.read_source_range_checked(
                 &source.input,
                 source.chain,
                 retained.binding,
                 at,
                 (source.end - at).min(65536),
+                &mut *check,
             )?;
             if chunk.is_empty() {
                 return Err(bad("operation retained source range unavailable"));
@@ -654,7 +657,9 @@ fn load_item(
     input: Option<i64>,
     text: Option<i64>,
     verified: &mut Verification,
+    check: &mut dyn FnMut() -> Result<()>,
 ) -> Result<Item> {
+    check()?;
     let p = reader.root.join("index.db");
     let mut operation: Operation = serde_json::from_slice(&bytes(
         &reader.index,
@@ -688,7 +693,7 @@ fn load_item(
             required: 4097,
         });
     }
-    verify_sources(reader, &sources, verified)?;
+    verify_sources(reader, &sources, verified, check)?;
     let (representations, representations_complete) =
         citations(reader, &reference, None, REPRESENTATION_PREVIEW_LIMIT)?;
     let associations = associations(reader, version)?;
@@ -719,6 +724,14 @@ impl ReadHandle {
     /// One pinned index transaction. Payload bytes and old versions are immutable;
     /// source availability is checked only for this selected body's contributors.
     pub fn tool_items(&self, session: &str) -> Result<Population> {
+        self.tool_items_checked(session, || Ok(()))
+    }
+    pub fn tool_items_checked(
+        &self,
+        session: &str,
+        mut check: impl FnMut() -> Result<()>,
+    ) -> Result<Population> {
+        check()?;
         let p = self.root.join("index.db");
         let _snapshot = db(&p, || self.index.unchecked_transaction())?;
         let mut s = db(&p, || {
@@ -746,7 +759,7 @@ impl ReadHandle {
         let mut verified = Verification::default();
         let mut size = 0usize;
         for (id, v, h, input, text) in rows {
-            let item = load_item(self, id, v, h, input, text, &mut verified)?;
+            let item = load_item(self, id, v, h, input, text, &mut verified, &mut check)?;
             size = size.saturating_add(
                 serde_json::to_vec(&item)
                     .map_err(|e| bad(e.to_string()))?
@@ -832,6 +845,14 @@ impl ReadHandle {
         })
     }
     pub fn tool_item(&self, reference: &str) -> Result<Option<Item>> {
+        self.tool_item_checked(reference, || Ok(()))
+    }
+    pub fn tool_item_checked(
+        &self,
+        reference: &str,
+        mut check: impl FnMut() -> Result<()>,
+    ) -> Result<Option<Item>> {
+        check()?;
         let (mut id, hash) = reference
             .split_once('@')
             .map_or((reference, None), |(id, h)| (id, Some(h)));
@@ -862,6 +883,7 @@ impl ReadHandle {
                 input,
                 text,
                 &mut Verification::default(),
+                &mut check,
             )
         })
         .transpose()
@@ -913,10 +935,29 @@ mod tests {
             raw_hash: [0; 32],
         };
         let reader = writer.read_handle().unwrap();
-        assert!(verify_sources(&reader, &[good.clone()], &mut Verification::default()).is_ok());
+        assert!(
+            verify_sources(
+                &reader,
+                &[good.clone()],
+                &mut Verification::default(),
+                &mut || Ok(())
+            )
+            .is_ok()
+        );
+        // The public operation deadline reaches the backing decoder rather than
+        // waiting for the full source proof to finish.
+        let mut checks = 0;
+        assert!(matches!(
+            verify_sources(&reader, &[good.clone()], &mut Verification::default(), &mut || {
+                checks += 1;
+                if checks >= 3 { Err(bad("synthetic operation deadline")) } else { Ok(()) }
+            }),
+            Err(Error::Invariant(message)) if message == "synthetic operation deadline"
+        ));
+        assert_eq!(checks, 3);
         let mut verified = Verification::default();
         assert!(matches!(
-            verify_sources(&reader, &[good, different], &mut verified),
+            verify_sources(&reader, &[good, different], &mut verified, &mut || Ok(())),
             Err(Error::Invariant(message)) if message == "operation rollout source evidence hash differs"
         ));
     }
