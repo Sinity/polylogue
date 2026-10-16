@@ -17,6 +17,12 @@ use std::{
 const SID: &str = "7f3a2c10-0001-4000-8000-000000000001";
 const MORROW: &[u8] = include_bytes!("../../../sources/tests/fixtures/morrow-main.jsonl");
 const WAIT: Duration = Duration::from_secs(40);
+// Debug suites run several durable source owners concurrently. Polling their
+// actors continuously adds requests and competes with canonical finalization.
+// Keep source settlement bounded, with the same allowance as client fixtures;
+// document operations retain their separate, shorter deadline above.
+const SOURCE_WAIT: Duration = Duration::from_secs(120);
+const POLL: Duration = Duration::from_millis(5);
 struct World {
     owner: Option<Owner>,
     reader: ReadHandle,
@@ -59,7 +65,7 @@ impl World {
         loop {
             match handle.try_import(request.clone()) {
                 Ok(reply) => return reply.recv_timeout(WAIT).unwrap().unwrap(),
-                Err(owner::Error::Busy) if Instant::now() < deadline => thread::yield_now(),
+                Err(owner::Error::Busy) if Instant::now() < deadline => thread::sleep(POLL),
                 Err(e) => panic!("import admission: {e}"),
             }
         }
@@ -75,7 +81,7 @@ impl World {
                 .try_progress(&input.id)
             {
                 Ok(reply) => return reply.recv_timeout(WAIT).unwrap().unwrap(),
-                Err(owner::Error::Busy) if Instant::now() < deadline => thread::yield_now(),
+                Err(owner::Error::Busy) if Instant::now() < deadline => thread::sleep(POLL),
                 Err(e) => panic!("progress admission: {e}"),
             }
         }
@@ -84,7 +90,7 @@ impl World {
         SessionId::new(&Origin::new("claude-code").unwrap(), SID).unwrap()
     }
     fn wait_selected(&self, input: &RetainedInput, native_ids: &[&str]) {
-        let deadline = Instant::now() + WAIT;
+        let deadline = Instant::now() + SOURCE_WAIT;
         loop {
             let progress = self.progress(input);
             assert!(progress.failure.is_none(), "{:?}", progress.failure);
@@ -109,14 +115,21 @@ impl World {
                 );
                 return;
             }
-            assert!(Instant::now() < deadline, "selected Message deadline");
-            thread::yield_now();
+            assert!(
+                Instant::now() < deadline,
+                "selected Message deadline: {progress:?}"
+            );
+            thread::sleep(POLL);
         }
     }
     fn wait_rows(&self, input: &RetainedInput, unavailable: bool) {
-        let deadline = Instant::now() + WAIT;
+        let deadline = Instant::now() + SOURCE_WAIT;
         loop {
             let progress = self.progress(input);
+            assert!(progress.recovery_error.is_none(), "{progress:?}");
+            if !unavailable {
+                assert!(progress.failure.is_none(), "{progress:?}");
+            }
             let done = if unavailable {
                 matches!(
                     progress.source_rows.state,
@@ -133,10 +146,9 @@ impl World {
             }
             assert!(
                 Instant::now() < deadline,
-                "source row deadline: {:?}",
-                progress.source_rows
+                "source row deadline: {progress:?}"
             );
-            thread::yield_now();
+            thread::sleep(POLL);
         }
     }
     fn document(&self) -> (Value, Coverage) {
@@ -388,7 +400,7 @@ fn known_pending_member_refuses_before_emitting_a_complete_looking_subset() {
             Instant::now() < deadline,
             "unsupported image did not remain explicit"
         );
-        thread::yield_now();
+        thread::sleep(POLL);
     }
     assert!(
         world
@@ -465,7 +477,7 @@ fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_relea
         polylogue_model::settlement::SourceRowState::Settled
     ) {
         assert!(Instant::now() < until);
-        thread::yield_now();
+        thread::sleep(POLL);
     }
     let pinned = world
         .reader
@@ -484,7 +496,7 @@ fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_relea
         polylogue_model::settlement::SourceRowState::Unavailable { .. }
     ) {
         assert!(Instant::now() < until);
-        thread::yield_now();
+        thread::sleep(POLL);
     }
     let fresh = world
         .reader
@@ -560,7 +572,7 @@ fn exact_selection_can_settle_while_document_keeps_possible_foreign_link_work_pe
         .is_none_or(|h| h.status != "waiting_tail")
     {
         assert!(Instant::now() < deadline);
-        thread::yield_now();
+        thread::sleep(POLL);
     }
     let catalog = world.reader.session_catalog(65536).unwrap();
     let query = polylogue_model::query::SessionQuery {
@@ -622,7 +634,7 @@ fn eof_without_finished_row_effects_does_not_certify_exact_read() {
             break;
         }
         assert!(Instant::now() < deadline);
-        thread::yield_now();
+        thread::sleep(POLL);
     }
     let view = world
         .reader
@@ -671,7 +683,7 @@ fn foreign_incoming_link_and_copy_sidechain_evidence_prevent_complete_document()
             .is_none_or(|h| h.parsed_upto != input.length)
         {
             assert!(Instant::now() < deadline);
-            thread::yield_now();
+            thread::sleep(POLL);
         }
         let view = world
             .reader
