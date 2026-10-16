@@ -191,6 +191,7 @@ fn retained_morrow_document_preserves_twelve_messages_payloads_and_exact_origins
     assert_eq!(document["session"]["cwd"], "/home/op/morrow");
     assert_eq!(document["session"]["branch"], "main");
     assert_eq!(document["session"]["harness_version"], "2.1.220");
+    assert_eq!(document["session"]["models"], json!({"claude-fable-5-1":6}));
     assert_eq!(
         document["session"]["started_at"],
         "2026-10-01T07:00:00.000Z"
@@ -650,7 +651,7 @@ fn foreign_incoming_link_and_copy_sidechain_evidence_prevent_complete_document()
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v.as_str().unwrap().contains("incoming links"))
+            .any(|v| v.as_str().unwrap().contains("Session links"))
     );
     for (label, record) in [
         (
@@ -682,4 +683,132 @@ fn foreign_incoming_link_and_copy_sidechain_evidence_prevent_complete_document()
                 .unwrap();
         assert!(!q.complete(), "{label} must keep lineage qualification");
     }
+}
+
+#[test]
+fn foreign_copied_parent_and_fork_evidence_prevent_complete_target_document() {
+    for how in ["copied-sessionId", "forkedFrom"] {
+        let world = World::new();
+        let base = world.import(&titled("known-row"), "foreign-copy-base");
+        world.wait_rows(&base, false);
+        assert_eq!(world.document().0["result"]["outcome"], "ok");
+        let mut record = json!({"type":"user","uuid":"foreign-row","sessionId":SID,"promptSource":"typed","message":{"role":"user","content":"Neutral foreign copy text"}});
+        if how == "forkedFrom" {
+            record["sessionId"] = json!("foreign-owner");
+            record["forkedFrom"] = json!({"sessionId":SID,"messageUuid":"known-row"});
+        }
+        let foreign = world.import_as(
+            &(record.to_string() + "\n").into_bytes(),
+            how,
+            "foreign-owner",
+        );
+        world.wait_rows(&foreign, true);
+        let document = world.document().0;
+        assert_eq!(document["result"]["outcome"], "degraded", "{how}");
+        assert!(
+            document["result"]["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|note| note.as_str().unwrap().contains("Session links")),
+            "{how}"
+        );
+    }
+}
+fn two_row_input(reverse: bool, branched: bool) -> Vec<u8> {
+    let mut records = vec![json!({"type":"ai-title","aiTitle":"Synthetic Session"})];
+    let ids = if reverse { ["v", "u"] } else { ["u", "v"] };
+    for (ordinal, id) in ids.into_iter().enumerate() {
+        let parent = if ordinal == 0 || branched {
+            None
+        } else {
+            Some(ids[0])
+        };
+        records.push(json!({"type":"user","uuid":id,"sessionId":SID,"parentUuid":parent,"promptSource":"typed","message":{"role":"user","content":id}}));
+    }
+    records
+        .into_iter()
+        .flat_map(|record| (record.to_string() + "\n").into_bytes())
+        .collect()
+}
+#[test]
+fn later_branch_or_reversed_input_withholds_all_active_path_claims() {
+    for (reverse, branched) in [(false, true), (true, false)] {
+        let world = World::new();
+        let base = world.import(&two_row_input(false, false), "topology-base");
+        world.wait_rows(&base, false);
+        let baseline = world.document().0;
+        assert_eq!(baseline["result"]["outcome"], "ok");
+        assert!(
+            baseline["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|message| message["on_active_path"] == true)
+        );
+        let later = world.import(&two_row_input(reverse, branched), "topology-later");
+        world.wait_rows(&later, true);
+        let view = world
+            .reader
+            .selected_session(&world.session(), 65536)
+            .unwrap()
+            .unwrap();
+        let qualification =
+            polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 65536)
+                .unwrap();
+        assert!(!qualification.complete());
+        assert!(qualification.active_messages.is_empty());
+        let document = world.document().0;
+        assert!(
+            document["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|message| message.get("on_active_path").is_none())
+        );
+    }
+}
+#[test]
+fn same_session_inputs_share_one_membership_admission() {
+    fn cohort(prefix: &str) -> Vec<u8> {
+        let mut raw = (json!({"type":"ai-title","aiTitle":"Synthetic Session"}).to_string() + "\n")
+            .into_bytes();
+        for i in 0..16 {
+            let uuid = format!("{prefix}-{i:03}");
+            let parent = (i > 0).then(|| format!("{prefix}-{:03}", i - 1));
+            raw.extend((json!({"type":"user","uuid":uuid,"sessionId":SID,"parentUuid":parent,"promptSource":"typed","message":{"role":"user","content":"Synthetic prompt"}}).to_string()+"\n").as_bytes());
+        }
+        raw
+    }
+    let world = World::new();
+    let first = world.import(&cohort("a"), "membership-first");
+    world.wait_rows(&first, false);
+    let view = world
+        .reader
+        .selected_session(&world.session(), 65536)
+        .unwrap()
+        .unwrap();
+    let first =
+        polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 8000);
+    assert!(first.is_ok(), "first input must fit: {first:?}");
+    drop(view);
+    let second = world.import(&cohort("b"), "membership-second");
+    world.wait_rows(&second, false);
+    let view = world
+        .reader
+        .selected_session(&world.session(), 65536)
+        .unwrap()
+        .unwrap();
+    let second =
+        polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 8000);
+    assert!(
+        matches!(
+            second,
+            Err(polylogue_store::Error::ParserAdmission {
+                resource: "Session cumulative Message membership",
+                ..
+            })
+        ),
+        "two-input membership must exceed one request admission: {second:?}"
+    );
 }

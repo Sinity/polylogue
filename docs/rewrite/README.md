@@ -14,7 +14,7 @@ change the separately pinned index18 schema.
 
 Exact native Session qualification follows the current requested-settlement,
 Claude membership, model, rendering and export contracts at specification
-commit `e11e70a`. Source-row receipts remain narrower than Session results.
+commit `e10907e`. Source-row receipts remain narrower than Session results.
 The supported provider-title main shape proves retained input membership,
 metadata, linear Message order and absence of required non-Message products.
 Selection and normalized-document scopes differ: the latter also inspects

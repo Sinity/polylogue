@@ -31,6 +31,8 @@ pub struct Qualification {
     exact: bool,
     metadata_conflicts: BTreeSet<String>,
     own_topology_unknown: bool,
+    own_counting_unknown: bool,
+    membership_bytes: usize,
 }
 impl Qualification {
     pub fn header(
@@ -283,11 +285,10 @@ fn qualify_operation(
                                     .ok_or_else(|| {
                                         Error::Invariant("missing foreign Session effects".into())
                                     })?;
-                            if effects
-                                .links
-                                .iter()
-                                .any(|link| Some(link.child.as_str()) == exact)
-                            {
+                            if effects.links.iter().any(|link| {
+                                Some(link.child.as_str()) == exact
+                                    || Some(link.parent.as_str()) == exact
+                            }) {
                                 possible = true;
                             }
                             for pending in effects.pending_messages {
@@ -303,7 +304,7 @@ fn qualify_operation(
                         }
                         if possible {
                             result.basis.push(source_rows::basis(&input));
-                            result.unsupported.insert("A foreign main input may contribute incoming links or unknown records to this Session document".into());
+                            result.unsupported.insert("A foreign main input may contribute Session links or unknown records to this document".into());
                             count_record_failures(
                                 session,
                                 &dependency,
@@ -400,6 +401,7 @@ fn qualify_operation(
             let mut cursor = None;
             let mut started: Option<i64> = None;
             let mut last: Option<i64> = None;
+            let mut models = BTreeMap::<String, u64>::new();
             loop {
                 deadline(until)?;
                 if cancelled() {
@@ -412,7 +414,32 @@ fn qualify_operation(
                         message,
                     } => {
                         if result.expected.get(message.id().as_str()) != Some(&sequence) {
+                            result.own_topology_unknown = true;
                             result.unsupported.insert("Selected Message membership/order is not proved by the retained source contributions".into());
+                        }
+                        if message.header()?.written_by == polylogue_model::WrittenBy::Model
+                            && !result.own_counting_unknown
+                        {
+                            use polylogue_model::merge::{MessageField, Slot};
+                            match message.field(&Slot::Message(MessageField::Model), allowance)? {
+                                Some(polylogue_store::contributions::FieldRead::Value(value)) => {
+                                    let range = value.range(0, allowance)?;
+                                    if !range.eof {
+                                        return Err(Error::ParserAdmission {
+                                            resource: "Session model name",
+                                            required: range.next_offset.saturating_add(1),
+                                        });
+                                    }
+                                    let name: String = serde_json::from_slice(&range.bytes)
+                                        .map_err(|e| {
+                                            Error::Invariant(format!("Session model name: {e}"))
+                                        })?;
+                                    add(models.entry(name).or_default(), 1)?;
+                                }
+                                _ => {
+                                    result.unsupported.insert("Model Message counts require a resolved recorded model name".into());
+                                }
+                            }
                         }
                         if let Some(at) = message.provider_time()? {
                             started = Some(started.map_or(at, |v| v.min(at)));
@@ -428,6 +455,7 @@ fn qualify_operation(
                         cursor = Some(next);
                     }
                     polylogue_store::contributions::SessionStep::UnresolvedOrder { .. } => {
+                        result.own_topology_unknown = true;
                         result
                             .unsupported
                             .insert("Selected Message order is unresolved".into());
@@ -437,6 +465,7 @@ fn qualify_operation(
                 }
             }
             if seen.len() != result.expected.len() {
+                result.own_topology_unknown = true;
                 result.unsupported.insert(
                     "Retained source Message membership differs from the visible selected catalog"
                         .into(),
@@ -448,8 +477,16 @@ fn qualify_operation(
                     precision: polylogue_model::Precision::Instant,
                     until: None,
                 };
-                metadata.started_at = started.map(time);
-                metadata.last_activity_at = last.map(time);
+                metadata.started_at = (!result.own_counting_unknown)
+                    .then_some(started)
+                    .flatten()
+                    .map(time);
+                metadata.last_activity_at = (!result.own_counting_unknown)
+                    .then_some(last)
+                    .flatten()
+                    .map(time);
+                metadata.models =
+                    (!result.own_counting_unknown && !models.is_empty()).then_some(models);
                 if metadata
                     .title
                     .as_deref()
@@ -652,6 +689,7 @@ fn qualify_shape(
             }
         }
         if response.message.copy_origin.is_some() || response.message.inherited_from.is_some() {
+            result.own_counting_unknown = true;
             result.unsupported.insert(
                 "Inherited/copy counting and original operation scope remain unsupported".into(),
             );
@@ -667,11 +705,15 @@ fn qualify_shape(
                     .map(|id| id.as_str().to_owned()),
             ),
         );
+        if !result.expected.contains_key(&message) {
+            admit_membership(result, &message, false, allowance)?;
+        }
         if result
             .expected
             .insert(message, p.ordinal)
             .is_some_and(|old| old != p.ordinal)
         {
+            result.own_topology_unknown = true;
             result
                 .unsupported
                 .insert("Independent inputs disagree about Session Message order".into());
@@ -691,8 +733,34 @@ fn qualify_shape(
         previous = Some(message);
     }
     if linear {
-        result.active_messages.extend(active);
+        for message in active {
+            if !result.active_messages.contains(&message) {
+                admit_membership(result, &message, true, allowance)?;
+                result.active_messages.insert(message);
+            }
+        }
+    } else {
+        result.own_topology_unknown = true;
     }
+    Ok(())
+}
+fn admit_membership(
+    result: &mut Qualification,
+    id: &str,
+    active: bool,
+    allowance: usize,
+) -> Result<(), Error> {
+    let required = result
+        .membership_bytes
+        .saturating_add(id.len())
+        .saturating_add(if active { 32 } else { 128 });
+    if required > allowance {
+        return Err(Error::ParserAdmission {
+            resource: "Session cumulative Message membership",
+            required: required as u64,
+        });
+    }
+    result.membership_bytes = required;
     Ok(())
 }
 fn count_record_failures(

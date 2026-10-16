@@ -39,6 +39,11 @@ class ExactRun(morrow.Run):
                              "title_source": "provider", "cwd": "/home/op/morrow", "branch": "main",
                              "harness": "claude-code", "harness_version": "2.1.220"}.items():
             morrow.require(session.get(field) == value, f"wrong Session {field}")
+        models = {}
+        for fact in expected["message_facts"]:
+            if fact.get("model"):
+                models[fact["model"]] = models.get(fact["model"], 0) + 1
+        morrow.require(session.get("models") == models, "wrong Session model Message counts")
         times = [fact["at"] for fact in expected["message_facts"]]
         morrow.require(session.get("started_at") == min(times)
                        and session.get("last_activity_at") == max(times), "wrong own Session time reduction")

@@ -124,6 +124,13 @@ pub fn execute(
         }
         if selected {
             let mut value = row(&header, known);
+            if let Some(models) = qualification
+                .metadata
+                .as_ref()
+                .and_then(|session| session.models.as_ref())
+            {
+                value["models"] = json!(models);
+            }
             value["known_last_message_at"] = json!(last_message_at);
             metadata_bytes = metadata_bytes.saturating_add(
                 serde_json::to_vec(&value)

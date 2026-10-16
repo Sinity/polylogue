@@ -223,6 +223,13 @@ pub(crate) fn write_with_cancel(
         member(&mut e, "display_title", &json!(title))?;
         member(&mut e, "title_source", &json!("provider"))?;
     }
+    if let Some(models) = source_qualification
+        .metadata
+        .as_ref()
+        .and_then(|session| session.models.as_ref())
+    {
+        member(&mut e, "models", &json!(models))?;
+    }
     if let Some(value) = h.started_at {
         member(&mut e, "started_at", &json!(timestamp(value)?))?;
     }
