@@ -22,6 +22,20 @@ HTML) only changes how it looks.
 | `live` | the session's live state and its evidence (`model.md`, Live state), what it waits on, the open tool call or todo item, the live task, peers, and its process tree (below, "The live view") (slice 2) | seeing what a running agent is doing now |
 | `raw` | the stored input records for the selected messages, as the provider wrote them | checking the parser |
 
+`dialogue` keeps human-authored Messages, including their image/file attachment
+references as described under Blocks, and model Text blocks. Thinking, tool
+calls, tool results and harness-authored blocks are deliberate omissions,
+including when they share a Message with selected content. A partial
+implementation may support only the Text portion of dialogue before the full
+view or `transcript` works. It must describe that subset and refuse a selected
+human attachment or other included block whose rendering is unavailable;
+unsupported content is not an intentional dialogue omission. An unknown body
+kind needed to establish masking state also refuses. The normative default
+remains `transcript`; an implemented default subset must not claim to be the
+full transcript.
+An exact supported block reference explicitly selects that block's full body,
+including Thinking, rather than inheriting Message-level dialogue omissions.
+
 ## Message header
 
 Every message starts with one header line: time (local, `HH:MM`; with the
@@ -60,6 +74,8 @@ results and deliveries, one line each with its reference (CLI in slice 7, web in
 slice 10).
 
 Every surface shows the display title and its source, read from `session_facts` (`display_title`, `title_source`; the rule is in `model.md`, Session). A derived title (source `instruction` or `first_prompt`) is cut at 60 characters, dimmed, and followed by its structural label (duration, tool calls, files touched).
+
+**Session-owned operations.** Show a ToolItem in the session timeline with its operation reference, recorded status and output, explicitly “Message owner unknown” when appropriate. A display position or timestamp never renders as a proven response/wrapper parent. Preserve present empty output versus no result; an omitted UI text field does not erase a completed result. A proven later association changes the owner link, not the operation count or output body. Output-search hits can cite the item without a Message. Unresolved correspondence/classification is visible in the evidence view and labels tool counts as partial/unknown with the Results reasons (`query.md`, Tool-item population coverage); an exact returned-row count is labelled as the known subset, never the full native population. Giant payloads use the existing bounded output reader and byte references.
 
 ## Blocks
 
@@ -146,11 +162,148 @@ Markdown and HTML spell the basis out ("API-equivalent").
   last, or Nth-last, compaction), `--last N`, `--around [MESSAGE]` (10
   before, 10 after) select a range. Positions are message IDs underneath, so
   a range is stable when messages are appended later.
-- The MCP `read` tool always returns a bounded range (default budget 4,000
-  tokens, counted by the same estimator as briefings) and a `next` argument
-  set for the following range. Truncation never cuts a block in half: a
-  block that alone exceeds the budget is shortened with
-  `… N more characters (read block:<id>)`.
+- Model-bound reads use the shared [bounded reader](#bounded-model-reading),
+  including within-block continuation. A short preview links to that reader;
+  `read block:<id>` alone is not a promise that a giant block fits in one reply.
+
+### Bounded model reading
+
+This is a planned shared daemon/render operation, exposed by CLI `read
+--budget TOKENS [--continuation TOKEN]` and MCP `read`'s `budget_tokens` and
+`continuation`. Default model budget is 4,000. Whole-document JSON reads and
+exports keep their documented shape; this is a model rendering, not a truncated
+export document. On the CLI, either new flag selects this structured model
+page on stdout; conflicting `--format` or non-stdout destinations are refused,
+so `read --format json` continues to mean a whole export-format document. The existing reference forms identify the selection. No
+within-block range syntax is added to references or the query language.
+
+**Placement.** Extending the query cursor would mix row-set paging with
+presentation progress inside one selected block, including a different stale
+basis. Adding character offsets to `block:` references would make a transient
+rendering position look like a durable citation and require clients to choose
+safe offsets. Instead, the existing read request accepts an opaque
+`continuation`; the daemon returns a ready `next` read call. CLI and MCP adapt
+this same operation. The proxy neither truncates whole Session JSON nor starts
+an independent renderer. This keeps `query.md`'s row cursor unchanged.
+
+**Selection and displayed coverage.** Resolve the reference, message range,
+active-path membership and explicit `view`, `detail`, `tools`, `thinking`,
+`harness`, `inherited`, `branches` and `output_lines` options before fitting.
+Bind their effective values, including defaults. Report filter omissions by
+reason; they are deliberate presentation/selection omissions, never missing
+evidence or an unknown-field count. A presentation cut does not change the
+selection's result, counts or qualification. `shown` identifies each emitted
+Session/Message/block and its half-open `[display_start, display_end)` span in
+that block's displayed text. Position zero is its first Unicode scalar after
+masking and display escaping. These coordinates are local to the supplied read
+basis and policy, not source-byte offsets or new durable references.
+
+`next` resumes at the first undisplayed position of the selected rendering,
+including inside a huge block. Each successful nonfinal page advances at least
+one display atom or consumes an empty block boundary. Following returned
+calls covers the selected display exactly once in order. It never searches for
+the last returned text: repeated passages have distinct identities and positions. Unselected or intentionally summarized
+content is named as omitted; a caller wanting it begins an explicit new
+selection. Direct block reading selects its full permitted body, so a collapsed
+tool-result preview is not reapplied recursively to that exact block.
+
+**Unicode, framing and budget.** Normalize no text. Positions count Unicode
+scalars, not UTF-8 bytes, UTF-16 units or grapheme clusters; splitting between
+combining scalars is allowed. Never split a UTF-8 encoding, a display escape or
+a credential replacement marker. Those escapes and markers are indivisible
+display atoms. Matching/masking sees the logical body across storage and
+transport frames before choosing a display boundary (`behavior.md`, Privacy).
+
+**Logical masking values.** Text, Thinking and the textual output of a
+ToolResult participate in one ordered Message body. Each block boundary ends
+ordinary credential recognizers, including incomplete prefixes. Recognized
+PEM private-key suppression and matching END progress survive that boundary.
+The Message boundary ends that suppression. Storage pieces and presentation
+pages are not block or Message boundaries. ToolCall fields and structured
+ToolResult `data` are independent values: each string is masked separately,
+and none opens or closes suppression in the Message body. Blob identities
+are not text bodies. These boundaries also apply when a view hides content.
+Replay preceding hidden body text when it can affect a displayed block;
+discard its display without resetting the masker. A completely excluded
+Message needs no such replay. A marker emitted in hidden content need not
+be repeated in visible content. Refuse when an unknown body kind, conflicting
+field or decoding admission prevents establishing the selected masking state;
+do not skip undecided bytes or concatenate structured fields to guess it.
+
+A page includes identity/attribution, zone, the fixed archive-text warning,
+qualification, `shown`, omission reasons and any continuation. These are
+framing metadata, not archived payload, and remain distinguishable from quoted
+text. No ellipsis is inserted into the payload fragment. A nonnull `next`
+explicitly means presentation remains; null means the selected display is
+finished, not that archive history is complete.
+
+Use the briefing estimator owned by `user-data.md`, Fitting the budget:
+`ceil(UTF-8 bytes / 4)`. Measure after masking, escaping and adding framing,
+including continuation and qualification. For this operation, count the compact
+UTF-8 JSON encoding of the delivered structured result plus each accompanying
+text-content string (newline separated); any duplicated passage counts twice.
+CLI renders that same structured result as compact JSON; MCP's text companion
+is short and counted. Host protocol envelopes or client UI outside that result
+are outside this estimate, which is not an actual model tokenizer guarantee.
+Network frame bounds do not satisfy it. If mandatory framing plus one next
+indivisible atom cannot fit, return `invalid_query` with reason
+`insufficient_budget`, the requested budget and a sufficient estimate for this
+position. Emit no successful partial page or advancing continuation. The
+minimum supported model budget is 128 estimated tokens, enough for the compact
+typed diagnostic with requested/minimum/sufficient budget and same-read retry
+instructions. Insufficient-budget refusals fit that minimum envelope and, for
+supported budgets, the requested budget. A request below 128 receives this explicit minimum-envelope
+error, which may exceed that unsupported request. A refusal withholds the
+unusable result entirely; it makes no empty, complete or data claim and does
+not echo oversized qualification metadata. Required settlement/basis metadata
+alone can exceed 64 KiB even when payload transport is chunked. Count it on
+every usable page, or refuse compactly; never deliver a metadata-free usable
+page. The caller retries the same reference and continuation, when present,
+with the sufficient budget estimate. This estimate applies at that bound
+position; it never instructs a restart from the selection's beginning.
+
+**Continuation basis and refusal.** A continuation binds the archive identity,
+exact resolved reference/selected membership, ordered Message/block identities,
+complete selected normalized bodies and relevant attribution/origin witnesses,
+render-policy version, effective selection/render options, and the next display
+position. The token records its prior budget as the default presentation
+capacity; budget is not selected-body or render-policy identity. A selected
+normalized-body/version certificate must cover those actual facts; equality of retained source hashes alone is insufficient. The
+implementation may recompute and compare an authenticated digest, or use an
+existing equivalent complete certificate. It does not retain a database view
+or old payload merely to service continuations. An exact block stays resumable
+when an unrelated source append changes the index view but none of this basis.
+A whole-session selection becomes stale when its selected membership changes.
+
+Each page pins its own serving view and reports existing result/recovery/
+freshness fields truthfully. Revalidate current removal/privacy authority before
+releasing content, including resumed content. Changed authorization, excision,
+unavailable required authority or a changed masking policy invalidates the old
+continuation; it never grants access to an old cached body. Refuse without body
+bytes using existing typed errors: `refused`/`stale_read` for a changed selected
+basis or policy, `invalid_query` for a malformed/cross-reference token or
+changed explicitly supplied selection/render arguments, and the owning
+unavailable/authorization
+error where current evidence cannot be served. Omitted continuation arguments
+come from its bound values. Differing selection/render options are refused;
+an explicitly supplied valid budget can increase or decrease capacity at the
+same bound position. Refit only the endpoint and record that capacity as the
+next continuation's default, without reopening the selection or rewinding.
+Restart or certificate loss may return `stale_read`; it never silently reopens
+today's body at yesterday's offset. Replay starts at the same bound position,
+without consuming shared mutable cursor state. Current view/qualification
+metadata still counts against the budget, so a retry can end earlier or later
+if that metadata changes; it cannot change the selected body or starting
+position. The client accepts one reply for an attempted call and follows that
+reply's `next`, rather than concatenating multiple retry replies.
+
+The [reference specimen](../prototypes/bounded-read/README.md) exercises this
+contract with synthetic bodies and supplied display transformation. It does not
+qualify production masking or native selected-body certificates. The separate
+[narrow native Text/Thinking qualification](../../polylogue-sinex-joint/realization/demos/README.md#qualified-bounded-textthinking-model-reads)
+exercises actual daemon/CLI calls. The [native MCP subset](../../polylogue-sinex-joint/realization/demos/README.md#qualified-read-only-mcp-subset)
+separately exercises the shared reader and combined companion budget. The complete
+rendering contract, including the remaining selections/options, stays unqualified.
 
 ## The lineage view
 

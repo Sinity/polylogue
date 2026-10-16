@@ -103,3 +103,13 @@ result = "exit"
 timeout_seconds = 600
 scratch = "nvme"
 cache = "none"
+
+[operations.dialogue_read_demo]
+description = "Exercise explicit native CLI and MCP dialogue against mixed masking controls and unchanged pinned Morrow inputs"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-dialogue-read.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 300
+scratch = "nvme"
+cache = "none"
