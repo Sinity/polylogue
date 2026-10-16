@@ -5,6 +5,7 @@ use polylogue_store::{ReadHandle, Writer};
 pub mod model_read;
 mod output_json;
 mod protocol;
+pub mod read_cancellation;
 pub mod reference_read;
 mod session_document;
 pub mod session_export;
@@ -283,7 +284,7 @@ pub fn request(socket: &Path) -> Result<Value, io::Error> {
 /// Send one request and read one bounded metadata response. Import success means
 /// durable raw retention; query readiness is reported independently.
 pub fn request_value(socket: &Path, value: &Value) -> Result<Value, io::Error> {
-    request_metadata(socket, value, None)
+    request_metadata(socket, value, None, None)
 }
 /// The absolute deadline covers connect, every write/read, framing and decode.
 /// No helper thread owns a transport after this call returns or is cancelled.
@@ -292,12 +293,26 @@ pub fn request_value_until(
     value: &Value,
     deadline: std::time::Instant,
 ) -> Result<Value, io::Error> {
-    request_metadata(socket, value, Some(deadline))
+    request_metadata(socket, value, Some(deadline), None)
+}
+/// A cancellable read-only metadata request, sharing the normal decoder.
+pub fn request_value_cancellable(
+    socket: &Path,
+    value: &Value,
+    cancellation: read_cancellation::ReadCancellation,
+) -> io::Result<Value> {
+    request_metadata(
+        socket,
+        value,
+        Some(std::time::Instant::now() + Duration::from_secs(30)),
+        Some(cancellation),
+    )
 }
 fn request_metadata(
     socket: &Path,
     value: &Value,
     deadline: Option<std::time::Instant>,
+    cancellation: Option<read_cancellation::ReadCancellation>,
 ) -> Result<Value, io::Error> {
     let bytes =
         serde_json::to_vec(value).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -307,7 +322,7 @@ fn request_metadata(
             "request metadata exceeds admission",
         ));
     }
-    let mut stream = metadata_transport(socket, deadline)?;
+    let mut stream = metadata_transport_cancellable(socket, deadline, cancellation)?;
     stream.write_all(&bytes)?;
     stream.write_all(b"\n")?;
     stream.stream.shutdown(std::net::Shutdown::Write)?;
@@ -328,22 +343,62 @@ fn request_metadata(
     remaining(deadline)?;
     Ok(result)
 }
-pub(crate) fn metadata_transport(
+pub(crate) fn metadata_transport_cancellable(
     socket: &Path,
     deadline: Option<std::time::Instant>,
+    cancellation: Option<read_cancellation::ReadCancellation>,
 ) -> io::Result<MetadataTransport> {
+    if let Some(c) = &cancellation {
+        c.check()?;
+    }
     let stream = if deadline.is_some() {
         // socket2 owns nonblocking connect/poll without a blocked helper thread.
         // Remaining time is recomputed after address/socket construction too.
         let address = socket2::SockAddr::unix(socket)?;
-        let stream = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
-        stream.connect_timeout(&address, remaining(deadline)?.unwrap())?;
+        let stream = if cancellation.is_some() {
+            loop {
+                if let Some(c) = &cancellation {
+                    c.check()?;
+                }
+                remaining(deadline)?;
+                let stream =
+                    socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
+                stream.set_nonblocking(true)?;
+                match stream.connect(&address) {
+                    Ok(()) => {
+                        stream.set_nonblocking(false)?;
+                        break stream;
+                    }
+                    // For a saturated local Unix listener EAGAIN means no
+                    // connection was queued. Retry before sending any bytes,
+                    // with a fresh socket because failed state is unspecified.
+                    Err(e)
+                        if e.kind() == io::ErrorKind::WouldBlock
+                            || e.raw_os_error() == Some(libc::EINPROGRESS) =>
+                    {
+                        thread::sleep(remaining(deadline)?.unwrap().min(Duration::from_millis(10)));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        } else {
+            let stream = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
+            stream.connect_timeout(&address, remaining(deadline)?.unwrap())?;
+            stream
+        };
         UnixStream::from(std::os::fd::OwnedFd::from(stream))
     } else {
         UnixStream::connect(socket)?
     };
     remaining(deadline)?;
-    Ok(MetadataTransport { stream, deadline })
+    if let Some(c) = &cancellation {
+        c.attach(&stream)?;
+    }
+    Ok(MetadataTransport {
+        stream,
+        deadline,
+        cancellation,
+    })
 }
 fn remaining(deadline: Option<std::time::Instant>) -> io::Result<Option<Duration>> {
     deadline
@@ -358,9 +413,20 @@ fn remaining(deadline: Option<std::time::Instant>) -> io::Result<Option<Duration
 pub(crate) struct MetadataTransport {
     stream: UnixStream,
     deadline: Option<std::time::Instant>,
+    cancellation: Option<read_cancellation::ReadCancellation>,
+}
+impl Drop for MetadataTransport {
+    fn drop(&mut self) {
+        if let Some(c) = &self.cancellation {
+            c.detach();
+        }
+    }
 }
 impl io::Read for MetadataTransport {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if let Some(c) = &self.cancellation {
+            c.check()?;
+        }
         self.stream.set_read_timeout(remaining(self.deadline)?)?;
         let result = io::Read::read(&mut self.stream, bytes);
         remaining(self.deadline)?;
@@ -369,6 +435,9 @@ impl io::Read for MetadataTransport {
 }
 impl Write for MetadataTransport {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(c) = &self.cancellation {
+            c.check()?;
+        }
         self.stream.set_write_timeout(remaining(self.deadline)?)?;
         let result = self.stream.write(bytes);
         remaining(self.deadline)?;
@@ -393,6 +462,7 @@ mod tests {
         let mut transport = MetadataTransport {
             stream,
             deadline: Some(started + Duration::from_millis(80)),
+            cancellation: None,
         };
         let error = transport.write_all(&vec![b'x'; 65536]).unwrap_err();
         assert!(matches!(

@@ -100,8 +100,22 @@ pub(crate) fn serve(
     )
 }
 pub fn request(socket: &Path, query: &str) -> io::Result<Value> {
+    request_inner(socket, query, None)
+}
+pub fn request_cancellable(
+    socket: &Path,
+    query: &str,
+    cancellation: crate::read_cancellation::ReadCancellation,
+) -> io::Result<Value> {
+    request_inner(socket, query, Some(cancellation))
+}
+fn request_inner(
+    socket: &Path,
+    query: &str,
+    cancellation: Option<crate::read_cancellation::ReadCancellation>,
+) -> io::Result<Value> {
     let deadline = Instant::now() + TIME;
-    let mut stream = crate::metadata_transport(socket, Some(deadline))?;
+    let mut stream = crate::metadata_transport_cancellable(socket, Some(deadline), cancellation)?;
     frame(&mut stream, json!({"command":"query","query":query}))?;
     let mut reader = BufReader::new(stream);
     let mut started = false;
