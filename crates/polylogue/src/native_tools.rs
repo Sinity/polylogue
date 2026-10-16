@@ -2,7 +2,7 @@
 use polylogue_store::ReadHandle;
 use serde_json::{Value, json};
 use std::time::Instant;
-fn deadline(until: Instant) -> polylogue_store::Result<()> {
+fn deadline(until: Instant) -> Result<(), polylogue_store::Error> {
     if Instant::now() >= until {
         Err(polylogue_store::Error::Invariant(
             "operation read deadline".into(),
