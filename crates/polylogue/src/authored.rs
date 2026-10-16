@@ -21,12 +21,126 @@ pub(crate) fn store_error(error: polylogue_store::Error) -> Value {
         e => fail(ErrorKind::NotYetAvailable, e),
     }
 }
+/// Transport loss or an unbound reply cannot establish whether an action committed.
+pub fn uncertain_reply(request: &Value, kind: ErrorKind, message: &str) -> Value {
+    let mut failure = Failure::new(kind, message);
+    failure.retryable = true;
+    failure.hint=Some("A write may have committed. Retry unchanged intent with the same request_id; never replace it merely because a reply was lost or mismatched.".into());
+    json!({"outcome":"error","error":failure,"request_id":request["request_id"],"commit_state":"unknown"})
+}
+/// Both public writing clients bind the immutable effect to the submitted action.
+/// A matching socket/JSON-RPC request number alone does not establish this.
+pub fn bind_write_reply(request: &Value, mut reply: Value) -> Value {
+    if reply["outcome"] == "error" {
+        reply["request_id"] = request["request_id"].clone();
+        return reply;
+    }
+    let id = request["request_id"].as_str().unwrap_or("");
+    let root = request["relations"]
+        .as_array()
+        .and_then(|a| a.iter().find(|r| r["type"] == "revises"))
+        .and_then(|r| r["ref"].as_str())
+        .and_then(|r| polylogue_model::authored::note_reference(r).ok())
+        .map_or(id, |(root, _)| root);
+    let reference = format!("note:{root}@{id}");
+    let effect_matches = matches!(reply["outcome"].as_str(), Some("ok" | "degraded"))
+        && reply["commit_state"] == "committed"
+        && reply["request_id"] == id
+        && reply["note"] == id
+        && reply["root"] == root
+        && reply["ref"] == reference;
+    let revision_matches = if let Some(revision) = reply.get("revision") {
+        revision["id"] == id && revision["root"] == root
+    } else {
+        reply["outcome"] == "degraded" && reply["presentation"] == "retained_but_unpresentable"
+    };
+    if effect_matches && revision_matches {
+        reply
+    } else {
+        uncertain_reply(
+            request,
+            ErrorKind::Io,
+            "Authored reply does not bind its effect to the submitted action; commit outcome is unknown.",
+        )
+    }
+}
+/// A durable effect survives a presentation refusal. Return its safe action
+/// identity with degraded qualification instead of losing the commit outcome.
+pub(crate) fn write_reply(
+    revision: polylogue_model::authored::Revision,
+    recovery: Option<polylogue_model::RecoveryQualification>,
+    until: Instant,
+) -> Value {
+    let mut notes = if recovery.is_some() {
+        vec![polylogue_model::RecoveryQualification::NOTE]
+    } else {
+        vec![]
+    };
+    let identity = json!({"request_id":revision.id,"note":revision.id,"ref":revision.reference(),"root":revision.root,"commit_state":"committed","recovery":recovery});
+    let identities = [&revision.author, &revision.machine]
+        .into_iter()
+        .map(String::as_str)
+        .chain(revision.targets.iter().map(|t| t.reference.as_str()))
+        .chain(revision.relations.iter().map(|r| r.other.as_str()));
+    let presentable = identities
+        .into_iter()
+        .all(|id| crate::output_json::check_identity(id, until).is_ok());
+    let mut reply = identity.clone();
+    reply["outcome"] = json!(if recovery.is_some() { "degraded" } else { "ok" });
+    reply["revision"] = json!(revision);
+    reply["notes"] = json!(notes);
+    reply["missing"] = json!(notes);
+    // Preflight the same encoder before the first socket byte. Inheritance and
+    // masking expansion can exceed the metadata response allowance even though
+    // submitted request metadata was admitted.
+    struct Capacity(usize);
+    impl std::io::Write for Capacity {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or_else(|| std::io::Error::other("metadata capacity"))?;
+            if self.0 >= 65536 {
+                return Err(std::io::Error::other("metadata capacity"));
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut encoder = crate::output_json::Encoder::new(Capacity(1), until); // newline
+    if presentable && encoder.value(&reply).and_then(|_| encoder.finish()).is_ok() {
+        return reply;
+    }
+    notes.push("authored effect committed; its full immutable outcome cannot be presented within credential/metadata admission");
+    let mut reply = identity;
+    reply["outcome"] = json!("degraded");
+    reply["presentation"] = json!("retained_but_unpresentable");
+    reply["notes"] = json!(notes);
+    reply["missing"] = json!(notes);
+    reply["retry"] = json!(
+        "Retain this request_id. Retry unchanged intent with the same ID; never create a replacement action merely because its reply could not be presented."
+    );
+    reply
+}
 pub(crate) fn family_value(
     family: Family,
     reader: &ReadHandle,
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
 ) -> Result<Value, Value> {
+    for state in family.shown.iter().chain(&family.withdrawal_trail) {
+        let revision = &state.revision;
+        for identity in [&revision.author, &revision.machine]
+            .into_iter()
+            .map(String::as_str)
+            .chain(revision.targets.iter().map(|t| t.reference.as_str()))
+            .chain(revision.relations.iter().map(|r| r.other.as_str()))
+        {
+            crate::output_json::check_identity(identity,until).map_err(|_|fail(ErrorKind::NotYetAvailable,"authored identity requires credential masking; exact outcome cannot be presented"))?;
+        }
+    }
     let mut v = serde_json::to_value(family).map_err(|e| fail(ErrorKind::Io, e))?;
     for state in v["shown"].as_array_mut().unwrap() {
         let revision: polylogue_model::authored::Revision =

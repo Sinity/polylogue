@@ -200,3 +200,79 @@ fn authored_cli_retries_inherits_basis_and_reconstructs_backlinks_without_provid
         target_read["shown"]
     );
 }
+
+#[test]
+fn authored_cli_lost_response_reports_unknown_commit_and_same_action_identity() {
+    use std::{
+        io::{BufRead, BufReader},
+        os::unix::net::UnixListener,
+    };
+    let mut w = World::new();
+    let socket = w.running.as_ref().unwrap().socket().to_path_buf();
+    w.running.take().unwrap().stop();
+    let listener = UnixListener::bind(socket).unwrap();
+    let peer = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        serde_json::from_str::<Value>(&line).unwrap()
+    });
+    let request = "01900000-0000-7000-8000-000000000401";
+    let reply = w.cli(
+        &[
+            "message:future",
+            "note",
+            "Final attributed text",
+            "--request-id",
+            request,
+        ],
+        4,
+    );
+    assert_eq!(reply["request_id"], request);
+    assert_eq!(reply["commit_state"], "unknown");
+    assert!(
+        reply["error"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("same request_id")
+    );
+    let submitted = peer.join().unwrap();
+    assert_eq!(submitted["request_id"], request);
+    assert_eq!(submitted["command"], "note");
+}
+
+#[test]
+fn authored_cli_rejects_a_success_for_another_action_identity() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::UnixListener,
+    };
+    let mut w = World::new();
+    let socket = w.running.as_ref().unwrap().socket().to_path_buf();
+    w.running.take().unwrap().stop();
+    let listener = UnixListener::bind(socket).unwrap();
+    let peer = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let id = "01900000-0000-7000-8000-000000000999";
+        writeln!(stream,"{}",json!({"outcome":"ok","request_id":id,"note":id,"root":id,"ref":format!("note:{id}@{id}"),"commit_state":"committed","revision":{"id":id,"root":id}})).unwrap();
+    });
+    let id = "01900000-0000-7000-8000-000000000402";
+    let reply = w.cli(
+        &[
+            "message:future",
+            "note",
+            "Final attributed text",
+            "--request-id",
+            id,
+        ],
+        4,
+    );
+    assert_eq!(reply["request_id"], id);
+    assert_eq!(reply["commit_state"], "unknown");
+    assert!(reply["error"]["message"].as_str().unwrap().contains("bind"));
+    peer.join().unwrap();
+}

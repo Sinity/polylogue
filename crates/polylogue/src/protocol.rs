@@ -105,15 +105,11 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                         .map_err(|e| failed(ErrorKind::NotYetAvailable, e.to_string()))?;
                 }
                 let committed = receive(owner.try_note(request, until))?;
-                let revision = committed.revision;
-                let notes = if committed.recovery.is_some() {
-                    vec![polylogue_model::RecoveryQualification::NOTE]
-                } else {
-                    vec![]
-                };
-                Ok(
-                    json!({"outcome":if committed.recovery.is_some(){"degraded"}else{"ok"},"note":revision.id,"ref":revision.reference(),"root":revision.root,"revision":revision,"recovery":committed.recovery,"notes":notes,"missing":notes}),
-                )
+                Ok(crate::authored::write_reply(
+                    committed.revision,
+                    committed.recovery,
+                    until,
+                ))
             }
             "import" => {
                 let allowed = [

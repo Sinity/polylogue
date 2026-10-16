@@ -296,6 +296,11 @@ fn exact_id(conn: &Connection, path: &Path, reference: &str, revise: bool) -> Re
     Ok(heads[0].clone())
 }
 impl Writer {
+    /// Archive qualification is independent of derived-tier availability. Read
+    /// it before the action; a later status failure cannot relabel a commit.
+    pub fn authored_recovery(&self) -> Result<Option<polylogue_model::RecoveryQualification>> {
+        crate::recovery::qualification(&self.archive, &self.root.join("archive.db"))
+    }
     pub fn write_note(&mut self, request: &WriteNote) -> Result<Revision> {
         let intent = request.intent().map_err(Error::Authored)?;
         let hash = client_request::digest(&intent)?;

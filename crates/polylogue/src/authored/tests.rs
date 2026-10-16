@@ -468,3 +468,119 @@ fn expired_queued_authored_intent_is_not_committed() {
         "authored_presentation_admission"
     );
 }
+
+#[test]
+fn authored_committed_inheritance_or_expansion_keeps_safe_retry_identity() {
+    for shape in ["target", "corrects", "capacity"] {
+        let world = World::new();
+        let e = example();
+        let mut seed = request(&e, "first");
+        let credential = format!("message:ghp_{}", "A".repeat(36));
+        match shape {
+            "target" => seed.targets.as_mut().unwrap()[0].reference = credential.clone(),
+            "corrects" => seed.relations.push(Relation {
+                kind: "corrects".into(),
+                other: credential.clone(),
+            }),
+            _ => {
+                seed.targets = Some(
+                    (0..8)
+                        .map(|n| Target {
+                            reference: format!("message:{n}{}", "x".repeat(7000)),
+                            seen_hash: None,
+                        })
+                        .collect(),
+                )
+            }
+        }
+        // Trusted retained typed data is deliberately outside surface preflight.
+        // The ordinary revision inherits it, rather than submitting it again.
+        world
+            .handle()
+            .try_note(seed, Instant::now() + WAIT)
+            .unwrap()
+            .recv_timeout(WAIT)
+            .unwrap()
+            .unwrap();
+        let mut next = request(&e, "second");
+        next.kind = None;
+        next.targets = None;
+        next.relations = vec![Relation {
+            kind: "revises".into(),
+            other: pin(&e, "first", "first"),
+        }];
+        if shape == "capacity" {
+            next.value = "v".repeat(16000);
+        }
+        let before = world
+            .reader
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .status()
+            .unwrap()
+            .write_counter;
+        let reply = world.write(&next);
+        assert_eq!(reply["outcome"], "degraded", "{shape}: {reply}");
+        assert_eq!(reply["commit_state"], "committed");
+        assert_eq!(reply["presentation"], "retained_but_unpresentable");
+        assert_eq!(reply["request_id"], e["ids"]["second"]);
+        assert!(reply.get("revision").is_none());
+        assert!(!reply.to_string().contains("ghp_"));
+        assert_eq!(world.write(&next), reply);
+        let reader = world.reader.as_ref().unwrap().lock().unwrap();
+        assert_eq!(reader.status().unwrap().write_counter, before + 1);
+        let family = reader
+            .authored_snapshot()
+            .unwrap()
+            .family(&root(&e, "first"))
+            .unwrap();
+        assert_eq!(family.current, [pin(&e, "first", "second")]);
+        assert_eq!(family.history.len(), 2);
+        assert_eq!(family.shown[0].revision.value, next.value);
+        drop(reader);
+        if shape != "capacity" {
+            let exact = world.read(&pin(&e, "first", "second"), 12000);
+            assert_eq!(exact["error"]["kind"], "not_yet_available");
+            assert!(!exact.to_string().contains("ghp_"));
+        }
+    }
+}
+
+#[test]
+fn authored_success_must_bind_effect_identity_for_both_public_clients() {
+    let request = serde_json::to_value(request(&example(), "first")).unwrap();
+    let id = request["request_id"].as_str().unwrap();
+    let reference = format!("note:{id}@{id}");
+    let reply = json!({"outcome":"ok","commit_state":"committed","request_id":id,"note":id,"ref":reference,"root":id,"revision":{"id":id,"root":id}});
+    assert_eq!(bind_write_reply(&request, reply.clone()), reply);
+    for path in [
+        vec!["request_id"],
+        vec!["note"],
+        vec!["ref"],
+        vec!["root"],
+        vec!["revision", "id"],
+        vec!["revision", "root"],
+    ] {
+        let mut wrong = reply.clone();
+        let mut field = &mut wrong;
+        for key in path {
+            field = &mut field[key];
+        }
+        *field = json!("01900000-0000-7000-8000-000000000999");
+        let result = bind_write_reply(&request, wrong);
+        assert_eq!(result["outcome"], "error");
+        assert_eq!(result["request_id"], id);
+        assert_eq!(result["commit_state"], "unknown");
+    }
+    let mut missing = reply.clone();
+    missing.as_object_mut().unwrap().remove("revision");
+    assert_eq!(
+        bind_write_reply(&request, missing.clone())["commit_state"],
+        "unknown"
+    );
+    missing["outcome"] = json!("degraded");
+    missing["presentation"] = json!("retained_but_unpresentable");
+    assert_eq!(bind_write_reply(&request, missing.clone()), missing);
+}

@@ -387,23 +387,32 @@ fn run() -> Result<i32, Failure> {
         } else {
             (false, 30)
         };
-    let mut value = match &command {
+    let response = match &command {
         Some(command) => polylogue::request_value(&socket, command),
         None => polylogue::request(&socket),
+    };
+    let mut value = match response {
+        Ok(value) => value,
+        Err(e) if command.as_ref().is_some_and(|v| v["command"] == "note") => {
+            authored_cli::uncertain_reply(command.as_ref().unwrap(), e)
+        }
+        Err(e) => {
+            return Err(error(
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                ) {
+                    ErrorKind::NotRunning
+                } else {
+                    ErrorKind::Io
+                },
+                format!("archive {}: {e}", archive.display()),
+            ));
+        }
+    };
+    if let Some(request) = command.as_ref().filter(|v| v["command"] == "note") {
+        value = polylogue::authored::bind_write_reply(request, value);
     }
-    .map_err(|e| {
-        error(
-            if matches!(
-                e.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-            ) {
-                ErrorKind::NotRunning
-            } else {
-                ErrorKind::Io
-            },
-            format!("archive {}: {e}", archive.display()),
-        )
-    })?;
     if wait && value["outcome"] == "ok" {
         value = source_wait::wait(&socket, value, std::time::Duration::from_secs(wait_seconds));
     }

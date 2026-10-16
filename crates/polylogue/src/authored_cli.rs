@@ -62,6 +62,20 @@ pub(crate) fn request_id() -> Result<String, Failure> {
         .map_err(|_| invalid("clock outside UUIDv7 range"))?;
     crate::import_cli::uuid_v7(ms, random)
 }
+pub(crate) fn uncertain_reply(request: &Value, error: std::io::Error) -> Value {
+    let kind = match error.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+            ErrorKind::NotRunning
+        }
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => ErrorKind::Timeout,
+        _ => ErrorKind::Io,
+    };
+    polylogue::authored::uncertain_reply(
+        request,
+        kind,
+        "Authored reply unavailable; commit outcome is unknown.",
+    )
+}
 pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
     if args.first().is_some_and(|s| s.starts_with("note:"))
         && (args.len() == 2 && args[1] == "read"

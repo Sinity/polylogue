@@ -486,12 +486,11 @@ impl Actor {
                     .into())
                 } else {
                     self.writer
-                        .write_note(&request)
-                        .and_then(|revision| {
-                            Ok(AuthoredReply {
-                                revision,
-                                recovery: self.writer.status()?.recovery,
-                            })
+                        .authored_recovery()
+                        .and_then(|recovery| {
+                            self.writer
+                                .write_note(&request)
+                                .map(|revision| AuthoredReply { revision, recovery })
                         })
                         .map_err(Error::Store)
                 };
@@ -1404,6 +1403,62 @@ mod tests {
         b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"synthetic-session\",\"source\":\"cli\"}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"u\",\"role\":\"user\",\"content\":[{\"text\":\"hello\"}]}}\n"
     }
     #[test]
+    fn authored_reply_does_not_open_derived_status_after_commit() {
+        use polylogue_model::authored::{NoteKind, Target, WriteNote};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let writer = Writer::open(root).unwrap();
+        let reader = writer.read_handle().unwrap();
+        // Hold the real connections while making only a new derived-tier open
+        // fail. This is an isolated fixture, never a live archive operation.
+        std::fs::rename(root.join("embeddings.db"), root.join("held-embeddings.db")).unwrap();
+        std::fs::create_dir(root.join("embeddings.db")).unwrap();
+        assert!(writer.status().is_err());
+        let service = Owner::start(writer, Arc::new(AtomicBool::new(false))).unwrap();
+        let request = WriteNote {
+            request_id: "01900000-0000-7000-8000-000000000501".into(),
+            author: "agent".into(),
+            machine: "synthetic-machine".into(),
+            created_at: None,
+            kind: Some(NoteKind::Correction),
+            value: "Correction survives a derived status outage.".into(),
+            targets: Some(vec![Target {
+                reference: "message:future".into(),
+                seen_hash: None,
+            }]),
+            relations: vec![],
+        };
+        let committed = service
+            .handle()
+            .try_note(request.clone(), Instant::now() + Duration::from_secs(30))
+            .unwrap()
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+        assert!(committed.recovery.is_none());
+        let retry = service
+            .handle()
+            .try_note(request, Instant::now() + Duration::from_secs(30))
+            .unwrap()
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.revision, retry.revision);
+        assert_eq!(
+            reader
+                .authored_snapshot()
+                .unwrap()
+                .family(&committed.revision.reference())
+                .unwrap()
+                .history
+                .len(),
+            1
+        );
+        std::fs::remove_dir(root.join("embeddings.db")).unwrap();
+        std::fs::rename(root.join("held-embeddings.db"), root.join("embeddings.db")).unwrap();
+        service.shutdown().unwrap();
+    }
+    #[test]
     fn declared_claude_context_replays_without_provider_and_remains_pending() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("untrusted-download-name.jsonl");
@@ -1450,7 +1505,7 @@ mod tests {
                 .unwrap()
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap(),
-            Err(Error::Store(StoreError::ImportRequestConflict { .. }))
+            Err(Error::Store(StoreError::ClientRequestConflict { .. }))
         ));
         service.shutdown().unwrap();
         let service = owner(&root);

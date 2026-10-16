@@ -277,6 +277,9 @@ impl Server {
         if name == "search" && (serde_json::to_vec(&json!({"structuredContent":&value,"content":[{"type":"text","text":SEARCH_COMPANION}]})).unwrap().len() as u64).div_ceil(4) > operation["budget_tokens"].as_u64().unwrap() {
             return failure(ErrorKind::NotYetAvailable, "search response exceeds budget_tokens; narrow the query or use | limit N");
         }
+        if name == "note" {
+            return polylogue::authored::bind_write_reply(&operation, value);
+        }
         value
     }
 }
@@ -362,6 +365,7 @@ impl ServerHandler for Server {
         if value["outcome"] == "error" {
             if let Some(id) = write_id {
                 value["request_id"] = id;
+                value["commit_state"] = json!("unknown");
                 value["error"]["hint"] = json!(
                     "An accepted write may have committed. Retry unchanged intent with this request_id; cancellation never withdraws a note."
                 );
