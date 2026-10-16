@@ -140,6 +140,37 @@ def protected_cleanup(steps):
     return errors
 
 
+def small_pages(run):
+    controls = []
+    for shape, sid in [('messages', '94fdef03-2101-4000-8000-000000000001'),
+                       ('blocks', '94fdef03-2101-4000-8000-000000000002')]:
+        texts = [f'Entry {i:02}: river, 東京, λ; \"quoted\".' for i in range(12)]
+        if shape == 'messages':
+            rows = [row(f'note-{i:02}', text, None if i == 0 else f'note-{i-1:02}', sid=sid, ordinal=i)
+                    for i, text in enumerate(texts)]
+            expected_ids = [f'block:claude-code:{sid}:note-{i:02}:0' for i in range(12)]
+        else:
+            record = row('single-message', '', sid=sid)
+            record['message']['content'] = [{'type': 'text', 'text': text} for text in texts]
+            rows = [record]
+            expected_ids = [f'block:claude-code:{sid}:single-message:{i}' for i in range(12)]
+        source = run.import_rows('small-' + shape, rows, sid=sid)
+        for budget in (4000, 16000):
+            page = run.read({'ref': 'claude-code:' + sid}, budget)
+            assert page['outcome'] != 'error', page
+            assert page['next'] is None and page['primary_content_complete'] is True
+            assert [shown['block'] for shown in page['shown']] == expected_ids
+            assert [shown['text'] for shown in page['shown']] == texts
+            assert all(shown['display_start'] == 0 and shown['display_end'] == len(text)
+                       and shown['sources'] and shown['field_origins']
+                       for shown, text in zip(page['shown'], texts, strict=True))
+            assert all(key in page for key in ('settlement', 'notes', 'unknown', 'recovery', 'up_to_date'))
+            controls.append({'shape': shape, 'budget': budget, 'pages': 1,
+                             'fragments': len(page['shown']), 'structured_cost': estimated(page)})
+        source.unlink()
+    return controls
+
+
 def verify(run):
     secret = "ghp_" + "A" * 36
     huge = "BEGIN BLUE\n" + "n" * 4090 + " " + secret + " " + ("🙂é \"\\\x1b " * 2100)
@@ -162,20 +193,20 @@ def verify(run):
         assert page["session"]["display_title"] == "Bounded neutral control"
         assert "settlement" in page and "up_to_date" in page and "recovery" in page
         assert secret not in compact(page)
-        assert len(page["shown"]) == 1
-        shown = page["shown"][0]
-        native, body = expected[selection]
-        assert shown["message"] == "message:" + REF + ":" + native
-        assert shown["block"] == "block:" + REF + ":" + native + ":0"
-        assert shown["written_by"] == "human" and shown["session"] == REF
-        assert shown["display_start"] == position
-        end = shown["display_end"]
-        assert end > position and shown["text"] == body[position:end]
-        assert shown["sources"] and all(s["start"] < s["end"] for s in shown["sources"])
-        position = end
-        if position == len(body):
-            selection += 1
-            position = 0
+        assert page["shown"]
+        for shown in page["shown"]:
+            native, body = expected[selection]
+            assert shown["message"] == "message:" + REF + ":" + native
+            assert shown["block"] == "block:" + REF + ":" + native + ":0"
+            assert shown["written_by"] == "human" and shown["session"] == REF
+            assert shown["display_start"] == position
+            end = shown["display_end"]
+            assert end > position and shown["text"] == body[position:end]
+            assert shown["sources"] and all(s["start"] < s["end"] for s in shown["sources"])
+            position = end
+            if position == len(body):
+                selection += 1
+                position = 0
         pages += 1
         assert pages < 300
         if page["next"] is None:
@@ -229,7 +260,7 @@ def verify(run):
     assert page["outcome"] != "error" and page["session"]["display_title"] == giant_title
     assert estimated(page) <= sufficient
     giant.unlink()
-    return {"pages": pages, "selected_blocks": selection, "middle_reached": True,
+    return {"small_pages": small_pages(run), "pages": pages, "selected_blocks": selection, "middle_reached": True,
             "large_required_metadata_bytes": len(giant_title.encode()),
             "scope": "native CLI/daemon text model reading; MCP and broad privacy products unqualified"}
 

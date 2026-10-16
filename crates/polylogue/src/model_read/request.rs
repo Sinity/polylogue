@@ -1,6 +1,7 @@
 //! The session model-read wire contract: decode once, execute typed options,
 //! and preserve those options when constructing the next public call.
 use super::{MAX_BUDGET, MCP_COMPANION, Position, View, key, open, refusal, seal, unavailable};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 #[derive(Clone, Copy)]
@@ -106,9 +107,26 @@ impl<'a> Request<'a> {
     pub fn cost(&self, value: &Value) -> u64 {
         match self.presentation {
             Presentation::Json => super::cost(value),
-            Presentation::Mcp => super::cost(
-                &json!({"structuredContent":value,"content":[{"type":"text","text":MCP_COMPANION}]}),
-            ),
+            Presentation::Mcp => {
+                #[derive(Serialize)]
+                struct Text<'a> {
+                    r#type: &'a str,
+                    text: &'a str,
+                }
+                #[derive(Serialize)]
+                struct Envelope<'a> {
+                    #[serde(rename = "structuredContent")]
+                    structured_content: &'a Value,
+                    content: [Text<'a>; 1],
+                }
+                super::cost(&Envelope {
+                    structured_content: value,
+                    content: [Text {
+                        r#type: "text",
+                        text: MCP_COMPANION,
+                    }],
+                })
+            }
         }
     }
 

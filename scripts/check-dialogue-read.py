@@ -117,20 +117,20 @@ def follow(run, client, ref, expected, omissions):
         assert page['omitted'] == omissions, page['omitted']
         assert page['warning'] == bounded.WARNING and page['settlement']
         shown = page['shown']
-        assert len(shown) == 1
-        span = shown[0]
-        identity, author, body = expected[index]
-        assert span['block'] == identity, (span, identity)
-        assert span['written_by'] == author
-        assert span['display_start'] == position
-        text = span['text']
-        assert span['display_end'] == position + len(text)
-        assert span['sources'] and span['field_origins']
-        reconstructed += text
-        position += len(text)
-        assert body.startswith(reconstructed), (identity, reconstructed[-100:])
-        if reconstructed == body:
-            index, position, reconstructed = index + 1, 0, ''
+        assert shown
+        for span in shown:
+            identity, author, body = expected[index]
+            assert span['block'] == identity, (span, identity)
+            assert span['written_by'] == author
+            assert span['display_start'] == position
+            text = span['text']
+            assert span['display_end'] == position + len(text)
+            assert span['sources'] and span['field_origins']
+            reconstructed += text
+            position += len(text)
+            assert body.startswith(reconstructed), (identity, reconstructed[-100:])
+            if reconstructed == body:
+                index, position, reconstructed = index + 1, 0, ''
         pages += 1
         assert pages < 150
         if page['next'] is None:
