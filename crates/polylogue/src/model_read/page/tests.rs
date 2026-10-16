@@ -175,7 +175,7 @@ fn real_prefix_replay_consumes_work_even_when_the_display_window_is_tiny() {
         time::{Duration, Instant},
     };
     let dir = tempfile::tempdir().unwrap();
-    let writer = Writer::open(dir.path().join("archive")).unwrap();
+    let writer = Writer::open(&dir.path().join("archive")).unwrap();
     let reader = writer.read_handle().unwrap();
     let owner = Owner::start(writer, Arc::new(AtomicBool::new(false))).unwrap();
     let path = dir.path().join("neutral.jsonl");
