@@ -15,6 +15,8 @@ pub(super) struct Evaluation<'a> {
     until: Instant,
     cancel: &'a mut dyn FnMut() -> bool,
     steps: u64,
+    #[cfg(test)]
+    cache_peak: i32,
 }
 impl<'a> Evaluation<'a> {
     pub(super) fn new(
@@ -45,6 +47,8 @@ impl<'a> Evaluation<'a> {
             until,
             cancel,
             steps: 0,
+            #[cfg(test)]
+            cache_peak: 0,
         };
         this.sql("INSERT INTO family(root) VALUES(?1)", [root])?;
         this.build()?;
@@ -58,6 +62,23 @@ impl<'a> Evaluation<'a> {
         if Instant::now() >= self.until || (self.cancel)() {
             return Err(Error::Cancelled);
         }
+        // Bundled SQLite shares a cache group, so cache_size alone is a soft
+        // target that can borrow other connections' allowances. Finalized
+        // point statements need no retained pages. Purge this scratch Btree
+        // before the next bounded step, without touching archive caches.
+        #[cfg(test)]
+        {
+            self.cache_peak = self.cache_peak.max(
+                crate::native::cache_bytes(&self.scratch)
+                    .map_err(|e| failure(ErrorKind::NotYetAvailable, e.to_string()))?,
+            );
+        }
+        crate::native::reset_scratch_cache(&self.scratch).map_err(|e| {
+            failure(
+                ErrorKind::NotYetAvailable,
+                format!("authored scratch cache reset unavailable: {e}"),
+            )
+        })?;
         self.steps += 1;
         if self.steps > STEPS {
             return Err(failure(
@@ -508,7 +529,7 @@ mod tests {
         let path = dir.path().join("archive.db");
         let root = id(1);
         writer.archive.execute_batch("BEGIN IMMEDIATE").unwrap();
-        for n in 1..=1000 {
+        for n in 1..=4000 {
             writer.archive.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,local_seq) VALUES(?1,?2,'note','body','agent','machine',0,?3)",params![id(n),root,n]).unwrap();
             if n > 1 {
                 writer
@@ -521,40 +542,52 @@ mod tests {
             }
         }
         writer.archive.execute_batch("COMMIT").unwrap();
-        let mut cancel = || false;
-        let mut eval = Evaluation::new(
-            &writer.archive,
-            &path,
-            &root,
-            1000,
-            default_until(),
-            &mut cancel,
-        )
-        .unwrap();
-        assert_eq!(eval.heads(&root).unwrap(), [id(1000)]);
-        assert_eq!(
-            eval.scratch
-                .query_row("PRAGMA cache_size", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            -64
-        );
-        let scratch = eval._file.path().to_owned();
-        let bytes = std::fs::metadata(&scratch).unwrap().len();
-        assert!(bytes > 65536 && bytes <= SCRATCH_PAGES * 4096, "{bytes}");
-        let cache = crate::native::cache_bytes(&eval.scratch).unwrap();
-        assert!(
-            cache > 0 && cache <= 128 * 1024 && (cache as u64) < bytes,
-            "cache={cache} file={bytes}"
-        );
-        eprintln!(
-            "authored scratch: file_bytes={bytes}, cache_bytes={cache}, configured_cache_kib=64, disk_limit_bytes={}",
-            SCRATCH_PAGES * 4096
-        );
-        assert_eq!(scratch.parent(), Some(std::env::temp_dir().as_path()));
-        eval.until = Instant::now();
-        assert!(matches!(eval.checkpoint(), Err(Error::Cancelled)));
-        drop(eval);
-        assert!(!scratch.exists());
+        for count in [1000u64, 4000] {
+            let mut cancel = || false;
+            let mut eval = Evaluation::new(
+                &writer.archive,
+                &path,
+                &root,
+                count,
+                default_until(),
+                &mut cancel,
+            )
+            .unwrap();
+            assert_eq!(eval.heads(&root).unwrap(), [id(count as u32)]);
+            assert_eq!(
+                eval.scratch
+                    .query_row("PRAGMA cache_size", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                -64
+            );
+            let scratch = eval._file.path().to_owned();
+            let bytes = std::fs::metadata(&scratch).unwrap().len();
+            let cache = crate::native::cache_bytes(&eval.scratch).unwrap();
+            let peak = eval.cache_peak.max(cache);
+            assert!(bytes > 65536 && bytes <= SCRATCH_PAGES * 4096, "{bytes}");
+            assert!(
+                cache > 0 && peak <= 128 * 1024 && (peak as u64) < bytes,
+                "nodes={count} peak={peak} cache={cache} file={bytes}"
+            );
+            eprintln!(
+                "authored scratch: nodes={count}, file_bytes={bytes}, cache_peak_bytes={peak}, cache_bytes={cache}, configured_cache_kib=64, disk_limit_bytes={}",
+                SCRATCH_PAGES * 4096
+            );
+            assert_eq!(scratch.parent(), Some(std::env::temp_dir().as_path()));
+            eval.steps = STEPS;
+            assert!(matches!(
+                eval.checkpoint(),
+                Err(Error::Authored(Failure {
+                    kind: ErrorKind::NotYetAvailable,
+                    ..
+                }))
+            ));
+            eval.steps = 0;
+            eval.until = Instant::now();
+            assert!(matches!(eval.checkpoint(), Err(Error::Cancelled)));
+            drop(eval);
+            assert!(!scratch.exists());
+        }
         // All source queries used for growing populations are index seeks and
         // require no hidden ORDER BY/DISTINCT temporary population operation.
         for sql in [

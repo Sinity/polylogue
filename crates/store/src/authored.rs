@@ -233,6 +233,12 @@ fn association_population(
         if Instant::now() >= until || cancel() {
             return Err(Error::Cancelled);
         }
+        crate::native::reset_scratch_cache(&population).map_err(|e| {
+            failure(
+                ErrorKind::NotYetAvailable,
+                format!("authored association cache reset unavailable: {e}"),
+            )
+        })?;
         steps += 1;
         if steps > 1_000_000 {
             return Err(failure(
@@ -716,6 +722,12 @@ impl Snapshot {
             if Instant::now() >= until || cancel() {
                 return Err(Error::Cancelled);
             }
+            crate::native::reset_scratch_cache(&population).map_err(|e| {
+                failure(
+                    ErrorKind::NotYetAvailable,
+                    format!("authored association cache reset unavailable: {e}"),
+                )
+            })?;
             let row:Option<(i64,String)>=population.query_row("SELECT first_rowid,root FROM family WHERE first_rowid>?1 ORDER BY first_rowid LIMIT 1",[pos],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|failure(ErrorKind::NotYetAvailable,e.to_string()))?;
             let Some((row, root)) = row else { break };
             if families.len() == limit {

@@ -17,6 +17,32 @@ pub(crate) fn reserve(conn: &Connection) -> i32 {
     unsafe { polylogue_reserve_bytes(conn.handle()) }
 }
 
+/// Purge only an idle disposable database's cache. Unlike shrink_memory this
+/// does not ask SQLite's shared cache group to release other readers' pages.
+pub(crate) fn reset_scratch_cache(conn: &Connection) -> rusqlite::Result<()> {
+    if !conn.is_autocommit() {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    // Borrowed connection stays valid; main is a static C string. This opcode
+    // ignores its final pointer. Callers finalize each bounded statement first.
+    let code = unsafe {
+        rusqlite::ffi::sqlite3_file_control(
+            conn.handle(),
+            c"main".as_ptr(),
+            rusqlite::ffi::SQLITE_FCNTL_RESET_CACHE,
+            std::ptr::null_mut(),
+        )
+    };
+    if code == rusqlite::ffi::SQLITE_OK {
+        Ok(())
+    } else {
+        Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
+    }
+}
+
 /// Observe SQLite's actual page-cache occupancy in resource discriminators.
 #[cfg(test)]
 pub(crate) fn cache_bytes(conn: &Connection) -> rusqlite::Result<i32> {
