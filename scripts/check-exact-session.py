@@ -106,9 +106,10 @@ def controls(run):
             admit(b"", "later", ["claude-subagent","ambiguous-agent"], (0,))
         else:
             admit([{"type":"user","uuid":"required-result","sessionId":"exact-control",
+                    "parentUuid":"known-row", "timestamp":"2026-10-01T08:01:00Z",
                     "toolUseResult":{"persistedOutputPath":"/synthetic/tool-results/result.txt"},
-                    "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call", "content":"preview"}]}}],
-                  "later", context, (7,))
+                    "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call", "content":"<persisted-output>\n/synthetic/tool-results/result.txt\n</persisted-output>"}]}}],
+                  "later", context, (2,))
         selection = run.client(archive, sid, "--json", expected=(0,) if kind in ["foreign_pending", "foreign_link"] else (5,))
         after = run.client(archive, sid, "read", "--format", "json", expected=(5,))
         morrow.require(after["result"]["outcome"] == "degraded", kind + " lost its qualification")

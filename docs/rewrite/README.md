@@ -20,7 +20,8 @@ metadata, linear Message order and absence of required non-Message products.
 Selection and normalized-document scopes differ: the latter also inspects
 possible foreign incoming-link contributors. Its result keeps target basis
 and serving view distinct. Other shapes preserve degraded or refused outcomes;
-general title/lineage/event products, productive late external-result companion
+canonical election for overlapping immutable snapshots, general title/lineage/event
+products, productive late external-result companion
 acquisition, full export and full Morrow/M1 acceptance remain open. The top-level
 README owns the current commands and limits. No canonical DDL changed.
 
