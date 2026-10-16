@@ -883,3 +883,6 @@ fn assembled_extents_refuse_arithmetic_overflow() {
     let mut assembled = s.assemble(&[Extent { blob: h, offset: 0, len: u64::MAX }]).unwrap();
     assert!(assembled.seek(SeekFrom::End(1)).is_err());
 }
+
+
+mod acquisition;

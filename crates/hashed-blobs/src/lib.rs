@@ -643,27 +643,34 @@ impl Store {
     /// name exists, validate its content before dropping the candidate. Invalid existing objects
     /// are refused and left untouched; the candidate remains in tmp for owner-scoped recovery.
     fn install(&self, tmp: TmpFile, h: Hash, unwrap: Option<Unwrap>) -> Result<Hash> {
-        tmp.file.sync_all()?;
+        self.install_with(tmp, h, |h| self.validate_existing(h, unwrap))
+    }
+
+    // The installation protocol is shared; the caller supplies its existing-object
+    // validation policy and error type. A refusal keeps the completed candidate.
+    fn install_with<E: From<Error>>(&self, tmp: TmpFile, h: Hash,
+        mut validate: impl FnMut(Hash) -> std::result::Result<(), E>) -> std::result::Result<Hash, E> {
+        tmp.file.sync_all().map_err(Error::Io)?;
         drop(tmp.file);
         if self.locate(&h).is_some() {
-            self.validate_existing(h, unwrap)?;
-            fs::remove_file(&tmp.path)?;
+            validate(h)?;
+            fs::remove_file(&tmp.path).map_err(Error::Io)?;
             return Ok(h);
         }
         let dest = Self::path_in(&self.write_root, &h);
         let dir = dest.parent().unwrap();
         if !dir.exists() {
-            fs::create_dir_all(dir)?;
-            fsync_dir(dir.parent().unwrap())?;
+            fs::create_dir_all(dir).map_err(Error::Io)?;
+            fsync_dir(dir.parent().unwrap()).map_err(Error::Io)?;
         }
         match fs::hard_link(&tmp.path, &dest) {
             Ok(()) => {},
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => self.validate_existing(h, unwrap)?,
-            Err(e) => return Err(e.into()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => validate(h)?,
+            Err(e) => return Err(Error::Io(e).into()),
         }
-        fs::remove_file(&tmp.path)?;
-        fsync_dir(dir)?;
-        fsync_dir(&self.write_root.join("blobs").join("tmp"))?;
+        fs::remove_file(&tmp.path).map_err(Error::Io)?;
+        fsync_dir(dir).map_err(Error::Io)?;
+        fsync_dir(&self.write_root.join("blobs").join("tmp")).map_err(Error::Io)?;
         Ok(h)
     }
 
@@ -675,14 +682,19 @@ impl Store {
         };
         match verified {
             Verified::Intact => {
-                let path = self.locate(&h).ok_or(Error::Missing(h))?;
-                File::open(&path)?.sync_all()?;
-                fsync_dir(path.parent().unwrap())?;
-                fsync_dir(path.parent().unwrap().parent().unwrap())?;
+                self.sync_existing(h)?;
                 Ok(())
             },
             other => Err(Error::Corrupt { blob: h, what: format!("existing destination is not usable: {other:?}") }),
         }
+    }
+
+    fn sync_existing(&self, h: Hash) -> Result<()> {
+        let path = self.locate(&h).ok_or(Error::Missing(h))?;
+        File::open(&path)?.sync_all()?;
+        fsync_dir(path.parent().unwrap())?;
+        fsync_dir(path.parent().unwrap().parent().unwrap())?;
+        Ok(())
     }
 
     fn view(&self, h: &Hash) -> Result<Arc<View>> {
@@ -735,9 +747,25 @@ impl Store {
     // ---- plain ----
 
     /// Store bytes as a plain seekable blob named by their BLAKE3; durable when it returns.
+    /// This convenience API has no cancellation contract; use `put_plain_checked` for polling.
     pub fn put(&self, bytes: impl Read, level: i32) -> Result<Hash> {
         let (tmp, h) = self.write_plain(bytes, level)?;
         self.install(tmp, h, None)
+    }
+
+    /// Plain acquisition with caller cancellation/deadline polling between input reads,
+    /// before/after each frame compression, and throughout duplicate verification. Existing nonplain
+    /// encodings refuse in this explicitly plain path. Blocking IO/compression is not preempted.
+    /// On failed existing-object validation, neither that object nor its candidate is removed.
+    pub fn put_plain_checked<E: From<Error>>(&self, bytes: impl Read, level: i32,
+        mut check: impl FnMut() -> std::result::Result<(), E>) -> std::result::Result<Hash, E> {
+        let (tmp, h) = self.write_plain_checked(bytes, level, &mut check)?;
+        check()?;
+        self.install_with(tmp, h, |h| {
+            self.open_plain(&h, None, |_| check())?;
+            self.sync_existing(h)?;
+            Ok(())
+        })
     }
 
     /// A group of puts sharing synchronization; visibility is not atomic (see `Batch`).
@@ -745,21 +773,36 @@ impl Store {
         Batch { store: self, durability, pending: Vec::new() }
     }
 
-    fn write_plain(&self, mut bytes: impl Read, level: i32) -> Result<(TmpFile, Hash)> {
+    fn write_plain(&self, bytes: impl Read, level: i32) -> Result<(TmpFile, Hash)> {
+        self.write_plain_checked::<Error>(bytes, level, || Ok(()))
+    }
+
+    fn write_plain_checked<E: From<Error>>(&self, mut bytes: impl Read, level: i32,
+        mut check: impl FnMut() -> std::result::Result<(), E>) -> std::result::Result<(TmpFile, Hash), E> {
+        check()?;
         self.check_frame_size()?;
         let mut tmp = self.tmp()?;
         let mut name = blake3::Hasher::new();
         let mut table: Vec<(u32, u32)> = Vec::new();
         let mut buf = vec![0u8; self.frame];
-        let mut comp = compressor(level)?;
+        let mut comp = compressor(level).map_err(Error::Io)?;
         loop {
-            let n = read_full(&mut bytes, &mut buf)?;
+            let mut n = 0;
+            while n < buf.len() {
+                check()?;
+                match bytes.read(&mut buf[n..]).map_err(Error::Io)? {
+                    0 => break,
+                    k => n += k,
+                }
+            }
             if n == 0 && !table.is_empty() {
                 break;
             }
             name.update(&buf[..n]);
-            let c = comp.compress(&buf[..n])?;
-            tmp.write(&c)?;
+            check()?;
+            let c = comp.compress(&buf[..n]).map_err(Error::Io)?;
+            check()?;
+            tmp.write(&c).map_err(Error::Io)?;
             table.push((u32::try_from(c.len()).map_err(|_| Error::Refused("compressed frame exceeds u32 seek entry".into()))?, n as u32));
             if n < self.frame {
                 break;
@@ -778,7 +821,7 @@ impl Store {
         st.extend_from_slice(&frame_count.to_le_bytes());
         st.push(0); // descriptor: no per-frame checksum entries; each frame carries its own
         st.extend_from_slice(&SEEKABLE_MAGIC.to_le_bytes());
-        tmp.write(&st)?;
+        tmp.write(&st).map_err(Error::Io)?;
         Ok((tmp, Hash(*name.finalize().as_bytes())))
     }
 

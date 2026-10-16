@@ -14,6 +14,8 @@ It holds no policy. Inline-versus-file size, when to use a delta, snapshots, pag
 
 ## Integrity, custody and bounded verification
 
+The ordinary `put` and batch APIs have no cancellation contract. Polylogue capture uses `put_plain_checked`, which polls the caller while reading/encoding input and while verifying an existing plain destination through the same bounded verifier. It refuses an existing nonplain representation in that explicitly plain acquisition path; ordinary `put` retains its existing encoding support. A cancellation preserves the completed candidate when duplicate validation has begun, and leaves the existing object unchanged. Blocking filesystem IO and a single compression call are not preempted.
+
 The writer encoding is unchanged in 0.1.1. Supported plain input is the existing writer's known-size, checksummed, dictionary-free zstd frames with a no-table-checksum seek layout. General zstd input without these fields is refused as corruption/unsupported representation. The descriptor's two unused low bits remain ignored as specified by the seekable format. Actual decoding checks every logical length and exact physical extent: matching two corrupt length declarations is insufficient.
 
 The stateless `Store::read_range` conservatively validates all plain frames with the existing zstd streaming decoder before returning selected bytes. It checks structure/checksums but retains the weaker whole-name boundary: another valid object substituted under a name can return its bytes. This method now performs whole-object decode work and is unsuitable for repeated small reads. Sealed range behavior is unchanged.

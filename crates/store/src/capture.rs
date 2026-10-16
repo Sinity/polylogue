@@ -95,7 +95,13 @@ impl BlobCapture {
             cancelled,
             length: 0,
         };
-        let result = blobs.put(&mut counted, 3);
+        let result = blobs.put_plain_checked::<Error>(&mut counted, 3, || {
+            if cancelled.load(Ordering::Acquire) {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
         if cancelled.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
         }
