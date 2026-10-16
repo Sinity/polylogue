@@ -319,7 +319,7 @@ impl Writer {
             )
         })?;
         db(&archive_file, || {
-            tx.execute("INSERT INTO revision(input,number,produced,chain,length,local_seq) VALUES(?1,?2,?3,1,?4,?5)",params![input_id,revision,if old.is_some(){"appended"}else{"first"},length,next_i])
+            tx.execute("INSERT INTO revision(input,number,produced,chain,length,local_seq,blake3) VALUES(?1,?2,?3,1,?4,?5,?6)",params![input_id,revision,if old.is_some(){"appended"}else{"first"},length,next_i,old.is_none().then_some(hash.bytes().as_slice())])
         })?;
         if added > 0 {
             db(&archive_file, || {
@@ -502,6 +502,19 @@ mod tests {
         .unwrap()
     }
     #[test]
+    fn first_nonempty_observed_revision_records_full_digest_without_immutable_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("session.jsonl");
+        let bytes = b"synthetic first observed bytes\n";
+        std::fs::write(&path, bytes).unwrap();
+        let mut w = Writer::open(&root.path().join("archive")).unwrap();
+        let source = acquire(&mut w, &path, "first");
+        let (digest, original): (Vec<u8>, Option<Vec<u8>>) = w.archive.query_row("SELECT r.blake3,i.original_hash FROM revision r JOIN input i ON i.id=r.input WHERE r.input=?1 AND r.number=1", [&source.input.id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(digest, blake3::hash(bytes).as_bytes());
+        assert!(original.is_none());
+        assert!(matches!(source.identity, SourceIdentity::Observed { .. }));
+    }
+    #[test]
     fn same_location_retains_empty_genesis_separator_and_split_record_extents() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("session.jsonl");
@@ -510,6 +523,24 @@ mod tests {
         let mut w = Writer::open(&archive).unwrap();
         let first = acquire(&mut w, &path, "genesis");
         assert_eq!(first.input.length, 0);
+        let digest: Vec<u8> = w
+            .archive
+            .query_row(
+                "SELECT blake3 FROM revision WHERE input=?1 AND number=1",
+                [&first.input.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(digest, blake3::hash(b"").as_bytes());
+        let original: Option<Vec<u8>> = w
+            .archive
+            .query_row(
+                "SELECT original_hash FROM input WHERE id=?1",
+                [&first.input.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(original.is_none());
         assert_eq!(first.context, ["claude-main", "session"]);
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         let parts = [
@@ -528,6 +559,15 @@ mod tests {
             assert_eq!(next.input.chain, 1);
             assert_eq!(next.binding, first.binding);
             assert_eq!(next.revision, i as u64 + 2);
+            let digest: Option<Vec<u8>> = w
+                .archive
+                .query_row(
+                    "SELECT blake3 FROM revision WHERE input=?1 AND number=?2",
+                    params![next.input.id, next.revision],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(digest.is_none());
             assert_eq!(
                 w.read_handle()
                     .unwrap()
