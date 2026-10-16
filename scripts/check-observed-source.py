@@ -312,7 +312,7 @@ def verify(run):
     code = run.process.returncode
     (run.output / 'interrupted-until-idle.stdout').write_bytes(stdout)
     (run.output / 'interrupted-until-idle.stderr').write_bytes(stderr)
-    assert code != 0 and b'interrupted before target settlement' in stderr, (code, stdout, stderr)
+    assert code == 3 and b'interrupted before target settlement' in stderr, (code, stdout, stderr)
     (run.output / 'interrupted-until-idle.json').write_text(json.dumps({'argv': argv, 'exit': code, 'observed_progress': pending}, indent=2))
     run.process = None
     run.archive = run.output / 'masking-archive'

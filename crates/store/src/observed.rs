@@ -563,7 +563,7 @@ mod tests {
                 .archive
                 .query_row(
                     "SELECT blake3 FROM revision WHERE input=?1 AND number=?2",
-                    params![next.input.id, next.revision],
+                    params![next.input.id, i64::try_from(next.revision).unwrap()],
                     |r| r.get(0),
                 )
                 .unwrap();

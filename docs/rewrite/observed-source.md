@@ -19,8 +19,8 @@ The output identifies the acquisition route, input, chain, revision, retained
 length and actual parser/source-row outcome. This idle check concerns the one
 configured input, not every archive dependency. A waiting tail or unavailable
 interpretation returns degraded exit 5 with its reason. General watcher
-convergence and whole-archive idle acceptance remain open. Interrupting this
-command before its target settles returns a timeout failure, never success.
+convergence and whole-archive idle acceptance remain open. Interrupting the
+pending idle wait returns an interruption refusal (exit 3), never success; actual deadline expiry remains `Timeout` (exit 7).
 
 Without `--until-idle`, the daemon stays available for ordinary clients. Adding
 `--json` prints and flushes a `scope: retention_only` admission before waiting;

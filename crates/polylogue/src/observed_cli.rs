@@ -161,7 +161,9 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
     }
     if until_idle {
         return Err(error(
-            ErrorKind::Timeout,
+            ErrorKind::Refused {
+                reason: "interrupted before target settlement".into(),
+            },
             "observed source interrupted before target settlement",
         ));
     }
