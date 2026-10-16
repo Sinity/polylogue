@@ -82,10 +82,7 @@ impl BlobCapture {
             return Err(Error::Cancelled);
         }
         let blobs = hashed_blobs::Store::open(&self.root, vec![], 0o600)?;
-        let mut counted = Counted {
-            reader,
-            length: 0,
-        };
+        let mut counted = Counted { reader, length: 0 };
         let result = blobs.put_plain_checked::<Error>(&mut counted, 3, || {
             if cancelled.load(Ordering::Acquire) {
                 Err(Error::Cancelled)
