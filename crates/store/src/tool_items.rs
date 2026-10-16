@@ -147,7 +147,7 @@ impl Writer {
             return Err(bad("operation Session scope differs"));
         }
         db(&p, || {
-            tx.execute("INSERT INTO session(id,origin,native_id,kind) VALUES(?1,'codex',?2,'main') ON CONFLICT(id) DO NOTHING",params![operation.session.as_str(),native])
+            tx.execute("INSERT INTO session(id,origin,native_id,kind,changed) VALUES(?1,'codex',?2,'main',0) ON CONFLICT(id) DO NOTHING",params![operation.session.as_str(),native])
         })?;
         let session: i64 = db(&p, || {
             tx.query_row(
@@ -318,6 +318,22 @@ impl Writer {
                 tx.execute("INSERT INTO tool_call(session_pk,operation_id,tool_item_pk,tool_item_version_pk,outcome,outcome_reason,exit_code,duration_ms,action) SELECT session_pk,?2,tool_item_pk,pk,coalesce(result_outcome,'unknown'),CASE WHEN result_present=0 THEN 'no_result' ELSE NULL END,result_exit_code,result_duration_ms,'shell' FROM tool_item_version WHERE pk=?1 AND agent_class='agent' AND correspondence='established' AND call_present=1",params![selected,id])
             })?;
         }
+        let changed = crate::counter(&tx, &p)?
+            .checked_add(1)
+            .filter(|n| *n <= i64::MAX as u64)
+            .ok_or(Error::Range)?;
+        db(&p, || {
+            tx.execute(
+                "UPDATE meta SET value=?1 WHERE key='write_counter'",
+                [changed.to_string()],
+            )
+        })?;
+        db(&p, || {
+            tx.execute(
+                "UPDATE session SET changed=?2 WHERE pk=?1",
+                params![session, changed as i64],
+            )
+        })?;
         db(&p, || tx.commit())?;
         Ok(version)
     }

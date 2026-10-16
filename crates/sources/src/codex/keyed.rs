@@ -2076,7 +2076,7 @@ impl<V: ReadView> KeyedRecords<V> {
                         _ => String::new(),
                     };
                     let (outcome, exit) = output_outcome(
-                        "exec_command",
+                        operation.tool.as_deref().unwrap_or(""),
                         p.get("output").unwrap_or(&Value::Null),
                         &text,
                     );
@@ -2544,6 +2544,8 @@ impl<V: ReadView> KeyedRecords<V> {
             operation.result_present = false;
             operation.output = None;
             operation.outcome = None;
+            operation.exit_code = None;
+            operation.duration_ms = None;
         }
         let previous = self
             .operation_key(&operation.invocation)

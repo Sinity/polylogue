@@ -199,6 +199,65 @@ def unavailable_control(binary, output):
         close_run(run, output)
 
 
+def missing_and_wrong_session_controls(binary, output):
+    run = mcp.Run(binary, output)
+    try:
+        run.start()
+        path = output / 'missing.jsonl'
+        rollout(path)
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        path.write_text(''.join(compact(row) + '\n' for row in rows[:3]))
+        imported(run, path, 'codex-rollout')
+        _, calls = query(run)
+        assert len(calls['rows']) == 1, calls
+        item = run.cli([calls['rows'][0]['ref'], 'read', '--budget', '20000'])['shown'][0]['operation']
+        assert not item['result_present'] and item['output'] is None, item
+        wrong = output / 'wrong-session.jsonl'
+        rollout(wrong, scope=False, call='wrong')
+        rows = [json.loads(line) for line in wrong.read_text().splitlines()]
+        rows[-1]['payload']['thread_id'] = 'foreign-session'
+        wrong.write_text(''.join(compact(row) + '\n' for row in rows))
+        imported(run, wrong, 'codex-rollout')
+        _, all_items = query(run, 'tool_items')
+        wrong_item = next(row for row in all_items['rows'] if row['invocation'] == 'wrong')
+        assert wrong_item['id'].startswith('operation:provisional-v1:') and wrong_item['correspondence'] == 'unresolved', wrong_item
+        assert not all_items['population']['correspondence_complete'], all_items
+        return all_items
+    finally:
+        close_run(run, output)
+
+
+def chunked_output_control(binary, output):
+    run = mcp.Run(binary, output)
+    try:
+        run.start()
+        text = 'begin-sentinel ' + 'neutral ' * 20000 + ' end-sentinel'
+        path = output / 'history.sqlite'
+        history(path, [native_item(output=text)])
+        imported(run, path, 'codex-history-sqlite')
+        _, hits = query(run, text='end-sentinel')
+        assert hits['count'] == 1, hits
+        item = run.cli([hits['rows'][0]['ref'], 'read', '--budget', '100000'])['shown'][0]['operation']
+        assert item['output'] == text, 'chunked output changed'
+        return {'bytes': len(text.encode()), 'reference': hits['rows'][0]['ref']}
+    finally:
+        close_run(run, output)
+
+
+def giant_admission_control(binary, output):
+    run = mcp.Run(binary, output)
+    try:
+        run.start()
+        path = output / 'giant.jsonl'
+        rollout(path, output='neutral ' * 150000)
+        reply = run.cli(['import', path, '--format', 'codex-rollout', '--wait', '--wait-timeout', '30'], allowed=(0, 2, 3, 4, 5, 7))
+        assert reply['retained'] and reply['source_rows']['state'] == 'unavailable', reply
+        assert reply['outcome'] != 'ok', reply
+        return reply
+    finally:
+        close_run(run, output)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True, type=Path)
@@ -216,7 +275,7 @@ def main():
         assert results[0]['reference'] == results[1]['reference']
         assert results[0]['selected'] == results[1]['selected']
         report['cases'] = results
-        for name, verifier in [('qualification', qualification_controls), ('refine-PNF', lambda b, p: refinement_control(b, p, 'PNF')), ('refine-NFP', lambda b, p: refinement_control(b, p, 'NFP')), ('unavailable', unavailable_control)]:
+        for name, verifier in [('qualification', qualification_controls), ('refine-PNF', lambda b, p: refinement_control(b, p, 'PNF')), ('refine-NFP', lambda b, p: refinement_control(b, p, 'NFP')), ('unavailable', unavailable_control), ('missing-wrong-session', missing_and_wrong_session_controls), ('chunked-output', chunked_output_control), ('giant-admission', giant_admission_control)]:
             path = args.output / name
             path.mkdir()
             report[name] = verifier(binary, path)

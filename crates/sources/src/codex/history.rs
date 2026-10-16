@@ -101,15 +101,19 @@ pub fn command(
             .into()
         }),
         exit_code: if result { exit } else { None },
-        duration_ms: get("duration_ms", "durationMs")
-            .and_then(Value::as_u64)
-            .or_else(|| {
-                let d = item.get("duration")?;
-                d.get("secs")?
-                    .as_u64()?
-                    .checked_mul(1000)?
-                    .checked_add(d.get("nanos")?.as_u64()? / 1_000_000)
-            }),
+        duration_ms: if result {
+            get("duration_ms", "durationMs")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    let d = item.get("duration")?;
+                    d.get("secs")?
+                        .as_u64()?
+                        .checked_mul(1000)?
+                        .checked_add(d.get("nanos")?.as_u64()? / 1_000_000)
+                })
+        } else {
+            None
+        },
         message: None,
         wrapper: None,
         wrapper_overlaps: vec![],
