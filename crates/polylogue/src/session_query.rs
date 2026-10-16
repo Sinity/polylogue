@@ -46,7 +46,7 @@ pub(crate) fn serve(
         let tool_plan = polylogue_query::bind_tools(request["query"].as_str().unwrap())
             .map_err(|e| json!({"type":"end","outcome":"error","error":e}))?;
         let deadline = Instant::now() + TIME;
-        let result = if let Some(plan) = tool_plan {
+        let mut result = if let Some(plan) = tool_plan {
             let guard = reader
                 .lock()
                 .map_err(|_| failed(ErrorKind::Io, "reader lock poisoned"))?;
@@ -68,6 +68,19 @@ pub(crate) fn serve(
                 .map_err(store_failure)?;
             result
         };
+        let guard = reader
+            .lock()
+            .map_err(|_| failed(ErrorKind::Io, "reader lock poisoned"))?;
+        let pending = crate::pending_codex_references(&guard, deadline).map_err(store_failure)?;
+        drop(guard);
+        if pending["snapshots"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty())
+        {
+            result["pending_references"] = pending;
+            result["outcome"] = json!("degraded");
+            result["up_to_date"] = json!(false);
+        }
         for row in result["rows"].as_array().unwrap() {
             for key in ["id", "native_id"] {
                 if let Some(identity) = row[key].as_str() {

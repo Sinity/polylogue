@@ -600,7 +600,28 @@ pub fn execute(
         };
     }
     match run(reader, request, until, cancel) {
-        Ok(v) | Err(v) => v,
+        Ok(v) => v,
+        Err(mut v) => {
+            if request["reference"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("codex:"))
+            {
+                if let Ok(reader) = reader.lock() {
+                    match crate::pending_codex_references(&reader, until) {
+                        Ok(mut pending) => {
+                            if let Some(rows) = pending["references"].as_array_mut() {
+                                rows.retain(|row| row["session"] == request["reference"]);
+                                if !rows.is_empty() {
+                                    v["pending_references"] = pending;
+                                }
+                            }
+                        }
+                        Err(e) => return unavailable(&e.to_string()),
+                    }
+                }
+            }
+            v
+        }
     }
 }
 fn run(

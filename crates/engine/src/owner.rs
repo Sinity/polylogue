@@ -307,7 +307,9 @@ impl CanonicalPosition {
     pub(crate) fn first(format: InputFormat) -> Self {
         match format {
             InputFormat::CodexRollout => Self::Codex(0),
-            InputFormat::CodexHistorySqlite => Self::ToolsAfter(None),
+            InputFormat::CodexHistorySqlite | InputFormat::CodexPromptHistory => {
+                Self::ToolsAfter(None)
+            }
             InputFormat::ClaudeCodeJsonl => Self::ClaudeAfter(None),
         }
     }
@@ -881,6 +883,9 @@ impl Actor {
             None => None,
         };
         let obligation = match parser.as_ref().map(|h| h.status.as_str()) {
+            None if input.format == InputFormat::CodexPromptHistory => {
+                "prompt_reference_conversation_evidence"
+            }
             None => "source_parser_admission",
             Some("waiting_tail") => "unfinished_source_record",
             Some("parsing") => "source_record_interpretation",
@@ -923,6 +928,11 @@ impl Actor {
             .writer
             .retained_source(id)?
             .ok_or(Error::UnknownInput)?;
+        if input.format == InputFormat::CodexPromptHistory {
+            return Err(Error::InvalidRequest(
+                "prompt references have no conversation parser to retry",
+            ));
+        }
         if let Some(head) = self
             .writer
             .parser_head(input.input.input_pk, input.input.chain)?
@@ -962,6 +972,10 @@ impl Actor {
                 match self.writer.next_retained_source(&self.after) {
                     Ok(Some(input)) => {
                         self.after = input.input.id.clone();
+                        // Prompt references remain pending outside conversation interpretation.
+                        if input.format == InputFormat::CodexPromptHistory {
+                            return Ok(());
+                        }
                         Active::Begin(input)
                     }
                     Ok(None) => {
@@ -1507,6 +1521,7 @@ pub(crate) fn parser_version(format: InputFormat) -> u32 {
     match format {
         InputFormat::CodexRollout => codex::PARSER_VERSION,
         InputFormat::CodexHistorySqlite => codex::history::PARSER_VERSION,
+        InputFormat::CodexPromptHistory => 1,
         InputFormat::ClaudeCodeJsonl => claude_code::PARSER_VERSION,
     }
 }

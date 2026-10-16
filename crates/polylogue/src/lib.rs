@@ -32,6 +32,22 @@ use std::{
     time::Duration,
 };
 
+fn pending_codex_references(
+    reader: &ReadHandle,
+    until: std::time::Instant,
+) -> Result<Value, polylogue_store::Error> {
+    let pending = polylogue_engine::codex_discovery::pending(reader, until)?;
+    if let Some(references) = pending["references"].as_array() {
+        for reference in references {
+            if let Some(id) = reference["session"].as_str() {
+                output_json::check_identity(id, until)
+                    .map_err(|e| polylogue_store::Error::Invariant(e.to_string()))?;
+            }
+        }
+    }
+    Ok(pending)
+}
+
 pub fn socket_path(archive: &Path, runtime: &Path) -> PathBuf {
     let key = blake3::hash(archive.as_os_str().as_encoded_bytes()).to_hex();
     runtime.join("polylogue").join(&key[..12]).join("socket")
@@ -73,7 +89,7 @@ impl Running {
         cancelled: &AtomicBool,
     ) -> Result<Self, String> {
         let writer = Writer::open_cancellable(archive, cancelled).map_err(|e| e.to_string())?;
-        Self::start_writer(writer, archive, runtime, fail_after_bind)
+        Self::start_writer(writer, archive, runtime, fail_after_bind, None)
     }
     pub fn start_observed(
         archive: &Path,
@@ -88,17 +104,34 @@ impl Running {
         let mut writer = Writer::open_cancellable(archive, cancelled)?;
         let retained = writer.acquire_claude_main(source, machine, host, id, seen_at, cancelled)?;
         Ok((
-            Self::start_writer(writer, archive, runtime, false)
+            Self::start_writer(writer, archive, runtime, false, None)
                 .map_err(polylogue_store::Error::Invariant)?,
             retained,
         ))
+    }
+    pub fn start_codex(
+        archive: &Path,
+        runtime: &Path,
+        config: &polylogue_store::configured_codex::Config,
+        id: &str,
+        seen_at: i64,
+        cancelled: &AtomicBool,
+    ) -> Result<(Self, polylogue_store::configured_codex::Acquisition), polylogue_store::Error>
+    {
+        let mut writer = Writer::open_cancellable(archive, cancelled)?;
+        let report = writer.acquire_codex_home(config, id, seen_at, cancelled)?;
+        let running = Self::start_writer(writer, archive, runtime, false, Some(report.clone()))
+            .map_err(polylogue_store::Error::Invariant)?;
+        Ok((running, report))
     }
     fn start_writer(
         writer: Writer,
         archive: &Path,
         runtime: &Path,
         fail_after_bind: bool,
+        acquisition: Option<polylogue_store::configured_codex::Acquisition>,
     ) -> Result<Self, String> {
+        let acquisition = Arc::new(acquisition);
         let reader = Arc::new(Mutex::new(writer.read_handle().map_err(|e| e.to_string())?));
         let archive = fs::canonicalize(archive).map_err(|e| e.to_string())?;
         let socket = socket_path(&archive, runtime);
@@ -170,10 +203,17 @@ impl Running {
                         let handle = handle.clone();
                         let archive = archive.clone();
                         let reader = Arc::clone(&reader);
+                        let acquisition = Arc::clone(&acquisition);
                         let completed = Arc::clone(&thread_clients);
                         workers.retain(|worker| !worker.is_finished());
                         workers.push(thread::spawn(move || {
-                            if let Err(error) = serve(stream, &archive, &reader, &handle) {
+                            if let Err(error) = serve(
+                                stream,
+                                &archive,
+                                &reader,
+                                &handle,
+                                acquisition.as_ref().as_ref(),
+                            ) {
                                 eprintln!("client: {error}");
                             }
                             completed.lock().expect("client lock").remove(&id);
@@ -249,6 +289,7 @@ fn serve(
     archive: &Path,
     reader: &Mutex<ReadHandle>,
     owner: &Handle,
+    acquisition: Option<&polylogue_store::configured_codex::Acquisition>,
 ) -> Result<(), String> {
     let mut line = String::new();
     use std::io::Read;
@@ -265,14 +306,30 @@ fn serve(
     }
     let reply = match serde_json::from_str::<Value>(&line) {
         Ok(request) if request == json!({"command":"status"}) => {
-            match reader.lock().expect("reader lock").status() {
-                Ok(status) => {
-                    let notes = if status.recovery.is_some() {
+            let guard = reader.lock().expect("reader lock");
+            match guard.status().and_then(|status| {
+                pending_codex_references(
+                    &guard,
+                    std::time::Instant::now() + Duration::from_secs(30),
+                )
+                .map(|pending| (status, pending))
+            }) {
+                Ok((status, pending)) => {
+                    let mut notes = if status.recovery.is_some() {
                         vec![polylogue_model::RecoveryQualification::NOTE]
                     } else {
                         vec![]
                     };
-                    json!({"outcome":if status.recovery.is_some(){"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
+                    if acquisition.is_some()
+                        || pending["snapshots"]
+                            .as_array()
+                            .is_some_and(|a| !a.is_empty())
+                    {
+                        notes.push(
+                            "Finite Codex source evidence leaves general Session coverage unknown.",
+                        );
+                    }
+                    json!({"outcome":if status.recovery.is_some() || acquisition.is_some() || pending["snapshots"].as_array().is_some_and(|a|!a.is_empty()) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-codex-home-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})

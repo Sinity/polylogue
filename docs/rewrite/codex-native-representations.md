@@ -131,7 +131,7 @@ claim a complete empty population.
 The existing archive/index schema owns these records; this change uses its
 provisioned ToolItem/version/source/association/anchor tables and adds no durable
 schema version or reset. Healthy predecessor archives follow their ordinary
-migration owner. Live SQLite collection, catalog discovery, source-default
+migration owner. Live history SQLite collection, general catalog reconciliation, source-default
 replacement, page-patch scheduling, other item schemas and complete Codex
 Session/export support remain outside this path.
 
@@ -141,3 +141,5 @@ The declared `native_representation_demo` operation runs it and retains command
 arguments, replies, daemon logs and its report outside Git. It covers both
 arrival orders, wrapper ambiguity, turn/legacy/classification controls,
 provisional references, restart, same-request retry and unavailable bytes.
+
+[Configured startup discovery](codex-configured-discovery.md) independently enumerates a bounded explicit Codex home and preserves prompt-history uncertainty through this same retained operation path.
