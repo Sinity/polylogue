@@ -238,7 +238,12 @@ fn qualify_operation(
             };
         result.up_to_date &= caught_up;
         // Format owns origin; a Codex rollout cannot contribute Claude rows.
-        if dependency.format() == InputFormat::CodexRollout {
+        if matches!(
+            dependency.format(),
+            InputFormat::CodexRollout
+                | InputFormat::CodexHistorySqlite
+                | InputFormat::CodexPromptHistory
+        ) {
             if document {
                 add(&mut result.unresolved_inputs, 1)?;
                 continue;

@@ -600,7 +600,33 @@ pub fn execute(
         };
     }
     match run(reader, request, until, cancel) {
-        Ok(v) | Err(v) => v,
+        Ok(v) => v,
+        Err(mut v) => {
+            if request["reference"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("codex:"))
+            {
+                if let Ok(reader) = reader.lock() {
+                    match crate::pending_codex_references(
+                        &reader,
+                        until,
+                        request["reference"].as_str(),
+                    ) {
+                        Ok(pending) => {
+                            if pending["matching_reference_observations"]
+                                .as_u64()
+                                .is_some_and(|n| n > 0)
+                                || pending["scan_complete"] == false
+                            {
+                                v["pending_references"] = pending;
+                            }
+                        }
+                        Err(e) => return unavailable(&e.to_string()),
+                    }
+                }
+            }
+            v
+        }
     }
 }
 fn run(

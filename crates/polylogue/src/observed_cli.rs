@@ -1,4 +1,4 @@
-//! One explicit startup acquisition. No source discovery or watcher is registered.
+//! Explicit finite startup acquisition. No watcher is registered.
 use crate::{error, import_cli, io_error};
 use polylogue_model::types::{ErrorKind, Failure};
 use serde::Deserialize;
@@ -16,7 +16,8 @@ use std::{
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
-    claude_main: Source,
+    claude_main: Option<Source>,
+    codex_home: Option<polylogue_store::configured_codex::Config>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +72,12 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
             format!("source configuration: {e}"),
         )
     })?;
+    if config.claude_main.is_some() == config.codex_home.is_some() {
+        return Err(error(
+            ErrorKind::InvalidQuery,
+            "configure exactly one of claude_main or codex_home",
+        ));
+    }
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -87,12 +94,26 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
     let stop = Arc::new(AtomicBool::new(false));
     let signalled = Arc::clone(&stop);
     ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
+    if let Some(codex) = config.codex_home {
+        return run_codex(
+            archive,
+            &runtime,
+            &codex,
+            &id,
+            i64::try_from(now.as_micros()).map_err(io_error)?,
+            &stop,
+            until_idle,
+            json_output,
+            out,
+        );
+    }
+    let claude = config.claude_main.expect("validated source selection");
     let (mut running, source) = polylogue::Running::start_observed(
         archive,
         &runtime,
-        &config.claude_main.path,
-        &config.claude_main.machine,
-        &config.claude_main.host,
+        &claude.path,
+        &claude.machine,
+        &claude.host,
         &id,
         i64::try_from(now.as_micros()).map_err(io_error)?,
         &stop,
@@ -168,4 +189,85 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
         ));
     }
     Ok(0)
+}
+
+fn run_codex(
+    archive: &Path,
+    runtime: &Path,
+    config: &polylogue_store::configured_codex::Config,
+    id: &str,
+    seen_at: i64,
+    stop: &AtomicBool,
+    until_idle: bool,
+    json_output: bool,
+    out: &mut impl Write,
+) -> Result<i32, Failure> {
+    let (mut running, acquisition) =
+        polylogue::Running::start_codex(archive, runtime, config, id, seen_at, stop)
+            .map_err(io_error)?;
+    eprintln!(
+        "listening: {} (finite configured Codex snapshots; no watcher)",
+        running.socket().display()
+    );
+    if !until_idle {
+        if json_output {
+            serde_json::to_writer(&mut *out,&json!({"outcome":"degraded","acquisition":acquisition,"scope":"retention_only","missing":["general_session_coverage"]})).map_err(io_error)?;
+            writeln!(out).map_err(io_error)?;
+            out.flush().map_err(io_error)?;
+        }
+        while !stop.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        running.stop();
+        return Ok(0);
+    }
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut progress = Vec::new();
+    for input in &acquisition.admitted {
+        if acquisition.prompt_input.as_ref() == Some(input) {
+            continue;
+        }
+        loop {
+            if stop.load(Ordering::Acquire) {
+                running.stop();
+                return Err(error(
+                    ErrorKind::Refused {
+                        reason: "startup interrupted".into(),
+                    },
+                    "startup interrupted before settlement",
+                ));
+            }
+            let value = polylogue::request_value_until(
+                running.socket(),
+                &json!({"command":"progress","input":input}),
+                deadline,
+            )
+            .map_err(io_error)?;
+            // Prompt snapshots are retained pending references, not parser jobs.
+            if value["source_rows"]["state"] == "settled"
+                || value["source_rows"]["state"] == "unavailable"
+                || !value["failure"].is_null()
+                || !value["recovery_error"].is_null()
+                || value["outcome"] == "error"
+            {
+                progress.push(value);
+                break;
+            }
+            if Instant::now() >= deadline {
+                running.stop();
+                return Err(error(
+                    ErrorKind::Timeout,
+                    "configured Codex inputs did not reach idle within 120 seconds",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let status =
+        polylogue::request_value_until(running.socket(), &json!({"command":"status"}), deadline)
+            .map_err(io_error)?;
+    running.stop();
+    serde_json::to_writer(&mut *out,&json!({"outcome":"degraded","acquisition":acquisition,"progress":progress,"status":status,"missing":["general_session_coverage"]})).map_err(io_error)?;
+    writeln!(out).map_err(io_error)?;
+    Ok(5)
 }

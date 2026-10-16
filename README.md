@@ -47,6 +47,10 @@ text and missing results stay distinct. Unknown ownership stays unknown. See the
 pinned revision, citations, provisional refinement, admission and remaining
 coverage limits.
 
+## Configured Codex home subset
+
+Explicit `codex_home` startup configuration discovers a finite set of rollout snapshots independently of thread catalog membership. Retained prompt-history references stay separate from conversations, with pending coverage and source provenance in status and query replies. The [configured discovery guide](docs/rewrite/codex-configured-discovery.md) describes relative paths, admission, missing versus empty evidence, and retained reads after source removal. General source reconciliation remains unfinished.
+
 ## Observed Claude source subset
 
 One explicit regular Claude main location can now be retained at startup with

@@ -11,6 +11,7 @@ mod keyed_codec;
 pub mod origins;
 pub mod presence;
 pub mod projection;
+pub mod prompt_history;
 mod raw;
 pub mod selection;
 pub const PARSER_VERSION: u32 = 7;

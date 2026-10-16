@@ -15,4 +15,5 @@ mod source_rows;
 
 pub mod session_qualification;
 
+pub mod codex_discovery;
 pub mod session_query;

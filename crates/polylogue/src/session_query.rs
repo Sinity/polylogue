@@ -46,7 +46,7 @@ pub(crate) fn serve(
         let tool_plan = polylogue_query::bind_tools(request["query"].as_str().unwrap())
             .map_err(|e| json!({"type":"end","outcome":"error","error":e}))?;
         let deadline = Instant::now() + TIME;
-        let result = if let Some(plan) = tool_plan {
+        let mut result = if let Some(plan) = tool_plan {
             let guard = reader
                 .lock()
                 .map_err(|_| failed(ErrorKind::Io, "reader lock poisoned"))?;
@@ -68,6 +68,21 @@ pub(crate) fn serve(
                 .map_err(store_failure)?;
             result
         };
+        let guard = reader
+            .lock()
+            .map_err(|_| failed(ErrorKind::Io, "reader lock poisoned"))?;
+        let pending =
+            crate::pending_codex_references(&guard, deadline, None).map_err(store_failure)?;
+        drop(guard);
+        if pending["examined_snapshots"]
+            .as_u64()
+            .is_some_and(|n| n > 0)
+            || pending["scan_complete"] == false
+        {
+            result["pending_references"] = pending;
+            result["outcome"] = json!("degraded");
+            result["up_to_date"] = json!(false);
+        }
         for row in result["rows"].as_array().unwrap() {
             for key in ["id", "native_id"] {
                 if let Some(identity) = row[key].as_str() {
@@ -92,6 +107,15 @@ pub(crate) fn serve(
             .value(&result)
             .and_then(|_| encoder.finish())
             .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
+        if bytes.len() > 4 * 1024 * 1024 && result.get("pending_references").is_some() {
+            crate::summarize_pending_references(&mut result);
+            bytes.clear();
+            let mut encoder = crate::output_json::Encoder::new(&mut bytes, deadline);
+            encoder
+                .value(&result)
+                .and_then(|_| encoder.finish())
+                .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
+        }
         if bytes.len() > 4 * 1024 * 1024 {
             return Err(failed(
                 ErrorKind::NotYetAvailable,

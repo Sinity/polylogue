@@ -181,6 +181,12 @@ impl Audit {
         }
         if self.step <= head.token.step {
             match input.format {
+                InputFormat::CodexPromptHistory => {
+                    return Err(Error::Invariant(
+                        "prompt references cannot certify conversation row settlement".into(),
+                    )
+                    .into());
+                }
                 InputFormat::CodexHistorySqlite => {
                     self.step = head.token.step + 1;
                 }

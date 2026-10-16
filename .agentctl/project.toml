@@ -123,3 +123,13 @@ result = "exit"
 timeout_seconds = 600
 scratch = "nvme"
 cache = "none"
+
+[operations.configured_codex_demo]
+description = "Exercise configured synthetic Codex home discovery, pending provenance and retained CLI/SDK MCP lifecycle"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-codex-discovery.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"
