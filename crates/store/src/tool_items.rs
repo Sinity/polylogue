@@ -68,6 +68,17 @@ fn payload(tx: &Transaction<'_>, path: &Path, codec: &str, bytes: &[u8]) -> Resu
         )
         .optional()
     })? {
+        // This caller becomes one new immutable metadata/text owner. Shared
+        // bytes do not erase that lease; transaction rollback undoes it too.
+        if db(path, || {
+            tx.execute(
+                "UPDATE body_value SET incoming=incoming+1 WHERE pk=?1 AND state='ready'",
+                [pk],
+            )
+        })? != 1
+        {
+            return Err(bad("operation payload lost its ready owner"));
+        }
         return Ok(pk);
     }
     db(path, || {
@@ -86,6 +97,24 @@ fn payload(tx: &Transaction<'_>, path: &Path, codec: &str, bytes: &[u8]) -> Resu
         })?;
     }
     Ok(pk)
+}
+/// A deduplicated text row owns one value lease, regardless of how many
+/// immutable operation versions refer to that row.
+fn output_text(tx: &Transaction<'_>, p: &Path, output: &str) -> Result<i64> {
+    let hash = blake3::hash(output.as_bytes());
+    if let Some(id) = db(p, || {
+        tx.query_row("SELECT t.id FROM text t JOIN body_value v ON v.pk=t.value_pk AND v.state='ready' AND v.codec='utf8' AND v.hash=t.hash WHERE t.hash=?1",[hash.as_bytes().as_slice()],|r|r.get(0)).optional()
+    })? {
+        return Ok(id);
+    }
+    let value = payload(tx, p, "utf8", output.as_bytes())?;
+    db(p, || {
+        tx.execute(
+            "INSERT INTO text(hash,value_pk) VALUES(?1,?2)",
+            params![hash.as_bytes().as_slice(), value],
+        )
+    })?;
+    Ok(tx.last_insert_rowid())
 }
 fn bytes(c: &Connection, p: &Path, pk: i64, allowance: usize) -> Result<Vec<u8>> {
     let (length, hash): (i64, Vec<u8>) = db(p, || {
@@ -250,25 +279,10 @@ impl Writer {
             return Ok(v);
         }
         let input = payload(&tx, &p, "json", &encoded)?;
-        let text = if let Some(output) = &output {
-            let value = payload(&tx, &p, "utf8", output.as_bytes())?;
-            let hash = blake3::hash(output.as_bytes());
-            db(&p, || {
-                tx.execute(
-                    "INSERT INTO text(hash,value_pk) VALUES(?1,?2) ON CONFLICT(hash) DO NOTHING",
-                    params![hash.as_bytes().as_slice(), value],
-                )
-            })?;
-            Some(db(&p, || {
-                tx.query_row(
-                    "SELECT id FROM text WHERE hash=?1",
-                    [hash.as_bytes().as_slice()],
-                    |r| r.get::<_, i64>(0),
-                )
-            })?)
-        } else {
-            None
-        };
+        let text = output
+            .as_deref()
+            .map(|output| output_text(&tx, &p, output))
+            .transpose()?;
         db(&p, || {
             tx.execute("INSERT INTO tool_item_version(tool_item_pk,session_pk,evidence_revision,ready,version_hash,kind,agent_class,correspondence,call_present,call_id,input_value_pk,result_present,output_present,result_text_id,result_outcome,result_exit_code,result_duration_ms) VALUES(?1,?2,?3,1,?4,?16,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",params![item,session,token.step,digest.bytes().as_slice(),operation.agent_class,operation.correspondence,operation.call_present,operation.invocation,if operation.call_present{Some(input)}else{None},operation.result_present,output.is_some(),text,operation.outcome,operation.exit_code,duration,operation.kind])
         })?;
@@ -804,5 +818,72 @@ impl ReadHandle {
             )
         })
         .transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn deduplicated_metadata_versions_acquire_leases_but_text_shares_one_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut writer = Writer::open(&dir.path().join("archive")).unwrap();
+        let p = writer.root.join("index.db");
+        let tx = writer._index.transaction().unwrap();
+        let first = payload(&tx, &p, "json", br#"{"synthetic":true}"#).unwrap();
+        assert_eq!(
+            payload(&tx, &p, "json", br#"{"synthetic":true}"#).unwrap(),
+            first
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT incoming FROM body_value WHERE pk=?1",
+                [first],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        // A separate field already owns the same UTF-8 bytes. Creating the
+        // shared text row acquires its own lease; a second result shares it.
+        let field = payload(&tx, &p, "utf8", b"synthetic-output").unwrap();
+        let text = output_text(&tx, &p, "synthetic-output").unwrap();
+        assert_eq!(output_text(&tx, &p, "synthetic-output").unwrap(), text);
+        assert_eq!(
+            tx.query_row("SELECT value_pk FROM text WHERE id=?1", [text], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            field
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT incoming FROM body_value WHERE pk=?1",
+                [field],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        // Releasing one metadata/field owner leaves the other owner's value
+        // readable. Rollback also restores both the acquisition and releases.
+        tx.execute(
+            "UPDATE body_value SET incoming=incoming-1 WHERE pk IN(?1,?2)",
+            params![first, field],
+        )
+        .unwrap();
+        assert_eq!(
+            bytes(&tx, &p, first, 4096).unwrap(),
+            br#"{"synthetic":true}"#
+        );
+        assert_eq!(bytes(&tx, &p, field, 4096).unwrap(), b"synthetic-output");
+        tx.rollback().unwrap();
+        assert_eq!(
+            writer
+                ._index
+                .query_row("SELECT count(*) FROM body_value", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }
