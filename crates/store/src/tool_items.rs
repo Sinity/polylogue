@@ -38,6 +38,7 @@ pub struct Item {
     pub operation: Operation,
     pub sources: Vec<Citation>,
     pub representations: Vec<Citation>,
+    pub representations_complete: bool,
     pub associations: Vec<Association>,
     pub conflicting_representations: bool,
     pub selected: bool,
@@ -508,13 +509,20 @@ fn associations(reader: &ReadHandle, version: i64) -> Result<Vec<Association>> {
     }
     Ok(out)
 }
-fn citations(reader: &ReadHandle, id: &str, version: Option<i64>) -> Result<Vec<Citation>> {
+// Alternative metadata is a preview, independent of exact-body admission.
+const REPRESENTATION_PREVIEW_LIMIT: usize = 16;
+fn citations(
+    reader: &ReadHandle,
+    id: &str,
+    version: Option<i64>,
+    limit: usize,
+) -> Result<(Vec<Citation>, bool)> {
     let p = reader.root.join("index.db");
     let mut s = db(&p, || {
-        reader.index.prepare("SELECT i.id,s.source_chain,s.source_start,s.source_end,s.field,s.constructor,lower(hex(v.version_hash)) FROM tool_item_source s JOIN input_ref i ON i.pk=s.input_pk JOIN tool_item_version v ON v.pk=s.tool_item_version_pk JOIN tool_item t ON t.pk=s.tool_item_pk WHERE t.id=?1 AND (?2 IS NULL OR v.pk=?2) ORDER BY i.id,v.pk,s.source_start,s.slot LIMIT 4097")
+        reader.index.prepare("SELECT i.id,s.source_chain,s.source_start,s.source_end,s.field,s.constructor,lower(hex(v.version_hash)) FROM tool_item_source s JOIN input_ref i ON i.pk=s.input_pk JOIN tool_item_version v ON v.pk=s.tool_item_version_pk JOIN tool_item t ON t.pk=s.tool_item_pk WHERE t.id=?1 AND (?2 IS NULL OR v.pk=?2) ORDER BY i.id,v.pk,s.source_start,s.slot LIMIT ?3")
     })?;
-    let raw = db(&p, || {
-        s.query_map(params![id, version], |r| {
+    let mut raw = db(&p, || {
+        s.query_map(params![id, version, (limit + 1) as i64], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
@@ -527,13 +535,10 @@ fn citations(reader: &ReadHandle, id: &str, version: Option<i64>) -> Result<Vec<
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
     })?;
-    if raw.len() > 4096 {
-        return Err(Error::ParserAdmission {
-            resource: "operation source citations",
-            required: raw.len() as u64,
-        });
-    }
-    raw.into_iter()
+    let complete = raw.len() <= limit;
+    raw.truncate(limit);
+    let citations = raw
+        .into_iter()
         .map(
             |(input, chain, start, end, origin, constructor, version_hash)| {
                 Ok(Citation {
@@ -548,7 +553,8 @@ fn citations(reader: &ReadHandle, id: &str, version: Option<i64>) -> Result<Vec<
                 })
             },
         )
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok((citations, complete))
 }
 #[derive(Default)]
 struct Verification {
@@ -642,9 +648,16 @@ fn load_item(
                 .map_err(|e| bad(e.to_string()))?,
         );
     }
-    let sources = citations(reader, &reference, Some(version))?;
+    let (sources, sources_complete) = citations(reader, &reference, Some(version), 4096)?;
+    if !sources_complete {
+        return Err(Error::ParserAdmission {
+            resource: "operation source citations",
+            required: 4097,
+        });
+    }
     verify_sources(reader, &sources, verified)?;
-    let representations = citations(reader, &reference, None)?;
+    let (representations, representations_complete) =
+        citations(reader, &reference, None, REPRESENTATION_PREVIEW_LIMIT)?;
     let associations = associations(reader, version)?;
     let selected: bool = db(&p, || {
         reader.index.query_row(
@@ -663,6 +676,7 @@ fn load_item(
         operation,
         sources,
         representations,
+        representations_complete,
         associations,
         conflicting_representations,
         selected,
