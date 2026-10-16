@@ -234,3 +234,155 @@ fn opaque_native_identity_is_not_split_or_interpreted_as_a_path() {
     assert_eq!(document["session"]["id"], reference);
     assert_eq!(document["session"]["native_id"], native);
 }
+
+#[test]
+fn sigint_terminates_partial_frame_export_and_disconnects_without_publication() {
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        os::unix::{net::UnixListener, process::ExitStatusExt},
+        sync::mpsc,
+    };
+    struct Owned(Child);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let work = tempfile::tempdir().unwrap();
+    let runtime = tempfile::tempdir_in("/tmp").unwrap();
+    let archive = work.path().join("archive");
+    fs::create_dir(&archive).unwrap();
+    let destination = work.path().join("export");
+    fs::create_dir(&destination).unwrap();
+    let manifest = json!({"format":"polylogue-export-manifest","version":1}).to_string();
+    fs::write(destination.join("manifest.json"), &manifest).unwrap();
+    fs::write(destination.join("prior"), b"previous complete export").unwrap();
+    let socket = polylogue::socket_path(&fs::canonicalize(&archive).unwrap(), runtime.path());
+    fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (ready, started) = mpsc::channel();
+    let producer = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "CLI never connected");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut request)
+            .unwrap();
+        let request: Value = serde_json::from_str(&request).unwrap();
+        assert_eq!(
+            request,
+            json!({"command":"session-read","reference":"test:cancel","format":"json"})
+        );
+        writeln!(stream,"{}",json!({"type":"session","id":"test:cancel","origin":"test","native_id":"cancel","format":"polylogue-session","version":1})).unwrap();
+        writeln!(
+            stream,
+            "{}",
+            json!({"type":"text","data":"{\"format\":\"polylogue-session\","})
+        )
+        .unwrap();
+        // No newline or completion follows this frame. The old handler merely
+        // set a flag, leaving the client stuck inside read_line until TIME.
+        stream
+            .write_all(b"{\"type\":\"text\",\"data\":\"unfinished")
+            .unwrap();
+        stream.flush().unwrap();
+        ready.send(()).unwrap();
+        let mut byte = [0];
+        stream.read(&mut byte)
+    });
+    let mut client = Owned(
+        Command::new(BINARY)
+            .args([
+                "--archive",
+                archive.to_str().unwrap(),
+                "test:cancel",
+                "export",
+                "--format",
+                "json",
+                "--to",
+                destination.to_str().unwrap(),
+            ])
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    // The signal targets this exact owned child; the positional argument avoids
+    // interpreting its numeric PID as shell text.
+    assert!(
+        Command::new("sh")
+            .args([
+                "-c",
+                "kill -INT \"$1\"",
+                "signal-export-client",
+                &client.0.id().to_string()
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = client.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "export client ignored SIGINT while waiting for a partial frame"
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(status.signal(), Some(2));
+    let disconnected = producer.join().unwrap();
+    // A full close can reset the stream if the client had unread bytes. Both
+    // observations release the producer; a timeout or open stream fails.
+    assert!(
+        matches!(disconnected, Ok(0))
+            || disconnected.is_err_and(|error| error.kind() == std::io::ErrorKind::ConnectionReset),
+        "producer must see full client disconnection"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("manifest.json")).unwrap(),
+        manifest
+    );
+    assert_eq!(
+        fs::read(destination.join("prior")).unwrap(),
+        b"previous complete export"
+    );
+    let stages = fs::read_dir(work.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".polylogue-export-")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stages.len(),
+        1,
+        "abrupt SIGINT retains only private unfinished staging"
+    );
+    assert!(stages[0].path().join("session.json").is_file());
+    assert!(!stages[0].path().join("manifest.json").exists());
+}

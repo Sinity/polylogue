@@ -216,9 +216,9 @@ fn run() -> Result<i32, Failure> {
     })?;
     let socket = polylogue::socket_path(&resolved, &runtime);
     if let Some(destination) = export_to {
-        let stop = Arc::new(AtomicBool::new(false));
-        let signalled = Arc::clone(&stop);
-        ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
+        // Preserve default SIGINT termination while IPC is blocked. Process
+        // exit closes the read socket; unfinished staging may remain private.
+        let stop = AtomicBool::new(false);
         let reply = polylogue::session_export::request(&socket, &args[0], &destination, &stop)
             .map_err(io_error)?;
         if reply["outcome"] == "error" {

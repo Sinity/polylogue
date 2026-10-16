@@ -81,6 +81,8 @@ struct DocumentQualification {
 /// Publish one detached document and its same-read manifest. Existing recognized
 /// export directories are exchanged atomically on Linux; other occupants refuse.
 /// The parent must already exist. This does not implement query/empty exports.
+/// `stop` gates filesystem publication; it does not interrupt blocking read IO.
+/// CLI signal cancellation uses ordinary process termination and socket close.
 pub fn request(
     socket: &Path,
     reference: &str,
