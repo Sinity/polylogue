@@ -2,7 +2,7 @@
 use polylogue_model::{ErrorKind, Failure};
 use polylogue_store::{
     ReadHandle,
-    authored::{Family, Snapshot},
+    authored::{Family, PageKind, Snapshot},
 };
 use serde_json::{Value, json};
 use std::time::Instant;
@@ -124,8 +124,94 @@ pub(crate) fn write_reply(
     );
     reply
 }
+// Same process key as selected-body continuation, with a separate MAC domain.
+// Only reference/archive hashes, counters and a page position enter this token.
+fn next_call(
+    snapshot: &Snapshot,
+    reference: &str,
+    view: &str,
+    cutoff: u64,
+    after: i64,
+) -> Result<Value, Value> {
+    let mut raw = Vec::from(*blake3::hash(reference.as_bytes()).as_bytes());
+    raw.extend_from_slice(&snapshot.identity());
+    raw.extend_from_slice(&cutoff.to_le_bytes());
+    raw.extend_from_slice(&after.to_le_bytes());
+    let tag = match view {
+        "history" => 1,
+        "withdrawals" => 2,
+        "current" => 3,
+        "annotations" => 4,
+        _ => return Err(fail(ErrorKind::InvalidQuery, "unsupported authored page")),
+    };
+    raw.push(tag);
+    let key = crate::model_read::key().map_err(|e| fail(ErrorKind::Io, e))?;
+    let mut signed = b"authored-page-v1\0".to_vec();
+    signed.extend_from_slice(&raw);
+    let token = format!(
+        "a1.{}.{}",
+        crate::model_read::hex(&raw),
+        blake3::keyed_hash(key, &signed).to_hex()
+    );
+    Ok(
+        json!({"tool":"read","arguments":{"ref":reference,"view":view,"continuation":token,"budget_tokens":4000}}),
+    )
+}
+fn position(
+    snapshot: &Snapshot,
+    reference: &str,
+    view: &str,
+    token: &str,
+) -> Result<(u64, i64), Value> {
+    let (raw, tag) = token
+        .strip_prefix("a1.")
+        .and_then(|s| s.split_once('.'))
+        .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid authored continuation"))?;
+    let raw = crate::model_read::unhex(raw)
+        .filter(|v| v.len() == 81)
+        .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid authored continuation"))?;
+    let tag = crate::model_read::unhex(tag)
+        .filter(|v| v.len() == 32)
+        .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid authored continuation"))?;
+    let key = crate::model_read::key().map_err(|e| fail(ErrorKind::Io, e))?;
+    let mut signed = b"authored-page-v1\0".to_vec();
+    signed.extend_from_slice(&raw);
+    let tag = blake3::Hash::from_bytes(tag.try_into().unwrap());
+    if blake3::keyed_hash(key, &signed) != tag
+        || raw[..32] != *blake3::hash(reference.as_bytes()).as_bytes()
+        || raw[32..64] != snapshot.identity()
+    {
+        return Err(fail(
+            ErrorKind::InvalidQuery,
+            "invalid, cross-reference/archive or expired authored continuation",
+        ));
+    }
+    let expected = match view {
+        "history" => 1,
+        "withdrawals" => 2,
+        "current" => 3,
+        "annotations" => 4,
+        _ => 0,
+    };
+    if raw[80] != expected {
+        return Err(fail(
+            ErrorKind::InvalidQuery,
+            "cross-view authored continuation",
+        ));
+    }
+    let cutoff = u64::from_le_bytes(raw[64..72].try_into().unwrap());
+    let after = i64::from_le_bytes(raw[72..80].try_into().unwrap());
+    if cutoff > snapshot.archive_counter || after < 0 {
+        return Err(fail(
+            ErrorKind::InvalidQuery,
+            "unavailable authored page basis",
+        ));
+    }
+    Ok((cutoff, after))
+}
 pub(crate) fn family_value(
     family: Family,
+    snapshot: &Snapshot,
     reader: &ReadHandle,
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
@@ -141,7 +227,23 @@ pub(crate) fn family_value(
             crate::output_json::check_identity(identity,until).map_err(|_|fail(ErrorKind::NotYetAvailable,"authored identity requires credential masking; exact outcome cannot be presented"))?;
         }
     }
+    let root = format!("note:{}", family.root);
+    let cutoff = family.status_at_archive_counter;
+    let nexts = [
+        ("history_next", "history", family.history_after),
+        ("withdrawals_next", "withdrawals", family.withdrawal_after),
+        ("current_next", "current", family.current_after),
+    ];
     let mut v = serde_json::to_value(family).map_err(|e| fail(ErrorKind::Io, e))?;
+    for (field, view, after) in nexts {
+        v[field] = match after {
+            Some(after) => next_call(snapshot, &root, view, cutoff, after)?,
+            None => Value::Null,
+        };
+    }
+    v["status_scope"] = json!(
+        "effective status at status_at_archive_counter; target_status compares the live retained source selection"
+    );
     for state in v["shown"].as_array_mut().unwrap() {
         let revision: polylogue_model::authored::Revision =
             serde_json::from_value(state["revision"].clone())
@@ -187,12 +289,78 @@ pub(crate) fn backlinks(
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
 ) -> Result<Value, Value> {
-    let families = snapshot.backlinks(reference).map_err(store_error)?;
-    let families = families
+    association_page(
+        snapshot,
+        reader,
+        reference,
+        snapshot.archive_counter,
+        0,
+        16,
+        until,
+        cancel,
+    )
+}
+fn association_page(
+    snapshot: &Snapshot,
+    reader: &ReadHandle,
+    reference: &str,
+    cutoff: u64,
+    after: i64,
+    limit: usize,
+    until: Instant,
+    cancel: &mut dyn FnMut() -> bool,
+) -> Result<Value, Value> {
+    let page = snapshot
+        .backlinks_page(reference, cutoff, after, limit, until, cancel)
+        .map_err(store_error)?;
+    let next = page
+        .after
+        .map(|pos| next_call(snapshot, reference, "annotations", cutoff, pos))
+        .transpose()?;
+    let families = page
+        .families
         .into_iter()
-        .map(|f| family_value(f, reader, until, cancel))
+        .map(|f| family_value(f, snapshot, reader, until, cancel))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(json!({"target":reference,"archive_counter":snapshot.archive_counter,"families":families}))
+    let complete = next.is_none()
+        && families.iter().all(|f| {
+            f["shown_current_complete"] == true && f["matching_target_revisions_complete"] != false
+        });
+    Ok(
+        json!({"target":reference,"archive_counter":cutoff,"status_scope":"effective state and membership at archive_counter; live retained source comparison/access checks still apply","families":families,"complete":complete,"next":next}),
+    )
+}
+/// Primary bodies can remain readable when their separately bounded relations
+/// cannot fit. Historical association pages retain their archive cutoff; the
+/// source-body certificate uses the separate authored-only watermark.
+pub(crate) fn bounded_backlinks(
+    snapshot: &Snapshot,
+    reader: &ReadHandle,
+    reference: &str,
+    budget: u64,
+    until: Instant,
+    cancel: &mut dyn FnMut() -> bool,
+) -> Value {
+    // Side metadata cannot consume the primary body's entire lifetime. A
+    // timed-out embedding has its own explicit read route under the full
+    // request deadline, rather than suppressing unchanged primary content.
+    let side_until = until.min(Instant::now() + std::time::Duration::from_secs(2));
+    let value = backlinks(snapshot, reader, reference, side_until, cancel);
+    if let Ok(value) = &value {
+        let fitted = fit(value.clone(), budget / 2, false, until);
+        if fitted["outcome"] != "error" {
+            return fitted;
+        }
+    }
+    let next = next_call(
+        snapshot,
+        reference,
+        "annotations",
+        snapshot.archive_counter,
+        0,
+    )
+    .ok();
+    json!({"target":reference,"archive_counter":snapshot.archive_counter,"families":[],"complete":false,"next":next,"unavailable":value.err(),"reason":"authored associations deferred from primary content; use next or exact pinned note reads"})
 }
 /// Same JSON encoder/masking policy as ordinary metadata, charged in full.
 pub(crate) fn fit(value: Value, budget: u64, mcp: bool, until: Instant) -> Value {
@@ -228,7 +396,14 @@ pub(crate) fn read(
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
 ) -> Value {
-    let action = || -> Result<Value, Value> {
+    let budget = request
+        .get("budget_tokens")
+        .map_or(Some(4000), Value::as_u64)
+        .filter(|n| *n > 0 && *n <= 1_048_576);
+    let Some(budget) = budget else {
+        return fail(ErrorKind::InvalidQuery, "budget_tokens must be1..1048576");
+    };
+    let mut action = || -> Result<Value, Value> {
         if Instant::now() >= until || cancel() {
             return Err(fail(
                 ErrorKind::Timeout,
@@ -239,47 +414,142 @@ pub(crate) fn read(
             o.keys().any(|k| {
                 !matches!(
                     k.as_str(),
-                    "command" | "reference" | "presentation" | "budget_tokens"
+                    "command"
+                        | "reference"
+                        | "presentation"
+                        | "budget_tokens"
+                        | "view"
+                        | "continuation"
                 )
             })
         }) {
             return Err(fail(
                 ErrorKind::NotYetAvailable,
-                "authored exact reads do not support continuation, views or general note queries",
+                "unsupported authored read fields",
+            ));
+        }
+        if request.get("command").is_some_and(|v| v != "model-read")
+            || request.get("presentation").is_some_and(|v| v != "mcp")
+        {
+            return Err(fail(
+                ErrorKind::InvalidQuery,
+                "unsupported authored read command/presentation",
             ));
         }
         let reference = request["reference"]
             .as_str()
-            .ok_or_else(|| fail(ErrorKind::InvalidQuery, "missing exact note reference"))?;
+            .ok_or_else(|| fail(ErrorKind::InvalidQuery, "missing exact reference"))?;
+        let view = request
+            .get("view")
+            .map_or(Some("family"), Value::as_str)
+            .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid authored view"))?;
+        if !matches!(
+            view,
+            "family" | "history" | "withdrawals" | "current" | "value" | "annotations"
+        ) {
+            return Err(fail(
+                ErrorKind::NotYetAvailable,
+                "unsupported authored read view",
+            ));
+        }
         let snapshot = reader.authored_snapshot().map_err(store_error)?;
-        let family = snapshot.family(reference).map_err(store_error)?;
-        let family = family_value(family, reader, until, cancel)?;
+        let (cutoff, after) = if let Some(token) = request.get("continuation") {
+            position(
+                &snapshot,
+                reference,
+                view,
+                token.as_str().ok_or_else(|| {
+                    fail(ErrorKind::InvalidQuery, "invalid authored continuation")
+                })?,
+            )?
+        } else {
+            (snapshot.archive_counter, 0)
+        };
+        let mut notes = vec![];
+        if snapshot.recovery.is_some() {
+            notes.push(polylogue_model::RecoveryQualification::NOTE);
+        }
+        if cutoff < snapshot.archive_counter {
+            notes.push("effective status is evaluated at the retained page basis, not current now");
+        }
+        let mut value = if view == "annotations" {
+            let annotations = association_page(
+                &snapshot, reader, reference, cutoff, after, 1, until, cancel,
+            )?;
+            if annotations["complete"] == false {
+                notes.push("authored target association evidence has a bounded remainder; follow the named read calls");
+            }
+            json!({"authored_notes":annotations,"next":annotations["next"]})
+        } else if view == "value" {
+            if request.get("continuation").is_some() {
+                return Err(fail(
+                    ErrorKind::InvalidQuery,
+                    "value-only reads have no continuation",
+                ));
+            }
+            let revision = snapshot.exact(reference, cutoff).map_err(store_error)?;
+            for identity in [&revision.author, &revision.machine]
+                .into_iter()
+                .map(String::as_str)
+                .chain(revision.targets.iter().map(|t| t.reference.as_str()))
+                .chain(revision.relations.iter().map(|r| r.other.as_str()))
+            {
+                crate::output_json::check_identity(identity, until).map_err(|_| {
+                    fail(
+                        ErrorKind::NotYetAvailable,
+                        "authored exact identity cannot be presented",
+                    )
+                })?;
+            }
+            notes.push(
+                "immutable retained value only; current and withdrawn status are unevaluated",
+            );
+            json!({"revision":revision,"current":null,"withdrawn":null,"status_evaluated":false,"next":null})
+        } else {
+            let kind = match view {
+                "history" => PageKind::History,
+                "withdrawals" => PageKind::Withdrawals,
+                "current" => PageKind::Current,
+                _ => PageKind::Family,
+            };
+            let family = snapshot
+                .family_page(reference, cutoff, kind, after, until, cancel)
+                .map_err(store_error)?;
+            if family.conflict {
+                notes.push("authored family has conflicting current revisions");
+            }
+            if family.history_complete == Some(false)
+                || family.withdrawal_trail_complete == Some(false)
+                || family.shown_current_complete == Some(false)
+            {
+                notes.push("authored history/control/current presentation has a bounded remainder; follow the named next calls");
+            }
+            let family = family_value(family, &snapshot, reader, until, cancel)?;
+            let next = match kind {
+                PageKind::History => family["history_next"].clone(),
+                PageKind::Withdrawals => family["withdrawals_next"].clone(),
+                PageKind::Current => family["current_next"].clone(),
+                _ => Value::Null,
+            };
+            json!({"family":family,"next":next})
+        };
         if Instant::now() >= until || cancel() {
             return Err(fail(
                 ErrorKind::Timeout,
                 "authored read cancelled or deadline exceeded",
             ));
         }
-        let conflict = family["conflict"] == true;
-        let mut notes = if snapshot.recovery.is_some() {
-            vec![polylogue_model::RecoveryQualification::NOTE]
-        } else {
-            vec![]
-        };
-        if conflict {
-            notes.push("authored family has conflicting current revisions");
-        }
-        Ok(
-            json!({"outcome":if snapshot.recovery.is_some() || conflict{"degraded"}else{"ok"},"warning":crate::model_read::MCP_COMPANION,"reference":reference,"family":family,"view":{"authored_archive_counter":snapshot.archive_counter},"recovery":snapshot.recovery,"notes":notes,"missing":notes,"basis_evidence":"Supplied authored basis is evidence attributed to the action, not proof anyone read the underlying text."}),
-        )
-    };
-    let mut action = action;
-    let budget = request
-        .get("budget_tokens")
-        .map_or(Some(4000), Value::as_u64)
-        .filter(|n| *n > 0 && *n <= 1_048_576);
-    let Some(budget) = budget else {
-        return fail(ErrorKind::InvalidQuery, "budget_tokens must be1..1048576");
+        value["outcome"] = json!(if notes.is_empty() { "ok" } else { "degraded" });
+        value["warning"] = json!(crate::model_read::MCP_COMPANION);
+        value["reference"] = json!(reference);
+        value["view"] = json!({"kind":view,"authored_archive_counter":cutoff,"observed_archive_counter":snapshot.archive_counter});
+        value["recovery"] = json!(snapshot.recovery);
+        value["notes"] = json!(notes);
+        value["missing"] = json!(notes);
+        value["basis_evidence"] = json!(
+            "Supplied authored basis is evidence attributed to the action, not proof anyone read the underlying text."
+        );
+        Ok(value)
     };
     let value = match action() {
         Ok(v) | Err(v) => v,

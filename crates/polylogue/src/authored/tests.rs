@@ -584,3 +584,246 @@ fn authored_success_must_bind_effect_identity_for_both_public_clients() {
     missing["presentation"] = json!("retained_but_unpresentable");
     assert_eq!(bind_write_reply(&request, missing.clone()), missing);
 }
+
+fn read_call(world: &World, arguments: &Value) -> Value {
+    let mut operation = arguments.clone();
+    operation["reference"] = operation.as_object_mut().unwrap().remove("ref").unwrap();
+    operation["command"] = json!("model-read");
+    crate::model_read::execute(
+        world.reader.as_ref().unwrap(),
+        &operation,
+        Instant::now() + Duration::from_secs(40),
+        &mut || false,
+    )
+}
+fn growth_request(n: u32, target: &str) -> WriteNote {
+    WriteNote {
+        request_id: format!("01900000-0000-7000-8000-{n:012}"),
+        author: "agent:neutral-growth".into(),
+        machine: "synthetic-machine".into(),
+        created_at: Some(1000 - n as i64),
+        kind: Some(NoteKind::Correction),
+        value: format!("Interpretation {n}; retained source bytes stay unchanged."),
+        targets: Some(vec![Target {
+            reference: target.into(),
+            seen_hash: Some(BlobHash::of(b"unchanged retained text")),
+        }]),
+        relations: vec![],
+    }
+}
+#[test]
+fn dense_authored_relations_degrade_context_without_suppressing_unchanged_primary_text() {
+    let world = World::new();
+    world.import("growth-associations", json!("unchanged retained text"));
+    let target = "block:claude-code:growth-associations:answer:0";
+    let before = world.read(target, 4000);
+    assert_eq!(before["shown"][0]["text"], "unchanged retained text");
+    for n in 1..=17 {
+        assert_eq!(
+            world.write(&growth_request(n, target))["commit_state"],
+            "committed"
+        );
+    }
+    let read = world.read(target, 4000);
+    assert_eq!(read["outcome"], "degraded", "{read}");
+    assert_eq!(
+        read["shown"], before["shown"],
+        "content, exact identity and citations remain unchanged"
+    );
+    assert_eq!(read["primary_content_complete"], true);
+    assert_eq!(read["authored_associations_complete"], false);
+    assert!(!read["authored_notes"]["next"].is_null());
+    let cutoff = read["authored_notes"]["archive_counter"].clone();
+    let mut next = read["authored_notes"]["next"].clone();
+    let mut roots = vec![];
+    // Intervening writes cannot join a retained association population or alter
+    // only its later status pages.
+    let mut withdrawal = growth_request(100, target);
+    withdrawal.kind = Some(NoteKind::Withdrawal);
+    withdrawal.targets = None;
+    withdrawal.relations = vec![Relation {
+        kind: "withdraws".into(),
+        other: format!("note:{}", growth_request(1, target).request_id),
+    }];
+    assert_eq!(world.write(&withdrawal)["commit_state"], "committed");
+    assert_eq!(
+        world.write(&growth_request(18, target))["commit_state"],
+        "committed"
+    );
+    while !next.is_null() {
+        let page = read_call(&world, &next["arguments"]);
+        assert_ne!(page["outcome"], "error", "{page}");
+        assert_eq!(page["authored_notes"]["archive_counter"], cutoff);
+        let families = page["authored_notes"]["families"].as_array().unwrap();
+        assert_eq!(families.len(), 1);
+        let family = &families[0];
+        assert_eq!(family["shown"][0]["withdrawn"], false);
+        assert_eq!(
+            family["shown"][0]["revision"]["targets"][0]["seen_hash"],
+            BlobHash::of(b"unchanged retained text").to_string()
+        );
+        roots.push(family["root"].as_str().unwrap().to_owned());
+        next = page["next"].clone();
+    }
+    assert_eq!(roots.len(), 17);
+    assert_eq!(
+        roots
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        17
+    );
+    let fresh = read_call(
+        &world,
+        &json!({"ref":target,"view":"annotations","budget_tokens":4000}),
+    );
+    assert!(
+        fresh["authored_notes"]["families"][0]["current"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(world.read(target, 4000)["shown"], before["shown"]);
+}
+#[test]
+fn authored_page_tokens_bind_reference_archive_view_and_fixed_status_basis() {
+    let world = World::new();
+    let target = "block:claude-code:awaited:answer:0";
+    let first = growth_request(1, target);
+    assert_eq!(world.write(&first)["commit_state"], "committed");
+    let mut previous = first.request_id.clone();
+    for n in 2..=40 {
+        let mut r = growth_request(n, target);
+        r.kind = None;
+        r.targets = None;
+        r.relations = vec![Relation {
+            kind: "revises".into(),
+            other: format!("note:{}@{previous}", first.request_id),
+        }];
+        assert_eq!(world.write(&r)["commit_state"], "committed");
+        previous = r.request_id;
+    }
+    let root = format!("note:{}", first.request_id);
+    let initial = world.read(&root, 12000);
+    let next = &initial["family"]["history_next"];
+    assert!(!next.is_null(), "{initial}");
+    let tail = read_call(&world, &next["arguments"]);
+    assert_ne!(tail["outcome"], "error", "{tail}");
+    assert_eq!(tail["family"]["history"].as_array().unwrap().len(), 8);
+    let mut bad = next["arguments"].clone();
+    bad["ref"] = json!(format!("note:{}", growth_request(2, target).request_id));
+    assert_eq!(read_call(&world, &bad)["outcome"], "error");
+    let mut bad = next["arguments"].clone();
+    bad["view"] = json!("withdrawals");
+    assert_eq!(read_call(&world, &bad)["outcome"], "error");
+    let other = World::new();
+    assert_eq!(read_call(&other, &next["arguments"])["outcome"], "error");
+    let mut bad = next["arguments"].clone();
+    let token = bad["continuation"].as_str().unwrap().to_owned();
+    let last = if token.ends_with('0') { '1' } else { '0' };
+    bad["continuation"] = json!(format!("{}{last}", &token[..token.len() - 1]));
+    assert_eq!(read_call(&world, &bad)["outcome"], "error");
+    let mut revision = growth_request(41, target);
+    revision.kind = None;
+    revision.targets = None;
+    revision.relations = vec![Relation {
+        kind: "revises".into(),
+        other: format!("{root}@{previous}"),
+    }];
+    assert_eq!(world.write(&revision)["commit_state"], "committed");
+    let mut withdrawal = growth_request(100, target);
+    withdrawal.kind = Some(NoteKind::Withdrawal);
+    withdrawal.targets = None;
+    withdrawal.relations = vec![Relation {
+        kind: "withdraws".into(),
+        other: root.clone(),
+    }];
+    assert_eq!(world.write(&withdrawal)["commit_state"], "committed");
+    let old = read_call(&world, &next["arguments"]);
+    assert_eq!(old["family"]["current"], initial["family"]["current"]);
+    assert_eq!(old["outcome"], "degraded");
+    assert_eq!(
+        old["view"]["authored_archive_counter"],
+        initial["view"]["authored_archive_counter"]
+    );
+    assert!(
+        world.read(&root, 12000)["family"]["current"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let mut restore = growth_request(101, target);
+    restore.kind = Some(NoteKind::Withdrawal);
+    restore.targets = None;
+    restore.relations = vec![Relation {
+        kind: "withdraws".into(),
+        other: format!("note:{}", withdrawal.request_id),
+    }];
+    assert_eq!(world.write(&restore)["commit_state"], "committed");
+    let restored = world.read(&root, 12000);
+    assert_eq!(
+        restored["family"]["current"],
+        json!([format!("{root}@{}", revision.request_id)])
+    );
+    assert_eq!(
+        read_call(&world, &next["arguments"])["family"]["current"],
+        initial["family"]["current"]
+    );
+    let pinned = format!("{root}@{}", first.request_id);
+    let value = read_call(
+        &world,
+        &json!({"ref":pinned,"view":"value","budget_tokens":4000}),
+    );
+    assert_eq!(value["status_evaluated"], false);
+    assert_eq!(value["current"], Value::Null);
+    assert_eq!(value["revision"]["value"], first.value);
+}
+
+#[test]
+fn body_continuation_allows_budget_refitting_but_refuses_a_new_authored_context() {
+    let world = World::new();
+    let raw = "retained neutral body ".repeat(2000);
+    world.import("growth-certificate", json!(raw));
+    let target = "block:claude-code:growth-certificate:answer:0";
+    for n in 1..=17 {
+        assert_eq!(
+            world.write(&growth_request(n, target))["commit_state"],
+            "committed"
+        );
+    }
+    let first = world.read(target, 2000);
+    assert_ne!(first["outcome"], "error", "{first}");
+    assert!(!first["next"].is_null());
+    assert_eq!(first["authored_associations_complete"], false);
+    world.import(
+        "unrelated-growth-source",
+        json!("unrelated newly retained source bytes"),
+    );
+    let mut next = first["next"].clone();
+    next["budget_tokens"] = json!(3000);
+    let second = read_call(&world, &next);
+    assert_ne!(second["outcome"], "error", "{second}");
+    assert_eq!(
+        second["shown"][0]["display_start"],
+        first["shown"][0]["display_end"]
+    );
+    // Native context fencing is intentionally conservative across authored
+    // writes, but must not include unrelated source/index bookkeeping.
+    assert_eq!(
+        world.write(&growth_request(
+            19,
+            "block:claude-code:unrelated-growth-source:answer:0"
+        ))["commit_state"],
+        "committed"
+    );
+    assert_eq!(read_call(&world, &next)["error"]["reason"], "stale_read");
+    let fresh = world.read(target, 2000);
+    assert!(!fresh["next"].is_null());
+    assert_eq!(
+        world.write(&growth_request(18, target))["commit_state"],
+        "committed"
+    );
+    let stale = read_call(&world, &fresh["next"]);
+    assert_eq!(stale["outcome"], "error");
+    assert_eq!(stale["error"]["reason"], "stale_read");
+}

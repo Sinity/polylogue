@@ -12,7 +12,12 @@ fn actor_error(error: OwnerError) -> Value {
         return json!({"outcome":"error","error":failure});
     }
     let kind = match &error {
-        OwnerError::Busy => ErrorKind::Timeout,
+        OwnerError::Busy | OwnerError::Store(polylogue_store::Error::Cancelled) => {
+            ErrorKind::Timeout
+        }
+        OwnerError::Store(polylogue_store::Error::ParserAdmission { .. }) => {
+            ErrorKind::NotYetAvailable
+        }
         OwnerError::Stopped => ErrorKind::NotRunning,
         OwnerError::Store(polylogue_store::Error::ClientRequestConflict { .. }) => {
             ErrorKind::Conflict

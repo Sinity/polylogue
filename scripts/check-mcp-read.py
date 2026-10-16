@@ -26,7 +26,7 @@ def validate_read_discovery(tool):
     properties = schema['properties']
     assert set(properties) == {'ref', 'budget_tokens', 'continuation', 'view', 'tools', 'thinking', 'harness', 'branches'}
     assert properties['branches']['type'] == 'boolean'
-    assert set(properties['view']['enum']) == {'dialogue', 'transcript'}
+    assert set(properties['view']['enum']) == {'dialogue', 'transcript', 'history', 'withdrawals', 'current', 'value', 'annotations'}
     for option in ('tools', 'thinking', 'harness'):
         assert properties[option]['enum'] == ['full']
     assert 'view:transcript' in tool['description'] and '65536' in tool['description']
