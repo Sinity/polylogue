@@ -128,6 +128,7 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                 }
                 let format = match text(request, "format")? {
                     "codex-rollout" => polylogue_store::InputFormat::CodexRollout,
+                    "codex-history-sqlite" => polylogue_store::InputFormat::CodexHistorySqlite,
                     "claude-code-jsonl" => polylogue_store::InputFormat::ClaudeCodeJsonl,
                     _ => {
                         return Err(failed(

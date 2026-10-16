@@ -25,6 +25,8 @@ use std::{
 pub mod authored;
 mod capture;
 mod client_request;
+pub mod codex_history;
+pub mod tool_items;
 pub use capture::{BlobCapture, PreparedBlob};
 pub mod contributions;
 mod native;

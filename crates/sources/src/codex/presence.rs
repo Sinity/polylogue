@@ -48,6 +48,9 @@ impl Witness {
                 ..
             } => Transform::JsonStringV1,
             Slot::Extra { .. } => Transform::JsonValueV1,
+            Slot::Block { field, .. } if matches!(selection.transform,Transform::ToolFieldV1{field:f} if f==*field) => {
+                selection.transform.clone()
+            }
             _ => return false,
         };
         if expected != selection.transform {
@@ -58,7 +61,9 @@ impl Witness {
         };
         selection.inputs.iter().all(|input| {
             input.record == base.record
-                && if selection.transform == Transform::TextJoinLfV1 {
+                && if matches!(selection.transform, Transform::ToolFieldV1 { .. }) {
+                    base.path.starts_with(&input.path)
+                } else if selection.transform == Transform::TextJoinLfV1 {
                     input.path.starts_with(&base.path)
                 } else {
                     input.path == base.path
@@ -187,8 +192,16 @@ pub(super) fn block(
                 .origins
                 .selected()
                 .map(|raw| FactSelection::new(Transform::JsonStringV1, vec![raw])),
-            // Inner-string decoding and result/continuation composition are
-            // explicitly unsupported until their source-owned recipes exist.
+            B::Tool
+            | B::CallId
+            | B::Input
+            | B::Command
+            | B::Output
+            | B::Outcome
+            | B::ExitCode
+            | B::DurationMs => origins
+                .selected()
+                .map(|raw| FactSelection::new(Transform::ToolFieldV1 { field }, vec![raw])),
             _ => None,
         };
         group.fields.retain(|old| old.slot != w.slot);

@@ -260,7 +260,7 @@ impl crate::parser_state::Snapshot {
             return Ok(None);
         };
         let selected: bool = db(&self.path, || {
-            self.db.query_row("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND session_pk=?2 AND hidden=0 AND (selected_body_pk=?3 OR EXISTS(SELECT 1 FROM message_body_compatibility own JOIN message_body_compatibility chosen ON chosen.digest=own.digest JOIN message_body b ON b.pk=chosen.body_pk JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE own.body_pk=?3 AND chosen.body_pk=message.selected_body_pk AND b.ready=1 AND c.eligible=1 AND b.removal_epoch=message.removal_epoch)))",params![source.body.message,source.body.session,source.body.pk],|r|r.get(0))
+            self.db.query_row("SELECT EXISTS(SELECT 1 FROM message m JOIN message_body selected ON selected.pk=m.selected_body_pk JOIN message_candidate c ON c.pk=selected.preferred_candidate_pk JOIN message_body carrier ON carrier.pk=c.body_pk WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0 AND selected.ready=1 AND carrier.ready=1 AND c.eligible=1 AND selected.removal_epoch=m.removal_epoch AND carrier.removal_epoch=m.removal_epoch AND selected.block_root_pk IS carrier.block_root_pk AND selected.field_root_pk IS carrier.field_root_pk AND selected.basis_digest=carrier.basis_digest AND selected.version_hash=carrier.version_hash AND (carrier.pk=?3 OR EXISTS(SELECT 1 FROM message_body_compatibility own JOIN message_body_compatibility chosen ON chosen.digest=own.digest WHERE own.body_pk=?3 AND chosen.body_pk=carrier.pk)))",params![source.body.message,source.body.session,source.body.pk],|r|r.get(0))
         })?;
         if !selected {
             return Err(Error::MessagePredecessorChanged);

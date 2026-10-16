@@ -42,9 +42,12 @@ pub enum Key {
     ContinuationTarget(String),
     Presence(usize, String),
     PresenceBlock(usize, usize),
+    Operation(String),
+    OperationBlock(usize, usize),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Cell {
+    Operation(polylogue_model::tool_item::Operation),
     /// A Message with no blocks; blocks have separate keys. Public IDs can change.
     Header {
         message: Message,
@@ -276,6 +279,8 @@ pub struct Resume {
     normalization_incomplete: bool,
     has_source_context: bool,
     has_model_context: bool,
+    #[serde(default)]
+    turn: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub struct Delta {
@@ -350,6 +355,12 @@ impl Cell {
         self.fits(key)
     }
     fn fits(&self, k: &Key) -> bool {
+        if matches!(
+            (k, self),
+            (Key::Operation(_), Self::Operation(_)) | (Key::OperationBlock(_, _), Self::Text(_))
+        ) {
+            return true;
+        }
         if let (Key::Presence(_, key), Self::Witness(w)) = (k, self) {
             return super::presence::matches_message_key(key, w);
         }
@@ -1993,6 +2004,7 @@ impl<V: ReadView> KeyedRecords<V> {
                     .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned))
             })
             .flatten();
+        let operation_command = command.clone();
         let Some(bi) = self.owned_block(
             i,
             BlockContent::ToolCall(ToolCall {
@@ -2005,6 +2017,9 @@ impl<V: ReadView> KeyedRecords<V> {
             return RecordOutcome::Used;
         };
         if let Some(c) = call_id {
+            if is_shell_tool(&name) || name == "exec" {
+                self.direct_operation(&c, &name, operation_command, i, bi);
+            }
             let raw_name = raw::canonical_field(
                 &self.effective_raw,
                 if self.s.legacy {
@@ -2052,6 +2067,45 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn output_item(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
+        if let Some(call) = p.get("call_id").and_then(Value::as_str) {
+            if let Some(key) = self.operation_key(call) {
+                if let Some(Cell::Operation(mut operation)) = self.get(key.clone()) {
+                    let output = recorded_output(p.get("output"));
+                    let text = match &output {
+                        Some(ToolOutput::Text(s)) => s.clone(),
+                        _ => String::new(),
+                    };
+                    let (outcome, exit) = output_outcome(
+                        operation.tool.as_deref().unwrap_or(""),
+                        p.get("output").unwrap_or(&Value::Null),
+                        &text,
+                    );
+                    operation.result_present = !matches!(
+                        outcome,
+                        ToolOutcome::Unknown {
+                            reason: UnknownReason::NoResult
+                        }
+                    );
+                    operation.output = if operation.result_present {
+                        output.and_then(|o| match o {
+                            ToolOutput::Text(s) => Some(s),
+                            _ => None,
+                        })
+                    } else {
+                        None
+                    };
+                    operation.outcome = operation
+                        .result_present
+                        .then(|| outcome.as_str().to_owned());
+                    operation.exit_code = exit;
+                    if let Some(origin) = self.operation_origin() {
+                        operation.origins.retain(|o|!matches!(o,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..}if tag=="result"));
+                        operation.origins.push(origin);
+                    }
+                    self.put(key, Cell::Operation(operation));
+                }
+            }
+        }
         if let Some(i) = self.known_owner(p) {
             if !self.own_evidence(i, p, true) {
                 return RecordOutcome::Used;
@@ -2291,10 +2345,325 @@ impl<V: ReadView> KeyedRecords<V> {
         RecordOutcome::Used
     }
 
+    fn operation_origin(&self) -> Option<polylogue_model::tool_item::ToolOrigin> {
+        let range = self
+            .current_origins
+            .advance(&mut self.current_origins.cursor())
+            .ok()??;
+        let value: Value = serde_json::from_slice(&self.current_raw).ok()?;
+        let ty = value.get("payload")?.get("type")?.as_str()?;
+        let tag = if ty.ends_with("_output") {
+            "result"
+        } else if ty == "item_completed" {
+            "status"
+        } else {
+            "call"
+        };
+        Some(polylogue_model::tool_item::ToolOrigin::Rollout {
+            tag: tag.into(),
+            start: range.start,
+            end: range.end,
+            raw_hash: *blake3::hash(&self.current_raw).as_bytes(),
+        })
+    }
+    fn operation_key(&mut self, call: &str) -> Option<Key> {
+        let call = self.call(call)?;
+        let Cell::Text(id) = self.get(Key::OperationBlock(call.at.0, call.at.1))? else {
+            return None;
+        };
+        let provisional = id.starts_with("operation:provisional-v1:");
+        Some(Key::Operation(format!(
+            "{}:{id}",
+            if provisional { 0 } else { 1 }
+        )))
+    }
+    fn completed_operation(
+        &mut self,
+        payload: &Value,
+        item: &Value,
+    ) -> Option<polylogue_model::tool_item::Operation> {
+        let invocation = item.get("id")?.as_str()?;
+        let turn = payload
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .or(self.s.turn.as_deref());
+        let key = if let Some(turn) = turn {
+            Key::Operation(format!(
+                "1:{}",
+                polylogue_model::tool_item::native_id(
+                    &self.s.session.as_ref()?.id,
+                    turn,
+                    invocation
+                )
+                .ok()?
+            ))
+        } else {
+            self.operation_key(invocation)?
+        };
+        match self.get(key) {
+            Some(Cell::Operation(operation)) => Some(operation),
+            _ => None,
+        }
+    }
+    fn completed_direct_call(&mut self, payload: &Value, item: &Value) -> bool {
+        let Some(operation) = self.completed_operation(payload, item) else {
+            return false;
+        };
+        let Some(call) = self
+            .call(&operation.invocation)
+            .filter(|c| c.tool != "exec")
+        else {
+            return false;
+        };
+        operation.wrapper.is_none()
+            && operation.message
+                == self
+                    .header(call.at.0)
+                    .map(|(m, _)| m.id.as_str().to_owned())
+            && operation.message.is_some()
+    }
+    fn direct_operation(
+        &mut self,
+        call: &str,
+        tool: &str,
+        command: Option<String>,
+        message: usize,
+        block: usize,
+    ) {
+        let Some(session) = self.s.session.as_ref().map(|s| s.id.clone()) else {
+            return;
+        };
+        let Some(origin) = self.operation_origin() else {
+            return;
+        };
+        let Some(Cell::Block(source_block)) = self.get(Key::Block(message, block)) else {
+            return;
+        };
+        let anchor = source_block.id.as_str().to_owned();
+        // An exec wrapper has a proved request block, not a native
+        // CommandExecution item ID. Keep that constructor distinction.
+        let native = tool != "exec" && self.s.turn.is_some();
+        let operation = polylogue_model::tool_item::Operation {
+            kind: if tool == "exec" {
+                "CodeExecution"
+            } else {
+                "CommandExecution"
+            }
+            .into(),
+            tool: Some(tool.into()),
+            native_session: self.s.session.as_ref().unwrap().native_id.clone(),
+            direct_anchors: vec![],
+            session,
+            turn: self.s.turn.clone(),
+            invocation: call.into(),
+            native,
+            provisional_anchor: (!native).then_some(anchor),
+            agent_class: "agent".into(),
+            correspondence: if self.s.turn.is_some() {
+                "established"
+            } else {
+                "unresolved"
+            }
+            .into(),
+            call_present: true,
+            command: command.map(polylogue_model::tool_item::Command::Text),
+            result_present: false,
+            output: None,
+            outcome: None,
+            exit_code: None,
+            duration_ms: None,
+            message: self.header(message).map(|(m, _)| m.id.as_str().to_owned()),
+            wrapper: None,
+            wrapper_overlaps: vec![],
+            origins: vec![origin],
+        };
+        if let Ok(id) = operation.id() {
+            self.put(Key::OperationBlock(message, block), Cell::Text(id));
+        }
+        if let Ok(id) = operation.id() {
+            self.put(
+                Key::Operation(format!("{}:{id}", if operation.native { 1 } else { 0 })),
+                Cell::Operation(operation),
+            );
+        }
+    }
+
+    fn command_operation(&mut self, payload: &Value, item: &Value, _at: Option<Timestamp>) -> bool {
+        // Only the pinned core shape establishes native correspondence. Older
+        // adapter records retain their existing Message interpretation below.
+        if !item.get("command").is_some_and(Value::is_array) {
+            self.s.normalization_incomplete = true;
+            return false;
+        }
+        let Some(session) = self.s.session.as_ref().map(|s| s.id.clone()) else {
+            return false;
+        };
+        if payload.get("thread_id").and_then(Value::as_str)
+            != self.s.session.as_ref().map(|s| s.native_id.as_str())
+        {
+            self.s.normalization_incomplete = true;
+            return false;
+        }
+        let turn = payload
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let mut cursor = self.current_origins.cursor();
+        let range = match self.current_origins.advance(&mut cursor) {
+            Ok(Some(r)) => r,
+            _ => {
+                self.failure = Some("native operation has no retained origin".into());
+                return false;
+            }
+        };
+        let origin = polylogue_model::tool_item::ToolOrigin::Rollout {
+            tag: "status".into(),
+            start: range.start,
+            end: range.end,
+            raw_hash: *blake3::hash(&self.current_raw).as_bytes(),
+        };
+        let mut operation = match super::history::command(
+            item,
+            session,
+            &self.s.session.as_ref().unwrap().native_id,
+            turn,
+            origin,
+            false,
+        ) {
+            Ok(v) => v,
+            Err(error) => {
+                self.s.normalization_incomplete = true;
+                let _ = error;
+                return false;
+            }
+        };
+        if operation.agent_class == "agent"
+            && payload.get("started_at_ms").is_none_or(Value::is_null)
+            && item.get("exit_code").is_none_or(Value::is_null)
+            && item.get("process_id").is_none_or(Value::is_null)
+        {
+            operation.agent_class = "unknown".into();
+            operation.result_present = false;
+            operation.output = None;
+            operation.outcome = None;
+            operation.exit_code = None;
+            operation.duration_ms = None;
+        }
+        let previous = self
+            .operation_key(&operation.invocation)
+            .and_then(|key| self.get(key));
+        if let Some(Cell::Operation(previous)) = previous {
+            if previous.kind == "CodeExecution" {
+                self.failure=Some("CommandExecution ID aliases its code wrapper; constructor correspondence is conflicting".into());
+                return false;
+            }
+            if !previous.native || previous.turn == operation.turn {
+                if operation.native && !previous.native {
+                    if let Ok(anchor) = previous.id() {
+                        operation.direct_anchors.push(anchor);
+                    }
+                }
+                if !operation.native {
+                    operation.provisional_anchor = previous.provisional_anchor;
+                }
+                operation.tool = previous.tool;
+                operation.message = previous.message;
+                operation.origins.splice(0..0,previous.origins.into_iter().filter(|origin|!matches!(origin,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..}if tag=="status")));
+            }
+        }
+        if !operation.native && operation.provisional_anchor.is_none() {
+            let hash = blake3::hash(&self.current_raw).to_hex().to_string();
+            let count = self.number(Key::Occurrence(format!("native-operation:{hash}")));
+            self.put(
+                Key::Occurrence(format!("native-operation:{hash}")),
+                Cell::Number(count + 1),
+            );
+            operation.provisional_anchor = Some(format!("source-record:{hash}:{count}"));
+        }
+        operation.native_session = self.s.session.as_ref().unwrap().native_id.clone();
+        let mut wrappers = Vec::new();
+        if operation.message.is_none() {
+            for (_, wrapper) in self.wrappers() {
+                if let Some(call) = self.call(&wrapper) {
+                    if let Some(Cell::Text(id)) =
+                        self.get(Key::OperationBlock(call.at.0, call.at.1))
+                    {
+                        let key = Key::Operation(format!(
+                            "{}:{id}",
+                            if id.starts_with("operation:provisional-v1:") {
+                                0
+                            } else {
+                                1
+                            }
+                        ));
+                        if let Some(Cell::Operation(owner)) = self.get(key) {
+                            if owner.turn == operation.turn && owner.turn.is_some() {
+                                wrappers.push((wrapper, id, owner.origins));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // CommandExecution has no parent-call field in this pinned schema.
+        // Temporal overlap supports suppression, never a Message/parent edge.
+        operation.wrapper = None;
+        operation.wrapper_overlaps = wrappers.iter().map(|(_, id, _)| id.clone()).collect();
+        for (raw, id, origins) in wrappers {
+            for origin in origins {
+                if let polylogue_model::tool_item::ToolOrigin::Rollout {
+                    tag,
+                    start,
+                    end,
+                    raw_hash,
+                } = origin
+                {
+                    if tag == "call" {
+                        operation
+                            .origins
+                            .push(polylogue_model::tool_item::ToolOrigin::Rollout {
+                                tag: format!("wrapper_overlap:{id}"),
+                                start,
+                                end,
+                                raw_hash,
+                            });
+                    }
+                }
+            }
+            self.child(raw, format!("~native:{}", operation.invocation));
+        }
+        match operation.id() {
+            Ok(id) => self.put(
+                Key::Operation(format!("{}:{id}", if operation.native { 1 } else { 0 })),
+                Cell::Operation(operation),
+            ),
+            Err(error) => self.failure = Some(error.to_string()),
+        };
+        true
+    }
+
     fn item_completed(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
         let original = p.get("item").cloned().unwrap_or(Value::Null);
         let item = self.preview_item(&original);
         let ty = item.get("type").and_then(Value::as_str).unwrap_or("");
+        let native_admitted = ty == "CommandExecution" && self.command_operation(p, &item, at);
+        if ty == "CommandExecution"
+            && !native_admitted
+            && item.get("command").is_some_and(Value::is_array)
+        {
+            return RecordOutcome::Unrecognized(
+                "unsupported or conflicting native CommandExecution",
+            );
+        }
+        if native_admitted {
+            let direct = self.completed_direct_call(p, &item);
+            let owned = self
+                .completed_operation(p, &item)
+                .is_some_and(|operation| operation.wrapper.is_some());
+            if !direct && !owned {
+                return RecordOutcome::Used;
+            }
+        }
         match ty {
             "CommandExecution" | "FileChange" | "McpToolCall" => {
                 if ty == "CommandExecution"
@@ -2316,10 +2685,14 @@ impl<V: ReadView> KeyedRecords<V> {
                             .filter(|id| self.call(id).is_some())
                             .map(str::to_owned)
                     });
-                let is_plain_call = call_id
-                    .as_ref()
-                    .and_then(|c| self.call(c))
-                    .is_some_and(|c| c.tool != "exec");
+                let is_plain_call = if native_admitted {
+                    self.completed_direct_call(p, &item)
+                } else {
+                    call_id
+                        .as_ref()
+                        .and_then(|c| self.call(c))
+                        .is_some_and(|c| c.tool != "exec")
+                };
                 if is_plain_call {
                     if let Some(c) = call_id {
                         let result = self.position(Key::Result(c.clone()));
@@ -2425,7 +2798,11 @@ impl<V: ReadView> KeyedRecords<V> {
                     .and_then(Value::as_str)
                     .filter(|c| self.wrapper_is_open(c))
                     .map(str::to_owned);
-                let owner = named.or_else(|| self.wrapper_one());
+                let owner = if native_admitted {
+                    None
+                } else {
+                    named.or_else(|| self.wrapper_one())
+                };
                 let prior_owner = self.known_owner(&item);
                 let wrapper_message = if let Some(place) = owner.as_ref() {
                     match self.call(place) {
@@ -2487,6 +2864,19 @@ impl<V: ReadView> KeyedRecords<V> {
                 ) else {
                     return RecordOutcome::Used;
                 };
+                if let Some(session) = self.s.session.as_ref() {
+                    if let Some(turn) = p
+                        .get("turn_id")
+                        .and_then(Value::as_str)
+                        .or(self.s.turn.as_deref())
+                    {
+                        if let Ok(id) =
+                            polylogue_model::tool_item::native_id(&session.id, turn, &child_id)
+                        {
+                            self.put(Key::OperationBlock(mi, call_block), Cell::Text(id));
+                        }
+                    }
+                }
                 let result = BlockContent::ToolResult(ToolResult {
                     data: None,
                     call_id: Some(child_id.clone()),
@@ -2628,7 +3018,10 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             "token_count" => self.token_count(p, at),
             "item_completed" => self.item_completed(p, at),
-            "task_started" => self.event("turn_start", at, false, p),
+            "task_started" => {
+                self.s.turn = p.get("turn_id").and_then(Value::as_str).map(str::to_owned);
+                self.event("turn_start", at, false, p)
+            }
             "task_complete" => self.event("turn_end", at, false, p),
             "turn_aborted" => self.event("turn_aborted", at, false, p),
             "context_compacted" => self.event("compaction", at, true, p),
@@ -2665,6 +3058,7 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             "session_meta" => self.event("repeated_session_meta", at, false, &p),
             "turn_context" => {
+                self.s.turn = p.get("turn_id").and_then(Value::as_str).map(str::to_owned);
                 if let Some(model) = p.get("model") {
                     self.s.model = model.as_str().map(str::to_owned);
                     if !model.is_string() {

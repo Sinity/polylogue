@@ -293,6 +293,10 @@ struct ComputeJob {
 pub(crate) enum CanonicalPosition {
     Audit(Box<crate::source_rows::Audit>),
     Codex(usize),
+    ToolsAfter(Option<String>),
+    // Publish independently proved Session operations before preserving a
+    // contested Message diagnostic; this never certifies the source complete.
+    ToolsBeforeFailure(Option<String>, String),
     ClaudeAfter(Option<crate::state::claude::PendingCursor>),
     ClaudeMessage(
         crate::state::claude::PendingCursor,
@@ -303,6 +307,7 @@ impl CanonicalPosition {
     pub(crate) fn first(format: InputFormat) -> Self {
         match format {
             InputFormat::CodexRollout => Self::Codex(0),
+            InputFormat::CodexHistorySqlite => Self::ToolsAfter(None),
             InputFormat::ClaudeCodeJsonl => Self::ClaudeAfter(None),
         }
     }
@@ -310,9 +315,10 @@ impl CanonicalPosition {
         match self {
             Self::Codex(n) => Ok(Self::Codex(n.checked_add(1).ok_or(StoreError::Range)?)),
             Self::ClaudeMessage(cursor, _) => Ok(Self::ClaudeAfter(Some(cursor))),
-            Self::Audit(_) | Self::ClaudeAfter(_) => {
-                Err(Error::InvalidRequest("no current Claude Message"))
-            }
+            Self::ToolsAfter(_)
+            | Self::ToolsBeforeFailure(_, _)
+            | Self::Audit(_)
+            | Self::ClaudeAfter(_) => Err(Error::InvalidRequest("no current Claude Message")),
         }
     }
     pub(crate) fn logical_key(&self) -> Result<Option<[u8; 32]>> {
@@ -325,7 +331,10 @@ impl CanonicalPosition {
                 h.update(p.message.as_str().as_bytes());
                 Ok(Some(*h.finalize().as_bytes()))
             }
-            Self::Audit(_) | Self::ClaudeAfter(_) => Ok(None),
+            Self::ToolsAfter(_)
+            | Self::ToolsBeforeFailure(_, _)
+            | Self::Audit(_)
+            | Self::ClaudeAfter(_) => Ok(None),
         }
     }
 }
@@ -337,6 +346,7 @@ enum CanonicalTurn {
         crate::state::claude::PendingCursor,
         claude_code::keyed::PendingMessage,
     ),
+    Operation(String, polylogue_model::tool_item::Operation, BlobHash),
     Done,
 }
 struct CanonicalJob {
@@ -357,6 +367,7 @@ enum Active {
     Recover(RetainedSource, Head),
     Compute(RetainedSource, Head, Option<CommittedContinuation>),
     Install(RetainedSource, Head, PendingInstall, CommitGuard),
+    HistoryInstall(RetainedSource, Head, PendingInstall),
     Canonical(
         RetainedSource,
         Head,
@@ -466,6 +477,7 @@ impl Actor {
                 Active::Begin(i)
                 | Active::Recover(i, _)
                 | Active::Compute(i, _, _)
+                | Active::HistoryInstall(i, _, _)
                 | Active::Install(i, _, _, _)
                 | Active::Canonical(i, _, _, _)
                 | Active::Selecting(i, _, _, _),
@@ -548,11 +560,16 @@ impl Actor {
                 let cancelled = Arc::clone(&self.inner.cancelled);
                 let sender = self.inner.sender.clone();
                 let path = request.path;
+                let history = request.format == InputFormat::CodexHistorySqlite;
                 let join = thread::Builder::new()
                     .name("polylogue-capture".into())
                     .spawn(move || {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            capture.capture_regular_file(&path, &cancelled)
+                            if history {
+                                capture.capture_history_snapshot(&path, &cancelled)
+                            } else {
+                                capture.capture_regular_file(&path, &cancelled)
+                            }
                         }))
                         .map_err(|_| Error::WorkerPanicked)
                         .and_then(|r| r.map_err(Error::Store));
@@ -646,6 +663,16 @@ impl Actor {
                             Err(e) => self.fail(&job.head, e.to_string())?,
                         }
                     }
+                    Ok(Computation::History { progress, changes }) => {
+                        match PendingInstall::begin(&mut self.writer, &job.head, progress, changes)
+                        {
+                            Ok(install) => {
+                                self.active =
+                                    Some(Active::HistoryInstall(job.input, job.head, install))
+                            }
+                            Err(e) => self.fail(&job.head, e.to_string())?,
+                        }
+                    }
                     Ok(Computation::Idle { .. }) => {}
                     Err(e) => self.fail(&job.head, e.to_string())?,
                 }
@@ -660,6 +687,27 @@ impl Actor {
                     return Ok(());
                 }
                 match result {
+                    Ok(CanonicalTurn::Operation(id, operation, digest)) => {
+                        match self
+                            .writer
+                            .publish_tool_item(&job.head.token, &operation, digest)
+                        {
+                            Ok(_) => {
+                                self.active = Some(Active::Canonical(
+                                    job.input,
+                                    job.head,
+                                    match job.position {
+                                        CanonicalPosition::ToolsBeforeFailure(_, reason) => {
+                                            CanonicalPosition::ToolsBeforeFailure(Some(id), reason)
+                                        }
+                                        _ => CanonicalPosition::ToolsAfter(Some(id)),
+                                    },
+                                    None,
+                                ))
+                            }
+                            Err(e) => self.fail(&job.head, e.to_string())?,
+                        }
+                    }
                     Ok(CanonicalTurn::Action(action)) => {
                         let operation = action.operation();
                         match canonical_message::apply(&mut self.writer, action) {
@@ -708,20 +756,59 @@ impl Actor {
                     Ok(CanonicalTurn::Selected(turn)) => {
                         use polylogue_store::contributions::CompatibilityTurn;
                         match turn {
-                            CompatibilityTurn::Progress(selection) => self.active=Some(Active::Selecting(job.input,job.head,job.position,selection)),
-                            CompatibilityTurn::Certified(selection,certificate) => {
+                            CompatibilityTurn::Progress(selection) => {
+                                self.active = Some(Active::Selecting(
+                                    job.input,
+                                    job.head,
+                                    job.position,
+                                    selection,
+                                ))
+                            }
+                            CompatibilityTurn::Certified(selection, certificate) => {
                                 match self.writer.certify_body_compatibility(certificate) {
-                                    Ok(())=>self.active=Some(Active::Selecting(job.input,job.head,job.position,selection)),
-                                    Err(e)=>self.fail(&job.head,format!("canonical compatibility: {e}"))?,
+                                    Ok(()) => {
+                                        self.active = Some(Active::Selecting(
+                                            job.input,
+                                            job.head,
+                                            job.position,
+                                            selection,
+                                        ))
+                                    }
+                                    Err(e) => self
+                                        .fail(&job.head, format!("canonical compatibility: {e}"))?,
                                 }
-                            },
+                            }
                             CompatibilityTurn::Ready(selection) => {
-                                match self.writer.install_compatible_source_selection(selection,65536) {
-                                    Ok(_)=>self.active=Some(Active::Canonical(job.input,job.head,job.position.next()?,None)),
-                                    Err(e)=>self.fail(&job.head,format!("canonical selection: {e}"))?,
+                                match self
+                                    .writer
+                                    .install_compatible_source_selection(selection, 65536)
+                                {
+                                    Ok(_) => {
+                                        self.active = Some(Active::Canonical(
+                                            job.input,
+                                            job.head,
+                                            job.position.next()?,
+                                            None,
+                                        ))
+                                    }
+                                    Err(e) => {
+                                        self.fail(&job.head, format!("canonical selection: {e}"))?
+                                    }
                                 }
-                            },
-                            CompatibilityTurn::Contested=>self.fail(&job.head,"canonical Message has incompatible or unsupported input candidates; merge remains pending".into())?,
+                            }
+                            CompatibilityTurn::Contested => {
+                                let reason = "canonical Message has incompatible or unsupported input candidates; merge remains pending".to_owned();
+                                if job.input.format == InputFormat::CodexRollout {
+                                    self.active = Some(Active::Canonical(
+                                        job.input,
+                                        job.head,
+                                        CanonicalPosition::ToolsBeforeFailure(None, reason),
+                                        None,
+                                    ));
+                                } else {
+                                    self.fail(&job.head, reason)?;
+                                }
+                            }
                         }
                     }
                     Ok(CanonicalTurn::Pending(cursor, pending)) => {
@@ -731,6 +818,14 @@ impl Actor {
                             CanonicalPosition::ClaudeMessage(cursor, pending),
                             None,
                         ));
+                    }
+                    Ok(CanonicalTurn::Done)
+                        if matches!(job.position, CanonicalPosition::ToolsBeforeFailure(_, _)) =>
+                    {
+                        let CanonicalPosition::ToolsBeforeFailure(_, reason) = job.position else {
+                            unreachable!()
+                        };
+                        self.fail(&job.head, reason)?;
                     }
                     Ok(CanonicalTurn::Done) if job.head.status == "waiting_tail" => {
                         // Complete Claude prefix rows may publish while its
@@ -803,7 +898,7 @@ impl Actor {
                 // A failed admitted install may still own unsealed work. Its
                 // retained diagnostic is unavailability, never a waiting tail.
                 source_rows.state = polylogue_model::settlement::SourceRowState::Unavailable {
-                    usable_result: false,
+                    usable_result: self.writer.source_has_tool_items(&input.input)?,
                     notes: vec![reason.clone()],
                     record_errors: head.counts.undecodable,
                 };
@@ -974,7 +1069,13 @@ impl Actor {
                 let hash = input.binding;
                 let input_id = input.input.id.clone();
                 let input_chain = input.input.chain;
-                let context = parser_context(&input)?;
+                let input_for_history = input.clone();
+                let history = input.format == InputFormat::CodexHistorySqlite;
+                let context = if history {
+                    SourceContext::Codex
+                } else {
+                    parser_context(&input)?
+                };
                 let cancelled = Arc::clone(&self.inner.cancelled);
                 let sender = self.inner.sender.clone();
                 let join = thread::Builder::new()
@@ -984,6 +1085,13 @@ impl Actor {
                             || -> Result<Computation> {
                                 if cancelled.load(Ordering::Acquire) {
                                     return Err(StoreError::Cancelled.into());
+                                }
+                                if history {
+                                    return compute_history(
+                                        &reader,
+                                        &input_for_history,
+                                        &cancelled,
+                                    );
                                 }
                                 let bytes = reader.read_source_range(
                                     &input_id,
@@ -1092,6 +1200,47 @@ impl Actor {
                                         source_budgets().reads,
                                     )?));
                                 }
+                                let tools_after = match &work_position {
+                                    CanonicalPosition::ToolsAfter(after)
+                                    | CanonicalPosition::ToolsBeforeFailure(after, _) => {
+                                        Some(after.clone())
+                                    }
+                                    CanonicalPosition::Codex(ordinal) => {
+                                        let attempt = crate::state::codex::Attempt::new(
+                                            &snapshot,
+                                            source_budgets().reads,
+                                        );
+                                        let resume =
+                                            attempt.resume().map_err(Error::InvalidEvidence)?;
+                                        (*ordinal >= resume.message_count()).then_some(None)
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(after) = tools_after {
+                                    use polylogue_sources::codex::keyed::{Cell, Key, ReadView};
+                                    let attempt = crate::state::codex::Attempt::new(
+                                        &snapshot,
+                                        source_budgets().reads,
+                                    );
+                                    return match attempt
+                                        .next(&Key::Operation(after.unwrap_or_default()))
+                                        .map_err(Error::InvalidEvidence)?
+                                    {
+                                        Some((Key::Operation(id), Cell::Operation(operation))) => {
+                                            let digest = operation_digest(
+                                                &reader,
+                                                &input_for_audit,
+                                                &operation,
+                                                &cancelled,
+                                            )?;
+                                            Ok(CanonicalTurn::Operation(id, operation, digest))
+                                        }
+                                        None => Ok(CanonicalTurn::Done),
+                                        _ => Err(Error::InvalidRequest(
+                                            "invalid native operation cell",
+                                        )),
+                                    };
+                                }
                                 let action = if let Some(state) = state {
                                     canonical_message::compute(
                                         &snapshot,
@@ -1188,6 +1337,22 @@ impl Actor {
                     Err(e) => self.fail(&head, e.to_string())?,
                 }
             }
+            Active::HistoryInstall(input, head, mut install) => {
+                match install.turn(&mut self.writer, install_budget()) {
+                    Ok(Turn::Yielded) => {
+                        self.active = Some(Active::HistoryInstall(input, head, install))
+                    }
+                    Ok(Turn::Published(published)) => {
+                        self.active = Some(Active::Canonical(
+                            input,
+                            published,
+                            CanonicalPosition::ToolsAfter(None),
+                            None,
+                        ))
+                    }
+                    Err(e) => self.fail(&head, e.to_string())?,
+                }
+            }
             Active::Install(input, head, mut install, guard) => {
                 match install.turn(&mut self.writer, install_budget()) {
                     Ok(Turn::Yielded) => {
@@ -1216,6 +1381,119 @@ impl Actor {
         Ok(())
     }
 }
+fn operation_digest(
+    reader: &polylogue_store::ReadHandle,
+    input: &RetainedSource,
+    operation: &polylogue_model::tool_item::Operation,
+    cancelled: &AtomicBool,
+) -> Result<BlobHash> {
+    use polylogue_model::{tool_item::ToolOrigin, version_evidence::Framer};
+    if let [ToolOrigin::History { row_hash, .. }] = operation.origins.as_slice() {
+        return Ok(BlobHash::from_bytes(*row_hash));
+    }
+    let mut units = Vec::new();
+    for origin in &operation.origins {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(StoreError::Cancelled.into());
+        }
+        let ToolOrigin::Rollout {
+            start,
+            end,
+            raw_hash,
+            tag,
+        } = origin
+        else {
+            return Err(Error::InvalidRequest(
+                "mixed representation source candidate",
+            ));
+        };
+        let bytes = reader.read_source_range(
+            &input.input.id,
+            input.input.chain,
+            input.binding,
+            *start,
+            end - start,
+        )?;
+        let canonical =
+            polylogue_model::identity::canonical_record(&bytes, &["timestamp", "ordinal"])
+                .map_err(|e| Error::InvalidEvidence(e.to_string()))?;
+        if blake3::hash(&canonical).as_bytes() != raw_hash {
+            return Err(Error::InvalidEvidence(
+                "operation raw evidence hash differs".into(),
+            ));
+        }
+        units.push((tag.as_str(), canonical));
+    }
+    let mut frame = if units.len() == 1 {
+        Framer::single_whole_record(units[0].1.len() as u64, u64::MAX)
+    } else {
+        Framer::compound(units.len() as u64, u64::MAX)
+            .map_err(|e| Error::InvalidEvidence(e.to_string()))?
+    };
+    for (tag, bytes) in &units {
+        if units.len() != 1 {
+            frame
+                .begin_json(tag.len() as u64, bytes.len() as u64)
+                .map_err(|e| Error::InvalidEvidence(e.to_string()))?;
+            frame
+                .tag(tag)
+                .map_err(|e| Error::InvalidEvidence(e.to_string()))?;
+        }
+        frame
+            .json(bytes)
+            .map_err(|e| Error::InvalidEvidence(e.to_string()))?;
+    }
+    frame
+        .finish()
+        .map_err(|e| Error::InvalidEvidence(e.to_string()))
+}
+
+fn compute_history(
+    reader: &polylogue_store::ReadHandle,
+    input: &RetainedSource,
+    cancelled: &AtomicBool,
+) -> Result<Computation> {
+    use polylogue_sources::codex::keyed::{Cell, Key};
+    use polylogue_store::parser_state::{Accounting, CellChange, Phase, Progress};
+    let rows = reader.codex_history_rows(input, cancelled)?;
+    let mut counts = Accounting::default();
+    let mut changes = Vec::new();
+    for row in rows {
+        counts.framed += 1;
+        match codex::history::map(&row) {
+            Ok(Some(operation)) => {
+                let key = Key::Operation(format!(
+                    "1:{}",
+                    operation
+                        .id()
+                        .map_err(|e| Error::InvalidEvidence(e.to_string()))?
+                ));
+                changes.push(CellChange {
+                    namespace: format!("codex.{}", key.family()),
+                    key: key.ordered_bytes(),
+                    value: Some(
+                        serde_json::to_vec(&Cell::Operation(operation))
+                            .map_err(|e| Error::InvalidEvidence(e.to_string()))?,
+                    ),
+                });
+                counts.used += 1;
+            }
+            Ok(None) => counts.unrecognized += 1,
+            Err(_) => counts.undecodable += 1,
+        }
+    }
+    Ok(Computation::History {
+        progress: Progress {
+            parsed_upto: input.input.length,
+            inspected_upto: input.input.length,
+            phase: Phase::Finalizing,
+            finalization_pending: true,
+            counts,
+        },
+        changes,
+    })
+}
+
 fn can_finalize(input: &RetainedSource, head: &Head) -> bool {
     head.status == "finalizing"
         || (input.observed()
@@ -1228,6 +1506,7 @@ fn settled(head: &Head) -> bool {
 pub(crate) fn parser_version(format: InputFormat) -> u32 {
     match format {
         InputFormat::CodexRollout => codex::PARSER_VERSION,
+        InputFormat::CodexHistorySqlite => codex::history::PARSER_VERSION,
         InputFormat::ClaudeCodeJsonl => claude_code::PARSER_VERSION,
     }
 }

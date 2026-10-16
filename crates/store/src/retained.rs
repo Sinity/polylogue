@@ -8,6 +8,7 @@ use rusqlite::{OptionalExtension, params};
 pub enum InputFormat {
     ClaudeCodeJsonl,
     CodexRollout,
+    CodexHistorySqlite,
 }
 impl InputFormat {
     /// Validate declared interpretation context without source IO or mutation.
@@ -18,6 +19,7 @@ impl InputFormat {
         match self {
             Self::ClaudeCodeJsonl => "claude-code-jsonl",
             Self::CodexRollout => "codex-rollout",
+            Self::CodexHistorySqlite => "codex-history-sqlite",
         }
     }
 }
@@ -70,7 +72,7 @@ fn validate_context(format: InputFormat, context: &[&str]) -> Result<()> {
         }
     }
     match format {
-        InputFormat::CodexRollout if context.is_empty() => {}
+        InputFormat::CodexRollout | InputFormat::CodexHistorySqlite if context.is_empty() => {}
         InputFormat::ClaudeCodeJsonl if matches!(context,["claude-main",stem] if !stem.is_empty() && !stem.contains('/') && !stem.contains('\0')) =>
             {}
         InputFormat::ClaudeCodeJsonl if matches!(context,["claude-subagent",agent] | ["claude-subagent",agent,_] if !agent.is_empty() && !agent.contains('/') && !agent.contains('\0') && context.iter().all(|v|!v.is_empty())) =>
@@ -875,6 +877,7 @@ pub(crate) fn decode_import_identity(
     }
     let format = match format.as_str() {
         "codex-rollout" => InputFormat::CodexRollout,
+        "codex-history-sqlite" => InputFormat::CodexHistorySqlite,
         "claude-code-jsonl" => InputFormat::ClaudeCodeJsonl,
         _ => {
             return Err(Error::Invariant(

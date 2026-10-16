@@ -181,6 +181,9 @@ impl Audit {
         }
         if self.step <= head.token.step {
             match input.format {
+                InputFormat::CodexHistorySqlite => {
+                    self.step = head.token.step + 1;
+                }
                 InputFormat::ClaudeCodeJsonl => {
                     let view = claude::View::new(snapshot, reads)?;
                     let effects = view.effects(self.step)?.ok_or_else(|| {
@@ -261,11 +264,17 @@ impl Audit {
             }
             return Ok(Turn::Progress(self));
         }
+        // A ready Session-owned operation is usable without any Message. This
+        // reads the actual publication in the same pinned source snapshot.
+        self.usable |= snapshot.source_has_tool_items()?;
         let position = self
             .position
             .take()
             .unwrap_or_else(|| CanonicalPosition::first(input.format));
         match position {
+            CanonicalPosition::ToolsAfter(_) | CanonicalPosition::ToolsBeforeFailure(_, _) => {
+                self.usable |= snapshot.source_has_tool_items()?;
+            }
             CanonicalPosition::Audit(_) => {
                 return Err(owner::Error::InvalidRequest("nested source audit cursor"));
             }

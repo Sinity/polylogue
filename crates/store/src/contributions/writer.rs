@@ -92,7 +92,7 @@ pub(super) fn basis(
     h.update(&evidence.to_be_bytes());
     *h.finalize().as_bytes()
 }
-pub(super) fn source_head(
+pub(crate) fn source_head(
     conn: &Connection,
     path: &Path,
     source: &parser_state::Token,
@@ -1046,6 +1046,79 @@ mod tests {
             drop(reader);
             self.writer.seal_message_value(build, &proof).unwrap()
         }
+    }
+    #[test]
+    fn source_election_carries_operation_root_without_rewriting_ready_bodies() {
+        use super::super::directory as d;
+        let mut f = Fixture::new();
+        let build = f.prepare().unwrap().build;
+        let path = f.root.join("index.db");
+        let owner = d::Owner {
+            message: build.message,
+            session: build.session,
+        };
+        let tx = f.writer._index.transaction().unwrap();
+        // Ready metadata and an empty operations directory are fixture setup;
+        // the target is the bounded immutable body/root transition.
+        tx.execute_batch("UPDATE message_body SET version_hash=zeroblob(32),ready=1; UPDATE message_candidate SET version_hash=zeroblob(32),facts_ready=1,source_blocks=0,source_text_blocks=0,source_fields=0,ready=1,body_ready=1,eligible=1;").unwrap();
+        let (root, _) = d::replace(
+            &tx,
+            &path,
+            owner,
+            d::Kind::Operations,
+            None,
+            0,
+            None,
+            &mut d::Work::default(),
+        )
+        .unwrap();
+        d::acquire(&tx, &path, owner, root).unwrap();
+        tx.execute(
+            "UPDATE message_body SET operation_root_pk=?2 WHERE pk=?1",
+            params![build.body, root],
+        )
+        .unwrap();
+        tx.execute("UPDATE message SET selected_body_pk=?1", [build.body])
+            .unwrap();
+        tx.execute("INSERT INTO message_body(message_pk,session_pk,ready,basis_digest,contributor_revision,removal_epoch,preferred_candidate_pk,layout,role,written_by,input_pk,version_hash,parser_version) SELECT message_pk,session_pk,ready,basis_digest,contributor_revision,removal_epoch,preferred_candidate_pk,layout,role,written_by,input_pk,version_hash,parser_version FROM message_body WHERE pk=?1",[build.body]).unwrap();
+        let source = tx.last_insert_rowid();
+        let derived =
+            super::super::tool_associations::carry_selected(&tx, &path, owner, source).unwrap();
+        assert_ne!(derived, source);
+        assert_ne!(derived, build.body);
+        let roots: Vec<Option<i64>> = tx
+            .prepare("SELECT operation_root_pk FROM message_body ORDER BY pk")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(roots, vec![Some(root), None, Some(root)]);
+        assert_eq!(
+            tx.query_row(
+                "SELECT count(DISTINCT version_hash) FROM message_body",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT incoming FROM message_body_node WHERE pk=?1",
+                [root],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        tx.execute("UPDATE message SET removal_epoch=removal_epoch+1", [])
+            .unwrap();
+        assert_eq!(
+            super::super::tool_associations::carry_selected(&tx, &path, owner, source).unwrap(),
+            source
+        );
+        tx.commit().unwrap();
     }
     #[test]
     fn text_block_checkpoint_rolls_back_and_resumes_without_publication() {

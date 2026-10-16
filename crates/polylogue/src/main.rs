@@ -209,7 +209,9 @@ fn run() -> Result<i32, Failure> {
     }
     let query = if args != ["daemon"] && args != ["status"] && command.is_none() {
         let text = query_args.join(" ");
-        polylogue_query::bind(&text)?;
+        if polylogue_query::bind_tools(&text)?.is_none() {
+            polylogue_query::bind(&text)?;
+        }
         Some(text)
     } else {
         None

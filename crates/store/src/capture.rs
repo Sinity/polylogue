@@ -1,5 +1,6 @@
-//! Worker-side CAS capture and opaque proof admission. SQLite remains owned by
-//! Writer; capture has no SQL capability and retains the archive lock authority.
+//! Worker-side CAS capture and opaque proof admission. Archive mutation stays
+//! with Writer; capture retains archive lock authority. Explicit native history
+//! capture additionally opens its supplied SQLite source read-only in store.
 use crate::{BlobHash, Error, Result, Writer, counter, db, private_dir};
 use rusqlite::{OptionalExtension, params};
 use std::{

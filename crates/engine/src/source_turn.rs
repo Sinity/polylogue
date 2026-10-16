@@ -130,6 +130,10 @@ pub enum Computation {
         continuation: Option<CommittedContinuation>,
     },
     Pending(PendingTurn),
+    History {
+        progress: Progress,
+        changes: Vec<CellChange>,
+    },
 }
 pub struct PendingTurn {
     head: Head,

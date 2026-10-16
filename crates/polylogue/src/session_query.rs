@@ -43,24 +43,37 @@ pub(crate) fn serve(
                 "query request requires only command and query text",
             ));
         }
-        let plan = polylogue_query::bind(request["query"].as_str().unwrap())
+        let tool_plan = polylogue_query::bind_tools(request["query"].as_str().unwrap())
             .map_err(|e| json!({"type":"end","outcome":"error","error":e}))?;
         let deadline = Instant::now() + TIME;
-        let catalog = reader
-            .lock()
-            .map_err(|_| failed(ErrorKind::Io, "reader lock poisoned"))?
-            .session_catalog(65536)
-            .map_err(store_failure)?;
-        let cancellation = stream.try_clone().map_err(|e| failed(ErrorKind::Io, e))?;
-        let result =
-            polylogue_engine::session_query::execute(&catalog, &plan, deadline, &mut || {
-                crate::session_read::peer_gone(&cancellation)
-            })
-            .map_err(store_failure)?;
+        let result = if let Some(plan) = tool_plan {
+            let guard = reader
+                .lock()
+                .map_err(|_| failed(ErrorKind::Io, "reader lock poisoned"))?;
+            crate::native_tools::query(&guard, &plan, deadline).map_err(store_failure)?
+        } else {
+            let plan = polylogue_query::bind(request["query"].as_str().unwrap())
+                .map_err(|e| json!({"type":"end","outcome":"error","error":e}))?;
+            let deadline = Instant::now() + TIME;
+            let catalog = reader
+                .lock()
+                .map_err(|_| failed(ErrorKind::Io, "reader lock poisoned"))?
+                .session_catalog(65536)
+                .map_err(store_failure)?;
+            let cancellation = stream.try_clone().map_err(|e| failed(ErrorKind::Io, e))?;
+            let result =
+                polylogue_engine::session_query::execute(&catalog, &plan, deadline, &mut || {
+                    crate::session_read::peer_gone(&cancellation)
+                })
+                .map_err(store_failure)?;
+            result
+        };
         for row in result["rows"].as_array().unwrap() {
             for key in ["id", "native_id"] {
-                crate::output_json::check_identity(row[key].as_str().unwrap(), deadline)
-                    .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
+                if let Some(identity) = row[key].as_str() {
+                    crate::output_json::check_identity(identity, deadline)
+                        .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
+                }
             }
             if let Some(hits) = row["hits"].as_array() {
                 for hit in hits {
@@ -85,8 +98,11 @@ pub(crate) fn serve(
                 "query response exceeds 4 MiB admission; narrow the query or use | limit",
             ));
         }
-        frame(stream, json!({"type":"query","unit":"sessions"}))
-            .map_err(|e| failed(ErrorKind::Io, e))?;
+        frame(
+            stream,
+            json!({"type":"query","unit":result["unit"].as_str().unwrap_or("sessions")}),
+        )
+        .map_err(|e| failed(ErrorKind::Io, e))?;
         text_frames(stream, |out| out.write_all(&bytes)).map_err(|e| failed(ErrorKind::Io, e))?;
         Ok(
             json!({"type":"end","outcome":result["outcome"],"count":result["count"],"notes":result["notes"]}),

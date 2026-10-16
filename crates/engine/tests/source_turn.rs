@@ -205,7 +205,9 @@ impl World {
 fn pending(result: Computation) -> PendingTurn {
     match result {
         Computation::Pending(p) => p,
-        Computation::Idle { .. } => panic!("expected computation"),
+        Computation::Idle { .. } | Computation::History { .. } => {
+            panic!("expected JSONL computation")
+        }
     }
 }
 #[test]

@@ -11,7 +11,12 @@ pub const CODEC_VERSION: u32 = 1;
 pub const ADAPTER_RECIPE_VERSION: u32 = 1;
 
 pub use crate::selection::{Cursor, PathPart, SelectedRaw};
-use crate::selection::{JsonWriteError, Operation, Recipe};
+use crate::selection::{JsonWriteError, Operation, Recipe, ScalarError};
+use polylogue_model::{
+    BlockContent, BlockSlot, ToolCall, ToolResult,
+    merge::{BlockField, Slot},
+};
+use serde_json::Value;
 pub type ValueError<E> = crate::selection::ValueError<E, Error>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Transform {
@@ -24,6 +29,9 @@ pub enum Transform {
     TextJoinLfV1,
     /// Current adapter: RFC3339 via jiff, milliseconds, Intrinsic/Instant.
     ProviderTimeV1,
+    ToolFieldV1 {
+        field: BlockField,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FactSelection {
@@ -143,10 +151,114 @@ impl Recipe for FactSelection {
             Transform::JsonStringV1 => Operation::JsonString,
             Transform::TextJoinLfV1 => Operation::TextJoinLf,
             Transform::ProviderTimeV1 => Operation::ProviderTime,
+            Transform::ToolFieldV1 { .. } => Operation::ProviderScalar,
         }
     }
     fn invalid(&self, reason: &'static str) -> Error {
         Error::Invalid(reason)
+    }
+    fn write_scalar<W: Write>(
+        &self,
+        value: &Value,
+        sink: &mut W,
+    ) -> Result<(), ScalarError<Self::Error>> {
+        let Transform::ToolFieldV1 { field } = &self.transform else {
+            return Err(ScalarError::Type);
+        };
+        let content = match field {
+            BlockField::Tool | BlockField::CallId | BlockField::Input | BlockField::Command => {
+                let input =
+                    value
+                        .get("arguments")
+                        .or_else(|| value.get("input"))
+                        .map(|v| match v {
+                            Value::String(s) => {
+                                serde_json::from_str(s).unwrap_or_else(|_| v.clone())
+                            }
+                            _ => v.clone(),
+                        });
+                let command = value
+                    .get("command")
+                    .cloned()
+                    .or_else(|| {
+                        input
+                            .as_ref()
+                            .and_then(|v| v.get("cmd").or_else(|| v.get("command")))
+                            .cloned()
+                    })
+                    .map(|v| match v {
+                        Value::String(s) => s,
+                        Value::Array(v) => v
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        v => v.to_string(),
+                    });
+                BlockContent::ToolCall(ToolCall {
+                    tool: value.get("name").and_then(Value::as_str).map(str::to_owned),
+                    call_id: value
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    input,
+                    command,
+                })
+            }
+            _ => {
+                let output = super::recorded_output(
+                    value
+                        .get("aggregated_output")
+                        .or_else(|| value.get("output")),
+                );
+                let text = match &output {
+                    Some(polylogue_model::ToolOutput::Text(s)) => s.as_str(),
+                    _ => "",
+                };
+                let (outcome, exit) = if value.get("status").is_some() {
+                    super::native_outcome(value)
+                } else {
+                    super::output_outcome(
+                        if text.starts_with("Script ") {
+                            "exec"
+                        } else {
+                            "exec_command"
+                        },
+                        value.get("output").unwrap_or(&Value::Null),
+                        text,
+                    )
+                };
+                BlockContent::ToolResult(ToolResult {
+                    data: None,
+                    call_id: value
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    outcome,
+                    exit_code: exit,
+                    duration_ms: super::native_duration(value),
+                    output,
+                })
+            }
+        };
+        let slot = BlockSlot::Item(0);
+        let selected = Slot::Block {
+            block: slot.clone(),
+            field: *field,
+        };
+        let status = polylogue_model::source_leaf::write(
+            polylogue_model::source_leaf::Subject::Block {
+                slot: &slot,
+                content: &content,
+            },
+            &selected,
+            sink,
+        )
+        .map_err(ScalarError::Leaf)?;
+        if status != polylogue_model::source_leaf::PresenceStatus::Written {
+            return Err(ScalarError::Type);
+        }
+        Ok(())
     }
     fn provider_time(&self, text: &str) -> Option<polylogue_model::ProviderTime> {
         super::parse_timestamp(text).map(super::provider_time)

@@ -189,6 +189,7 @@ impl BodyDigest {
         }
         let name = match format {
             crate::InputFormat::CodexRollout => "codex-rollout",
+            crate::InputFormat::CodexHistorySqlite => "codex-history-sqlite",
             crate::InputFormat::ClaudeCodeJsonl => "claude-code-jsonl",
         };
         hasher.update(&(name.len() as u64).to_be_bytes());
@@ -576,7 +577,15 @@ impl Writer {
         if revision != proof.revision || epoch != proof.epoch {
             return Err(changed());
         }
-        let body = proof.carrier.ok_or_else(changed)?.1;
+        let body = super::tool_associations::carry_selected(
+            &tx,
+            &path,
+            d::Owner {
+                message: proof.source.body.message,
+                session: proof.source.body.session,
+            },
+            proof.carrier.ok_or_else(changed)?.1,
+        )?;
         let changed = db(&path, || {
             tx.execute(
                 "UPDATE message SET selected_body_pk=?2 WHERE pk=?1 AND selected_body_pk IS NOT ?2",

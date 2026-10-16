@@ -16,3 +16,11 @@ pub struct SessionQuery {
     pub limit: Option<usize>,
     pub recent: bool,
 }
+
+#[derive(Clone, Debug)]
+pub struct ToolQuery {
+    pub calls_only: bool,
+    pub session: String,
+    pub text: Option<String>,
+    pub limit: usize,
+}
