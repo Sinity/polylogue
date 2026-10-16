@@ -8,7 +8,7 @@ publish.workspace = true
 [dependencies]
 polylogue-model.workspace = true
 hashed-blobs.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["backup"] }
 libsqlite3-sys = { version = "=0.38.2", features = ["bundled"] }
 libc.workspace = true
 thiserror.workspace = true

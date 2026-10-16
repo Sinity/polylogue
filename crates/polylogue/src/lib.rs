@@ -5,6 +5,7 @@ use polylogue_store::{ReadHandle, Writer};
 pub mod authored;
 pub mod input_cat;
 pub mod model_read;
+pub mod native_tools;
 mod output_json;
 mod protocol;
 pub mod read_cancellation;

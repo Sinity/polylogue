@@ -102,6 +102,7 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
     let path = path.ok_or_else(|| invalid("import requires a regular file path"))?;
     let format = match format.as_deref() {
         Some("codex-rollout") => polylogue_store::InputFormat::CodexRollout,
+        Some("codex-history-sqlite") => polylogue_store::InputFormat::CodexHistorySqlite,
         Some("claude-code-jsonl") => polylogue_store::InputFormat::ClaudeCodeJsonl,
         _ => {
             return Err(Failure::new(

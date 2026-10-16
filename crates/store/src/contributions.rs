@@ -26,7 +26,7 @@ pub use reads::{
 mod retirement;
 mod source;
 pub use source::{SourceProjection, SourceSelection};
-mod writer;
+pub(crate) mod writer;
 pub use retirement::{Retirement, ValueCollection};
 pub use writer::{Build, Identity, Preparation, Source};
 

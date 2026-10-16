@@ -34,6 +34,19 @@ The declared AgentCTL operations run the Nix build/check and development-shell c
 
 `crates/credential-output` owns the shared pure streaming credential presentation engine; terminal and Session rendering use it without changing their response limits. `crates/model` is pure. Only `crates/store` owns SQLite connections; public handles expose typed operations. `crates/hashed-blobs` is the reviewed shared file layer plus an explicit read-only capability, documented in [source provenance](docs/shared-crate-source.json). The owner publishes the reviewed file layer as `hashed-blobs-v0.1.0`; consumer pins require their own verification. [Store limits](crates/store/README.md) distinguish these primitives from complete input acquisition and recovery.
 
+## Explicit Codex operation representations
+
+An explicit `--format codex-history-sqlite` import retains one transactionally
+consistent physical history snapshot. The pinned CommandExecution adapter joins
+independently scoped rollout/native evidence under Session/turn/item identity.
+Ordinary CLI and MCP queries expose `tool_items` and `tool_calls` with exact
+`session:` and optional output `text:` filters; returned immutable `operation:`
+references use the existing read transport. Explicit empty output, omitted UI
+text and missing results stay distinct. Unknown ownership stays unknown. See the
+[representation guide](docs/rewrite/codex-native-representations.md) for the
+pinned revision, citations, provisional refinement, admission and remaining
+coverage limits.
+
 ## Observed Claude source subset
 
 One explicit regular Claude main location can now be retained at startup with

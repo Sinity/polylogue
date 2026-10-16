@@ -5,6 +5,7 @@ use polylogue_model::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+pub mod history;
 pub mod keyed;
 mod keyed_codec;
 pub mod origins;
@@ -12,7 +13,7 @@ pub mod presence;
 pub mod projection;
 mod raw;
 pub mod selection;
-pub const PARSER_VERSION: u32 = 6;
+pub const PARSER_VERSION: u32 = 7;
 
 /// Record kinds that carry nothing to keep in the index (their bytes stay stored).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -113,3 +113,13 @@ result = "exit"
 timeout_seconds = 300
 scratch = "nvme"
 cache = "none"
+
+[operations.native_representation_demo]
+description = "Exercise one explicit binary through synthetic Codex rollout/history CLI and SDK MCP acceptance"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-codex-native.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"

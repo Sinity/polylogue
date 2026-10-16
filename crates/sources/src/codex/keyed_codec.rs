@@ -6,6 +6,8 @@ use super::keyed::Key;
 impl Key {
     pub fn family(&self) -> &'static str {
         match self {
+            Self::Operation(_) => "operation",
+            Self::OperationBlock(_, _) => "operation_block",
             Self::Message(_) => "message",
             Self::Block(_, _) => "block",
             Self::Call(_) => "call",
@@ -71,7 +73,9 @@ impl Key {
             Self::Evidence(_, _, _) | Self::OutputChunk(_, _, _) => (25, None),
             Self::PendingResult(_, _) => (17, None),
             Self::EvidenceItem(_, s) | Self::Presence(_, s) => (11, Some(s)),
-            Self::Block(_, _) | Self::PresenceBlock(_, _) => (17, None),
+            Self::Block(_, _) | Self::PresenceBlock(_, _) | Self::OperationBlock(_, _) => {
+                (17, None)
+            }
             Self::Call(s)
             | Self::Reasoning(s)
             | Self::Running(s)
@@ -83,7 +87,8 @@ impl Key {
             | Self::CallWitness(s)
             | Self::StatusWitness(s)
             | Self::Result(s)
-            | Self::ContinuationTarget(s) => (3, Some(s)),
+            | Self::ContinuationTarget(s)
+            | Self::Operation(s) => (3, Some(s)),
             Self::CallBlock(s, _, _) => (19, Some(s)),
             Self::WrapperCall(s, _) | Self::Child(s, _) | Self::Mutable(_, s) => (11, Some(s)),
             Self::Prompt => (1, None),
@@ -119,6 +124,15 @@ impl Key {
             out.write_all(&[0, 0])
         }
         match self {
+            Self::OperationBlock(m, b) => {
+                out.write_all(&[32])?;
+                number(out, *m)?;
+                number(out, *b)?;
+            }
+            Self::Operation(s) => {
+                out.write_all(&[31])?;
+                text(out, s)?;
+            }
             Self::Message(n) => {
                 out.write_all(&[0])?;
                 number(out, *n)?;
@@ -335,6 +349,8 @@ impl Key {
             28 => Self::ContinuationTarget(r.text()?),
             29 => Self::Presence(r.number()?, r.text()?),
             30 => Self::PresenceBlock(r.number()?, r.number()?),
+            31 => Self::Operation(r.text()?),
+            32 => Self::OperationBlock(r.number()?, r.number()?),
             _ => return Err("unknown Codex cell key tag".into()),
         };
         if !r.0.is_empty() {

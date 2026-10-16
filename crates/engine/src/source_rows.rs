@@ -181,6 +181,9 @@ impl Audit {
         }
         if self.step <= head.token.step {
             match input.format {
+                InputFormat::CodexHistorySqlite => {
+                    self.step = head.token.step + 1;
+                }
                 InputFormat::ClaudeCodeJsonl => {
                     let view = claude::View::new(snapshot, reads)?;
                     let effects = view.effects(self.step)?.ok_or_else(|| {
@@ -266,6 +269,9 @@ impl Audit {
             .take()
             .unwrap_or_else(|| CanonicalPosition::first(input.format));
         match position {
+            CanonicalPosition::ToolsAfter(_) => {
+                self.usable = head.counts.used > 0;
+            }
             CanonicalPosition::Audit(_) => {
                 return Err(owner::Error::InvalidRequest("nested source audit cursor"));
             }

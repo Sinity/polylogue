@@ -342,3 +342,62 @@ mod quoted_syntax_tests {
         }
     }
 }
+
+/// Bounded exact-Session operation reads use the ordinary query transport.
+/// This binder never guesses a Session from operation reference punctuation.
+pub fn bind_tools(text: &str) -> Result<Option<polylogue_model::query::ToolQuery>, Failure> {
+    if text.len() > 16384 {
+        return Err(invalid(0, "query exceeds 16384-byte admission"));
+    }
+    let tokens = tokens(text)?;
+    let mut i = usize::from(tokens.first().is_some_and(|t| t.syntax("find")));
+    let Some(table) = tokens.get(i) else {
+        return Ok(None);
+    };
+    if !table.syntax("tool_items") && !table.syntax("tool_calls") {
+        return Ok(None);
+    }
+    let calls_only = table.syntax("tool_calls");
+    i += 1;
+    if tokens.get(i).is_some_and(|t| t.syntax("where")) {
+        i += 1;
+    }
+    let mut session = None;
+    let mut text = None;
+    let mut limit = 100;
+    while let Some(t) = tokens.get(i) {
+        if t.syntax("|") {
+            if tokens.get(i + 1).is_none_or(|t| !t.syntax("limit")) || tokens.len() != i + 3 {
+                return Err(unsupported(t.at, "operation query pipeline"));
+            }
+            limit = tokens[i + 2]
+                .value
+                .parse::<usize>()
+                .ok()
+                .filter(|n| *n > 0 && *n <= 4096)
+                .ok_or_else(|| invalid(t.at, "operation limit must be 1..4096"))?;
+            break;
+        }
+        if let Some(v) = t.value.strip_prefix("session:").filter(|v| !v.is_empty()) {
+            if session.replace(v.to_owned()).is_some() {
+                return Err(invalid(t.at, "repeated operation Session"));
+            }
+        } else if let Some(v) = t.value.strip_prefix("text:").filter(|v| !v.is_empty()) {
+            if text.replace(v.to_owned()).is_some() {
+                return Err(invalid(t.at, "repeated operation text"));
+            }
+        } else {
+            return Err(unsupported(
+                t.at,
+                "operation filter; use exact session: and optional text:",
+            ));
+        }
+        i += 1;
+    }
+    Ok(Some(polylogue_model::query::ToolQuery {
+        calls_only,
+        session: session.ok_or_else(|| invalid(0, "operation query requires exact session:"))?,
+        text,
+        limit,
+    }))
+}

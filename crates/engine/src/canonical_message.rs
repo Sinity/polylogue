@@ -624,7 +624,10 @@ fn block(attempt: &Attempt<'_>, message: usize, index: usize) -> Result<(Block, 
     };
     if !matches!(
         value.content,
-        BlockContent::Text { .. } | BlockContent::Thinking(_)
+        BlockContent::Text { .. }
+            | BlockContent::Thinking(_)
+            | BlockContent::ToolCall(_)
+            | BlockContent::ToolResult(_)
     ) {
         return Err(Error::Unsupported(
             "Codex block kind has no canonical materializer yet",
@@ -1228,7 +1231,10 @@ pub fn compute(
                 Step::Unit(Unit::Block { index, value }) => {
                     if !matches!(
                         value.content,
-                        BlockContent::Text { .. } | BlockContent::Thinking(_)
+                        BlockContent::Text { .. }
+                            | BlockContent::Thinking(_)
+                            | BlockContent::ToolCall(_)
+                            | BlockContent::ToolResult(_)
                     ) {
                         return Err(Error::Unsupported(
                             "Codex block kind has no canonical materializer yet",
@@ -1246,9 +1252,14 @@ pub fn compute(
                     cursor.stage = Stage::Text { index };
                     advance(state, &cursor, b)
                 }
-                Step::Unit(_) => Err(Error::Unsupported(
-                    "Codex operation/chunk projection remains pending",
-                )),
+                Step::Unit(
+                    Unit::Continuation { .. }
+                    | Unit::WrapperStart { .. }
+                    | Unit::WrapperChild { .. }
+                    | Unit::ResultStart { .. }
+                    | Unit::ResultChunk { .. }
+                    | Unit::ResultEnd { .. },
+                ) => advance(state, &cursor, b),
             }
         }
         Stage::MessageField { witness } => {
@@ -1279,6 +1290,25 @@ pub fn compute(
                     t.text.as_deref(),
                     OwnedBlockKind::Thinking {
                         encrypted: t.encrypted,
+                    },
+                ),
+                BlockContent::ToolCall(_) => {
+                    let operation = match read(&attempt, &Key::OperationBlock(message, index))? {
+                        Some(Cell::Text(id)) => id,
+                        _ => {
+                            return Err(Error::Unsupported(
+                                "Codex call lacks scoped operation anchor",
+                            ));
+                        }
+                    };
+                    (None, OwnedBlockKind::ToolCall { operation })
+                }
+                BlockContent::ToolResult(result) => (
+                    None,
+                    OwnedBlockKind::ToolResult {
+                        outcome: result.outcome.clone(),
+                        exit_code: result.exit_code,
+                        duration_ms: result.duration_ms,
                     },
                 ),
                 _ => return Err(Error::Unsupported("unsupported staged block")),

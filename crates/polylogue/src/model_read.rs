@@ -580,6 +580,15 @@ pub fn execute(
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
 ) -> Value {
+    if request["reference"]
+        .as_str()
+        .is_some_and(|r| r.starts_with("operation:"))
+    {
+        return match reader.lock() {
+            Ok(reader) => crate::native_tools::read(&reader, request, until),
+            Err(_) => unavailable("reader_lock_poisoned"),
+        };
+    }
     if request["view"] == "annotations"
         || request["reference"]
             .as_str()
@@ -1240,9 +1249,10 @@ fn request_inner(
 /// and unsupported rendering arguments are refused before contacting the owner.
 pub fn cli(args: &[String]) -> Result<Option<Value>, Value> {
     if args.get(1).map(String::as_str) != Some("read")
-        || !args
-            .iter()
-            .any(|a| matches!(a.as_str(), "--budget" | "--continuation"))
+        || (!args.first().is_some_and(|r| r.starts_with("operation:"))
+            && !args
+                .iter()
+                .any(|a| matches!(a.as_str(), "--budget" | "--continuation")))
     {
         return Ok(None);
     }

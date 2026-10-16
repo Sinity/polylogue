@@ -92,7 +92,7 @@ pub(super) fn basis(
     h.update(&evidence.to_be_bytes());
     *h.finalize().as_bytes()
 }
-pub(super) fn source_head(
+pub(crate) fn source_head(
     conn: &Connection,
     path: &Path,
     source: &parser_state::Token,
