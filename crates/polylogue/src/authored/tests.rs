@@ -795,6 +795,10 @@ fn body_continuation_allows_budget_refitting_but_refuses_a_new_authored_context(
     assert_ne!(first["outcome"], "error", "{first}");
     assert!(!first["next"].is_null());
     assert_eq!(first["authored_associations_complete"], false);
+    world.import(
+        "unrelated-growth-source",
+        json!("unrelated newly retained source bytes"),
+    );
     let mut next = first["next"].clone();
     next["budget_tokens"] = json!(3000);
     let second = read_call(&world, &next);
@@ -803,11 +807,23 @@ fn body_continuation_allows_budget_refitting_but_refuses_a_new_authored_context(
         second["shown"][0]["display_start"],
         first["shown"][0]["display_end"]
     );
+    // Native context fencing is intentionally conservative across authored
+    // writes, but must not include unrelated source/index bookkeeping.
+    assert_eq!(
+        world.write(&growth_request(
+            19,
+            "block:claude-code:unrelated-growth-source:answer:0"
+        ))["commit_state"],
+        "committed"
+    );
+    assert_eq!(read_call(&world, &next)["error"]["reason"], "stale_read");
+    let fresh = world.read(target, 2000);
+    assert!(!fresh["next"].is_null());
     assert_eq!(
         world.write(&growth_request(18, target))["commit_state"],
         "committed"
     );
-    let stale = read_call(&world, &next);
+    let stale = read_call(&world, &fresh["next"]);
     assert_eq!(stale["outcome"], "error");
     assert_eq!(stale["error"]["reason"], "stale_read");
 }

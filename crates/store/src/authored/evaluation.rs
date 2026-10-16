@@ -5,7 +5,7 @@ use super::*;
 use std::time::{Duration, Instant};
 
 const STEPS: u64 = 1_000_000;
-const SCRATCH_PAGES: u64 = 4096; // 16 MiB on disk, with a 64 KiB SQLite page cache.
+const SCRATCH_PAGES: u64 = 4096; // 16 MiB on disk, with a configured 64 KiB SQLite cache target.
 pub(super) struct Evaluation<'a> {
     source: &'a Connection,
     path: &'a Path,

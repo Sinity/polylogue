@@ -732,7 +732,7 @@ fn run(
     } else {
         None
     };
-    let authored_notes = if selection.exact.is_some() {
+    let (authored_notes, authored_sequence) = if selection.exact.is_some() {
         let reader = reader
             .lock()
             .map_err(|_| unavailable("reader_lock_poisoned"))?;
@@ -746,12 +746,12 @@ fn run(
         }
         if notes["complete"] == false || notes["families"].as_array().is_some_and(|v| !v.is_empty())
         {
-            Some(notes)
+            (Some(notes), snapshot.authored_sequence)
         } else {
-            None
+            (None, snapshot.authored_sequence)
         }
     } else {
-        None
+        (None, 0)
     };
     // A second pass before handoff recomputes the same incarnation/visibility
     // certificates. Current removal/generation checks remain live at every read.
@@ -762,16 +762,12 @@ fn run(
         basis.update(&[u8::from(branches)]);
     }
     basis.update(reference.as_bytes());
-    if let Some(notes) = &authored_notes {
-        // Context authority is the retained authored counter, independently of
-        // how much side metadata fits this page's presentation budget.
-        basis.update(b"authored-context-v1\0");
-        basis.update(
-            &notes["archive_counter"]
-                .as_u64()
-                .expect("authored counter")
-                .to_le_bytes(),
-        );
+    if authored_notes.is_some() {
+        // The indexed authored-only watermark conservatively fences any later
+        // note write, independently of fitted metadata and unrelated source
+        // acquisition. Historical association pages retain their own cutoff.
+        basis.update(b"authored-context-v2\0");
+        basis.update(&authored_sequence.to_le_bytes());
     }
     let mut count = 0u64;
     let mut omitted = Omissions::default();

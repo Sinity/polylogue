@@ -331,7 +331,8 @@ fn association_page(
     )
 }
 /// Primary bodies can remain readable when their separately bounded relations
-/// cannot fit. The retained archive counter still binds their context basis.
+/// cannot fit. Historical association pages retain their archive cutoff; the
+/// source-body certificate uses the separate authored-only watermark.
 pub(crate) fn bounded_backlinks(
     snapshot: &Snapshot,
     reader: &ReadHandle,

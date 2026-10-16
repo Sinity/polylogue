@@ -477,6 +477,8 @@ pub struct Snapshot {
     conn: Connection,
     path: PathBuf,
     pub archive_counter: u64,
+    /// Indexed authored-only watermark, separate from general archive bookkeeping.
+    pub authored_sequence: u64,
     pub recovery: Option<polylogue_model::RecoveryQualification>,
     _lock: Arc<File>,
 }
@@ -486,11 +488,21 @@ impl ReadHandle {
         let conn = crate::open(&path, true, true)?;
         db(&path, || conn.execute_batch("BEGIN DEFERRED"))?;
         let archive_counter = counter(&conn, &path)?;
+        let authored_sequence = db(&path, || {
+            conn.query_row(
+                "SELECT local_seq FROM note INDEXED BY note_local ORDER BY local_seq DESC LIMIT 1",
+                [],
+                |r| crate::parser_state::unsigned(r, 0),
+            )
+            .optional()
+        })?
+        .unwrap_or(0);
         let recovery = crate::recovery::qualification(&conn, &path)?;
         Ok(Snapshot {
             conn,
             path,
             archive_counter,
+            authored_sequence,
             recovery,
             _lock: Arc::clone(&self._lock),
         })
