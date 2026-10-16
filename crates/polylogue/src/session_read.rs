@@ -85,7 +85,7 @@ pub(crate) fn serve(
         })?;
         match coverage.catalog {
             polylogue_store::contributions::SessionCoverage::KnownCatalogOnly => Ok(
-                json!({"type":"end","outcome":"degraded","canonical_complete":false,"messages":coverage.messages,"missing":coverage.qualification["notes"],"notes":coverage.qualification["notes"],"unknown":coverage.qualification["unknown"]}),
+                json!({"type":"end","outcome":"degraded","canonical_complete":false,"messages":coverage.messages,"missing":coverage.qualification["notes"],"notes":coverage.qualification["notes"],"unknown":coverage.qualification["unknown"],"recovery":coverage.qualification["recovery"]}),
             ),
         }
     })();

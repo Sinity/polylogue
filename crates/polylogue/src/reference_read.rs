@@ -97,6 +97,7 @@ pub(crate) fn serve(
     request: &Value,
     reader: &std::sync::Mutex<ReadHandle>,
 ) -> io::Result<()> {
+    let mut recovery = None;
     let mut run = || -> Result<(), Value> {
         if request.as_object().is_none_or(|o| {
             o.keys()
@@ -136,6 +137,7 @@ pub(crate) fn serve(
             MessageLookup::Ready(v) => v,
         };
         let header = message.header().map_err(|e| failed(ErrorKind::Io, e))?;
+        recovery = message.recovery().map_err(|e| failed(ErrorKind::Io, e))?;
         frame(stream,json!({"type":"message","id":message.id().as_str(),"session":message.id().session().as_str(),"role":header.role,"written_by":header.written_by})).map_err(|e|failed(ErrorKind::Io,e))?;
         let mut masker = credential_output::Masker::new();
         let mut index = 0u64;
@@ -203,7 +205,7 @@ pub(crate) fn serve(
     match run() {
         Ok(()) => frame(
             stream,
-            json!({"type":"end","outcome":"degraded","missing":["canonical_history_coverage","source_provenance"],"canonical_complete":false}),
+            json!({"type":"end","outcome":"degraded","missing":["canonical_history_coverage","source_provenance"],"notes":if recovery.is_some(){vec![polylogue_model::RecoveryQualification::NOTE]}else{vec![]},"recovery":recovery,"canonical_complete":false}),
         ),
         Err(error) => frame(stream, error),
     }
@@ -303,6 +305,9 @@ pub fn request(socket: &Path, reference: &str, out: &mut impl Write) -> io::Resu
             {
                 if started {
                     writeln!(out)?;
+                }
+                if item.get("recovery").is_some_and(|v| !v.is_null()) {
+                    writeln!(out, "{}", polylogue_model::RecoveryQualification::NOTE)?;
                 }
                 return Ok(item);
             }

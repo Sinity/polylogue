@@ -29,11 +29,12 @@ mod native;
 mod retained;
 pub use retained::{ImmutableImport, ImportObservation, InputFormat, RetainedInput};
 pub mod parser_state;
+pub mod recovery;
 pub mod values;
 mod wal;
 
-pub const ARCHIVE_VERSION: u32 = 1;
-pub const ARCHIVE_SPEC_COMMIT: &str = "191adbec3ddf0b39c1ce07ef3bbd555d07ecf795";
+pub const ARCHIVE_VERSION: u32 = 2;
+pub const ARCHIVE_SPEC_COMMIT: &str = "8c4e2210692282420d7a5ca91dc005b409a668f1";
 pub const EMBEDDINGS_VERSION: u32 = 0;
 pub const INDEX_VERSION: u32 = 18;
 /// Exact owning forward-schema revision, independently qualified from inbox index8.
@@ -47,6 +48,14 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("controlled copy recovery refused: {0}")]
+    RecoveryRefused(String),
+    #[error("recovery failed; owned staging retained at {path}: {error}")]
+    RecoveryStaging {
+        path: PathBuf,
+        #[source]
+        error: Box<Error>,
+    },
     #[error(
         "immutable interpretation context needs {required} framed bytes; maximum declaration is {maximum}"
     )]
@@ -143,6 +152,7 @@ pub struct Status {
     pub index_version: u32,
     pub embeddings_version: u32,
     pub write_counter: u64,
+    pub recovery: Option<polylogue_model::RecoveryQualification>,
 }
 
 /// Acquired only by the daemon's startup path. Its lock lives as long as its connections.
@@ -260,7 +270,13 @@ fn owned_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
         Err(err) => Err(Error::Io(err)),
     }
 }
-fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Result<()> {
+fn validate_version(
+    root: &Path,
+    name: &str,
+    expected: u32,
+    durable: bool,
+    legacy: bool,
+) -> Result<()> {
     let file = root.join(name);
     // Inspect retained siblings even when the main file is missing or empty.
     // A WAL may hold the only committed schema/content and must never be overwritten as fresh.
@@ -308,7 +324,7 @@ fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Re
             expected,
         });
     }
-    if durable && found != expected {
+    if durable && found != expected && !(legacy && name == "archive.db" && found == 1) {
         return Err(Error::Schema(file));
     }
     validate_schema(
@@ -322,6 +338,12 @@ fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Re
     )?;
     if name != "embeddings.db" {
         counter(&conn, &file)?;
+    }
+    if name == "archive.db" {
+        let qualification = recovery::qualification(&conn, &file)?;
+        if found == 1 && qualification.is_some() {
+            return Err(Error::Schema(file));
+        }
     }
     if name == "index.db" {
         let stored: String = db(&file, || {
@@ -345,9 +367,12 @@ fn validate_version(root: &Path, name: &str, expected: u32, durable: bool) -> Re
     Ok(())
 }
 fn preflight(root: &Path) -> Result<()> {
-    validate_version(root, "archive.db", ARCHIVE_VERSION, true)?;
-    validate_version(root, "embeddings.db", EMBEDDINGS_VERSION, true)?;
-    validate_version(root, "index.db", INDEX_VERSION, false)?;
+    preflight_inner(root, false)
+}
+fn preflight_inner(root: &Path, legacy: bool) -> Result<()> {
+    validate_version(root, "archive.db", ARCHIVE_VERSION, true, legacy)?;
+    validate_version(root, "embeddings.db", EMBEDDINGS_VERSION, true, false)?;
+    validate_version(root, "index.db", INDEX_VERSION, false, false)?;
     if root.try_exists()? && owned_metadata(&root.join("archive.db"))?.is_none() {
         for entry in fs::read_dir(root)? {
             let path = entry?.path();
@@ -487,7 +512,7 @@ fn startup_lock(root: &Path, create: bool, writable: bool) -> Result<File> {
         .write(writable)
         .create_new(create)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&path);
     let lock = match lock {
         Ok(lock) => lock,
@@ -534,6 +559,9 @@ fn startup_lock(root: &Path, create: bool, writable: bool) -> Result<File> {
         }
         Err(e) => return Err(Error::Io(e)),
     };
+    if !lock.metadata()?.is_file() {
+        return Err(Error::Schema(path));
+    }
     match lock.try_lock() {
         Ok(()) => Ok(lock),
         Err(std::fs::TryLockError::WouldBlock) => Err(Error::WriterHeld {
@@ -563,6 +591,7 @@ impl Writer {
         }
         let mut lock = startup_lock(&root, empty, true)?;
         wal::validate(&root, cancelled)?;
+        recovery::migrate(&root, cancelled)?;
         preflight(&root)?;
         wal::check_cancel(cancelled)?;
         private_dir(&root)?;
@@ -615,6 +644,13 @@ impl ReadHandle {
         let root = fs::canonicalize(path)?;
         let lock = startup_lock(&root, false, false)?;
         wal::validate(&root, cancelled)?;
+        if recovery::raw_versions(&root)? == Some(1) {
+            return Err(wal::required(
+                &root.join("archive.db"),
+                "format migration requires the daemon owner",
+                None,
+            ));
+        }
         preflight(&root)?;
         wal::check_cancel(cancelled)?;
         Self::owned(root, Arc::new(lock))
@@ -630,12 +666,14 @@ impl ReadHandle {
     }
     pub fn status(&self) -> Result<Status> {
         let file = self.root.join("archive.db");
-        let write_counter = counter(&self.archive, &file)?;
+        let snapshot = db(&file, || self.archive.unchecked_transaction())?;
+        let write_counter = counter(&snapshot, &file)?;
         Ok(Status {
-            archive_version: version(&self.archive, &file)?,
+            archive_version: version(&snapshot, &file)?,
             index_version: version(&self.index, &self.root.join("index.db"))?,
             embeddings_version: version(&self.embeddings, &self.root.join("embeddings.db"))?,
             write_counter,
+            recovery: recovery::qualification(&snapshot, &file)?,
         })
     }
     pub fn read_blob_range(&self, hash: BlobHash, offset: u64, length: u64) -> Result<Vec<u8>> {

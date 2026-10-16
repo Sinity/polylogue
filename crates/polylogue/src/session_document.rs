@@ -73,7 +73,11 @@ fn result_qualification(
     } else {
         json!({})
     };
-    Ok(json!({"outcome":"degraded","notes":notes,"unknown":unknown}))
+    let recovery = session.recovery().map_err(io::Error::other)?;
+    if recovery.is_some() {
+        notes.push(polylogue_model::RecoveryQualification::NOTE.to_owned());
+    }
+    Ok(json!({"outcome":"degraded","notes":notes,"unknown":unknown,"recovery":recovery}))
 }
 const LEAF: usize = 65536;
 const PIECE: usize = 4096;
@@ -227,7 +231,13 @@ pub(crate) fn write_with_cancel(
     // Package version is fixed build metadata, not provider text.
     e.syntax(env!("CARGO_PKG_VERSION").as_bytes())?;
     e.syntax(b"\"")?;
-    member(&mut e, "result", &qualification)?;
+    let mut result = qualification.clone();
+    result
+        .as_object_mut()
+        .expect("result qualification")
+        .remove("recovery");
+    member(&mut e, "result", &result)?;
+    member(&mut e, "recovery", &qualification["recovery"])?;
     e.syntax(b",\"session\":{")?;
     let h = stored(session.header())?;
     e.key("id")?;

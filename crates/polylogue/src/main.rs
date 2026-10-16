@@ -45,7 +45,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read --format json|[QUERY] [list] [--json]|config schema>\nImport retains one regular file. Selected Message terminal reads and Session JSON reads have explicit degraded coverage. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Export and MCP remain unavailable.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read --format json|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Selected Message terminal reads and Session JSON reads have explicit degraded coverage. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Export and MCP remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -79,6 +79,22 @@ fn run() -> Result<i32, Failure> {
     } else {
         env::current_dir().map_err(io_error)?.join(archive)
     };
+    if args.first().map(String::as_str) == Some("recover") {
+        if args.len() != 3 || args[1] != "--to" || args[2].is_empty() {
+            return Err(error(
+                ErrorKind::InvalidQuery,
+                "recover requires exactly --to DEST",
+            ));
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let signalled = Arc::clone(&stop);
+        ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
+        let report = polylogue::Running::recover_copy(&archive, &PathBuf::from(&args[2]), &stop)
+            .map_err(io_error)?;
+        serde_json::to_writer(&mut out,&json!({"outcome":"degraded","destination":report.destination,"recovery":report.recovery,"receipt":report.receipt,"notes":[polylogue_model::RecoveryQualification::NOTE],"missing":[polylogue_model::RecoveryQualification::NOTE]})).map_err(io_error)?;
+        writeln!(out).map_err(io_error)?;
+        return Ok(5);
+    }
     let terminal_read = args.first().is_some_and(|s| s.starts_with("message:"))
         && (args.len() == 2 && args[1] == "read"
             || args.len() == 4 && args[1..] == ["read", "--format", "terminal"]);

@@ -163,7 +163,11 @@ pub fn execute(
     if let Some(limit) = plan.limit {
         rows.truncate(limit);
     }
+    let recovery = catalog.recovery()?;
     let mut notes = vec![];
+    if recovery.is_some() {
+        notes.push(polylogue_model::RecoveryQualification::NOTE.to_owned());
+    }
     if sessions > 0 || known_messages > 0 || qualification.interpreted_nonempty_inputs > 0 {
         notes.push("Only the known selected Session/Message catalog was searched; Session metadata reductions, linked/subagent expansion, inherited/copy classification and complete source populations remain pending.".to_owned());
     }
@@ -256,7 +260,7 @@ pub fn execute(
         ));
     }
     Ok(
-        json!({"outcome":outcome,"unit":"sessions","rows":rows,"count":count,"next_cursor":null,"up_to_date":false,
+        json!({"outcome":outcome,"recovery":recovery,"unit":"sessions","rows":rows,"count":count,"next_cursor":null,"up_to_date":false,
         "read_as":read_as, "selection":{"limit":plan.limit}, "ranking":{"state":"unavailable","order":"known_last_message_at desc; id desc"},
         "view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()},
         "defaults":{"exclude_subagents":plan.kind.is_none()&&!plan.all_kinds&&plan.id.is_none()},

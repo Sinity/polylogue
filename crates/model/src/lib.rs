@@ -19,3 +19,7 @@ pub use types::{Credits, ErrorKind, Failure, Ratio, RecordOutcome, ResultOutcome
 pub mod settlement;
 
 pub mod query;
+pub mod recovery;
+pub use recovery::{
+    DurableTier, HeadCoverage, RecoveredWal, RecoveryQualification, RecoveryReason,
+};

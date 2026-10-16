@@ -27,6 +27,7 @@ struct PinnedRead {
     visibility: Connection,
     archive: Option<Connection>,
     archive_visibility: Option<Connection>,
+    recovery: Option<polylogue_model::RecoveryQualification>,
     _lock: Arc<File>,
 }
 type SharedRead = Arc<Mutex<PinnedRead>>;
@@ -107,6 +108,11 @@ impl ReadHandle {
             .ok_or(Error::MessagePredecessorChanged)
     }
     pub fn selected_message(&self, id: &MessageId) -> Result<Option<MessageView>> {
+        let archive_path = self.root.join("archive.db");
+        let archive = crate::open(&archive_path, true, true)?;
+        db(&archive_path, || archive.execute_batch("BEGIN DEFERRED"))?;
+        let archive_counter = crate::counter(&archive, &archive_path)?;
+        let recovery = crate::recovery::qualification(&archive, &archive_path)?;
         let path = self.root.join("index.db");
         let connection = crate::open(&path, true, false)?;
         db(&path, || connection.execute_batch("BEGIN DEFERRED"))?;
@@ -124,12 +130,16 @@ impl ReadHandle {
         let Some((message, session, body, root, removal_epoch)) = selected else {
             return Ok(None);
         };
+        if crate::counter(&self.archive, &archive_path)? != archive_counter {
+            return Err(Error::MessagePredecessorChanged);
+        }
         Ok(Some(MessageView {
             read: Arc::new(Mutex::new(PinnedRead {
                 connection,
                 visibility: crate::open(&path, true, false)?,
-                archive: None,
+                archive: Some(archive),
                 archive_visibility: None,
+                recovery,
                 _lock: Arc::clone(&self._lock),
             })),
             path,
@@ -143,6 +153,9 @@ impl ReadHandle {
     }
 }
 impl MessageView {
+    pub fn recovery(&self) -> Result<Option<polylogue_model::RecoveryQualification>> {
+        Ok(locked(&self.read)?.recovery.clone())
+    }
     pub fn provider_time(&self) -> Result<Option<i64>> {
         search_time(self)
     }
@@ -600,6 +613,9 @@ pub struct SessionCatalogCursor {
     after: String,
 }
 impl SessionCatalog {
+    pub fn recovery(&self) -> Result<Option<polylogue_model::RecoveryQualification>> {
+        Ok(locked(&self.read)?.recovery.clone())
+    }
     fn visible(&self) -> Result<()> {
         let read = locked(&self.read)?;
         let archive_path = self.path.with_file_name("archive.db");
@@ -745,6 +761,7 @@ impl ReadHandle {
         let archive = crate::open(&archive_path, true, true)?;
         db(&archive_path, || archive.execute_batch("BEGIN DEFERRED"))?;
         let archive_counter = crate::counter(&archive, &archive_path)?;
+        let recovery = crate::recovery::qualification(&archive, &archive_path)?;
         let path = self.root.join("index.db");
         let connection = crate::open(&path, true, false)?;
         db(&path, || connection.execute_batch("BEGIN DEFERRED"))?;
@@ -763,6 +780,7 @@ impl ReadHandle {
                 visibility: crate::open(&path, true, false)?,
                 archive: Some(archive),
                 archive_visibility: Some(crate::open(&archive_path, true, true)?),
+                recovery,
                 _lock: Arc::clone(&self._lock),
             })),
             path,
@@ -914,6 +932,9 @@ impl SessionCatalog {
     }
 }
 impl SessionView {
+    pub fn recovery(&self) -> Result<Option<polylogue_model::RecoveryQualification>> {
+        Ok(locked(&self.read)?.recovery.clone())
+    }
     pub fn catalog(&self) -> SessionCatalog {
         SessionCatalog {
             read: Arc::clone(&self.read),

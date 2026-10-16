@@ -41,7 +41,7 @@ fn ddl_is_exact_extraction_from_copied_owning_spec() {
 
 #[test]
 fn context_qualified_archive_uses_explicit_owning_schema_basis() {
-    assert_eq!(ARCHIVE_VERSION, 1);
+    assert_eq!(ARCHIVE_VERSION, 2);
     let provenance = include_str!("../schema/provenance.json");
     assert!(provenance.contains(&format!("\"spec_commit\": \"{ARCHIVE_SPEC_COMMIT}\"")));
     let conn = Connection::open_in_memory().unwrap();
@@ -612,6 +612,12 @@ fn retained_wal_probe_child() {
         .archive
         .pragma_update(None, "wal_autocheckpoint", 0)
         .unwrap();
+    if std::env::var("POLYLOGUE_WAL_CHILD_MODE").as_deref() == Ok("legacy-normal") {
+        writer
+            .archive
+            .pragma_update(None, "user_version", 1)
+            .unwrap();
+    }
     writer
         .put_file_blob(b"first acknowledged WAL commit")
         .unwrap();
@@ -619,8 +625,14 @@ fn retained_wal_probe_child() {
         .put_file_blob(b"second acknowledged WAL commit")
         .unwrap();
     assert_eq!(writer.status().unwrap().write_counter, 3);
+    if std::env::var("POLYLOGUE_WAL_CHILD_MODE").as_deref() == Ok("stale-newer") {
+        writer
+            .archive
+            .pragma_update(None, "user_version", 99)
+            .unwrap();
+    }
     match std::env::var("POLYLOGUE_WAL_CHILD_MODE").as_deref() {
-        Ok("stale-generation") => {
+        Ok("stale-generation" | "stale-newer") => {
             writer
                 .archive
                 .execute_batch("PRAGMA wal_checkpoint(RESTART)")
@@ -777,11 +789,15 @@ fn retained_wal_cold_reopen_gate() {
     }
 }
 
-fn killed_wal_fixture(mode: &str) -> (tempfile::TempDir, PathBuf, u64) {
+pub(crate) fn killed_wal_fixture(mode: &str) -> (tempfile::TempDir, PathBuf, u64) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("original");
     let ack = tmp.path().join("ack");
-    let expected = if mode == "stale-generation" { 4 } else { 3 };
+    let expected = if matches!(mode, "stale-generation" | "stale-newer") {
+        4
+    } else {
+        3
+    };
     let mut initial = Writer::open(&root).unwrap();
     initial.put_file_blob(b"checkpointed baseline").unwrap();
     if mode == "embeddings" {

@@ -1,9 +1,10 @@
 //! Conservative cold-start gate, not a replacement WAL recovery engine.
 //! Caller owns the archive lock; no SQLite connection has opened yet.
 use super::{Error, Result, owned_metadata, sibling};
+use polylogue_model::{DurableTier, RecoveredWal};
 use std::{
     fs::File,
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -82,6 +83,23 @@ fn read(file: &mut File, bytes: &mut [u8], path: &Path, frame: Option<u64>) -> R
     })
 }
 pub(super) fn inspect(path: &Path, cancelled: &mut impl FnMut() -> bool) -> Result<()> {
+    inspect_inner(path, cancelled, None).map(|_| ())
+}
+
+/// Only the separately owned copy-recovery path requests this classification.
+/// Normal inspection still refuses at the first salt mismatch, as before.
+pub(super) fn recovery_tail(
+    path: &Path,
+    cancelled: &mut impl FnMut() -> bool,
+    tier: DurableTier,
+) -> Result<Option<RecoveredWal>> {
+    inspect_inner(path, cancelled, Some(tier))
+}
+fn inspect_inner(
+    path: &Path,
+    cancelled: &mut impl FnMut() -> bool,
+    recover: Option<DurableTier>,
+) -> Result<Option<RecoveredWal>> {
     let mut file = File::open(path)?;
     let length = file.metadata()?.len();
     if cancelled() {
@@ -110,6 +128,9 @@ pub(super) fn inspect(path: &Path, cancelled: &mut impl FnMut() -> bool) -> Resu
     let mut page = vec![0; size as usize];
     let mut position = 32u64;
     let mut frame = 0u64;
+    let mut committed = 0u64;
+    let mut tail: Option<([u8; 8], u64)> = None;
+    let mut previous_state = None;
     while position < length {
         if cancelled() {
             return Err(Error::Cancelled);
@@ -126,9 +147,59 @@ pub(super) fn inspect(path: &Path, cancelled: &mut impl FnMut() -> bool) -> Resu
         read(&mut file, &mut frame_header, path, Some(frame))?;
         read(&mut file, &mut page, path, Some(frame))?;
         if frame_header[8..16] != header[16..24] {
+            if recover.is_none() {
+                return Err(required(
+                    path,
+                    "uncertain WAL generation tail (may be legitimate reuse)",
+                    Some(frame),
+                ));
+            }
+            let salt: [u8; 8] = frame_header[8..16].try_into().unwrap();
+            if tail.is_none() {
+                if committed != frame - 1
+                    || committed == 0
+                    || word(&salt[..4]).wrapping_add(1) != word(&header[16..20])
+                {
+                    return Err(required(
+                        path,
+                        "unsupported WAL generation boundary",
+                        Some(frame),
+                    ));
+                }
+                tail = Some((salt, frame));
+            }
+            if tail.as_ref().unwrap().0 != salt || word(&frame_header[..4]) == 0 {
+                return Err(required(
+                    path,
+                    "mixed or malformed previous WAL generation",
+                    Some(frame),
+                ));
+            }
+            let recorded = [word(&frame_header[16..20]), word(&frame_header[20..24])];
+            // The overwritten previous prefix prevents validating the first
+            // old frame. Its recorded state still anchors every later frame.
+            if let Some(previous) = previous_state {
+                let computed = checksum(
+                    &page,
+                    little,
+                    checksum(&frame_header[..8], little, previous),
+                );
+                if computed != recorded {
+                    return Err(required(
+                        path,
+                        "previous WAL tail checksum mismatch",
+                        Some(frame),
+                    ));
+                }
+            }
+            previous_state = Some(recorded);
+            position += 24 + u64::from(size);
+            continue;
+        }
+        if tail.is_some() {
             return Err(required(
                 path,
-                "uncertain WAL generation tail (may be legitimate reuse)",
+                "current generation after previous WAL generation",
                 Some(frame),
             ));
         }
@@ -138,6 +209,9 @@ pub(super) fn inspect(path: &Path, cancelled: &mut impl FnMut() -> bool) -> Resu
         state = checksum(&page, little, checksum(&frame_header[..8], little, state));
         if state != [word(&frame_header[16..20]), word(&frame_header[20..24])] {
             return Err(required(path, "WAL frame checksum mismatch", Some(frame)));
+        }
+        if word(&frame_header[4..8]) != 0 {
+            committed = frame;
         }
         position += 24 + u64::from(size);
     }
@@ -151,7 +225,52 @@ pub(super) fn inspect(path: &Path, cancelled: &mut impl FnMut() -> bool) -> Resu
             None,
         ));
     }
-    Ok(())
+    Ok(tail.map(|(_, first)| RecoveredWal {
+        tier: recover.unwrap(),
+        committed_frame: committed,
+        first_previous_generation_frame: first,
+    }))
+}
+
+/// Read the effective committed format without letting SQLite alter any siblings.
+/// Caller has already validated the WAL or admitted its narrow generation tail.
+pub(super) fn schema_version(main: &Path) -> Result<u32> {
+    let mut header = [0; 100];
+    File::open(main)?.read_exact(&mut header)?;
+    if &header[..16] != b"SQLite format 3\0" {
+        return Err(Error::Schema(main.into()));
+    }
+    let mut version = word(&header[60..64]);
+    let path = sibling(main, "-wal");
+    let Some(meta) = owned_metadata(&path)? else {
+        return Ok(version);
+    };
+    if meta.len() == 0 {
+        return Ok(version);
+    }
+    let mut file = File::open(&path)?;
+    let mut wal = [0; 32];
+    file.read_exact(&mut wal)?;
+    let size = word(&wal[8..12]);
+    let mut proposed = version;
+    let mut frame = [0; 24];
+    while file.stream_position()? < meta.len() {
+        file.read_exact(&mut frame)?;
+        if frame[8..16] != wal[16..24] {
+            break;
+        }
+        if word(&frame[..4]) == 1 {
+            file.read_exact(&mut header)?;
+            proposed = word(&header[60..64]);
+            file.seek(SeekFrom::Current(i64::from(size) - 100))?;
+        } else {
+            file.seek(SeekFrom::Current(i64::from(size)))?;
+        }
+        if word(&frame[4..8]) != 0 {
+            version = proposed;
+        }
+    }
+    Ok(version)
 }
 
 #[cfg(test)]
