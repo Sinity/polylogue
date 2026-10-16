@@ -184,7 +184,10 @@ fn mcp_discovers_only_supported_tools_without_a_daemon_or_archive_creation() {
     for tool in tools {
         assert_eq!(tool["outputSchema"]["required"], json!(["outcome"]));
         assert_eq!(tool["annotations"]["readOnlyHint"], tool["name"] != "note");
-        assert_eq!(tool["annotations"]["idempotentHint"], tool["name"] != "note");
+        assert_eq!(
+            tool["annotations"]["idempotentHint"],
+            tool["name"] != "note"
+        );
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     }
     let note = &tools[3];
