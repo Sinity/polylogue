@@ -690,7 +690,8 @@ fn sequential_verification_decodes_once_and_checks_identity_and_length() {
 
 #[test]
 fn verification_callback_cancels_and_enforces_expired_deadline() {
-    let (_d, s) = store();
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path(), vec![], 0o600).unwrap(); // default 4 MiB frames
     let bytes = data(18, 8 << 20);
     let h = s.put(&bytes[..], 1).unwrap();
     let mut decoded = 0usize;
