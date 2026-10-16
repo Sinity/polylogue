@@ -1060,7 +1060,7 @@ mod tests {
         let tx = f.writer._index.transaction().unwrap();
         // Ready metadata and an empty operations directory are fixture setup;
         // the target is the bounded immutable body/root transition.
-        tx.execute_batch("UPDATE message_candidate SET version_hash=zeroblob(32),ready=1,body_ready=1,eligible=1; UPDATE message_body SET version_hash=zeroblob(32),ready=1;").unwrap();
+        tx.execute_batch("UPDATE message_body SET version_hash=zeroblob(32),ready=1; UPDATE message_candidate SET version_hash=zeroblob(32),facts_ready=1,source_blocks=0,source_text_blocks=0,source_fields=0,ready=1,body_ready=1,eligible=1;").unwrap();
         let (root, _) = d::replace(
             &tx,
             &path,
@@ -1111,6 +1111,12 @@ mod tests {
             )
             .unwrap(),
             2
+        );
+        tx.execute("UPDATE message SET removal_epoch=removal_epoch+1", [])
+            .unwrap();
+        assert_eq!(
+            super::super::tool_associations::carry_selected(&tx, &path, owner, source).unwrap(),
+            source
         );
         tx.commit().unwrap();
     }
