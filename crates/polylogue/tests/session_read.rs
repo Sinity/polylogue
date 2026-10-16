@@ -308,6 +308,10 @@ fn fixture_records() -> Vec<Value> {
 fn assert_morrow(document: &Value) {
     assert_eq!(document["format"], "polylogue-session");
     assert_eq!(document["version"], 1);
+    assert!(
+        !document.as_object().unwrap().contains_key("recovery"),
+        "an unrecovered standalone document omits recovery"
+    );
     assert_eq!(document["session"]["id"], reference());
     assert_eq!(document["session"]["native_id"], SID);
     let messages = document["messages"].as_array().unwrap();

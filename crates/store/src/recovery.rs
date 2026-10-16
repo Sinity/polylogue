@@ -277,6 +277,7 @@ pub(crate) fn migrate(root: &Path, cancelled: &AtomicBool) -> Result<()> {
     sync_tree(backup.path())?;
     let _preserved = backup.keep();
     File::open(&backups)?.sync_all()?;
+    File::open(root)?.sync_all()?;
     crate::preflight_inner(root, true)?;
     wal::check_cancel(cancelled)?;
     let path = root.join("archive.db");
@@ -376,6 +377,18 @@ fn blobs(reader: &ReadHandle, cancelled: &AtomicBool) -> Result<(u64, u64)> {
         }
         let hash = BlobHash::from_bytes(hash.try_into().map_err(|_| Error::Schema(path.clone()))?);
         let size = u64::try_from(size).map_err(|_| Error::Schema(path.clone()))?;
+        if size == 0 {
+            // A zero-byte range checks presence and supported encoding, but
+            // covers no frame. The existing verifier also decodes that frame.
+            reader.read_blob_range(hash, 0, 0)?;
+            let physical = hashed_blobs::Reader::new(&reader.root, vec![])
+                .verify(&hashed_blobs::Hash(*hash.bytes()))?;
+            if physical != hashed_blobs::Verified::Intact {
+                return Err(refused(format!(
+                    "empty blob physical representation is invalid: {hash}"
+                )));
+            }
+        }
         let mut actual = blake3::Hasher::new();
         let mut offset = 0;
         while offset < size {

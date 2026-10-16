@@ -618,9 +618,13 @@ fn retained_wal_probe_child() {
             .pragma_update(None, "user_version", 1)
             .unwrap();
     }
-    writer
-        .put_file_blob(b"first acknowledged WAL commit")
-        .unwrap();
+    let first: &[u8] = if std::env::var("POLYLOGUE_WAL_CHILD_MODE").as_deref() == Ok("stale-empty")
+    {
+        b""
+    } else {
+        b"first acknowledged WAL commit"
+    };
+    writer.put_file_blob(first).unwrap();
     writer
         .put_file_blob(b"second acknowledged WAL commit")
         .unwrap();
@@ -632,7 +636,7 @@ fn retained_wal_probe_child() {
             .unwrap();
     }
     match std::env::var("POLYLOGUE_WAL_CHILD_MODE").as_deref() {
-        Ok("stale-generation" | "stale-newer") => {
+        Ok("stale-generation" | "stale-newer" | "stale-empty") => {
             writer
                 .archive
                 .execute_batch("PRAGMA wal_checkpoint(RESTART)")
@@ -793,7 +797,7 @@ pub(crate) fn killed_wal_fixture(mode: &str) -> (tempfile::TempDir, PathBuf, u64
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("original");
     let ack = tmp.path().join("ack");
-    let expected = if matches!(mode, "stale-generation" | "stale-newer") {
+    let expected = if matches!(mode, "stale-generation" | "stale-newer" | "stale-empty") {
         4
     } else {
         3

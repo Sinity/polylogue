@@ -237,7 +237,9 @@ pub(crate) fn write_with_cancel(
         .expect("result qualification")
         .remove("recovery");
     member(&mut e, "result", &result)?;
-    member(&mut e, "recovery", &qualification["recovery"])?;
+    if !qualification["recovery"].is_null() {
+        member(&mut e, "recovery", &qualification["recovery"])?;
+    }
     e.syntax(b",\"session\":{")?;
     let h = stored(session.header())?;
     e.key("id")?;

@@ -328,6 +328,48 @@ fn source_change_and_corrupt_blob_never_publish_and_do_not_repair_originals() {
 }
 
 #[test]
+fn present_empty_blob_requires_its_valid_physical_file() {
+    let (tmp, source, _) = crate::tests::killed_wal_fixture("stale-empty");
+    let cancel = AtomicBool::new(false);
+    let hash = BlobHash::of(b"");
+    let hex = hash.to_string();
+    let file = source
+        .join("blobs")
+        .join(&hex[..2])
+        .join(format!("{hex}.zst"));
+    let original = fs::read(&file).unwrap();
+    assert!(
+        !original.is_empty(),
+        "an empty blob still owns an encoded frame"
+    );
+    let report = recover_copy(&source, &tmp.path().join("valid-empty"), &cancel).unwrap();
+    assert_eq!(report.checked_blobs, 4);
+    let mut outcomes = vec![];
+    for mutation in ["missing", "truncated", "damaged-frame"] {
+        fs::write(&file, &original).unwrap();
+        match mutation {
+            "missing" => fs::remove_file(&file).unwrap(),
+            "truncated" => fs::write(&file, b"").unwrap(),
+            "damaged-frame" => {
+                let mut damaged = original.clone();
+                damaged[0] ^= 1; // Preserve the seek table, invalidate the empty zstd frame.
+                fs::write(&file, damaged).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let before = inventory(&source, &cancel).unwrap();
+        let destination = tmp.path().join(mutation);
+        let refused = recover_copy(&source, &destination, &cancel).is_err();
+        outcomes.push((mutation, refused));
+        assert_eq!(inventory(&source, &cancel).unwrap(), before);
+        if refused {
+            assert!(!destination.exists());
+        }
+    }
+    assert!(outcomes.iter().all(|(_, refused)| *refused), "{outcomes:?}");
+}
+
+#[test]
 fn fifo_coordination_refuses_instead_of_blocking() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("unsafe-source");
