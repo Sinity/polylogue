@@ -84,6 +84,7 @@ def verify_case(binary,output,order,wrappers=False):
             assert len(associations) == 1 and associations[0]['kind'] == 'message_owner', associations
         assert facts['result_present'] and facts['output']=='' and facts['outcome']=='error'and facts['exit_code']==1,facts
         assert facts['invocation']=='C'and facts['turn']=='T',facts
+        assert facts['tool'] is None if wrappers else facts['tool'] == 'exec_command', facts
         assert facts['message'] is None if wrappers else facts['message']==REF+':M',facts
         assert facts['wrapper'] is None,facts
         if wrappers:

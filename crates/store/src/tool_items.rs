@@ -441,7 +441,7 @@ impl Writer {
         })?;
         if selected != 0 {
             db(&p, || {
-                tx.execute("INSERT INTO tool_call(session_pk,operation_id,tool_item_pk,tool_item_version_pk,outcome,outcome_reason,exit_code,duration_ms,action) SELECT session_pk,?2,tool_item_pk,pk,coalesce(result_outcome,'unknown'),CASE WHEN result_present=0 THEN 'no_result' ELSE NULL END,result_exit_code,result_duration_ms,'shell' FROM tool_item_version WHERE pk=?1 AND agent_class='agent' AND correspondence='established' AND call_present=1",params![selected,id])
+                tx.execute("INSERT INTO tool_call(session_pk,operation_id,tool_item_pk,tool_item_version_pk,outcome,outcome_reason,exit_code,duration_ms,action) SELECT session_pk,?2,tool_item_pk,pk,coalesce(result_outcome,'unknown'),CASE WHEN result_present=0 THEN 'no_result' ELSE NULL END,result_exit_code,result_duration_ms,CASE WHEN kind='CodeExecution' THEN 'code' ELSE 'shell' END FROM tool_item_version WHERE pk=?1 AND agent_class='agent' AND correspondence='established' AND call_present=1",params![selected,id])
             })?;
         }
         crate::contributions::tool_associations::attach_selected(&tx, &p, item)?;
