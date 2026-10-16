@@ -1252,8 +1252,9 @@ impl Store {
     /// Check a plain object's expected name and length from one opened representation.
     /// The callback runs before metadata/frame work and on at most 64 KiB decoded chunks;
     /// it can enforce cancellation/deadlines and must not publish provisional bytes before
-    /// success. Memory is bounded by the seek table, zstd window and fixed IO buffers,
-    /// independent of total content size. Delta/sealed encodings are explicitly refused.
+    /// success. Memory consists of the seek table, zstd window, one bounded decoded frame
+    /// and fixed IO buffers. Table metadata grows with frame count; no whole-content buffer
+    /// is created. Delta/sealed encodings are explicitly refused.
     pub fn verify_plain<E: From<Error>>(&self, h: &Hash, expected_len: u64,
         visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<VerificationStats, E> {
         self.open_plain(h, Some(expected_len), visit).map(|(_, stats)| stats)
@@ -1406,6 +1407,7 @@ fn syncfs(f: &File) -> io::Result<()> {
 }
 
 impl Batch<'_> {
+    /// Prepare a temporary candidate and return its name; custody/durability require commit.
     pub fn put(&mut self, bytes: impl Read, level: i32) -> Result<Hash> {
         let (tmp, h) = self.store.write_plain(bytes, level)?;
         self.pending.push((tmp, h));
