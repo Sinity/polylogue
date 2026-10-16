@@ -224,6 +224,7 @@ def bounds(binary,output):
         counter=stable['foundation']['write_counter'];before=resources(run);started=time.monotonic()
         time.sleep(3.3)
         after_status=run.cli(['status']);after=resources(run)
+        stable_wall=time.monotonic()-started
         assert after_status['foundation']['write_counter']==counter
         assert after['archive_bytes']==before['archive_bytes'],(before,after)
         assert after_status['continuation']['state']=='polling'
@@ -256,7 +257,7 @@ def bounds(binary,output):
         restart_state=wait(run,lambda v:v['continuation']['successful_snapshots']>=1)
         restart_stop=graceful_stop(run)
         return dict(waves=waves,reusable_budget_witness=budget_samples[0],partial_enumeration_witness=partial_samples[0],completed_larger_cycle=complete['continuation'],revisit_delay_seconds=revisit_delay,
-                    stable_before=before,stable_after=after,stable_wall_seconds=time.monotonic()-started,
+                    stable_before=before,stable_after=after,stable_wall_seconds=stable_wall,
                     stable_write_counter=counter,final=after_status['continuation'],stopped=stopped,
                     larger_restart=restarted['acquisition'],larger_restart_continuation=restart_state['continuation'],restart_stop=restart_stop,operator_interventions=0)
     finally:native.close_run(run,output)

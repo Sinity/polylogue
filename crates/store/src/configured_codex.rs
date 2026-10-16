@@ -1,4 +1,4 @@
-//! Bounded startup acquisition. SQLite catalog access and archive mutation stay
+//! Bounded configured-home discovery and acquisition. SQLite access and mutation stay
 //! in store. Catalog membership never gates independent rollout enumeration.
 use crate::{Error, ImportObservation, InputFormat, ReadHandle, RetainedSource, Writer};
 use rusqlite::{Connection, OpenFlags};
