@@ -8,7 +8,7 @@ This workspace prepares Polylogue’s Rust replacement. The top-level README and
 
 ## Tests
 
-Keep substantial unit tests and fixtures in separate source files, using private `#[cfg(test)]` modules for implementation access. Small nearby tests may stay inline. Use synthetic inputs and isolated temporary state. CLI and MCP acceptance tests exercise their shared semantics through public routes.
+Keep substantial unit tests and fixtures in separate source files, using private `#[cfg(test)]` modules for implementation access. Keep production visibility unchanged when moving tests. Small nearby tests may stay inline. Use synthetic inputs and isolated temporary state. CLI and MCP acceptance tests exercise their shared semantics through public routes.
 
 ## Commands and style
 
