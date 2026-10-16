@@ -160,6 +160,6 @@ fn genuine_worker_failure_still_records_a_parser_defect() {
     assert!(!actor.stopping);
     assert_eq!(
         actor.writer.parser_failure(&head.token).unwrap().as_deref(),
-        Some("synthetic corrupt source")
+        Some("parser state invariant: synthetic corrupt source")
     );
 }
