@@ -1505,6 +1505,14 @@ fn model_disconnect_and_expired_deadline_release_the_reader_without_source_owner
         &mut || false,
     );
     assert_eq!(expired["error"]["reason"], "reader_cancelled_or_deadline");
+    assert_eq!(expired["error"]["kind"], "timeout");
+    assert_eq!(
+        serde_json::from_value::<polylogue_model::types::Failure>(expired["error"].clone())
+            .unwrap()
+            .outcome()
+            .exit_code(),
+        7
+    );
     assert!(expired.get("shown").is_none());
     let fresh = polylogue::model_read::execute(
         &reader,

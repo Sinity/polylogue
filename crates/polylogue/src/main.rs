@@ -21,6 +21,21 @@ fn error(kind: ErrorKind, message: impl Into<String>) -> Failure {
 fn io_error(error: impl ToString) -> Failure {
     Failure::new(ErrorKind::Io, error.to_string())
 }
+fn model_read_io_error(error: io::Error) -> Failure {
+    let kind = match error.kind() {
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ErrorKind::Timeout,
+        _ => ErrorKind::Io,
+    };
+    let mut failure = Failure::new(kind, format!("bounded model transport: {error}"));
+    if failure.kind == ErrorKind::Timeout {
+        let suggestion =
+            "Use a narrower Message/block reference or a smaller display budget before retrying.";
+        failure.message.push_str(". ");
+        failure.message.push_str(suggestion);
+        failure.suggestion = Some(suggestion.into());
+    }
+    failure
+}
 fn schema() -> serde_json::Value {
     json!({"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Polylogue foundation configuration","type":"object","properties":{"archive":{"type":"string","description":"CLI --archive; default XDG_DATA_HOME/polylogue"}},"additionalProperties":false})
 }
@@ -283,7 +298,8 @@ fn run() -> Result<i32, Failure> {
         return reply_exit_code(&value);
     }
     if let Some(request) = &model_read {
-        let value = polylogue::model_read::request(&socket, request).map_err(io_error)?;
+        let value =
+            polylogue::model_read::request(&socket, request).map_err(model_read_io_error)?;
         serde_json::to_writer(&mut out, &value).map_err(io_error)?;
         writeln!(out).map_err(io_error)?;
         return reply_exit_code(&value);
@@ -385,6 +401,25 @@ fn reply_exit_code(value: &serde_json::Value) -> Result<i32, Failure> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn model_transport_deadlines_preserve_timeout_exit_seven() {
+        for kind in [io::ErrorKind::TimedOut, io::ErrorKind::WouldBlock] {
+            let failure = model_read_io_error(io::Error::new(kind, "synthetic deadline"));
+            assert_eq!(failure.kind, ErrorKind::Timeout);
+            assert_eq!(failure.outcome().exit_code(), 7);
+            assert!(failure.suggestion.is_some());
+            assert!(!failure.retryable);
+            assert!(failure.message.contains("narrower Message/block reference"));
+        }
+        assert_eq!(
+            model_read_io_error(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "synthetic frame"
+            ))
+            .kind,
+            ErrorKind::Io
+        );
+    }
     #[test]
     fn remote_outcomes_preserve_typed_exit_codes() {
         for kind in [

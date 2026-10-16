@@ -36,16 +36,28 @@ fn unavailable(reason: &str) -> Value {
         failure(polylogue_model::types::ErrorKind::NotYetAvailable, reason)
     }
 }
+fn timed_out(stage: &str) -> Value {
+    let mut value = failure(
+        polylogue_model::types::ErrorKind::Timeout,
+        "reader_cancelled_or_deadline",
+    );
+    value["error"]["hint"] = json!(stage);
+    value["error"]["suggestion"] = json!(
+        "Use a narrower Message/block reference or a smaller display budget before retrying."
+    );
+    value["error"]["retryable"] = json!(false);
+    value
+}
 fn stored<T>(value: Result<T, polylogue_store::Error>) -> Result<T, Value> {
     value.map_err(|e| match e {
-        polylogue_store::Error::Cancelled => unavailable("reader_cancelled_or_deadline"),
+        polylogue_store::Error::Cancelled => timed_out("retained selection or qualification"),
         polylogue_store::Error::MessagePredecessorChanged => unavailable("stale_read"),
         _ => unavailable(&e.to_string()),
     })
 }
 fn check(until: Instant, cancel: &mut dyn FnMut() -> bool) -> Result<(), Value> {
     if Instant::now() >= until || cancel() {
-        Err(unavailable("reader_cancelled_or_deadline"))
+        Err(timed_out("bounded model selection, rendering or handoff"))
     } else {
         Ok(())
     }
@@ -1003,6 +1015,7 @@ mod transport_deadline_tests {
             ),
             "{error}"
         );
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(started.elapsed() < Duration::from_millis(700));
         peer.join().unwrap();
     }
