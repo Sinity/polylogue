@@ -9,6 +9,7 @@ publish.workspace = true
 polylogue-model.workspace = true
 hashed-blobs.workspace = true
 rusqlite = { workspace = true, features = ["backup"] }
+rustix = { version = "1", features = ["fs"] }
 libsqlite3-sys = { version = "=0.38.2", features = ["bundled"] }
 libc.workspace = true
 thiserror.workspace = true

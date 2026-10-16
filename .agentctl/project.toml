@@ -133,3 +133,23 @@ result = "exit"
 timeout_seconds = 600
 scratch = "nvme"
 cache = "none"
+
+[operations.claude_body_tests]
+description = "Check the connected retained Claude tool-result body path"
+exec = ["nix", "develop", "--command", "cargo", "test", "--locked", "-p", "polylogue-store", "-p", "polylogue-sources", "-p", "polylogue-engine", "-p", "polylogue"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"
+
+[operations.claude_body_demo]
+description = "Exercise packaged configured Claude required bodies through CLI and the official MCP SDK"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-claude-required-body.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"

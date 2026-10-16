@@ -284,6 +284,31 @@ fn required_companions_leave_missing_work_explicit_and_optional_replicas_do_not_
     );
 }
 
+#[test]
+fn complete_inline_duplicate_does_not_add_required_body_version_evidence() {
+    let value = json!({"type":"user","uuid":"u","sessionId":"s","toolUseResult":{"persistedOutputPath":"c.txt"},"message":{"content":[{"type":"tool_result","tool_use_id":"c","content":"complete inline"}]}});
+    let mut memory = MemoryReadView::default();
+    memory.set_body(
+        "c.txt",
+        Some(BodyPayload {
+            blob: BlobHash::of(b"complete inline"),
+            length: 15,
+        }),
+    );
+    let output = drive_jsonl(
+        KeyedRecords::new(FileCtx::main("s"), &memory).unwrap(),
+        line(value).as_bytes(),
+        0,
+    )
+    .output
+    .unwrap();
+    let contribution = &output.delta.contributions[0].2;
+    assert!(contribution.bodies.is_empty());
+    assert!(
+        matches!(&contribution.blocks[0],BlockContent::ToolResult(result) if result.output==Some(polylogue_model::ToolOutput::Text("complete inline".into())))
+    );
+}
+
 struct Metered<'a> {
     memory: &'a MemoryReadView,
     reads: Cell<usize>,

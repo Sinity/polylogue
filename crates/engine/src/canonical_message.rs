@@ -884,6 +884,7 @@ impl Write for DigestSink<'_> {
 enum FieldSelector<'a> {
     Codex(&'a FactSelection),
     Claude(&'a polylogue_sources::claude_code::selection::LeafSelection),
+    ClaudeBody(&'a polylogue_store::claude_bodies::Companion),
     Author(&'a polylogue_sources::claude_code::selection::AuthorSelection),
 }
 impl FieldSelector<'_> {
@@ -896,15 +897,24 @@ impl FieldSelector<'_> {
             Self::Codex(s) => s.write_bound(binding, sink).map_err(Error::Descriptor),
             Self::Claude(s) => s.write_bound(cb, sink).map_err(Error::ClaudeDescriptor),
             Self::Author(s) => s.write_bound(cb, sink).map_err(Error::ClaudeDescriptor),
+            Self::ClaudeBody(body) => serde_json::to_writer(sink, &serde_json::json!({"format":"claude-code-tool-result-body","codec_version":1,"binding":{"input":body.input,"chain":body.chain},"revision":body.revision,"path":body.path,"blob":body.blob,"start":0,"end":body.length,"transform":"utf8-tool-output-v1"})).map_err(|e| Error::Source(e.to_string())),
         }
     }
     fn write_value(
         &self,
+        reader: &ReadHandle,
         resolver: impl FnMut(RecordRange) -> std::result::Result<Vec<u8>, ResolveError>,
         allowance: usize,
         sink: &mut impl Write,
     ) -> Result<()> {
         match self {
+            Self::ClaudeBody(body) => {
+                let bytes = reader.claude_body(body)?;
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| Error::Unsupported("Claude body is not UTF-8"))?;
+                serde_json::to_writer(sink, &ToolOutput::Text(text))
+                    .map_err(|e| Error::Source(e.to_string()))
+            }
             Self::Codex(s) => s
                 .write_value(resolver, allowance, sink)
                 .map_err(Error::Selection),
@@ -992,6 +1002,7 @@ fn field_turn(
         }
         let mut value = DigestSink::new(flag);
         let evaluated = selection.write_value(
+            reader,
             |range| {
                 if flag.load(Ordering::Acquire) {
                     return Err(ResolveError::Cancelled);

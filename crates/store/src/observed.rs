@@ -34,6 +34,7 @@ pub struct RetainedSource {
     pub format: InputFormat,
     pub context: Vec<String>,
     pub revision: u64,
+    pub companions: Vec<super::claude_bodies::Companion>,
 }
 impl From<ImmutableImport> for RetainedSource {
     fn from(v: ImmutableImport) -> Self {
@@ -46,6 +47,7 @@ impl From<ImmutableImport> for RetainedSource {
             format: v.format,
             context: v.context,
             revision: 1,
+            companions: vec![],
         }
     }
 }
@@ -120,6 +122,7 @@ pub(crate) fn decode(
             format,
             context,
             revision: 1,
+            companions: vec![],
         }));
     }
     if context.is_some() || format != "claude-code-jsonl" || chain != 1 {
@@ -153,6 +156,7 @@ pub(crate) fn decode(
         format: InputFormat::ClaudeCodeJsonl,
         context,
         revision: u64::try_from(revision).map_err(|_| Error::Range)?,
+        companions: super::claude_bodies::manifest(connection, file, id)?,
     }))
 }
 impl Writer {
@@ -169,7 +173,7 @@ impl Writer {
         let id: Option<String> = db(&self.root.join("archive.db"), || {
             self.archive
                 .query_row(
-                    "SELECT id FROM input WHERE id>?1 ORDER BY id LIMIT 1",
+                    "SELECT id FROM input WHERE id>?1 AND format<>'claude-code-tool-result' ORDER BY id LIMIT 1",
                     [after],
                     |r| r.get(0),
                 )

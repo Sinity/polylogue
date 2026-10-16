@@ -722,16 +722,14 @@ fn run(
             .map_err(|_| unavailable("reader_lock_poisoned"))?,
         reference,
     )?;
-    let q = stored(
-        polylogue_engine::session_qualification::qualify_with_cancel(
-            &selection.session,
-            until,
-            16 * 1024 * 1024,
-            cancel,
-        ),
-    )?;
+    let qualify = if selection.exact.is_some() {
+        polylogue_engine::session_qualification::qualify_member_with_cancel
+    } else {
+        polylogue_engine::session_qualification::qualify_with_cancel
+    };
+    let q = stored(qualify(&selection.session, until, 16 * 1024 * 1024, cancel))?;
     if q.pending_inputs > 0
-        || if branches {
+        || if branches || selection.exact.is_some() {
             !q.known_rows_readable()
         } else {
             q.unavailable_inputs > 0
@@ -946,7 +944,7 @@ fn run(
                     crate::output_json::check_identity(id, until)
                         .map_err(|_| unavailable("identity_requires_masking"))?;
                 }
-                let mut identity = json!({"session":m.id().session().as_str(),"message":format!("message:{}",m.id().as_str()),"block":format!("block:{}",block_id(m,&b.slot)?),"written_by":h.written_by,"role":h.role,"kind":b.kind,"encrypted":b.encrypted,"sources":sources,"field_origins":origins});
+                let mut identity = json!({"version_hash":stored(m.version_hash())?.to_string(),"session":m.id().session().as_str(),"message":format!("message:{}",m.id().as_str()),"block":format!("block:{}",block_id(m,&b.slot)?),"written_by":h.written_by,"role":h.role,"kind":b.kind,"encrypted":b.encrypted,"sources":sources,"field_origins":origins});
                 if matches!(view, View::TranscriptFull) {
                     check(until, cancel)?;
                     identity["message_metadata"] =

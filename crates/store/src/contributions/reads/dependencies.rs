@@ -39,6 +39,30 @@ impl SessionInputDependency {
     }
 }
 impl SessionCatalog {
+    pub fn verify_dependency_bodies(&self, dependency: &SessionInputDependency) -> Result<()> {
+        self.visible()?;
+        if !Arc::ptr_eq(&self.read, &dependency.read) {
+            return Err(Error::MessagePredecessorChanged);
+        }
+        let read = locked(&self.read)?;
+        let archive = read
+            .archive
+            .as_ref()
+            .ok_or_else(|| Error::Invariant("Session archive snapshot missing".into()))?;
+        for body in dependency
+            .source
+            .companions
+            .iter()
+            .filter(|body| !body.inline_duplicate)
+        {
+            crate::claude_bodies::read_pinned(
+                archive,
+                self.path.parent().ok_or(Error::Range)?,
+                body,
+            )?;
+        }
+        Ok(())
+    }
     /// One unique retained input, even when it has no selected/catalog Message.
     /// `None` ends only this fixed admission catalog, not Session completeness.
     pub fn next_dependency(
@@ -59,7 +83,7 @@ impl SessionCatalog {
             .ok_or_else(|| Error::Invariant("Session admission snapshot missing".into()))?;
         let path = self.path.with_file_name("archive.db");
         let id: Option<(u64, Option<String>)> = db(&path, || {
-            archive.query_row("SELECT length(CAST(id AS BLOB)),CASE WHEN length(CAST(id AS BLOB))<=?2 THEN id END FROM input WHERE id>?1 ORDER BY id LIMIT 1", params![key,i64::try_from(allowance).unwrap_or(i64::MAX)],|r| Ok((parser_state::unsigned(r,0)?,r.get(1)?))).optional()
+            archive.query_row("SELECT length(CAST(id AS BLOB)),CASE WHEN length(CAST(id AS BLOB))<=?2 THEN id END FROM input WHERE id>?1 AND format<>'claude-code-tool-result' ORDER BY id LIMIT 1", params![key,i64::try_from(allowance).unwrap_or(i64::MAX)],|r| Ok((parser_state::unsigned(r,0)?,r.get(1)?))).optional()
         })?;
         let Some((required, id)) = id else {
             return Ok(None);

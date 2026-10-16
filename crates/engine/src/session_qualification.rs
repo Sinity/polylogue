@@ -151,13 +151,40 @@ pub fn qualify_with_cancel(
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Qualification, Error> {
+    qualify_session(session, until, allowance, cancelled, false)
+}
+/// Exact member reads preserve unavailable Session context while independently
+/// checking the selected Message's retained body witnesses at handoff.
+pub fn qualify_member_with_cancel(
+    session: &SessionView,
+    until: Instant,
+    allowance: usize,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<Qualification, Error> {
+    qualify_session(session, until, allowance, cancelled, true)
+}
+fn qualify_session(
+    session: &SessionView,
+    until: Instant,
+    allowance: usize,
+    cancelled: &mut dyn FnMut() -> bool,
+    member: bool,
+) -> Result<Qualification, Error> {
     let header = session.header()?;
     let plan = polylogue_model::query::SessionQuery {
         origin: Some(header.origin.as_str().into()),
         id: Some(header.id.as_str().into()),
         ..Default::default()
     };
-    qualify_operation(&session.catalog(), &plan, until, allowance, cancelled, true)
+    qualify_operation(
+        &session.catalog(),
+        &plan,
+        until,
+        allowance,
+        cancelled,
+        true,
+        member,
+    )
 }
 /// Qualify every possible retained contributor, including those that published
 /// no Session or matching Message. EOF alone never becomes a query proof.
@@ -168,7 +195,7 @@ pub fn qualify_catalog(
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Qualification, Error> {
-    qualify_operation(session, plan, until, allowance, cancelled, false)
+    qualify_operation(session, plan, until, allowance, cancelled, false, false)
 }
 fn qualify_operation(
     session: &SessionCatalog,
@@ -177,6 +204,7 @@ fn qualify_operation(
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
     document: bool,
+    member: bool,
 ) -> Result<Qualification, Error> {
     let mut result = Qualification {
         up_to_date: true,
@@ -343,6 +371,17 @@ fn qualify_operation(
                 add(&mut result.unresolved_inputs, 1)?;
                 continue;
             }
+        }
+        if let Err(error) = session.verify_dependency_bodies(&dependency) {
+            let unavailable_body = matches!(&error, Error::Blob(_) | Error::UnknownBlob)
+                || matches!(&error, Error::Invariant(detail) if detail == "required Claude retained body metadata unavailable");
+            if !member || !unavailable_body {
+                return Err(error);
+            }
+            add(&mut result.unavailable_inputs, 1)?;
+            result.unsupported.insert(format!(
+                "Required body unavailable in Session context: {error}"
+            ));
         }
         result.basis.push(source_rows::basis(&input));
         result.own_topology_unknown |= !caught_up;

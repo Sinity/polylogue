@@ -153,6 +153,22 @@ impl ReadHandle {
     }
 }
 impl MessageView {
+    pub fn version_hash(&self) -> Result<polylogue_model::BlobHash> {
+        self.visible()?;
+        let read = locked(&self.read)?;
+        let bytes: Vec<u8> = db(&self.path, || {
+            read.connection.query_row(
+                "SELECT version_hash FROM message_body WHERE pk=?1 AND ready=1",
+                [self.body],
+                |r| r.get(0),
+            )
+        })?;
+        Ok(polylogue_model::BlobHash::from_bytes(
+            bytes
+                .try_into()
+                .map_err(|_| Error::Invariant("ready Message version unavailable".into()))?,
+        ))
+    }
     pub fn recovery(&self) -> Result<Option<polylogue_model::RecoveryQualification>> {
         Ok(locked(&self.read)?.recovery.clone())
     }
@@ -219,8 +235,9 @@ impl MessageView {
     /// Complete normalized-body and origin certificate assembled from sealed
     /// value hashes. Immutable row identity alone is insufficient: compatible
     /// source election can replace a body without changing its normalized data.
-    /// No provider payload is decoded or rehashed here. Exact source selectors
-    /// remain included, so equal text with changed attribution cannot resume.
+    /// Required companion descriptors also verify their pinned retained bytes.
+    /// Exact source selectors remain included, so equal text with changed
+    /// attribution cannot resume.
     pub fn read_certificate(&self) -> Result<[u8; 32]> {
         self.read_certificate_with_cancel(&mut || false)
     }
@@ -324,6 +341,21 @@ impl MessageView {
                     hash.update(&head.hash.ok_or(Error::ValueNotReady)?);
                 }
             }
+        }
+        if let Some(origin) = &field.origin {
+            let range = values::range(&read.connection, &self.path, origin, 0, 65536)?;
+            if !range.eof {
+                return Err(metadata_admission("Message field origin", 65537));
+            }
+            let archive = read
+                .archive
+                .as_ref()
+                .ok_or_else(|| Error::Invariant("Message archive snapshot missing".into()))?;
+            crate::claude_bodies::verify_origin(
+                archive,
+                self.path.parent().ok_or(Error::Range)?,
+                &range.bytes,
+            )?;
         }
         hash.update(&[u8::from(field.supplied)]);
         hash.update(&[u8::from(field.source_time.is_some())]);

@@ -42,6 +42,7 @@ pub struct PendingCursor(Vec<u8>);
 
 pub struct View<'a> {
     snapshot: &'a Snapshot,
+    bodies: Option<&'a [polylogue_store::claude_bodies::Companion]>,
     budget: Budget,
     usage: Cell<Usage>,
     error: RefCell<Option<StoreError>>,
@@ -55,10 +56,15 @@ impl<'a> View<'a> {
         }
         Ok(Self {
             snapshot,
+            bodies: None,
             budget,
             usage: Cell::new(Usage::default()),
             error: RefCell::new(None),
         })
+    }
+    pub fn with_bodies(mut self, bodies: &'a [polylogue_store::claude_bodies::Companion]) -> Self {
+        self.bodies = Some(bodies);
+        self
     }
     /// Recover the original structured failure after the provider's existing
     /// String callback boundary. The owner must inspect this before publishing.
@@ -245,6 +251,15 @@ impl ReadView for View<'_> {
         })
     }
     fn body(&self, path: &str) -> std::result::Result<Option<BodyPayload>, String> {
+        if let Some(bodies) = self.bodies {
+            return Ok(bodies
+                .iter()
+                .find(|body| body.path == path)
+                .map(|body| BodyPayload {
+                    blob: body.blob,
+                    length: body.length,
+                }));
+        }
         self.callback(|| self.get(BODY, path))
     }
 }

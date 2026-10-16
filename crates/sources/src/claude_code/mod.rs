@@ -13,7 +13,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 6;
+pub const PARSER_VERSION: u32 = 7;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -1241,25 +1241,7 @@ impl<R: ReadView> KeyedRecords<R> {
                 continue;
             }
             let text = item.get("content").and_then(text_of).unwrap_or_default();
-            let path = item
-                .get("persistedOutputPath")
-                .and_then(Value::as_str)
-                .or_else(|| {
-                    if result_count == 1 {
-                        record
-                            .get("toolUseResult")
-                            .and_then(|r| r.get("persistedOutputPath"))
-                            .and_then(Value::as_str)
-                    } else {
-                        None
-                    }
-                })
-                .or_else(|| {
-                    text.lines().find_map(|line| {
-                        line.strip_prefix("Full output saved to: ")
-                            .or_else(|| line.strip_prefix("Output has been saved to "))
-                    })
-                });
+            let path = body_path(record, item, result_count, &text);
             if let Some(path) = path {
                 let payload = match self.view.body(path).map_err(|e| e.to_string())? {
                     Some(body) => Some(body),
@@ -1268,6 +1250,12 @@ impl<R: ReadView> KeyedRecords<R> {
                         None => None,
                     },
                 };
+                if payload.as_ref().is_some_and(|body| {
+                    body.length == text.len() as u64
+                        && body.blob == polylogue_model::BlobHash::of(text.as_bytes())
+                }) {
+                    continue;
+                }
                 let content_item =
                     u32::try_from(index).map_err(|_| "Claude content-item overflow")?;
                 if let Some(BlockContent::ToolResult(result)) = blocks.get_mut(index) {
@@ -1288,4 +1276,69 @@ impl<R: ReadView> KeyedRecords<R> {
         }
         Ok((blocks, bodies))
     }
+}
+
+fn body_path<'a>(
+    record: &'a Value,
+    item: &'a Value,
+    result_count: usize,
+    text: &'a str,
+) -> Option<&'a str> {
+    item.get("persistedOutputPath")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            if result_count == 1 {
+                record
+                    .get("toolUseResult")
+                    .and_then(|r| r.get("persistedOutputPath"))
+                    .and_then(Value::as_str)
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            text.lines().find_map(|line| {
+                line.strip_prefix("Full output saved to: ")
+                    .or_else(|| line.strip_prefix("Output has been saved to "))
+            })
+        })
+}
+
+/// Exact content-list item reference, shared by acquisition and origin proof.
+pub fn required_body_path(record: &Value, index: usize) -> Option<String> {
+    let items = record.get("message")?.get("content")?.as_array()?;
+    let item = items.get(index)?;
+    if item.get("type").and_then(Value::as_str) != Some("tool_result") {
+        return None;
+    }
+    let count = items
+        .iter()
+        .filter(|i| i.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .count();
+    let text = item.get("content").and_then(text_of).unwrap_or_default();
+    body_path(record, item, count, &text).map(str::to_owned)
+}
+
+/// Source-owned inline witnesses used only to recognize an exact redundant copy.
+pub fn body_references(record: &Value) -> Vec<(String, polylogue_model::BlobHash, u64)> {
+    let Some(items) = record
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+    else {
+        return vec![];
+    };
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let path = required_body_path(record, index)?;
+            let text = item.get("content").and_then(text_of).unwrap_or_default();
+            Some((
+                path,
+                polylogue_model::BlobHash::of(text.as_bytes()),
+                text.len() as u64,
+            ))
+        })
+        .collect()
 }
