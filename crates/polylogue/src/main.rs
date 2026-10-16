@@ -1,5 +1,6 @@
 mod import_cli;
 mod mcp;
+mod observed_cli;
 mod source_wait;
 use polylogue_model::types::{ErrorKind, Failure, ResultOutcome};
 use serde_json::json;
@@ -38,7 +39,7 @@ fn model_read_io_error(error: io::Error) -> Failure {
     failure
 }
 fn schema() -> serde_json::Value {
-    json!({"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Polylogue foundation configuration","type":"object","properties":{"archive":{"type":"string","description":"CLI --archive; default XDG_DATA_HOME/polylogue"}},"additionalProperties":false})
+    json!({"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Polylogue foundation configuration","type":"object","properties":{"archive":{"type":"string","description":"CLI --archive; default XDG_DATA_HOME/polylogue"}},"additionalProperties":false,"$defs":{"observedStartup":{"type":"object","required":["claude_main"],"additionalProperties":false,"properties":{"claude_main":{"type":"object","required":["path","machine","host"],"additionalProperties":false,"properties":{"path":{"type":"string","description":"Absolute regular Claude main JSONL path"},"machine":{"type":"string","minLength":1},"host":{"type":"string","minLength":1}}}}}}})
 }
 
 fn run() -> Result<i32, Failure> {
@@ -61,7 +62,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|mcp|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|REF read --budget TOKENS [--continuation TOKEN]|SID export --format json --to DIR|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Exact native Session JSON directory export shares the pinned read. Bounded model reads support retained Text/Thinking selections, within-block continuation and measured structured budgets; included tool kinds and extra rendering options refuse. Read-only MCP stdio exposes supported status/search/bounded-read tools. General exports and broader MCP capabilities remain unavailable.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon [--config FILE [--until-idle] [--json]]|input cat ID|mcp|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|REF read --budget TOKENS [--continuation TOKEN]|SID export --format json --to DIR|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Explicit daemon --config observes one Claude main location at startup; input cat presents verified retained UTF-8 with credential masking. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Exact native Session JSON directory export shares the pinned read. Bounded model reads support retained Text/Thinking selections, within-block continuation and measured structured budgets; included tool kinds and extra rendering options refuse. Read-only MCP stdio exposes supported status/search/bounded-read tools. General exports and broader MCP capabilities remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -121,6 +122,10 @@ fn run() -> Result<i32, Failure> {
     }
     let model_read = polylogue::model_read::cli(&args)
         .map_err(|v| error(ErrorKind::InvalidQuery, v.to_string()))?;
+    if args.first().is_some_and(|s| s == "daemon") && args.len() > 1 {
+        return observed_cli::run(&args, &archive, &mut out);
+    }
+    let input_cat = args.len() == 3 && args[0] == "input" && args[1] == "cat";
     let terminal_read = args.first().is_some_and(|s| s.starts_with("message:"))
         && (args.len() == 2 && args[1] == "read"
             || args.len() == 4 && args[1..] == ["read", "--format", "terminal"]);
@@ -166,7 +171,9 @@ fn run() -> Result<i32, Failure> {
     } else {
         None
     };
-    let command = if let Some(request) = &model_read {
+    let command = if input_cat {
+        Some(json!({"command":"input-cat","input":args[2]}))
+    } else if let Some(request) = &model_read {
         Some(request.clone())
     } else if session_export || session_json || session_terminal {
         Some(json!({"command":"session-read","reference":args[0],"format":"json"}))
@@ -220,7 +227,7 @@ fn run() -> Result<i32, Failure> {
         let mut running = polylogue::Running::start_cancellable(&archive, &runtime, &stop)
             .map_err(|e| error(ErrorKind::Io, format!("archive {}: {e}", archive.display())))?;
         eprintln!(
-            "listening: {} (immutable source imports; canonical finalization incomplete)",
+            "listening: {} (retained source replay; no source watcher)",
             running.socket().display()
         );
         while !stop.load(Ordering::Acquire) {
@@ -243,6 +250,10 @@ fn run() -> Result<i32, Failure> {
         )
     })?;
     let socket = polylogue::socket_path(&resolved, &runtime);
+    if input_cat {
+        polylogue::input_cat::request(&socket, &args[2], &mut out).map_err(io_error)?;
+        return Ok(0);
+    }
     if let Some(destination) = export_to {
         // Preserve default SIGINT termination while IPC is blocked. Process
         // exit closes the read socket; unfinished staging may remain private.

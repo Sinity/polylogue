@@ -10,7 +10,7 @@ use std::{
 fn invalid(message: impl Into<String>) -> Failure {
     Failure::new(ErrorKind::InvalidQuery, message)
 }
-fn uuid_v7(millis: u64, random: [u8; 16]) -> Result<String, Failure> {
+pub(crate) fn uuid_v7(millis: u64, random: [u8; 16]) -> Result<String, Failure> {
     if millis >= (1u64 << 48) {
         return Err(invalid("clock is outside UUIDv7 range"));
     }

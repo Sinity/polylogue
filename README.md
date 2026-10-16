@@ -34,6 +34,17 @@ The declared AgentCTL operations run the Nix build/check and development-shell c
 
 `crates/credential-output` owns the shared pure streaming credential presentation engine; terminal and Session rendering use it without changing their response limits. `crates/model` is pure. Only `crates/store` owns SQLite connections; public handles expose typed operations. `crates/hashed-blobs` is the reviewed shared file layer plus an explicit read-only capability, documented in [source provenance](docs/shared-crate-source.json). The owner publishes the reviewed file layer as `hashed-blobs-v0.1.0`; consumer pins require their own verification. [Store limits](crates/store/README.md) distinguish these primitives from complete input acquisition and recovery.
 
+## Observed Claude source subset
+
+One explicit regular Claude main location can now be retained at startup with
+`daemon --config FILE [--until-idle] [--json]`. Verified growth preserves its
+input/chain and parses retained pieces through the existing source owner. The
+[observed-source guide](docs/rewrite/observed-source.md) documents configuration,
+source-row qualification, separator and unfinished-tail behavior, retained
+`input cat ID` presentation, and the independent client demonstration. Default
+input presentation is credential-masked; source offsets and hashes remain raw
+coordinates. Directory discovery, watchers, rewrites and full M1 remain open.
+
 ## Delivery boundary
 
 [Replacement disposition](docs/REPLACEMENT.md) records predecessor removal and preserved legal/history material. [Contract snapshot](docs/rewrite/README.md) links current semantic owners; canonical DDL provenance lives beside `crates/store/schema`.

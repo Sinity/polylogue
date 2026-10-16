@@ -1,6 +1,6 @@
 # Source interpretation
 
-This crate contains one fallible framing route with Codex rollout and Claude Code interpretation cores. The application currently registers only a limited Codex import/finalization path. Source-core tests alone do not qualify the application.
+This crate contains one fallible framing route with Codex rollout and Claude Code interpretation cores. The application registers explicit immutable Codex/Claude imports and one observed Claude main startup location through the same framing/state cores. Source-core tests alone do not qualify the application.
 
 `frame::JsonlDriver` owns record boundaries and accounting. Its byte, record and retained-record allowances are logical scheduling/admission controls. Callback failure fuses the attempted driver; a failed attempt cannot finalize or resume. `PendingJsonlStep::commit_with` returns a partial-record continuation only after the owning writer commits the provider state, output and complete-record checkpoint together. These interfaces do not establish a hard RSS bound.
 

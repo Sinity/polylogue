@@ -176,24 +176,17 @@ impl BodyDigest {
             required: length,
         })?;
         let archive_path = reader.root.join("archive.db");
-        // Imported identity is revalidated by the retained-input API. Its ID is
-        // raw-content/format/context derived, never an observation or sequence.
-        let (format, length, digest, original, context): (
-            String,
-            i64,
-            Vec<u8>,
-            Vec<u8>,
-            Option<String>,
-        ) = db(&archive_path, || {
-            reader.archive.query_row("SELECT i.format,r.length,r.blake3,i.original_hash,CASE WHEN length(CAST(i.context_json AS BLOB))<=?2 THEN i.context_json END FROM input i JOIN revision r ON r.input=i.id AND r.number=1 AND r.chain=1 AND r.produced='imported' WHERE i.id=?1",params![input,allowance as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))
-        })?;
-        let context = context.ok_or(Error::ParserAdmission {
-            resource: "compatibility interpretation context",
-            required: allowance as u64 + 1,
-        })?;
-        let (_, _, format, parts, _) = crate::retained::decode_import_identity(
-            input, format, length, digest, original, context,
-        )?;
+        let retained = crate::observed::decode(&reader.archive, &archive_path, &input)?
+            .ok_or_else(|| Error::Invariant("compatibility source unavailable".into()))?;
+        let format = retained.format;
+        let parts = retained.context;
+        let required = parts.iter().map(|part| part.len() + 8).sum::<usize>();
+        if required > allowance {
+            return Err(Error::ParserAdmission {
+                resource: "compatibility interpretation context",
+                required: required as u64,
+            });
+        }
         let name = match format {
             crate::InputFormat::CodexRollout => "codex-rollout",
             crate::InputFormat::ClaudeCodeJsonl => "claude-code-jsonl",

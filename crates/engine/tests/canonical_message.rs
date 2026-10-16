@@ -44,7 +44,7 @@ struct World {
     root: PathBuf,
     writer: Writer,
     head: Head,
-    source_hash: polylogue_model::BlobHash,
+    source_binding: polylogue_model::BlobHash,
 }
 impl World {
     fn new(bytes: &[u8]) -> Self {
@@ -133,7 +133,7 @@ impl World {
             root,
             writer,
             head,
-            source_hash: blob,
+            source_binding: blob,
         }
     }
     fn request(&self) -> m::Request {
@@ -141,7 +141,7 @@ impl World {
             message: 0,
             revision: 1,
             logical_key: [3; 32],
-            source_hash: self.source_hash,
+            source_binding: self.source_binding,
         }
     }
     fn begin(&mut self) -> m::Handle {
@@ -182,7 +182,7 @@ impl World {
             root,
             writer,
             head,
-            source_hash,
+            source_binding,
         } = self;
         drop(writer);
         // Concurrent subprocess tests can briefly inherit CLOEXEC lock file
@@ -206,7 +206,7 @@ impl World {
             root,
             writer,
             head,
-            source_hash,
+            source_binding,
         }
     }
 }
@@ -330,7 +330,7 @@ fn real_text_actions_restart_values_and_source_publication_keep_eof_pending() {
             assert_eq!(origin["format"], "codex-field-origin");
             assert_eq!(
                 origin["binding"]["input"],
-                polylogue_model::InputId::imported(&world.source_hash, "codex-rollout", &[])
+                polylogue_model::InputId::imported(&world.source_binding, "codex-rollout", &[])
                     .as_str()
             );
             assert_eq!(origin["selection"]["transform"], "JsonValueV1");
@@ -637,7 +637,7 @@ fn verified_origin_producer_restarts_and_selected_descriptor_outlives_parser_cel
         .select_compatible_source_message_for_test(&source, 65536)
         .unwrap();
     let expected_input =
-        polylogue_model::InputId::imported(&world.source_hash, "codex-rollout", &[]);
+        polylogue_model::InputId::imported(&world.source_binding, "codex-rollout", &[]);
     let read_descriptor = |world: &World| {
         let reader = world.writer.read_handle().unwrap();
         let view = reader.selected_message(source.message()).unwrap().unwrap();
@@ -706,7 +706,7 @@ fn verified_origin_producer_restarts_and_selected_descriptor_outlives_parser_cel
     assert_eq!(read_descriptor(&world), before);
 }
 #[test]
-fn wrong_source_hash_cannot_publish_a_finished_build_after_restart() {
+fn wrong_source_binding_cannot_publish_a_finished_build_after_restart() {
     let mut world = World::new(&text_input("source binding"));
     let handle = world.begin();
     loop {
@@ -718,7 +718,7 @@ fn wrong_source_hash_cannot_publish_a_finished_build_after_restart() {
     }
     world = world.reopen();
     let mut wrong = world.request();
-    wrong.source_hash = polylogue_model::BlobHash::of(b"different retained input");
+    wrong.source_binding = polylogue_model::BlobHash::of(b"different retained input");
     let snapshot = world.writer.parser_snapshot(&world.head.token).unwrap();
     let action = m::start(&snapshot, &wrong, None, budget(), 65536).unwrap();
     drop(snapshot);

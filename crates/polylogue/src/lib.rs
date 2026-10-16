@@ -2,6 +2,7 @@
 use polylogue_engine::owner::{Handle, Owner};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, Writer};
+pub mod input_cat;
 pub mod model_read;
 mod output_json;
 mod protocol;
@@ -70,6 +71,32 @@ impl Running {
         cancelled: &AtomicBool,
     ) -> Result<Self, String> {
         let writer = Writer::open_cancellable(archive, cancelled).map_err(|e| e.to_string())?;
+        Self::start_writer(writer, archive, runtime, fail_after_bind)
+    }
+    pub fn start_observed(
+        archive: &Path,
+        runtime: &Path,
+        source: &Path,
+        machine: &str,
+        host: &str,
+        id: &str,
+        seen_at: i64,
+        cancelled: &AtomicBool,
+    ) -> Result<(Self, polylogue_store::RetainedSource), polylogue_store::Error> {
+        let mut writer = Writer::open_cancellable(archive, cancelled)?;
+        let retained = writer.acquire_claude_main(source, machine, host, id, seen_at, cancelled)?;
+        Ok((
+            Self::start_writer(writer, archive, runtime, false)
+                .map_err(polylogue_store::Error::Invariant)?,
+            retained,
+        ))
+    }
+    fn start_writer(
+        writer: Writer,
+        archive: &Path,
+        runtime: &Path,
+        fail_after_bind: bool,
+    ) -> Result<Self, String> {
         let reader = Arc::new(Mutex::new(writer.read_handle().map_err(|e| e.to_string())?));
         let archive = fs::canonicalize(archive).map_err(|e| e.to_string())?;
         let socket = socket_path(&archive, runtime);
@@ -243,12 +270,15 @@ fn serve(
                     } else {
                         vec![]
                     };
-                    json!({"outcome":if status.recovery.is_some(){"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1"],"product_path":"partial"})
+                    json!({"outcome":if status.recovery.is_some(){"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})
                 }
             }
+        }
+        Ok(request) if request["command"] == "input-cat" => {
+            return input_cat::serve(&mut stream, &request, reader).map_err(|e| e.to_string());
         }
         Ok(request) if request["command"] == "query" => {
             return session_query::serve(&mut stream, &request, reader).map_err(|e| e.to_string());

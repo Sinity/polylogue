@@ -93,3 +93,13 @@ result = "exit"
 timeout_seconds = 300
 scratch = "nvme"
 cache = "none"
+
+[operations.observed_source_demo]
+description = "Exercise a packaged single-location Claude append and retained-byte client path"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-observed-source.py"]
+arguments = "required"
+pool = "bulk"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"

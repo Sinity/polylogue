@@ -11,7 +11,7 @@ use polylogue_model::{
     settlement::{SourceRowBasis, SourceRowScope, SourceRowState, SourceRows},
 };
 use polylogue_store::{
-    Error, ImmutableImport, InputFormat,
+    Error, InputFormat, RetainedSource,
     parser_state::{Budget, Snapshot, Token},
 };
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,12 @@ impl Receipt {
     pub fn validate(&self, token: &Token, basis: &SourceRowBasis) -> Result<()> {
         if &self.predecessor != token
             || &self.rows.basis != basis
-            || self.rows.scope != SourceRowScope::ImportedSourceRows
+            || self.rows.scope
+                != if basis.original_hash.is_some() {
+                    SourceRowScope::ImportedSourceRows
+                } else {
+                    SourceRowScope::ObservedSourceRows
+                }
             || matches!(self.rows.state, SourceRowState::Pending { .. })
         {
             return Err(Error::ParserPredecessorChanged.into());
@@ -80,27 +85,31 @@ impl Receipt {
         Ok(())
     }
 }
-pub fn basis(input: &ImmutableImport) -> SourceRowBasis {
+pub fn basis(input: &RetainedSource) -> SourceRowBasis {
     SourceRowBasis {
         input: input.input.id.clone(),
-        original_hash: input.hash,
+        original_hash: input.original_hash(),
         chain: input.input.chain,
-        revision: 1,
+        revision: input.revision,
         length: input.input.length,
         parser_version: owner::parser_version(input.format),
         interpretation: BlobHash::from_bytes(owner::parser_basis(input)),
     }
 }
-pub fn pending(input: &ImmutableImport, obligation: &str) -> SourceRows {
+pub fn pending(input: &RetainedSource, obligation: &str) -> SourceRows {
     SourceRows {
-        scope: SourceRowScope::ImportedSourceRows,
+        scope: if input.observed() {
+            SourceRowScope::ObservedSourceRows
+        } else {
+            SourceRowScope::ImportedSourceRows
+        },
         basis: basis(input),
         state: SourceRowState::Pending {
             obligations: vec![obligation.into()],
         },
     }
 }
-pub fn read(snapshot: &Snapshot, input: &ImmutableImport) -> Result<Option<Receipt>> {
+pub fn read(snapshot: &Snapshot, input: &RetainedSource) -> Result<Option<Receipt>> {
     let value = snapshot.cell(
         polylogue_store::parser_state::SOURCE_ROWS_NAMESPACE,
         b"",
@@ -119,7 +128,7 @@ pub fn read(snapshot: &Snapshot, input: &ImmutableImport) -> Result<Option<Recei
 pub(crate) fn decode(
     value: &[u8],
     head: &polylogue_store::parser_state::Head,
-    input: &ImmutableImport,
+    input: &RetainedSource,
 ) -> Result<Receipt> {
     let receipt: Receipt = serde_json::from_slice(value)
         .map_err(|_| Error::Invariant("invalid source row settlement receipt".into()))?;
@@ -158,7 +167,7 @@ impl Audit {
     pub fn advance(
         mut self,
         snapshot: &Snapshot,
-        input: &ImmutableImport,
+        input: &RetainedSource,
         reads: Budget,
     ) -> Result<Turn> {
         let head = &snapshot.head;
@@ -279,9 +288,9 @@ impl Audit {
                     snapshot,
                     &m::ClaudeRequest {
                         pending,
-                        source_hash: input.hash,
+                        source_binding: input.binding,
                         context: input.context.clone(),
-                        revision: 1,
+                        revision: input.revision,
                         logical_key: key,
                     },
                     Some(source),
@@ -315,8 +324,8 @@ impl Audit {
                         snapshot,
                         &m::Request {
                             message: ordinal,
-                            source_hash: input.hash,
-                            revision: 1,
+                            source_binding: input.binding,
+                            revision: input.revision,
                             logical_key: key,
                         },
                         Some(source),
@@ -378,7 +387,11 @@ impl Audit {
                 head.counts.undecodable,
             ],
             rows: SourceRows {
-                scope: SourceRowScope::ImportedSourceRows,
+                scope: if input.observed() {
+                    SourceRowScope::ObservedSourceRows
+                } else {
+                    SourceRowScope::ImportedSourceRows
+                },
                 basis: basis(input),
                 state,
             },
@@ -401,7 +414,7 @@ mod tests {
         };
         let basis = SourceRowBasis {
             input: "synthetic-input".into(),
-            original_hash: BlobHash::of(b"raw"),
+            original_hash: Some(BlobHash::of(b"raw")),
             chain: 1,
             revision: 1,
             length: 10,
@@ -458,7 +471,7 @@ mod tests {
         wrong.interpretation = BlobHash::of(b"new recipe");
         assert!(receipt.validate_published(&head, &wrong).is_err());
         let mut wrong = receipt.rows.basis.clone();
-        wrong.original_hash = BlobHash::of(b"different raw");
+        wrong.original_hash = Some(BlobHash::of(b"different raw"));
         assert!(receipt.validate_published(&head, &wrong).is_err());
     }
     #[test]

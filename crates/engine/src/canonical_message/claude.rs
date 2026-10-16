@@ -16,7 +16,7 @@ use polylogue_sources::claude_code::{
 #[derive(Clone, Debug)]
 pub struct ClaudeRequest {
     pub pending: PendingMessage,
-    pub source_hash: BlobHash,
+    pub source_binding: BlobHash,
     pub context: Vec<String>,
     /// Archive revision, independently of pending.revision (provider evidence).
     pub revision: u64,
@@ -31,14 +31,14 @@ pub(super) struct Head {
 pub(super) struct Proof {
     token: Token,
     head: Head,
-    source_hash: BlobHash,
+    source_binding: BlobHash,
     digest: BlobHash,
 }
 impl Proof {
     pub(super) fn validate(&self, h: &Handle) -> Result<BlobHash> {
         if self.token != *h.build.predecessor()
             || h.head != EvidenceBasis::Claude(self.head.clone())
-            || self.source_hash != h.request.source_hash
+            || self.source_binding != h.request.source_binding
         {
             return Err(Error::Invariant("Claude evidence proof basis changed"));
         }
@@ -94,9 +94,11 @@ pub fn start(
     budget: Budget,
     allowance: usize,
 ) -> Result<Action> {
-    if snapshot.head.status != "finalizing" || !snapshot.head.finalization_pending {
+    if !matches!(snapshot.head.status.as_str(), "finalizing" | "waiting_tail")
+        || !snapshot.head.finalization_pending
+    {
         return Err(Error::Unsupported(
-            "Claude materializer requires a finalizing source head",
+            "Claude materializer requires a committed complete-record source head",
         ));
     }
     let view = View::new(snapshot, budget)?;
@@ -116,12 +118,12 @@ pub fn start(
             .map_err(|_| Error::Invariant("Claude ordinal overflow"))?,
         revision: request.revision,
         logical_key: request.logical_key,
-        source_hash: request.source_hash,
+        source_binding: request.source_binding,
     };
     let basis = EvidenceBasis::Claude(head);
     let typed = EvidenceGuard {
         head: basis.clone(),
-        source_hash: request.source_hash,
+        source_binding: request.source_binding,
     };
     let guard = bounded_json(&typed, allowance)?;
     if let Some(previous) = &current {
@@ -353,17 +355,15 @@ pub(super) fn compute(
     let view = View::new(snapshot, b.read)?;
     let r = response(&view, head)?;
     let input = snapshot.message_source_input_id(&state.handle.build, b.metadata)?;
-    let context: Vec<_> = head.context.iter().map(String::as_str).collect();
-    if input
-        != InputId::imported(
-            &state.handle.request.source_hash,
-            "claude-code-jsonl",
-            &context,
-        )
-        .as_str()
+    let retained = reader
+        .source(&input)?
+        .ok_or(Error::Unsupported("retained Claude input unavailable"))?;
+    if retained.binding != state.handle.request.source_binding
+        || retained.input.chain != snapshot.head.token.chain
+        || retained.context != head.context
     {
         return Err(Error::Invariant(
-            "raw source hash/context does not identify this immutable Claude input",
+            "retained source binding/context differs from Claude input",
         ));
     }
     if let Some(prepared) = &state.preparation.projection {
@@ -919,7 +919,7 @@ pub(super) fn compute(
             }
         }
         Cursor::Finish => {
-            let proof = proof(snapshot, head, state.handle.request.source_hash, b, flag)?;
+            let proof = proof(snapshot, head, state.handle.request.source_binding, b, flag)?;
             let finish = match r.message.in_progress {
                 Some(true) => FinishState::InProgress,
                 Some(false) => FinishState::Finished,
@@ -944,7 +944,7 @@ pub(super) fn compute(
 fn proof(
     snapshot: &Snapshot,
     head: &Head,
-    source_hash: BlobHash,
+    source_binding: BlobHash,
     b: Budgets,
     flag: &AtomicBool,
 ) -> Result<Proof> {
@@ -1021,7 +1021,7 @@ fn proof(
     Ok(Proof {
         token: snapshot.head.token.clone(),
         head: head.clone(),
-        source_hash,
+        source_binding,
         digest: framer.finish().map_err(Error::Evidence)?,
     })
 }

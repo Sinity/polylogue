@@ -1,4 +1,4 @@
-//! Private SQLite ownership and typed foundation storage. No product ingestion is registered.
+//! Private SQLite ownership and typed retained-source storage. Source discovery is not registered.
 //!
 //! A read handle cannot acquire mutation capability:
 //! ```compile_fail
@@ -26,7 +26,9 @@ mod capture;
 pub use capture::{BlobCapture, PreparedBlob};
 pub mod contributions;
 mod native;
+pub mod observed;
 mod retained;
+pub use observed::{RetainedSource, SourceIdentity};
 pub use retained::{ImmutableImport, ImportObservation, InputFormat, RetainedInput};
 pub mod parser_state;
 pub mod recovery;
@@ -48,6 +50,8 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("observed source refused: {0}")]
+    ObservedSourceRefused(String),
     #[error("controlled copy recovery refused: {0}")]
     RecoveryRefused(String),
     #[error("recovery failed; owned staging retained at {path}: {error}")]
@@ -679,6 +683,9 @@ impl ReadHandle {
             write_counter,
             recovery: recovery::qualification(&snapshot, &file)?,
         })
+    }
+    pub fn fork(&self) -> Result<Self> {
+        Self::owned(self.root.clone(), Arc::clone(&self._lock))
     }
     pub fn read_blob_range(&self, hash: BlobHash, offset: u64, length: u64) -> Result<Vec<u8>> {
         let path = self.root.join("archive.db");

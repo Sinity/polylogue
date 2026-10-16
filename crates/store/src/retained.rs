@@ -179,7 +179,7 @@ impl Writer {
         };
         let (id, hash, format, context, length) =
             decode_import_identity(id, format, length, digest, original, context_json)?;
-        let input = self.register_import_reference(id, length)?;
+        let input = self.register_retained_reference(id, length)?;
         Ok(Some(ImmutableImport {
             input,
             hash,
@@ -230,7 +230,11 @@ impl Writer {
         Ok(Some(imported.input))
     }
 
-    fn register_import_reference(&mut self, id: String, length: u64) -> Result<RetainedInput> {
+    pub(crate) fn register_retained_reference(
+        &mut self,
+        id: String,
+        length: u64,
+    ) -> Result<RetainedInput> {
         let file = self.root.join("index.db");
         let tx = db(&file, || self._index.transaction())?;
         db(&file, || {
@@ -425,7 +429,7 @@ impl Writer {
         }
         db(&file, || tx.commit())?;
         // An interrupted disposable index reconstructs this reference from archive.
-        self.register_import_reference(id, length_u64)
+        self.register_retained_reference(id, length_u64)
     }
 }
 

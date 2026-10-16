@@ -10,8 +10,8 @@ rewriting it. Callers receive typed handles, never raw SQLite connections.
 revisions, parsing or M1 support.
 
 All three schemas are exact SQL-fence extractions from the owning snapshot;
-a drift test compares their text. Archive version 1 adds the immutable import
-identity tuple; embeddings version remains zero and index version is 18. No
+a drift test compares their text. Archive version 2 retains the immutable import
+identity tuple; embeddings version remains zero and index version is 19. No
 pre-release durable migration is supplied. Existing schemas and versions are checked before database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 it. Retained state without its coordination lock requires controlled recovery;
@@ -219,3 +219,10 @@ partial-excision qualification remains open. No new schema or migration is added
 The query-local Message conjunction index has separate selected Text-block phrase membership. It does not let a phrase cross a block boundary. Canonical distinct-text relevance is explicitly unavailable; query-local Message documents never acquire authority as canonical BM25 statistics.
 
 `recovery::recover_copy` is the one-shot process owner entry. It holds the stopped source lock without rewriting it, verifies independent files and one admitted previous-generation WAL tail, then uses only the pinned SQLite/checksum VFS on staging. Format 2 and the typed archive meta qualification commit before native reopen and atomic no-replace publication. Every pinned read view carries that qualification; parsing, imports and index recreation cannot clear it. Healthy format-1 startup preserves database sibling sets before the concrete migration. Receipts record exact source-manifest bytes and internal checks, not external latest-head certainty. Present plain file blobs are supported; other blob codecs and general corruption recovery explicitly refuse.
+
+`observed::RetainedSource` shares closed immutable/location identity modes and
+contiguous retained-range reading across the source owner and field verifier.
+Startup acquisition supports one Claude main regular location, full predecessor
+prefix comparison and immutable CAS pieces. It refuses changed prefixes, inode
+replacement, short reads and gaps without synthesizing normalized empty output.
+See [the native scope](../../docs/rewrite/observed-source.md).
