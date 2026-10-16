@@ -9,7 +9,7 @@
 //!
 //! - **plain**: independent zstd frames (each with its content checksum) followed by a seek table
 //!   in the zstd seekable format, so stock `zstd -d` decompresses the file and a range read
-//!   checks the frame map and decompresses selected frames (large extents also decode during map validation). Named by the BLAKE3 of the content.
+//!   validates the complete frame map; a scoped Reader verifies once and reuses its checked file/index. Named by the BLAKE3 of the content.
 //! - **delta**: a skippable header frame naming the base, then one zstd frame made as `zstd --patch-from`
 //!   makes one (the base as prefix, a window over base and content, long-distance matching). The base is always plain, so a read decompresses at most two
 //!   blobs. Not seekable.
@@ -457,8 +457,8 @@ impl SealedFooter {
 }
 
 /// Positional reads of one blob file: readers fetch the seek table, header or footer and the frames
-/// they need. Plain range-map validation also scans compressed extents; sequential verification
-/// uses a bounded positional stream instead of reopening ranges.
+/// they need. Initial plain proof checks the whole representation with a bounded positional
+/// stream; scoped subsequent ranges reuse that file/index and a bounded decoded frame.
 struct View {
     file: File,
     len: u64,
@@ -1207,10 +1207,10 @@ impl Store {
         Ok(out)
     }
 
-    /// A byte range, decompressing only the frames it covers; frames are checked by their zstd
-    /// checksum (plain) or AEAD tag (sealed). Plain addressing also validates all compressed
-    /// extents, using bounded streaming for large extents. This does not check whole-object
-    /// expected identity. Deltas are not seekable.
+    /// A stateless byte range. Plain input checks every frame/extent with bounded streaming;
+    /// sealed input checks selected AEAD tags. This does not check whole-object expected
+    /// identity. Use Reader for one verified representation and bounded frame reuse across
+    /// repeated plain ranges. Deltas are not seekable.
     pub fn read_range(&self, h: &Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
         self.range(h, offset, len, None)
     }

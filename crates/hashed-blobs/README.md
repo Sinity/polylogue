@@ -8,7 +8,7 @@ It holds no policy. Inline-versus-file size, when to use a delta, snapshots, pag
 
 | Layout | Name | Reads |
 |---|---|---|
-| plain | BLAKE3 of the content | zstd frames (4 MiB, each with its content checksum) plus a seek table in the zstd seekable format; stock `zstd -d` decompresses the file; range reads decompress only the frames they cover |
+| plain | BLAKE3 of the content | zstd frames (4 MiB, each with its content checksum) plus a seek table in the zstd seekable format; stock `zstd -d` decompresses the file; stateless ranges validate all frames; scoped Reader first verifies the whole name, then reuses its index and bounded selected-frame buffer |
 | delta | BLAKE3 of the content | a skippable header naming the base, then one zstd frame made as `zstd --patch-from` makes one: the base as prefix, a window over base and content, long-distance matching; base always plain (at most two blobs per read); not seekable |
 | sealed | BLAKE3 keyed hash under HKDF(data key, "hashed-blobs name v1") (#24) | frames under ChaCha20-Poly1305 with a fresh per-encoding frame key HKDF-SHA256(data key, salt = random 32-byte encoding salt, info = "hashed-blobs frame v2" ‖ name) and nonce = frame index; AAD binds the v2 encoding context and current frame entry (#23); a footer carries the frame table and a BLAKE3 of the ciphertext, so `verify` works without the key (#19b) |
 
