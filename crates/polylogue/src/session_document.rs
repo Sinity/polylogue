@@ -18,6 +18,7 @@ const LEAF: usize = 65536;
 const PIECE: usize = 4096;
 #[derive(Debug)]
 pub(crate) struct Coverage {
+    pub up_to_date: bool,
     pub messages: u64,
     pub catalog: SessionCoverage,
     pub qualification: Value,
@@ -296,6 +297,7 @@ pub(crate) fn write_with_cancel(
     e.syntax(b"}")?;
     e.finish()?;
     Ok(Coverage {
+        up_to_date: source_qualification.up_to_date,
         messages,
         catalog,
         qualification,

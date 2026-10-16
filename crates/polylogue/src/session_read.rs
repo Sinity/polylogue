@@ -84,7 +84,8 @@ pub(crate) fn serve(
             )
         })?;
         let complete = coverage.qualification["outcome"] == "ok";
-        let mut end = json!({"type":"end","outcome":coverage.qualification["outcome"],"canonical_complete":complete,"messages":coverage.messages,"missing":coverage.qualification["notes"],"notes":coverage.qualification["notes"],"unknown":coverage.qualification["unknown"]});
+        let mut end = json!({"type":"end","outcome":coverage.qualification["outcome"],"canonical_complete":complete,"messages":coverage.messages,"missing":coverage.qualification["notes"],"notes":coverage.qualification["notes"],"unknown":coverage.qualification["unknown"],
+            "view":format!("{}:{}",session.position().generation,session.position().counter),"up_to_date":coverage.up_to_date});
         if let Some(recovery) = coverage.recovery {
             end["recovery"] = json!(recovery);
         }
@@ -224,6 +225,7 @@ fn decode(
     deadline: Instant,
 ) -> io::Result<Value> {
     let mut started = false;
+    let mut identity = None;
     loop {
         let remaining = deadline
             .checked_duration_since(Instant::now())
@@ -239,7 +241,7 @@ fn decode(
                 "Session stream ended without bounded completion frame",
             ));
         }
-        let item: Value = serde_json::from_str(&line)?;
+        let mut item: Value = serde_json::from_str(&line)?;
         match item["type"].as_str() {
             Some("session")
                 if !started
@@ -247,7 +249,8 @@ fn decode(
                     && item["format"] == "polylogue-session"
                     && item["version"] == 1 =>
             {
-                started = true
+                started = true;
+                identity = Some(item.clone());
             }
             Some("text") if started => out.write_all(
                 item["data"]
@@ -269,6 +272,13 @@ fn decode(
             {
                 if started && item["outcome"] != "error" {
                     out.write_all(b"\n")?;
+                    if let Some(header) = &identity {
+                        for key in ["origin", "native_id"] {
+                            if let Some(value) = header.get(key) {
+                                item[key] = value.clone();
+                            }
+                        }
+                    }
                 }
                 return Ok(item);
             }

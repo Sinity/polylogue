@@ -45,7 +45,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Export and MCP remain unavailable.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|SID export --format json --to DIR|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Exact native Session JSON directory export shares the pinned read; general exports and MCP remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -104,7 +104,43 @@ fn run() -> Result<i32, Failure> {
     let session_json = args.len() == 4
         && args[1..] == ["read", "--format", "json"]
         && !args[0].starts_with("message:");
-    let command = if session_json || session_terminal {
+    let session_export = args.get(1).is_some_and(|arg| arg == "export");
+    let export_to = if session_export {
+        let mut destination = None;
+        let mut format = false;
+        let mut i = 2;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--format" if !format && args.get(i + 1).is_some_and(|s| s == "json") => {
+                    format = true
+                }
+                "--to"
+                    if destination.is_none()
+                        && args
+                            .get(i + 1)
+                            .is_some_and(|s| !s.is_empty() && !s.starts_with("--")) =>
+                {
+                    destination = Some(PathBuf::from(&args[i + 1]))
+                }
+                _ => {
+                    return Err(error(
+                        ErrorKind::InvalidQuery,
+                        "export supports one exact native Session with --format json --to DIR only",
+                    ));
+                }
+            }
+            i += 2;
+        }
+        Some(destination.filter(|_| format).ok_or_else(|| {
+            error(
+                ErrorKind::InvalidQuery,
+                "export requires --format json --to DIR",
+            )
+        })?)
+    } else {
+        None
+    };
+    let command = if session_export || session_json || session_terminal {
         Some(json!({"command":"session-read","reference":args[0],"format":"json"}))
     } else if terminal_read {
         Some(json!({"command":"read","reference":args[0],"format":"terminal"}))
@@ -179,6 +215,24 @@ fn run() -> Result<i32, Failure> {
         )
     })?;
     let socket = polylogue::socket_path(&resolved, &runtime);
+    if let Some(destination) = export_to {
+        // Preserve default SIGINT termination while IPC is blocked. Process
+        // exit closes the read socket; unfinished staging may remain private.
+        let stop = AtomicBool::new(false);
+        let reply = polylogue::session_export::request(&socket, &args[0], &destination, &stop)
+            .map_err(io_error)?;
+        if reply["outcome"] == "error" {
+            return Err(
+                serde_json::from_value::<Failure>(reply["error"].clone()).map_err(io_error)?
+            );
+        }
+        if reply["outcome"] == "degraded" {
+            eprintln!(
+                "Export coverage is incomplete; detached documents and manifest retain the result diagnostics."
+            );
+        }
+        return reply_exit_code(&reply);
+    }
     if let Some(query) = query {
         let value = polylogue::session_query::request(&socket, &query).map_err(|e| {
             error(
