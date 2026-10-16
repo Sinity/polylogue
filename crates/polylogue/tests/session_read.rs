@@ -1310,6 +1310,14 @@ fn model_call(world: &World, call: &Value, budget: Option<u64>) -> Value {
     if let Some(v) = call["view"].as_str() {
         args.extend(["--view".into(), v.into()]);
     }
+    for option in ["tools", "thinking", "harness"] {
+        if let Some(value) = call[option].as_str() {
+            args.extend([format!("--{option}"), value.into()]);
+        }
+    }
+    if call["branches"] == true {
+        args.push("--branches".into());
+    }
     if let Some(c) = call["continuation"].as_str() {
         args.extend(["--continuation".into(), c.into()]);
     }
@@ -1832,4 +1840,486 @@ fn model_late_native_metadata_growth_retries_same_cursor_without_rewinding() {
     assert_eq!(retry["shown"][0]["display_start"], start);
     assert_eq!(retry["session"]["display_title"], title);
     assert!((serde_json::to_vec(&retry).unwrap().len() as u64).div_ceil(4) <= sufficient);
+}
+
+fn transcript_call(reference: &str) -> Value {
+    json!({"ref":reference,"view":"transcript","tools":"full","thinking":"full","harness":"full"})
+}
+#[test]
+fn model_full_transcript_keeps_all_morrow_facts_and_effective_selection() {
+    let world = World::new();
+    let input = world.input("transcript-morrow.jsonl", MORROW);
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000820");
+    world.read(
+        &reference(),
+        receipt["retained"]["id"].as_str().unwrap(),
+        12,
+    );
+    let whole = world.cli(&[&reference(), "read", "--format", "json"]);
+    assert_eq!(whole.status.code(), Some(0));
+    let document: Value = serde_json::from_slice(&whole.stdout).unwrap();
+    let mut call = transcript_call(&reference());
+    let mut shown = vec![];
+    let mut pages = 0;
+    loop {
+        let page = model_call(
+            &world,
+            &call,
+            Some(if pages % 2 == 0 { 4000 } else { 3600 }),
+        );
+        assert_ne!(page["outcome"], "error", "{page}");
+        assert!(
+            serde_json::to_vec(&page).unwrap().len().div_ceil(4)
+                <= if pages % 2 == 0 { 4000 } else { 3600 }
+        );
+        assert_eq!(page["omitted"]["blocks"], 0);
+        shown.extend(page["shown"].as_array().unwrap().iter().cloned());
+        pages += 1;
+        if page["next"].is_null() {
+            break;
+        }
+        call = page["next"].clone();
+        assert_eq!(call["view"], "transcript");
+        for option in ["tools", "thinking", "harness"] {
+            assert_eq!(call[option], "full");
+        }
+        assert!(pages < 100);
+    }
+    // The independent packaged oracle owns qualification; this connected test
+    // additionally catches divergence from the unchanged document field encoder.
+    let mut at = 0;
+    for message in document["messages"].as_array().unwrap() {
+        for block in message["blocks"].as_array().unwrap() {
+            let actual = &shown[at];
+            at += 1;
+            assert_eq!(
+                actual["message"],
+                format!("message:{}", message["id"].as_str().unwrap())
+            );
+            assert_eq!(
+                actual["block"],
+                format!("block:{}", block["id"].as_str().unwrap())
+            );
+            assert_eq!(actual["kind"], block["kind"]);
+            for name in ["role", "written_by"] {
+                assert_eq!(actual[name], message[name]);
+            }
+            for name in ["at", "model", "stop_reason", "usage", "attrs"] {
+                assert_eq!(actual["message_metadata"][name], message[name]);
+            }
+            for name in [
+                "signature",
+                "call_id",
+                "tool",
+                "input",
+                "outcome",
+                "outcome_reason",
+                "exit_code",
+                "duration_ms",
+                "data",
+            ] {
+                assert_eq!(actual["block_fields"][name], block[name], "{name}");
+            }
+            assert_eq!(actual.get("text"), block.get("text"));
+        }
+    }
+    assert_eq!(at, shown.len());
+    let refusal = model_call(
+        &world,
+        &json!({"ref":reference(),"view":"transcript"}),
+        Some(4000),
+    );
+    assert_eq!(
+        refusal["error"]["reason"],
+        "transcript_requires_full_tools_thinking_harness"
+    );
+    let mut wrong = call.clone();
+    wrong["view"] = json!("dialogue");
+    assert_eq!(
+        model_call(&world, &wrong, Some(4000))["error"]["reason"],
+        "unsupported_selection_option"
+    );
+}
+
+#[test]
+fn model_full_transcript_preserves_tool_body_masking_independent_values_and_admission() {
+    let world = World::new();
+    let input = world.input("transcript-mixed.jsonl", &mixed_dialogue_fixture());
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000821");
+    let until = Instant::now() + WAIT;
+    loop {
+        let p = world.progress(receipt["retained"]["id"].as_str().unwrap());
+        if p["source_rows"]["state"] != "pending" {
+            break;
+        }
+        assert!(Instant::now() < until, "{p}");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let mut call = transcript_call(&format!("message:{}:{}", reference(), "mixed-model"));
+    let mut shown = vec![];
+    loop {
+        let page = model_call(&world, &call, Some(4000));
+        assert_ne!(page["outcome"], "error", "{page}");
+        assert!(!page.to_string().contains("MUST STAY HIDDEN"));
+        assert!(!page.to_string().contains("STILL HIDDEN"));
+        shown.extend(page["shown"].as_array().unwrap().iter().cloned());
+        if page["next"].is_null() {
+            break;
+        }
+        call = page["next"].clone();
+    }
+    assert_eq!(shown.len(), 7);
+    assert!(shown[0]["text"].as_str().unwrap().contains("masked"));
+    assert_eq!(shown[1]["text"], "");
+    assert!(shown[2].get("text").is_none());
+    assert_eq!(shown[3]["text"], " visible α");
+    assert_eq!(shown[6]["text"], format!("{} open🙂", "A".repeat(36)));
+    assert!(
+        !shown[5]["block_fields"]["input"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("BEGIN PRIVATE")
+    );
+    let page = model_call(
+        &world,
+        &transcript_call(&mixed_block("mixed-result", 0)),
+        Some(4000),
+    );
+    assert!(
+        page["shown"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("masked"),
+        "{page}"
+    );
+    let page = model_call(
+        &world,
+        &transcript_call(&mixed_block("mixed-result", 1)),
+        Some(4000),
+    );
+    assert_eq!(page["shown"][0]["text"], " visible result λ");
+    let page = model_call(
+        &world,
+        &transcript_call(&mixed_block("mixed-large", 0)),
+        Some(4000),
+    );
+    assert_eq!(
+        page["error"]["reason"],
+        "tool_output_unavailable_or_exceeds_admission"
+    );
+    assert!(page.get("shown").is_none());
+    let tiny = model_call(
+        &world,
+        &transcript_call(&mixed_block("mixed-model", 2)),
+        Some(128),
+    );
+    assert_eq!(tiny["error"]["reason"], "insufficient_budget");
+    assert!(tiny.get("shown").is_none());
+    let sufficient = tiny["error"]["sufficient_budget"].as_u64().unwrap();
+    let page = model_call(
+        &world,
+        &transcript_call(&mixed_block("mixed-model", 2)),
+        Some(sufficient),
+    );
+    assert_ne!(page["outcome"], "error", "{page}");
+    assert!(serde_json::to_vec(&page).unwrap().len().div_ceil(4) as u64 <= sufficient);
+}
+
+#[test]
+fn model_full_tool_output_resumes_unicode_middle_and_masks_structured_channels() {
+    let world = World::new();
+    let credential = format!("ghp_{}", "Z".repeat(36));
+    let body = format!(
+        "start🙂 {} middle中 {} end🙂",
+        "neutral🙂 ".repeat(1800),
+        "neutral中 ".repeat(1800)
+    );
+    let row = json!({"type":"user","uuid":"full-result","sessionId":SID,"parentUuid":null,"isSidechain":false,
+        "timestamp":"2026-10-01T10:00:00.000Z","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"full-call","content":body,"is_error":true}]},
+        "toolUseResult":{"stdout":format!("independent {credential}"),"stderr":"-----BEGIN PRIVATE KEY----- hidden"}});
+    let empty = json!({"type":"user","uuid":"empty-result","sessionId":SID,"parentUuid":"full-result","isSidechain":false,
+        "timestamp":"2026-10-01T10:01:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"empty-call","content":"","is_error":false}]}});
+    let absent = json!({"type":"user","uuid":"absent-result","sessionId":SID,"parentUuid":"empty-result","isSidechain":false,
+        "timestamp":"2026-10-01T10:02:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"absent-call","is_error":false}]}});
+    let bytes = [row, empty, absent]
+        .into_iter()
+        .flat_map(|r| (r.to_string() + "\n").into_bytes())
+        .collect::<Vec<_>>();
+    let input = world.input("full-result.jsonl", &bytes);
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000822");
+    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    let mut call = transcript_call(&mixed_block("full-result", 0));
+    let mut reconstructed = String::new();
+    let mut pages = 0;
+    loop {
+        let budget = if pages % 2 == 0 { 1800 } else { 2300 };
+        let page = model_call(&world, &call, Some(budget));
+        assert_ne!(page["outcome"], "error", "{page}");
+        assert!(!page.to_string().contains(&credential));
+        assert!(!page.to_string().contains("BEGIN PRIVATE"));
+        assert!(serde_json::to_vec(&page).unwrap().len().div_ceil(4) as u64 <= budget);
+        let shown = &page["shown"][0];
+        assert_eq!(shown["block"], mixed_block("full-result", 0));
+        assert_eq!(shown["display_start"], reconstructed.chars().count());
+        assert_eq!(shown["block_fields"]["call_id"], "full-call");
+        assert_eq!(shown["block_fields"]["outcome"], "error");
+        assert!(shown["sources"].as_array().is_some_and(|s| !s.is_empty()));
+        reconstructed.push_str(shown["text"].as_str().unwrap());
+        pages += 1;
+        if page["next"].is_null() {
+            break;
+        }
+        call = page["next"].clone();
+        assert!(pages < 100);
+    }
+    assert!(pages > 5);
+    assert_eq!(reconstructed, body);
+    let empty = model_call(
+        &world,
+        &transcript_call(&mixed_block("empty-result", 0)),
+        Some(4000),
+    );
+    assert_eq!(empty["shown"][0]["text"], "");
+    let absent = model_call(
+        &world,
+        &transcript_call(&mixed_block("absent-result", 0)),
+        Some(4000),
+    );
+    assert!(absent["shown"][0].get("text").is_none(), "{absent}");
+}
+
+fn known_catalog_call(reference: &str) -> Value {
+    let mut call = transcript_call(reference);
+    call["branches"] = json!(true);
+    call
+}
+#[test]
+fn model_branches_preserves_malformed_morrow_facts_without_claiming_active_membership() {
+    let world = World::new();
+    let mut bytes = MORROW.to_vec();
+    bytes.extend_from_slice(b"{not valid json}\n");
+    let input = world.input("known-malformed.jsonl", &bytes);
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000830");
+    let document = world.read(
+        &reference(),
+        receipt["retained"]["id"].as_str().unwrap(),
+        12,
+    );
+    assert_eq!(document["result"]["outcome"], "degraded");
+    let refused = model_call(&world, &transcript_call(&reference()), Some(4000));
+    assert_eq!(
+        refused["error"]["reason"],
+        "current_selected_basis_unavailable"
+    );
+    assert!(refused.get("shown").is_none());
+    let mut call = known_catalog_call(&reference());
+    let mut shown = vec![];
+    loop {
+        let page = model_call(&world, &call, Some(4000));
+        assert_eq!(page["outcome"], "degraded", "{page}");
+        assert_eq!(page["unknown"]["record_errors"], 1);
+        assert!(
+            page["unknown"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|n| n.as_u64().is_some())
+        );
+        assert!(page["notes"].as_array().unwrap().iter().any(|n| {
+            n.as_str()
+                .is_some_and(|n| n.contains("Active-path membership remains unavailable"))
+        }));
+        assert_eq!(page["settlement"]["state"], "unavailable");
+        assert!(!page["notes"].as_array().unwrap().is_empty());
+        assert!(
+            page["read_as"]
+                .as_str()
+                .unwrap()
+                .contains("Known retained Session-catalog")
+        );
+        assert!(serde_json::to_vec(&page).unwrap().len().div_ceil(4) <= 4000);
+        shown.extend(page["shown"].as_array().unwrap().iter().cloned());
+        if page["next"].is_null() {
+            break;
+        }
+        call = page["next"].clone();
+        assert_eq!(call["branches"], true);
+        assert!(shown.len() < 100);
+    }
+    let mut index = 0;
+    for message in document["messages"].as_array().unwrap() {
+        for block in message["blocks"].as_array().unwrap() {
+            let actual = &shown[index];
+            index += 1;
+            assert_eq!(
+                actual["block"],
+                format!("block:{}", block["id"].as_str().unwrap())
+            );
+            assert_eq!(actual.get("text"), block.get("text"));
+            for key in ["tool", "input", "call_id", "outcome", "data", "signature"] {
+                assert_eq!(actual["block_fields"][key], block[key]);
+            }
+        }
+    }
+    assert_eq!(index, shown.len());
+}
+
+#[test]
+fn model_branches_includes_known_uncertain_paths_in_catalog_order_without_inventing_topology() {
+    let world = World::new();
+    let mut rows = model_fixture("branch body", false)
+        .split(|b| *b == b'\n')
+        .filter(|r| !r.is_empty())
+        .map(|r| serde_json::from_slice::<Value>(r).unwrap())
+        .collect::<Vec<_>>();
+    rows.last_mut().unwrap()["parentUuid"] = json!("bounded-first");
+    let bytes = rows
+        .into_iter()
+        .flat_map(|r| (r.to_string() + "\n").into_bytes())
+        .collect::<Vec<_>>();
+    let input = world.input("known-branches.jsonl", &bytes);
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000831");
+    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    let refused = model_call(&world, &transcript_call(&reference()), Some(4000));
+    assert_eq!(
+        refused["error"]["reason"],
+        "active_path_membership_unavailable"
+    );
+    let mut call = known_catalog_call(&reference());
+    let mut ids = vec![];
+    loop {
+        let page = model_call(&world, &call, Some(4000));
+        assert_eq!(page["outcome"], "degraded", "{page}");
+        assert!(
+            page["unknown"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|n| n.as_u64().is_some())
+        );
+        assert!(page["notes"].as_array().unwrap().iter().any(|n| {
+            n.as_str()
+                .is_some_and(|n| n.contains("Active-path membership remains unavailable"))
+        }));
+        for row in page["shown"].as_array().unwrap() {
+            ids.push(row["block"].clone());
+            assert!(row.get("on_active_path").is_none());
+        }
+        if page["next"].is_null() {
+            break;
+        }
+        call = page["next"].clone();
+        assert!(ids.len() < 10);
+    }
+    assert_eq!(
+        ids,
+        vec![
+            json!(model_ref("bounded-first")),
+            json!(model_ref("bounded-huge")),
+            json!(model_ref("bounded-repeat"))
+        ]
+    );
+}
+
+#[test]
+fn model_branches_binds_selection_and_does_not_authorize_pending_edits_or_old_incarnations() {
+    let mut world = World::new();
+    let huge = "Neutral🙂 ".repeat(3000);
+    let input = world.input("known-current.jsonl", &model_fixture(&huge, false));
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000832");
+    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    let first = model_call(&world, &known_catalog_call(&reference()), Some(1800));
+    assert_ne!(first["outcome"], "error", "{first}");
+    let next = first["next"].clone();
+    assert_eq!(next["branches"], true);
+    let mut switched = next.clone();
+    switched.as_object_mut().unwrap().remove("branches");
+    assert_eq!(
+        model_call(&world, &switched, None)["error"]["reason"],
+        "stale_read"
+    );
+    let edit = world.input(
+        "known-edit.jsonl",
+        &model_fixture(&(huge + " changed selected body"), false),
+    );
+    let receipt = world.import(&edit, "01900000-0000-7000-8000-000000000833");
+    let until = Instant::now() + WAIT;
+    loop {
+        let p = world.raw_progress(receipt["retained"]["id"].as_str().unwrap());
+        if !p["failure"].is_null() {
+            break;
+        }
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(5));
+    }
+    let page = model_call(&world, &next, Some(1800));
+    assert_eq!(
+        page["error"]["reason"],
+        "current_selected_basis_unavailable"
+    );
+    assert!(page.get("shown").is_none());
+    world.restart();
+    let page = model_call(&world, &next, Some(1800));
+    assert_eq!(page["error"]["reason"], "invalid_continuation");
+    assert!(page.get("shown").is_none());
+    let fresh = model_call(&world, &known_catalog_call(&reference()), Some(1800));
+    assert_eq!(fresh["outcome"], "error");
+    assert!(fresh.get("shown").is_none());
+}
+
+#[test]
+fn model_branches_does_not_treat_record_error_counts_as_selected_row_authority() {
+    let world = World::new();
+    let mut bytes = model_fixture("known body", false);
+    bytes.extend_from_slice(b"{invalid json}\n");
+    bytes.extend_from_slice(
+        (json!({"type":"unrecognized-future-record","sessionId":SID}).to_string() + "\n")
+            .as_bytes(),
+    );
+    let input = world.input("known-plus-unrecognized.jsonl", &bytes);
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000834");
+    let document = world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    assert_eq!(document["result"]["unknown"]["record_errors"], 1);
+    assert_eq!(document["result"]["unknown"]["unavailable_inputs"], 1);
+    let page = model_call(&world, &known_catalog_call(&reference()), Some(4000));
+    assert_eq!(
+        page["error"]["reason"],
+        "current_selected_basis_unavailable"
+    );
+    assert!(page.get("shown").is_none());
+}
+
+#[test]
+fn model_full_transcript_refuses_zero_block_message_before_claiming_completed_fidelity() {
+    let world = World::new();
+    let rows = model_fixture("placeholder", false)
+        .split(|b| *b == b'\n')
+        .filter(|r| !r.is_empty())
+        .map(|r| {
+            let mut value = serde_json::from_slice::<Value>(r).unwrap();
+            if value["uuid"] == "bounded-huge" {
+                value["message"]["content"] = json!([]);
+            }
+            value
+        })
+        .collect::<Vec<_>>();
+    let bytes = rows
+        .into_iter()
+        .flat_map(|r| (r.to_string() + "\n").into_bytes())
+        .collect::<Vec<_>>();
+    let input = world.input("zero-block.jsonl", &bytes);
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000835");
+    let document = world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    assert_eq!(document["messages"][1]["blocks"], json!([]));
+    for reference in [reference(), format!("message:{}:bounded-huge", reference())] {
+        let page = model_call(&world, &known_catalog_call(&reference), Some(4000));
+        assert_eq!(page["error"]["kind"], "not_yet_available");
+        assert_eq!(
+            page["error"]["reason"], "zero_block_message_model_read_unavailable",
+            "{page}"
+        );
+        assert!(page.get("shown").is_none());
+        assert!(page.get("next").is_none());
+    }
 }

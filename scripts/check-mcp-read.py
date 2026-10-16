@@ -20,6 +20,18 @@ META = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
         "io.modelcontextprotocol/clientInfo": {"name": "native-read-oracle", "version": "1"}}
 
 
+def validate_read_discovery(tool):
+    schema = tool['inputSchema']
+    assert schema['required'] == ['ref']
+    properties = schema['properties']
+    assert set(properties) == {'ref', 'budget_tokens', 'continuation', 'view', 'tools', 'thinking', 'harness', 'branches'}
+    assert properties['branches']['type'] == 'boolean'
+    assert set(properties['view']['enum']) == {'dialogue', 'transcript'}
+    for option in ('tools', 'thinking', 'harness'):
+        assert properties[option]['enum'] == ['full']
+    assert 'view:transcript' in tool['description'] and '65536' in tool['description']
+
+
 class Client:
     def __init__(self, run, legacy=False):
         self.run, self.counter, self.legacy = run, 0, legacy
@@ -45,7 +57,7 @@ class Client:
             assert tool["inputSchema"]["additionalProperties"] is False
             assert tool["annotations"]["readOnlyHint"] is (tool["name"] != "note")
             assert tool["annotations"]["idempotentHint"] is (tool["name"] != "note")
-        assert set(listing["tools"][2]["inputSchema"]["properties"]) == {"ref", "budget_tokens", "continuation", "view"}
+        validate_read_discovery(listing["tools"][2])
         note = listing["tools"][3]
         assert note["inputSchema"]["required"] == ["value"]
         assert set(note["inputSchema"]["properties"]["kind"]["enum"]) == {"note", "correction", "withdrawal"}
@@ -130,7 +142,7 @@ class Run(bounded.Run):
             args["budget_tokens"] = budget
         response = self.client.tool("read", args)
         page = response["structuredContent"]
-        bounded.validate_page_citations(page, self.sources)
+        bounded.validate_page_citations(page, self.sources, text_only=args.get('view') != 'transcript')
         budget = args.get("budget_tokens", 4000)
         assert response["content"] and response["content"][0]["text"].startswith(bounded.WARNING)
         total = bounded.estimated({"structuredContent": page, "content": response["content"]})
@@ -138,11 +150,74 @@ class Run(bounded.Run):
         if page.get("next"):
             actual = page["next"]
             assert actual["tool"] == "read"
-            assert set(actual["arguments"]) == {"ref", "continuation", "budget_tokens"}
+            effective = {key: args[key] for key in ('view', 'tools', 'thinking', 'harness', 'branches') if key in args}
+            assert set(actual["arguments"]) == {"ref", "continuation", "budget_tokens"} | effective.keys()
+            assert actual["arguments"]["ref"] == args["ref"]
+            assert all(actual["arguments"][key] == value for key, value in effective.items())
             fixture_call = {key: value for key, value in actual["arguments"].items() if key != "budget_tokens"}
             self.next_calls[bounded.compact(fixture_call)] = actual
             page = dict(page, next=fixture_call)
         return page
+
+
+def full_selection_control(run):
+    """Same MCP boundary, fitter and citation checker as the existing controls."""
+    sid = '7f3a2c10-0005-4000-8000-000000000005'
+    reference = 'claude-code:' + sid
+    begin, end = '-----BEGIN PRIVATE KEY-----', '-----END PRIVATE KEY-----'
+    secret = 'ghp_' + 'Z' * 36
+    body = 'BEGIN🙂 ' + 'Repeated neutral中 ' * 900 + secret + ' END🙂'
+    expected_body = body.replace(secret, '[credential: GitHub token, masked]')
+    model = bounded.row('full-model', '', sid=sid)
+    model.update(type='assistant')
+    model.pop('promptSource')
+    model['message'] = {'role': 'assistant', 'id': 'synthetic-full-response', 'model': 'synthetic-full-model', 'content': [
+        {'type': 'thinking', 'thinking': begin + ' hidden key', 'signature': 'synthetic-signature'},
+        {'type': 'tool_use', 'id': 'full-call', 'name': 'Bash', 'input': {'independent_end': end}},
+        {'type': 'text', 'text': 'STILL HIDDEN' + end + ' visible🙂'}]}
+    result = bounded.row('full-result', '', parent='full-model', sid=sid, ordinal=1)
+    result.pop('promptSource')
+    result['message'] = {'role': 'user', 'content': [
+        {'type': 'tool_result', 'tool_use_id': 'full-call', 'content': body, 'is_error': False}]}
+    run.import_rows('full-selection', [model, result], sid=sid)
+    call = {'ref': reference, 'view': 'transcript', 'tools': 'full', 'thinking': 'full', 'harness': 'full', 'branches': True}
+    blocks, order, pages = {}, [], 0
+    while True:
+        page = run.read(call, 1800 if pages % 2 == 0 else 2300)
+        assert page['outcome'] != 'error', page
+        assert 'STILL HIDDEN' not in bounded.compact(page) and secret not in bounded.compact(page)
+        assert page['omitted']['blocks'] == 0
+        for shown in page['shown']:
+            bid = shown['block']
+            if bid not in blocks:
+                order.append(bid)
+                blocks[bid] = ''
+            assert shown['display_start'] == len(blocks[bid])
+            if 'text' in shown:
+                blocks[bid] += shown['text']
+            assert shown['display_end'] == len(blocks[bid])
+            if shown['kind'] == 'tool_call':
+                assert 'text' not in shown
+                assert shown['block_fields']['tool'] == 'Bash'
+                assert shown['block_fields']['input'] == {'independent_end': end}
+            elif shown['kind'] == 'tool_result':
+                assert shown['block_fields']['call_id'] == 'full-call'
+                assert shown['block_fields']['outcome'] == 'ok'
+            assert shown['message_metadata']['at'] in ('2026-10-01T08:00:00.000Z', '2026-10-01T08:01:00.000Z')
+        pages += 1
+        if page['next'] is None:
+            break
+        call = page['next']
+        assert all(call[key] == value for key, value in {'view': 'transcript', 'tools': 'full', 'thinking': 'full', 'harness': 'full', 'branches': True}.items())
+        assert pages < 100
+    expected_order = ['block:' + reference + ':full-model:' + str(i) for i in range(3)] + ['block:' + reference + ':full-result:0']
+    assert order == expected_order
+    assert blocks[expected_order[0]] == '[credential: PEM private key, masked]'
+    assert blocks[expected_order[1]] == ''
+    assert blocks[expected_order[2]] == ' visible🙂'
+    assert blocks[expected_order[3]] == expected_body
+    assert pages > 4, 'large ToolResult did not traverse returned continuations'
+    return {'pages': pages, 'blocks': order, 'masked_result_scalars': len(expected_body)}
 
 
 def cancellation_controls(run):
@@ -275,6 +350,11 @@ def main():
         legacy = Client(run, legacy=True)
         assert legacy.tool("status", {})["structuredContent"]["outcome"] == "ok"
         legacy.close()
+        run.client.close()
+        # Bare transcript remains an explicit refusal; the supported full
+        # combination above must traverse the same public reader boundary.
+        run.client = Client(run)
+        report["full_selection"] = full_selection_control(run)
         run.client.close()
         report["cancellation"] = cancellation_controls(run)
         run.client = Client(run)

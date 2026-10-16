@@ -28,6 +28,10 @@ FIXTURES = [
     "polylogue-spec/examples/archive/claude-code/projects/-home-op-morrow/7f3a2c10-0001-4000-8000-000000000001.jsonl",
     "sinex-spec/examples/kestrel/raw/home/iris/.local/share/atuin/history.db",
 ]
+MCP_FIXTURES = [
+    "polylogue-sinex-joint/realization/demos/morrow_mcp.py",
+    "polylogue-sinex-joint/realization/demos/joint-consumer/mcp_client.py",
+]
 STEPS = ["package", "fixture", "base", "repeat", "append", "restart", "empty", "malformed"]
 
 
@@ -75,12 +79,14 @@ def append_snapshot(provider, prepared):
 
 
 class Run:
-    def __init__(self, output, control):
+    def __init__(self, output, control, route="cli", sdk_python=None):
         self.output = output
         self.control = control
+        self.route = route
+        self.sdk_python = sdk_python
         self.commands = []
         self.processes = []
-        self.steps = {name: {"outcome": "unrun"} for name in STEPS}
+        self.steps = {name: {"outcome": "unrun"} for name in STEPS + (["provider-loss"] if route == "mcp" else [])}
         self.current = None
         self.daemon = None
         self.binary = None
@@ -211,6 +217,8 @@ class Run:
         self.answers(archive, expected, name, checker)
 
     def answers(self, archive, expected, name, checker):
+        if self.route == "mcp":
+            return self.mcp_answers(archive, expected, name)
         sid = expected["session_id"]
         errors = expected.get("record_errors", 0)
         exits = (5,) if errors else (0,)
@@ -262,19 +270,95 @@ class Run:
                 and type(manifest.get("sessions")) is int and manifest["sessions"] == 1
                 and manifest.get("up_to_date") is True, "wrong or incomplete export selection manifest")
 
+    def mcp_compare(self, record, case, label, expected=(0,)):
+        demo = self.output / "spec/polylogue-sinex-joint/realization/demos"
+        return json.loads(self.command([self.sdk_python, demo / "morrow_mcp.py",
+            "--expected", self.output / "prepared/expected.json", "--case", case,
+            "--record", record], label, expected=expected))
+
+    def mcp_answers(self, archive, expected, name):
+        demo = self.output / "spec/polylogue-sinex-joint/realization/demos"
+        output = self.output / (name + "-sdk")
+        binary = self.binary
+        launch_failure = self.control == "mcp-launch-failure"
+        if launch_failure:
+            binary = self.output / "deliberately-absent-mcp-server"
+        self.command([self.sdk_python, demo / "joint-consumer/mcp_client.py",
+            "--binary", binary, "--archive", archive, "--reference", expected["session_id"],
+            "--morrow-facts", "--output", output], "official SDK " + name,
+            expected=(1,) if launch_failure else (0,), timeout=30)
+        record = output / "result.json"
+        captured = json.loads(record.read_text())
+        if launch_failure:
+            require(captured.get("success") is False and captured.get("server_argv", [None])[0] == str(binary)
+                    and "failure" in captured and "projection" not in captured,
+                    "SDK launch control did not record its intended failure")
+            self.control_exercised = True
+            self.control_result.update(state="launch_refused", sdk_record=str(record.relative_to(self.output)))
+            raise ValueError("intentional MCP server launch failure")
+        case = {"repeat": "base", "restart": "append", "provider-loss": "append"}.get(name, name)
+        assessment = self.mcp_compare(record, case, "actual public fact comparison " + name)
+        require(assessment.get("complete") is True, "Morrow public facts are incomplete")
+        for entry in captured["calls"]:
+            if entry["method"] != "tools/call":
+                continue
+            value = entry["response"]["structuredContent"]
+            if value["outcome"] == "empty":
+                continue
+            qualification(value, expected.get("record_errors", 0), "MCP " + entry["parameters"]["name"])
+            require(value.get("up_to_date") is True, "MCP selected evidence is not fresh")
+        if self.control in ("wrong-tool", "missing-result"):
+            mutant = deepcopy(captured)
+            changed = None
+            for entry in mutant["calls"]:
+                if entry["method"] != "tools/call" or entry["parameters"]["name"] != "read":
+                    continue
+                shown = entry["response"]["structuredContent"].get("shown", [])
+                for item in list(shown):
+                    if self.control == "wrong-tool" and item["kind"] == "tool_call":
+                        item["block_fields"]["tool"] = "deliberately-wrong-tool"
+                        changed = (item["block"], "tool")
+                    elif self.control == "missing-result" and item["kind"] == "tool_result":
+                        shown.remove(item)
+                        changed = (item["block"], "text")
+                    if changed:
+                        break
+                if changed:
+                    break
+            require(changed is not None, "intended raw SDK mutation target is absent")
+            path = self.output / (name + "-damaged-sdk.json")
+            path.write_text(json.dumps(mutant, indent=2) + "\n")
+            rejected = self.mcp_compare(path, case, "damaging raw SDK control", expected=(1,))
+            require(rejected.get("complete") is False and any(
+                    x["subject"] == changed[0] and x["field"] == [changed[1]]
+                    for x in rejected["missing"] + rejected["wrong"]),
+                    "unrelated comparator failure cannot qualify damaging SDK control")
+            self.control_exercised = True
+            self.control_result.update(state="oracle_rejected", baseline_valid=True,
+                                       mutation=str(path.relative_to(self.output)), subject=changed[0], field=changed[1])
+            raise ValueError("intentional raw SDK fact mutation rejected")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spec-repo", type=Path, required=True)
     parser.add_argument("--spec-revision", required=True, help="explicit committed fixture/oracle revision")
     parser.add_argument("--output", type=Path, required=True, help="new absolute private result directory")
-    parser.add_argument("--control", choices=["launch-failure", "corrupt-answer"])
+    parser.add_argument("--control", choices=["launch-failure", "corrupt-answer", "wrong-tool", "missing-result", "mcp-launch-failure"])
+    parser.add_argument("--route", choices=["cli", "mcp"], default="cli")
+    parser.add_argument("--sdk-python", type=Path, help="explicit pinned official MCP SDK interpreter")
+    parser.add_argument("--binary", type=Path, help="explicit immutable packaged binary; omit to build this candidate")
     args = parser.parse_args()
+    require(args.route != "mcp" or args.sdk_python is not None, "MCP route requires --sdk-python")
+    require(not args.sdk_python or args.sdk_python.is_absolute(), "SDK interpreter must be absolute")
+    require(args.control not in ("wrong-tool", "missing-result", "mcp-launch-failure") or args.route == "mcp",
+            "MCP controls require --route mcp")
+    require(args.control != "corrupt-answer" or args.route == "cli", "corrupt-answer is the unchanged CLI control")
     require(args.output.is_absolute(), "--output must be absolute")
     args.output.mkdir(parents=True, mode=0o700, exist_ok=False)
-    run = Run(args.output, args.control)
+    run = Run(args.output, args.control, args.route, args.sdk_python)
     result = {"success": False, "failure": None, "control": args.control,
-              "started_at": datetime.now(timezone.utc).isoformat(),
+              "route": args.route, "started_at": datetime.now(timezone.utc).isoformat(),
               "invocation": [sys.executable, *sys.argv], "invocation_cwd": str(ROOT),
               "candidate": {}, "spec": {}, "steps": run.steps, "commands": run.commands,
               "acquisition_mode": "immutable_import_snapshots", "input_changes": [],
@@ -290,6 +374,12 @@ def main():
         require(not run.command(["git", "status", "--porcelain"], "candidate cleanliness").strip(), "candidate must be clean")
         result["candidate"]["head"] = head
         def package():
+            if args.binary is not None:
+                require(args.binary.is_absolute() and str(args.binary).startswith("/nix/store/") and args.binary.is_file(),
+                        "--binary must name an immutable packaged executable")
+                run.binary = args.binary
+                result["candidate"].update(package=str(args.binary.parent.parent), binary_sha256=hashlib.sha256(args.binary.read_bytes()).hexdigest(), package_mode="supplied")
+                return
             package = run.command(["nix", "build", "--no-link", ".#default", "--print-out-paths", "--max-jobs", "1"],
                                   "actual candidate package", timeout=900, env=dict(os.environ)).strip()
             require(package.startswith("/nix/store/") and "\n" not in package, "expected exactly one immutable package")
@@ -301,7 +391,7 @@ def main():
             require(len(revision) == 40, "expected full specification commit identity")
             result["spec"]["revision"] = revision
             hashes = {}
-            for relative in FIXTURES:
+            for relative in FIXTURES + (MCP_FIXTURES if args.route == "mcp" else []):
                 data = subprocess.check_output(["git", "-C", str(args.spec_repo), "show", revision + ":" + relative])
                 path = args.output / "spec" / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -312,6 +402,13 @@ def main():
             prepared = load(demo / "prepare.py", "morrow_prepare").prepare(args.output / "prepared")
             result["expected"] = prepared["polylogue"]
         run.step("fixture", fixture)
+        if args.route == "mcp":
+            result["sdk"] = {"python": str(args.sdk_python), "python_sha256": hashlib.sha256(args.sdk_python.read_bytes()).hexdigest(),
+                             "version": run.command([args.sdk_python, "-c", "from importlib.metadata import version; print(version('mcp'))"], "pinned SDK version").strip()}
+            result["remaining"] = ["M0/M1 criteria outside this full Morrow retained-read fact path",
+                                   "observed-source lifecycle (separately qualified route)",
+                                   "arbitrary huge structured fields/tool output, attachments and other presentation modes",
+                                   "broad native privacy/removal products"]
         checker = load(args.output / "spec/polylogue-sinex-joint/realization/demos/check_answer.py", "morrow_checker")
         cases = result["expected"]["cases"]
         archive = args.output / "archive-base"
@@ -326,6 +423,14 @@ def main():
             admit("append", provider)
         run.step("append", append)
         run.step("restart", lambda: (run.stop(), run.start(archive), run.answers(archive, cases["append"], "restart", checker)))
+        if args.route == "mcp":
+            def provider_loss():
+                provider.unlink()
+                result["input_changes"].append({"kind": "provider_removed", "path": str(provider)})
+                run.stop()
+                run.start(archive)
+                run.answers(archive, cases["append"], "provider-loss", checker)
+            run.step("provider-loss", provider_loss)
         run.stop()
         for case in ["empty", "malformed"]:
             archive = args.output / ("archive-" + case)

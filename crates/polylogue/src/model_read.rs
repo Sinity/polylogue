@@ -21,6 +21,7 @@ const MINIMUM: u64 = 128;
 enum View {
     Native,
     Dialogue,
+    TranscriptFull,
 }
 impl View {
     fn disposition(
@@ -31,6 +32,13 @@ impl View {
     ) -> Result<Option<&'static str>, Value> {
         // An exact supported block selects its body, including Thinking. A
         // dialogue option cannot silently override that explicit selection.
+        if matches!(self, Self::TranscriptFull) {
+            return if matches!(kind, "text" | "thinking" | "tool_call" | "tool_result") {
+                Ok(None)
+            } else {
+                Err(unavailable("unsupported_model_block_kind"))
+            };
+        }
         if exact {
             if matches!(kind, "text" | "thinking") {
                 return Ok(None);
@@ -52,6 +60,7 @@ impl View {
         match self {
             Self::Native => b"native-model-read-v1",
             Self::Dialogue => b"dialogue-v1",
+            Self::TranscriptFull => b"transcript-full-tools-thinking-harness-v1",
         }
     }
 }
@@ -109,6 +118,13 @@ fn unavailable(reason: &str) -> Value {
         )
     } else {
         failure(polylogue_model::types::ErrorKind::NotYetAvailable, reason)
+    }
+}
+fn metadata_error(error: io::Error, reason: &str) -> Value {
+    if error.kind() == io::ErrorKind::TimedOut {
+        timed_out("selected metadata encoding")
+    } else {
+        unavailable(reason)
     }
 }
 fn timed_out(stage: &str) -> Value {
@@ -272,6 +288,7 @@ fn select(reader: &ReadHandle, reference: &str) -> Result<Selection, Value> {
 fn visit(
     selection: &Selection,
     active: &std::collections::BTreeSet<String>,
+    branches: bool,
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
     mut f: impl FnMut(&MessageView, u64, &mut dyn FnMut() -> bool) -> Result<(), Value>,
@@ -306,7 +323,7 @@ fn visit(
                 message: m,
                 ..
             } => {
-                if active.contains(m.id().as_str()) {
+                if branches || active.contains(m.id().as_str()) {
                     f(&m, u64::MAX, cancel)?;
                     let mut i = 0;
                     while stored(m.block_at(i))?.is_some() {
@@ -331,6 +348,7 @@ struct Window {
     ends: Vec<(usize, u64)>,
     limit: usize,
     full: bool,
+    present: bool,
 }
 impl Write for Window {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -394,6 +412,31 @@ fn window(
         ends: Vec::new(),
         limit,
         full: false,
+        present: true,
+    };
+    if matches!(body_kind(&block.kind)?, BodyKind::Independent) {
+        w.present = false;
+        if start != 0 {
+            return Err(refusal("invalid_display_position"));
+        }
+        return Ok(w);
+    }
+    let output = if block.kind == "tool_result" {
+        check(until, cancel)?;
+        match crate::session_document::tool_output(block)
+            .map_err(|_| unavailable("tool_output_unavailable_or_exceeds_admission"))?
+        {
+            Some(ToolOutput::Text(text)) => Some(text),
+            _ => {
+                w.present = false;
+                if start != 0 {
+                    return Err(refusal("invalid_display_position"));
+                }
+                return Ok(w);
+            }
+        }
+    } else {
+        None
     };
     let mut masker = credential_output::Masker::new();
     for i in 0..index {
@@ -468,10 +511,26 @@ fn window(
     let mut pending = Vec::new();
     loop {
         check(until, cancel)?;
-        let Some(range) = stored(block.text_range(offset, 4096))? else {
-            break;
+        let (bytes, next_offset, eof) = if let Some(text) = &output {
+            if offset as usize >= text.len() {
+                break;
+            }
+            let mut end = (offset as usize + 4096).min(text.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            (
+                text.as_bytes()[offset as usize..end].to_vec(),
+                end as u64,
+                end == text.len(),
+            )
+        } else {
+            let Some(range) = stored(block.text_range(offset, 4096))? else {
+                break;
+            };
+            (range.bytes, range.next_offset, range.eof)
         };
-        pending.extend_from_slice(&range.bytes);
+        pending.extend_from_slice(&bytes);
         let valid = match std::str::from_utf8(&pending) {
             Ok(_) => pending.len(),
             Err(e) if e.error_len().is_none() => e.valid_up_to(),
@@ -488,16 +547,16 @@ fn window(
             return Err(unavailable(&e.to_string()));
         }
         pending.drain(..valid);
-        if range.eof {
+        if eof {
             if !pending.is_empty() {
                 return Err(unavailable("incomplete_retained_utf8"));
             }
             break;
         }
-        if range.next_offset <= offset {
+        if next_offset <= offset {
             return Err(unavailable("nonadvancing_retained_range"));
         }
-        offset = range.next_offset;
+        offset = next_offset;
     }
     if let Err(e) = masker.finish(&mut w) {
         if !w.full {
@@ -512,8 +571,8 @@ fn window(
 fn cost(v: &Value) -> u64 {
     (serde_json::to_vec(v).expect("JSON value").len() as u64).div_ceil(4)
 }
-/// Shared operation. The default native subset and explicit dialogue have no
-/// included tool rendering. Unknown arguments never disappear.
+/// Shared operation. Explicit full transcript adds typed tools/metadata to the
+/// same body window and fitter. Unknown arguments never disappear.
 /// Native privacy/removal products are not implemented by this operation.
 pub fn execute(
     reader: &std::sync::Mutex<ReadHandle>,
@@ -550,6 +609,10 @@ fn run(
                     | "continuation"
                     | "presentation"
                     | "view"
+                    | "tools"
+                    | "thinking"
+                    | "harness"
+                    | "branches"
             )
         })
     }) {
@@ -566,7 +629,24 @@ fn run(
     let view = match request.get("view") {
         None => View::Native,
         Some(Value::String(s)) if s == "dialogue" => View::Dialogue,
+        Some(Value::String(s)) if s == "transcript" => View::TranscriptFull,
         _ => return Err(refusal("unsupported_view")),
+    };
+    // Only the explicit full transcript combination is implemented. Other
+    // planned detail/collapse/range products never silently acquire defaults.
+    for option in ["tools", "thinking", "harness"] {
+        if matches!(view, View::TranscriptFull) {
+            if request.get(option).and_then(Value::as_str) != Some("full") {
+                return Err(refusal("transcript_requires_full_tools_thinking_harness"));
+            }
+        } else if request.get(option).is_some() {
+            return Err(refusal("unsupported_selection_option"));
+        }
+    }
+    let branches = match request.get("branches") {
+        None => false,
+        Some(Value::Bool(value)) if matches!(view, View::TranscriptFull) => *value,
+        _ => return Err(refusal("unsupported_branches_selection")),
     };
     let cost = |value: &Value| {
         if mcp {
@@ -614,10 +694,24 @@ fn run(
             cancel,
         ),
     )?;
-    if q.pending_inputs > 0 || q.unavailable_inputs > 0 {
+    if q.pending_inputs > 0
+        || if branches {
+            !q.known_rows_readable()
+        } else {
+            q.unavailable_inputs > 0
+        }
+    {
         return Err(unavailable("current_selected_basis_unavailable"));
     }
+    if !branches && selection.exact.is_none() && !q.active_path_known() {
+        return Err(unavailable("active_path_membership_unavailable"));
+    }
     let mut qualification = q.result(&selection.session.catalog());
+    if branches && !q.active_path_known() {
+        qualification["notes"].as_array_mut().expect("qualification notes").push(
+            json!("Active-path membership remains unavailable; explicit branches selects only known retained catalog members.")
+        );
+    }
     let recovery = stored(selection.session.recovery())?;
     if recovery.is_some() {
         qualification["outcome"] = json!("degraded");
@@ -660,6 +754,9 @@ fn run(
     let mut basis = blake3::Hasher::new();
     basis.update(POLICY.as_bytes());
     basis.update(view.basis());
+    if matches!(view, View::TranscriptFull) {
+        basis.update(&[u8::from(branches)]);
+    }
     basis.update(reference.as_bytes());
     if let Some(notes) = &authored_notes {
         basis.update(&serde_json::to_vec(notes).expect("authored metadata"));
@@ -669,10 +766,14 @@ fn run(
     visit(
         &selection,
         &q.active_messages,
+        branches,
         until,
         cancel,
         |m, i, _cancel| {
             if i == u64::MAX {
+                if matches!(view, View::TranscriptFull) && stored(m.block_at(0))?.is_none() {
+                    return Err(unavailable("zero_block_message_model_read_unavailable"));
+                }
                 basis.update(&stored(m.read_certificate_with_cancel(&mut || {
                     Instant::now() >= until || _cancel()
                 }))?);
@@ -709,6 +810,7 @@ fn run(
     visit(
         &selection,
         &q.active_messages,
+        branches,
         until,
         cancel,
         |m, i, cancel| {
@@ -801,10 +903,26 @@ fn run(
                     crate::output_json::check_identity(id, until)
                         .map_err(|_| unavailable("identity_requires_masking"))?;
                 }
-                selected = Some((
-                    json!({"session":m.id().session().as_str(),"message":format!("message:{}",m.id().as_str()),"block":format!("block:{}",block_id(m,&b.slot)?),"written_by":h.written_by,"role":h.role,"kind":b.kind,"encrypted":b.encrypted,"sources":sources,"field_origins":origins}),
-                    w,
-                ));
+                let mut identity = json!({"session":m.id().session().as_str(),"message":format!("message:{}",m.id().as_str()),"block":format!("block:{}",block_id(m,&b.slot)?),"written_by":h.written_by,"role":h.role,"kind":b.kind,"encrypted":b.encrypted,"sources":sources,"field_origins":origins});
+                if matches!(view, View::TranscriptFull) {
+                    check(until, cancel)?;
+                    identity["message_metadata"] =
+                        crate::session_document::message_metadata(m, until).map_err(|e| {
+                            metadata_error(
+                                e,
+                                "selected_message_metadata_unavailable_or_exceeds_admission",
+                            )
+                        })?;
+                    identity["block_fields"] = crate::session_document::block_metadata(&b, until)
+                        .map_err(|e| {
+                        metadata_error(
+                            e,
+                            "selected_block_metadata_unavailable_or_exceeds_admission",
+                        )
+                    })?;
+                    check(until, cancel)?;
+                }
+                selected = Some((identity, w));
             }
             n += 1;
             Ok(())
@@ -868,9 +986,28 @@ fn run(
                 next["view"] = json!("dialogue");
             }
         }
+        if matches!(view, View::TranscriptFull) && !next.is_null() {
+            let args = if mcp {
+                &mut next["arguments"]
+            } else {
+                &mut next
+            };
+            args["view"] = json!("transcript");
+            for option in ["tools", "thinking", "harness"] {
+                args[option] = json!("full");
+            }
+            if request.get("branches").is_some() {
+                args["branches"] = json!(branches);
+            }
+        }
         let mut page = qualification.clone();
         page["missing"] = page["notes"].clone();
         page["rendered_as"] = json!(std::str::from_utf8(view.basis()).expect("static ASCII"));
+        if branches {
+            page["read_as"] = json!(
+                "Known retained Session-catalog members in supplied catalog order, including abandoned or uncertain-path members. Active-path membership and complete topology are not asserted."
+            );
+        }
         page["zone"] = json!("UTC");
         page["warning"] = json!(WARNING);
         page["session"] = json!({"id":h.id.as_str(),"origin":h.origin.as_str(),"display_title":title,"title_source":if title.is_some(){"provider"}else{"unknown"}});
@@ -890,7 +1027,9 @@ fn run(
             let mut s = identity.clone();
             s["display_start"] = json!(position.scalar);
             s["display_end"] = json!(display_end);
-            s["text"] = json!(&w.text[..take]);
+            if w.present {
+                s["text"] = json!(&w.text[..take]);
+            }
             json!([s])
         } else {
             json!([])
@@ -956,6 +1095,7 @@ fn run(
     visit(
         &selection,
         &q.active_messages,
+        branches,
         until,
         cancel,
         |m, i, cancel| {
@@ -1095,10 +1235,21 @@ pub fn cli(args: &[String]) -> Result<Option<Value>, Value> {
     let mut r = json!({"command":"model-read","reference":args[0]});
     let mut i = 2;
     while i < args.len() {
+        if args[i] == "--branches" {
+            if r.get("branches").is_some() {
+                return Err(refusal("duplicate_option"));
+            }
+            r["branches"] = json!(true);
+            i += 1;
+            continue;
+        }
         let key = match args[i].as_str() {
             "--budget" => "budget_tokens",
             "--continuation" => "continuation",
             "--view" => "view",
+            "--tools" => "tools",
+            "--thinking" => "thinking",
+            "--harness" => "harness",
             _ => return Err(refusal("unsupported_option")),
         };
         if r.get(key).is_some() {
@@ -1107,7 +1258,7 @@ pub fn cli(args: &[String]) -> Result<Option<Value>, Value> {
         let value = args
             .get(i + 1)
             .ok_or_else(|| refusal("missing_option_value"))?;
-        if key == "view" && value != "dialogue" {
+        if key == "view" && !matches!(value.as_str(), "dialogue" | "transcript") {
             return Err(refusal("unsupported_view"));
         }
         r[key] = if key == "budget_tokens" {
@@ -1174,6 +1325,7 @@ mod tests {
             ends: vec![],
             limit: 1024,
             full: false,
+            present: true,
         };
         let mut masker = credential_output::Masker::new();
         masker.push("🙂\u{1b} ghp_", &mut w).unwrap();
@@ -1215,6 +1367,7 @@ mod window_stop_tests {
             ends: vec![],
             limit: 1,
             full: false,
+            present: true,
         };
         assert!(w.write_all("🙂".as_bytes()).is_err());
         assert!(w.full);

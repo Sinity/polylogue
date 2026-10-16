@@ -33,6 +33,10 @@ struct Read {
     budget_tokens: Option<u64>,
     continuation: Option<String>,
     view: Option<String>,
+    tools: Option<String>,
+    thinking: Option<String>,
+    harness: Option<String>,
+    branches: Option<bool>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,9 +71,9 @@ fn tools() -> Vec<Tool> {
         ),
         (
             "read",
-            "Read an exact note family/pinned revision or native Session, message: reference or block: reference from retained evidence. Exact authored reads retain attribution, history, withdrawal trail and live basis comparison. Text target reads expose authored_basis, a whole-target raw decoded UTF-8 digest before masking, plus current note backlinks; it is not proof anyone read underlying text. The default native Text subset omits Thinking except for an exact Thinking block and refuses included tools. Explicit view:dialogue supports the human/model Text portion and reports tool, Thinking and harness omissions. Selected human attachments and other unavailable included kinds refuse. Exact supported blocks select their body. Preceding textual tool output has a 65536-byte normalized JSON admission; unavailable masking state refuses. No ranges, self, included tool rendering or other views. Follow next and retain evidence qualifiers.",
+            "Read an exact note family/pinned revision or native Session, message: reference or block: reference from retained evidence. Exact authored reads retain attribution, history, withdrawal trail and live basis comparison. Text target reads expose authored_basis, a whole-target raw decoded UTF-8 digest before masking, plus current note backlinks; it is not proof anyone read underlying text. The default native Text subset omits Thinking except for an exact Thinking block and refuses included tools. Explicit view:dialogue supports the human/model Text portion and reports tool, Thinking and harness omissions. Selected human attachments and other unavailable included kinds refuse. Exact supported blocks select their body. Preceding textual tool output has a 65536-byte normalized JSON admission; unavailable masking state refuses. Explicit view:transcript with tools:full, thinking:full, harness:full includes native Text/Thinking/ToolCall/ToolResult, typed Message metadata and tool fields. Structured JSON fields/output admit at most 65536 bytes each; oversized mandatory metadata refuses. branches:true on that full selection reads known retained catalog members, even when active-path membership is unavailable, preserving degraded source qualification. Pending effects, current invalidation and unavailable selected rows still refuse. A selected zero-block Message refuses rather than losing its metadata. No branch indentation/topology reconstruction, ranges, self, other detail/collapse options or included attachment rendering. Follow next and retain evidence qualifiers.",
             schema(
-                json!({"ref":{"type":"string","minLength":1,"maxLength":16384},"budget_tokens":budget,"continuation":{"type":"string","description":"Opaque value from read.next. Do not construct or edit."},"view":{"type":"string","enum":["dialogue"],"description":"Explicit human/model Text selection; omitted by default to retain the native subset. Not a full transcript."}}),
+                json!({"ref":{"type":"string","minLength":1,"maxLength":16384},"budget_tokens":budget,"continuation":{"type":"string","description":"Opaque value from read.next. Do not construct or edit."},"view":{"type":"string","enum":["dialogue","transcript"],"description":"dialogue selects human/model Text. transcript requires tools, thinking and harness all full; other included kinds refuse. Omitted retains the native Text subset."},"tools":{"enum":["full"]},"thinking":{"enum":["full"]},"harness":{"enum":["full"]},"branches":{"type":"boolean","description":"Only with explicit full transcript. True selects known retained catalog members including abandoned/uncertain paths; it does not assert active membership or complete topology."}}),
                 &["ref"],
             ),
         ),
@@ -93,7 +97,7 @@ fn tools() -> Vec<Tool> {
         });
         if name == "read" {
             properties["shown"] = json!({"type":"array","description":"Bounded retained text, author, display positions, source spans and field origins."});
-            properties["next"] = json!({"description":"Ready {tool:read, arguments:{ref,budget_tokens,continuation,view?}} follow-up call, or null."});
+            properties["next"] = json!({"description":"Ready {tool:read, arguments:{ref,budget_tokens,continuation,view?,tools?,thinking?,harness?,branches?}} follow-up call, or null."});
             properties["rendered_as"] = json!({"type":"string"});
         } else if name == "note" {
             properties["note"]=json!({"type":"string"});properties["ref"]=json!({"type":"string"});properties["revision"]=json!({"type":"object"});
@@ -223,10 +227,22 @@ impl Server {
                     request["continuation"] = json!(v);
                 }
                 if let Some(v) = args.view {
-                    if v != "dialogue" {
-                        return invalid("only explicit view:dialogue is supported");
+                    if !matches!(v.as_str(), "dialogue" | "transcript") {
+                        return invalid("only explicit view:dialogue or transcript is supported");
                     }
                     request["view"] = json!(v);
+                }
+                for (name, value) in [
+                    ("tools", args.tools),
+                    ("thinking", args.thinking),
+                    ("harness", args.harness),
+                ] {
+                    if let Some(value) = value {
+                        request[name] = json!(value);
+                    }
+                }
+                if let Some(value) = args.branches {
+                    request["branches"] = json!(value);
                 }
                 request
             }
