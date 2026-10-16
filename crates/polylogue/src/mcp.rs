@@ -284,7 +284,7 @@ impl Server {
             ),
             _ => polylogue::request_value_cancellable(&socket, &operation, cancellation),
         };
-        let value = match reply {
+        let mut value = match reply {
             Ok(v) => v,
             Err(e) => {
                 return failure(
@@ -299,6 +299,9 @@ impl Server {
                 );
             }
         };
+        if name == "search" && (serde_json::to_vec(&json!({"structuredContent":&value,"content":[{"type":"text","text":SEARCH_COMPANION}]})).unwrap().len() as u64).div_ceil(4) > operation["budget_tokens"].as_u64().unwrap() {
+            polylogue::summarize_pending_references(&mut value);
+        }
         if name == "search" && (serde_json::to_vec(&json!({"structuredContent":&value,"content":[{"type":"text","text":SEARCH_COMPANION}]})).unwrap().len() as u64).div_ceil(4) > operation["budget_tokens"].as_u64().unwrap() {
             return failure(ErrorKind::NotYetAvailable, "search response exceeds budget_tokens; narrow the query or use | limit N");
         }

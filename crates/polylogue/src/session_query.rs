@@ -71,11 +71,13 @@ pub(crate) fn serve(
         let guard = reader
             .lock()
             .map_err(|_| failed(ErrorKind::Io, "reader lock poisoned"))?;
-        let pending = crate::pending_codex_references(&guard, deadline).map_err(store_failure)?;
+        let pending =
+            crate::pending_codex_references(&guard, deadline, None).map_err(store_failure)?;
         drop(guard);
-        if pending["snapshots"]
-            .as_array()
-            .is_some_and(|a| !a.is_empty())
+        if pending["examined_snapshots"]
+            .as_u64()
+            .is_some_and(|n| n > 0)
+            || pending["scan_complete"] == false
         {
             result["pending_references"] = pending;
             result["outcome"] = json!("degraded");
@@ -105,6 +107,15 @@ pub(crate) fn serve(
             .value(&result)
             .and_then(|_| encoder.finish())
             .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
+        if bytes.len() > 4 * 1024 * 1024 && result.get("pending_references").is_some() {
+            crate::summarize_pending_references(&mut result);
+            bytes.clear();
+            let mut encoder = crate::output_json::Encoder::new(&mut bytes, deadline);
+            encoder
+                .value(&result)
+                .and_then(|_| encoder.finish())
+                .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
+        }
         if bytes.len() > 4 * 1024 * 1024 {
             return Err(failed(
                 ErrorKind::NotYetAvailable,

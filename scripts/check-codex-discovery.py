@@ -99,7 +99,12 @@ def lifecycle(binary, output):
         assert body['operation']['output'] == 'independent retained output', body
         # Raw source facts are independent of the product's parser output.
         source = body['sources'][0]
-        assert before_bytes and source, source
+        origin = source['origin']
+        assert origin['representation'] == 'rollout', source
+        cited = json.loads(before_bytes[origin['start']:origin['end']])
+        assert cited['type'] == 'event_msg' and cited['payload']['type'] == 'item_completed', cited
+        assert cited['payload']['thread_id'] == S and cited['payload']['turn_id'] == 'T', cited
+        assert cited['payload']['item']['id'] == 'C' and cited['payload']['item']['aggregated_output'] == 'independent retained output', cited
         search = run.cli(['origin:codex', '--json'])
         assert all(row['id'] != 'codex:' + P for row in search['rows']), search
         assert one_pending(search) == pending
@@ -211,6 +216,64 @@ def acquisition_controls(binary, output):
     finally:
         native.close_run(run, output)
 
+def growth_controls(binary, output):
+    run = Run(binary, output)
+    home = output / 'codex-home'
+    home.mkdir()
+    sessions = home / 'sessions'
+    sessions.mkdir()
+    original = sessions / 'rollout-owned.jsonl'
+    native.rollout(original, output='usable despite optional discovery growth')
+    original_bytes = original.read_bytes()
+    # Put requested P last, beyond the general bounded metadata sample.
+    rows = [{'session_id': 'unrelated-' + str(n), 'text': 'synthetic prompt'} for n in range(63)]
+    rows.append({'session_id': P, 'text': 'last pending prompt'})
+    (home / 'history.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    catalog(home / 'state_5.sqlite')
+    config(output, home)
+    try:
+        status = run.start()
+        summary = status['pending_references']
+        assert status['outcome'] != 'error' and summary['reference_observations'] == 64, status
+        assert summary['references_shown'] < 64 and summary['references_omitted'] == 64 - summary['references_shown'], summary
+        assert summary['conversation_coverage'] is None and not summary['presentation_complete'], summary
+        assert all(row['session'] != 'codex:' + P for row in summary['references']), summary
+        selected = run.cli(['codex:' + P, 'read', '--budget', '20000'], allowed=(2, 3, 4, 5, 7))
+        assert one_pending(selected)['state'] == 'pending', selected
+        assert selected['pending_references']['matching_reference_observations'] == 1
+        calls = settled(run)
+        operation = calls['rows'][0]
+        read = run.cli([operation['ref'], 'read', '--budget', '20000'])
+        assert read['shown'][0]['operation']['output'] == 'usable despite optional discovery growth'
+        run.client = mcp.Client(run)
+        # Optional reference arrays must yield to an otherwise fitting response.
+        remote = run.client.tool('search', {'query': 'tool_calls where session:codex:' + S, 'budget_tokens': 2000})['structuredContent']
+        assert remote['rows'] == calls['rows'] and remote['outcome'] != 'error', remote
+        assert remote['pending_references']['references'] == [], remote
+        assert remote['pending_references']['references_omitted'] == 64, remote
+        run.client.close()
+        run.client = None
+        run.stop()
+        # All300 additional source attempts deduplicate to the known raw input.
+        # Completed acquisition must survive its public report sample limit.
+        for n in range(300):
+            (sessions / ('rollout-extra-' + str(n) + '.jsonl')).write_bytes(original_bytes)
+        many = run.start()
+        acquisition = many['acquisition']
+        assert acquisition['retained_count'] == 302, acquisition
+        assert acquisition['retained_count_unit'] == 'successful_source_attempts'
+        assert acquisition['retained_omitted'] == 302 - len(acquisition['retained']) > 0
+        assert acquisition['rollouts']['entries'] == 301
+        assert acquisition['history']['entries'] == 1 and acquisition['history']['count_unit'] == 'retained_inputs'
+        assert len(json.dumps(acquisition).encode()) < 16384, acquisition
+        assert settled(run)['rows'][0]['ref'] == operation['ref']
+        assert run.cli([operation['ref'], 'read', '--budget', '20000'])['shown'] == read['shown']
+        return {'references': summary, 'exact_pending': selected['pending_references'],
+                'bounded_mcp_search': remote, 'many_rollout_attempts': acquisition, 'operation': operation['ref']}
+    finally:
+        native.close_run(run, output)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--binary', required=True, type=Path)
@@ -219,7 +282,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     report = {'binary': str(args.binary.resolve()), 'sha256': hashlib.sha256(args.binary.read_bytes()).hexdigest(), 'cases': {}}
     try:
-        for name, function in [('lifecycle', lifecycle), ('acquisition', acquisition_controls)]:
+        for name, function in [('lifecycle', lifecycle), ('acquisition', acquisition_controls), ('growth', growth_controls)]:
             path = args.output / name
             path.mkdir()
             report['cases'][name] = function(args.binary.resolve(), path)

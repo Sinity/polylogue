@@ -39,11 +39,14 @@ fn catalog() -> PathBuf {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Availability {
-    pub path: PathBuf,
+    pub path: Option<PathBuf>,
+    pub path_key: String,
+    pub count_unit: &'static str,
     pub state: &'static str,
     /// Exact admitted total only after complete traversal; unavailable is unknown.
     pub entries: Option<usize>,
     pub reason: Option<String>,
+    pub reason_truncated: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct Acquisition {
@@ -52,7 +55,15 @@ pub struct Acquisition {
     pub catalog: Availability,
     pub rollouts: Availability,
     pub history: Availability,
+    /// A bounded presentation sample, independently of completed acquisition.
     pub retained: Vec<String>,
+    pub retained_count: usize,
+    pub retained_omitted: usize,
+    pub retained_count_unit: &'static str,
+    #[serde(skip)]
+    pub admitted: Vec<String>,
+    pub refused_count: usize,
+    pub refused_omitted: usize,
     pub prompt_input: Option<String>,
     pub refused: Vec<Availability>,
     pub conversation_coverage: Option<bool>,
@@ -94,9 +105,21 @@ fn resolve(home: &Path, path: &Path) -> crate::Result<PathBuf> {
     }
     Ok(resolved)
 }
-fn available(path: PathBuf, entries: usize) -> Availability {
+fn availability_path(path: PathBuf) -> (Option<PathBuf>, String) {
+    let key = blake3::hash(path.as_os_str().as_encoded_bytes())
+        .to_hex()
+        .to_string();
+    let shown = serde_json::to_vec(&path)
+        .is_ok_and(|p| p.len() <= 1024)
+        .then_some(path);
+    (shown, key)
+}
+fn available(path: PathBuf, entries: usize, unit: &'static str) -> Availability {
+    let (path, path_key) = availability_path(path);
     Availability {
         path,
+        path_key,
+        count_unit: unit,
         state: if entries == 0 {
             "accessible_empty"
         } else {
@@ -104,14 +127,21 @@ fn available(path: PathBuf, entries: usize) -> Availability {
         },
         entries: Some(entries),
         reason: None,
+        reason_truncated: false,
     }
 }
 fn unavailable(path: PathBuf, e: impl ToString) -> Availability {
+    let (path, path_key) = availability_path(path);
+    let reason = e.to_string();
+    let reason_truncated = reason.chars().count() > 256;
     Availability {
         path,
+        path_key,
+        count_unit: "unknown",
         state: "unavailable",
         entries: None,
-        reason: Some(e.to_string()),
+        reason: Some(reason.chars().take(256).collect()),
+        reason_truncated,
     }
 }
 fn enumerate(
@@ -174,7 +204,7 @@ impl Writer {
         let mut paths = BTreeSet::new();
         let mut visited = 0;
         let rollout_state = match enumerate(&rollout_path, 0, &mut visited, &mut paths, cancel) {
-            Ok(()) => available(rollout_path, paths.len()),
+            Ok(()) => available(rollout_path, paths.len(), "rollout_paths"),
             Err(Error::Cancelled) => return Err(Error::Cancelled),
             Err(e) => unavailable(rollout_path, e),
         };
@@ -215,7 +245,7 @@ impl Writer {
                 }
                 paths.insert(resolve(&home, Path::new(&path))?);
             }
-            Ok(available(catalog_path.clone(), count))
+            Ok(available(catalog_path.clone(), count, "thread_rows"))
         })();
         let catalog_state = match catalog_state {
             Ok(v) => v,
@@ -257,27 +287,48 @@ impl Writer {
             cancel,
         ) {
             Ok(source) => {
-                let entries = usize::from(source.input.length > 0);
+                let empty = source.input.length == 0;
                 prompt_input = Some(source.input.id.clone());
                 retained.push(source.input.id);
-                available(history_path, entries)
+                let mut state = available(history_path, 1, "retained_inputs");
+                if empty {
+                    state.state = "accessible_empty";
+                }
+                state
             }
             Err(Error::Cancelled) => return Err(Error::Cancelled),
             Err(e) => unavailable(history_path, e),
         };
-        let report = Acquisition {
+        let retained_count = retained.len();
+        let refused_count = failures.len();
+        let admitted = retained.clone();
+        retained.truncate(32);
+        failures.truncate(4);
+        let mut report = Acquisition {
             recipe: "configured-codex-home-v1",
             scope: "finite_startup_snapshots",
             catalog: catalog_state,
             rollouts: rollout_state,
             history: history_state,
+            retained_omitted: retained_count - retained.len(),
+            retained_count,
+            retained_count_unit: "successful_source_attempts",
+            admitted,
             retained,
             prompt_input,
+            refused_omitted: refused_count - failures.len(),
+            refused_count,
             refused: failures,
             conversation_coverage: None,
         };
-        if serde_json::to_vec(&report).map_err(refused)?.len() > 16384 {
-            return Err(refused("Codex acquisition report exceeds 16 KiB"));
+        while serde_json::to_vec(&report).is_ok_and(|bytes| bytes.len() > 16384) {
+            if report.refused.pop().is_some() {
+                report.refused_omitted += 1;
+            } else if report.retained.pop().is_some() {
+                report.retained_omitted += 1;
+            } else {
+                break;
+            }
         }
         Ok(report)
     }
@@ -409,9 +460,6 @@ impl ReadHandle {
         let mut result = Vec::new();
         for id in ids {
             let id = crate::db(&file, || id)?;
-            if result.len() == 512 {
-                return Err(refused("retained prompt snapshots exceed 512"));
-            }
             result.push(
                 self.source(&id)?
                     .ok_or_else(|| refused("retained prompt source missing"))?,

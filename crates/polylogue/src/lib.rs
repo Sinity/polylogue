@@ -35,17 +35,54 @@ use std::{
 fn pending_codex_references(
     reader: &ReadHandle,
     until: std::time::Instant,
+    selection: Option<&str>,
 ) -> Result<Value, polylogue_store::Error> {
-    let pending = polylogue_engine::codex_discovery::pending(reader, until)?;
-    if let Some(references) = pending["references"].as_array() {
-        for reference in references {
-            if let Some(id) = reference["session"].as_str() {
-                output_json::check_identity(id, until)
-                    .map_err(|e| polylogue_store::Error::Invariant(e.to_string()))?;
+    let mut pending = polylogue_engine::codex_discovery::pending(reader, until, selection)?;
+    let mut omitted = 0;
+    if let Some(references) = pending["references"].as_array_mut() {
+        references.retain(|reference| {
+            let keep = reference["session"]
+                .as_str()
+                .is_some_and(|id| output_json::check_identity(id, until).is_ok());
+            if !keep {
+                omitted += 1;
             }
-        }
+            keep
+        });
+        let shown = references.len();
+        pending["references_shown"] = json!(shown);
+    }
+    if omitted > 0 {
+        pending["references_omitted"] = pending["references_omitted"]
+            .as_u64()
+            .map(|count| json!(count + omitted))
+            .unwrap_or(Value::Null);
+        pending["identity_details_omitted"] = json!(omitted);
+        pending["presentation_complete"] = json!(false);
     }
     Ok(pending)
+}
+/// Omit optional discovery detail while preserving all primary rows and the
+/// summary's uncertainty. Shared by CLI response and MCP budget presentation.
+pub fn summarize_pending_references(value: &mut Value) {
+    let Some(pending) = value.get_mut("pending_references") else {
+        return;
+    };
+    let references = pending["references"].as_array().map_or(0, Vec::len);
+    let snapshots = pending["snapshots"].as_array().map_or(0, Vec::len);
+    pending["references"] = json!([]);
+    pending["snapshots"] = json!([]);
+    pending["references_shown"] = json!(0);
+    pending["snapshot_details_shown"] = json!(0);
+    pending["references_omitted"] = pending["references_omitted"]
+        .as_u64()
+        .map(|n| json!(n + references as u64))
+        .unwrap_or(Value::Null);
+    pending["snapshot_details_omitted"] = pending["snapshot_details_omitted"]
+        .as_u64()
+        .map(|n| json!(n + snapshots as u64))
+        .unwrap_or(Value::Null);
+    pending["presentation_complete"] = json!(false);
 }
 
 pub fn socket_path(archive: &Path, runtime: &Path) -> PathBuf {
@@ -311,6 +348,7 @@ fn serve(
                 pending_codex_references(
                     &guard,
                     std::time::Instant::now() + Duration::from_secs(30),
+                    None,
                 )
                 .map(|pending| (status, pending))
             }) {
@@ -321,15 +359,16 @@ fn serve(
                         vec![]
                     };
                     if acquisition.is_some()
-                        || pending["snapshots"]
-                            .as_array()
-                            .is_some_and(|a| !a.is_empty())
+                        || (pending["examined_snapshots"]
+                            .as_u64()
+                            .is_some_and(|n| n > 0)
+                            || pending["scan_complete"] == false)
                     {
                         notes.push(
                             "Finite Codex source evidence leaves general Session coverage unknown.",
                         );
                     }
-                    json!({"outcome":if status.recovery.is_some() || acquisition.is_some() || pending["snapshots"].as_array().is_some_and(|a|!a.is_empty()) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-codex-home-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
+                    json!({"outcome":if status.recovery.is_some() || acquisition.is_some() || (pending["examined_snapshots"].as_u64().is_some_and(|n|n>0) || pending["scan_complete"]==false) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-codex-home-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})

@@ -216,7 +216,7 @@ fn run_codex(
     }
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut progress = Vec::new();
-    for input in &acquisition.retained {
+    for input in &acquisition.admitted {
         if acquisition.prompt_input.as_ref() == Some(input) {
             continue;
         }
