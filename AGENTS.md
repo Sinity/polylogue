@@ -4,7 +4,11 @@ This workspace prepares Polylogue’s Rust replacement. The top-level README and
 
 ## Structure
 
-`crates/model` owns pure identity, value and outcome types. `crates/hashed-blobs` is the reviewed shared file layer with a read-only capability. `crates/store` owns every SQLite connection and mutation. `crates/engine` computes provider work outside the writer and installs it through typed store operations. `crates/polylogue` owns configuration, process lifetime, the daemon actor and CLI. `xtask` runs focused developer checks. Tests use synthetic inputs and isolated temporary state. Retained-source progress and canonical Message readiness are distinct; source EOF alone cannot certify a complete query.
+`crates/model` owns pure identity, value and outcome types. `crates/hashed-blobs` is the reviewed shared file layer with a read-only capability. `crates/store` owns every SQLite connection and mutation. `crates/engine` computes provider work outside the writer and installs it through typed store operations. `crates/polylogue` owns configuration, process lifetime, the daemon actor and CLI. `xtask` runs focused developer checks. Retained-source progress and canonical Message readiness are distinct; source EOF alone cannot certify a complete query.
+
+## Tests
+
+Keep substantial unit tests and fixtures in separate source files, using private `#[cfg(test)]` modules for implementation access. Small nearby tests may stay inline. Use synthetic inputs and isolated temporary state. CLI and MCP acceptance tests exercise their shared semantics through public routes.
 
 ## Commands and style
 
