@@ -258,7 +258,9 @@ def bounds(binary,output):
         connection=sqlite3.connect(home/'state_5.sqlite')
         connection.execute('INSERT INTO threads VALUES(?,?)',('outside-waiting',str(waiting.relative_to(home))))
         connection.commit();connection.close()
-        restarted=run.start()
+        restart_started=time.monotonic()
+        restarted=run.start(timeout=120)
+        restart_seconds=time.monotonic()-restart_started
         assert restarted['acquisition']['deferred_rollout_paths']==1,restarted
         restarted_facts=await_facts(run,expected+['later appended invocation after fair revisit',waiting_fact])
         witnesses(restarted_facts[waiting_fact][1],waiting_raw)
@@ -267,7 +269,7 @@ def bounds(binary,output):
         return dict(waves=waves,reusable_budget_witness=budget_samples[0],partial_enumeration_witness=partial_samples[0],completed_larger_cycle=complete['continuation'],revisit_delay_seconds=revisit_delay,
                     stable_before=before,stable_after=after,stable_wall_seconds=stable_wall,
                     stable_write_counter=counter,final=after_status['continuation'],stopped=stopped,
-                    larger_restart=restarted['acquisition'],larger_restart_continuation=restart_state['continuation'],restart_stop=restart_stop,operator_interventions=0)
+                    larger_restart=restarted['acquisition'],larger_restart_startup_seconds=restart_seconds,larger_restart_continuation=restart_state['continuation'],restart_stop=restart_stop,operator_interventions=0)
     finally:native.close_run(run,output)
 
 def cancellation(binary,output):
@@ -282,7 +284,7 @@ def cancellation(binary,output):
         active=wait(run,lambda v:v['continuation']['pass_active'])
         stopped=graceful_stop(run)
         # Restart remains an ordinary configured acquisition, without repair.
-        restarted=run.start()
+        restarted=run.start(timeout=120)
         reads=await_facts(run,['cancellation workload'])
         return dict(active_at_signal=active['continuation'],stopped=stopped,
                     restart_acquisition=restarted['acquisition'],discovered_refs=[r[0] for r in reads.values()],
