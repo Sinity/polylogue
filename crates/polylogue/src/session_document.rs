@@ -158,7 +158,9 @@ pub(crate) fn write_with_cancel(
     let recovery = stored(session.recovery())?;
     if recovery.is_some() {
         qualification["outcome"] = json!("degraded");
-        qualification["notes"].as_array_mut().expect("qualification notes")
+        qualification["notes"]
+            .as_array_mut()
+            .expect("qualification notes")
             .push(json!(polylogue_model::RecoveryQualification::NOTE));
     }
     let mut after = None;
