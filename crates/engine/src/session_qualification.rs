@@ -33,6 +33,7 @@ pub struct Qualification {
     own_topology_unknown: bool,
     own_counting_unknown: bool,
     membership_bytes: usize,
+    known_rows_readable: bool,
 }
 impl Qualification {
     pub fn header(
@@ -50,6 +51,18 @@ impl Qualification {
             h.last_activity_at = s.last_activity_at.and_then(|t| t.at()).map(|t| t.0);
         }
         h
+    }
+    /// Known catalog membership/order and every interpreted row have current
+    /// source-row audit authority. This is independent of active-path knowledge
+    /// and never upgrades unavailable population/record qualification.
+    pub fn known_rows_readable(&self) -> bool {
+        self.exact
+            && self.known_rows_readable
+            && self.pending_inputs == 0
+            && self.unresolved_inputs == 0
+    }
+    pub fn active_path_known(&self) -> bool {
+        !self.own_topology_unknown
     }
     pub fn complete(&self) -> bool {
         self.record_errors == 0
@@ -168,6 +181,7 @@ fn qualify_operation(
     let mut result = Qualification {
         up_to_date: true,
         document,
+        known_rows_readable: true,
         ..Default::default()
     };
     let exact = plan.id.as_deref().filter(|_| {
@@ -343,6 +357,9 @@ fn qualify_operation(
             add(&mut result.interpreted_nonempty_inputs, 1)?;
         }
         let mut unavailable = dependency.failure().is_some();
+        if unavailable {
+            result.known_rows_readable = false;
+        }
         let receipt = session.dependency_cell(
             &dependency,
             polylogue_store::parser_state::SOURCE_ROWS_NAMESPACE,
@@ -352,14 +369,28 @@ fn qualify_operation(
         match receipt {
             Some(bytes) => {
                 let receipt = source_rows::decode(&bytes, head, &input).map_err(owner_error)?;
+                // The existing row audit has checked every known canonical
+                // Message against this exact retained receipt. A bad record
+                // alone leaves topology/population unknown, not those rows.
+                // Unsupported effects, unrecognized records and owner failures
+                // cannot acquire that narrower permission by matching counts.
+                let readable = !receipt.unsupported_effects && head.counts.unrecognized == 0;
                 match receipt.rows.state {
-                    polylogue_model::settlement::SourceRowState::Unavailable { .. } => {
-                        unavailable = true
+                    polylogue_model::settlement::SourceRowState::Unavailable {
+                        usable_result,
+                        record_errors,
+                        ..
+                    } => {
+                        unavailable = true;
+                        result.known_rows_readable &=
+                            readable && usable_result && record_errors > 0;
                     }
                     polylogue_model::settlement::SourceRowState::Pending { .. } => {
                         add(&mut result.pending_inputs, 1)?
                     }
-                    polylogue_model::settlement::SourceRowState::Settled => {}
+                    polylogue_model::settlement::SourceRowState::Settled => {
+                        result.known_rows_readable &= readable;
+                    }
                 }
             }
             None if head.status == "done" => {
@@ -417,6 +448,7 @@ fn qualify_operation(
                     } => {
                         if result.expected.get(message.id().as_str()) != Some(&sequence) {
                             result.own_topology_unknown = true;
+                            result.known_rows_readable = false;
                             result.unsupported.insert("Selected Message membership/order is not proved by the retained source contributions".into());
                         }
                         if message.header()?.written_by == polylogue_model::WrittenBy::Model
@@ -458,6 +490,7 @@ fn qualify_operation(
                     }
                     polylogue_store::contributions::SessionStep::UnresolvedOrder { .. } => {
                         result.own_topology_unknown = true;
+                        result.known_rows_readable = false;
                         result
                             .unsupported
                             .insert("Selected Message order is unresolved".into());
@@ -468,6 +501,7 @@ fn qualify_operation(
             }
             if seen.len() != result.expected.len() {
                 result.own_topology_unknown = true;
+                result.known_rows_readable = false;
                 result.unsupported.insert(
                     "Retained source Message membership differs from the visible selected catalog"
                         .into(),
@@ -504,6 +538,7 @@ fn qualify_operation(
                     .insert("Session metadata has no interpreted source owner".into());
             }
         } else if result.metadata.is_some() || !result.expected.is_empty() {
+            result.known_rows_readable = false;
             result
                 .unsupported
                 .insert("Retained Session contributions have no published catalog owner".into());
@@ -716,6 +751,7 @@ fn qualify_shape(
             .is_some_and(|old| old != p.ordinal)
         {
             result.own_topology_unknown = true;
+            result.known_rows_readable = false;
             result
                 .unsupported
                 .insert("Independent inputs disagree about Session Message order".into());

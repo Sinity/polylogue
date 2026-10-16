@@ -34,7 +34,7 @@ args, remaining = parser.parse_known_args()
 driver = load(Path(__file__).with_name("check-morrow.py"), "morrow_driver")
 checker = load(args.checker, "fixture_checker")
 SID = "claude-code:synthetic"
-EXPECTED = {"session_id": SID, "sessions": 1, "messages": 1, "human_prompts": ["retained prompt"],
+EXPECTED = {"session_models": {}, "session_id": SID, "sessions": 1, "messages": 1, "human_prompts": ["retained prompt"],
             "import_context": {"version": 1, "context": ["claude-main", "synthetic"]},
             "message_facts": [{"id": "claude-code:synthetic:prompt", "role": "user", "written_by": "human", "at": "2026-10-15T10:00:00.000Z",
                                "blocks": [{"id": "claude-code:synthetic:prompt:0", "kind": "text", "text": "retained prompt"}]}]}
@@ -319,6 +319,57 @@ class ControllerTests(unittest.TestCase):
         self.assertIn('href="000.stdout"', driver.render_report(result, moved).read_text())
         for path in ['/etc/passwd', '../outside.txt', 'https://example.com', 'escape']:
             self.assertNotIn('<a ', artifact(moved, path))
+
+    def test_mcp_route_never_uses_cli_answer_or_export(self):
+        run = self.keep_run(driver.Run(self.output, None, route="mcp", sdk_python=Path(sys.executable)))
+        calls = []
+        run.mcp_answers = lambda *items: calls.append(items)
+        run.client = lambda *a, **kw: self.fail("MCP answer attempted CLI data acquisition")
+        run.answers(self.output/'archive', EXPECTED, 'base', checker)
+        self.assertEqual(calls, [(self.output/'archive', EXPECTED, 'base')])
+        self.assertIn('provider-loss', run.steps)
+
+    def test_mcp_launch_failure_requires_actual_failed_sdk_receipt(self):
+        run = self.keep_run(driver.Run(self.output, "mcp-launch-failure", route="mcp", sdk_python=Path(sys.executable)))
+        run.binary = Path('/nix/store/synthetic-package/bin/polylogue')
+        def command(argv, label, **kwargs):
+            self.assertEqual(kwargs['expected'], (1,))
+            output = Path(argv[-1]); output.mkdir()
+            (output/'result.json').write_text(json.dumps({'success':False, 'server_argv':[str(self.output/'deliberately-absent-mcp-server')], 'failure':'synthetic captured launch refusal'}))
+            return ''
+        run.command = command
+        with self.assertRaisesRegex(ValueError, 'intentional MCP server launch failure'):
+            run.mcp_answers(self.output/'archive', EXPECTED, 'base')
+        self.assertTrue(run.control_exercised)
+        self.assertEqual(run.control_result['state'], 'launch_refused')
+
+    def test_mcp_damaging_controls_mutate_only_actual_reply_and_require_target_rejection(self):
+        for control, kind, field in [('wrong-tool','tool_call','tool'),('missing-result','tool_result','text')]:
+            for unrelated in [False, True]:
+                output=self.output/(control+str(unrelated)); output.mkdir()
+                run=self.keep_run(driver.Run(output,control,route='mcp',sdk_python=Path(sys.executable)))
+                run.binary=Path('/nix/store/synthetic-package/bin/polylogue')
+                item={'kind':kind,'block':'block:synthetic:target','block_fields':{'tool':'Bash'},'text':'actual result'}
+                captured={'success':True,'projection':{'diagnostic':'must remain unchanged'},'calls':[
+                    {'method':'tools/call','parameters':{'name':'read'},'response':{'structuredContent':{
+                        'outcome':'ok','notes':[],'unknown':{},'up_to_date':True,'shown':[item]}}}]}
+                def command(argv,label,**kwargs):
+                    destination=Path(argv[-1]); destination.mkdir()
+                    (destination/'result.json').write_text(json.dumps(captured)); return ''
+                run.command=command
+                def compare(path,case,label,expected=(0,)):
+                    if expected==(0,): return {'complete':True}
+                    mutated=json.loads(path.read_text())
+                    self.assertEqual(mutated['projection'],captured['projection'])
+                    shown=mutated['calls'][0]['response']['structuredContent']['shown']
+                    if control=='wrong-tool': self.assertEqual(shown[0]['block_fields']['tool'],'deliberately-wrong-tool')
+                    else: self.assertEqual(shown,[])
+                    return {'complete':False,'missing':[{'subject':'block:unrelated' if unrelated else item['block'],'field':[field]}],'wrong':[]}
+                run.mcp_compare=compare
+                reason='unrelated comparator failure' if unrelated else 'intentional raw SDK fact mutation rejected'
+                with self.subTest(control=control,unrelated=unrelated),self.assertRaisesRegex(ValueError,reason):
+                    run.mcp_answers(output/'archive',EXPECTED,'base')
+                self.assertEqual(run.control_exercised,not unrelated)
 
     @unittest.skipUnless(args.binary, "supply an immutable real binary for long result paths")
     def test_real_daemon_uses_short_owned_socket_directory_for_long_results(self):

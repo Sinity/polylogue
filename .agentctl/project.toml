@@ -63,7 +63,7 @@ scratch = "nvme"
 cache = "none"
 
 [operations.morrow_demo]
-description = "Exercise packaged Morrow clients with a pinned specification oracle and retained failed-run evidence"
+description = "Exercise packaged Morrow CLI/export or official MCP fact clients with a pinned specification oracle and retained failed-run evidence"
 exec = ["nix", "develop", "--command", "python3", "scripts/check-morrow.py"]
 arguments = "required"
 pool = "bulk"

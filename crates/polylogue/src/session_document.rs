@@ -338,6 +338,59 @@ fn write_message<W: Write>(
     if let Some(progress) = header.in_progress {
         member(e, "in_progress", &json!(progress))?;
     }
+    write_message_fields(m, e, deadline)?;
+    e.syntax(b",\"blocks\":[")?;
+    let mut index = 0u64;
+    while let Some(block) = stored(m.block_at(index))? {
+        check(deadline)?;
+        if index != 0 {
+            e.syntax(b",")?;
+        }
+        write_block(m, &block, e, deadline)?;
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| invalid("block count overflow"))?;
+    }
+    e.syntax(b"]")?;
+    e.message_boundary()?;
+    write_origins(m, e, deadline)?;
+    e.syntax(b",\"sources\":[")?;
+    let mut cursor = None;
+    let mut first = true;
+    loop {
+        check(deadline)?;
+        match stored(m.next_source(cursor.as_ref(), LEAF))? {
+            SourceStep::Span {
+                cursor: next,
+                source,
+            } => {
+                if !first {
+                    e.syntax(b",")?;
+                }
+                first = false;
+                e.syntax(b"{")?;
+                e.key("input")?;
+                e.identity(&source.input)?;
+                member(e, "chain", &json!(source.chain))?;
+                member(e, "start", &json!(source.start))?;
+                member(e, "end", &json!(source.end))?;
+                if source.preferred {
+                    member(e, "preferred", &json!(true))?;
+                }
+                e.syntax(b"}")?;
+                cursor = Some(next);
+            }
+            SourceStep::Continue { cursor: next } => cursor = Some(next),
+            SourceStep::End => break,
+        }
+    }
+    e.syntax(b"]}")
+}
+fn write_message_fields<W: Write>(
+    m: &MessageView,
+    e: &mut Encoder<W>,
+    deadline: Instant,
+) -> io::Result<()> {
     let mut cursor = None;
     while let Some(entry) = stored(m.next_field(cursor.as_ref(), LEAF))? {
         check(deadline)?;
@@ -406,53 +459,9 @@ fn write_message<W: Write>(
             e.syntax(b"}")?;
         }
     }
-    e.syntax(b",\"blocks\":[")?;
-    let mut index = 0u64;
-    while let Some(block) = stored(m.block_at(index))? {
-        check(deadline)?;
-        if index != 0 {
-            e.syntax(b",")?;
-        }
-        write_block(m, &block, e, deadline)?;
-        index = index
-            .checked_add(1)
-            .ok_or_else(|| invalid("block count overflow"))?;
-    }
-    e.syntax(b"]")?;
-    e.message_boundary()?;
-    write_origins(m, e, deadline)?;
-    e.syntax(b",\"sources\":[")?;
-    let mut cursor = None;
-    let mut first = true;
-    loop {
-        check(deadline)?;
-        match stored(m.next_source(cursor.as_ref(), LEAF))? {
-            SourceStep::Span {
-                cursor: next,
-                source,
-            } => {
-                if !first {
-                    e.syntax(b",")?;
-                }
-                first = false;
-                e.syntax(b"{")?;
-                e.key("input")?;
-                e.identity(&source.input)?;
-                member(e, "chain", &json!(source.chain))?;
-                member(e, "start", &json!(source.start))?;
-                member(e, "end", &json!(source.end))?;
-                if source.preferred {
-                    member(e, "preferred", &json!(true))?;
-                }
-                e.syntax(b"}")?;
-                cursor = Some(next);
-            }
-            SourceStep::Continue { cursor: next } => cursor = Some(next),
-            SourceStep::End => break,
-        }
-    }
-    e.syntax(b"]}")
+    Ok(())
 }
+
 fn write_block<W: Write>(
     m: &MessageView,
     b: &BlockView<'_>,
@@ -497,7 +506,17 @@ fn write_block<W: Write>(
         if let Some(encrypted) = b.encrypted {
             member(e, "encrypted", &json!(encrypted))?;
         }
-    } else if b.kind == "tool_result" {
+    }
+    write_block_fields(b, e, deadline, true)?;
+    e.syntax(b"}")
+}
+fn write_block_fields<W: Write>(
+    b: &BlockView<'_>,
+    e: &mut Encoder<W>,
+    deadline: Instant,
+    include_output: bool,
+) -> io::Result<()> {
+    if b.kind == "tool_result" {
         let result =
             stored(b.tool_result(LEAF))?.ok_or_else(|| invalid("tool result header absent"))?;
         member(e, "outcome", &json!(result.outcome.as_str()))?;
@@ -535,7 +554,12 @@ fn write_block<W: Write>(
                         | BlockField::ExitCode
                         | BlockField::DurationMs
                 );
-            if !body_scalar && !result_scalar {
+            if !include_output && kind == BlockField::Output {
+                if let ToolOutput::Blob(hash) = tool_output_field(&field)? {
+                    member(e, "blob", &json!(format!("blake3:{hash}")))?;
+                }
+            }
+            if !body_scalar && !result_scalar && (include_output || kind != BlockField::Output) {
                 if kind == BlockField::Output {
                     let output = tool_output_field(&field)?;
                     match output {
@@ -591,8 +615,45 @@ fn write_block<W: Write>(
     if !first {
         e.syntax(b"}")?;
     }
-    e.syntax(b"}")
+    Ok(())
 }
+/// Finite selected metadata, encoded with exactly the document's logical-value
+/// rules. Body text is excluded and remains owned by the bounded body window.
+struct Metadata(Vec<u8>);
+impl Write for Metadata {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > (4 * 1_048_576usize).saturating_sub(self.0.len()) {
+            return Err(invalid("selected metadata exceeds admission"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+fn metadata(
+    write: impl FnOnce(&mut Encoder<Metadata>) -> io::Result<()>,
+    deadline: Instant,
+) -> io::Result<Value> {
+    let mut e = Encoder::new(Metadata(Vec::new()), deadline);
+    e.syntax(b"{\"_\":null")?;
+    write(&mut e)?;
+    e.syntax(b"}")?;
+    let mut value: Value = serde_json::from_slice(&e.finish()?.0)?;
+    value
+        .as_object_mut()
+        .expect("encoded metadata object")
+        .remove("_");
+    Ok(value)
+}
+pub(crate) fn message_metadata(m: &MessageView, deadline: Instant) -> io::Result<Value> {
+    metadata(|e| write_message_fields(m, e, deadline), deadline)
+}
+pub(crate) fn block_metadata(b: &BlockView<'_>, deadline: Instant) -> io::Result<Value> {
+    metadata(|e| write_block_fields(b, e, deadline, false), deadline)
+}
+
 fn write_origins<W: Write>(
     m: &MessageView,
     e: &mut Encoder<W>,

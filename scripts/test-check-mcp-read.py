@@ -42,6 +42,52 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             run.read({"ref": "claude-code:neutral"}, 4000)
 
+    def test_full_discovery_is_precise_and_does_not_advertise_collapsed_modes(self):
+        tool={'inputSchema':{'required':['ref'],'properties':{
+            'ref':{},'budget_tokens':{},'continuation':{},'branches':{'type':'boolean'},'view':{'enum':['dialogue','transcript']},
+            **{key:{'enum':['full']} for key in ('tools','thinking','harness')}}},
+            'description':'Explicit view:transcript, 65536-byte normalized admission'}
+        mcp.validate_read_discovery(tool)
+        for mutation in ('missing tools','extra mode','missing transcript','old help','wrong branches type'):
+            broken=json.loads(json.dumps(tool))
+            if mutation=='missing tools': broken['inputSchema']['properties'].pop('tools')
+            elif mutation=='extra mode': broken['inputSchema']['properties']['harness']['enum'].append('collapsed')
+            elif mutation=='missing transcript': broken['inputSchema']['properties']['view']['enum']=['dialogue']
+            elif mutation=='old help': broken['description']='Text only'
+            else: broken['inputSchema']['properties']['branches']['type']='string'
+            with self.subTest(mutation=mutation),self.assertRaises(AssertionError):
+                mcp.validate_read_discovery(broken)
+
+    def test_full_continuation_retains_effective_options_and_budget_verbatim(self):
+        call={'ref':'opaque:session','view':'transcript','tools':'full','thinking':'full','harness':'full','branches':True}
+        emitted=dict(call,continuation='opaque:actual',budget_tokens=2300)
+        replies=[{'outcome':'ok','shown':[],'next':{'tool':'read','arguments':emitted}},
+                 {'outcome':'ok','shown':[],'next':None}]
+        calls=[]
+        def tool(name,args):
+            calls.append(dict(args))
+            return {'structuredContent':replies[len(calls)-1],'content':[{'type':'text','text':mcp.bounded.WARNING}]}
+        run=object.__new__(mcp.Run)
+        run.sources,run.next_calls,run.client={}, {}, SimpleNamespace(tool=tool)
+        page=run.read(call,1800)
+        run.read(page['next'])
+        self.assertEqual(calls,[dict(call,budget_tokens=1800),emitted])
+        replies[0]['next']['arguments']=dict(emitted)
+        replies[0]['next']['arguments'].pop('harness')
+        calls.clear()
+        with self.assertRaises(AssertionError): run.read(call,1800)
+
+    def test_full_citation_validation_admits_typed_values_but_keeps_exact_selectors(self):
+        data=json.dumps({'sessionId':'neutral','uuid':'message','message':{'content':{'command':'neutral'}}}).encode()
+        page={'shown':[{'message':'message:claude-code:neutral:message','sources':[
+            {'input':'input','start':0,'end':len(data)}],'field_origins':[
+                {'binding':{'input':'input'},'selection':{'inputs':[
+                    {'record':{'start':0,'end':len(data)},'path':[{'Key':'message'},{'Key':'content'}]}]}}]}]}
+        with self.assertRaises(AssertionError): mcp.bounded.validate_page_citations(page,{'input':data})
+        mcp.bounded.validate_page_citations(page,{'input':data},text_only=False)
+        page['shown'][0]['field_origins'][0]['selection']['inputs'][0]['path'].append({'Key':'missing'})
+        with self.assertRaises(KeyError): mcp.bounded.validate_page_citations(page,{'input':data},text_only=False)
+
     def test_failed_send_retains_the_attempt_before_writing(self):
         def broken(_):
             raise BrokenPipeError("synthetic closed input")

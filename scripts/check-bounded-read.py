@@ -104,7 +104,7 @@ class Run:
         return page
 
 
-def validate_page_citations(page, sources):
+def validate_page_citations(page, sources, text_only=True):
     for shown in page.get("shown", []):
         for source in shown["sources"]:
             raw = sources[source["input"]][source["start"]:source["end"]]
@@ -123,7 +123,11 @@ def validate_page_citations(page, sources):
                     assert len(component) == 1
                     key = component.get("Key", component.get("Index"))
                     value = value[key]
-                assert isinstance(value, str)
+                if text_only:
+                    assert isinstance(value, str)
+                # Full transcript also cites typed JSON input and status fields.
+                # Their exact identity, source range and selector were checked
+                # above; the full-selection control checks delivered values.
 
 
 def protected_cleanup(steps):
