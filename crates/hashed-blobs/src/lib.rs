@@ -178,7 +178,9 @@ impl Reader {
         self.read_range_checked::<Error>(hash, None, offset, len, || Ok(()))
     }
 
-    /// One scoped plain representation and at most one bounded decoded frame are retained.
+    /// One scoped plain representation and bounded decoded frame slot are retained.
+    /// Each concurrent in-flight call can independently own one representation/frame; the
+    /// caller bounds concurrency. No state mutex is held during IO or caller callbacks.
     /// First use verifies the expected name; subsequent ranges never reopen its pathname.
     /// Descriptor mutation refuses; replacement of its pathname does not change the held object.
     pub fn read_range_checked<E: From<Error>>(&self, hash: &Hash, expected_len: Option<u64>, offset: u64, len: u64,
@@ -758,19 +760,22 @@ impl Store {
             name.update(&buf[..n]);
             let c = comp.compress(&buf[..n])?;
             tmp.write(&c)?;
-            table.push((c.len() as u32, n as u32));
+            table.push((u32::try_from(c.len()).map_err(|_| Error::Refused("compressed frame exceeds u32 seek entry".into()))?, n as u32));
             if n < self.frame {
                 break;
             }
         }
-        let mut st = Vec::with_capacity(17 + table.len() * 8);
+        let table_len = table.len().checked_mul(8).and_then(|n| n.checked_add(9))
+            .and_then(|n| u32::try_from(n).ok()).ok_or_else(|| Error::Refused("seek table exceeds u32 layout".into()))?;
+        let frame_count = u32::try_from(table.len()).map_err(|_| Error::Refused("too many seek frames".into()))?;
+        let mut st = Vec::with_capacity(8 + table_len as usize);
         st.extend_from_slice(&SEEK_SKIP_MAGIC.to_le_bytes());
-        st.extend_from_slice(&((table.len() * 8 + 9) as u32).to_le_bytes());
+        st.extend_from_slice(&table_len.to_le_bytes());
         for (c, d) in &table {
             st.extend_from_slice(&c.to_le_bytes());
             st.extend_from_slice(&d.to_le_bytes());
         }
-        st.extend_from_slice(&(table.len() as u32).to_le_bytes());
+        st.extend_from_slice(&frame_count.to_le_bytes());
         st.push(0); // descriptor: no per-frame checksum entries; each frame carries its own
         st.extend_from_slice(&SEEKABLE_MAGIC.to_le_bytes());
         tmp.write(&st)?;
@@ -962,7 +967,9 @@ impl Store {
                 Some(d) => delta_compress(level, d, &buf[..n])?,
                 None => comp.compress(&buf[..n])?,
             };
-            footer.frames[k as usize] = ((c.len() + 16) as u32, n as u32);
+            let cipher_len = c.len().checked_add(16).and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| Error::Refused("sealed frame exceeds u32 entry".into()))?;
+            footer.frames[k as usize] = (cipher_len, n as u32);
             let ct = aead
                 .encrypt(Nonce::from_slice(&nonce(k)), Payload { msg: &c, aad: &aad(footer, name, k, plain_start) })
                 .map_err(|_| Error::Refused("encryption failed".into()))?;
@@ -1222,16 +1229,17 @@ impl Store {
                 return Err(Error::Missing(e.blob));
             }
             starts.push(total);
-            total += e.len;
+            total = total.checked_add(e.len).ok_or_else(|| Error::Refused("assembled length overflow".into()))?;
         }
-        Ok(Assembled { store: self, extents: extents.to_vec(), starts, total, pos: 0 })
+        Ok(Assembled { store: self, reader: Reader::new(&self.write_root, self.roots[1..].to_vec()), extents: extents.to_vec(), starts, total, pos: 0 })
     }
 
-    fn range_any(&self, h: &Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
-        match self.range(h, offset, len, None) {
+    fn range_any(&self, reader: &Reader, h: &Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
+        match reader.read_range(h, offset, len) {
             Err(Error::NotSeekable(_)) => {
                 let all = self.read_all(h, None)?;
-                all.get(offset as usize..(offset + len) as usize)
+                let end = offset.checked_add(len).ok_or_else(|| Error::Refused("extent overflow".into()))?;
+                all.get(offset as usize..end as usize)
                     .map(|s| s.to_vec())
                     .ok_or_else(|| Error::Refused(format!("extent past the end of {h}")))
             }
@@ -1464,6 +1472,7 @@ impl Batch<'_> {
 
 pub struct Assembled<'a> {
     store: &'a Store,
+    reader: Reader,
     extents: Vec<Extent>,
     starts: Vec<u64>,
     total: u64,
@@ -1489,7 +1498,8 @@ impl Read for Assembled<'_> {
         let e = self.extents[i];
         let within = self.pos - self.starts[i];
         let take = (buf.len() as u64).min(e.len - within).min(1 << 20);
-        let data = self.store.range_any(&e.blob, e.offset + within, take).map_err(io::Error::other)?;
+        let offset = e.offset.checked_add(within).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "extent offset overflow"))?;
+        let data = self.store.range_any(&self.reader, &e.blob, offset, take).map_err(io::Error::other)?;
         buf[..data.len()].copy_from_slice(&data);
         self.pos += data.len() as u64;
         Ok(data.len())
@@ -1506,7 +1516,7 @@ impl Seek for Assembled<'_> {
         if p < 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek before the start"));
         }
-        self.pos = p as u64;
+        self.pos = u64::try_from(p).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "seek position overflow"))?;
         Ok(self.pos)
     }
 }

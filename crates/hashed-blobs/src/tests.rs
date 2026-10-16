@@ -870,3 +870,15 @@ fn reader_remains_send_and_sync_and_warms_one_frame_without_extra_decoding() {
     assert!(matches!(reader.read_range(&h, 0, 1), Err(Error::Corrupt { .. })));
     assert!(reader.slot().unwrap().is_none());
 }
+
+#[test]
+fn assembled_extents_refuse_arithmetic_overflow() {
+    let (_d, s) = store();
+    let h = s.put(&b"bytes"[..], 1).unwrap();
+    assert!(matches!(s.assemble(&[Extent { blob: h, offset: 0, len: u64::MAX }, Extent { blob: h, offset: 0, len: 1 }]), Err(Error::Refused(_))));
+    let mut assembled = s.assemble(&[Extent { blob: h, offset: u64::MAX, len: 2 }]).unwrap();
+    assembled.seek(SeekFrom::Start(1)).unwrap();
+    assert!(assembled.read(&mut [0u8; 1]).is_err());
+    let mut assembled = s.assemble(&[Extent { blob: h, offset: 0, len: u64::MAX }]).unwrap();
+    assert!(assembled.seek(SeekFrom::End(1)).is_err());
+}
