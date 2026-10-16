@@ -72,7 +72,7 @@ pub fn command(
     let result = executed && terminal;
     Ok(Operation {
         kind: "CommandExecution".into(),
-        tool: Some("exec_command".into()),
+        tool: None,
         native_session: native_session.into(),
         direct_anchors: vec![],
         session,
@@ -198,6 +198,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(core.id(), ui.id());
+        assert_eq!(core.tool, None);
+        assert_eq!(ui.tool, None);
         assert!(core.result_present && ui.result_present);
         assert_eq!(core.output, Some("".into()));
         assert_eq!(ui.output, None);

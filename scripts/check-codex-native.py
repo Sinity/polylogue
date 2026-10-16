@@ -151,6 +151,8 @@ def qualification_controls(binary, output):
         imported(run, path, 'codex-history-sqlite')
         _, all_items = query(run, 'tool_items')
         assert len(all_items['rows']) == 6, all_items
+        user = next(row for row in all_items['rows'] if row['invocation'] == 'user')
+        assert run.cli([user['ref'], 'read', '--budget', '20000'])['shown'][0]['operation']['tool'] is None
         _, calls = query(run)
         assert len(calls['rows']) == 2, calls
         assert len({row['id'] for row in calls['rows']}) == 2, calls
@@ -309,7 +311,7 @@ def command_representation_control(binary, output):
         selected = calls['rows'][0]
         current = run.cli([selected['ref'], 'read', '--budget', '20000'])
         facts = current['shown'][0]['operation']
-        assert facts['command'] == argv and facts['message'] is None, facts
+        assert facts['command'] == argv and facts['message'] is None and facts['tool'] is None, facts
         ui_hash = next(cite['version_hash'] for cite in current['shown'][0]['representations'] if cite['origin']['representation'] == 'history')
         projected = run.cli([selected['id'] + '@' + ui_hash, 'read', '--budget', '20000'])
         assert projected['shown'][0]['operation']['command'] == display, projected

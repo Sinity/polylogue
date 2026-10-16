@@ -121,7 +121,27 @@ fn attach(
         }),
         &mut d::Work::default(),
     )?;
-    for root in [blocks, fields, Some(next)].into_iter().flatten() {
+    let selected = clone_with_root(tx, p, owner, body, blocks, fields, next)?;
+    if db(p, || {
+        tx.execute("UPDATE message SET selected_body_pk=?2 WHERE pk=?1 AND selected_body_pk=?3 AND session_pk=?4 AND hidden=0",params![message,selected,body,session])
+    })? != 1
+    {
+        return Err(Error::MessagePredecessorChanged);
+    }
+    Ok(true)
+}
+// The caller has already fenced the owner and ready source body. Only a fixed
+// row is copied; all three variable directories keep their original leases.
+fn clone_with_root(
+    tx: &Transaction<'_>,
+    p: &Path,
+    owner: d::Owner,
+    body: i64,
+    blocks: Option<i64>,
+    fields: Option<i64>,
+    root: i64,
+) -> Result<i64> {
+    for root in [blocks, fields, Some(root)].into_iter().flatten() {
         d::acquire(tx, p, owner, root)?;
     }
     // This fixed schema-owned row copy never materializes variable values or
@@ -141,17 +161,37 @@ fn attach(
     let sql = format!(
         "INSERT INTO message_body({columns}) SELECT {values} FROM message_body WHERE pk=?1 AND ready=1"
     );
-    if db(p, || tx.execute(&sql, params![body, next]))? != 1 {
+    if db(p, || tx.execute(&sql, params![body, root]))? != 1 {
         return Err(Error::MessagePredecessorChanged);
     }
-    let selected = tx.last_insert_rowid();
-    if db(p, || {
-        tx.execute("UPDATE message SET selected_body_pk=?2 WHERE pk=?1 AND selected_body_pk=?3 AND session_pk=?4 AND hidden=0",params![message,selected,body,session])
-    })? != 1
-    {
-        return Err(Error::MessagePredecessorChanged);
+    Ok(tx.last_insert_rowid())
+}
+
+/// Source election must not erase independently proved operation membership.
+/// Carry the prior immutable root into a fixed metadata clone of the new body.
+/// A different nonempty operation root needs reconciliation, never union by ID.
+pub(super) fn carry_selected(
+    tx: &Transaction<'_>,
+    p: &Path,
+    owner: d::Owner,
+    body: i64,
+) -> Result<i64> {
+    let old: Option<i64> = db(p, || {
+        tx.query_row("SELECT b.operation_root_pk FROM message m LEFT JOIN message_body b ON b.pk=m.selected_body_pk WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0",params![owner.message,owner.session],|r|r.get(0))
+    })?;
+    let Some(old) = old else {
+        return Ok(body);
+    };
+    let (blocks, fields, root): (Option<i64>, Option<i64>, Option<i64>) = db(p, || {
+        tx.query_row("SELECT block_root_pk,field_root_pk,operation_root_pk FROM message_body WHERE pk=?1 AND message_pk=?2 AND session_pk=?3 AND ready=1",params![body,owner.message,owner.session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))
+    })?;
+    if root == Some(old) {
+        return Ok(body);
     }
-    Ok(true)
+    if root.is_some() {
+        return Err(Error::MessagePreparationPending);
+    }
+    clone_with_root(tx, p, owner, body, blocks, fields, old)
 }
 /// One operation admits at most16 overlaps plus its direct owner. Replays may
 /// restore membership after source election selects an equivalent source body.

@@ -43,7 +43,9 @@ provider's `CommandExecution.id`, scoped by Session and turn. In the pinned
 core constructor the direct tool's `ctx.call_id` becomes that item ID; a rollout
 response call can therefore correspond when its turn is independently known.
 A code wrapper's call ID is a different invocation from its child command ID.
-Wrappers retain their proved block-derived identity, known turn and raw call ID;
+Native items carry no tool-name field, so `tool` stays null unless an actual
+response-call witness supplies it. Wrappers retain their proved block-derived
+identity, known turn and raw call ID;
 they do not claim a native CommandExecution item ID.
 Equal commands, generated legacy UI `item-N` IDs and legacy Session/call IDs
 supply no correspondence proof. Generated UI IDs remain unresolved.
@@ -61,7 +63,9 @@ carry the exact request-call source ranges, selected Message-body key/hash and
 index generation. Visibility requires both the selected ToolItem version and
 membership in that exact selected Message body’s immutable operation root.
 Association publication copies fixed body metadata and shares existing roots;
-it never edits a ready body or its source version hash. Historical ToolItem
+it never edits a ready body or its source version hash. Compatible source
+election carries that shared operation root into its selected body rather than
+erasing independent associations. Historical ToolItem
 reads return `selected: false` and no current association projection. Until a scoped rollout witness
 accounts for the affected wrapper cohort, aggregate count coverage stays
 unknown even when all individual items were decoded.

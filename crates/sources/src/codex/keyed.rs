@@ -2567,6 +2567,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 if !operation.native {
                     operation.provisional_anchor = previous.provisional_anchor;
                 }
+                operation.tool = previous.tool;
                 operation.message = previous.message;
                 operation.origins.splice(0..0,previous.origins.into_iter().filter(|origin|!matches!(origin,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..}if tag=="status")));
             }
