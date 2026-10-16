@@ -37,10 +37,13 @@ impl World {
         }
     }
     fn import(&self, bytes: &[u8], id: &str) -> RetainedInput {
+        self.import_as(bytes, id, SID)
+    }
+    fn import_as(&self, bytes: &[u8], id: &str, native: &str) -> RetainedInput {
         fs::write(&self.path, bytes).unwrap();
         let request = ImportRequest {
             format: InputFormat::ClaudeCodeJsonl,
-            context: vec!["claude-main".into(), SID.into()],
+            context: vec!["claude-main".into(), native.into()],
             path: self.path.clone(),
             observation: Observation {
                 id: id.into(),
@@ -110,6 +113,32 @@ impl World {
             thread::yield_now();
         }
     }
+    fn wait_rows(&self, input: &RetainedInput, unavailable: bool) {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let progress = self.progress(input);
+            let done = if unavailable {
+                matches!(
+                    progress.source_rows.state,
+                    polylogue_model::settlement::SourceRowState::Unavailable { .. }
+                )
+            } else {
+                matches!(
+                    progress.source_rows.state,
+                    polylogue_model::settlement::SourceRowState::Settled
+                )
+            };
+            if done {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "source row deadline: {:?}",
+                progress.source_rows
+            );
+            thread::yield_now();
+        }
+    }
     fn document(&self) -> (Value, Coverage) {
         let session = self
             .reader
@@ -145,6 +174,7 @@ fn retained_morrow_document_preserves_twelve_messages_payloads_and_exact_origins
         .iter()
         .map(|r| r["uuid"].as_str().unwrap())
         .collect::<Vec<_>>();
+    world.wait_rows(&input, false);
     world.wait_selected(&input, &ids);
     fs::remove_file(&world.path).unwrap();
     let (document, coverage) = world.document();
@@ -153,6 +183,22 @@ fn retained_morrow_document_preserves_twelve_messages_payloads_and_exact_origins
         coverage.catalog,
         SessionCoverage::KnownCatalogOnly
     ));
+    assert_eq!(document["result"]["outcome"], "ok");
+    assert_eq!(document["result"]["settlement"]["state"], "settled");
+    assert_eq!(document["session"]["title"], "Project skeleton");
+    assert_eq!(document["session"]["display_title"], "Project skeleton");
+    assert_eq!(document["session"]["title_source"], "provider");
+    assert_eq!(document["session"]["cwd"], "/home/op/morrow");
+    assert_eq!(document["session"]["branch"], "main");
+    assert_eq!(document["session"]["harness_version"], "2.1.220");
+    assert_eq!(
+        document["session"]["started_at"],
+        "2026-10-01T07:00:00.000Z"
+    );
+    assert_eq!(
+        document["session"]["last_activity_at"],
+        "2026-10-01T07:42:00.000Z"
+    );
     assert_eq!(document["format"], "polylogue-session");
     assert_eq!(document["version"], 1);
     assert_eq!(document["session"]["id"], world.session().as_str());
@@ -449,7 +495,16 @@ fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_relea
     write(&fresh, &mut second, Instant::now() + WAIT).unwrap();
     let second: Value = serde_json::from_slice(&second).unwrap();
     assert_eq!(second["result"]["unknown"]["record_errors"], 1);
-    assert_eq!(second["messages"], first["messages"]);
+    // An undecodable newer record can hide a branch. Its arrival removes the
+    // derived active-path assertion; content, identity and origins stay exact.
+    let mut original = first["messages"].clone();
+    let mut current = second["messages"].clone();
+    for messages in [&mut original, &mut current] {
+        for message in messages.as_array_mut().unwrap() {
+            message.as_object_mut().unwrap().remove("on_active_path");
+        }
+    }
+    assert_eq!(current, original);
     let mut old_again = Vec::new();
     write(&pinned, &mut old_again, Instant::now() + WAIT).unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&old_again).unwrap(), first);
@@ -472,4 +527,159 @@ fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_relea
         polylogue_model::settlement::SourceRowState::Settled
     ));
     assert_eq!(world.document().0["result"]["unknown"]["record_errors"], 1);
+}
+
+fn titled(uuid: &str) -> Vec<u8> {
+    let mut raw =
+        (json!({"type":"ai-title","aiTitle":"Synthetic Session"}).to_string() + "\n").into_bytes();
+    raw.extend((json!({"type":"user","uuid":uuid,"sessionId":SID,"promptSource":"typed","timestamp":"2026-10-01T08:00:00.000Z","message":{"role":"user","content":"Synthetic prompt"}}).to_string()+"\n").as_bytes());
+    raw
+}
+#[test]
+fn exact_selection_can_settle_while_document_keeps_possible_foreign_link_work_pending() {
+    let world = World::new();
+    let input = world.import(&titled("exact-row"), "exact-good");
+    world.wait_rows(&input, false);
+    let pinned = world
+        .reader
+        .selected_session(&world.session(), 65536)
+        .unwrap()
+        .unwrap();
+    let mut old = Vec::new();
+    write(&pinned, &mut old, Instant::now() + WAIT).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&old).unwrap()["result"]["outcome"],
+        "ok"
+    );
+    let unrelated = world.import_as(b"{", "unrelated-tail", "other-main");
+    let deadline = Instant::now() + WAIT;
+    while world
+        .progress(&unrelated)
+        .parser
+        .is_none_or(|h| h.status != "waiting_tail")
+    {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    let catalog = world.reader.session_catalog(65536).unwrap();
+    let query = polylogue_model::query::SessionQuery {
+        id: Some(world.session().as_str().into()),
+        origin: Some("claude-code".into()),
+        ..Default::default()
+    };
+    let selected = polylogue_engine::session_query::execute(
+        &catalog,
+        &query,
+        Instant::now() + WAIT,
+        &mut || false,
+    )
+    .unwrap();
+    assert_eq!(selected["outcome"], "ok");
+    assert_eq!(selected["up_to_date"], false);
+    assert_eq!(selected["settlement"]["state"], "settled");
+    let fresh = world.document().0;
+    assert_eq!(fresh["result"]["outcome"], "degraded");
+    assert_eq!(fresh["result"]["settlement"]["state"], "pending");
+    assert_eq!(
+        fresh["messages"],
+        serde_json::from_slice::<Value>(&old).unwrap()["messages"]
+    );
+    let mut again = Vec::new();
+    write(&pinned, &mut again, Instant::now() + WAIT).unwrap();
+    assert_eq!(old, again);
+}
+#[test]
+fn malformed_only_relevant_input_without_selected_rows_revokes_complete_claim() {
+    let world = World::new();
+    let input = world.import(&titled("known-row"), "malformed-control-good");
+    world.wait_rows(&input, false);
+    assert_eq!(world.document().0["result"]["outcome"], "ok");
+    let malformed = world.import(b"{not json}\n", "malformed-control-only");
+    world.wait_rows(&malformed, true);
+    let document = world.document().0;
+    assert_eq!(document["result"]["outcome"], "degraded");
+    assert_eq!(document["result"]["unknown"]["record_errors"], 1);
+    assert_eq!(document["messages"].as_array().unwrap().len(), 1);
+}
+#[test]
+fn eof_without_finished_row_effects_does_not_certify_exact_read() {
+    let world = World::new();
+    let mut raw = titled("known-row");
+    // A required body-bearing tool-result companion has no acquisition route
+    // here. Byte EOF cannot discharge its source mapping obligation.
+    raw.extend((json!({"type":"user","uuid":"required-result","sessionId":SID,"parentUuid":"known-row","timestamp":"2026-10-01T08:01:00Z","toolUseResult":{"persistedOutputPath":"/absent/tool-results/result.txt"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"missing-companion","content":"<persisted-output>\n/absent/tool-results/result.txt\n</persisted-output>"}]}}).to_string()+"\n").as_bytes());
+    let input = world.import(&raw, "required-companion-eof");
+    world.wait_selected(&input, &["known-row"]);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let p = world.progress(&input);
+        if p.parser
+            .as_ref()
+            .is_some_and(|h| h.parsed_upto == input.length)
+        {
+            assert!(p.parser.unwrap().finalization_pending);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    let view = world
+        .reader
+        .selected_session(&world.session(), 65536)
+        .unwrap()
+        .unwrap();
+    let q = polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 65536)
+        .unwrap();
+    assert!(!q.complete());
+    assert!(q.pending_inputs > 0 || q.unavailable_inputs > 0);
+}
+
+#[test]
+fn foreign_incoming_link_and_copy_sidechain_evidence_prevent_complete_document() {
+    let world = World::new();
+    let input = world.import(&titled("known-row"), "lineage-good");
+    world.wait_rows(&input, false);
+    let link =
+        (json!({"type":"continued-in","continuedInSessionId":SID}).to_string() + "\n").into_bytes();
+    let foreign = world.import_as(&link, "lineage-foreign", "foreign-owner");
+    world.wait_rows(&foreign, true);
+    let document = world.document().0;
+    assert_eq!(document["result"]["outcome"], "degraded");
+    assert!(
+        document["result"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().unwrap().contains("incoming links"))
+    );
+    for (label, record) in [
+        (
+            "copy",
+            json!({"type":"user","uuid":"known-row","sessionId":"copied-parent","message":{"role":"user","content":"copied record"}}),
+        ),
+        (
+            "sidechain",
+            json!({"type":"user","uuid":"side-row","isSidechain":true,"sessionId":SID,"message":{"role":"user","content":"side instruction"}}),
+        ),
+    ] {
+        let input = world.import(&(record.to_string() + "\n").into_bytes(), label);
+        let deadline = Instant::now() + WAIT;
+        while world
+            .progress(&input)
+            .parser
+            .is_none_or(|h| h.parsed_upto != input.length)
+        {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        let view = world
+            .reader
+            .selected_session(&world.session(), 65536)
+            .unwrap()
+            .unwrap();
+        let q =
+            polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 65536)
+                .unwrap();
+        assert!(!q.complete(), "{label} must keep lineage qualification");
+    }
 }

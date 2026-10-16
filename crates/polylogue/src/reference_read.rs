@@ -212,7 +212,7 @@ pub(crate) fn serve(
 }
 /// Frames are transport-only. The terminal renderer writes one bounded text
 /// piece at a time; it never collects a Message or mistakes EOF for success.
-fn terminal_text(out: &mut impl Write, text: &str, layout: bool) -> io::Result<()> {
+pub(crate) fn terminal_text(out: &mut impl Write, text: &str, layout: bool) -> io::Result<()> {
     let mut start = 0;
     for (index, ch) in text.char_indices() {
         if ch.is_control() && !(layout && matches!(ch, '\n' | '\t')) {

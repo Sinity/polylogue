@@ -16,13 +16,13 @@ use polylogue_store::parser_state::{Budget, CellChange, Head, Snapshot};
 type Result<T> = std::result::Result<T, StoreError>;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-const HEADER: &str = "claude.header.v1";
-const SESSION: &str = "claude.session.v1";
-const RESPONSE: &str = "claude.response.v1";
+pub(crate) const HEADER: &str = "claude.header.v1";
+pub(crate) const SESSION: &str = "claude.session.v1";
+pub(crate) const RESPONSE: &str = "claude.response.v1";
 const SIDE: &str = "claude.side.v1";
 const LINK: &str = "claude.link.v1";
 const RECORD: &str = "claude.record.v1";
-const CONTRIBUTION: &str = "claude.contribution.v1";
+pub(crate) const CONTRIBUTION: &str = "claude.contribution.v1";
 const BODY: &str = "claude.body.v1";
 const PENDING: &str = "claude.pending.v1";
 pub(crate) const EFFECTS: &str = "claude.effects.v1";

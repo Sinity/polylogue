@@ -14,71 +14,6 @@ use std::{
     io::{self, Write},
     time::Instant,
 };
-pub(crate) const COVERAGE_GAPS: &[&str] = &[
-    "source_catalog_coverage",
-    "canonical_history_coverage",
-    "session_metadata_reductions",
-    "links_events_notes_runs_deliveries",
-    "tool_population_and_pairing",
-    "partial_excision_coverage",
-];
-fn result_qualification(
-    session: &SessionView,
-    deadline: Instant,
-    cancelled: &mut dyn FnMut() -> bool,
-) -> io::Result<Value> {
-    let qualification = polylogue_engine::session_qualification::qualify_with_cancel(
-        session,
-        deadline,
-        16 * 1024 * 1024,
-        cancelled,
-    )
-    .map_err(|error| {
-        if matches!(error, polylogue_store::Error::Cancelled) {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "Session dependency qualification deadline",
-            )
-        } else {
-            io::Error::other(error)
-        }
-    })?;
-    let mut notes: Vec<String> = COVERAGE_GAPS.iter().map(|s| (*s).into()).collect();
-    if qualification.record_errors != 0 {
-        notes.push(format!(
-            "{} retained undecodable complete records affect this Session's main inputs",
-            qualification.record_errors
-        ));
-    }
-    if qualification.pending_inputs != 0 {
-        notes.push(format!(
-            "{} direct Session input bases have pending interpretation or row effects",
-            qualification.pending_inputs
-        ));
-    }
-    if qualification.unavailable_inputs != 0 {
-        notes.push(format!(
-            "{} direct Session input bases have unavailable interpretation or effects",
-            qualification.unavailable_inputs
-        ));
-    }
-    if qualification.unresolved_inputs != 0 {
-        notes.push(format!(
-            "{} input dependency shapes remain unresolved for this Session",
-            qualification.unresolved_inputs
-        ));
-    }
-    let unknown = if qualification.record_errors != 0 {
-        json!({"record_errors":qualification.record_errors})
-    } else {
-        json!({})
-    };
-    let recovery = session.recovery().map_err(io::Error::other)?;
-    if recovery.is_some() {
-        notes.push(polylogue_model::RecoveryQualification::NOTE.to_owned());
-    }
-    Ok(json!({"outcome":"degraded","notes":notes,"unknown":unknown,"recovery":recovery}))
-}
 const LEAF: usize = 65536;
 const PIECE: usize = 4096;
 #[derive(Debug)]
@@ -86,6 +21,7 @@ pub(crate) struct Coverage {
     pub messages: u64,
     pub catalog: SessionCoverage,
     pub qualification: Value,
+    pub recovery: Option<polylogue_model::RecoveryQualification>,
 }
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -205,7 +141,26 @@ pub(crate) fn write_with_cancel(
     deadline: Instant,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> io::Result<Coverage> {
-    let qualification = result_qualification(session, deadline, cancelled)?;
+    let source_qualification = polylogue_engine::session_qualification::qualify_with_cancel(
+        session,
+        deadline,
+        16 * 1024 * 1024,
+        cancelled,
+    )
+    .map_err(|error| {
+        if matches!(error, polylogue_store::Error::Cancelled) {
+            io::Error::new(io::ErrorKind::TimedOut, error)
+        } else {
+            io::Error::other(error)
+        }
+    })?;
+    let mut qualification = source_qualification.result(&session.catalog());
+    let recovery = stored(session.recovery())?;
+    if recovery.is_some() {
+        qualification["outcome"] = json!("degraded");
+        qualification["notes"].as_array_mut().expect("qualification notes")
+            .push(json!(polylogue_model::RecoveryQualification::NOTE));
+    }
     let mut after = None;
     loop {
         check(deadline)?;
@@ -231,17 +186,12 @@ pub(crate) fn write_with_cancel(
     // Package version is fixed build metadata, not provider text.
     e.syntax(env!("CARGO_PKG_VERSION").as_bytes())?;
     e.syntax(b"\"")?;
-    let mut result = qualification.clone();
-    result
-        .as_object_mut()
-        .expect("result qualification")
-        .remove("recovery");
-    member(&mut e, "result", &result)?;
-    if !qualification["recovery"].is_null() {
-        member(&mut e, "recovery", &qualification["recovery"])?;
+    member(&mut e, "result", &qualification)?;
+    if let Some(recovery) = &recovery {
+        member(&mut e, "recovery", &json!(recovery))?;
     }
     e.syntax(b",\"session\":{")?;
-    let h = stored(session.header())?;
+    let h = source_qualification.header(stored(session.header())?);
     e.key("id")?;
     e.identity(h.id.as_str())?;
     member(&mut e, "origin", &json!(h.origin.as_str()))?;
@@ -265,9 +215,14 @@ pub(crate) fn write_with_cancel(
             member(&mut e, key, &json!(value))?;
         }
     }
-    // The archive-wide preamble/note/index title reduction is not available
-    // through this reader. Do not label an ID fallback as the owning display
-    // title while a higher-priority first prompt may exist.
+    if let Some(title) = h
+        .title
+        .as_deref()
+        .filter(|title| !title.is_empty() && *title != "New chat")
+    {
+        member(&mut e, "display_title", &json!(title))?;
+        member(&mut e, "title_source", &json!("provider"))?;
+    }
     if let Some(value) = h.started_at {
         member(&mut e, "started_at", &json!(timestamp(value)?))?;
     }
@@ -304,7 +259,14 @@ pub(crate) fn write_with_cancel(
                 if messages != 0 {
                     e.syntax(b",")?;
                 }
-                write_message(&message, &mut e, deadline)?;
+                write_message(
+                    &message,
+                    &mut e,
+                    deadline,
+                    source_qualification
+                        .active_messages
+                        .contains(message.id().as_str()),
+                )?;
                 messages = messages
                     .checked_add(1)
                     .ok_or_else(|| invalid("Message count overflow"))?;
@@ -316,18 +278,26 @@ pub(crate) fn write_with_cancel(
             SessionStep::End { coverage } => break coverage,
         }
     };
-    e.syntax(b"]}")?;
+    e.syntax(b"]")?;
+    if source_qualification.complete() {
+        e.syntax(b",\"links\":[],\"events\":[],\"notes\":[],\"runs\":[],\"deliveries\":[]")?;
+    }
+    e.syntax(b",\"inputs\":")?;
+    e.value(&json!(source_qualification.inputs))?;
+    e.syntax(b"}")?;
     e.finish()?;
     Ok(Coverage {
         messages,
         catalog,
         qualification,
+        recovery,
     })
 }
 fn write_message<W: Write>(
     m: &MessageView,
     e: &mut Encoder<W>,
     deadline: Instant,
+    active: bool,
 ) -> io::Result<()> {
     let header = stored(m.header())?;
     e.syntax(b"{")?;
@@ -335,6 +305,9 @@ fn write_message<W: Write>(
     e.identity(m.id().as_str())?;
     member(e, "role", &serde_json::to_value(header.role)?)?;
     member(e, "written_by", &serde_json::to_value(header.written_by)?)?;
+    if active {
+        member(e, "on_active_path", &json!(true))?;
+    }
     if let Some(progress) = header.in_progress {
         member(e, "in_progress", &json!(progress))?;
     }

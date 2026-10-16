@@ -13,7 +13,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 5;
+pub const PARSER_VERSION: u32 = 6;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -1082,7 +1082,9 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                     }
                 }
                 // Evidence for the subagent link; the copied records themselves carry the lineage.
-                "fork-context-ref" => RecordOutcome::Used,
+                "fork-context-ref" => {
+                    RecordOutcome::Unrecognized("fork context lineage not yet derived")
+                }
                 "custom-title" | "ai-title" | "summary" => {
                     let (rank, field) = match ty {
                         "custom-title" => (3, "customTitle"),
@@ -1093,16 +1095,9 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                         && self.header.title.as_ref().is_none_or(|(r, _)| rank >= *r)
                     {
                         self.header.title = Some((rank, t.to_owned()));
-                        // Metadata-only changes explicitly touch their existing
-                        // owner without enumerating other historical sessions.
-                        if let FileCtx::Main { stem } = self.ctx.clone()
-                            && (self.by_id.contains_key(&stem)
-                                || self
-                                    .view
-                                    .session(&stem)
-                                    .map_err(|e| e.to_string())?
-                                    .is_some())
-                        {
+                        // Metadata-only input is itself a possible Session contributor;
+                        // preserve its owner even when it has no Message rows.
+                        if let FileCtx::Main { stem } = self.ctx.clone() {
                             self.session_index(&stem, SessionKind::Main)?;
                         }
                     }
@@ -1115,7 +1110,9 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                     .and_then(Value::as_str)
                 {
                     // Subagent evidence and hook runs are kept (spec/sources/claude-code.md, record table).
-                    Some("agent_progress") => RecordOutcome::Used,
+                    Some("agent_progress") => {
+                        RecordOutcome::Unrecognized("agent progress linkage not yet derived")
+                    }
                     Some("hook_progress") => self.event(rec, "hook_run")?,
                     // Counted only: payload not stored in the index.
                     Some(

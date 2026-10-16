@@ -82,8 +82,13 @@ pub fn execute(
                 required: sessions,
             });
         }
-        let header = session.header()?;
-        let selected = matches(plan, header);
+        let stored_header = session.header()?;
+        let selected = matches(plan, stored_header);
+        // An exact selection has no corpus/ranking dependency on other Sessions.
+        if !selected && plan.text.is_empty() {
+            continue;
+        }
+        let header = qualification.header(stored_header);
         let mut after = None;
         let mut known = 0u64;
         let mut last_message_at: Option<i64> = None;
@@ -118,7 +123,7 @@ pub fn execute(
             }
         }
         if selected {
-            let mut value = row(header, known);
+            let mut value = row(&header, known);
             value["known_last_message_at"] = json!(last_message_at);
             metadata_bytes = metadata_bytes.saturating_add(
                 serde_json::to_vec(&value)
@@ -164,36 +169,12 @@ pub fn execute(
         rows.truncate(limit);
     }
     let recovery = catalog.recovery()?;
-    let mut notes = vec![];
+    let mut notes = qualification.notes();
     if recovery.is_some() {
         notes.push(polylogue_model::RecoveryQualification::NOTE.to_owned());
     }
-    if sessions > 0 || known_messages > 0 || qualification.interpreted_nonempty_inputs > 0 {
+    if plan.id.is_none() || !plan.text.is_empty() {
         notes.push("Only the known selected Session/Message catalog was searched; Session metadata reductions, linked/subagent expansion, inherited/copy classification and complete source populations remain pending.".to_owned());
-    }
-    if qualification.record_errors > 0 {
-        notes.push(format!(
-            "{} undecodable complete records in relevant retained inputs",
-            qualification.record_errors
-        ));
-    }
-    if qualification.pending_inputs > 0 {
-        notes.push(format!(
-            "{} retained inputs have pending interpretation",
-            qualification.pending_inputs
-        ));
-    }
-    if qualification.unavailable_inputs > 0 {
-        notes.push(format!(
-            "{} retained inputs have unavailable interpretation",
-            qualification.unavailable_inputs
-        ));
-    }
-    if qualification.unresolved_inputs > 0 {
-        notes.push(format!(
-            "{} retained input dependency shapes remain unresolved",
-            qualification.unresolved_inputs
-        ));
     }
     if corpus.is_some() && sessions > 0 {
         notes.push("Canonical relevance ranking is unavailable; results use newest known selected Message time. Distinct-text ranking/publication remains pending.".to_owned());
@@ -217,6 +198,9 @@ pub fn execute(
     while let Some((next, session)) = catalog.next(verify.as_ref(), 65536)? {
         check(until, cancelled)?;
         verify = Some(next);
+        if plan.text.is_empty() && !matches(plan, session.header()?) {
+            continue;
+        }
         let mut after = None;
         loop {
             check(until, cancelled)?;
@@ -236,7 +220,9 @@ pub fn execute(
     } else {
         "ok"
     };
-    let mut read_as = if corpus.is_some() {
+    let mut read_as = if qualification.complete() && plan.id.is_some() {
+        "Select the exact Session and its source-proved owned Message catalog from the pinned retained basis; this selection does not certify the larger normalized document's foreign incoming-link dependencies.".to_owned()
+    } else if corpus.is_some() {
         "Find known selected Sessions with all prose terms in the same human or model Message, phrases within one Text block, ordered by newest known selected Message time; relevance, snippets, complete population and linked subagent expansion remain unqualified.".to_owned()
     } else {
         "List known selected Sessions by newest known selected Message time; complete retained population remains unqualified.".to_owned()
@@ -260,12 +246,12 @@ pub fn execute(
         ));
     }
     Ok(
-        json!({"outcome":outcome,"recovery":recovery,"unit":"sessions","rows":rows,"count":count,"next_cursor":null,"up_to_date":false,
+        json!({"outcome":outcome,"recovery":recovery,"unit":"sessions","rows":rows,"count":count,"next_cursor":null,"up_to_date":qualification.up_to_date,
         "read_as":read_as, "selection":{"limit":plan.limit}, "ranking":{"state":"unavailable","order":"known_last_message_at desc; id desc"},
         "view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()},
         "defaults":{"exclude_subagents":plan.kind.is_none()&&!plan.all_kinds&&plan.id.is_none()},
         "missing":notes,"notes":notes,"unknown":{"record_errors":qualification.record_errors,"pending_inputs":qualification.pending_inputs,"unavailable_inputs":qualification.unavailable_inputs,"unresolved_inputs":qualification.unresolved_inputs,"unknown_authors":unknown_authors,"pending_messages":pending,"unresolved_message_order":unresolved_order},
-        "searched":{"known_sessions":sessions,"candidate_sessions":candidate_count,"selected_messages":known_messages,"prose_messages":corpus.as_ref().map(ProseSearch::documents),"scope":"pinned retained admission and selected body catalog"}}),
+        "settlement":qualification.result(catalog)["settlement"],"searched":{"known_sessions":sessions,"candidate_sessions":candidate_count,"selected_messages":known_messages,"prose_messages":corpus.as_ref().map(ProseSearch::documents),"scope":"pinned retained admission and selected body catalog"}}),
     )
 }
 

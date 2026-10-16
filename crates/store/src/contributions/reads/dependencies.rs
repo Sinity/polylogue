@@ -132,6 +132,50 @@ impl SessionCatalog {
             },
         )))
     }
+    /// Existing non-Message products must not be silently omitted by the
+    /// narrow native Session reader. This check is local to the exact owner.
+    pub fn has_other_session_products(&self, id: &SessionId) -> Result<bool> {
+        self.visible()?;
+        let read = locked(&self.read)?;
+        let products: bool = db(&self.path, || {
+            read.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM link WHERE child_id=?1 OR parent_id=?1) OR EXISTS(SELECT 1 FROM event e JOIN session s ON s.pk=e.session_pk WHERE s.id=?1) OR EXISTS(SELECT 1 FROM delivery WHERE recipient_id=?1) OR EXISTS(SELECT 1 FROM run_session r JOIN session s ON s.pk=r.session_pk WHERE s.id=?1)", [id.as_str()], |r|r.get(0))
+        })?;
+        let archive = read
+            .archive
+            .as_ref()
+            .ok_or_else(|| Error::Invariant("Session archive snapshot missing".into()))?;
+        let annotations: bool = db(&self.path.with_file_name("archive.db"), || {
+            archive.query_row(
+            "SELECT EXISTS(SELECT 1 FROM note_target WHERE ref=?1 OR ref=?2 OR substr(ref,1,length(?3))=?3 OR substr(ref,1,length(?4))=?4)",
+            params![id.as_str(),format!("session:{}",id.as_str()),format!("message:{}:",id.as_str()),format!("block:{}:",id.as_str())],|r|r.get(0))
+        })?;
+        Ok(products || annotations)
+    }
+    pub fn dependency_first_path(
+        &self,
+        dependency: &SessionInputDependency,
+        allowance: usize,
+    ) -> Result<Option<String>> {
+        self.visible()?;
+        if !Arc::ptr_eq(&self.read, &dependency.read) {
+            return Err(Error::MessagePredecessorChanged);
+        }
+        let read = locked(&self.read)?;
+        let archive = read
+            .archive
+            .as_ref()
+            .ok_or_else(|| Error::Invariant("Session archive snapshot missing".into()))?;
+        let row: Option<(u64, Option<String>)> = db(
+            &self.path.with_file_name("archive.db"),
+            || {
+                archive.query_row(
+            "SELECT length(CAST(path AS BLOB)),CASE WHEN length(CAST(path AS BLOB))<=?2 THEN path END FROM observation WHERE input=?1 ORDER BY rowid LIMIT 1",params![dependency.id(),i64::try_from(allowance).unwrap_or(i64::MAX)],|r|Ok((parser_state::unsigned(r,0)?,r.get(1)?))).optional()
+            },
+        )?;
+        row.map(|(n, path)| path.ok_or_else(|| metadata_admission("Session input path", n)))
+            .transpose()
+    }
     /// A point read from the SAME pinned index as Session rows and admission
     /// traversal. The dependency is unforgeable and bound to that read Arc.
     pub fn dependency_cell(
