@@ -47,21 +47,37 @@ class Client:
         assert set(listing["tools"][2]["inputSchema"]["properties"]) == {"ref", "budget_tokens", "continuation"}
 
     def send(self, message):
-        self.process.stdin.write((bounded.compact(message) + "\n").encode())
-        self.process.stdin.flush()
-        self.run.mcp_calls.append({"send": message})
+        attempt = {"send": message, "status": "attempted"}
+        self.run.mcp_calls.append(attempt)
+        try:
+            self.process.stdin.write((bounded.compact(message) + "\n").encode())
+            self.process.stdin.flush()
+        except BaseException as error:
+            attempt.update(status="failed", error=repr(error))
+            raise
+        attempt["status"] = "sent"
 
     def receive(self, timeout=45):
         until = time.monotonic() + timeout
         while b"\n" not in self.buffer:
-            assert self.selector.select(max(0, until - time.monotonic())), "MCP response timeout"
+            if not self.selector.select(max(0, until - time.monotonic())):
+                self.receive_error("MCP response timeout")
             chunk = os.read(self.process.stdout.fileno(), 65536)
-            assert chunk, "MCP stdout ended"
+            if not chunk:
+                self.receive_error("MCP stdout ended")
             self.buffer += chunk
         line, self.buffer = self.buffer.split(b"\n", 1)
-        value = json.loads(line)
+        try:
+            value = json.loads(line)
+        except BaseException as error:
+            self.run.mcp_calls.append({"receive_error": repr(error), "line_hex": line.hex()})
+            raise
         self.run.mcp_calls.append({"receive": value})
         return value
+
+    def receive_error(self, reason):
+        self.run.mcp_calls.append({"receive_error": reason, "partial_buffer_hex": self.buffer.hex()})
+        raise AssertionError(reason)
 
     def begin(self, method, parameters):
         self.counter += 1
@@ -109,6 +125,7 @@ class Run(bounded.Run):
             args["budget_tokens"] = budget
         response = self.client.tool("read", args)
         page = response["structuredContent"]
+        bounded.validate_page_citations(page, self.sources)
         budget = args.get("budget_tokens", 4000)
         assert response["content"] and response["content"][0]["text"].startswith(bounded.WARNING)
         total = bounded.estimated({"structuredContent": page, "content": response["content"]})
@@ -183,6 +200,42 @@ def cancellation_controls(run):
     return results
 
 
+def finish(run, report):
+    steps = []
+    for index, client in enumerate(run.clients):
+        def kill(client=client):
+            if client.process.poll() is None:
+                client.process.kill()
+        def wait(client=client):
+            if client.process.poll() is None:
+                client.process.wait(timeout=15)
+        steps.extend([
+            (f"mcp-{index}-close", client.close),
+            (f"mcp-{index}-fallback-kill", kill),
+            (f"mcp-{index}-fallback-wait", wait),
+            (f"mcp-{index}-selector", client.selector.close),
+            (f"mcp-{index}-stdin", client.process.stdin.close),
+            (f"mcp-{index}-stdout", client.process.stdout.close),
+            (f"mcp-{index}-log", client.log.close),
+        ])
+    steps.extend([("daemon", run.stop), ("daemon_log", run.daemon_log.close),
+                  ("socket_directory", run.socket_owner.cleanup)])
+    cleanup_errors = bounded.protected_cleanup(steps)
+    if cleanup_errors:
+        report.update(outcome="failed", cleanup_errors=cleanup_errors)
+    report["commands"] = run.calls
+    report["daemon_reaped"] = run.daemon is None
+    report["mcp_processes_reaped"] = [client.process.poll() is not None for client in run.clients]
+    try:
+        (run.output / "mcp-calls.json").write_text(json.dumps(run.mcp_calls, ensure_ascii=False, indent=2) + "\n")
+    except BaseException as error:
+        cleanup_errors.append({"owner": "mcp-calls.json", "error": repr(error)})
+        report.update(outcome="failed", cleanup_errors=cleanup_errors)
+    (run.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(bounded.compact({k: v for k, v in report.items() if k != "commands"}))
+    return cleanup_errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
@@ -204,7 +257,7 @@ def main():
         native = run.cli(["BLUE", "--json"])
         mcp = run.client.tool("search", {"query": "BLUE", "budget_tokens": 4000})["structuredContent"]
         assert mcp == native and mcp["outcome"] == "degraded" and mcp["rows"]
-        oversized = run.client.tool("search", {"query": ""})
+        oversized = run.client.tool("search", {"query": "", "budget_tokens": 128})
         assert oversized["structuredContent"]["error"]["kind"] == "not_yet_available"
         assert "narrow" in oversized["structuredContent"]["error"]["message"]
         assert bounded.estimated({"structuredContent": oversized["structuredContent"], "content": oversized["content"]}) <= 128
@@ -228,24 +281,7 @@ def main():
         failure = error
         report.update(outcome="failed", error=repr(error))
     finally:
-        cleanup_errors = []
-        for client in run.clients:
-            try:
-                if not client.log.closed:
-                    client.close()
-            except BaseException as error:
-                cleanup_errors.append(repr(error))
-                client.process.kill()
-                client.process.wait()
-        run.stop()
-        run.daemon_log.close()
-        run.socket_owner.cleanup()
-        if cleanup_errors:
-            report.update(outcome="failed", cleanup_errors=cleanup_errors)
-        report["commands"] = run.calls
-        (output / "mcp-calls.json").write_text(json.dumps(run.mcp_calls, ensure_ascii=False, indent=2) + "\n")
-        (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-        print(bounded.compact({k: v for k, v in report.items() if k != "commands"}))
+        cleanup_errors = finish(run, report)
     if failure:
         raise failure
     if cleanup_errors:

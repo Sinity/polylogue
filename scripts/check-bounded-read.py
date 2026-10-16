@@ -100,26 +100,40 @@ class Run:
         if "continuation" in call:
             args += ["--continuation", call["continuation"]]
         page = self.cli(args, allowed=(0, 2, 3, 4, 5))
-        for shown in page.get("shown", []):
-            for source in shown["sources"]:
-                raw = self.sources[source["input"]][source["start"]:source["end"]]
-                records = [json.loads(line) for line in raw.splitlines() if line.strip()]
-                assert records and all("uuid" in record for record in records)
-                assert all("message:claude-code:" + record["sessionId"] + ":" + record["uuid"] == shown["message"] for record in records), (shown, records)
-            for origin in shown["field_origins"]:
-                data = self.sources[origin["binding"]["input"]]
-                for selected in origin["selection"]["inputs"]:
-                    record = selected["record"]
-                    value = json.loads(data[record["start"]:record["end"]])
-                    assert "message:claude-code:" + value["sessionId"] + ":" + value["uuid"] == shown["message"]
-                    # Verify source selectors against known original records;
-                    # displayed text is checked separately after transformation.
-                    for component in selected["path"]:
-                        assert len(component) == 1
-                        key = component.get("Key", component.get("Index"))
-                        value = value[key]
-                    assert isinstance(value, str)
+        validate_page_citations(page, self.sources)
         return page
+
+
+def validate_page_citations(page, sources):
+    for shown in page.get("shown", []):
+        for source in shown["sources"]:
+            raw = sources[source["input"]][source["start"]:source["end"]]
+            records = [json.loads(line) for line in raw.splitlines() if line.strip()]
+            assert records and all("uuid" in record for record in records)
+            assert all("message:claude-code:" + record["sessionId"] + ":" + record["uuid"] == shown["message"] for record in records), (shown, records)
+        for origin in shown["field_origins"]:
+            data = sources[origin["binding"]["input"]]
+            for selected in origin["selection"]["inputs"]:
+                record = selected["record"]
+                value = json.loads(data[record["start"]:record["end"]])
+                assert "message:claude-code:" + value["sessionId"] + ":" + value["uuid"] == shown["message"]
+                # Verify source selectors against known original records;
+                # displayed text is checked separately after transformation.
+                for component in selected["path"]:
+                    assert len(component) == 1
+                    key = component.get("Key", component.get("Index"))
+                    value = value[key]
+                assert isinstance(value, str)
+
+
+def protected_cleanup(steps):
+    errors = []
+    for label, cleanup in steps:
+        try:
+            cleanup()
+        except BaseException as error:
+            errors.append({"owner": label, "error": repr(error)})
+    return errors
 
 
 def verify(run):
@@ -233,13 +247,9 @@ def main():
         failure = error
         report.update(outcome="failed", error=repr(error))
     finally:
-        cleanup_errors = []
-        for label, cleanup in [("daemon", run.stop), ("daemon_log", run.daemon_log.close),
-                               ("socket_directory", run.socket_owner.cleanup)]:
-            try:
-                cleanup()
-            except BaseException as error:
-                cleanup_errors.append({"owner": label, "error": repr(error)})
+        cleanup_errors = protected_cleanup([
+            ("daemon", run.stop), ("daemon_log", run.daemon_log.close),
+            ("socket_directory", run.socket_owner.cleanup)])
         if cleanup_errors:
             report.update(outcome="failed", cleanup_errors=cleanup_errors)
         report["commands"] = run.calls
