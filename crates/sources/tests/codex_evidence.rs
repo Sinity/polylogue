@@ -492,3 +492,128 @@ fn evidence_validation_owns_roles_required_slots_and_count_bounds() {
     head.incomplete = true;
     assert!(head.validate().is_err());
 }
+
+#[test]
+fn pinned_unowned_command_keeps_wrapper_messages_and_raw_evidence_unchanged() {
+    let w = |id: &str| {
+        line(
+            "response_item",
+            json!({"type":"function_call","id":format!("message-{id}"),"call_id":id,"name":"exec","arguments":"{}"}),
+        )
+    };
+    let bytes = header()
+        + &line("turn_context", json!({"turn_id":"T"}))
+        + &w("W1")
+        + &line("event_msg", json!({"type":"token_count","info":null}))
+        + &w("W2");
+    let (view, resume) = run(MemoryReadView::default(), Resume::default(), &bytes);
+    let before = [
+        (
+            view.message(0).unwrap().unwrap().blocks,
+            head(&view, 0),
+            units(&view, 0),
+        ),
+        (
+            view.message(1).unwrap().unwrap().blocks,
+            head(&view, 1),
+            units(&view, 1),
+        ),
+    ];
+    let completion = line(
+        "event_msg",
+        json!({"type":"item_completed","thread_id":"session:opaque","turn_id":"T","started_at_ms":1,"completed_at_ms":2,"item":{"type":"CommandExecution","id":"C","source":"agent","command":["printf",""],"parsed_cmd":[],"cwd":"/synthetic","status":"failed","exit_code":1,"aggregated_output":""}}),
+    );
+    let (view, resume) = run(view, resume, &completion);
+    assert_eq!(resume.message_count(), 2);
+    for (i, (blocks, h, u)) in before.iter().enumerate() {
+        assert_eq!(&view.message(i).unwrap().unwrap().blocks, blocks);
+        assert_eq!(&head(&view, i), h);
+        assert_eq!(&units(&view, i), u);
+    }
+    let operations: Vec<_> = view
+        .cells
+        .values()
+        .filter_map(|cell| match cell {
+            Cell::Operation(op) => Some(op),
+            _ => None,
+        })
+        .collect();
+    let child = operations.iter().find(|op| op.invocation == "C").unwrap();
+    assert!(child.message.is_none() && child.wrapper.is_none());
+    assert_eq!(child.wrapper_overlaps.len(), 2);
+    assert!(
+        child
+            .wrapper_overlaps
+            .iter()
+            .all(|id| id.starts_with("operation:"))
+    );
+    assert!(child.counted() && child.result_present);
+    assert_eq!(child.output.as_deref(), Some(""));
+    assert_eq!(child.exit_code, Some(1));
+    assert!(
+        operations
+            .iter()
+            .filter(|op| op.kind == "CodeExecution")
+            .all(|op| op.id().unwrap() != child.id().unwrap())
+    );
+}
+
+#[test]
+fn provisional_call_uses_its_real_block_and_only_an_exact_session_witness_refines_it() {
+    let bytes = header()
+        + &line(
+            "response_item",
+            json!({"type":"reasoning","id":"reason","summary":[{"text":"synthetic thought"}]}),
+        )
+        + &line(
+            "response_item",
+            json!({"type":"function_call","id":"request","call_id":"C","name":"exec_command","arguments":"{\"cmd\":\"same\"}"}),
+        );
+    let (view, resume) = run(MemoryReadView::default(), Resume::default(), &bytes);
+    let call = view
+        .message(0)
+        .unwrap()
+        .unwrap()
+        .blocks
+        .into_iter()
+        .find(|b| matches!(b.content, BlockContent::ToolCall(_)))
+        .unwrap();
+    let provisional = view
+        .cells
+        .values()
+        .find_map(|c| match c {
+            Cell::Operation(op) if op.invocation == "C" => Some(op.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        provisional.provisional_anchor.as_deref(),
+        Some(call.id.as_str())
+    );
+    assert!(!provisional.native && !provisional.counted());
+    let completion = |thread: &str| {
+        line(
+            "event_msg",
+            json!({"type":"item_completed","thread_id":thread,"turn_id":"T","started_at_ms":1,"completed_at_ms":2,"item":{"type":"CommandExecution","id":"C","source":"agent","command":["same"],"parsed_cmd":[],"cwd":"/synthetic","status":"failed","exit_code":1,"aggregated_output":""}}),
+        )
+    };
+    let (view, resume) = run(view, resume, &completion("foreign-session"));
+    assert!(
+        !view
+            .cells
+            .values()
+            .any(|c| matches!(c,Cell::Operation(op) if op.native))
+    );
+    let (view, _) = run(view, resume, &completion("session:opaque"));
+    let native = view
+        .cells
+        .values()
+        .find_map(|c| match c {
+            Cell::Operation(op) if op.native => Some(op),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(native.turn.as_deref(), Some("T"));
+    assert_eq!(native.direct_anchors, vec![provisional.id().unwrap()]);
+    assert_ne!(native.id().unwrap(), provisional.id().unwrap());
+}

@@ -69,8 +69,12 @@ status without execution evidence cannot upgrade a pre-execution item to a
 completed Agent call. Conflicting known classifications, results or output
 bodies qualify correspondence and are excluded from a proved call count.
 
+Core command argv remains a vector; recorded shell/UI display text stays text.
+The adapter does not approximate the provider's command-presentation renderer.
+
 The population reports retained representations, decoded selected items, source
-row dispositions and correspondence independently. A source with unknown rows
+row dispositions and correspondence independently. The full retained-item
+population remains explicitly unknown (`retained_items: null`). A source with unknown rows
 keeps coverage degraded. The query always reports incomplete general Session
 coverage: a physical paginated projection supplies neither request boundaries
 nor proof that the entire Session was acquired. Current-row selection prefers a
@@ -85,7 +89,8 @@ not invalidate an independent selected representation.
 This first path admits a physical snapshot up to 16 MiB, 4096 typed rows and
 16 MiB of item JSON; one operation's normalized metadata plus output is limited
 to 2 MiB. Existing chunked immutable values hold admitted bodies. Population
-reads admit 4096 selected items, 4096 citations per item and 4 MiB encoded data.
+reads admit 4096 selected items, 4096 citations per item, 32 MiB of selected-source
+byte verification and 4 MiB encoded data.
 Read display budgets are 1 through 1048576 estimated tokens and must fit the
 whole operation; operation-output continuations and resource qualification for
 larger bodies remain unavailable. Admission failures retain owed work and never

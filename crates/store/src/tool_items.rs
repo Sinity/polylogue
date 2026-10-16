@@ -1,7 +1,7 @@
 //! Immutable typed Session-owned operation publication and version-pinned reads.
 //! This is the first bounded CommandExecution admission, not a general merger.
 use crate::{Error, ReadHandle, Result, Writer, db, parser_state::Token};
-use polylogue_model::tool_item::{CODEX_CONSTRUCTOR, Operation, ToolOrigin};
+use polylogue_model::tool_item::{CODEX_CONSTRUCTOR, CODEX_REVISION, Operation, ToolOrigin};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -15,6 +15,7 @@ pub struct Citation {
     pub origin: ToolOrigin,
     pub version_hash: String,
     pub constructor: String,
+    pub adapter_revision: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Item {
@@ -374,20 +375,37 @@ fn citations(reader: &ReadHandle, id: &str, version: Option<i64>) -> Result<Vec<
                     end: u64::try_from(end).map_err(|_| Error::Range)?,
                     origin: serde_json::from_str(&origin).map_err(|e| bad(e.to_string()))?,
                     constructor,
+                    adapter_revision: CODEX_REVISION.into(),
                     version_hash,
                 })
             },
         )
         .collect()
 }
+#[derive(Default)]
+struct Verification {
+    ranges: std::collections::BTreeSet<(String, i64, u64, u64)>,
+    bytes: u64,
+}
 fn verify_sources(
     reader: &ReadHandle,
     sources: &[Citation],
-    verified: &mut std::collections::BTreeSet<(String, i64, u64, u64)>,
+    verified: &mut Verification,
 ) -> Result<()> {
     for source in sources {
-        if !verified.insert((source.input.clone(), source.chain, source.start, source.end)) {
+        if !verified
+            .ranges
+            .insert((source.input.clone(), source.chain, source.start, source.end))
+        {
             continue;
+        }
+        let length = source.end.checked_sub(source.start).ok_or(Error::Range)?;
+        verified.bytes = verified.bytes.checked_add(length).ok_or(Error::Range)?;
+        if verified.bytes > 32 * 1024 * 1024 {
+            return Err(Error::ParserAdmission {
+                resource: "operation source verification bytes",
+                required: verified.bytes,
+            });
         }
         let retained = reader
             .source(&source.input)?
@@ -428,7 +446,7 @@ fn load_item(
     hash: String,
     input: Option<i64>,
     text: Option<i64>,
-    verified: &mut std::collections::BTreeSet<(String, i64, u64, u64)>,
+    verified: &mut Verification,
 ) -> Result<Item> {
     let p = reader.root.join("index.db");
     let mut operation: Operation = serde_json::from_slice(&bytes(
@@ -500,7 +518,7 @@ impl ReadHandle {
             });
         }
         let mut items = Vec::new();
-        let mut verified = std::collections::BTreeSet::new();
+        let mut verified = Verification::default();
         let mut size = 0usize;
         for (id, v, h, input, text) in rows {
             let item = load_item(self, id, v, h, input, text, &mut verified)?;
@@ -593,7 +611,7 @@ impl ReadHandle {
                 h,
                 input,
                 text,
-                &mut std::collections::BTreeSet::new(),
+                &mut Verification::default(),
             )
         })
         .transpose()

@@ -35,7 +35,7 @@ pub fn query(
         }
     }
     Ok(
-        json!({"outcome":"degraded","unit":if plan.calls_only{"tool_calls"}else{"tool_items"},"count":rows.len(),"rows":rows,"population":{"retained_items":population.items.len(),"decoded_items":population.items.len(),"retained_source_rows":population.retained_rows,"decoded_source_rows":population.decoded_rows,"unsupported_source_rows":population.unsupported_rows,"retained_representations":population.retained_representations,"tool_calls":population.tool_calls,"failed":population.failed,"correspondence_complete":population.correspondence_complete},"notes":["Exact imported operation subset only; Session boundaries, source acquisition and general tool schemas remain incomplete."],"missing":["general_session_coverage"],"up_to_date":false}),
+        json!({"outcome":"degraded","unit":if plan.calls_only{"tool_calls"}else{"tool_items"},"count":rows.len(),"rows":rows,"population":{"retained_items":null,"decoded_items":population.items.len(),"established_items":population.items.iter().filter(|i|i.operation.correspondence=="established" && !i.conflicting_representations).count(),"retained_source_rows":population.retained_rows,"decoded_source_rows":population.decoded_rows,"unsupported_source_rows":population.unsupported_rows,"retained_representations":population.retained_representations,"tool_calls":population.tool_calls,"failed":population.failed,"correspondence_complete":population.correspondence_complete},"notes":["Exact imported operation subset only; Session boundaries, source acquisition and general tool schemas remain incomplete."],"missing":["general_session_coverage"],"up_to_date":false}),
     )
 }
 pub fn read(reader: &ReadHandle, request: &Value, until: Instant) -> Value {

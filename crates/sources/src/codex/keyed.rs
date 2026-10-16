@@ -2463,7 +2463,7 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             .into(),
             call_present: true,
-            command,
+            command: command.map(polylogue_model::tool_item::Command::Text),
             result_present: false,
             output: None,
             outcome: None,

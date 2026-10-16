@@ -2,7 +2,7 @@
 //! snapshot acquisition belong to store; unsupported item schemas stay visible.
 use polylogue_model::{
     SessionId,
-    tool_item::{HistoryRow, Operation, ToolOrigin},
+    tool_item::{Command, HistoryRow, Operation, ToolOrigin},
 };
 use serde_json::Value;
 pub const PARSER_VERSION: u32 = 1;
@@ -58,18 +58,17 @@ pub fn command(
                 .ok_or("CommandExecution exit code is not an integer")
         })
         .transpose()?;
-    let command = item.get("command").and_then(|v| {
-        v.as_str().map(str::to_owned).or_else(|| {
-            v.as_array().and_then(|v| {
-                v.iter()
-                    .map(Value::as_str)
-                    .collect::<Option<Vec<_>>>()
-                    .map(|v| v.join(" "))
-            })
-        })
-    });
-    let command =
-        command.ok_or("CommandExecution command is missing or has an unsupported shape")?;
+    let command = if ui {
+        item.get("command")
+            .and_then(Value::as_str)
+            .map(|s| Command::Text(s.into()))
+    } else {
+        item.get("command")
+            .and_then(Value::as_array)
+            .and_then(|a| a.iter().map(Value::as_str).collect::<Option<Vec<_>>>())
+            .map(|a| Command::Argv(a.into_iter().map(str::to_owned).collect()))
+    }
+    .ok_or("CommandExecution command is missing or has an unsupported shape")?;
     let result = executed && terminal;
     Ok(Operation {
         kind: "CommandExecution".into(),
@@ -202,5 +201,7 @@ mod tests {
         assert!(core.result_present && ui.result_present);
         assert_eq!(core.output, Some("".into()));
         assert_eq!(ui.output, None);
+        assert_eq!(core.command, Some(Command::Argv(vec![])));
+        assert_eq!(ui.command, Some(Command::Text(String::new())));
     }
 }

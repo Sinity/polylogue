@@ -52,6 +52,14 @@ pub enum ToolOrigin {
         raw_hash: [u8; 32],
     },
 }
+/// Preserve core argv separately from recorded shell/UI display text. The
+/// provider's CommandExecutionPresentation is not a space-joining constructor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Command {
+    Argv(Vec<String>),
+    Text(String),
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Operation {
     pub kind: String,
@@ -66,7 +74,7 @@ pub struct Operation {
     pub agent_class: String,
     pub correspondence: String,
     pub call_present: bool,
-    pub command: Option<String>,
+    pub command: Option<Command>,
     pub result_present: bool,
     /// None is a missing display field. Some("") is explicit empty output.
     pub output: Option<String>,
