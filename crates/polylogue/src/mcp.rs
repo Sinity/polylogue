@@ -32,6 +32,7 @@ struct Read {
     reference: String,
     budget_tokens: Option<u64>,
     continuation: Option<String>,
+    view: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,9 +67,9 @@ fn tools() -> Vec<Tool> {
         ),
         (
             "read",
-            "Read an exact native Session, message: reference or block: reference from retained evidence. Uses the shared bounded Text reader; Thinking is omitted except for an exact Thinking block. Tool-containing selections refuse. No ranges, self, alternative views or rendering options. Follow next for every continuation and retain coverage, provenance and freshness qualifiers.",
+            "Read an exact native Session, message: reference or block: reference from retained evidence. The default native Text subset omits Thinking except for an exact Thinking block and refuses included tools. Explicit view:dialogue supports the human/model Text portion and reports tool, Thinking and harness omissions. Selected human attachments and other unavailable included kinds refuse. Exact supported blocks select their body. Preceding textual tool output has a 65536-byte normalized JSON admission; unavailable masking state refuses. No ranges, self, included tool rendering or other views. Follow next and retain evidence qualifiers.",
             schema(
-                json!({"ref":{"type":"string","minLength":1,"maxLength":16384},"budget_tokens":budget,"continuation":{"type":"string","description":"Opaque value from read.next. Do not construct or edit."}}),
+                json!({"ref":{"type":"string","minLength":1,"maxLength":16384},"budget_tokens":budget,"continuation":{"type":"string","description":"Opaque value from read.next. Do not construct or edit."},"view":{"type":"string","enum":["dialogue"],"description":"Explicit human/model Text selection; omitted by default to retain the native subset. Not a full transcript."}}),
                 &["ref"],
             ),
         ),
@@ -84,7 +85,7 @@ fn tools() -> Vec<Tool> {
         });
         if name == "read" {
             properties["shown"] = json!({"type":"array","description":"Bounded retained text, author, display positions, source spans and field origins."});
-            properties["next"] = json!({"description":"Ready {tool:read, arguments:{ref,budget_tokens,continuation}} follow-up call, or null."});
+            properties["next"] = json!({"description":"Ready {tool:read, arguments:{ref,budget_tokens,continuation,view?}} follow-up call, or null."});
             properties["rendered_as"] = json!({"type":"string"});
         } else if name == "search" {
             properties["rows"] = json!({"type":"array"});
@@ -157,6 +158,12 @@ impl Server {
                 }
                 if let Some(v) = args.continuation {
                     request["continuation"] = json!(v);
+                }
+                if let Some(v) = args.view {
+                    if v != "dialogue" {
+                        return invalid("only explicit view:dialogue is supported");
+                    }
+                    request["view"] = json!(v);
                 }
                 request
             }
@@ -355,7 +362,7 @@ mod tests {
             shutdown,
         };
         for (name, args) in [
-            ("read", json!({"ref":"test:neutral","view":"dialogue"})),
+            ("read", json!({"ref":"test:neutral","view":"transcript"})),
             (
                 "read",
                 json!({"ref":"test:neutral","ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA":true}),

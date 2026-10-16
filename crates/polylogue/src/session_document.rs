@@ -62,6 +62,22 @@ fn resolved(field: FieldRead<'_>) -> io::Result<FieldView<'_>> {
         )),
     }
 }
+// Both document encoding and bounded prefix replay use this admitted typed
+// field. It is normalized JSON, not a provider payload or an arbitrary blob.
+fn tool_output_field(field: &FieldView<'_>) -> io::Result<ToolOutput> {
+    let value = field_value(field, false)?.ok_or_else(|| invalid("missing block field"))?;
+    serde_json::from_value(value).map_err(Into::into)
+}
+pub(crate) fn tool_output(block: &BlockView<'_>) -> io::Result<Option<ToolOutput>> {
+    let slot = Slot::Block {
+        block: block.slot.clone(),
+        field: BlockField::Output,
+    };
+    match stored(block.field(&slot, LEAF))? {
+        Some(field) => tool_output_field(&resolved(field)?).map(Some),
+        None => Ok(None),
+    }
+}
 fn time(value: Value) -> io::Result<Value> {
     let millis = value
         .get("at")
@@ -520,10 +536,8 @@ fn write_block<W: Write>(
                         | BlockField::DurationMs
                 );
             if !body_scalar && !result_scalar {
-                let value =
-                    field_value(&field, false)?.ok_or_else(|| invalid("missing block field"))?;
                 if kind == BlockField::Output {
-                    let output: ToolOutput = serde_json::from_value(value)?;
+                    let output = tool_output_field(&field)?;
                     match output {
                         ToolOutput::Text(text) => {
                             e.syntax(b",")?;
@@ -535,6 +549,8 @@ fn write_block<W: Write>(
                         }
                     }
                 } else {
+                    let value = field_value(&field, false)?
+                        .ok_or_else(|| invalid("missing block field"))?;
                     e.syntax(b",")?;
                     e.key(block_name(kind))?;
                     if matches!(kind, BlockField::CallId | BlockField::ProducedBy) {

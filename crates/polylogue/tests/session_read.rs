@@ -1307,6 +1307,9 @@ fn model_call(world: &World, call: &Value, budget: Option<u64>) -> Value {
     if let Some(b) = budget {
         args.extend(["--budget".into(), b.to_string()]);
     }
+    if let Some(v) = call["view"].as_str() {
+        args.extend(["--view".into(), v.into()]);
+    }
     if let Some(c) = call["continuation"].as_str() {
         args.extend(["--continuation".into(), c.into()]);
     }
@@ -1538,6 +1541,191 @@ fn model_mixed_session_refuses_unimplemented_included_tool_blocks_before_content
     assert_eq!(page["error"]["reason"], "unsupported_model_block_kind");
     assert!(page.get("shown").is_none());
     assert!(page.get("next").is_none());
+}
+
+#[test]
+fn model_dialogue_keeps_the_unchanged_morrow_selection_and_truthful_omissions() {
+    let world = World::new();
+    let input = world.input("dialogue-morrow.jsonl", MORROW);
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000811");
+    world.read(
+        &reference(),
+        receipt["retained"]["id"].as_str().unwrap(),
+        12,
+    );
+    let rows: Vec<Value> = MORROW
+        .split(|b| *b == b'\n')
+        .filter(|r| !r.is_empty())
+        .map(|r| serde_json::from_slice(r).unwrap())
+        .filter(|r: &Value| matches!(r["type"].as_str(), Some("user" | "assistant")))
+        .collect();
+    let wanted = [1, 6, 7, 10, 11, 12];
+    let mut call = json!({"ref":reference(),"view":"dialogue"});
+    let mut seen = 0;
+    loop {
+        let page = model_call(&world, &call, Some(2000));
+        assert_ne!(page["outcome"], "error", "{page}");
+        assert!(serde_json::to_vec(&page).unwrap().len().div_ceil(4) <= 2000);
+        assert_eq!(page["rendered_as"], "dialogue-v1");
+        assert_eq!(page["omitted"]["blocks"], 13);
+        assert_eq!(
+            page["omitted"]["by_kind"],
+            json!({"thinking":1,"tool_call":6,"tool_result":6})
+        );
+        assert_eq!(page["omitted"]["by_author"], json!({"model":7,"harness":6}));
+        let row = &rows[wanted[seen] - 1];
+        let expected = row["message"]["content"]
+            .as_str()
+            .unwrap_or_else(|| row["message"]["content"][0]["text"].as_str().unwrap());
+        let span = &page["shown"][0];
+        assert_eq!(span["text"], expected);
+        assert!(
+            span["message"]
+                .as_str()
+                .unwrap()
+                .ends_with(row["uuid"].as_str().unwrap())
+        );
+        assert_eq!(
+            span["written_by"],
+            if row["type"] == "user" {
+                "human"
+            } else {
+                "model"
+            }
+        );
+        assert!(!span["sources"].as_array().unwrap().is_empty());
+        seen += 1;
+        if page["next"].is_null() {
+            break;
+        }
+        call = page["next"].clone();
+        assert_eq!(call["view"], "dialogue");
+    }
+    assert_eq!(seen, 6);
+}
+
+fn mixed_dialogue_fixture() -> Vec<u8> {
+    let begin = "-----BEGIN PRIVATE KEY-----";
+    let end = "-----END PRIVATE KEY-----";
+    let mut rows =
+        vec![json!({"type":"ai-title","aiTitle":"Mixed dialogue boundaries","sessionId":SID})];
+    let contents = [
+        (
+            "mixed-model",
+            "assistant",
+            json!([
+                {"type":"thinking","thinking":format!("{begin} hidden"),"signature":"synthetic"},
+                {"type":"text","text":"PEM BODY MUST STAY HIDDEN"},
+                {"type":"tool_use","id":"independent-close","name":"Bash","input":{"command":end}},
+                {"type":"text","text":format!("STILL HIDDEN{end} visible α")},
+                {"type":"text","text":"short ghp_"},
+                {"type":"tool_use","id":"independent-open","name":"Write","input":{"content":begin}},
+                {"type":"text","text":format!("{} open🙂", "A".repeat(36))}
+            ]),
+        ),
+        (
+            "mixed-result",
+            "user",
+            json!([
+                {"type":"tool_result","tool_use_id":"result","content":format!("{begin} hidden"),"is_error":false},
+                {"type":"text","text":format!("HIDDEN{end} visible result λ")}
+            ]),
+        ),
+        (
+            "mixed-large",
+            "user",
+            json!([
+                {"type":"tool_result","tool_use_id":"large","content":"neutral".repeat(10000),"is_error":false},
+                {"type":"text","text":"after oversized result"}
+            ]),
+        ),
+        ("mixed-last", "user", json!("Next Message is independent.")),
+    ];
+    let mut parent = Value::Null;
+    for (index, (id, role, content)) in contents.into_iter().enumerate() {
+        let mut row = json!({"type":role,"uuid":id,"sessionId":SID,"parentUuid":parent,"isSidechain":false,"timestamp":format!("2026-10-01T08:{index:02}:00.000Z"),"message":{"role":role,"content":content}});
+        if role == "assistant" {
+            row["message"]["model"] = json!("synthetic-model");
+            row["message"]["id"] = json!("response-mixed");
+        } else if id == "mixed-last" {
+            row["promptSource"] = json!("typed");
+        }
+        if id == "mixed-result" {
+            row["toolUseResult"] = json!({"stdout":begin,"stderr":"","interrupted":false});
+        }
+        rows.push(row);
+        parent = json!(id);
+    }
+    rows.into_iter()
+        .flat_map(|row| (row.to_string() + "\n").into_bytes())
+        .collect()
+}
+fn mixed_block(native: &str, slot: u32) -> String {
+    let sid = polylogue_model::SessionId::from_stored(reference()).unwrap();
+    format!(
+        "block:{}",
+        polylogue_model::BlockId::new(polylogue_model::MessageId::new(sid, native).unwrap(), slot)
+            .as_str()
+    )
+}
+#[test]
+fn model_dialogue_and_exact_blocks_preserve_hidden_pem_and_independent_structured_values() {
+    let world = World::new();
+    let input = world.input("mixed-boundaries.jsonl", &mixed_dialogue_fixture());
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000812");
+    let until = Instant::now() + WAIT;
+    loop {
+        let p = world.progress(receipt["retained"]["id"].as_str().unwrap());
+        if p["source_rows"]["state"] != "pending" {
+            break;
+        }
+        assert!(Instant::now() < until, "{p}");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let mut call = json!({"ref":reference(),"view":"dialogue"});
+    let expected = [
+        "".to_owned(),
+        " visible α".to_owned(),
+        "short ghp_".to_owned(),
+        format!("{} open🙂", "A".repeat(36)),
+        "Next Message is independent.".to_owned(),
+    ];
+    for text in expected {
+        let page = model_call(&world, &call, Some(4000));
+        assert_ne!(page["outcome"], "error", "{page}");
+        assert_eq!(page["shown"][0]["text"], text);
+        assert!(!page.to_string().contains("STILL HIDDEN"));
+        call = page["next"].clone();
+    }
+    assert!(call.is_null());
+    let page = model_call(
+        &world,
+        &json!({"ref":mixed_block("mixed-result",1)}),
+        Some(4000),
+    );
+    assert_eq!(page["shown"][0]["text"], " visible result λ", "{page}");
+    let page = model_call(
+        &world,
+        &json!({"ref":mixed_block("mixed-large",1)}),
+        Some(4000),
+    );
+    assert_eq!(
+        page["error"]["reason"],
+        "prior_tool_output_unavailable_or_exceeds_admission"
+    );
+    assert!(page.get("shown").is_none());
+    let page = model_call(
+        &world,
+        &json!({"ref":mixed_block("mixed-model",0),"view":"dialogue"}),
+        Some(4000),
+    );
+    assert!(
+        page["shown"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("masked"),
+        "{page}"
+    );
 }
 
 #[test]

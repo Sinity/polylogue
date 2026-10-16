@@ -44,7 +44,7 @@ class Client:
             assert tool["outputSchema"]["required"] == ["outcome"]
             assert tool["inputSchema"]["additionalProperties"] is False
             assert tool["annotations"]["readOnlyHint"]
-        assert set(listing["tools"][2]["inputSchema"]["properties"]) == {"ref", "budget_tokens", "continuation"}
+        assert set(listing["tools"][2]["inputSchema"]["properties"]) == {"ref", "budget_tokens", "continuation", "view"}
 
     def send(self, message):
         attempt = {"send": message, "status": "attempted"}
@@ -265,7 +265,7 @@ def main():
         assert len(admitted["structuredContent"]["rows"]) >= 3
         assert bounded.estimated({"structuredContent": admitted["structuredContent"], "content": admitted["content"]}) <= 65536
         assert run.client.tool("search", {"query": "BLUE", "budget_tokens": 1})["structuredContent"]["error"]["kind"] == "not_yet_available"
-        assert run.client.tool("read", {"ref": bounded.REF, "view": "dialogue"})["structuredContent"]["error"]["kind"] == "invalid_query"
+        assert run.client.tool("read", {"ref": bounded.REF, "view": "transcript"})["structuredContent"]["error"]["kind"] == "invalid_query"
         assert run.client.tool("search", {"query": "", "cursor": "invented"})["structuredContent"]["error"]["kind"] == "invalid_query"
         legacy = Client(run, legacy=True)
         assert legacy.tool("status", {})["structuredContent"]["outcome"] == "ok"
