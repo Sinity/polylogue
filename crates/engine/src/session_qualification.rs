@@ -99,7 +99,7 @@ impl Qualification {
         json!({"outcome":if self.complete() {"ok"} else {"degraded"},
             "notes":self.notes(), "unknown":unknown,
             "settlement":{"scope":if self.exact{"exact_session"}else{"session_selection"},"operation":if self.document{"normalized_read"}else{"selection"},"state":if self.complete(){"settled"}else if self.pending_inputs>0{"pending"}else if self.unavailable_inputs>0||self.record_errors>0{"unavailable"}else{"unsupported"},
-                "target_basis":{"archive_counter":catalog.source_archive_counter(),"recipe":"native-session-v1","configuration":"fixed-immutable-native-context-v1","inputs":self.basis},
+                "target_basis":{"archive_counter":catalog.source_archive_counter(),"recipe":"native-session-v1","configuration":if self.basis.iter().any(|b|b.original_hash.is_none()){"retained-native-context-v1"}else{"fixed-immutable-native-context-v1"},"inputs":self.basis},
                 "serving_view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()}}})
     }
 }
@@ -200,7 +200,8 @@ fn qualify_operation(
         // A retained unavailable interpretation is caught up, but not complete.
         let caught_up =
             if let (Some(input), Some(head)) = (dependency.registered(), dependency.head()) {
-                if head.token.basis == owner::parser_basis(&input)
+                if head.acquired_upto == input.input.length
+                    && head.token.basis == owner::parser_basis(&input)
                     && head.parser_version == owner::parser_version(input.format)
                 {
                     match session.dependency_cell(
@@ -330,7 +331,8 @@ fn qualify_operation(
             add(&mut result.pending_inputs, 1)?;
             continue;
         };
-        if head.token.basis != owner::parser_basis(&input)
+        if head.acquired_upto != input.input.length
+            || head.token.basis != owner::parser_basis(&input)
             || head.parser_version != owner::parser_version(input.format)
         {
             add(&mut result.pending_inputs, 1)?;

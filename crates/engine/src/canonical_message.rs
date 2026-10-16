@@ -2,7 +2,7 @@
 //! owns decoding/serialization/hash work; apply owns one bounded writer turn.
 //! This certifies source projections only. Effects-v3 dirty updates, full merge,
 //! canonical selection, operations, search and exports remain separate work.
-//! Immutable provider imports bind raw CAS identity/context before selectors.
+//! Retained sources bind immutable identity or an observed chain/context before selectors.
 //! Each field replays admitted source records/leaf/descriptor serialization on
 //! the worker; this is not a universal CPU/RSS or append-locality bound.
 mod claude;
@@ -40,7 +40,7 @@ pub struct Request {
     pub message: usize,
     pub revision: u64,
     pub logical_key: [u8; 32],
-    pub source_hash: BlobHash,
+    pub source_binding: BlobHash,
 }
 #[derive(Clone, Copy)]
 pub struct Budgets {
@@ -126,7 +126,10 @@ impl std::error::Error for ResolveError {}
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct EvidenceGuard {
     head: EvidenceBasis,
-    source_hash: BlobHash,
+    // Retain the existing disposable evidence-guard encoding for immutable
+    // inputs; the typed binding also admits a validated observed chain key.
+    #[serde(rename = "source_hash")]
+    source_binding: BlobHash,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -487,7 +490,7 @@ pub fn start(
     }
     let typed_guard = EvidenceGuard {
         head: EvidenceBasis::Codex(head.clone()),
-        source_hash: request.source_hash,
+        source_binding: request.source_binding,
     };
     let guard = bounded_json(&typed_guard, allowance)?;
     if let Some(previous) = &current {
@@ -1001,7 +1004,15 @@ fn field_turn(
                     .checked_sub(range.start)
                     .ok_or(ResolveError::Unbound)?;
                 reader
-                    .read_blob_range(state.handle.request.source_hash, range.start, length)
+                    .read_source_range(
+                        &snapshot
+                            .message_source_input_id(&state.handle.build, b.metadata)
+                            .map_err(ResolveError::Store)?,
+                        snapshot.head.token.chain,
+                        state.handle.request.source_binding,
+                        range.start,
+                        length,
+                    )
                     .map_err(ResolveError::Store)
             },
             b.read.encoded_bytes,
@@ -1089,7 +1100,8 @@ pub fn compute(
         return Err(Error::Invariant("materializer evidence head changed"));
     }
     let input_id = snapshot.message_source_input_id(&state.handle.build, b.metadata)?;
-    let expected_input = InputId::imported(&state.handle.request.source_hash, "codex-rollout", &[]);
+    let expected_input =
+        InputId::imported(&state.handle.request.source_binding, "codex-rollout", &[]);
     if input_id != expected_input.as_str() {
         return Err(Error::Invariant(
             "raw source hash does not identify this immutable Codex input",

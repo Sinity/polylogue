@@ -1,11 +1,12 @@
-//! Requested import settlement is narrower than Session/query completeness.
+//! Requested retained-source settlement is narrower than Session/query completeness.
 use crate::BlobHash;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceRowBasis {
     pub input: String,
-    pub original_hash: BlobHash,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_hash: Option<BlobHash>,
     pub chain: i64,
     pub revision: u64,
     pub length: u64,
@@ -36,6 +37,8 @@ pub struct SourceRows {
 pub enum SourceRowScope {
     #[serde(rename = "imported_source_rows")]
     ImportedSourceRows,
+    #[serde(rename = "observed_source_rows")]
+    ObservedSourceRows,
 }
 
 /// One retained undecodable record, independent of query/candidate paths.

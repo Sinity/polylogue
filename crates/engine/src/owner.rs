@@ -1,4 +1,4 @@
-//! Single Writer actor for retained immutable imports and provider-state progress
+//! Single Writer actor for retained sources and provider-state progress
 //! plus compatible source Message materialization through one shared core.
 //! Capture, provider interpretation and canonical encoding run outside the actor.
 //! Search, contested merges and complete history coverage remain pending.
@@ -12,8 +12,8 @@ use crate::{
 use polylogue_model::BlobHash;
 use polylogue_sources::{claude_code, codex, frame::StepBudget};
 use polylogue_store::{
-    Error as StoreError, ImmutableImport, ImportObservation, InputFormat, PreparedBlob,
-    RetainedInput, Writer,
+    Error as StoreError, ImportObservation, InputFormat, PreparedBlob, RetainedInput,
+    RetainedSource, Writer,
     parser_state::{Basis, Budget, Head},
 };
 use std::{
@@ -261,7 +261,7 @@ struct CaptureJob {
     join: JoinHandle<()>,
 }
 struct ComputeJob {
-    input: ImmutableImport,
+    input: RetainedSource,
     head: Head,
     join: JoinHandle<()>,
 }
@@ -318,7 +318,7 @@ enum CanonicalTurn {
     Done,
 }
 struct CanonicalJob {
-    input: ImmutableImport,
+    input: RetainedSource,
     head: Head,
     position: CanonicalPosition,
     handle: Option<canonical_message::Handle>,
@@ -326,17 +326,17 @@ struct CanonicalJob {
 }
 enum Active {
     Selecting(
-        ImmutableImport,
+        RetainedSource,
         Head,
         CanonicalPosition,
         polylogue_store::contributions::CompatibleSelection,
     ),
-    Begin(ImmutableImport),
-    Recover(ImmutableImport, Head),
-    Compute(ImmutableImport, Head, Option<CommittedContinuation>),
-    Install(ImmutableImport, Head, PendingInstall, CommitGuard),
+    Begin(RetainedSource),
+    Recover(RetainedSource, Head),
+    Compute(RetainedSource, Head, Option<CommittedContinuation>),
+    Install(RetainedSource, Head, PendingInstall, CommitGuard),
     Canonical(
-        ImmutableImport,
+        RetainedSource,
         Head,
         CanonicalPosition,
         Option<canonical_message::Handle>,
@@ -689,6 +689,10 @@ impl Actor {
                             None,
                         ));
                     }
+                    Ok(CanonicalTurn::Done) if job.head.status == "waiting_tail" => {
+                        // Complete Claude prefix rows may publish while its
+                        // unframed suffix waits. The source stays pending.
+                    }
                     Ok(CanonicalTurn::Done) => {
                         self.active = Some(Active::Canonical(
                             job.input,
@@ -729,7 +733,7 @@ impl Actor {
     fn progress(&mut self, id: &str) -> Result<Progress> {
         let input = self
             .writer
-            .immutable_import(id)?
+            .retained_source(id)?
             .ok_or(Error::UnknownInput)?;
         let parser = self
             .writer
@@ -746,7 +750,8 @@ impl Actor {
         };
         let mut source_rows = crate::source_rows::pending(&input, obligation);
         if let Some(head) = &parser {
-            if head.token.basis != parser_basis(&input)
+            if head.acquired_upto != input.input.length
+                || head.token.basis != parser_basis(&input)
                 || head.parser_version != parser_version(input.format)
             {
                 source_rows =
@@ -778,7 +783,7 @@ impl Actor {
     fn retry(&mut self, id: &str) -> Result<()> {
         let input = self
             .writer
-            .immutable_import(id)?
+            .retained_source(id)?
             .ok_or(Error::UnknownInput)?;
         if let Some(head) = self
             .writer
@@ -816,7 +821,7 @@ impl Actor {
                 if !self.scanning {
                     return Ok(());
                 }
-                match self.writer.next_immutable_import(&self.after) {
+                match self.writer.next_retained_source(&self.after) {
                     Ok(Some(input)) => {
                         self.after = input.input.id.clone();
                         Active::Begin(input)
@@ -866,7 +871,7 @@ impl Actor {
                     Ok(Recovery::Reparse) => {
                         if !settled(&head) {
                             self.active = Some(Active::Compute(input, head, None));
-                        } else if head.status == "finalizing"
+                        } else if can_finalize(&input, &head)
                             && crate::source_rows::read(
                                 &self.writer.parser_snapshot(&head.token)?,
                                 &input,
@@ -884,7 +889,7 @@ impl Actor {
                     Ok(Recovery::Published(head)) => {
                         if !settled(&head) {
                             self.active = Some(Active::Compute(input, head, None));
-                        } else if head.status == "finalizing"
+                        } else if can_finalize(&input, &head)
                             && crate::source_rows::read(
                                 &self.writer.parser_snapshot(&head.token)?,
                                 &input,
@@ -923,7 +928,9 @@ impl Actor {
                     .checked_sub(offset)
                     .ok_or(StoreError::Range)?
                     .min(WINDOW_BYTES);
-                let hash = input.hash;
+                let hash = input.binding;
+                let input_id = input.input.id.clone();
+                let input_chain = input.input.chain;
                 let context = parser_context(&input)?;
                 let cancelled = Arc::clone(&self.inner.cancelled);
                 let sender = self.inner.sender.clone();
@@ -935,7 +942,13 @@ impl Actor {
                                 if cancelled.load(Ordering::Acquire) {
                                     return Err(StoreError::Cancelled.into());
                                 }
-                                let bytes = reader.read_blob_range(hash, offset, length)?;
+                                let bytes = reader.read_source_range(
+                                    &input_id,
+                                    input_chain,
+                                    hash,
+                                    offset,
+                                    length,
+                                )?;
                                 if cancelled.load(Ordering::Acquire) {
                                     return Err(StoreError::Cancelled.into());
                                 }
@@ -1016,7 +1029,7 @@ impl Actor {
                     None
                 };
                 let input_for_audit = input.clone();
-                let source_hash = input.hash;
+                let source_binding = input.binding;
                 let context = input.context.clone();
                 let work_position = position.clone();
                 let cancelled = Arc::clone(&self.inner.cancelled);
@@ -1064,9 +1077,9 @@ impl Actor {
                                         &snapshot,
                                         &canonical_message::ClaudeRequest {
                                             pending: pending.clone(),
-                                            source_hash,
+                                            source_binding,
                                             context,
-                                            revision: 1,
+                                            revision: input_for_audit.revision,
                                             logical_key: logical_key.ok_or(
                                                 Error::InvalidRequest("missing Claude logical key"),
                                             )?,
@@ -1100,11 +1113,11 @@ impl Actor {
                                         &snapshot,
                                         &canonical_message::Request {
                                             message: ordinal,
-                                            revision: 1,
+                                            revision: input_for_audit.revision,
                                             logical_key: logical_key.ok_or(
                                                 Error::InvalidRequest("missing Codex logical key"),
                                             )?,
-                                            source_hash,
+                                            source_binding,
                                         },
                                         current,
                                         source_budgets().reads,
@@ -1142,7 +1155,7 @@ impl Actor {
                             if !settled(&published) {
                                 self.active =
                                     Some(Active::Compute(input, published, Some(continuation)));
-                            } else if published.status == "finalizing" {
+                            } else if can_finalize(&input, &published) {
                                 self.active = Some(Active::Canonical(
                                     input.clone(),
                                     published,
@@ -1160,6 +1173,12 @@ impl Actor {
         Ok(())
     }
 }
+fn can_finalize(input: &RetainedSource, head: &Head) -> bool {
+    head.status == "finalizing"
+        || (input.observed()
+            && input.format == InputFormat::ClaudeCodeJsonl
+            && head.status == "waiting_tail")
+}
 fn settled(head: &Head) -> bool {
     matches!(head.status.as_str(), "waiting_tail" | "finalizing" | "done")
 }
@@ -1169,7 +1188,7 @@ pub(crate) fn parser_version(format: InputFormat) -> u32 {
         InputFormat::ClaudeCodeJsonl => claude_code::PARSER_VERSION,
     }
 }
-pub(crate) fn parser_context(input: &ImmutableImport) -> Result<SourceContext> {
+pub(crate) fn parser_context(input: &RetainedSource) -> Result<SourceContext> {
     let parts = input.context.iter().map(String::as_str).collect::<Vec<_>>();
     input.format.validate_context(&parts)?;
     match (input.format, parts.as_slice()) {
@@ -1194,7 +1213,7 @@ pub(crate) fn parser_context(input: &ImmutableImport) -> Result<SourceContext> {
         _ => Err(Error::InvalidRequest("unsupported retained source context")),
     }
 }
-fn parser_context_json(input: &ImmutableImport) -> Result<String> {
+fn parser_context_json(input: &RetainedSource) -> Result<String> {
     if input.format == InputFormat::CodexRollout {
         return Ok(CONTEXT.into());
     }
@@ -1209,15 +1228,15 @@ fn parser_context_json(input: &ImmutableImport) -> Result<String> {
     })
     .map_err(|_| Error::InvalidRequest("source context serialization failed"))
 }
-pub(crate) fn parser_basis(input: &ImmutableImport) -> [u8; 32] {
+pub(crate) fn parser_basis(input: &RetainedSource) -> [u8; 32] {
     if input.format == InputFormat::CodexRollout {
-        return basis(&input.hash);
+        return basis(&input.binding);
     }
     let mut hash = blake3::Hasher::new();
     hash.update(b"polylogue.claude.immutable.parser-basis.v1\0");
     hash.update(&parser_version(input.format).to_be_bytes());
     hash.update(&crate::source_rows::RECIPE.to_be_bytes());
-    hash.update(input.hash.bytes());
+    hash.update(input.binding.bytes());
     // The admitted portable context is source identity; frame each component.
     hash.update(&(input.context.len() as u64).to_be_bytes());
     for item in &input.context {

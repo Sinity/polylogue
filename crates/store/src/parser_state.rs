@@ -286,6 +286,9 @@ pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Resu
                 "same parser basis cannot shrink its acquired prefix".into(),
             ));
         }
+        if basis.acquired_upto > old.acquired_upto {
+            sql!(path, tx.execute("DELETE FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4", params![basis.input_pk,basis.chain,old.token.generation,SOURCE_ROWS_NAMESPACE]))?;
+        }
         sql!(path, tx.execute(
             "UPDATE parse_state SET acquired_upto=?3,
              status=CASE WHEN acquired_upto<?3 AND status IN ('done','waiting_tail') THEN 'parsing' ELSE status END

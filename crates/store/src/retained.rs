@@ -144,20 +144,6 @@ impl Writer {
         Ok(())
     }
 
-    /// Recover one immutable import in primary-key order. Archive metadata is
-    /// authoritative; repair its disposable index reference after a crash gap.
-    /// This does not enumerate growable/native inputs or choose Claude context.
-    pub fn next_immutable_import(&mut self, after: &str) -> Result<Option<ImmutableImport>> {
-        self.check_import_acquisition()?;
-        let file = self.root.join("archive.db");
-        let row: Option<(String, String, i64, Vec<u8>, Vec<u8>, String)> = db(&file, || {
-            self.archive.query_row(
-            "SELECT i.id,i.format,r.length,r.blake3,i.original_hash,CASE WHEN length(CAST(i.context_json AS BLOB))<=524288 THEN i.context_json ELSE NULL END FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.id>?1 AND r.produced='imported' AND r.chain=1 ORDER BY i.id LIMIT 1", [after],
-            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()
-        })?;
-        self.decode_immutable_import(row)
-    }
-
     /// Exact retained-import lookup. Does not inspect provider records or paths.
     pub fn immutable_import(&mut self, id: &str) -> Result<Option<ImmutableImport>> {
         self.check_import_acquisition()?;
@@ -179,7 +165,7 @@ impl Writer {
         };
         let (id, hash, format, context, length) =
             decode_import_identity(id, format, length, digest, original, context_json)?;
-        let input = self.register_import_reference(id, length)?;
+        let input = self.register_retained_reference(id, length)?;
         Ok(Some(ImmutableImport {
             input,
             hash,
@@ -230,7 +216,11 @@ impl Writer {
         Ok(Some(imported.input))
     }
 
-    fn register_import_reference(&mut self, id: String, length: u64) -> Result<RetainedInput> {
+    pub(crate) fn register_retained_reference(
+        &mut self,
+        id: String,
+        length: u64,
+    ) -> Result<RetainedInput> {
         let file = self.root.join("index.db");
         let tx = db(&file, || self._index.transaction())?;
         db(&file, || {
@@ -425,7 +415,7 @@ impl Writer {
         }
         db(&file, || tx.commit())?;
         // An interrupted disposable index reconstructs this reference from archive.
-        self.register_import_reference(id, length_u64)
+        self.register_retained_reference(id, length_u64)
     }
 }
 
@@ -546,7 +536,7 @@ mod tests {
         assert_eq!(imported.length, 22);
     }
     #[test]
-    fn immutable_import_recovery_pages_and_repairs_only_registered_archive_inputs() {
+    fn retained_source_recovery_pages_and_repairs_only_registered_archive_inputs() {
         let root = tempfile::tempdir().unwrap();
         let mut writer = Writer::open(root.path()).unwrap();
         for (bytes, id) in [(b"a".as_slice(), "a"), (b"b".as_slice(), "b")] {
@@ -564,10 +554,13 @@ mod tests {
         writer._index.execute("DELETE FROM input_ref", []).unwrap();
         drop(writer);
         let mut writer = Writer::open(root.path()).unwrap();
-        let first = writer.next_immutable_import("").unwrap().unwrap();
+        let first = writer.next_retained_source("").unwrap().unwrap();
         assert_eq!(
             first.input.id,
-            InputId::imported(&first.hash, first.format.name(), &[]).to_string()
+            InputId::imported(&first.binding, first.format.name(), &[]).to_string()
+        );
+        assert!(
+            matches!(first.identity, crate::SourceIdentity::Immutable { original_hash } if original_hash == first.binding)
         );
         assert_eq!(first.input.length, 1);
         assert_eq!(
@@ -578,18 +571,18 @@ mod tests {
             1
         );
         let second = writer
-            .next_immutable_import(&first.input.id)
+            .next_retained_source(&first.input.id)
             .unwrap()
             .unwrap();
         assert!(second.input.id > first.input.id);
         assert!(
             writer
-                .next_immutable_import(&second.input.id)
+                .next_retained_source(&second.input.id)
                 .unwrap()
                 .is_none()
         );
         assert_eq!(
-            writer.next_immutable_import("").unwrap().unwrap().input,
+            writer.next_retained_source("").unwrap().unwrap().input,
             first.input
         );
         writer.archive.execute("INSERT INTO excision(id,scope,created_at,local_seq) VALUES('removal','session:unknown',1,1)",[]).unwrap();
@@ -598,7 +591,7 @@ mod tests {
             Err(Error::ExcisionCheckRequired)
         ));
         assert!(matches!(
-            writer.next_immutable_import(""),
+            writer.next_retained_source(""),
             Err(Error::ExcisionCheckRequired)
         ));
     }

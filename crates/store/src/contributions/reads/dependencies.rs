@@ -1,6 +1,6 @@
 //! Snapshot-pinned admission catalog, independent of selected Message rows.
 use super::*;
-use crate::{ImmutableImport, RetainedInput, parser_state};
+use crate::{RetainedSource, parser_state};
 #[derive(Clone)]
 pub struct SessionDependencyCursor {
     read: SharedRead,
@@ -9,10 +9,7 @@ pub struct SessionDependencyCursor {
 pub struct SessionInputDependency {
     read: SharedRead,
     id: String,
-    hash: crate::BlobHash,
-    format: crate::InputFormat,
-    context: Vec<String>,
-    length: u64,
+    source: RetainedSource,
     registered: Option<i64>,
     head: Option<parser_state::Head>,
     failure: Option<String>,
@@ -22,10 +19,10 @@ impl SessionInputDependency {
         &self.id
     }
     pub fn format(&self) -> crate::InputFormat {
-        self.format
+        self.source.format
     }
     pub fn context(&self) -> &[String] {
-        &self.context
+        &self.source.context
     }
     pub fn head(&self) -> Option<&parser_state::Head> {
         self.head.as_ref()
@@ -33,17 +30,11 @@ impl SessionInputDependency {
     pub fn failure(&self) -> Option<&str> {
         self.failure.as_deref()
     }
-    pub fn registered(&self) -> Option<ImmutableImport> {
-        self.registered.map(|input_pk| ImmutableImport {
-            input: RetainedInput {
-                input_pk,
-                id: self.id.clone(),
-                chain: 1,
-                length: self.length,
-            },
-            hash: self.hash,
-            format: self.format,
-            context: self.context.clone(),
+    pub fn registered(&self) -> Option<RetainedSource> {
+        self.registered.map(|input_pk| {
+            let mut source = self.source.clone();
+            source.input.input_pk = input_pk;
+            source
         })
     }
 }
@@ -67,27 +58,22 @@ impl SessionCatalog {
             .as_ref()
             .ok_or_else(|| Error::Invariant("Session admission snapshot missing".into()))?;
         let path = self.path.with_file_name("archive.db");
-        let row: Option<(
-            u64,
-            Option<String>,
-            Option<String>,
-            i64,
-            Vec<u8>,
-            Vec<u8>,
-            Option<String>,
-        )> = db(&path, || {
-            archive.query_row(
-            "SELECT length(CAST(i.id AS BLOB))+length(CAST(i.format AS BLOB))+length(CAST(i.context_json AS BLOB)),CASE WHEN length(CAST(i.id AS BLOB))+length(CAST(i.format AS BLOB))+length(CAST(i.context_json AS BLOB))<=?2 THEN i.id END,CASE WHEN length(CAST(i.id AS BLOB))+length(CAST(i.format AS BLOB))+length(CAST(i.context_json AS BLOB))<=?2 THEN i.format END,r.length,r.blake3,i.original_hash,CASE WHEN length(CAST(i.id AS BLOB))+length(CAST(i.format AS BLOB))+length(CAST(i.context_json AS BLOB))<=?2 THEN i.context_json END FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.id>?1 AND r.produced='imported' AND r.chain=1 ORDER BY i.id LIMIT 1",
-            params![key,i64::try_from(allowance).unwrap_or(i64::MAX)],|r|Ok((parser_state::unsigned(r,0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()
+        let id: Option<(u64, Option<String>)> = db(&path, || {
+            archive.query_row("SELECT length(CAST(id AS BLOB)),CASE WHEN length(CAST(id AS BLOB))<=?2 THEN id END FROM input WHERE id>?1 ORDER BY id LIMIT 1", params![key,i64::try_from(allowance).unwrap_or(i64::MAX)],|r| Ok((parser_state::unsigned(r,0)?,r.get(1)?))).optional()
         })?;
-        let Some((required, id, format, length, hash, original, context)) = row else {
+        let Some((required, id)) = id else {
             return Ok(None);
         };
-        let (Some(id), Some(format), Some(context)) = (id, format, context) else {
-            return Err(metadata_admission("Session dependency identity", required));
-        };
-        let (id, hash, format, context, length) =
-            crate::retained::decode_import_identity(id, format, length, hash, original, context)?;
+        let id = id.ok_or_else(|| metadata_admission("Session dependency identity", required))?;
+        let source = crate::observed::decode(archive, &path, &id)?
+            .ok_or_else(|| Error::Invariant("retained dependency disappeared".into()))?;
+        let required = id.len() + source.context.iter().map(String::len).sum::<usize>();
+        if required > allowance {
+            return Err(metadata_admission(
+                "Session dependency context",
+                required as u64,
+            ));
+        }
         let registered: Option<(i64, bool)> = db(&self.path, || {
             read.connection
                 .query_row("SELECT pk,excised FROM input_ref WHERE id=?1", [&id], |r| {
@@ -100,7 +86,7 @@ impl SessionCatalog {
         }
         let pk = registered.map(|(pk, _)| pk);
         let head = pk
-            .map(|pk| parser_state::head(&read.connection, &self.path, pk, 1))
+            .map(|pk| parser_state::head(&read.connection, &self.path, pk, source.input.chain))
             .transpose()?
             .flatten();
         let failure = if let Some(head) = &head {
@@ -122,10 +108,7 @@ impl SessionCatalog {
             SessionInputDependency {
                 read: Arc::clone(&self.read),
                 id,
-                hash,
-                format,
-                context,
-                length,
+                source,
                 registered: pk,
                 head,
                 failure,

@@ -326,6 +326,24 @@ impl Writer {
                 return Err(Error::MessagePredecessorChanged);
             }
         }
+        // A verified append can move the same logical candidate to its newer
+        // retained revision. Immutable independent revisions never acquire this
+        // withdrawal authority. The exact prior certificate is still required.
+        let observed_append = if previous.is_some() {
+            let id: String = db(&path, || {
+                self._index.query_row(
+                    "SELECT id FROM input_ref WHERE pk=?1",
+                    [build.source.input_pk],
+                    |r| r.get(0),
+                )
+            })?;
+            let source =
+                crate::observed::decode(&self.archive, &self.root.join("archive.db"), &id)?
+                    .ok_or(Error::MessagePredecessorChanged)?;
+            source.observed() && source.input.chain == build.source.chain
+        } else {
+            false
+        };
         let tx = db(&path, || self._index.transaction())?;
         writer::check_completed(&tx, &path, build)?;
         type Prepared = (
@@ -379,7 +397,7 @@ impl Writer {
         }
         type Existing = (i64, u64, u64, i64, i64, Vec<u8>, Vec<u8>);
         let existing: Option<Existing> = db(&path, || {
-            tx.query_row("SELECT pk,revision,evidence_revision,source_state_generation,source_state_step,source_basis_digest,basis_digest FROM message_candidate INDEXED BY message_candidate_effective WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND revision=(SELECT revision FROM message_candidate WHERE pk=?4) AND logical_key=?5 AND eligible=1",params![build.message,input,build.source.chain,build.candidate,logical.as_slice()],|r|Ok((r.get(0)?,crate::parser_state::unsigned(r,1)?,crate::parser_state::unsigned(r,2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()
+            tx.query_row("SELECT pk,revision,evidence_revision,source_state_generation,source_state_step,source_basis_digest,basis_digest FROM message_candidate INDEXED BY message_candidate_effective WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND (revision=(SELECT revision FROM message_candidate WHERE pk=?4) OR (?6 AND pk=?7 AND revision<(SELECT revision FROM message_candidate WHERE pk=?4))) AND logical_key=?5 AND eligible=1",params![build.message,input,build.source.chain,build.candidate,logical.as_slice(),observed_append,previous.map(|p|p.candidate).unwrap_or(0)],|r|Ok((r.get(0)?,crate::parser_state::unsigned(r,1)?,crate::parser_state::unsigned(r,2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional()
         })?;
         let withdrawal = match existing {
             Some((candidate, revision, evidence, generation, step, basis, preparation)) => {

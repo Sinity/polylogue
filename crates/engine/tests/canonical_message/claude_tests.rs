@@ -88,7 +88,7 @@ fn make_world(retained: &[u8], parsed: &[u8]) -> (World, Vec<PendingMessage>) {
             root,
             writer,
             head,
-            source_hash: blob,
+            source_binding: blob,
         },
         pending,
     )
@@ -98,7 +98,7 @@ fn request(world: &World, pending: &PendingMessage) -> m::ClaudeRequest {
     key[..8].copy_from_slice(&pending.ordinal.to_be_bytes());
     m::ClaudeRequest {
         pending: pending.clone(),
-        source_hash: world.source_hash,
+        source_binding: world.source_binding,
         context: vec!["claude-main".into(), SID.into()],
         revision: 1,
         logical_key: key,
@@ -157,7 +157,7 @@ fn real_morrow_claude_bodies_use_native_ids_flat_order_and_verified_origins() {
         assert_eq!(
             origin["binding"]["input"],
             polylogue_model::InputId::imported(
-                &world.source_hash,
+                &world.source_binding,
                 "claude-code-jsonl",
                 &["claude-main", SID]
             )
@@ -300,7 +300,7 @@ fn claude_wrong_original_hash_and_raw_typed_selector_mismatch_refuse_source_cert
     let raw = input("original");
     let (mut world, pending) = make_world(&raw, &raw);
     let mut req = request(&world, &pending[0]);
-    req.source_hash = polylogue_model::BlobHash::from_bytes([77; 32]);
+    req.source_binding = polylogue_model::BlobHash::from_bytes([77; 32]);
     let handle = begin(&mut world, &req);
     assert!(matches!(
         world.compute_with(&handle, work_budget()),

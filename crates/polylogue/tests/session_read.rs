@@ -1130,9 +1130,78 @@ fn metadata_only_source_is_not_a_complete_empty_selection() {
 
 #[test]
 fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citation_after_restart() {
+    // This positive, multi-snapshot fixture shares the suite's bounded WAIT.
+    // A short CLI wait can expire under parallel debug-test load while the
+    // retained owner continues; retry only that same receipt and fixed basis.
+    fn settled_import(world: &World, path: &Path, request_id: &str) -> Output {
+        let started = Instant::now();
+        let deadline = started + WAIT;
+        let mut original = None;
+        let mut progress = Value::Null;
+        let mut attempts = 0;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "compatible import {request_id} exceeded {WAIT:?}; progress {progress}; daemon {}",
+                world.log()
+            );
+            let timeout = remaining.as_secs().clamp(1, 30).to_string();
+            let out = wait_import(world, path, request_id, &timeout);
+            attempts += 1;
+            let receipt: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+                panic!(
+                    "compatible import {request_id}: {e}; {out:?}; daemon {}",
+                    world.log()
+                )
+            });
+            assert_eq!(receipt["request_id"], request_id, "{receipt}");
+            assert_eq!(receipt["seen_at"], 17, "{receipt}");
+            let retained_basis =
+                json!({"retained":receipt["retained"],"basis":receipt["source_rows"]["basis"]});
+            if let Some(expected) = &original {
+                assert_eq!(
+                    &retained_basis, expected,
+                    "retry changed immutable retained basis"
+                );
+            } else {
+                original = Some(retained_basis);
+            }
+            if out.status.success() {
+                assert_eq!(receipt["source_rows"]["state"], "settled", "{receipt}");
+                eprintln!(
+                    "compatible import {request_id} settled after {attempts} attempt(s), {:?}",
+                    started.elapsed()
+                );
+                return out;
+            }
+            assert_eq!(
+                out.status.code(),
+                Some(7),
+                "{out:?}; progress {progress}; daemon {}",
+                world.log()
+            );
+            assert_eq!(receipt["error"]["kind"], "timeout", "{receipt}");
+            assert_eq!(receipt["source_rows"]["state"], "pending", "{receipt}");
+            assert!(
+                Instant::now() < deadline,
+                "compatible import {request_id} exceeded {WAIT:?}; receipt {receipt}; prior progress {progress}; daemon {}",
+                world.log()
+            );
+            progress = world.progress(receipt["retained"]["id"].as_str().unwrap());
+            assert_eq!(
+                progress["source_rows"]["basis"], receipt["source_rows"]["basis"],
+                "retry target changed"
+            );
+            eprintln!(
+                "compatible import {request_id} pending after {attempts} attempt(s), {:?}; progress {progress}",
+                started.elapsed()
+            );
+        }
+    }
     let mut world = World::new();
     let path = world.input("compatible-snapshot.jsonl", MORROW);
-    let base = wait_import(&world, &path, "01900000-0000-7000-8000-000000000700", "30");
+    let base = settled_import(&world, &path, "01900000-0000-7000-8000-000000000700");
     assert_eq!(base.status.code(), Some(0), "{base:?}; {}", world.log());
     let base: Value = serde_json::from_slice(&base.stdout).unwrap();
     let base_input = base["retained"]["id"].as_str().unwrap();
@@ -1151,7 +1220,7 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
     }
     stream.sync_all().unwrap();
     drop(stream);
-    let appended = wait_import(&world, &path, "01900000-0000-7000-8000-000000000701", "30");
+    let appended = settled_import(&world, &path, "01900000-0000-7000-8000-000000000701");
     assert_eq!(
         appended.status.code(),
         Some(0),
@@ -1192,7 +1261,7 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
     );
     fs::remove_file(&path).unwrap();
     world.restart(); // Genuine SIGKILL; ordinary current-index WAL reuse remains supported.
-    let replay = wait_import(&world, &path, "01900000-0000-7000-8000-000000000701", "30");
+    let replay = settled_import(&world, &path, "01900000-0000-7000-8000-000000000701");
     assert_eq!(replay.status.code(), Some(0), "{replay:?}; {}", world.log());
     let replay: Value = serde_json::from_slice(&replay.stdout).unwrap();
     assert_eq!(replay["retained"], appended["retained"]);
