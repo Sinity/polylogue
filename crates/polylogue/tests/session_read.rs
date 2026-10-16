@@ -1579,12 +1579,9 @@ fn model_dialogue_keeps_the_unchanged_morrow_selection_and_truthful_omissions() 
             .unwrap_or_else(|| row["message"]["content"][0]["text"].as_str().unwrap());
         let span = &page["shown"][0];
         assert_eq!(span["text"], expected);
-        assert!(
-            span["message"]
-                .as_str()
-                .unwrap()
-                .ends_with(row["uuid"].as_str().unwrap())
-        );
+        let uuid = row["uuid"].as_str().unwrap();
+        assert_eq!(span["message"], format!("message:{}:{uuid}", reference()));
+        assert_eq!(span["block"], format!("block:{}:{uuid}:0", reference()));
         assert_eq!(
             span["written_by"],
             if row["type"] == "user" {
