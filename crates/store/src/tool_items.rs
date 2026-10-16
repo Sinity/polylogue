@@ -519,7 +519,11 @@ impl ReadHandle {
         }
         let suppressed_wrappers: std::collections::BTreeSet<_> = items
             .iter()
-            .filter(|i| i.operation.kind != "CodeExecution")
+            .filter(|i| {
+                i.operation.kind != "CodeExecution"
+                    && i.operation.counted()
+                    && !i.conflicting_representations
+            })
             .flat_map(|i| i.operation.wrapper_overlaps.iter().cloned())
             .collect();
         let mut calls = 0;

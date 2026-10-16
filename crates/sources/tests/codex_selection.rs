@@ -195,7 +195,7 @@ fn overlay_selection_retains_original_content_and_replacement_uses_new_record() 
     assert_eq!(extract(&changed, &selected), vec![json!("old")]);
 }
 #[test]
-fn identical_reemission_preserves_frozen_selection_and_unsupported_result_is_unknown() {
+fn identical_reemission_preserves_frozen_selection_and_direct_tools_have_proved_selectors() {
     let header = line("session_meta", json!({"id":"selector-replay"}));
     let item = line(
         "response_item",
@@ -227,7 +227,36 @@ fn identical_reemission_preserves_frozen_selection_and_unsupported_result_is_unk
                         ..
                     }
                 ) {
-                    assert!(w.selection.is_none());
+                    let selected = w
+                        .selection
+                        .as_ref()
+                        .expect("supported direct tool selector");
+                    let mut emitted = Vec::new();
+                    selected
+                        .write_value(
+                            |range| {
+                                Ok::<_, ()>(
+                                    bytes.as_bytes()[range.start as usize..range.end as usize]
+                                        .to_vec(),
+                                )
+                            },
+                            65536,
+                            &mut emitted,
+                        )
+                        .unwrap();
+                    let actual: Value = serde_json::from_slice(&emitted).unwrap();
+                    let expected = if matches!(
+                        w.slot,
+                        Slot::Block {
+                            field: BlockField::Command,
+                            ..
+                        }
+                    ) {
+                        json!("x")
+                    } else {
+                        json!({"Text":"result"})
+                    };
+                    assert_eq!(actual, expected);
                 }
             }
         }

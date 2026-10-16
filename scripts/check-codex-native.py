@@ -77,7 +77,7 @@ def verify_case(binary,output,order,wrappers=False):
         facts=result['shown'][0]['operation']
         assert facts['result_present'] and facts['output']=='' and facts['outcome']=='error'and facts['exit_code']==1,facts
         assert facts['invocation']=='C'and facts['turn']=='T',facts
-        assert facts['message'] is None if wrappers else facts['message']=='message:'+REF+':M',facts
+        assert facts['message'] is None if wrappers else facts['message']==REF+':M',facts
         assert facts['wrapper'] is None,facts
         if wrappers:
             assert len(facts['wrapper_overlaps'])==2 and all(ref.startswith('operation:')for ref in facts['wrapper_overlaps']),facts

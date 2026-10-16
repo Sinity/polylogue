@@ -206,7 +206,11 @@ impl Recipe for FactSelection {
                 })
             }
             _ => {
-                let output = super::recorded_output(value.get("output"));
+                let output = super::recorded_output(
+                    value
+                        .get("aggregated_output")
+                        .or_else(|| value.get("output")),
+                );
                 let text = match &output {
                     Some(polylogue_model::ToolOutput::Text(s)) => s.as_str(),
                     _ => "",
