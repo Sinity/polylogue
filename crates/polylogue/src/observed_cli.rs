@@ -103,6 +103,7 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
             i64::try_from(now.as_micros()).map_err(io_error)?,
             &stop,
             until_idle,
+            json_output,
             out,
         );
     }
@@ -198,6 +199,7 @@ fn run_codex(
     seen_at: i64,
     stop: &AtomicBool,
     until_idle: bool,
+    json_output: bool,
     out: &mut impl Write,
 ) -> Result<i32, Failure> {
     let (mut running, acquisition) =
@@ -208,6 +210,11 @@ fn run_codex(
         running.socket().display()
     );
     if !until_idle {
+        if json_output {
+            serde_json::to_writer(&mut *out,&json!({"outcome":"degraded","acquisition":acquisition,"scope":"retention_only","missing":["general_session_coverage"]})).map_err(io_error)?;
+            writeln!(out).map_err(io_error)?;
+            out.flush().map_err(io_error)?;
+        }
         while !stop.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(10));
         }

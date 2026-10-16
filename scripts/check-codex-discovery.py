@@ -19,15 +19,24 @@ P = 'prompt-only:synthetic'
 
 class Run(mcp.Run):
     def start(self):
-        args = ['daemon', '--config', self.output / 'config.json']
-        self.calls.append({'launch': self.command(args)})
-        self.daemon = subprocess.Popen(self.command(args), env=self.env,
-                                       stdout=subprocess.DEVNULL, stderr=self.daemon_log)
+        args = ['daemon', '--config', self.output / 'config.json', '--json']
+        output = self.output / ('startup-' + str(len(self.calls)) + '.json')
+        self.calls.append({'launch': self.command(args), 'stdout': output.name})
+        with output.open('wb') as stdout:
+            self.daemon = subprocess.Popen(self.command(args), env=self.env,
+                                           stdout=stdout, stderr=self.daemon_log)
         until = time.monotonic() + 30
         while True:
             value = self.cli(['status'], allowed=(0, 4, 5, 6))
             if value and value.get('acquisition'):
-                return value
+                try:
+                    startup = json.loads(output.read_text())
+                except (json.JSONDecodeError, FileNotFoundError):
+                    startup = None
+                if startup:
+                    assert startup['outcome'] == 'degraded' and startup['scope'] == 'retention_only', startup
+                    assert startup['acquisition'] == value['acquisition'], (startup, value)
+                    return value
             assert self.daemon.poll() is None, 'configured daemon exited'
             assert time.monotonic() < until, 'configured startup timeout'
             time.sleep(.02)
