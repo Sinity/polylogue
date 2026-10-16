@@ -840,19 +840,6 @@ impl Store {
         Ok(out)
     }
 
-    fn plain_frame(v: &View, h: Hash, (off, c, d): (u64, u32, u32)) -> Result<Vec<u8>> {
-        let src = v.at(off, c as u64)?;
-        if zstd::zstd_safe::find_frame_compressed_size(&src).ok() != Some(c as usize) {
-            return Err(Error::Corrupt { blob: h, what: "seek extent is not one complete frame".into() });
-        }
-        let out = zstd::bulk::decompress(&src, d as usize)
-            .map_err(|e| Error::Corrupt { blob: h, what: format!("frame at {off}: {e}") })?;
-        if out.len() != d as usize {
-            return Err(Error::Corrupt { blob: h, what: format!("frame at {off}: decoded length disagrees with seek table") });
-        }
-        Ok(out)
-    }
-
     fn stream_plain_frame<E: From<Error>>(v: &Arc<View>, h: Hash, (off, c, d): (u64, u32, u32),
         mut visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<(), E> {
         let corrupt = |what: &str| Error::Corrupt { blob: h, what: what.into() };
@@ -864,7 +851,10 @@ impl Store {
         let mut buf = [0u8; 65536];
         loop {
             visit(&[])?;
-            let n = decoder.read(&mut buf).map_err(|_| corrupt("plain frame decode/checksum"))?;
+            let n = decoder.read(&mut buf).map_err(|error| {
+                if error.raw_os_error().is_some() { Error::Io(error) }
+                else { corrupt("plain frame decode/checksum") }
+            })?;
             if n == 0 { break; }
             decoded += n as u64;
             if decoded > u64::from(d) { return Err(corrupt("frame exceeds seek length").into()); }
@@ -1083,10 +1073,10 @@ impl Store {
 
     // ---- reading ----
 
-    /// Every frame of a plain blob in order, checked by its zstd checksum; one frame in memory at a time.
-    fn plain_frames(v: &View, h: Hash, mut each: impl FnMut(&[u8])) -> Result<()> {
+    /// Checked chunks in frame order through the same bounded decoder used by verification.
+    fn plain_frames(v: &Arc<View>, h: Hash, mut each: impl FnMut(&[u8])) -> Result<()> {
         for fr in Self::seek_table_checked::<Error>(v, h, || Ok(()))? {
-            each(&Self::plain_frame(v, h, fr)?);
+            Self::stream_plain_frame::<Error>(v, h, fr, |chunk| { each(chunk); Ok(()) })?;
         }
         Ok(())
     }
