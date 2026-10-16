@@ -74,7 +74,9 @@
       "Cargo.toml",
       "README.md",
       "src/lib.rs",
-      "src/tests.rs"
+      "src/tests.rs",
+      "src/tests/acquisition.rs",
+      "src/tests/decoder_cancellation.rs"
     ],
     "implementation_unchanged": false,
     "writer_encoding_unchanged": true
