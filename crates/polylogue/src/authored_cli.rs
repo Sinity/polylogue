@@ -44,11 +44,6 @@ pub(crate) fn author(mcp: bool) -> String {
         std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
     )
 }
-pub(crate) fn machine() -> Result<String, Failure> {
-    fs::read_to_string("/etc/machine-id")
-        .map(|v| v.trim().to_owned())
-        .map_err(|e| Failure::new(ErrorKind::Io, e.to_string()))
-}
 pub(crate) fn request_id() -> Result<String, Failure> {
     let mut random = [0; 16];
     fs::File::open("/dev/urandom")
@@ -216,7 +211,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
     let request = WriteNote {
         request_id: id.map(Ok).unwrap_or_else(request_id)?,
         author: author(false),
-        machine: machine()?,
+        machine: crate::host_identity::machine()?,
         created_at: None,
         kind,
         value,

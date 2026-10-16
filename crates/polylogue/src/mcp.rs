@@ -188,7 +188,7 @@ impl Server {
         }
         let operation = match name {
             "note" => {
-                let machine = match crate::authored_cli::machine() {
+                let machine = match crate::host_identity::machine() {
                     Ok(v) => v,
                     Err(e) => return json!({"outcome":"error","error":e}),
                 };

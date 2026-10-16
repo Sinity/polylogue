@@ -1,4 +1,5 @@
 mod authored_cli;
+mod host_identity;
 mod import_cli;
 mod mcp;
 mod observed_cli;

@@ -18,6 +18,11 @@ impl World {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let archive = dir.path().join("archive");
+        fs::write(
+            dir.path().join("machine-id"),
+            "00112233445566778899aabbccddeeff\n",
+        )
+        .unwrap();
         let runtime = tempfile::tempdir_in("/tmp").unwrap();
         let running = Some(polylogue::Running::start(&archive, runtime.path()).unwrap());
         Self {
@@ -36,6 +41,10 @@ impl World {
             .env("XDG_RUNTIME_DIR", self.runtime.path())
             .env("TMPDIR", self.dir.path())
             .env("CODEX_THREAD_ID", "synthetic-client")
+            .env(
+                "POLYLOGUE_MACHINE_ID_FILE",
+                self.dir.path().join("machine-id"),
+            )
             .output()
             .unwrap()
     }
@@ -78,6 +87,10 @@ fn authored_cli_retries_inherits_basis_and_reconstructs_backlinks_without_provid
     ];
     let first = w.cli(&args, 0);
     assert_eq!(first["revision"]["author"], "codex:synthetic-client");
+    assert_eq!(
+        first["revision"]["machine"],
+        "00112233445566778899aabbccddeeff"
+    );
     assert_eq!(
         w.cli(&args, 0),
         first,
