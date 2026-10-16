@@ -7,6 +7,7 @@ use rusqlite::{OptionalExtension, params};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputFormat {
     ClaudeCodeJsonl,
+    ClaudeCodeToolResult,
     CodexRollout,
     CodexHistorySqlite,
     /// Retained prompt references only; never a conversation parser input.
@@ -20,6 +21,7 @@ impl InputFormat {
     pub fn name(self) -> &'static str {
         match self {
             Self::ClaudeCodeJsonl => "claude-code-jsonl",
+            Self::ClaudeCodeToolResult => "claude-code-tool-result",
             Self::CodexRollout => "codex-rollout",
             Self::CodexHistorySqlite => "codex-history-sqlite",
             Self::CodexPromptHistory => "codex-prompt-history",
@@ -79,6 +81,8 @@ fn validate_context(format: InputFormat, context: &[&str]) -> Result<()> {
         | InputFormat::CodexHistorySqlite
         | InputFormat::CodexPromptHistory
             if context.is_empty() => {}
+        InputFormat::ClaudeCodeToolResult if matches!(context,[main,path,kind] if !main.is_empty() && std::path::Path::new(path).is_absolute() && matches!(*kind,"required"|"inline-duplicate")) =>
+            {}
         InputFormat::ClaudeCodeJsonl if matches!(context,["claude-main",stem] if !stem.is_empty() && !stem.contains('/') && !stem.contains('\0')) =>
             {}
         InputFormat::ClaudeCodeJsonl if matches!(context,["claude-subagent",agent] | ["claude-subagent",agent,_] if !agent.is_empty() && !agent.contains('/') && !agent.contains('\0') && context.iter().all(|v|!v.is_empty())) =>
@@ -886,6 +890,7 @@ pub(crate) fn decode_import_identity(
         "codex-history-sqlite" => InputFormat::CodexHistorySqlite,
         "codex-prompt-history" => InputFormat::CodexPromptHistory,
         "claude-code-jsonl" => InputFormat::ClaudeCodeJsonl,
+        "claude-code-tool-result" => InputFormat::ClaudeCodeToolResult,
         _ => {
             return Err(Error::Invariant(
                 "unsupported immutable import format".into(),

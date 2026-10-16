@@ -344,6 +344,16 @@ pub fn compute(
     context: SourceContext,
     budgets: Budgets,
 ) -> Result<Computation> {
+    compute_with_bodies(snapshot, continuation, window, context, budgets, &[])
+}
+pub fn compute_with_bodies(
+    snapshot: &Snapshot,
+    continuation: Option<CommittedContinuation>,
+    window: Window<'_>,
+    context: SourceContext,
+    budgets: Budgets,
+    bodies: &[polylogue_store::claude_bodies::Companion],
+) -> Result<Computation> {
     let head = &snapshot.head;
     let version = match &context {
         SourceContext::Codex => codex_source::PARSER_VERSION,
@@ -430,7 +440,7 @@ pub fn compute(
             (pending, step)
         }
         SourceContext::Claude(ctx) => {
-            let view = claude::View::new(snapshot, budgets.reads)?;
+            let view = claude::View::new(snapshot, budgets.reads)?.with_bodies(bodies);
             let parser = match claude_code::KeyedRecords::new(ctx, &view) {
                 Ok(p) => p,
                 Err(e) => {
@@ -455,13 +465,19 @@ pub fn compute(
             let (pending, step) = outcome?;
             let pending =
                 pending.try_map_output(|mut output, counts, parsed, _| -> Result<()> {
-                    changes = Some(claude::encode_step(
-                        &mut output,
-                        head,
-                        parsed,
-                        counts,
-                        budgets.encoding,
-                    )?);
+                    let mut encoded =
+                        claude::encode_step(&mut output, head, parsed, counts, budgets.encoding)?;
+                    for body in bodies {
+                        encoded.push(claude::encode_body(
+                            &body.path,
+                            Some(&claude_code::keyed::BodyPayload {
+                                blob: body.blob,
+                                length: body.length,
+                            }),
+                            budgets.encoding,
+                        )?);
+                    }
+                    changes = Some(encoded);
                     Ok(())
                 })?;
             (pending, step)

@@ -187,12 +187,7 @@ impl BodyDigest {
                 required: required as u64,
             });
         }
-        let name = match format {
-            crate::InputFormat::CodexRollout => "codex-rollout",
-            crate::InputFormat::CodexHistorySqlite => "codex-history-sqlite",
-            crate::InputFormat::CodexPromptHistory => "codex-prompt-history",
-            crate::InputFormat::ClaudeCodeJsonl => "claude-code-jsonl",
-        };
+        let name = format.name();
         hasher.update(&(name.len() as u64).to_be_bytes());
         hasher.update(name.as_bytes());
         hasher.update(&(parts.len() as u64).to_be_bytes());

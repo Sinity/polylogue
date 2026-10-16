@@ -67,5 +67,64 @@ identity/binding/span/duplicate mutants. It also witnesses pending target work
 before SIGINT and requires the interrupted idle command to fail.
 
 Source scanning, sampled verification, renames, rewrites, revision coalescing,
-piece joining, companion acquisition, marker/attachment equivalence, corpus
+piece joining, general companion acquisition, marker/attachment equivalence, corpus
 resource guarantees, deployment and full M1 are not qualified by this subset.
+
+## Required tool-result bodies
+
+Configured main acquisition also reads tool-result paths explicitly named by
+complete retained records. The supported location is
+`<main directory>/<main stem>/tool-results/*.txt`. The source adapter owns
+`persistedOutputPath` and the existing saved-output text spellings. Acquisition
+does not enumerate the directory. Each startup scans the full retained main in
+64 KiB windows and checks cancellation at every window; this does not establish
+append-local scan cost. It admits at most 32 referenced paths, a
+1 MiB reference record and 1 MiB per regular body. The configured main parent resolves normally. Held directory handles then open
+the appended session directory, `tool-results` directory and body leaf with
+`NOFOLLOW`; symlinks in any of those components and nonregular descriptors refuse. UTF-8 is required for normalized text.
+Full structured output keeps the public reader's existing 65536-byte normalized
+JSON admission; larger retained bodies can still refuse that presentation.
+
+Each acquired body is an immutable `claude-code-tool-result` input. Its context
+contains the owning main input ID, exact path and `required` or
+`inline-duplicate`. The last local acquisition observation for each path selects
+its snapshot. This reuses Archive input, revision, extent, blob and observation
+ownership. It adds no durable table or mutable parser authority. A checked exact
+copy of complete inline text stays redundant. Its bytes do not join the Message
+version, and losing that retained replica cannot invalidate the inline result.
+
+The sorted retained manifest participates in the main parser basis. A changed
+required snapshot causes normal re-evaluation from retained bytes. The parser
+gets body cells on that same basis, and the result Message version includes its
+raw record and exact required-body digest/length under the owning compound
+evidence recipe. The assistant call's version stays independent. Missing bodies
+leave required work unresolved. Denied reads and retained corruption are errors;
+neither becomes an empty result. Missing provider copies preserve already
+acquired snapshots, and ordinary daemon restart reads only retained bytes.
+
+Session JSON and bounded CLI/MCP rows expose the selected Message's
+`version_hash`. Full tool-result text has a `claude-code-tool-result-body` field
+origin with the companion input, chain, snapshot revision, exact path, byte
+range and raw blob hash. The origin verifier reads and hashes that retained
+snapshot instead of treating the inline preview as the full output. Public
+Session qualification also verifies required retained snapshots. A normalized
+copy cannot make a lost or changed required witness readable. Output and
+`input cat` retain their existing credential masking.
+
+`claude_body_demo` takes `--binary`, `--binary-candidate`, `--output`, `--sdk-python`, `--sdk-client`
+and `--b3sum`. The SDK client is the official-SDK adapter from the pinned joint
+demo. The driver constructs synthetic inputs and independently assembles the
+expected compound Message-version bytes. It checks CLI and SDK output, native
+identity, exact retained origins, separator-only continuation, later content,
+body-only revision, restart, provider removal, unavailable/corrupt retained
+bytes, missing/denied provider reads, symlinks in each appended path component,
+redundant inline copies and private file
+modes. Every attempted CLI command and failed-run report remains inspectable.
+This is one configured-main body shape, not general attachments, watchers,
+directory discovery, subagent acquisition or full M1 acceptance.
+
+An exact Message or block read verifies the required body witnesses pinned by
+that selected Message's field origins. A different Message's lost required body
+does not prevent an independently backed Text member from being read: its
+Session context remains degraded and unavailable. A full Session read and the
+owning tool-result read still refuse the missing witness.

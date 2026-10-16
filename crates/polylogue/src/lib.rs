@@ -140,6 +140,16 @@ impl Running {
     ) -> Result<(Self, polylogue_store::RetainedSource), polylogue_store::Error> {
         let mut writer = Writer::open_cancellable(archive, cancelled)?;
         let retained = writer.acquire_claude_main(source, machine, host, id, seen_at, cancelled)?;
+        let retained = polylogue_engine::claude_bodies::acquire(
+            &mut writer,
+            &retained,
+            source,
+            machine,
+            host,
+            id,
+            seen_at,
+            cancelled,
+        )?;
         Ok((
             Self::start_writer(writer, archive, runtime, false, None)
                 .map_err(polylogue_store::Error::Invariant)?,

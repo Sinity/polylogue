@@ -168,6 +168,11 @@ impl Handle {
         })
     }
     pub fn try_import(&self, request: ImportRequest) -> Result<Receiver<Result<RetainedInput>>> {
+        if request.format == InputFormat::ClaudeCodeToolResult {
+            return Err(Error::InvalidRequest(
+                "Claude companions require the configured main acquisition path",
+            ));
+        }
         let o = &request.observation;
         let required = request
             .path
@@ -311,6 +316,7 @@ impl CanonicalPosition {
                 Self::ToolsAfter(None)
             }
             InputFormat::ClaudeCodeJsonl => Self::ClaudeAfter(None),
+            InputFormat::ClaudeCodeToolResult => unreachable!("companions are never scheduled"),
         }
     }
     fn next(self) -> Result<Self> {
@@ -1117,7 +1123,14 @@ impl Actor {
                                 if cancelled.load(Ordering::Acquire) {
                                     return Err(StoreError::Cancelled.into());
                                 }
-                                Ok(source_turn::compute(
+                                for body in input_for_history
+                                    .companions
+                                    .iter()
+                                    .filter(|body| !body.inline_duplicate)
+                                {
+                                    reader.claude_body(body)?;
+                                }
+                                Ok(source_turn::compute_with_bodies(
                                     &snapshot,
                                     continuation,
                                     Window {
@@ -1126,6 +1139,7 @@ impl Actor {
                                     },
                                     context,
                                     source_budgets(),
+                                    &input_for_history.companions,
                                 )?)
                             },
                         ))
@@ -1523,6 +1537,7 @@ pub(crate) fn parser_version(format: InputFormat) -> u32 {
         InputFormat::CodexHistorySqlite => codex::history::PARSER_VERSION,
         InputFormat::CodexPromptHistory => 1,
         InputFormat::ClaudeCodeJsonl => claude_code::PARSER_VERSION,
+        InputFormat::ClaudeCodeToolResult => 0,
     }
 }
 pub(crate) fn parser_context(input: &RetainedSource) -> Result<SourceContext> {
@@ -1558,10 +1573,12 @@ fn parser_context_json(input: &RetainedSource) -> Result<String> {
     struct Context<'a> {
         format: &'static str,
         context: &'a [String],
+        companions: &'a [polylogue_store::claude_bodies::Companion],
     }
     serde_json::to_string(&Context {
         format: input.format.name(),
         context: &input.context,
+        companions: &input.companions,
     })
     .map_err(|_| Error::InvalidRequest("source context serialization failed"))
 }
@@ -1579,6 +1596,11 @@ pub(crate) fn parser_basis(input: &RetainedSource) -> [u8; 32] {
     for item in &input.context {
         hash.update(&(item.len() as u64).to_be_bytes());
         hash.update(item.as_bytes());
+    }
+    if !input.companions.is_empty() {
+        hash.update(
+            &serde_json::to_vec(&input.companions).expect("companion manifest is serializable"),
+        );
     }
     *hash.finalize().as_bytes()
 }

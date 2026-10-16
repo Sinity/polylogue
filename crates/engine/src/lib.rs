@@ -17,3 +17,5 @@ pub mod session_qualification;
 
 pub mod codex_discovery;
 pub mod session_query;
+
+pub mod claude_bodies;

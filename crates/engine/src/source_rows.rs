@@ -187,6 +187,11 @@ impl Audit {
                     )
                     .into());
                 }
+                InputFormat::ClaudeCodeToolResult => {
+                    return Err(
+                        Error::Invariant("companion is not independently parsed".into()).into(),
+                    );
+                }
                 InputFormat::CodexHistorySqlite => {
                     self.step = head.token.step + 1;
                 }

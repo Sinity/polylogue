@@ -659,7 +659,7 @@ pub(super) fn compute(
             phase,
         } => {
             let c = contribution(snapshot, head, item, b.read)?;
-            let Some(content) = c.blocks.get(block_local as usize) else {
+            let Some(original_content) = c.blocks.get(block_local as usize) else {
                 return progress(
                     state,
                     &mut cursor,
@@ -672,6 +672,41 @@ pub(super) fn compute(
                     b,
                 );
             };
+            let mut content = original_content.clone();
+            let body = if let Some(required) = c
+                .bodies
+                .iter()
+                .find(|body| body.content_item == block_local)
+            {
+                let payload = required
+                    .payload
+                    .as_ref()
+                    .ok_or(Error::Unsupported("Claude required body unavailable"))?;
+                let raw: serde_json::Value =
+                    serde_json::from_slice(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
+                let path = source::required_body_path(&raw, block_local as usize)
+                    .ok_or(Error::Unsupported("Claude required body path unavailable"))?;
+                let body = retained
+                    .companions
+                    .iter()
+                    .find(|body| {
+                        body.path == path
+                            && body.blob == payload.blob
+                            && body.length == payload.length
+                    })
+                    .ok_or(Error::Unsupported(
+                        "Claude body differs from pinned manifest",
+                    ))?;
+                let text = String::from_utf8(reader.claude_body(body)?)
+                    .map_err(|_| Error::Unsupported("Claude body is not UTF-8"))?;
+                if let BlockContent::ToolResult(result) = &mut content {
+                    result.output = Some(ToolOutput::Text(text));
+                }
+                Some(body)
+            } else {
+                None
+            };
+            let content = &content;
             let address = BlockSlot::Item(block_local);
             match phase {
                 BlockPhase::Begin => {
@@ -838,12 +873,29 @@ pub(super) fn compute(
                         return progress(state, &mut cursor, next, b);
                     }
                     let slot = slot(&fact.field)?;
+                    let descriptor = if matches!(
+                        fact.field,
+                        Field::Block {
+                            field: BlockField::Output,
+                            ..
+                        }
+                    ) && body.is_some()
+                    {
+                        FieldDescriptor {
+                            slot: &slot,
+                            time: None,
+                            supplied: !retained,
+                            selection: FieldSelector::ClaudeBody(body.unwrap()),
+                        }
+                    } else {
+                        field(fact, &slot, !retained)?
+                    };
                     field_turn(
                         snapshot,
                         reader,
                         state,
                         &mut cursor,
-                        field(fact, &slot, !retained)?,
+                        descriptor,
                         leaf(fact, &slot, &r, Some(&c), Some(content))?,
                         true,
                         Stage::Claude(next),

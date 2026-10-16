@@ -797,6 +797,7 @@ dependencies = [
  "libsqlite3-sys",
  "polylogue-model",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

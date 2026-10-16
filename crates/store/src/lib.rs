@@ -28,6 +28,7 @@ mod client_request;
 pub mod codex_history;
 pub mod tool_items;
 pub use capture::{BlobCapture, PreparedBlob};
+pub mod claude_bodies;
 pub mod configured_codex;
 pub mod contributions;
 mod native;

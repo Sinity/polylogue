@@ -330,6 +330,11 @@ fn write_message<W: Write>(
     e.syntax(b"{")?;
     e.key("id")?;
     e.identity(m.id().as_str())?;
+    member(
+        e,
+        "version_hash",
+        &json!(stored(m.version_hash())?.to_string()),
+    )?;
     member(e, "role", &serde_json::to_value(header.role)?)?;
     member(e, "written_by", &serde_json::to_value(header.written_by)?)?;
     if active {
