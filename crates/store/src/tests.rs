@@ -581,6 +581,14 @@ fn public_reader_reports_corrupt_archive_page_without_repair() {
     assert_eq!(fs::read(&file).unwrap(), before);
 }
 
+// The parent treats marker existence as a complete acknowledgement. Publish
+// after the payload write so it cannot observe fs::write's empty creation window.
+fn publish_wal_ack(path: &Path, value: &[u8]) {
+    let pending = path.with_extension("pending");
+    fs::write(&pending, value).unwrap();
+    fs::rename(pending, path).unwrap();
+}
+
 #[test]
 #[ignore = "owned subprocess helper for retained WAL probe"]
 fn retained_wal_probe_child() {
@@ -603,7 +611,7 @@ fn retained_wal_probe_child() {
                 .unwrap(),
             3
         );
-        fs::write(ack, b"3").unwrap();
+        publish_wal_ack(&ack, b"3");
         loop {
             std::thread::park();
         }
@@ -645,20 +653,20 @@ fn retained_wal_probe_child() {
                 .put_file_blob(b"acknowledged next WAL generation")
                 .unwrap();
             assert_eq!(writer.status().unwrap().write_counter, 4);
-            fs::write(ack, b"4").unwrap();
+            publish_wal_ack(&ack, b"4");
         }
         Ok("uncommitted") => {
             let tx = writer.archive.transaction().unwrap();
             tx.execute("UPDATE meta SET value='4' WHERE key='write_counter'", [])
                 .unwrap();
             tx.cache_flush().unwrap();
-            fs::write(ack, b"3").unwrap();
+            publish_wal_ack(&ack, b"3");
             loop {
                 std::thread::park();
             }
         }
         _ => {
-            fs::write(ack, b"3").unwrap();
+            publish_wal_ack(&ack, b"3");
         }
     }
     loop {
