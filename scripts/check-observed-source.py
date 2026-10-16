@@ -1,9 +1,91 @@
 #!/usr/bin/env python3
 """Independent single-location append and retained-byte client demonstration."""
+import copy
 import argparse, hashlib, json, os, select, signal, subprocess, tempfile, time
 from pathlib import Path
 SID = '7f3a2c10-0001-4000-8000-000000000001'
 REF = 'claude-code:' + SID
+
+EXPECTED_MESSAGES = [('first', 'user', 'human', 'Initial neutral prompt.'), ('answer', 'assistant', 'model', 'Retained answer 東京🙂.'), ('later', 'user', 'human', 'Later complete prompt.'), ('split', 'user', 'human', 'Split record crosses retained extents.')]
+
+def check_document(document, source, raw):
+    assert document['session']['id'] == REF
+    assert document['session']['title'] == 'Observed neutral source'
+    assert document['session']['models'] == {'synthetic-model': 1}
+    assert document['session']['started_at'] == '2026-10-01T08:00:00.000Z'
+    assert document['session']['last_activity_at'] == '2026-10-01T08:03:00.000Z'
+    spans = {}
+    offset = 0
+    for physical in raw.splitlines(keepends=True):
+        if physical.strip():
+            record = json.loads(physical)
+            if 'uuid' in record:
+                spans[record['uuid']] = {'start': offset, 'end': offset + len(physical.rstrip(b'\r\n'))}
+        offset += len(physical)
+    messages = document['messages']
+    assert len(messages) == 4
+    assert len(set(m['id'] for m in messages)) == 4
+    for index, (message, (native, role, author, text)) in enumerate(zip(messages, EXPECTED_MESSAGES)):
+        assert message['id'] == REF + ':' + native
+        assert message['role'] == role and message['written_by'] == author
+        assert message['blocks'] == [{'id': REF + ':' + native + ':0', 'kind': 'text', 'text': text}]
+        assert message['at'] == f'2026-10-01T08:{index:02}:00.000Z'
+        fields = {'at', 'blocks[0].text'} | ({'prompt_kind'} if role == 'user' else {'model'}) | ({'parent'} if index else set())
+        assert len(message['field_origins']) == len(fields)
+        assert {entry['field'] for entry in message['field_origins']} == fields
+        assert message['sources'] == [{'input': source, 'chain': 1, **spans[native], 'preferred': True}]
+
+        for citation in message['sources']:
+            assert citation['input'] == source and citation['chain'] == 1
+            record = json.loads(raw[citation['start']:citation['end']])
+            assert record['uuid'] == native and record['sessionId'] == SID
+        for entry in message['field_origins']:
+            origin = entry['origin']
+            assert origin['binding'] == {'input': source, 'chain': 1}
+            assert origin['format'] == 'claude-code-field-origin'
+            selection = origin['selection']
+            assert selection['adapter_version'] == selection['codec_version'] == 1
+            field = entry['field']
+            path = {'at': [{'Key': 'timestamp'}], 'parent': [{'Key': 'parentUuid'}], 'model': [{'Key': 'message'}, {'Key': 'model'}], 'prompt_kind': [], 'blocks[0].text': [{'Key': 'message'}, {'Key': 'content'}] + ([{'Index': 0}, {'Key': 'text'}] if role == 'assistant' else [])}[field]
+
+            selected = selection.get('inputs', [])
+            if 'input' in selection:
+                selected = [selection['input']]
+            assert selected
+            for item in selected:
+                assert item['path'] == path
+                record_range = item['record']
+                assert record_range == spans[native]
+                record = json.loads(raw[record_range['start']:record_range['end']])
+                assert record['uuid'] == native and record['sessionId'] == SID
+                value = record
+                for component in item['path']:
+                    value = value[component.get('Key', component.get('Index'))]
+                if entry['field'] == 'blocks[0].text':
+                    assert value == text
+
+def check_mutants(document, source, raw):
+    mutants = {}
+    base = document
+    wrong = copy.deepcopy(base)
+    wrong['messages'][0]['id'] = 'claude-code:foreign:first'
+    mutants['foreign_session_same_native_suffix'] = wrong
+    wrong = copy.deepcopy(base)
+    wrong['messages'][0]['field_origins'][0]['origin']['binding']['input'] = 'wrong-source'
+    mutants['wrong_origin_binding'] = wrong
+    wrong = copy.deepcopy(base)
+    wrong['messages'][0]['sources'][0]['end'] += 20
+    mutants['wrong_source_span'] = wrong
+    wrong = copy.deepcopy(base)
+    wrong['messages'].append(copy.deepcopy(wrong['messages'][0]))
+    mutants['duplicate_live_message'] = wrong
+    for name, mutant in mutants.items():
+        try:
+            check_document(mutant, source, raw)
+        except (AssertionError, ValueError, KeyError):
+            continue
+        raise AssertionError('accepted mutant: ' + name)
+    return list(mutants)
 
 def line(value):
     return (json.dumps(value, ensure_ascii=False, separators=(',', ':')) + '\n').encode()
@@ -132,7 +214,7 @@ def verify(run):
     assert p['parser']['parsed_upto'] == len(initial + separator + later)
     assert p['parser']['inspected_upto'] == p['length']
     assert p['parser']['records']['framed'] == 4
-    assert len(partialdoc['messages']) == 3 and partialdoc['messages'][-1]['id'].endswith(':later'), partialdoc
+    assert len(partialdoc['messages']) == 3 and partialdoc['messages'][-1]['id'] == REF + ':later', partialdoc
     repeated_partial = run.acquire(config, allowed=(5,))
     assert repeated_partial['revision'] == partial['revision']
     assert repeated_partial['progress']['parser']['step'] == partial['progress']['parser']['step']
@@ -145,22 +227,14 @@ def verify(run):
     assert p['parser']['records']['framed'] == 5
     assert p['parser']['records']['undecodable'] == 0
     assert p['source_rows']['state'] == 'settled'
-    messages = finaldoc['messages']
-    assert len(messages) == 4, (finaldoc, messages)
-    native = ['first', 'answer', 'later', 'split']
-    texts = ['Initial neutral prompt.', 'Retained answer 東京🙂.', 'Later complete prompt.', 'Split record crosses retained extents.']
-    for message, name, text in zip(messages, native, texts):
-        assert message['id'].endswith(':' + name), (message, name)
-        assert text in json.dumps(message, ensure_ascii=False), (message, text)
-        assert message['sources'], message
-        for citation in message['sources']:
-            assert citation['input'] == source and citation['chain'] == 1
-            records = [json.loads(x) for x in expected[citation['start']:citation['end']].splitlines() if x.strip()]
-            assert records and all((r['uuid'] == name for r in records)), (message, records)
+    check_document(finaldoc, source, expected)
+    mutants = check_mutants(finaldoc, source, expected)
     incremental_archive = run.archive
     run.archive = run.output / 'baseline-archive'
     baseline = run.acquire(config)
     _, baseline_doc = run.inspect(baseline['input'], expected)
+
+    check_document(baseline_doc, baseline['input'], expected)
 
     def normalized(document, input_id):
         document = json.loads(json.dumps(document).replace(input_id, 'SOURCE'))
@@ -175,9 +249,11 @@ def verify(run):
         f.write(b'X' if old != b'X' else b'Y')
     run.acquire(config, allowed=(3,))
     p, after = run.inspect(source, expected)
+    check_document(after, source, expected)
     assert after['messages'] == finaldoc['messages']
     path.unlink()
     p, lost = run.inspect(source, expected)
+    check_document(lost, source, expected)
     assert lost['messages'] == finaldoc['messages']
     assert p['source_rows']['state'] == 'settled'
     run.archive = run.output / 'interrupted-archive'
@@ -214,6 +290,31 @@ def verify(run):
         assert len(recovered_doc['messages']) == 3 and recovered['parser']['records']['framed'] == 4
     finally:
         run.stop()
+    run.archive = run.output / 'interrupted-until-idle-archive'
+    path.write_bytes(initial)
+    idle_source = run.acquire(config)['input']
+    # A known retained target lets the ordinary progress client witness pending
+    # source work before the owned process receives SIGINT; no timing-only claim.
+    waiting = initial + b''.join(line(user('interrupt-' + str(i), 'Pending ' + 'x' * 200000, 'answer', 4)) for i in range(32))
+    path.write_bytes(waiting)
+    argv = [run.binary, '--archive', str(run.archive), 'daemon', '--config', str(config), '--until-idle', '--json']
+    run.process = subprocess.Popen(argv, env=run.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + 30
+    while True:
+        assert run.process.poll() is None, 'until-idle exited before pending control'
+        pending = run.command(['progress', idle_source], allowed=(0, 4, 6, 7))
+        if pending and pending.get('parser', {}).get('acquired_upto') == len(waiting) and pending['source_rows']['state'] == 'pending':
+            break
+        assert time.monotonic() < deadline, pending
+        time.sleep(.01)
+    run.process.send_signal(signal.SIGINT)
+    stdout, stderr = run.process.communicate(timeout=30)
+    code = run.process.returncode
+    (run.output / 'interrupted-until-idle.stdout').write_bytes(stdout)
+    (run.output / 'interrupted-until-idle.stderr').write_bytes(stderr)
+    assert code != 0 and b'interrupted before target settlement' in stderr, (code, stdout, stderr)
+    (run.output / 'interrupted-until-idle.json').write_text(json.dumps({'argv': argv, 'exit': code, 'observed_progress': pending}, indent=2))
+    run.process = None
     run.archive = run.output / 'masking-archive'
     secret = 'ghp_' + 'A' * 36
     secret_bytes = title + line(user('credential', 'Neutral ' + secret))
@@ -231,7 +332,7 @@ def verify(run):
     escaped_source = run.acquire(config)['input']
     run.start()
     try:
-        refused = run.command(['input', 'cat', escaped_source], allowed=(4,), raw=True)
+        refused = run.command(['input', 'cat', escaped_source], allowed=(2,), raw=True)
         assert not refused
     finally:
         run.stop()
@@ -251,7 +352,7 @@ def verify(run):
     assert after_empty['input'] == empty['input'] and after_empty['chain'] == empty['chain']
     _, after_empty_document = run.inspect(empty['input'], initial)
     assert len(after_empty_document['messages']) == 2
-    return {'input': source, 'chain': 1, 'revisions': [base['revision'], sep['revision'], partial['revision'], final['revision']], 'records': 5, 'messages': 4, 'retained_bytes': len(expected), 'provider_deleted_read': True, 'separator_zero_records': True, 'split_tail_restart_retry': True, 'empty_genesis_then_append': True, 'waiting_tail_publishes_complete_prefix': True, 'owned_pending_process_kill_recovery': True, 'uninterrupted_equivalence': True, 'input_presentation_masked': True, 'escaped_presentation_refused': True, 'retained_sha256': hashlib.sha256(expected).hexdigest()}
+    return {'exact_capture_mutants_rejected': mutants, 'input': source, 'chain': 1, 'revisions': [base['revision'], sep['revision'], partial['revision'], final['revision']], 'records': 5, 'messages': 4, 'retained_bytes': len(expected), 'provider_deleted_read': True, 'separator_zero_records': True, 'split_tail_restart_retry': True, 'empty_genesis_then_append': True, 'waiting_tail_publishes_complete_prefix': True, 'owned_pending_process_kill_recovery': True, 'pending_until_idle_interrupt_non_success': True, 'uninterrupted_equivalence': True, 'input_presentation_masked': True, 'escaped_presentation_refused': True, 'retained_sha256': hashlib.sha256(expected).hexdigest()}
 
 def main():
     parser = argparse.ArgumentParser()

@@ -19,7 +19,8 @@ The output identifies the acquisition route, input, chain, revision, retained
 length and actual parser/source-row outcome. This idle check concerns the one
 configured input, not every archive dependency. A waiting tail or unavailable
 interpretation returns degraded exit 5 with its reason. General watcher
-convergence and whole-archive idle acceptance remain open.
+convergence and whole-archive idle acceptance remain open. Interrupting this
+command before its target settles returns a timeout failure, never success.
 
 Without `--until-idle`, the daemon stays available for ordinary clients. Adding
 `--json` prints and flushes a `scope: retention_only` admission before waiting;
@@ -47,7 +48,11 @@ changed display length. This subset refuses invalid UTF-8, binary/control bytes
 and JSON escape spellings before payload output; encoded strings need a decoded
 presentation that is not implemented here. There is no `--reveal` support.
 Credential-free supported inputs can still reproduce their exact retained bytes
-through this presentation.
+through this presentation. Unknown inputs return `NotFound`; unsupported safe
+presentation returns `NotYetAvailable`, excision requires a refusal, and expiry
+returns `Timeout`. The client preserves these typed failures. Verification and
+presentation check peer disappearance at bounded read boundaries; disconnecting
+a read does not cancel the retained source owner.
 
 The independent `observed_source_demo` operation accepts `--binary ABSOLUTE_PATH
 --output NEW_DIRECTORY`. It exercises actual daemon and CLI processes, captures
@@ -56,6 +61,10 @@ when a check fails. It distinguishes an owned process kill after retention while
 row work is pending from exact internal install-boundary interruption. Store
 unit controls separately cover registration failure after archive commit,
 missing/overlapping extents, replacement, prefix mutation and short capture.
+The shipped checker validates complete Session, Message and block identities,
+logical text, source spans and decoded origin selectors, and rejects four planted
+identity/binding/span/duplicate mutants. It also witnesses pending target work
+before SIGINT and requires the interrupted idle command to fail.
 
 Source scanning, sampled verification, renames, rewrites, revision coalescing,
 piece joining, companion acquisition, marker/attachment equivalence, corpus

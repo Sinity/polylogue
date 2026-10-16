@@ -159,5 +159,11 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
         }
         return Ok(if ok { 0 } else { 5 });
     }
+    if until_idle {
+        return Err(error(
+            ErrorKind::Timeout,
+            "observed source interrupted before target settlement",
+        ));
+    }
     Ok(0)
 }

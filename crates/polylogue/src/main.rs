@@ -251,7 +251,7 @@ fn run() -> Result<i32, Failure> {
     })?;
     let socket = polylogue::socket_path(&resolved, &runtime);
     if input_cat {
-        polylogue::input_cat::request(&socket, &args[2], &mut out).map_err(io_error)?;
+        polylogue::input_cat::request(&socket, &args[2], &mut out)?;
         return Ok(0);
     }
     if let Some(destination) = export_to {
