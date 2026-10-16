@@ -100,6 +100,16 @@ def verify_case(binary,output,order,wrappers=False):
         for receipt,path,format in zip(receipts,[rollout_path if k=='R'else native for k in order],['codex-rollout'if k=='R'else'codex-history-sqlite'for k in order]):
             repeated=run.cli(['import',path,'--format',format,'--request-id',receipt['request_id'],'--seen-at',str(receipt['seen_at'])])
             assert repeated['retained']==receipt['retained'],repeated
+        # The UI snapshot is an alternative witness, not a contributor to the
+        # selected core body. Losing it cannot invalidate that independent body.
+        native_receipt = next(receipt for receipt, kind in zip(receipts, order) if kind == 'N')
+        native_hash = native_receipt['source_rows']['basis']['original_hash']
+        native_blob = output / 'archive' / 'blobs' / native_hash[:2] / (native_hash + '.zst')
+        run.stop()
+        native_blob.rename(native_blob.with_suffix('.unavailable'))
+        run.start()
+        independent = run.cli([operation['ref'], 'read', '--budget', '20000'])
+        assert independent['shown'] == result['shown'], independent
         return {'reference':operation['id'],'selected':operation['ref'],'rows':calls['rows'],'receipts':receipts}
     finally:
         for client in run.clients:
@@ -258,6 +268,47 @@ def giant_admission_control(binary, output):
         close_run(run, output)
 
 
+def command_representation_control(binary, output):
+    # Expected UI facts follow the pinned from_raw constructor, shlex1.3's
+    # foo-bar/empty quoting vectors and Codex sanitizer.rs's existing 16-byte
+    # Bearer test. This fixture is not a second command renderer.
+    argv = ['printf', '', 'white space', 'Bearer abcdefghijklmnop']
+    display = "printf '' 'white space' 'Bearer [REDACTED_SECRET]'"
+    run = mcp.Run(binary, output)
+    try:
+        run.start()
+        core = output / 'command.jsonl'
+        rollout(core)
+        rows = [json.loads(line) for line in core.read_text().splitlines()]
+        rows[-1]['payload']['item']['command'] = argv
+        rows[-1]['payload']['item']['parsed_cmd'] = []
+        rows = [rows[0], rows[1], rows[-1]]
+        core.write_text(''.join(compact(row) + '\n' for row in rows))
+        native = output / 'history.sqlite'
+        turn, item = native_item()
+        item['command'] = display
+        history(native, [(turn, item)])
+        imported(run, native, 'codex-history-sqlite')
+        imported(run, core, 'codex-rollout')
+        _, calls = query(run)
+        assert calls['count'] == 1, calls
+        selected = calls['rows'][0]
+        current = run.cli([selected['ref'], 'read', '--budget', '20000'])
+        facts = current['shown'][0]['operation']
+        assert facts['command'] == argv and facts['message'] is None, facts
+        ui_hash = next(cite['version_hash'] for cite in current['shown'][0]['representations'] if cite['origin']['representation'] == 'history')
+        projected = run.cli([selected['id'] + '@' + ui_hash, 'read', '--budget', '20000'])
+        assert projected['shown'][0]['operation']['command'] == display, projected
+        assert projected['shown'][0]['operation']['command'] != argv
+        assert all(cite['adapter_revision'] == '092d3acd6bec3e3a14bdc7e7a2810ab628ab759d' for cite in current['shown'][0]['representations'])
+        return {'reference': selected['id'], 'argv': argv, 'ui_display': display,
+                'constructor': 'openai/codex@092d3acd6bec3e3a14bdc7e7a2810ab628ab759d:codex-rs/app-server-protocol/src/protocol/item_builders.rs:58',
+                'redaction_vector': 'codex-rs/secrets/src/sanitizer.rs:redacts_supported_bearer_tokens',
+                'shlex_version': '1.3.0'}
+    finally:
+        close_run(run, output)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True, type=Path)
@@ -275,7 +326,7 @@ def main():
         assert results[0]['reference'] == results[1]['reference']
         assert results[0]['selected'] == results[1]['selected']
         report['cases'] = results
-        for name, verifier in [('qualification', qualification_controls), ('refine-PNF', lambda b, p: refinement_control(b, p, 'PNF')), ('refine-NFP', lambda b, p: refinement_control(b, p, 'NFP')), ('unavailable', unavailable_control), ('missing-wrong-session', missing_and_wrong_session_controls), ('chunked-output', chunked_output_control), ('giant-admission', giant_admission_control)]:
+        for name, verifier in [('qualification', qualification_controls), ('refine-PNF', lambda b, p: refinement_control(b, p, 'PNF')), ('refine-NFP', lambda b, p: refinement_control(b, p, 'NFP')), ('unavailable', unavailable_control), ('missing-wrong-session', missing_and_wrong_session_controls), ('chunked-output', chunked_output_control), ('giant-admission', giant_admission_control), ('command-representations', command_representation_control)]:
             path = args.output / name
             path.mkdir()
             report[name] = verifier(binary, path)
