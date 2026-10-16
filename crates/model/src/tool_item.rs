@@ -49,7 +49,10 @@ pub enum ToolOrigin {
         thread: String,
         turn: String,
         item: String,
+        /// Canonical item JSON, separately inspectable from its row envelope.
         raw_hash: [u8; 32],
+        /// Constructor-bound typed row, including qualification timestamps.
+        row_hash: [u8; 32],
     },
 }
 /// Preserve core argv separately from recorded shell/UI display text. The

@@ -119,6 +119,27 @@ pub fn command(
         origins: vec![origin],
     })
 }
+// Every consulted physical-row fact contributes to immutable version identity.
+// Keep the item JSON hash separate: equal item JSON alone does not imply equal
+// qualification when its started/completed timestamps differ.
+fn row_evidence(row: &HistoryRow) -> Result<[u8; 32], String> {
+    let bytes = serde_json::to_vec(row).map_err(|e| e.to_string())?;
+    let canonical =
+        polylogue_model::identity::canonical_record(&bytes, &[]).map_err(|e| e.to_string())?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"polylogue.codex-history-row.v1\0");
+    hash.update(&PARSER_VERSION.to_be_bytes());
+    for part in [
+        polylogue_model::tool_item::CODEX_REVISION.as_bytes(),
+        polylogue_model::tool_item::CODEX_CONSTRUCTOR.as_bytes(),
+        SCHEMA.as_bytes(),
+        canonical.as_slice(),
+    ] {
+        hash.update(&(part.len() as u64).to_be_bytes());
+        hash.update(part);
+    }
+    Ok(*hash.finalize().as_bytes())
+}
 pub fn map(row: &HistoryRow) -> Result<Option<Operation>, String> {
     let item: Value =
         serde_json::from_str(&row.item_json).map_err(|e| format!("history item_json: {e}"))?;
@@ -145,6 +166,7 @@ pub fn map(row: &HistoryRow) -> Result<Option<Operation>, String> {
                 .map_err(|e| e.to_string())?,
         )
         .as_bytes(),
+        row_hash: row_evidence(row)?,
     };
     let mut operation = command(
         &item,
@@ -178,6 +200,36 @@ pub fn map(row: &HistoryRow) -> Result<Option<Operation>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn row_qualification_facts_change_version_evidence_for_identical_item_json() {
+        let mut row = HistoryRow { thread_id:"S".into(),turn_id:"T".into(),item_id:"C".into(),rollout_ordinal:1,updated_at_ordinal:1,created_at_ms:1,started_at_ms:None,completed_at_ms:None,item_type:"commandExecution".into(),item_json:serde_json::json!({"type":"commandExecution","id":"C","source":"agent","command":"same","status":"completed"}).to_string() };
+        let unknown = map(&row).unwrap().unwrap();
+        row.started_at_ms = Some(1);
+        let proved = map(&row).unwrap().unwrap();
+        assert_eq!(unknown.id(), proved.id());
+        assert_eq!(unknown.agent_class, "unknown");
+        assert!(!unknown.result_present);
+        assert_eq!(proved.agent_class, "agent");
+        assert!(proved.result_present);
+        match (&unknown.origins[0], &proved.origins[0]) {
+            (
+                ToolOrigin::History {
+                    raw_hash: a,
+                    row_hash: av,
+                    ..
+                },
+                ToolOrigin::History {
+                    raw_hash: b,
+                    row_hash: bv,
+                    ..
+                },
+            ) => {
+                assert_eq!(a, b);
+                assert_ne!(av, bv);
+            }
+            _ => panic!("history origins"),
+        }
+    }
     #[test]
     fn empty_core_and_omitted_ui_are_distinct_present_results() {
         let session = SessionId::from_stored("codex:S").unwrap();

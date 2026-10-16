@@ -34,7 +34,10 @@ transaction before SQLite backup, and retains the resulting physical snapshot.
 It therefore includes committed WAL pages consistently; the retained bytes are
 the backup image, not a purported copy of the original main file. Citations name
 that immutable input, its full physical range, the schema, table, exact native
-row key and canonical item-JSON hash. Logical row exports are not accepted as
+row key and canonical item-JSON hash. Immutable version evidence additionally
+binds the constructor, adapter/schema pin and every typed row fact, including
+timestamps consulted for execution qualification. Equal item JSON with different
+row evidence cannot alias version-pinned bodies. Logical row exports are not accepted as
 physical snapshots. The original path is never consulted by subsequent reads.
 
 Operation identity length-frames the opaque public Session, native turn and
@@ -56,6 +59,8 @@ pinned completion event, with matching `thread_id`, native `turn_id` and item ID
 can refine it. The old unpinned reference follows one direct anchor; the old
 version-pinned reference still reads its immutable body and citations. A
 standalone native row cannot assign a turn to an unrelated unscoped call.
+A completion missing its recorded native turn stays provisional even when a
+current turn context exists; it cannot borrow that context for late completion.
 `CommandExecution` has no parent-call field in this schema. Open wrapper overlap
 supports counting suppression, never an invented Message or wrapper parent.
 Selected `associations` distinguish `message_owner` from `wrapper_overlap` and

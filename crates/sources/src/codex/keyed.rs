@@ -2507,8 +2507,7 @@ impl<V: ReadView> KeyedRecords<V> {
         let turn = payload
             .get("turn_id")
             .and_then(Value::as_str)
-            .map(str::to_owned)
-            .or_else(|| self.s.turn.clone());
+            .map(str::to_owned);
         let mut cursor = self.current_origins.cursor();
         let range = match self.current_origins.advance(&mut cursor) {
             Ok(Some(r)) => r,

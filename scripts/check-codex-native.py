@@ -24,13 +24,13 @@ def native_item(call='C',turn='T',output=None,source='agent',status='failed',exi
     if output is not None:item['aggregatedOutput']=output
     return turn,item
 
-def history(path,items):
+def history(path,items,started_at_ms=None):
     connection=sqlite3.connect(path)
     connection.executescript((ROOT/'crates/store/tests/fixtures/codex-history-v0162.sql').read_text())
     connection.execute('CREATE TABLE _sqlx_migrations(version BIGINT PRIMARY KEY,success BOOLEAN NOT NULL)')
     connection.executemany('INSERT INTO _sqlx_migrations VALUES(?,1)',[(n,)for n in range(1,9)])
     for ordinal,(turn,item) in enumerate(items,1):
-        connection.execute('INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,updated_at_ordinal,created_at_ms,item_type,item_json) VALUES(?,?,?,?,?,?,?,?)',(S,turn,item['id'],ordinal,ordinal,1,item['type'],compact(item)))
+        connection.execute('INSERT INTO thread_items(thread_id,turn_id,item_id,rollout_ordinal,updated_at_ordinal,created_at_ms,item_type,item_json,started_at_ms) VALUES(?,?,?,?,?,?,?,?,?)',(S,turn,item['id'],ordinal,ordinal,1,item['type'],compact(item),started_at_ms))
     connection.commit();connection.close()
 
 def rollout(path,scope=True,output='',call='C',turn='T',wrappers=False):
@@ -163,7 +163,27 @@ def qualification_controls(binary, output):
         omitted = next(row for row in calls['rows'] if row['turn'] == 'T')
         facts = run.cli([omitted['ref'], 'read', '--budget', '20000'])['shown'][0]['operation']
         assert facts['result_present'] and facts['output'] is None, facts
-        return all_items
+        # Identical item JSON, distinct physical-row qualification facts. An
+        # immutable ref must never select the first body by a colliding hash.
+        _, row_item = native_item(call='row-evidence', status='completed', exit_code=None)
+        absent = output / 'row-unknown.sqlite'
+        started = output / 'row-started.sqlite'
+        history(absent, [('T', row_item)])
+        history(started, [('T', row_item)], started_at_ms=1)
+        imported(run, absent, 'codex-history-sqlite')
+        before = next(row for row in query(run, 'tool_items')[1]['rows'] if row['invocation'] == 'row-evidence')
+        old = run.cli([before['ref'], 'read', '--budget', '20000'])['shown'][0]
+        assert old['operation']['agent_class'] == 'unknown' and not old['operation']['result_present'], old
+        imported(run, started, 'codex-history-sqlite')
+        after = next(row for row in query(run, 'tool_items')[1]['rows'] if row['invocation'] == 'row-evidence')
+        assert before['id'] == after['id'] and before['ref'] != after['ref'], (before, after)
+        current = run.cli([after['ref'], 'read', '--budget', '20000'])['shown'][0]
+        assert current['operation']['agent_class'] == 'agent' and current['operation']['result_present'], current
+        historical = run.cli([before['ref'], 'read', '--budget', '20000'])['shown'][0]
+        assert historical['operation'] == old['operation'] and not historical['selected'], historical
+        a = old['sources'][0]['origin']; b = current['sources'][0]['origin']
+        assert a['raw_hash'] == b['raw_hash'] and a['row_hash'] != b['row_hash'], (a, b)
+        return {'classification': all_items, 'row_evidence': {'before': before['ref'], 'after': after['ref']}}
     finally:
         close_run(run, output)
 
@@ -239,6 +259,17 @@ def missing_and_wrong_session_controls(binary, output):
         assert not item['result_present'] and item['output'] is None, item
         assert calls['population']['tool_calls'] == 1 and calls['population']['failed'] is None, calls
         assert not calls['population']['outcomes_complete'], calls
+        late = output / 'missing-native-turn.jsonl'
+        rollout(late, call='late')
+        late_rows = [json.loads(line) for line in late.read_text().splitlines()]
+        del late_rows[-1]['payload']['turn_id']
+        # Keep current turn context, omit the ResponseItem call/output so it
+        # cannot independently supply scope for this late native completion.
+        late.write_text(''.join(compact(row) + '\n' for row in [late_rows[0], late_rows[1], late_rows[-1]]))
+        imported(run, late, 'codex-rollout')
+        late_item = next(row for row in query(run, 'tool_items')[1]['rows'] if row['invocation'] == 'late')
+        assert late_item['turn'] is None and late_item['correspondence'] == 'unresolved', late_item
+        assert late_item['id'].startswith('operation:provisional-v1:'), late_item
         wrong = output / 'wrong-session.jsonl'
         rollout(wrong, scope=False, call='wrong')
         rows = [json.loads(line) for line in wrong.read_text().splitlines()]

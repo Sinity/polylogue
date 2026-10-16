@@ -1388,8 +1388,8 @@ fn operation_digest(
     cancelled: &AtomicBool,
 ) -> Result<BlobHash> {
     use polylogue_model::{tool_item::ToolOrigin, version_evidence::Framer};
-    if let [ToolOrigin::History { raw_hash, .. }] = operation.origins.as_slice() {
-        return Ok(BlobHash::from_bytes(*raw_hash));
+    if let [ToolOrigin::History { row_hash, .. }] = operation.origins.as_slice() {
+        return Ok(BlobHash::from_bytes(*row_hash));
     }
     let mut units = Vec::new();
     for origin in &operation.origins {

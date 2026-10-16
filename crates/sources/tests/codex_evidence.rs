@@ -624,3 +624,32 @@ fn provisional_call_uses_its_real_block_and_only_an_exact_session_witness_refine
     assert_eq!(native.direct_anchors, vec![provisional.id().unwrap()]);
     assert_ne!(native.id().unwrap(), provisional.id().unwrap());
 }
+
+#[test]
+fn native_completion_without_recorded_turn_never_borrows_current_turn() {
+    let bytes = header()
+        + &line("turn_context", json!({"turn_id":"newer-turn"}))
+        + &line(
+            "event_msg",
+            json!({"type":"item_completed","thread_id":"session:opaque","item":{"type":"CommandExecution","id":"late-C","source":"agent","command":["same"],"status":"completed","exit_code":0}}),
+        );
+    let (view, resume) = run(MemoryReadView::default(), Resume::default(), &bytes);
+    assert_eq!(resume.message_count(), 0);
+    let operation = view
+        .cells
+        .values()
+        .find_map(|c| match c {
+            Cell::Operation(op) => Some(op),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(operation.turn, None);
+    assert_eq!(operation.correspondence, "unresolved");
+    assert!(!operation.native && !operation.counted());
+    assert!(
+        operation
+            .id()
+            .unwrap()
+            .starts_with("operation:provisional-v1:")
+    );
+}
