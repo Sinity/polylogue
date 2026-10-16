@@ -239,7 +239,7 @@ def bounds(binary,output):
         assert after_status['continuation']['successful_snapshots']==649
         budget_samples=[];partial_samples=[]
         for call in run.calls:
-            if call.get('arguments')!=['status'] or call.get('status')!='completed':continue
+            if call.get('arguments')!=['status'] or call.get('status')!='completed' or call.get('exit') not in (0,5):continue
             value=json.loads((output/call['stdout']).read_text()).get('continuation')
             if not value or not value.get('last_pass'):continue
             if value['last_pass']['budget_exhausted']:budget_samples.append(value)
