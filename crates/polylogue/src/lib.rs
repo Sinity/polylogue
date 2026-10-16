@@ -3,6 +3,7 @@ use polylogue_engine::owner::{Handle, Owner};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, Writer};
 pub mod authored;
+mod codex_continuation;
 pub mod input_cat;
 pub mod model_read;
 pub mod native_tools;
@@ -92,6 +93,8 @@ pub fn socket_path(archive: &Path, runtime: &Path) -> PathBuf {
 
 pub struct Running {
     owner: Option<Owner>,
+    collector: Option<JoinHandle<()>>,
+    continuation: Arc<Mutex<Option<codex_continuation::Status>>>,
     stop: Arc<AtomicBool>,
     clients: Arc<Mutex<HashMap<u64, UnixStream>>>,
     accept: Option<JoinHandle<()>>,
@@ -126,7 +129,7 @@ impl Running {
         cancelled: &AtomicBool,
     ) -> Result<Self, String> {
         let writer = Writer::open_cancellable(archive, cancelled).map_err(|e| e.to_string())?;
-        Self::start_writer(writer, archive, runtime, fail_after_bind, None)
+        Self::start_writer(writer, archive, runtime, fail_after_bind, None, false)
     }
     pub fn start_observed(
         archive: &Path,
@@ -151,7 +154,7 @@ impl Running {
             cancelled,
         )?;
         Ok((
-            Self::start_writer(writer, archive, runtime, false, None)
+            Self::start_writer(writer, archive, runtime, false, None, false)
                 .map_err(polylogue_store::Error::Invariant)?,
             retained,
         ))
@@ -163,12 +166,33 @@ impl Running {
         id: &str,
         seen_at: i64,
         cancelled: &AtomicBool,
+        continue_collecting: bool,
     ) -> Result<(Self, polylogue_store::configured_codex::Acquisition), polylogue_store::Error>
     {
         let mut writer = Writer::open_cancellable(archive, cancelled)?;
         let report = writer.acquire_codex_home(config, id, seen_at, cancelled)?;
-        let running = Self::start_writer(writer, archive, runtime, false, Some(report.clone()))
-            .map_err(polylogue_store::Error::Invariant)?;
+        let mut running = Self::start_writer(
+            writer,
+            archive,
+            runtime,
+            false,
+            Some(report.clone()),
+            continue_collecting,
+        )
+        .map_err(polylogue_store::Error::Invariant)?;
+        if continue_collecting {
+            let handle = running.owner.as_ref().expect("running owner").handle();
+            let config = config.clone();
+            let request = id.to_owned();
+            let stop = Arc::clone(&running.stop);
+            let status = Arc::clone(&running.continuation);
+            running.collector = Some(
+                thread::Builder::new()
+                    .name("polylogue-codex-home".into())
+                    .spawn(move || codex_continuation::run(handle, config, request, stop, status))
+                    .map_err(polylogue_store::Error::Io)?,
+            );
+        }
         Ok((running, report))
     }
     fn start_writer(
@@ -177,8 +201,13 @@ impl Running {
         runtime: &Path,
         fail_after_bind: bool,
         acquisition: Option<polylogue_store::configured_codex::Acquisition>,
+        continue_collecting: bool,
     ) -> Result<Self, String> {
         let acquisition = Arc::new(acquisition);
+        let continuation = Arc::new(Mutex::new(
+            continue_collecting.then(codex_continuation::Status::initial),
+        ));
+        let thread_continuation = Arc::clone(&continuation);
         let reader = Arc::new(Mutex::new(writer.read_handle().map_err(|e| e.to_string())?));
         let archive = fs::canonicalize(archive).map_err(|e| e.to_string())?;
         let socket = socket_path(&archive, runtime);
@@ -251,15 +280,19 @@ impl Running {
                         let archive = archive.clone();
                         let reader = Arc::clone(&reader);
                         let acquisition = Arc::clone(&acquisition);
+                        let continuation = Arc::clone(&thread_continuation);
                         let completed = Arc::clone(&thread_clients);
                         workers.retain(|worker| !worker.is_finished());
                         workers.push(thread::spawn(move || {
+                            let continuation =
+                                continuation.lock().expect("continuation status").clone();
                             if let Err(error) = serve(
                                 stream,
                                 &archive,
                                 &reader,
                                 &handle,
                                 acquisition.as_ref().as_ref(),
+                                continuation.as_ref(),
                             ) {
                                 eprintln!("client: {error}");
                             }
@@ -281,6 +314,8 @@ impl Running {
         });
         Ok(Self {
             owner: Some(owner),
+            collector: None,
+            continuation,
             stop,
             clients,
             accept: Some(accept),
@@ -299,6 +334,9 @@ impl Running {
             let _ = accept.join();
         }
         self.socket.remove();
+        if let Some(collector) = self.collector.take() {
+            let _ = collector.join();
+        }
         if let Some(owner) = self.owner.take() {
             if let Err(error) = owner.shutdown() {
                 eprintln!("writer shutdown: {error}");
@@ -337,6 +375,7 @@ fn serve(
     reader: &Mutex<ReadHandle>,
     owner: &Handle,
     acquisition: Option<&polylogue_store::configured_codex::Acquisition>,
+    continuation: Option<&codex_continuation::Status>,
 ) -> Result<(), String> {
     let mut line = String::new();
     use std::io::Read;
@@ -378,7 +417,7 @@ fn serve(
                             "Finite Codex source evidence leaves general Session coverage unknown.",
                         );
                     }
-                    json!({"outcome":if status.recovery.is_some() || acquisition.is_some() || (pending["examined_snapshots"].as_u64().is_some_and(|n|n>0) || pending["scan_complete"]==false) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-codex-home-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
+                    json!({"outcome":if status.recovery.is_some() || acquisition.is_some() || (pending["examined_snapshots"].as_u64().is_some_and(|n|n>0) || pending["scan_complete"]==false) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"continuation":continuation,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-codex-home-v1","configured-codex-continuation-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})
