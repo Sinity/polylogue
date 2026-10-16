@@ -40,12 +40,19 @@ pub fn pending(
         raw_bytes += source.input.length;
         examined += 1;
         let provenance = reader.codex_prompt_provenance(&source.input.id)?;
-        let bytes = match reader.read_source_range(
+        let bytes = match reader.read_source_range_checked(
             &source.input.id,
             source.input.chain,
             source.binding,
             0,
             source.input.length,
+            || {
+                if Instant::now() >= scan_until {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            },
         ) {
             Ok(bytes) => bytes,
             Err(Error::ExcisionCheckRequired) => return Err(Error::ExcisionCheckRequired),

@@ -480,11 +480,30 @@ impl Actor {
         self.inner.cancelled.store(true, Ordering::Release);
         self.active = None;
     }
+    fn observe_stop(&mut self) {
+        if self.inner.cancelled.load(Ordering::Acquire) && !self.stopping {
+            self.begin_stop();
+        }
+    }
+    fn stop_for_completion<T>(&mut self, result: &Result<T>) -> bool {
+        self.observe_stop();
+        // A worker's typed cancellation is lifecycle evidence even if shutdown
+        // arrived after dispatch. Never turn it into a durable parser defect.
+        if matches!(
+            result,
+            Err(Error::Stopped
+                | Error::Store(StoreError::Cancelled)
+                | Error::Source(source_turn::Error::Store(StoreError::Cancelled))
+                | Error::Canonical(canonical_message::Error::Store(StoreError::Cancelled))
+                | Error::Canonical(canonical_message::Error::Cancelled))
+        ) {
+            self.begin_stop();
+        }
+        self.stopping
+    }
     fn run(mut self, rx: Receiver<Message>) -> Result<()> {
         loop {
-            if self.inner.cancelled.load(Ordering::Acquire) && !self.stopping {
-                self.begin_stop();
-            }
+            self.observe_stop();
             let immediate = !self.stopping
                 && self.compute.is_none()
                 && self.canonical.is_none()
@@ -552,6 +571,8 @@ impl Actor {
         }
     }
     fn message(&mut self, message: Message) -> Result<()> {
+        // recv_timeout may have blocked since the loop's stop observation.
+        self.observe_stop();
         match message {
             Message::Note(request, deadline, reply) => {
                 let result = if self.stopping {
@@ -734,7 +755,7 @@ impl Actor {
                     return Err(Error::InvalidRequest("unexpected capture completion"));
                 };
                 job.join.join().map_err(|_| Error::WorkerPanicked)?;
-                if self.stopping {
+                if self.stop_for_completion(&result) {
                     let _ = job.reply.send(Err(Error::Stopped), false);
                     return Ok(());
                 }
@@ -770,7 +791,7 @@ impl Actor {
                     return Err(Error::InvalidRequest("unexpected source completion"));
                 };
                 job.join.join().map_err(|_| Error::WorkerPanicked)?;
-                if self.stopping {
+                if self.stop_for_completion(&result) {
                     return Ok(());
                 }
                 match result {
@@ -808,7 +829,7 @@ impl Actor {
                     .take()
                     .ok_or(Error::InvalidRequest("unexpected canonical completion"))?;
                 job.join.join().map_err(|_| Error::WorkerPanicked)?;
-                if self.stopping {
+                if self.stop_for_completion(&result) {
                     return Ok(());
                 }
                 match result {
@@ -1077,6 +1098,10 @@ impl Actor {
         self.recovery_error = None;
     }
     fn fail(&mut self, head: &Head, details: String) -> Result<()> {
+        self.observe_stop();
+        if self.stopping {
+            return Ok(());
+        }
         let details = diagnostic(details);
         self.writer
             .record_parser_failure(&head.token, Some(&details), DETAIL_BYTES)?;
@@ -1230,12 +1255,19 @@ impl Actor {
                                         &cancelled,
                                     );
                                 }
-                                let bytes = reader.read_source_range(
+                                let bytes = reader.read_source_range_checked(
                                     &input_id,
                                     input_chain,
                                     hash,
                                     offset,
                                     length,
+                                    || {
+                                        if cancelled.load(Ordering::Acquire) {
+                                            Err(StoreError::Cancelled)
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
                                 )?;
                                 if cancelled.load(Ordering::Acquire) {
                                     return Err(StoreError::Cancelled.into());
@@ -1552,12 +1584,19 @@ fn operation_digest(
                 "mixed representation source candidate",
             ));
         };
-        let bytes = reader.read_source_range(
+        let bytes = reader.read_source_range_checked(
             &input.input.id,
             input.input.chain,
             input.binding,
             *start,
             end - start,
+            || {
+                if cancelled.load(Ordering::Acquire) {
+                    Err(StoreError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            },
         )?;
         let canonical =
             polylogue_model::identity::canonical_record(&bytes, &["timestamp", "ordinal"])
@@ -1786,6 +1825,7 @@ mod tests {
             metadata_allowance: 4096,
         }
     }
+    mod cancellation;
     mod configured;
     fn owner(root: &Path) -> Owner {
         Owner::start(

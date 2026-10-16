@@ -2,6 +2,15 @@
 use polylogue_store::ReadHandle;
 use serde_json::{Value, json};
 use std::time::Instant;
+fn deadline(until: Instant) -> Result<(), polylogue_store::Error> {
+    if Instant::now() >= until {
+        Err(polylogue_store::Error::Invariant(
+            "operation read deadline".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
 fn fail(reason: impl ToString) -> Value {
     json!({"outcome":"error","error":polylogue_model::Failure::new(polylogue_model::ErrorKind::NotYetAvailable,reason.to_string())})
 }
@@ -10,7 +19,8 @@ pub fn query(
     plan: &polylogue_model::query::ToolQuery,
     until: Instant,
 ) -> Result<Value, polylogue_store::Error> {
-    let population = reader.tool_items(&plan.session)?;
+    let reader = reader.fork()?;
+    let population = reader.tool_items_checked(&plan.session, || deadline(until))?;
     let mut rows = Vec::new();
     for item in &population.items {
         identities(item, until).map_err(|e| polylogue_store::Error::Invariant(e.to_string()))?;
@@ -71,7 +81,12 @@ pub fn read(reader: &ReadHandle, request: &Value, until: Instant) -> Value {
     let Some(reference) = request["reference"].as_str() else {
         return fail("operation reference missing");
     };
-    let item = match reader.tool_item(reference) {
+    // Retained file proof and frame reuse last for this public read operation.
+    let reader = match reader.fork() {
+        Ok(reader) => reader,
+        Err(error) => return fail(error),
+    };
+    let item = match reader.tool_item_checked(reference, || deadline(until)) {
         Ok(Some(v)) => v,
         Ok(None) => return fail("operation or immutable version not found"),
         Err(e) => return fail(e),
