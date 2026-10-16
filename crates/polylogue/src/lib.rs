@@ -2,6 +2,7 @@
 use polylogue_engine::owner::{Handle, Owner};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, Writer};
+pub mod authored;
 pub mod input_cat;
 pub mod model_read;
 mod output_json;
@@ -270,7 +271,7 @@ fn serve(
                     } else {
                         vec![]
                     };
-                    json!({"outcome":if status.recovery.is_some(){"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1"],"product_path":"partial"})
+                    json!({"outcome":if status.recovery.is_some(){"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})

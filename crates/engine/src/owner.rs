@@ -24,7 +24,7 @@ use std::{
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 // These are admission limits, not format limits or a hard RSS bound. A rejected
 // record/cell remains owed and its required capacity is kept in the diagnostic.
@@ -108,6 +108,11 @@ pub struct ImportRequest {
     pub metadata_allowance: usize,
 }
 #[derive(Debug)]
+pub struct AuthoredReply {
+    pub revision: polylogue_model::authored::Revision,
+    pub recovery: Option<polylogue_model::RecoveryQualification>,
+}
+#[derive(Debug)]
 pub struct Progress {
     pub input: RetainedInput,
     pub parser: Option<Head>,
@@ -117,6 +122,11 @@ pub struct Progress {
     pub source_rows: polylogue_model::settlement::SourceRows,
 }
 enum Message {
+    Note(
+        polylogue_model::authored::WriteNote,
+        Instant,
+        Reply<AuthoredReply>,
+    ),
     Import(ImportRequest, Reply<RetainedInput>),
     Progress(String, Reply<Progress>),
     Retry(String, Reply<()>),
@@ -135,6 +145,18 @@ pub struct Handle {
     inner: Arc<Inner>,
 }
 impl Handle {
+    pub fn try_note(
+        &self,
+        request: polylogue_model::authored::WriteNote,
+        deadline: Instant,
+    ) -> Result<Receiver<Result<AuthoredReply>>> {
+        request
+            .validate()
+            .map_err(|e| Error::Store(StoreError::Authored(e)))?;
+        let (reply, rx) = mpsc::sync_channel(1);
+        self.send(Message::Note(request, deadline, reply))?;
+        Ok(rx)
+    }
     fn send(&self, message: Message) -> Result<()> {
         let accepting = self.inner.accepting.lock().map_err(|_| Error::Stopped)?;
         if !*accepting || self.inner.cancelled.load(Ordering::Acquire) {
@@ -453,6 +475,28 @@ impl Actor {
     }
     fn message(&mut self, message: Message) -> Result<()> {
         match message {
+            Message::Note(request, deadline, reply) => {
+                let result = if self.stopping {
+                    Err(Error::Stopped)
+                } else if Instant::now() >= deadline {
+                    Err(StoreError::Authored(polylogue_model::Failure::new(
+                        polylogue_model::ErrorKind::Timeout,
+                        "queued authored write deadline passed; no effect committed",
+                    ))
+                    .into())
+                } else {
+                    self.writer
+                        .write_note(&request)
+                        .and_then(|revision| {
+                            Ok(AuthoredReply {
+                                revision,
+                                recovery: self.writer.status()?.recovery,
+                            })
+                        })
+                        .map_err(Error::Store)
+                };
+                let _ = reply.send(result);
+            }
             Message::Import(request, reply) => {
                 if self.stopping {
                     let _ = reply.send(Err(Error::Stopped));

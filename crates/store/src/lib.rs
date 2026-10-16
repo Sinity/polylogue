@@ -22,7 +22,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, OnceLock, atomic::AtomicBool},
 };
+pub mod authored;
 mod capture;
+mod client_request;
 pub use capture::{BlobCapture, PreparedBlob};
 pub mod contributions;
 mod native;
@@ -64,8 +66,10 @@ pub enum Error {
         "immutable interpretation context needs {required} framed bytes; maximum declaration is {maximum}"
     )]
     ImportContextTooLarge { required: usize, maximum: usize },
-    #[error("import request {id} was reused with different content")]
-    ImportRequestConflict { id: String },
+    #[error("client request {id} was reused with different content")]
+    ClientRequestConflict { id: String },
+    #[error("{0}")]
+    Authored(polylogue_model::Failure),
     #[error(
         "normalized value chunk of {required} bytes must be split into chunks of at most {maximum} bytes"
     )]

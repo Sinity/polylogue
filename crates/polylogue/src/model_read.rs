@@ -233,21 +233,11 @@ fn message(reader: &ReadHandle, id: &str) -> Result<MessageView, Value> {
     }
 }
 fn select(reader: &ReadHandle, reference: &str) -> Result<Selection, Value> {
-    let (exact, slot) = if let Some(id) = reference.strip_prefix("block:") {
-        // BlockId's public final ordinal is interpreted only after resolving the
-        // complete preceding opaque Message through its stored Session relation.
-        let (id, tail) = id
-            .rsplit_once(':')
-            .ok_or_else(|| refusal("invalid_block_reference"))?;
+    let (exact, slot) = if reference.starts_with("block:") {
+        let (id, slot) = polylogue_model::authored::target_address(reference)
+            .map_err(|_| refusal("invalid_block_reference"))?;
         let m = message(reader, id)?;
-        let slot = if let Some(n) = tail.strip_prefix('r') {
-            BlockSlot::Reasoning(n.parse().map_err(|_| refusal("invalid_block_reference"))?)
-        } else {
-            BlockSlot::Item(
-                tail.parse()
-                    .map_err(|_| refusal("invalid_block_reference"))?,
-            )
-        };
+        let slot = slot.expect("block address");
         let b = stored(m.block(slot.clone()))?.ok_or_else(|| refusal("block_unavailable"))?;
         if format!("block:{}", block_id(&m, &b.slot)?) != reference {
             return Err(refusal("invalid_block_reference"));
@@ -534,6 +524,15 @@ pub fn execute(
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
 ) -> Value {
+    if request["reference"]
+        .as_str()
+        .is_some_and(|r| r.starts_with("note:"))
+    {
+        return match reader.lock() {
+            Ok(reader) => crate::authored::read(request, &reader, until, cancel),
+            Err(_) => unavailable("reader_lock_poisoned"),
+        };
+    }
     match run(reader, request, until, cancel) {
         Ok(v) | Err(v) => v,
     }
@@ -630,12 +629,44 @@ fn run(
             .expect("notes")
             .push(json!(polylogue_model::RecoveryQualification::NOTE));
     }
+    let authored_basis = if let Some(m) = &selection.exact {
+        Some(stored(polylogue_engine::authored::selected_basis(
+            m,
+            selection.slot.as_ref(),
+            reference,
+            until,
+            cancel,
+        ))?)
+    } else {
+        None
+    };
+    let authored_notes = if selection.exact.is_some() {
+        let reader = reader
+            .lock()
+            .map_err(|_| unavailable("reader_lock_poisoned"))?;
+        let snapshot = stored(reader.authored_snapshot())?;
+        let notes = crate::authored::backlinks(&snapshot, &reader, reference, until, cancel)?;
+        if notes["families"].as_array().is_some_and(|v| !v.is_empty()) {
+            let notes = crate::authored::fit(notes, MAX_BUDGET, false, until);
+            if notes["outcome"] == "error" {
+                return Err(notes);
+            }
+            Some(notes)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     // A second pass before handoff recomputes the same incarnation/visibility
     // certificates. Current removal/generation checks remain live at every read.
     let mut basis = blake3::Hasher::new();
     basis.update(POLICY.as_bytes());
     basis.update(view.basis());
     basis.update(reference.as_bytes());
+    if let Some(notes) = &authored_notes {
+        basis.update(&serde_json::to_vec(notes).expect("authored metadata"));
+    }
     let mut count = 0u64;
     let mut omitted = Omissions::default();
     visit(
@@ -852,6 +883,12 @@ fn run(
         page["next"] = next;
         page["authority"] =
             json!("current selected-body visibility; native privacy/removal products unavailable");
+        if let Some(witness) = &authored_basis {
+            page["authored_basis"] = json!(witness);
+        }
+        if let Some(notes) = &authored_notes {
+            page["authored_notes"] = notes.clone();
+        }
         page["shown"] = if let Some((identity, w)) = &selected {
             let mut s = identity.clone();
             s["display_start"] = json!(position.scalar);

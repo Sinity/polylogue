@@ -8,10 +8,13 @@ fn failed(kind: ErrorKind, message: impl Into<String>) -> Value {
     json!({"outcome":"error","error":Failure::new(kind,message)})
 }
 fn actor_error(error: OwnerError) -> Value {
+    if let OwnerError::Store(polylogue_store::Error::Authored(ref failure)) = error {
+        return json!({"outcome":"error","error":failure});
+    }
     let kind = match &error {
         OwnerError::Busy => ErrorKind::Timeout,
         OwnerError::Stopped => ErrorKind::NotRunning,
-        OwnerError::Store(polylogue_store::Error::ImportRequestConflict { .. }) => {
+        OwnerError::Store(polylogue_store::Error::ClientRequestConflict { .. }) => {
             ErrorKind::Conflict
         }
         OwnerError::Store(polylogue_store::Error::ExcisionCheckRequired) => ErrorKind::Refused {
@@ -61,6 +64,57 @@ fn valid_request_id(id: &str) -> bool {
 pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
     let action = || -> Result<Value, Value> {
         match text(request, "command")? {
+            "note" => {
+                let mut request = request.clone();
+                let object = request.as_object_mut().ok_or_else(|| {
+                    failed(ErrorKind::InvalidQuery, "note request must be an object")
+                })?;
+                object.remove("command");
+                let deadline = object
+                    .remove("deadline_ms")
+                    .map(|v| {
+                        v.as_u64().filter(|n| *n > 0 && *n <= 30000).ok_or_else(|| {
+                            failed(ErrorKind::InvalidQuery, "deadline_ms must be1..30000")
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or(30000);
+                let request: polylogue_model::authored::WriteNote = serde_json::from_value(request)
+                    .map_err(|e| {
+                        failed(
+                            ErrorKind::InvalidQuery,
+                            format!("unsupported authored request: {e}"),
+                        )
+                    })?;
+                request
+                    .validate()
+                    .map_err(|e| json!({"outcome":"error","error":e}))?;
+                let until = std::time::Instant::now() + std::time::Duration::from_millis(deadline);
+                for id in [request.author.as_str(), request.machine.as_str()]
+                    .into_iter()
+                    .chain(
+                        request
+                            .targets
+                            .iter()
+                            .flatten()
+                            .map(|t| t.reference.as_str()),
+                    )
+                    .chain(request.relations.iter().map(|r| r.other.as_str()))
+                {
+                    crate::output_json::check_identity(id, until)
+                        .map_err(|e| failed(ErrorKind::NotYetAvailable, e.to_string()))?;
+                }
+                let committed = receive(owner.try_note(request, until))?;
+                let revision = committed.revision;
+                let notes = if committed.recovery.is_some() {
+                    vec![polylogue_model::RecoveryQualification::NOTE]
+                } else {
+                    vec![]
+                };
+                Ok(
+                    json!({"outcome":if committed.recovery.is_some(){"degraded"}else{"ok"},"note":revision.id,"ref":revision.reference(),"root":revision.root,"revision":revision,"recovery":committed.recovery,"notes":notes,"missing":notes}),
+                )
+            }
             "import" => {
                 let allowed = [
                     "command", "id", "path", "format", "context", "machine", "host", "seen_at",

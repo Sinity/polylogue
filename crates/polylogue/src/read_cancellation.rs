@@ -1,5 +1,5 @@
-//! One request owns one downstream read socket. Cancellation never touches the
-//! daemon owner or an import request.
+//! One request owns one downstream socket. Cancellation closes its transport;
+//! it never undoes a note accepted by the writer or cancels source retention.
 use std::{
     io,
     net::Shutdown,
