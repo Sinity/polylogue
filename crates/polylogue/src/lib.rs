@@ -6,6 +6,7 @@ mod output_json;
 mod protocol;
 pub mod reference_read;
 mod session_document;
+pub mod session_export;
 pub mod session_query;
 pub mod session_read;
 use serde_json::{Value, json};
