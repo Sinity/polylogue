@@ -1,4 +1,4 @@
-//! Real subprocess daemon/CLI Session reads; catalog coverage remains degraded.
+//! Real subprocess daemon/CLI reads with source-scoped completion qualifications.
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
@@ -205,12 +205,17 @@ impl World {
         loop {
             let p = self.progress(id);
             let out = self.cli(&[reference, "read", "--format", "json"]);
-            if out.status.code() == Some(5) {
+            if matches!(out.status.code(), Some(0 | 5)) {
                 let document: Value = serde_json::from_slice(&out.stdout).unwrap();
-                assert!(
-                    String::from_utf8_lossy(&out.stderr).contains("coverage is incomplete"),
-                    "{out:?}"
-                );
+                if out.status.code() == Some(5) {
+                    assert!(
+                        String::from_utf8_lossy(&out.stderr).contains("coverage is incomplete"),
+                        "{out:?}"
+                    );
+                } else {
+                    assert_eq!(document["result"]["outcome"], "ok");
+                    assert_eq!(document["result"]["settlement"]["state"], "settled");
+                }
                 if document["messages"].as_array().unwrap().len() == messages
                     && p["source_rows"]["state"] != "pending"
                 {
@@ -390,6 +395,11 @@ fn actual_morrow_json_read_survives_provider_loss_sigkill_and_observation_replay
     fs::remove_file(&path).unwrap();
     let document = world.read(&reference(), id, 12);
     assert_morrow(&document);
+    assert_eq!(document["result"]["outcome"], "ok");
+    let (framed, _, end) = world.socket_read(&reference());
+    assert_eq!(framed, document);
+    assert_eq!(end["outcome"], "ok");
+    assert_eq!(end["canonical_complete"], true);
     world.restart(); // Child::kill sends SIGKILL; Drop waits before starting.
     let replay = world.import(&path, request);
     assert_eq!(replay["retained"], receipt["retained"]);
@@ -787,7 +797,7 @@ fn admission_refusal_and_provider_diagnostics_are_named_without_credential_discl
 }
 
 #[test]
-fn session_qualification_includes_malformed_only_source_but_excludes_unrelated_pending_main() {
+fn session_document_includes_malformed_only_and_possible_foreign_link_sources() {
     let mut world = World::new();
     let clean = world.input(
         "qualified-main.jsonl",
@@ -830,7 +840,7 @@ fn session_qualification_includes_malformed_only_source_but_excludes_unrelated_p
                 .contains("undecodable complete records"))
     );
     assert!(
-        !first["result"]["notes"]
+        first["result"]["notes"]
             .as_array()
             .unwrap()
             .iter()
@@ -883,8 +893,8 @@ fn session_qualification_includes_malformed_only_source_but_excludes_unrelated_p
     let reread = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(reread.status.code(), Some(5));
     assert_eq!(
-        serde_json::from_slice::<Value>(&reread.stdout).unwrap(),
-        first
+        without_settlement(serde_json::from_slice::<Value>(&reread.stdout).unwrap()),
+        without_settlement(first.clone())
     );
     fs::remove_file(&clean).unwrap();
     fs::remove_file(&malformed).unwrap();
@@ -906,8 +916,8 @@ fn session_qualification_includes_malformed_only_source_but_excludes_unrelated_p
     let read = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(read.status.code(), Some(5));
     assert_eq!(
-        serde_json::from_slice::<Value>(&read.stdout).unwrap(),
-        first
+        without_settlement(serde_json::from_slice::<Value>(&read.stdout).unwrap()),
+        without_settlement(first.clone())
     );
 }
 
@@ -1081,4 +1091,39 @@ fn query_unknown_population_is_not_completed_empty_and_request_shapes_refuse() {
         assert!(matches!(out.status.code(), Some(2 | 3)), "{query}: {out:?}");
         assert!(out.stdout.is_empty());
     }
+}
+
+fn without_settlement(mut document: Value) -> Value {
+    // New observations bind a new read basis even when source payloads and
+    // retained failure identities are unchanged.
+    document["result"]
+        .as_object_mut()
+        .unwrap()
+        .remove("settlement");
+    document
+}
+
+#[test]
+fn metadata_only_source_is_not_a_complete_empty_selection() {
+    let world = World::new();
+    let source = world.input(
+        "metadata-only.jsonl",
+        b"{\"type\":\"ai-title\",\"aiTitle\":\"Synthetic title\"}\n",
+    );
+    let imported = wait_import(
+        &world,
+        &source,
+        "01900000-0000-7000-8000-000000000440",
+        "20",
+    );
+    assert_eq!(imported.status.code(), Some(0));
+    let selected = world.cli(&[&reference(), "--json"]);
+    assert_eq!(selected.status.code(), Some(5));
+    let selected: Value = serde_json::from_slice(&selected.stdout).unwrap();
+    assert_eq!(selected["count"], 0);
+    assert!(selected["notes"].as_array().unwrap().iter().any(|note| {
+        note.as_str()
+            .unwrap()
+            .contains("no published catalog owner")
+    }));
 }

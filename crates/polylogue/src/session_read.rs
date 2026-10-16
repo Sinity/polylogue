@@ -83,11 +83,12 @@ pub(crate) fn serve(
                 e,
             )
         })?;
-        match coverage.catalog {
-            polylogue_store::contributions::SessionCoverage::KnownCatalogOnly => Ok(
-                json!({"type":"end","outcome":"degraded","canonical_complete":false,"messages":coverage.messages,"missing":coverage.qualification["notes"],"notes":coverage.qualification["notes"],"unknown":coverage.qualification["unknown"],"recovery":coverage.qualification["recovery"]}),
-            ),
+        let complete = coverage.qualification["outcome"] == "ok";
+        let mut end = json!({"type":"end","outcome":coverage.qualification["outcome"],"canonical_complete":complete,"messages":coverage.messages,"missing":coverage.qualification["notes"],"notes":coverage.qualification["notes"],"unknown":coverage.qualification["unknown"]});
+        if let Some(recovery) = coverage.recovery {
+            end["recovery"] = json!(recovery);
         }
+        Ok(end)
     })();
     frame(
         stream,
@@ -136,6 +137,86 @@ pub fn request(socket: &Path, reference: &str, out: &mut impl Write) -> io::Resu
         Instant::now() + TIME,
     )
 }
+/// Terminal rendering consumes the same qualified document as JSON. The
+/// bounded client buffer is an explicit surface admission, not another query.
+pub fn request_terminal(socket: &Path, reference: &str, out: &mut impl Write) -> io::Result<Value> {
+    struct Document(Vec<u8>);
+    impl Write for Document {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes.len() > (16 * 1024 * 1024usize).saturating_sub(self.0.len()) {
+                return Err(io::Error::other(
+                    "terminal Session document exceeds 16 MiB admission",
+                ));
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut bytes = Document(Vec::new());
+    let end = request(socket, reference, &mut bytes)?;
+    if end["outcome"] == "error" {
+        return Ok(end);
+    }
+    let document: Value = serde_json::from_slice(&bytes.0)?;
+    render_terminal(&document, out)?;
+    Ok(end)
+}
+fn render_terminal(document: &Value, out: &mut impl Write) -> io::Result<()> {
+    use crate::reference_read::terminal_text;
+    for value in [
+        &document["session"]["id"],
+        &document["session"]["display_title"],
+    ] {
+        if let Some(text) = value.as_str() {
+            terminal_text(out, text, false)?;
+            out.write_all(b"\n")?;
+        }
+    }
+    for message in document["messages"].as_array().into_iter().flatten() {
+        out.write_all(b"\n")?;
+        for key in ["id", "role", "at"] {
+            if let Some(text) = message[key].as_str() {
+                terminal_text(out, text, false)?;
+                out.write_all(b"  ")?;
+            }
+        }
+        out.write_all(b"\n")?;
+        for block in message["blocks"].as_array().into_iter().flatten() {
+            if block["kind"] == "tool_result" {
+                out.write_all(b"[tool_result ")?;
+                terminal_text(out, block["outcome"].as_str().unwrap_or("unknown"), false)?;
+                if let Some(call) = block["call_id"].as_str() {
+                    out.write_all(b" ")?;
+                    terminal_text(out, call, false)?;
+                }
+                out.write_all(b"]\n")?;
+            } else if block["kind"] == "thinking" {
+                out.write_all(b"[thinking]\n")?;
+            }
+            if let Some(text) = block["text"].as_str() {
+                terminal_text(out, text, true)?;
+                out.write_all(b"\n")?;
+            }
+            if block["kind"] == "tool_call" {
+                terminal_text(out, block["tool"].as_str().unwrap_or("tool"), false)?;
+                out.write_all(b" ")?;
+                if let Some(input) = block.get("input") {
+                    terminal_text(out, &serde_json::to_string(input)?, true)?;
+                }
+                out.write_all(b"\n")?;
+            }
+            if let Some(data) = block.get("data") {
+                terminal_text(out, &serde_json::to_string(data)?, true)?;
+                out.write_all(b"\n")?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn decode(
     mut reader: BufReader<UnixStream>,
     reference: &str,
@@ -179,9 +260,12 @@ fn decode(
             Some("end")
                 if item["outcome"] == "error"
                     || started
-                        && item["outcome"] == "degraded"
-                        && item["canonical_complete"] == false
-                        && item["missing"].as_array().is_some_and(|v| !v.is_empty()) =>
+                        && ((item["outcome"] == "degraded"
+                            && item["canonical_complete"] == false
+                            && item["missing"].as_array().is_some_and(|v| !v.is_empty()))
+                            || (item["outcome"] == "ok"
+                                && item["canonical_complete"] == true
+                                && item["missing"].as_array().is_some_and(|v| v.is_empty()))) =>
             {
                 if started && item["outcome"] != "error" {
                     out.write_all(b"\n")?;

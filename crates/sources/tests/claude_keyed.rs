@@ -502,7 +502,7 @@ fn failed_point_read_fuses_driver_and_never_produces_checkpoint_output() {
     }
 }
 #[test]
-fn metadata_only_steps_touch_existing_owner_and_link_header_only_steps_do_not_invent_messages() {
+fn metadata_only_steps_keep_their_owner_and_link_header_only_steps_do_not_invent_messages() {
     let mut memory = MemoryReadView::default();
     let (empty, _) = step(
         &mut memory,
@@ -510,7 +510,14 @@ fn metadata_only_steps_touch_existing_owner_and_link_header_only_steps_do_not_in
         line(json!({"type":"custom-title","customTitle":"Before"})).as_bytes(),
         0,
     );
-    assert!(empty.delta.sessions.is_empty());
+    assert_eq!(empty.delta.sessions.len(), 1);
+    assert_eq!(
+        empty.delta.sessions[0].session.title.as_deref(),
+        Some("Before")
+    );
+    assert_eq!(empty.delta.sessions[0].next_message_ordinal, 0);
+    assert!(empty.delta.responses.is_empty());
+    assert!(empty.delta.pending_messages.is_empty());
     step(
         &mut memory,
         FileCtx::main("s"),
