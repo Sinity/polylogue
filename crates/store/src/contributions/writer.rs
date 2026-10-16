@@ -922,6 +922,7 @@ fn encoded_key(value: &impl serde::Serialize, lower: usize, allowance: usize) ->
 
 #[cfg(test)]
 mod tests {
+    use super::super::SelectCompatibleSourceForTest as _;
     use super::*;
     use crate::contributions::Retirement;
     use crate::{ImportObservation, InputFormat};
@@ -3154,7 +3155,7 @@ mod tests {
         f.writer._index.execute_batch("CREATE TRIGGER refuse_selected_session BEFORE UPDATE OF changed ON session BEGIN SELECT RAISE(ABORT,'synthetic selected session failure'); END;").unwrap();
         assert!(
             f.writer
-                .select_uncontested_source_message(&source, 4096)
+                .select_compatible_source_message_for_test(&source, 4096)
                 .is_err()
         );
         assert!(reader.selected_message(&f.message).unwrap().is_none());
@@ -3168,13 +3169,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             f.writer
-                .select_uncontested_source_message(&source, 4096)
+                .select_compatible_source_message_for_test(&source, 4096)
                 .unwrap(),
             SourceSelection::Selected
         );
         assert_eq!(
             f.writer
-                .select_uncontested_source_message(&source, 4096)
+                .select_compatible_source_message_for_test(&source, 4096)
                 .unwrap(),
             SourceSelection::AlreadySelected
         );
@@ -3247,13 +3248,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             f.writer
-                .select_uncontested_source_message(&other, 4096)
+                .select_compatible_source_message_for_test(&other, 4096)
                 .unwrap(),
             SourceSelection::Contested
         );
         assert_eq!(
             f.writer
-                .select_uncontested_source_message(&source, 4096)
+                .select_compatible_source_message_for_test(&source, 4096)
                 .unwrap(),
             SourceSelection::Contested
         );
@@ -3362,7 +3363,7 @@ mod tests {
             .publish_source_projection(&prepared, None, b"synthetic selected evidence", 4096)
             .unwrap();
         f.writer
-            .select_uncontested_source_message(&source, 4096)
+            .select_compatible_source_message_for_test(&source, 4096)
             .unwrap();
         let MessageLookup::Ready(view) =
             reader.message_reference(f.message.as_str(), 4096).unwrap()
@@ -3878,7 +3879,7 @@ mod tests {
             .publish_source_projection(&done, None, b"old", 4096)
             .unwrap();
         f.writer
-            .select_uncontested_source_message(&old, 4096)
+            .select_compatible_source_message_for_test(&old, 4096)
             .unwrap();
         reparse_source_fixture(&mut f);
         let new = f.prepare().unwrap().build;
@@ -3946,7 +3947,7 @@ mod tests {
             old.body()
         );
         f.writer
-            .select_uncontested_source_message(&replacement, 4096)
+            .select_compatible_source_message_for_test(&replacement, 4096)
             .unwrap();
         let f = f.reopen();
         assert_eq!(
@@ -3977,7 +3978,7 @@ mod tests {
                 .publish_source_projection(&done, None, b"old", 4096)
                 .unwrap();
             f.writer
-                .select_uncontested_source_message(&old, 4096)
+                .select_compatible_source_message_for_test(&old, 4096)
                 .unwrap();
             if damage == "missing same generation" {
                 advance_source_fixture(&mut f);
@@ -4138,7 +4139,7 @@ mod tests {
             );
             assert_eq!(
                 f.writer
-                    .select_uncontested_source_message(&replacement, 4096)
+                    .select_compatible_source_message_for_test(&replacement, 4096)
                     .unwrap(),
                 super::super::SourceSelection::Contested
             );

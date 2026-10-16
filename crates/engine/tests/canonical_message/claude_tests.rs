@@ -120,7 +120,7 @@ fn begin(world: &mut World, request: &m::ClaudeRequest) -> m::Handle {
 fn selected(world: &mut World, source: &SourceProjection) -> MessageView {
     world
         .writer
-        .select_uncontested_source_message(source, 65536)
+        .select_compatible_source_message_for_test(source, 65536)
         .unwrap();
     world
         .writer

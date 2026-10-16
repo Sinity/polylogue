@@ -1191,27 +1191,7 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
             .ends_with(":compatible-append-model")
     );
     fs::remove_file(&path).unwrap();
-    // This equality slice qualifies stopped restart. SIGKILL with a reused
-    // current-generation WAL retains the existing explicit recovery boundary.
-    let mut stopped = world.child.take().unwrap();
-    assert!(
-        Command::new("kill")
-            .args(["-INT", &stopped.0.id().to_string()])
-            .status()
-            .unwrap()
-            .success()
-    );
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        if let Some(status) = stopped.0.try_wait().unwrap() {
-            assert!(status.success());
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(5));
-    }
-    drop(stopped);
-    world.start();
+    world.restart(); // Genuine SIGKILL; ordinary current-index WAL reuse remains supported.
     let replay = wait_import(&world, &path, "01900000-0000-7000-8000-000000000701", "30");
     assert_eq!(replay.status.code(), Some(0), "{replay:?}; {}", world.log());
     let replay: Value = serde_json::from_slice(&replay.stdout).unwrap();

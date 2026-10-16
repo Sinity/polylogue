@@ -1,5 +1,5 @@
 //! Single Writer actor for retained immutable imports and provider-state progress
-//! plus uncontested source Message materialization through one shared core.
+//! plus compatible source Message materialization through one shared core.
 //! Capture, provider interpretation and canonical encoding run outside the actor.
 //! Search, contested merges and complete history coverage remain pending.
 use crate::{

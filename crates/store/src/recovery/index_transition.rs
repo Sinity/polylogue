@@ -147,6 +147,17 @@ pub(crate) fn begin_index_rebuild(
         if meta.len() == 0 {
             return Ok(None);
         }
+        // Eligibility precedes any predecessor-only WAL policy. Current
+        // index WAL reuse is ordinary SQLite behavior, not this transition.
+        let mut header = [0; 100];
+        regular(&index)?.read_exact(&mut header)?;
+        if &header[..16] != b"SQLite format 3\0" {
+            return Err(Error::Schema(index));
+        }
+        let main_version = u32::from_be_bytes(header[60..64].try_into().unwrap());
+        if main_version != 18 {
+            return Ok(None);
+        }
         for suffix in ["-wal", "-shm"] {
             let sibling = sibling(&index, suffix);
             if owned_metadata(&sibling)?.is_some_and(|m| !m.is_file()) {

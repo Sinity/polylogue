@@ -1502,6 +1502,7 @@ impl<'a> BlockView<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::SelectCompatibleSourceForTest as _;
     use super::*;
     use crate::{
         ImportObservation, InputFormat, Writer,
@@ -1776,7 +1777,7 @@ mod tests {
                 )
                 .unwrap();
             self.writer
-                .select_uncontested_source_message(&source, 65536)
+                .select_compatible_source_message_for_test(&source, 65536)
                 .unwrap();
             source
         }

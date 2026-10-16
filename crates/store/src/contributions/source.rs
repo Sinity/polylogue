@@ -240,8 +240,8 @@ fn certified_predecessor(
     Ok(predecessor)
 }
 
-/// An uncontested first publication is a bounded vertical slice. Contested
-/// inputs require the normal nested fold/fill path, which this method refuses.
+/// A complete compatible source selection is a bounded equality slice.
+/// Nonidentical or unsupported candidates retain explicit merge work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceSelection {
     Selected,
@@ -285,57 +285,6 @@ impl Writer {
             logical_key,
             allowance,
         )
-    }
-    /// Select only a complete source body with no other eligible candidate for
-    /// this Message. This is deliberately not a general merge/fill algorithm.
-    /// Contested remains owed; no complete-looking subset is published.
-    pub fn select_uncontested_source_message(
-        &mut self,
-        source: &SourceProjection,
-        allowance: usize,
-    ) -> Result<SourceSelection> {
-        let path = self.root.join("index.db");
-        if source.body.path != path {
-            return Err(Error::MessagePredecessorChanged);
-        }
-        let tx = db(&path, || self._index.transaction())?;
-        let current = read_current(&tx, &path, &source.predecessor, &source.logical, allowance)?
-            .ok_or(Error::MessagePredecessorChanged)?;
-        if current.reference != source.reference {
-            return Err(Error::MessagePredecessorChanged);
-        }
-        // The partial index contains eligible states only. At most this one
-        // candidate and the first different candidate need be visited.
-        let contested: bool = db(&path, || {
-            tx.query_row("SELECT EXISTS(SELECT 1 FROM message_candidate INDEXED BY message_candidate_effective WHERE message_pk=?1 AND eligible=1 AND pk<>?2 LIMIT 1)",params![source.body.message,source.candidate],|r|r.get(0))
-        })?;
-        if contested {
-            return Ok(SourceSelection::Contested);
-        }
-        let changed = db(&path, || {
-            tx.execute("UPDATE message SET selected_body_pk=?2 WHERE pk=?1 AND session_pk=?3 AND hidden=0 AND selected_body_pk IS NOT ?2",params![source.body.message,source.body.pk,source.body.session])
-        })?;
-        if changed == 0 {
-            return Ok(SourceSelection::AlreadySelected);
-        }
-        let next = crate::counter(&tx, &path)?
-            .checked_add(1)
-            .ok_or(Error::Range)?;
-        let next = writer::integer(next)?;
-        db(&path, || {
-            tx.execute(
-                "UPDATE meta SET value=?1 WHERE key='write_counter'",
-                [next.to_string()],
-            )
-        })?;
-        db(&path, || {
-            tx.execute(
-                "UPDATE session SET changed=?2 WHERE pk=?1",
-                params![source.body.session, next],
-            )
-        })?;
-        db(&path, || tx.commit())?;
-        Ok(SourceSelection::Selected)
     }
     /// Publish a source certificate and its restart reference atomically. Only
     /// the identified previous scheduling cut of this same logical candidate is

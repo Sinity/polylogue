@@ -301,7 +301,7 @@ fn real_text_actions_restart_values_and_source_publication_keep_eof_pending() {
     assert_eq!(source.predecessor(), &world.head.token);
     world
         .writer
-        .select_uncontested_source_message(&source, 65536)
+        .select_compatible_source_message_for_test(&source, 65536)
         .unwrap();
     let reader = world.writer.read_handle().unwrap();
     let view = reader.selected_message(source.message()).unwrap().unwrap();
@@ -475,7 +475,7 @@ fn textless_reasoning_preserves_unknown_encryption_without_empty_text() {
     let source = source.unwrap_or_else(|| panic!("reasoning source certificate missing"));
     world
         .writer
-        .select_uncontested_source_message(&source, 65536)
+        .select_compatible_source_message_for_test(&source, 65536)
         .unwrap();
     let reader = world.writer.read_handle().unwrap();
     let view = reader.selected_message(source.message()).unwrap().unwrap();
@@ -634,7 +634,7 @@ fn verified_origin_producer_restarts_and_selected_descriptor_outlives_parser_cel
     assert!(restarted_value && restarted_origin);
     world
         .writer
-        .select_uncontested_source_message(&source, 65536)
+        .select_compatible_source_message_for_test(&source, 65536)
         .unwrap();
     let expected_input =
         polylogue_model::InputId::imported(&world.source_hash, "codex-rollout", &[]);
@@ -899,7 +899,7 @@ fn parser_generation_replay_replaces_only_verified_prior_candidate_and_preserves
     let previous = world.complete(&handle);
     world
         .writer
-        .select_uncontested_source_message(&previous, 65536)
+        .select_compatible_source_message_for_test(&previous, 65536)
         .unwrap();
     let old_generation = world.head.token.generation;
     let new = world
@@ -988,7 +988,7 @@ fn parser_generation_replay_replaces_only_verified_prior_candidate_and_preserves
     );
     world
         .writer
-        .select_uncontested_source_message(&replacement, 65536)
+        .select_compatible_source_message_for_test(&replacement, 65536)
         .unwrap();
     assert_eq!(
         &reader
@@ -1033,4 +1033,44 @@ fn parser_generation_replay_replaces_only_verified_prior_candidate_and_preserves
         m::apply(&mut world.writer, action).unwrap(),
         m::Applied::Existing(_)
     ));
+}
+
+trait SelectCompatibleSourceForTest {
+    fn select_compatible_source_message_for_test(
+        &mut self,
+        source: &polylogue_store::contributions::SourceProjection,
+        allowance: usize,
+    ) -> std::result::Result<polylogue_store::contributions::SourceSelection, polylogue_store::Error>;
+}
+impl SelectCompatibleSourceForTest for Writer {
+    fn select_compatible_source_message_for_test(
+        &mut self,
+        source: &polylogue_store::contributions::SourceProjection,
+        allowance: usize,
+    ) -> std::result::Result<polylogue_store::contributions::SourceSelection, polylogue_store::Error>
+    {
+        use polylogue_store::contributions::{CompatibilityTurn, SourceSelection};
+        let reader = self.read_handle()?;
+        let mut work = self.begin_compatible_source_selection(source, allowance)?;
+        for _ in 0..100000 {
+            work = match work.advance(
+                &reader,
+                allowance,
+                &std::sync::atomic::AtomicBool::new(false),
+            )? {
+                CompatibilityTurn::Progress(w) => w,
+                CompatibilityTurn::Certified(w, c) => {
+                    self.certify_body_compatibility(c)?;
+                    w
+                }
+                CompatibilityTurn::Ready(w) => {
+                    return self.install_compatible_source_selection(w, allowance);
+                }
+                CompatibilityTurn::Contested => return Ok(SourceSelection::Contested),
+            };
+        }
+        Err(polylogue_store::Error::Invariant(
+            "test selection failed to make bounded progress".into(),
+        ))
+    }
 }
