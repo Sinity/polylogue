@@ -153,3 +153,13 @@ result = "exit"
 timeout_seconds = 600
 scratch = "nvme"
 cache = "none"
+
+[operations.storage_proofs_demo]
+description = "Exercise synthetic retained CLI and SDK MCP citations, malformed seek maps and custody retry"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-storage-proofs.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 300
+scratch = "nvme"
+cache = "none"

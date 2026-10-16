@@ -408,7 +408,7 @@ fn delta_against_a_large_base_stays_small() {
 }
 
 #[test]
-fn batches_become_visible_together_and_dedup() {
+fn batch_success_establishes_durability_and_dedup() {
     for mode in [Durability::PerFile, Durability::Filesystem] {
         let (_d, s) = store();
         let items: Vec<Vec<u8>> = (0..20).map(|i| data(40 + i % 10, 3 * FRAME / 2)).collect(); // ten distinct, each twice
@@ -494,7 +494,7 @@ fn encoding_salt_has_independent_hkdf_vectors_and_attempts_survive_dedup() {
         assert!(!pairs.contains(&pair), "every attempted encoding separates key/nonce, including discarded duplicates");
         pairs.push(pair);
         let temporary_path = tmp.path.clone();
-        s.install(tmp, h).unwrap();
+        s.install(tmp, h, Some(&|_| Ok(k.key))).unwrap();
         assert!(!temporary_path.exists());
         let retained = fs::read(file_of(&s, &h)).unwrap();
         if let Some(first) = &installed { assert_eq!(&retained, first, "dedup keeps the installed encoding"); }
@@ -587,4 +587,189 @@ fn a_later_range_authenticates_its_decoded_start() {
     assert_eq!(s.verify(&h).unwrap(), Verified::CiphertextIntact);
     assert!(matches!(s.read_range_with(&h, FRAME as u64 + 20, 10, &u), Err(Error::Corrupt { .. })),
         "an earlier decoded-length mutation must not shift an authenticated later range");
+}
+
+#[test]
+fn seek_metadata_refuses_one_bit_and_merged_unselected_frames() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path(), vec![], 0o600).unwrap().with_frame_size(8);
+    let bytes = b"ABCDEFGHijklmnopQRSTUVWX";
+    let h = s.put(&bytes[..], 1).unwrap();
+    let path = file_of(&s, &h);
+    let original = fs::read(&path).unwrap();
+    let table = original.len() - 17 - 3 * 8;
+    let mut bad = original.clone();
+    bad[table + 12] ^= 1;
+    fs::write(&path, &bad).unwrap();
+    for offset in [8, 9, 16] {
+        assert!(matches!(s.read_range(&h, offset, 1), Err(Error::Corrupt { .. })));
+    }
+    assert!(matches!(s.verify(&h), Ok(Verified::Corrupt(_))));
+    assert!(s.verify_plain::<Error>(&h, 24, |_| Ok(())).is_err());
+    // Merge the first two compressed extents, retain frame one's declared logical size,
+    // and remove entry two. Header-only checks would accept displaced frame-three bytes.
+    let mut bad = original.clone();
+    let merged = u32_at(&bad, table + 8) + u32_at(&bad, table + 16);
+    bad[table + 8..table + 12].copy_from_slice(&merged.to_le_bytes());
+    bad.drain(table + 16..table + 24);
+    let len = bad.len();
+    bad[len - 9..len - 5].copy_from_slice(&2u32.to_le_bytes());
+    bad[table + 4..table + 8].copy_from_slice(&25u32.to_le_bytes());
+    fs::write(&path, &bad).unwrap();
+    assert!(matches!(s.read_range(&h, 9, 1), Err(Error::Corrupt { .. })));
+    assert!(s.verify_plain::<Error>(&h, 24, |_| Ok(())).is_err());
+}
+
+#[test]
+fn corrupt_destinations_refuse_single_and_batch_without_repair() {
+    let (_d, s) = store();
+    let bytes = b"known correct new candidate";
+    let h = s.put(&bytes[..], 1).unwrap();
+    let path = file_of(&s, &h);
+    fs::write(&path, b"corrupt destination").unwrap();
+    assert!(s.put(&bytes[..], 1).is_err());
+    let mut batch = s.batch(Durability::PerFile);
+    batch.put(&bytes[..], 1).unwrap();
+    assert!(batch.commit().is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"corrupt destination");
+    assert_eq!(fs::read_dir(s.write_root.join("blobs/tmp")).unwrap().count(), 2);
+}
+
+#[test]
+fn partial_batch_can_be_retried_without_rollback_or_false_success() {
+    let (_d, s) = store();
+    let first = b"first retained dependency";
+    let mut second = b"second retained dependency".to_vec();
+    while Hash::of(first).hex()[..2] == Hash::of(&second).hex()[..2] { second.push(b'x'); }
+    let a = Hash::of(first);
+    let b = Hash::of(&second);
+    let obstruction = s.write_root.join("blobs").join(&b.hex()[..2]);
+    fs::write(&obstruction, b"not a directory").unwrap();
+    let mut batch = s.batch(Durability::PerFile);
+    batch.put(&first[..], 1).unwrap();
+    batch.put(&second[..], 1).unwrap();
+    assert!(!s.contains(&a));
+    assert!(batch.commit().is_err());
+    assert_eq!(s.verify(&a).unwrap(), Verified::Intact);
+    assert!(!s.contains(&b));
+    fs::remove_file(obstruction).unwrap();
+    let mut retry = s.batch(Durability::PerFile);
+    retry.put(&first[..], 1).unwrap();
+    retry.put(&second[..], 1).unwrap();
+    assert_eq!(retry.commit().unwrap(), vec![a, b]);
+    assert_eq!(s.verify(&b).unwrap(), Verified::Intact);
+}
+
+#[test]
+fn sequential_verification_decodes_once_and_checks_identity_and_length() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path(), vec![], 0o600).unwrap();
+    let bytes = data(37, 8 << 20);
+    let h = s.put(&bytes[..], 1).unwrap();
+    let mut visited = 0;
+    let stats = s.verify_plain::<Error>(&h, bytes.len() as u64, |chunk| {
+        assert!(chunk.len() <= 65536);
+        assert_eq!(chunk, &bytes[visited..visited + chunk.len()]);
+        visited += chunk.len();
+        Ok(())
+    }).unwrap();
+    assert_eq!(stats.frames, 2);
+    assert_eq!(stats.decoded_bytes, 8 << 20);
+    assert_eq!(stats.compressed_bytes + 33, s.stored_size(&h).unwrap());
+    assert_eq!(stats.metadata_bytes, 8 + 56 + 9 + 33 + 36);
+    eprintln!("BOUNDED_VERIFY input={} decoded={} compressed={} metadata={} frames={} chunk_max=65536", bytes.len(), stats.decoded_bytes, stats.compressed_bytes, stats.metadata_bytes, stats.frames);
+    assert!(s.verify_plain::<Error>(&h, bytes.len() as u64 - 1, |_| Ok(())).is_err());
+    let other = s.put(&b"other valid object"[..], 1).unwrap();
+    fs::copy(file_of(&s, &other), file_of(&s, &h)).unwrap();
+    assert_eq!(s.read_range(&h, 0, 1).unwrap(), b"o"); // Local range proof boundary.
+    assert!(s.verify_plain::<Error>(&h, 18, |_| Ok(())).is_err());
+    let empty = s.put(&b""[..], 1).unwrap();
+    assert_eq!(s.verify_plain::<Error>(&empty, 0, |_| Ok(())).unwrap().frames, 1);
+}
+
+#[test]
+fn verification_callback_cancels_and_enforces_expired_deadline() {
+    let (_d, s) = store();
+    let bytes = data(18, 8 << 20);
+    let h = s.put(&bytes[..], 1).unwrap();
+    let mut decoded = 0usize;
+    let started = std::time::Instant::now();
+    let result = s.verify_plain::<Error>(&h, bytes.len() as u64, |chunk| {
+        decoded += chunk.len();
+        if decoded >= 65536 { return Err(Error::Refused("cancelled".into())); }
+        Ok(())
+    });
+    assert!(matches!(result, Err(Error::Refused(s)) if s == "cancelled"));
+    assert_eq!(decoded, 65536);
+    eprintln!("CANCEL decoded={decoded} elapsed_us={}", started.elapsed().as_micros());
+    let deadline = std::time::Instant::now();
+    assert!(matches!(s.verify_plain::<Error>(&h, bytes.len() as u64, |_| {
+        if std::time::Instant::now() >= deadline { Err(Error::Refused("deadline".into())) } else { Ok(()) }
+    }), Err(Error::Refused(_))));
+}
+
+#[test]
+fn finite_valid_ranges_and_structural_negative_controls() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut cases = 0;
+    for frame in [1usize, 2, 7, 8, 31, 64] {
+        for len in [0usize, 1, 2, 7, 8, 9, 33, 65] {
+            let s = Store::open(temp.path().join(format!("{frame}-{len}")), vec![], 0o600).unwrap().with_frame_size(frame);
+            let bytes: Vec<u8> = (0..len).map(|i| ((i*37+frame)%256) as u8).collect();
+            let h = s.put(&bytes[..], 1).unwrap();
+            for a in 0..=len { for b in a..=len {
+                assert_eq!(s.read_range(&h, a as u64, (b-a) as u64).unwrap(), bytes[a..b]);
+                cases += 1;
+            }}
+        }
+    }
+    assert_eq!(cases, 17712);
+    let s = Store::open(temp.path().join("negative"), vec![], 0o600).unwrap().with_frame_size(8);
+    let h = s.put(&b"0123456789abcdefghijklmn"[..], 1).unwrap();
+    let path = file_of(&s, &h);
+    let original = fs::read(&path).unwrap();
+    let table = original.len() - 17 - 3*8;
+    for entry in 0..3 { for value in [0u32, 7, 9, u32::MAX] {
+        let mut bad = original.clone();
+        bad[table+12+entry*8..table+16+entry*8].copy_from_slice(&value.to_le_bytes());
+        fs::write(&path, bad).unwrap();
+        assert!(s.read_range(&h, 16, 1).is_err());
+        assert!(matches!(s.verify(&h), Ok(Verified::Corrupt(_))));
+    }}
+    for pos in [original.len()-5, table+4, table+8] {
+        let mut bad = original.clone();
+        bad[pos] = 0xff;
+        fs::write(&path, bad).unwrap();
+        assert!(s.read_range(&h, 16, 1).is_err());
+    }
+}
+
+#[test]
+fn larger_writer_frames_use_bounded_decoder_and_corrupt_large_extent_refuses() {
+    let temp = tempfile::tempdir().unwrap();
+    let s = Store::open(temp.path(), vec![], 0o600).unwrap().with_frame_size(9 << 20);
+    let mut x = 91u64;
+    let bytes: Vec<u8> = (0..10<<20).map(|_| {
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8
+    }).collect();
+    let h = s.put(&bytes[..], 1).unwrap();
+    assert!(s.stored_size(&h).unwrap() > zstd::zstd_safe::compress_bound(DEFAULT_FRAME) as u64);
+    assert_eq!(s.read_range(&h, (8<<20)+17, 31).unwrap(), bytes[(8<<20)+17..(8<<20)+48]);
+    assert_eq!(s.verify_plain::<Error>(&h, bytes.len() as u64, |_| Ok(())).unwrap().decoded_bytes, bytes.len() as u64);
+    let path = file_of(&s, &h);
+    let mut bad = fs::read(&path).unwrap();
+    let table = bad.len() - 17 - 2*8;
+    bad[table+8..table+12].copy_from_slice(&u32::MAX.to_le_bytes());
+    fs::write(&path, bad).unwrap();
+    assert!(matches!(s.read_range(&h, 0, 1), Err(Error::Corrupt { .. })));
+}
+
+#[test]
+fn frame_size_must_fit_the_written_seek_entry() {
+    for frame in [0, usize::MAX] {
+        let temp = tempfile::tempdir().unwrap();
+        let s = Store::open(temp.path(), vec![], 0o600).unwrap().with_frame_size(frame);
+        assert!(matches!(s.put(&b"bytes"[..], 1), Err(Error::Refused(_))));
+        assert!(matches!(s.put_sealed(Cursor::new(b"bytes"), 1, &key("key", 7)), Err(Error::Refused(_))));
+    }
 }

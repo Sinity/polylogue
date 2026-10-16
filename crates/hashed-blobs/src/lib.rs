@@ -5,11 +5,11 @@
 //! joining, excision rewrites, privacy classes and key management all belong to the caller.
 //!
 //! Files live at `<root>/blobs/<first byte hex>/<name hex>.zst`, written to `<root>/blobs/tmp/`,
-//! synced, renamed into place, with every directory created on the way synced. Three layouts:
+//! synced, installed without replacing an existing name, with touched directories synced. Three layouts:
 //!
 //! - **plain**: independent zstd frames (each with its content checksum) followed by a seek table
 //!   in the zstd seekable format, so stock `zstd -d` decompresses the file and a range read
-//!   decompresses only the frames it needs. Named by the BLAKE3 of the content.
+//!   checks the frame map and decompresses selected frames (large extents also decode during map validation). Named by the BLAKE3 of the content.
 //! - **delta**: a skippable header frame naming the base, then one zstd frame made as `zstd --patch-from`
 //!   makes one (the base as prefix, a window over base and content, long-distance matching). The base is always plain, so a read decompresses at most two
 //!   blobs. Not seekable.
@@ -176,8 +176,23 @@ impl Reader {
         self.0.read_range(hash, offset, len)
     }
 
+    /// Bounded plain-object verification; callback chunks are provisional until success.
+    pub fn verify_plain<E: From<Error>>(&self, hash: &Hash, expected_len: u64,
+        visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<VerificationStats, E> {
+        self.0.verify_plain(hash, expected_len, visit)
+    }
+
     /// Check the existing physical representation and content without a write capability.
     pub fn verify(&self, hash: &Hash) -> Result<Verified> { self.0.verify(hash) }
+}
+
+/// Work performed by one bounded plain verification, including metadata reads.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct VerificationStats {
+    pub decoded_bytes: u64,
+    pub compressed_bytes: u64,
+    pub metadata_bytes: u64,
+    pub frames: u64,
 }
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -407,7 +422,8 @@ impl SealedFooter {
 }
 
 /// Positional reads of one blob file: readers fetch the seek table, header or footer and the frames
-/// they need, never the whole file (a range read of a 15 GiB export reads a few MiB).
+/// they need. Plain range-map validation also scans compressed extents; sequential verification
+/// uses a bounded positional stream instead of reopening ranges.
 struct View {
     file: File,
     len: u64,
@@ -427,6 +443,19 @@ impl View {
     fn tail(&self, n: u64) -> io::Result<Vec<u8>> {
         let n = n.min(self.len);
         self.at(self.len - n, n)
+    }
+}
+
+struct ViewRange<'a> { view: &'a View, pos: u64, end: u64 }
+impl Read for ViewRange<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let n = out.len().min((self.end - self.pos) as usize);
+        if n == 0 { return Ok(0); }
+        let n = self.view.file.read_at(&mut out[..n], self.pos)?;
+        if n == 0 { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated frame")); }
+        self.pos += n as u64;
+        Ok(n)
     }
 }
 
@@ -460,6 +489,13 @@ impl Store {
         self
     }
 
+    fn check_frame_size(&self) -> Result<()> {
+        if self.frame == 0 || self.frame > u32::MAX as usize {
+            return Err(Error::Refused("frame size must fit a nonzero u32 seek entry".into()));
+        }
+        Ok(())
+    }
+
     fn path_in(root: &Path, h: &Hash) -> PathBuf {
         let hex = h.hex();
         root.join("blobs").join(&hex[..2]).join(format!("{hex}.zst"))
@@ -485,12 +521,14 @@ impl Store {
         Ok(TmpFile { file, path, hasher: blake3::Hasher::new() })
     }
 
-    /// Sync the temporary file and rename it into place, syncing every directory touched. If the
-    /// name already exists in any root, the new copy is dropped (same name, same content).
-    fn install(&self, tmp: TmpFile, h: Hash) -> Result<Hash> {
+    /// Sync the temporary file and link it into place without replacement, syncing every directory touched. If the
+    /// name exists, validate its content before dropping the candidate. Invalid existing objects
+    /// are refused and left untouched; the candidate remains in tmp for owner-scoped recovery.
+    fn install(&self, tmp: TmpFile, h: Hash, unwrap: Option<Unwrap>) -> Result<Hash> {
         tmp.file.sync_all()?;
         drop(tmp.file);
         if self.locate(&h).is_some() {
+            self.validate_existing(h, unwrap)?;
             fs::remove_file(&tmp.path)?;
             return Ok(h);
         }
@@ -500,10 +538,33 @@ impl Store {
             fs::create_dir_all(dir)?;
             fsync_dir(dir.parent().unwrap())?;
         }
-        fs::rename(&tmp.path, &dest)?;
+        match fs::hard_link(&tmp.path, &dest) {
+            Ok(()) => {},
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => self.validate_existing(h, unwrap)?,
+            Err(e) => return Err(e.into()),
+        }
+        fs::remove_file(&tmp.path)?;
         fsync_dir(dir)?;
         fsync_dir(&self.write_root.join("blobs").join("tmp"))?;
         Ok(h)
+    }
+
+    // Refuse rather than overwrite an invalid destination. Failed candidates remain in tmp.
+    fn validate_existing(&self, h: Hash, unwrap: Option<Unwrap>) -> Result<()> {
+        let verified = match self.kind(&h)? {
+            Kind::Sealed { .. } => self.verify_with(&h, unwrap.ok_or(Error::Locked(h))?)?,
+            _ => self.verify(&h)?,
+        };
+        match verified {
+            Verified::Intact => {
+                let path = self.locate(&h).ok_or(Error::Missing(h))?;
+                File::open(&path)?.sync_all()?;
+                fsync_dir(path.parent().unwrap())?;
+                fsync_dir(path.parent().unwrap().parent().unwrap())?;
+                Ok(())
+            },
+            other => Err(Error::Corrupt { blob: h, what: format!("existing destination is not usable: {other:?}") }),
+        }
     }
 
     fn view(&self, h: &Hash) -> Result<View> {
@@ -558,15 +619,16 @@ impl Store {
     /// Store bytes as a plain seekable blob named by their BLAKE3; durable when it returns.
     pub fn put(&self, bytes: impl Read, level: i32) -> Result<Hash> {
         let (tmp, h) = self.write_plain(bytes, level)?;
-        self.install(tmp, h)
+        self.install(tmp, h, None)
     }
 
-    /// A group of puts made durable together (see `Batch`).
+    /// A group of puts sharing synchronization; visibility is not atomic (see `Batch`).
     pub fn batch(&self, durability: Durability) -> Batch<'_> {
         Batch { store: self, durability, pending: Vec::new() }
     }
 
     fn write_plain(&self, mut bytes: impl Read, level: i32) -> Result<(TmpFile, Hash)> {
+        self.check_frame_size()?;
         let mut tmp = self.tmp()?;
         let mut name = blake3::Hasher::new();
         let mut table: Vec<(u32, u32)> = Vec::new();
@@ -600,29 +662,76 @@ impl Store {
     }
 
     /// The seek table: per frame (offset in file, compressed length, decompressed length). Reads only
-    /// the table at the end of the file.
+    /// the table and every indexed frame header. Only known-size, checksummed zstd frames and
+    /// the no-table-checksum layout written by this crate are supported.
     fn seek_table(v: &View, h: Hash) -> Result<Vec<(u64, u32, u32)>> {
-        let bad = |what: &str| Error::Corrupt { blob: h, what: what.to_string() };
-        let t9 = v.tail(9)?;
+        let table = Self::seek_table_checked::<Error>(v, h, || Ok(()))?;
+        // Header lengths alone do not prove physical extents: one entry could swallow a
+        // whole following frame. Use zstd's parser rather than invent a block decoder.
+        for &(off, c, d) in &table {
+            if c as usize <= zstd::zstd_safe::compress_bound(DEFAULT_FRAME) {
+                let src = v.at(off, u64::from(c))?;
+                if zstd::zstd_safe::find_frame_compressed_size(&src).ok() != Some(c as usize) {
+                    return Err(Error::Corrupt { blob: h, what: "seek extent is not one complete frame".into() });
+                }
+            } else {
+                // A corrupt c can span most of the object. Do not allocate c bytes.
+                // Existing larger writer frames remain readable through bounded streaming.
+                Self::stream_plain_frame::<Error>(v, h, (off, c, d), |_| Ok(()))?;
+            }
+        }
+        Ok(table)
+    }
+
+    fn seek_table_checked<E: From<Error>>(v: &View, h: Hash,
+        mut check: impl FnMut() -> std::result::Result<(), E>) -> std::result::Result<Vec<(u64, u32, u32)>, E> {
+        let bad = |what: &str| E::from(Error::Corrupt { blob: h, what: what.to_string() });
+        let t9 = v.tail(9).map_err(Error::Io)?;
         if t9.len() < 9 || u32_at(&t9, 5) != SEEKABLE_MAGIC {
             return Err(bad("no seek table"));
         }
+        // This writer emits the no-table-checksum layout. Reserved bits and
+        // unsupported checksum entries must not be read as the same layout.
+        if t9[4] & 0xFC != 0 {
+            return Err(bad("unsupported seek table descriptor"));
+        }
         let n = u32_at(&t9, 0) as u64;
+        if n == 0 { return Err(bad("empty seek table")); }
         let tlen = 9 + n * 8 + 8;
         if tlen > v.len {
             return Err(bad("seek table length"));
         }
-        let table = v.tail(tlen)?;
+        let table = v.tail(tlen).map_err(Error::Io)?;
         if u32_at(&table, 0) != SEEK_SKIP_MAGIC {
             return Err(bad("seek table magic"));
+        }
+        if u32_at(&table, 4) as u64 != tlen - 8 {
+            return Err(bad("seek table frame size"));
         }
         let mut off = 0u64;
         let mut out = Vec::with_capacity(n as usize);
         for i in 0..n as usize {
+            check()?;
             let c = u32_at(&table, 8 + i * 8);
             let d = u32_at(&table, 12 + i * 8);
+            let end = off.checked_add(c as u64).ok_or_else(|| bad("frame offset overflow"))?;
+            if c == 0 || end > v.len - tlen {
+                return Err(bad("frame extent outside data region"));
+            }
+            // A prior frame's length controls this frame's logical coordinate.
+            // Check every indexed frame header, not only the selected frames.
+            let head = v.at(off, (c as u64).min(18))
+                .map_err(|_| bad("unreadable frame header"))?;
+            // Standard frame magic, no dictionary, and a content checksum are required.
+            if head.len() < 5 || u32_at(&head, 0) != 0xFD2FB528 || head[4] & 0x07 != 0x04 {
+                return Err(bad("unsupported plain frame (checksum/dictionary)"));
+            }
+            match zstd::zstd_safe::get_frame_content_size(&head) {
+                Ok(Some(actual)) if actual == d as u64 => {},
+                _ => return Err(bad("seek length disagrees with supported frame header")),
+            }
             out.push((off, c, d));
-            off += c as u64;
+            off = end;
         }
         if off != v.len - tlen {
             return Err(bad("frames do not fill the file"));
@@ -632,7 +741,39 @@ impl Store {
 
     fn plain_frame(v: &View, h: Hash, (off, c, d): (u64, u32, u32)) -> Result<Vec<u8>> {
         let src = v.at(off, c as u64)?;
-        zstd::bulk::decompress(&src, d as usize).map_err(|e| Error::Corrupt { blob: h, what: format!("frame at {off}: {e}") })
+        if zstd::zstd_safe::find_frame_compressed_size(&src).ok() != Some(c as usize) {
+            return Err(Error::Corrupt { blob: h, what: "seek extent is not one complete frame".into() });
+        }
+        let out = zstd::bulk::decompress(&src, d as usize)
+            .map_err(|e| Error::Corrupt { blob: h, what: format!("frame at {off}: {e}") })?;
+        if out.len() != d as usize {
+            return Err(Error::Corrupt { blob: h, what: format!("frame at {off}: decoded length disagrees with seek table") });
+        }
+        Ok(out)
+    }
+
+    fn stream_plain_frame<E: From<Error>>(v: &View, h: Hash, (off, c, d): (u64, u32, u32),
+        mut visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<(), E> {
+        let corrupt = |what: &str| Error::Corrupt { blob: h, what: what.into() };
+        let input = ViewRange { view: v, pos: off, end: off + u64::from(c) };
+        let mut decoder = zstd::stream::read::Decoder::new(input)
+            .map_err(|_| corrupt("invalid frame decoder"))?.single_frame();
+        decoder.window_log_max(31).map_err(Error::Io)?;
+        let mut decoded = 0u64;
+        let mut buf = [0u8; 65536];
+        loop {
+            visit(&[])?;
+            let n = decoder.read(&mut buf).map_err(|_| corrupt("plain frame decode/checksum"))?;
+            if n == 0 { break; }
+            decoded += n as u64;
+            if decoded > u64::from(d) { return Err(corrupt("frame exceeds seek length").into()); }
+            visit(&buf[..n])?;
+        }
+        let input = decoder.finish();
+        if decoded != u64::from(d) || input.get_ref().pos - input.buffer().len() as u64 != off + u64::from(c) {
+            return Err(corrupt("frame extent/decoded length differs from seek table").into());
+        }
+        Ok(())
     }
 
     // ---- delta ----
@@ -689,7 +830,7 @@ impl Store {
         debug_assert_eq!(head.len() as u64, DELTA_HEAD_LEN);
         tmp.write(&head)?;
         tmp.write(c)?;
-        self.install(tmp, h)
+        self.install(tmp, h, None)
     }
 
     // ---- sealed ----
@@ -748,10 +889,13 @@ impl Store {
     /// no plaintext is written to disk.
     pub fn put_sealed(&self, bytes: impl Read + Seek, level: i32, key: &DataKey) -> Result<Hash> {
         let (tmp, name) = self.write_sealed(bytes, level, key)?;
-        self.install(tmp, name)
+        self.install(tmp, name, Some(&|reference| {
+            if reference == key.key_ref { Ok(key.key) } else { Err("existing key reference differs".into()) }
+        }))
     }
 
     fn write_sealed(&self, mut bytes: impl Read + Seek, level: i32, key: &DataKey) -> Result<(TmpFile, Hash)> {
+        self.check_frame_size()?;
         let mut namer = blake3::Hasher::new_keyed(&Self::name_key(key));
         let mut buf = vec![0u8; self.frame];
         let mut total = 0u64;
@@ -783,7 +927,9 @@ impl Store {
     /// must be a sealed, non-delta blob under the same key (#19a).
     pub fn put_delta_sealed(&self, base: &Hash, bytes: impl Read, level: i32, key: &DataKey) -> Result<Hash> {
         let (tmp, name) = self.write_delta_sealed(base, bytes, level, key)?;
-        self.install(tmp, name)
+        self.install(tmp, name, Some(&|reference| {
+            if reference == key.key_ref { Ok(key.key) } else { Err("existing key reference differs".into()) }
+        }))
     }
 
     fn write_delta_sealed(&self, base: &Hash, mut bytes: impl Read, level: i32, key: &DataKey) -> Result<(TmpFile, Hash)> {
@@ -836,7 +982,7 @@ impl Store {
 
     /// Every frame of a plain blob in order, checked by its zstd checksum; one frame in memory at a time.
     fn plain_frames(v: &View, h: Hash, mut each: impl FnMut(&[u8])) -> Result<()> {
-        for fr in Self::seek_table(v, h)? {
+        for fr in Self::seek_table_checked::<Error>(v, h, || Ok(()))? {
             each(&Self::plain_frame(v, h, fr)?);
         }
         Ok(())
@@ -931,17 +1077,34 @@ impl Store {
             }
             let content = match &sealed {
                 Some((f, dk)) => Self::open_sealed_frame(&v, h, f, dk, k, foff, start, None)?,
-                None => Self::plain_frame(&v, h, plain_table[k])?,
+                None if flen <= DEFAULT_FRAME as u64 && plain_table[k].1 as usize <= zstd::zstd_safe::compress_bound(DEFAULT_FRAME) => Self::plain_frame(&v, h, plain_table[k])?,
+                None => {
+                    let mut position = start;
+                    Self::stream_plain_frame::<Error>(&v, h, plain_table[k], |chunk| {
+                        let end = position + chunk.len() as u64;
+                        let a = offset.max(position);
+                        let b = (offset + len).min(end);
+                        if a < b { out.extend_from_slice(&chunk[(a-position) as usize..(b-position) as usize]); }
+                        position = end;
+                        Ok(())
+                    })?;
+                    continue;
+                },
             };
             let a = offset.saturating_sub(start) as usize;
             let b = ((offset + len).min(start + flen) - start) as usize;
-            out.extend_from_slice(&content[a..b]);
+            let selected = content.get(a..b).ok_or_else(|| Error::Corrupt {
+                blob: h, what: format!("frame {k}: range exceeds decoded content"),
+            })?;
+            out.extend_from_slice(selected);
         }
         Ok(out)
     }
 
     /// A byte range, decompressing only the frames it covers; frames are checked by their zstd
-    /// checksum (plain) or AEAD tag (sealed). Deltas are not seekable.
+    /// checksum (plain) or AEAD tag (sealed). Plain addressing also validates all compressed
+    /// extents, using bounded streaming for large extents. This does not check whole-object
+    /// expected identity. Deltas are not seekable.
     pub fn read_range(&self, h: &Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
         self.range(h, offset, len, None)
     }
@@ -978,6 +1141,40 @@ impl Store {
     }
 
     // ---- verify and delete ----
+
+    /// Check a plain object's expected name and length from one opened representation.
+    /// The callback runs before metadata/frame work and on at most 64 KiB decoded chunks;
+    /// it can enforce cancellation/deadlines and must not publish provisional bytes before
+    /// success. Memory is bounded by the seek table, zstd window and fixed IO buffers,
+    /// independent of total content size. Delta/sealed encodings are explicitly refused.
+    pub fn verify_plain<E: From<Error>>(&self, h: &Hash, expected_len: u64,
+        mut visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<VerificationStats, E> {
+        visit(&[])?;
+        let v = self.view(h)?;
+        if Self::kind_of_view(&v, *h)? != Kind::Plain {
+            return Err(Error::Refused("bounded plain verification requires plain encoding".into()).into());
+        }
+        let table = Self::seek_table_checked(&v, *h, || visit(&[]))?;
+        let mut stats = VerificationStats { metadata_bytes: 8 + v.len.min(DELTA_HEAD_LEN) + 9 + 17 + table.len() as u64 * 8
+            + table.iter().map(|(_, c, _)| u64::from(*c).min(18)).sum::<u64>(), ..Default::default() };
+        let mut digest = blake3::Hasher::new();
+        let corrupt = |what: &str| Error::Corrupt { blob: *h, what: what.into() };
+        for &(off, c, d) in &table {
+            visit(&[])?;
+            Self::stream_plain_frame::<E>(&v, *h, (off, c, d), |chunk| {
+                digest.update(chunk);
+                visit(chunk)
+            })?;
+            stats.decoded_bytes += u64::from(d);
+            stats.compressed_bytes += u64::from(c);
+            stats.frames += 1;
+        }
+        visit(&[])?;
+        if stats.decoded_bytes != expected_len || digest.finalize().as_bytes() != &h.0 {
+            return Err(corrupt("content length or expected name mismatch").into());
+        }
+        Ok(stats)
+    }
 
     /// Reports; never repairs. Streams: a plain blob is hashed frame by frame, a sealed one by its
     /// ciphertext in 4 MiB reads without the key, so a 15 GiB blob never sits in memory.
@@ -1018,8 +1215,13 @@ impl Store {
             }
             Kind::Plain => {
                 let mut hs = blake3::Hasher::new();
-                if let Err(e) = Self::plain_frames(&v, *h, |b| { hs.update(b); }) {
-                    return report(e);
+                let table = match Self::seek_table_checked::<Error>(&v, *h, || Ok(())) {
+                    Ok(table) => table, Err(e) => return report(e),
+                };
+                for frame in table {
+                    if let Err(e) = Self::stream_plain_frame::<Error>(&v, *h, frame, |chunk| { hs.update(chunk); Ok(()) }) {
+                        return report(e);
+                    }
                 }
                 Ok(if Hash(*hs.finalize().as_bytes()) == *h {
                     Verified::Intact
@@ -1063,10 +1265,11 @@ pub enum Durability {
     Filesystem,
 }
 
-/// Puts that become visible and durable together. Nothing is visible under its name until
-/// `commit` returns; when it returns, every blob's bytes and name are durable. Renames happen only
-/// after the bytes are durable, so a crash never leaves a name over incomplete bytes; it can leave
-/// files in `blobs/tmp/`, which are harmless and removable.
+/// A durability batch, not an atomic visibility transaction. New candidates are temporary
+/// before commit starts. Commit installs names individually; an error may leave an installed
+/// subset and temporary candidates, and promises neither all-or-none effects nor durability
+/// of that subset. Success makes all returned names/bytes durable. Retry the same puts safely;
+/// callers publish domain references only after every required dependency succeeds.
 pub struct Batch<'a> {
     store: &'a Store,
     durability: Durability,
@@ -1113,6 +1316,7 @@ impl Batch<'_> {
         for (t, h) in self.pending {
             drop(t.file);
             if s.locate(&h).is_some() {
+                s.validate_existing(h, None)?;
                 fs::remove_file(&t.path)?;
                 out.push(h);
                 continue;
@@ -1123,7 +1327,12 @@ impl Batch<'_> {
                 fs::create_dir_all(&dir)?;
                 dirs.insert(dir.parent().unwrap().to_path_buf());
             }
-            fs::rename(&t.path, &dest)?;
+            match fs::hard_link(&t.path, &dest) {
+                Ok(()) => {},
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => s.validate_existing(h, None)?,
+                Err(e) => return Err(e.into()),
+            }
+            fs::remove_file(&t.path)?;
             dirs.insert(dir);
             out.push(h);
         }

@@ -379,29 +379,11 @@ fn blobs(reader: &ReadHandle, cancelled: &AtomicBool) -> Result<(u64, u64)> {
         }
         let hash = BlobHash::from_bytes(hash.try_into().map_err(|_| Error::Schema(path.clone()))?);
         let size = u64::try_from(size).map_err(|_| Error::Schema(path.clone()))?;
-        if size == 0 {
-            // A zero-byte range checks presence and supported encoding, but
-            // covers no frame. The existing verifier also decodes that frame.
-            reader.read_blob_range(hash, 0, 0)?;
-            let physical = hashed_blobs::Reader::new(&reader.root, vec![])
-                .verify(&hashed_blobs::Hash(*hash.bytes()))?;
-            if physical != hashed_blobs::Verified::Intact {
-                return Err(refused(format!(
-                    "empty blob physical representation is invalid: {hash}"
-                )));
-            }
-        }
-        let mut actual = blake3::Hasher::new();
-        let mut offset = 0;
-        while offset < size {
-            wal::check_cancel(cancelled)?;
-            let data = reader.read_blob_range(hash, offset, (size - offset).min(65536))?;
-            actual.update(&data);
-            offset += data.len() as u64;
-        }
-        if actual.finalize().as_bytes() != hash.bytes() {
-            return Err(refused(format!("blob content digest mismatch: {hash}")));
-        }
+        hashed_blobs::Reader::new(&reader.root, vec![]).verify_plain::<Error>(
+            &hashed_blobs::Hash(*hash.bytes()),
+            size,
+            |_| wal::check_cancel(cancelled),
+        )?;
         count += 1;
         bytes += size;
     }
@@ -419,7 +401,7 @@ fn blobs(reader: &ReadHandle, cancelled: &AtomicBool) -> Result<(u64, u64)> {
             })?;
         let length = u64::try_from(length).map_err(|_| Error::Schema(path.clone()))?;
         let mut extents = db(&path, || {
-            reader.archive.prepare("SELECT offset,length,blob,blob_offset FROM extent WHERE input=?1 AND chain=?2 AND offset<?3 ORDER BY offset")
+            reader.archive.prepare("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size FROM extent e JOIN blob b ON b.hash=e.blob AND b.state='present' WHERE input=?1 AND chain=?2 AND offset<?3 ORDER BY offset")
         })?;
         let mut parts = db(&path, || {
             extents.query(rusqlite::params![
@@ -431,29 +413,45 @@ fn blobs(reader: &ReadHandle, cancelled: &AtomicBool) -> Result<(u64, u64)> {
         let mut offset = 0;
         let mut hash = blake3::Hasher::new();
         while let Some(part) = db(&path, || parts.next())? {
-            let (start, len, blob, blob_offset): (i64, i64, Vec<u8>, i64) = db(&path, || {
-                Ok((part.get(0)?, part.get(1)?, part.get(2)?, part.get(3)?))
-            })?;
+            let (start, len, blob, blob_offset, blob_size): (i64, i64, Vec<u8>, i64, i64) =
+                db(&path, || {
+                    Ok((
+                        part.get(0)?,
+                        part.get(1)?,
+                        part.get(2)?,
+                        part.get(3)?,
+                        part.get(4)?,
+                    ))
+                })?;
             if start < 0 || start as u64 != offset || len <= 0 || blob_offset < 0 {
                 return Err(refused("inconsistent revision extents"));
             }
             let blob =
                 BlobHash::from_bytes(blob.try_into().map_err(|_| Error::Schema(path.clone()))?);
             let end = length.min(offset.checked_add(len as u64).ok_or(Error::Range)?);
-            let mut local = 0;
-            while offset < end {
-                wal::check_cancel(cancelled)?;
-                let data = reader.read_blob_range(
-                    blob,
-                    (blob_offset as u64)
-                        .checked_add(local)
-                        .ok_or(Error::Range)?,
-                    (end - offset).min(65536),
-                )?;
-                hash.update(&data);
-                offset += data.len() as u64;
-                local += data.len() as u64;
+            let select_start = u64::try_from(blob_offset).map_err(|_| Error::Range)?;
+            let select_end = select_start.checked_add(end - offset).ok_or(Error::Range)?;
+            let blob_size = u64::try_from(blob_size).map_err(|_| Error::Range)?;
+            if select_end > blob_size {
+                return Err(Error::Range);
             }
+            let mut position = 0u64;
+            hashed_blobs::Reader::new(&reader.root, vec![]).verify_plain::<Error>(
+                &hashed_blobs::Hash(*blob.bytes()),
+                blob_size,
+                |data| {
+                    wal::check_cancel(cancelled)?;
+                    let next = position + data.len() as u64;
+                    let a = select_start.max(position);
+                    let b = select_end.min(next);
+                    if a < b {
+                        hash.update(&data[(a - position) as usize..(b - position) as usize]);
+                    }
+                    position = next;
+                    Ok(())
+                },
+            )?;
+            offset = end;
         }
         if offset != length
             || expected.is_some_and(|expected| expected.as_slice() != hash.finalize().as_bytes())

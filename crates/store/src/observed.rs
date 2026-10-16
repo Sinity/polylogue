@@ -463,17 +463,11 @@ impl ReadHandle {
                     .map_err(|_| refusal("invalid backing digest"))?,
             );
             let length = u64::try_from(length).map_err(|_| Error::Range)?;
-            let mut digest = blake3::Hasher::new();
-            let mut cursor = 0;
-            while cursor < length {
-                check()?;
-                let bytes = self.read_blob_range(hash, cursor, (length - cursor).min(65536))?;
-                digest.update(&bytes);
-                cursor += bytes.len() as u64;
-            }
-            if digest.finalize().as_bytes() != hash.bytes() {
-                return Err(refusal("backing piece content hash mismatch"));
-            }
+            hashed_blobs::Reader::new(&self.root, vec![]).verify_plain::<Error>(
+                &hashed_blobs::Hash(*hash.bytes()),
+                length,
+                |_| check(),
+            )?;
         }
         Ok(())
     }
@@ -504,6 +498,38 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap()
+    }
+    #[test]
+    fn invalid_existing_dependency_does_not_publish_a_source_revision() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("archive");
+        let path = root.path().join("source.jsonl");
+        let bytes = b"synthetic retained source\n";
+        std::fs::write(&path, bytes).unwrap();
+        let mut w = Writer::open(&archive).unwrap();
+        let blobs = hashed_blobs::Store::open(&archive, vec![], 0o600).unwrap();
+        let hash = blobs.put(&bytes[..], 1).unwrap();
+        let hex = hash.hex();
+        let physical = archive
+            .join("blobs")
+            .join(&hex[..2])
+            .join(format!("{hex}.zst"));
+        std::fs::write(&physical, b"invalid existing dependency").unwrap();
+        let before = w.status().unwrap().write_counter;
+        assert!(
+            w.acquire_claude_main(&path, "m", "h", "refused", 1, &AtomicBool::new(false))
+                .is_err()
+        );
+        assert_eq!(w.status().unwrap().write_counter, before);
+        let revisions: i64 = w
+            .archive
+            .query_row("SELECT count(*) FROM revision", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(revisions, 0);
+        assert_eq!(
+            std::fs::read(physical).unwrap(),
+            b"invalid existing dependency"
+        );
     }
     #[test]
     fn first_nonempty_observed_revision_records_full_digest_without_immutable_identity() {
