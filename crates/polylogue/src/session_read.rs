@@ -185,6 +185,17 @@ fn render_terminal(document: &Value, out: &mut impl Write) -> io::Result<()> {
         }
         out.write_all(b"\n")?;
         for block in message["blocks"].as_array().into_iter().flatten() {
+            if block["kind"] == "tool_result" {
+                out.write_all(b"[tool_result ")?;
+                terminal_text(out, block["outcome"].as_str().unwrap_or("unknown"), false)?;
+                if let Some(call) = block["call_id"].as_str() {
+                    out.write_all(b" ")?;
+                    terminal_text(out, call, false)?;
+                }
+                out.write_all(b"]\n")?;
+            } else if block["kind"] == "thinking" {
+                out.write_all(b"[thinking]\n")?;
+            }
             if let Some(text) = block["text"].as_str() {
                 terminal_text(out, text, true)?;
                 out.write_all(b"\n")?;
@@ -195,6 +206,10 @@ fn render_terminal(document: &Value, out: &mut impl Write) -> io::Result<()> {
                 if let Some(input) = block.get("input") {
                     terminal_text(out, &serde_json::to_string(input)?, true)?;
                 }
+                out.write_all(b"\n")?;
+            }
+            if let Some(data) = block.get("data") {
+                terminal_text(out, &serde_json::to_string(data)?, true)?;
                 out.write_all(b"\n")?;
             }
         }

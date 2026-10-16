@@ -1102,3 +1102,28 @@ fn without_settlement(mut document: Value) -> Value {
         .remove("settlement");
     document
 }
+
+#[test]
+fn metadata_only_source_is_not_a_complete_empty_selection() {
+    let world = World::new();
+    let source = world.input(
+        "metadata-only.jsonl",
+        b"{\"type\":\"ai-title\",\"aiTitle\":\"Synthetic title\"}\n",
+    );
+    let imported = wait_import(
+        &world,
+        &source,
+        "01900000-0000-7000-8000-000000000440",
+        "20",
+    );
+    assert_eq!(imported.status.code(), Some(0));
+    let selected = world.cli(&[&reference(), "--json"]);
+    assert_eq!(selected.status.code(), Some(5));
+    let selected: Value = serde_json::from_slice(&selected.stdout).unwrap();
+    assert_eq!(selected["count"], 0);
+    assert!(selected["notes"].as_array().unwrap().iter().any(|note| {
+        note.as_str()
+            .unwrap()
+            .contains("no published catalog owner")
+    }));
+}

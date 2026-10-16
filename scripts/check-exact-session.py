@@ -48,6 +48,12 @@ class ExactRun(morrow.Run):
             for block in fact["blocks"]:
                 if "text" in block:
                     morrow.require(block["text"] in terminal, "terminal changed or omitted Message text")
+                if block["kind"] == "tool_call":
+                    rendered_input = json.dumps(block["input"], sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+                    morrow.require(block["tool"] in terminal and rendered_input in terminal, "terminal omitted tool arguments")
+                if block["kind"] == "tool_result":
+                    morrow.require("[tool_result " + block["outcome"] + " " + block["call_id"] + "]" in terminal,
+                                   "terminal omitted result status or invocation")
         if not errors:
             morrow.require(answer["result"]["settlement"]["state"] == "settled", "read lacks scoped proof")
             for population in ["links", "events", "notes", "runs", "deliveries"]:
@@ -55,6 +61,7 @@ class ExactRun(morrow.Run):
         # Reject a planted content loss with the original independent oracle.
         if name == "base":
             mutant = dict(answer, messages=[])
+            (self.output / "base-corrupted.json").write_text(json.dumps(mutant, indent=2) + "\n")
             try:
                 checker.check("polylogue", expected, mutant)
             except ValueError:
@@ -97,7 +104,7 @@ def controls(run):
                     "toolUseResult":{"persistedOutputPath":"/synthetic/tool-results/result.txt"},
                     "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call", "content":"preview"}]}}],
                   "later", context, (7,))
-        selection = run.client(archive, sid, "--json", expected=(0,) if kind == "foreign_pending" else (5,))
+        selection = run.client(archive, sid, "--json", expected=(0,) if kind in ["foreign_pending", "foreign_link"] else (5,))
         after = run.client(archive, sid, "read", "--format", "json", expected=(5,))
         morrow.require(after["result"]["outcome"] == "degraded", kind + " lost its qualification")
         morrow.require(after["result"]["settlement"]["target_basis"]["archive_counter"] > before["result"]["settlement"]["target_basis"]["archive_counter"], "later admission did not move the new basis")
