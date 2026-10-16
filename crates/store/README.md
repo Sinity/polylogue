@@ -226,3 +226,5 @@ Startup acquisition supports one Claude main regular location, full predecessor
 prefix comparison and immutable CAS pieces. It refuses changed prefixes, inode
 replacement, short reads and gaps without synthesizing normalized empty output.
 See [the native scope](../../docs/rewrite/observed-source.md).
+
+Attributed notes/corrections and withdrawal use the existing archive note tables and shared `client_request` hash/identity transaction. Replay precedes current-head lookup and returns the original immutable effect. Current-head refusal and retained control-parent validation precede any mutation; revision/withdrawal relations form a DAG. Graph reads admit 128 connected revisions and 256 KiB metadata, and refuse unavailable controls. Authored rows remain archive authority across index reconstruction. This selected path changes no pinned SQL text or schema version and does not qualify general note import/union or portable export.

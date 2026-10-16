@@ -159,12 +159,7 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
     let (machine, host) = match (machine, host) {
         (Some(machine), Some(host)) => (machine, host),
         (None, None) => (
-            fs::read_to_string("/etc/machine-id")
-                .map_err(|e| {
-                    Failure::new(ErrorKind::Io, format!("collector machine identity: {e}"))
-                })?
-                .trim()
-                .to_owned(),
+            crate::host_identity::machine()?,
             fs::read_to_string("/proc/sys/kernel/hostname")
                 .map_err(|e| Failure::new(ErrorKind::Io, format!("collector host identity: {e}")))?
                 .trim()

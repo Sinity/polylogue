@@ -1,3 +1,5 @@
+mod authored_cli;
+mod host_identity;
 mod import_cli;
 mod mcp;
 mod observed_cli;
@@ -62,7 +64,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon [--config FILE [--until-idle] [--json]]|input cat ID|mcp|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|REF read --budget TOKENS [--continuation TOKEN] [--view dialogue]|SID export --format json --to DIR|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Explicit daemon --config observes one Claude main location at startup; input cat presents verified retained UTF-8 with credential masking. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Exact native Session JSON directory export shares the pinned read. Bounded model reads support retained Text/Thinking selections, within-block continuation and measured structured budgets; explicit --view dialogue supports the human/model Text portion with tool, Thinking and harness omissions; unsupported included attachments refuse. The default subset still refuses included tools. Prior textual tool output has a 65536-byte normalized JSON admission; other rendering options refuse. Read-only MCP stdio exposes supported status/search/bounded-read tools. General exports and broader MCP capabilities remain unavailable.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon [--config FILE [--until-idle] [--json]]|input cat ID|mcp|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|REF read --budget TOKENS [--continuation TOKEN] [--view dialogue]|REF note TEXT [--kind note|correction] [--target-basis FILE] [--request-id UUIDv7]|note:REF revise TEXT [--target-basis FILE] [--request-id UUIDv7]|note:REF withdraw --reason TEXT [--request-id UUIDv7]|SID export --format json --to DIR|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Explicit daemon --config observes one Claude main location at startup; input cat presents verified retained UTF-8 with credential masking. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Exact native Session JSON directory export shares the pinned read. Bounded model reads support retained Text/Thinking selections, within-block continuation and measured structured budgets; explicit --view dialogue supports the human/model Text portion with tool, Thinking and harness omissions; unsupported included attachments refuse. The default subset still refuses included tools. Prior textual tool output has a 65536-byte normalized JSON admission; other rendering options refuse. Exact note/correction creation, current revision and withdrawal share durable request identity; note: reads preserve history and live supplied-basis comparison. Exact Text/Thinking reads expose a whole-target decoded UTF-8 authored_basis digest before masking; composite Message comparison stays unknown. MCP stdio exposes status/search/read/note; MCP attribution is harness session or agent. General exports and broader MCP capabilities remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -120,8 +122,15 @@ fn run() -> Result<i32, Failure> {
         writeln!(out).map_err(io_error)?;
         return Ok(5);
     }
+    let authored = authored_cli::request(&args)?;
     let model_read = polylogue::model_read::cli(&args)
-        .map_err(|v| error(ErrorKind::InvalidQuery, v.to_string()))?;
+        .map_err(|v| error(ErrorKind::InvalidQuery, v.to_string()))?
+        .or_else(|| {
+            authored
+                .as_ref()
+                .filter(|v| v["command"] == "model-read")
+                .cloned()
+        });
     if args.first().is_some_and(|s| s == "daemon") && args.len() > 1 {
         return observed_cli::run(&args, &archive, &mut out);
     }
@@ -171,7 +180,9 @@ fn run() -> Result<i32, Failure> {
     } else {
         None
     };
-    let command = if input_cat {
+    let command = if let Some(request) = &authored {
+        Some(request.clone())
+    } else if input_cat {
         Some(json!({"command":"input-cat","input":args[2]}))
     } else if let Some(request) = &model_read {
         Some(request.clone())
@@ -377,23 +388,32 @@ fn run() -> Result<i32, Failure> {
         } else {
             (false, 30)
         };
-    let mut value = match &command {
+    let response = match &command {
         Some(command) => polylogue::request_value(&socket, command),
         None => polylogue::request(&socket),
+    };
+    let mut value = match response {
+        Ok(value) => value,
+        Err(e) if command.as_ref().is_some_and(|v| v["command"] == "note") => {
+            authored_cli::uncertain_reply(command.as_ref().unwrap(), e)
+        }
+        Err(e) => {
+            return Err(error(
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                ) {
+                    ErrorKind::NotRunning
+                } else {
+                    ErrorKind::Io
+                },
+                format!("archive {}: {e}", archive.display()),
+            ));
+        }
+    };
+    if let Some(request) = command.as_ref().filter(|v| v["command"] == "note") {
+        value = polylogue::authored::bind_write_reply(request, value);
     }
-    .map_err(|e| {
-        error(
-            if matches!(
-                e.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-            ) {
-                ErrorKind::NotRunning
-            } else {
-                ErrorKind::Io
-            },
-            format!("archive {}: {e}", archive.display()),
-        )
-    })?;
     if wait && value["outcome"] == "ok" {
         value = source_wait::wait(&socket, value, std::time::Duration::from_secs(wait_seconds));
     }

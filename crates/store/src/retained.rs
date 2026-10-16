@@ -122,8 +122,7 @@ fn request_hash(
         });
     }
     let value = serde_json::json!({"context":context,"command":"import","format":format.name(),"machine":observation.machine,"host":observation.host,"path":observation.path,"seen_at":observation.seen_at});
-    let bytes = serde_json::to_vec(&value).map_err(|e| Error::Invariant(e.to_string()))?;
-    Ok(BlobHash::of(&bytes))
+    crate::client_request::digest(&value)
 }
 
 impl Writer {
@@ -186,22 +185,8 @@ impl Writer {
         let expected = request_hash(format, context, observation, allowance)?;
         self.check_import_acquisition()?;
         let file = self.root.join("archive.db");
-        let previous: Option<Vec<u8>> = db(&file, || {
-            self.archive
-                .query_row(
-                    "SELECT content_hash FROM client_request WHERE id=?1",
-                    [observation.id],
-                    |r| r.get(0),
-                )
-                .optional()
-        })?;
-        let Some(previous) = previous else {
+        if !crate::client_request::replay(&self.archive, &file, observation.id, expected)? {
             return Ok(None);
-        };
-        if previous.as_slice() != expected.bytes() {
-            return Err(Error::ImportRequestConflict {
-                id: observation.id.to_owned(),
-            });
         }
         let id: String = db(&file, || {
             self.archive.query_row(
@@ -264,7 +249,7 @@ impl Writer {
             self.replay_immutable_import(format, context, observation, metadata_allowance)?
         {
             if previous.id != InputId::imported(&hash, format.name(), context).as_str() {
-                return Err(Error::ImportRequestConflict {
+                return Err(Error::ClientRequestConflict {
                     id: observation.id.to_owned(),
                 });
             }
@@ -288,16 +273,13 @@ impl Writer {
         }
         let file = self.root.join("archive.db");
         let tx = db(&file, || self.archive.transaction())?;
-        let request_inserted = db(&file, || {
-            tx.execute(
-                "INSERT INTO client_request(id,content_hash,created_at) VALUES(?1,?2,?3)",
-                params![
-                    observation.id,
-                    request_hash.bytes().as_slice(),
-                    observation.seen_at
-                ],
-            )
-        })?;
+        let request_inserted = crate::client_request::insert(
+            &tx,
+            &file,
+            observation.id,
+            request_hash,
+            observation.seen_at,
+        )?;
         // This foundation primitive does not interpret refused_json or guess
         // session/text removal closure. Until the collector owns that check,
         // refuse explicitly instead of reintroducing removed provider bytes.

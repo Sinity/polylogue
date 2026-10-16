@@ -24,7 +24,7 @@ use std::{
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 // These are admission limits, not format limits or a hard RSS bound. A rejected
 // record/cell remains owed and its required capacity is kept in the diagnostic.
@@ -108,6 +108,11 @@ pub struct ImportRequest {
     pub metadata_allowance: usize,
 }
 #[derive(Debug)]
+pub struct AuthoredReply {
+    pub revision: polylogue_model::authored::Revision,
+    pub recovery: Option<polylogue_model::RecoveryQualification>,
+}
+#[derive(Debug)]
 pub struct Progress {
     pub input: RetainedInput,
     pub parser: Option<Head>,
@@ -117,6 +122,11 @@ pub struct Progress {
     pub source_rows: polylogue_model::settlement::SourceRows,
 }
 enum Message {
+    Note(
+        polylogue_model::authored::WriteNote,
+        Instant,
+        Reply<AuthoredReply>,
+    ),
     Import(ImportRequest, Reply<RetainedInput>),
     Progress(String, Reply<Progress>),
     Retry(String, Reply<()>),
@@ -135,6 +145,18 @@ pub struct Handle {
     inner: Arc<Inner>,
 }
 impl Handle {
+    pub fn try_note(
+        &self,
+        request: polylogue_model::authored::WriteNote,
+        deadline: Instant,
+    ) -> Result<Receiver<Result<AuthoredReply>>> {
+        request
+            .validate()
+            .map_err(|e| Error::Store(StoreError::Authored(e)))?;
+        let (reply, rx) = mpsc::sync_channel(1);
+        self.send(Message::Note(request, deadline, reply))?;
+        Ok(rx)
+    }
     fn send(&self, message: Message) -> Result<()> {
         let accepting = self.inner.accepting.lock().map_err(|_| Error::Stopped)?;
         if !*accepting || self.inner.cancelled.load(Ordering::Acquire) {
@@ -453,6 +475,27 @@ impl Actor {
     }
     fn message(&mut self, message: Message) -> Result<()> {
         match message {
+            Message::Note(request, deadline, reply) => {
+                let result = if self.stopping {
+                    Err(Error::Stopped)
+                } else if Instant::now() >= deadline {
+                    Err(StoreError::Authored(polylogue_model::Failure::new(
+                        polylogue_model::ErrorKind::Timeout,
+                        "queued authored write deadline passed; no effect committed",
+                    ))
+                    .into())
+                } else {
+                    self.writer
+                        .authored_recovery()
+                        .and_then(|recovery| {
+                            self.writer
+                                .write_note(&request)
+                                .map(|revision| AuthoredReply { revision, recovery })
+                        })
+                        .map_err(Error::Store)
+                };
+                let _ = reply.send(result);
+            }
             Message::Import(request, reply) => {
                 if self.stopping {
                     let _ = reply.send(Err(Error::Stopped));
@@ -1360,6 +1403,62 @@ mod tests {
         b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"synthetic-session\",\"source\":\"cli\"}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"u\",\"role\":\"user\",\"content\":[{\"text\":\"hello\"}]}}\n"
     }
     #[test]
+    fn authored_reply_does_not_open_derived_status_after_commit() {
+        use polylogue_model::authored::{NoteKind, Target, WriteNote};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let writer = Writer::open(root).unwrap();
+        let reader = writer.read_handle().unwrap();
+        // Hold the real connections while making only a new derived-tier open
+        // fail. This is an isolated fixture, never a live archive operation.
+        std::fs::rename(root.join("embeddings.db"), root.join("held-embeddings.db")).unwrap();
+        std::fs::create_dir(root.join("embeddings.db")).unwrap();
+        assert!(writer.status().is_err());
+        let service = Owner::start(writer, Arc::new(AtomicBool::new(false))).unwrap();
+        let request = WriteNote {
+            request_id: "01900000-0000-7000-8000-000000000501".into(),
+            author: "agent".into(),
+            machine: "synthetic-machine".into(),
+            created_at: None,
+            kind: Some(NoteKind::Correction),
+            value: "Correction survives a derived status outage.".into(),
+            targets: Some(vec![Target {
+                reference: "message:future".into(),
+                seen_hash: None,
+            }]),
+            relations: vec![],
+        };
+        let committed = service
+            .handle()
+            .try_note(request.clone(), Instant::now() + Duration::from_secs(30))
+            .unwrap()
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+        assert!(committed.recovery.is_none());
+        let retry = service
+            .handle()
+            .try_note(request, Instant::now() + Duration::from_secs(30))
+            .unwrap()
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
+            .unwrap();
+        assert_eq!(committed.revision, retry.revision);
+        assert_eq!(
+            reader
+                .authored_snapshot()
+                .unwrap()
+                .family(&committed.revision.reference())
+                .unwrap()
+                .history
+                .len(),
+            1
+        );
+        std::fs::remove_dir(root.join("embeddings.db")).unwrap();
+        std::fs::rename(root.join("held-embeddings.db"), root.join("embeddings.db")).unwrap();
+        service.shutdown().unwrap();
+    }
+    #[test]
     fn declared_claude_context_replays_without_provider_and_remains_pending() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("untrusted-download-name.jsonl");
@@ -1406,7 +1505,7 @@ mod tests {
                 .unwrap()
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap(),
-            Err(Error::Store(StoreError::ImportRequestConflict { .. }))
+            Err(Error::Store(StoreError::ClientRequestConflict { .. }))
         ));
         service.shutdown().unwrap();
         let service = owner(&root);

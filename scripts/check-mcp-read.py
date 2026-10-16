@@ -39,12 +39,17 @@ class Client:
             assert "2026-07-28" in discovery["result"]["supportedVersions"]
             assert set(discovery["result"]["capabilities"]) == {"tools"}
         listing = self.rpc("tools/list", {})["result"]
-        assert [tool["name"] for tool in listing["tools"]] == ["status", "search", "read"]
+        assert [tool["name"] for tool in listing["tools"]] == ["status", "search", "read", "note"]
         for tool in listing["tools"]:
             assert tool["outputSchema"]["required"] == ["outcome"]
             assert tool["inputSchema"]["additionalProperties"] is False
-            assert tool["annotations"]["readOnlyHint"]
+            assert tool["annotations"]["readOnlyHint"] is (tool["name"] != "note")
+            assert tool["annotations"]["idempotentHint"] is (tool["name"] != "note")
         assert set(listing["tools"][2]["inputSchema"]["properties"]) == {"ref", "budget_tokens", "continuation", "view"}
+        note = listing["tools"][3]
+        assert note["inputSchema"]["required"] == ["value"]
+        assert set(note["inputSchema"]["properties"]["kind"]["enum"]) == {"note", "correction", "withdrawal"}
+        assert "author" not in note["inputSchema"]["properties"]
 
     def send(self, message):
         attempt = {"send": message, "status": "attempted"}

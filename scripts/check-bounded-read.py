@@ -200,7 +200,8 @@ def verify(run):
     assert run.read(wrong)["error"]["reason"] == "cross_reference_continuation"
     tiny = run.read({"ref": block_ref}, 1)
     assert tiny["error"]["minimum_budget"] == 128 and estimated(tiny) <= 128
-    assert run.read({"ref": "note:unknown"}, 1800)["error"]["kind"] == "not_yet_available"
+    assert run.read({"ref": "note:01900000-0000-7000-8000-999999999999"}, 1800)["error"]["kind"] == "not_found"
+    assert run.read({"ref": "note:unknown"}, 1800)["error"]["kind"] == "invalid_query"
     run.cli([block_ref, "read", "--budget", "1800", "--format", "json"], allowed=(2,))
     original.unlink()
     unrelated.unlink()

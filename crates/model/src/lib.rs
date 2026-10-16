@@ -1,4 +1,5 @@
 //! Pure identities, measurements and outcomes. No filesystem or storage access.
+pub mod authored;
 pub mod content;
 pub mod declared_operation;
 pub mod identity;

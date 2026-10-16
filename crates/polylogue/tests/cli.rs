@@ -179,10 +179,23 @@ fn mcp_discovers_only_supported_tools_without_a_daemon_or_archive_creation() {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["status", "search", "read"]
+        ["status", "search", "read", "note"]
     );
     for tool in tools {
         assert_eq!(tool["outputSchema"]["required"], json!(["outcome"]));
+        assert_eq!(tool["annotations"]["readOnlyHint"], tool["name"] != "note");
+        assert_eq!(
+            tool["annotations"]["idempotentHint"],
+            tool["name"] != "note"
+        );
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     }
+    let note = &tools[3];
+    assert_eq!(note["inputSchema"]["required"], json!(["value"]));
+    assert_eq!(
+        note["inputSchema"]["properties"]["kind"]["enum"],
+        json!(["note", "correction", "withdrawal"])
+    );
+    assert!(note["inputSchema"]["properties"].get("author").is_none());
     assert!(!archive.exists());
 }
