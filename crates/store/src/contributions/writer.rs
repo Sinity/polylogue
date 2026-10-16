@@ -1049,6 +1049,7 @@ mod tests {
     }
     #[test]
     fn source_election_carries_operation_root_without_rewriting_ready_bodies() {
+        use super::super::directory as d;
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
         let path = f.root.join("index.db");

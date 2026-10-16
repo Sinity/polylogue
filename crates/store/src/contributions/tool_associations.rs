@@ -63,7 +63,7 @@ pub(crate) fn membership(
     session: i64,
 ) -> Result<Option<(i64, String, String)>> {
     let body: Option<(i64, Option<i64>, String, String)> = db(p, || {
-        c.query_row("SELECT b.pk,b.operation_root_pk,lower(hex(b.version_hash)),(SELECT value FROM meta WHERE key='generation') FROM message m JOIN message_body b ON b.pk=m.selected_body_pk AND b.ready=1 WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0",params![message,session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()
+        c.query_row("SELECT b.pk,b.operation_root_pk,lower(hex(b.version_hash)),(SELECT value FROM meta WHERE key='generation') FROM message m JOIN message_body b ON b.pk=m.selected_body_pk AND b.ready=1 WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0 AND b.removal_epoch=m.removal_epoch",params![message,session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()
     })?;
     let Some((body, root, hash, generation)) = body else {
         return Ok(None);
@@ -104,7 +104,7 @@ fn attach(
         return Ok(false);
     }
     let (body, blocks, fields, root): (i64, Option<i64>, Option<i64>, Option<i64>) = db(p, || {
-        tx.query_row("SELECT b.pk,b.block_root_pk,b.field_root_pk,b.operation_root_pk FROM message m JOIN message_body b ON b.pk=m.selected_body_pk AND b.ready=1 WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0",params![message,session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
+        tx.query_row("SELECT b.pk,b.block_root_pk,b.field_root_pk,b.operation_root_pk FROM message m JOIN message_body b ON b.pk=m.selected_body_pk AND b.ready=1 WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0 AND b.removal_epoch=m.removal_epoch",params![message,session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
     })?;
     let owner = d::Owner { message, session };
     let key = u64::try_from(association).map_err(|_| Error::Range)?;
@@ -177,7 +177,7 @@ pub(super) fn carry_selected(
     body: i64,
 ) -> Result<i64> {
     let old: Option<i64> = db(p, || {
-        tx.query_row("SELECT b.operation_root_pk FROM message m LEFT JOIN message_body b ON b.pk=m.selected_body_pk WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0",params![owner.message,owner.session],|r|r.get(0))
+        tx.query_row("SELECT CASE WHEN b.removal_epoch=m.removal_epoch THEN b.operation_root_pk END FROM message m LEFT JOIN message_body b ON b.pk=m.selected_body_pk WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0",params![owner.message,owner.session],|r|r.get(0))
     })?;
     let Some(old) = old else {
         return Ok(body);
