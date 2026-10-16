@@ -45,7 +45,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|SID export --format json --to DIR|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Exact native Session JSON directory export shares the pinned read; general exports and MCP remain unavailable.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|REF read --budget TOKENS [--continuation TOKEN]|SID export --format json --to DIR|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Exact native Session JSON directory export shares the pinned read. Bounded model reads support retained Text/Thinking selections, within-block continuation and measured structured budgets; included tool kinds and extra rendering options refuse. General exports and MCP remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -95,6 +95,8 @@ fn run() -> Result<i32, Failure> {
         writeln!(out).map_err(io_error)?;
         return Ok(5);
     }
+    let model_read = polylogue::model_read::cli(&args)
+        .map_err(|v| error(ErrorKind::InvalidQuery, v.to_string()))?;
     let terminal_read = args.first().is_some_and(|s| s.starts_with("message:"))
         && (args.len() == 2 && args[1] == "read"
             || args.len() == 4 && args[1..] == ["read", "--format", "terminal"]);
@@ -140,7 +142,9 @@ fn run() -> Result<i32, Failure> {
     } else {
         None
     };
-    let command = if session_export || session_json || session_terminal {
+    let command = if let Some(request) = &model_read {
+        Some(request.clone())
+    } else if session_export || session_json || session_terminal {
         Some(json!({"command":"session-read","reference":args[0],"format":"json"}))
     } else if terminal_read {
         Some(json!({"command":"read","reference":args[0],"format":"terminal"}))
@@ -276,6 +280,12 @@ fn run() -> Result<i32, Failure> {
                 eprintln!("{}", terminal_text(note.as_str().unwrap_or("")));
             }
         }
+        return reply_exit_code(&value);
+    }
+    if let Some(request) = &model_read {
+        let value = polylogue::model_read::request(&socket, request).map_err(io_error)?;
+        serde_json::to_writer(&mut out, &value).map_err(io_error)?;
+        writeln!(out).map_err(io_error)?;
         return reply_exit_code(&value);
     }
     if terminal_read || session_json || session_terminal {

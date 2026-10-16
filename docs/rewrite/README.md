@@ -20,7 +20,7 @@ metadata, linear Message order and absence of required non-Message products.
 Selection and normalized-document scopes differ: the latter also inspects
 possible foreign incoming-link contributors. Its result keeps target basis
 and serving view distinct. Other shapes preserve degraded or refused outcomes;
-canonical election for overlapping immutable snapshots, general title/lineage/event
+general ranking/fill of nonidentical immutable candidates, general title/lineage/event
 products, productive late external-result companion
 acquisition, full export and full Morrow/M1 acceptance remain open. The top-level
 README owns the current commands and limits. No canonical DDL changed.
@@ -30,3 +30,5 @@ Controlled copy recovery and archive format 2 follow specification `8c4e22106922
 Complete immutable-snapshot compatibility and index19 follow `aca97f216bc3c56a81f4b2523b81744ce42c6454` (storage/index-db). The certificate requires identical normalized bodies, raw evidence, context, parser/rank and supplied source sequence. It preserves each candidate origin and exact citations; nonidentical ranking/fill remains unfinished. The known stopped-startup index18→19 replacement preserves its exact predecessor file set and reparses retained sources through ordinary recovery. Full online generation handoff is unqualified.
 
 Exact native Session JSON directory export follows `export-format.md` and the CLI's atomic replacement contract at specification `aca97f216bc3c56a81f4b2523b81744ce42c6454`. It consumes the existing pinned Session document, result, recovery qualification, view and freshness. The manifest and detached document retain the same result for this one-Session selection. No schema, second provider parser or daemon export endpoint is added. General selection, portable normalized reimport and full Morrow/M1 acceptance remain separate.
+
+Bounded model reading follows `rendering.md`, CLI/MCP and law 53 at specification `4bd2e8b76672536efdd427abe6300de4c6e315e5`. The current native CLI/daemon operation supports the limited Text/Thinking domain documented in the top-level README. The reference specimen qualifies synthetic semantics only; it does not prescribe production prefix hashing or whole-body allocation. MCP remains a separately open part of this same eventual agent-read capability. Full rendering/selection options, current native privacy products and M1 acceptance keep their normative scope. No canonical DDL or parser changed.

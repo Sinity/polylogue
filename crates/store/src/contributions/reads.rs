@@ -216,6 +216,120 @@ impl MessageView {
             in_progress,
         })
     }
+    /// Complete normalized-body and origin certificate assembled from sealed
+    /// value hashes. Immutable row identity alone is insufficient: compatible
+    /// source election can replace a body without changing its normalized data.
+    /// No provider payload is decoded or rehashed here. Exact source selectors
+    /// remain included, so equal text with changed attribution cannot resume.
+    pub fn read_certificate(&self) -> Result<[u8; 32]> {
+        self.read_certificate_with_cancel(&mut || false)
+    }
+    pub fn read_certificate_with_cancel(
+        &self,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<[u8; 32]> {
+        self.visible()?;
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"native-model-body-origin-v1\0");
+        for bytes in [
+            self.path.as_os_str().as_encoded_bytes(),
+            self.generation.as_bytes(),
+            self.id.as_str().as_bytes(),
+        ] {
+            hash.update(&(bytes.len() as u64).to_le_bytes());
+            hash.update(bytes);
+        }
+        hash.update(&self.removal_epoch.to_le_bytes());
+        {
+            let read = locked(&self.read)?;
+            super::compatibility::hash_row(
+                &read.connection,
+                &self.path,
+                "SELECT layout,role,written_by,prompt_kind,at,completed_at,at_until,id_kind,in_progress,on_active_path,copy_origin,usage_present,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cache_write_5m_tokens,cache_write_1h_tokens,reasoning_tokens,web_requests,provider_cost_nusd,cost_nusd,duration_ms,words,parser_version FROM message_body WHERE pk=?1",
+                self.body,
+                &mut hash,
+                65536,
+            )?;
+        }
+        let mut cursor = None;
+        while let Some(entry) = self.next_field(cursor.as_ref(), 65536)? {
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let key =
+                serde_json::to_vec(&entry.slot).map_err(|e| Error::Invariant(e.to_string()))?;
+            hash.update(&(key.len() as u64).to_le_bytes());
+            hash.update(&key);
+            self.hash_field(&entry.value, &mut hash)?;
+            cursor = Some(entry.cursor);
+        }
+        hash.update(b"end-message-fields\0");
+        let mut i = 0;
+        while let Some(block) = self.block_at(i)? {
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+            hash.update(&i.to_le_bytes());
+            let read = locked(&self.read)?;
+            super::compatibility::hash_row(
+                &read.connection,
+                &self.path,
+                "SELECT b.slot_kind,b.attach_key,b.kind,b.encrypted,b.blob_hash,b.direction,b.size,b.result_outcome,b.result_reason,b.result_exit_code,b.result_duration_ms,v.codec,v.length,v.hash FROM block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN body_value v ON v.pk=t.value_pk AND v.state='ready' WHERE b.pk=?1",
+                block.pk,
+                &mut hash,
+                65536,
+            )?;
+            drop(read);
+            let mut cursor = None;
+            while let Some(entry) = block.next_field(cursor.as_ref(), 65536)? {
+                if cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                let key = match entry.address {
+                    BlockFieldAddress::Field(kind) => {
+                        hash.update(b"field\0");
+                        serde_json::to_vec(&kind)
+                    }
+                    BlockFieldAddress::Extra(key) => {
+                        hash.update(b"extra\0");
+                        serde_json::to_vec(&key)
+                    }
+                }
+                .map_err(|e| Error::Invariant(e.to_string()))?;
+                hash.update(&(key.len() as u64).to_le_bytes());
+                hash.update(&key);
+                self.hash_field(&entry.value, &mut hash)?;
+                cursor = Some(entry.cursor);
+            }
+            hash.update(b"end-block-fields\0");
+            i += 1;
+        }
+        Ok(*hash.finalize().as_bytes())
+    }
+    fn hash_field(&self, field: &FieldRead<'_>, hash: &mut blake3::Hasher) -> Result<()> {
+        let FieldRead::Value(field) = field else {
+            return Err(Error::MessagePreparationPending);
+        };
+        let read = locked(&self.read)?;
+        for value in [Some(&field.value), field.origin.as_ref()] {
+            match value {
+                None => {
+                    hash.update(&[0]);
+                }
+                Some(value) => {
+                    let head = values::head(&read.connection, &self.path, value)?;
+                    hash.update(&[1]);
+                    hash.update(head.codec.as_str().as_bytes());
+                    hash.update(&head.length.to_le_bytes());
+                    hash.update(&head.hash.ok_or(Error::ValueNotReady)?);
+                }
+            }
+        }
+        hash.update(&[u8::from(field.supplied)]);
+        hash.update(&[u8::from(field.source_time.is_some())]);
+        hash.update(&field.source_time.unwrap_or_default().to_le_bytes());
+        Ok(())
+    }
     pub fn body_pk(&self) -> i64 {
         self.body
     }
@@ -2046,6 +2160,10 @@ mod tests {
             Err(Error::MessagePredecessorChanged)
         ));
         assert!(matches!(
+            message.read_certificate(),
+            Err(Error::MessagePredecessorChanged)
+        ));
+        assert!(matches!(
             view.next(None, 65536),
             Err(Error::MessagePredecessorChanged)
         ));
@@ -2122,6 +2240,10 @@ mod tests {
         ));
         assert_eq!(model(&old), "old");
         assert_eq!(model(&new), "new");
+        assert_ne!(
+            old.read_certificate().unwrap(),
+            new.read_certificate().unwrap()
+        );
         assert!(matches!(
             new.next_field(None, 1),
             Err(Error::ParserAdmission { .. })
