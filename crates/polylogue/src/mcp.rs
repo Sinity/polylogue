@@ -75,9 +75,9 @@ fn tools() -> Vec<Tool> {
         ),
         (
             "note",
-            "Write an attributed final note/correction on exact Message/block targets, revise a current pinned note with revises, or withdraw a pinned revision/root with kind:withdrawal and withdraws. Supplied seen_hash is retained unchanged; omitted stays unknown. Reuse request_id for an unchanged retry. MCP author is the harness session or agent, never operator. No authored-return, tags, judgments, pages, bulk writes or other note kinds.",
+            "Write an attributed final note/correction on exact Message/block targets, revise a current pinned note with revises, or withdraw a pinned revision/root with kind:withdrawal and withdraws. Supplied seen_hash is retained unchanged; omitted stays unknown. Supply and retain request_id before sending, then reuse it for an unchanged retry. Without request_id each call creates a new action. MCP author is the harness session or agent, never operator. No authored-return, tags, judgments, pages, bulk writes or other note kinds.",
             schema(
-                json!({"targets":{"type":"array","minItems":1,"maxItems":8,"items":{"oneOf":[{"type":"string"},{"type":"object","required":["ref"],"additionalProperties":false,"properties":{"ref":{"type":"string"},"seen_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"}}}]}},"kind":{"enum":["note","correction","withdrawal"]},"value":{"type":"string","maxLength":16384},"relations":{"type":"array","maxItems":2,"items":{"type":"object","required":["type","ref"],"additionalProperties":false,"properties":{"type":{"enum":["revises","withdraws","corrects"]},"ref":{"type":"string"}}}},"request_id":{"type":"string","description":"Canonical UUIDv7. Supply and retain it before sending when a lost-reply retry is required; generated once if omitted."}}),
+                json!({"targets":{"type":"array","minItems":1,"maxItems":8,"items":{"oneOf":[{"type":"string"},{"type":"object","required":["ref"],"additionalProperties":false,"properties":{"ref":{"type":"string"},"seen_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"}}}]}},"kind":{"enum":["note","correction","withdrawal"]},"value":{"type":"string","maxLength":16384},"relations":{"type":"array","maxItems":2,"items":{"type":"object","required":["type","ref"],"additionalProperties":false,"properties":{"type":{"enum":["revises","withdraws","corrects"]},"ref":{"type":"string"}}}},"request_id":{"type":"string","description":"Canonical UUIDv7. Supply and retain it before sending when a lost-reply retry is required; a fresh ID is generated for each call if omitted."}}),
                 &["value"],
             ),
         ),
@@ -103,7 +103,7 @@ fn tools() -> Vec<Tool> {
             properties["searched"] = json!({"type":"object"});
         }
         tool.output_schema = Some(Arc::new(json!({"type":"object","required":["outcome"],"properties":properties}).as_object().unwrap().clone()));
-        tool.annotations = Some(ToolAnnotations::new().read_only(name != "note").destructive(false).idempotent(true).open_world(false));
+        tool.annotations = Some(ToolAnnotations::new().read_only(name != "note").destructive(false).idempotent(name != "note").open_world(false));
         tool
     }).collect()
 }
@@ -492,7 +492,7 @@ mod authored_tests {
         for t in tools {
             let a = serde_json::to_value(t.annotations.unwrap()).unwrap();
             assert_eq!(a["readOnlyHint"], t.name != "note");
-            assert_eq!(a["idempotentHint"], true);
+            assert_eq!(a["idempotentHint"], t.name != "note");
         }
     }
 }
