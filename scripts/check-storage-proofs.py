@@ -12,15 +12,34 @@ spec.loader.exec_module(mcp)
 
 
 def verify(run):
+    # Reuse the independent synthetic native-source builder, not a product exporter.
+    native_spec = importlib.util.spec_from_file_location("storage_native", Path(__file__).with_name("check-codex-native.py"))
+    native = importlib.util.module_from_spec(native_spec)
+    native_spec.loader.exec_module(native)
     run.start()
     text = "Exact retained citation 東京🙂."
-    run.import_rows("retained-proof", [mcp.bounded.row("storage-proof", text)])
-    ref = mcp.bounded.REF
-    page = run.cli([ref, "read", "--budget", "8000"])
-    mcp.bounded.validate_page_citations(page, run.sources)
-    assert page["shown"] and "".join(s.get("text", "") for s in page["shown"]) == text, page
+    source = run.output / "retained-proof.jsonl"
+    native.rollout(source, output=text)
+    receipt = native.imported(run, source, "codex-rollout")
+    raw = source.read_bytes()
+    _, calls = native.query(run)
+    assert len(calls["rows"]) == 1, calls
+    ref = calls["rows"][0]["ref"]
+    page = run.cli([ref, "read", "--budget", "20000"])
+    shown, = page["shown"]
+    assert shown["operation"]["output"] == text, page
+    citations = shown["sources"]
+    assert citations
+    for citation in citations:
+        assert citation["input"] == receipt["retained"]["id"] and citation["chain"] == 1, citation
+        origin = citation["origin"]
+        assert origin["representation"] == "rollout"
+        assert (citation["start"], citation["end"]) == (origin["start"], origin["end"])
+        record = json.loads(raw[citation["start"]:citation["end"]])
+        payload = record["payload"]
+        assert payload.get("call_id", payload.get("item", {}).get("id")) == "C", record
     run.client = mcp.Client(run)
-    remote = run.read({"ref": ref}, 8000)
+    remote = run.client.tool("read", {"ref": ref, "budget_tokens": 20000})["structuredContent"]
     assert remote["shown"] == page["shown"], remote
     run.client.close()
     run.client = None
@@ -30,21 +49,33 @@ def verify(run):
     count = int.from_bytes(original[-9:-5], "little")
     table = len(original) - 17 - count * 8
     assert count == 1 and int.from_bytes(original[table:table+4], "little") == 0x184D2A5E
-    corrupt = bytearray(original)
-    corrupt[table + 12] ^= 1
-    blob.write_bytes(corrupt)
+    controls = {}
+    for jointly_changed_header in [False, True]:
+        corrupt = bytearray(original)
+        corrupt[table + 12] ^= 1
+        if jointly_changed_header:
+            # This finite fixture uses single-segment/dictionary-free size encoding.
+            assert original[4] in (0x24, 0x64)
+            corrupt[5] ^= 1
+        blob.write_bytes(corrupt)
+        run.start()
+        refused = run.cli([ref, "read", "--budget", "20000"], allowed=(0, 2, 3, 4, 5, 7))
+        assert refused["outcome"] == "error" and not refused.get("shown"), refused
+        assert "kind" in refused["error"], refused
+        run.client = mcp.Client(run)
+        remote = run.client.tool("read", {"ref": ref, "budget_tokens": 20000})["structuredContent"]
+        assert remote["outcome"] == "error" and not remote.get("shown"), remote
+        assert "kind" in remote["error"], remote
+        run.client.close()
+        run.client = None
+        run.stop()
+        controls["header_and_table" if jointly_changed_header else "table_one_bit"] = {"cli": refused["error"], "mcp": remote["error"]}
     run.start()
-    refused = run.cli([ref, "read", "--budget", "8000"], allowed=(0, 2, 3, 4, 5, 7))
-    assert refused["outcome"] == "error" and not refused.get("shown"), refused
-    run.client = mcp.Client(run)
-    remote = run.client.tool("read", {"ref": ref, "budget_tokens": 8000})["structuredContent"]
-    assert remote["outcome"] == "error" and not remote.get("shown"), remote
-    run.client.close()
-    run.client = None
     # A fresh custody attempt cannot turn the corrupt name into successful retention.
-    args = ["import", run.output / "retained-proof.jsonl", "--format", "claude-code-jsonl", "--context", run.output / "retained-proof.context.json", "--request-id", "storage-corrupt-retry", "--wait", "--wait-timeout", "30"]
+    args = ["import", source, "--format", "codex-rollout", "--request-id", "019a0000-0000-7000-8000-000000000111", "--seen-at", "1", "--wait", "--wait-timeout", "30"]
     failed = run.cli(args, allowed=(0, 2, 3, 4, 5, 7))
     assert failed["outcome"] == "error" and not failed.get("retained"), failed
+    assert "seek" in json.dumps(failed).lower() or "existing" in json.dumps(failed).lower() or "frame" in json.dumps(failed).lower(), failed
     assert blob.read_bytes() == corrupt
     run.stop()
     # Restore only this owned synthetic fixture; product puts never perform this repair.
@@ -52,9 +83,9 @@ def verify(run):
     run.start()
     retried = run.cli(args)
     assert retried.get("retained") and retried["outcome"] != "error", retried
-    restored = run.cli([ref, "read", "--budget", "8000"])
+    restored = run.cli([ref, "read", "--budget", "20000"])
     assert restored["shown"] == page["shown"], restored
-    return {"positive_citations": len(page["shown"]), "cli_corruption_error": refused["error"], "mcp_corruption_error": remote["error"], "corrupt_custody_refused": True, "retry_after_fixture_restoration": True}
+    return {"positive_citations": len(citations), "corruption_controls": controls, "corrupt_custody_refused": True, "retry_after_fixture_restoration": True}
 
 
 def main():

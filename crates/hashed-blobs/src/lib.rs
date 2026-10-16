@@ -23,6 +23,8 @@
 //! checksums are off): full reads check the name, range reads check frame checksums or AEAD tags.
 
 use std::fmt;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::os::unix::fs::MetadataExt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -159,27 +161,58 @@ pub struct Store {
 /// let reader = hashed_blobs::Reader::new("unused", vec![]);
 /// reader.put(&b"not permitted"[..], 1);
 /// ```
-pub struct Reader(Store);
+pub struct Reader(Store, Mutex<Option<PlainRead>>);
 
 impl Reader {
     pub fn new(root: impl Into<PathBuf>, extra_roots: Vec<PathBuf>) -> Self {
         let root = root.into();
         let mut roots = vec![root.clone()];
         roots.extend(extra_roots);
-        Self(Store { write_root: root, roots, mode: 0o600, frame: DEFAULT_FRAME })
+        Self(Store { write_root: root, roots, mode: 0o600, frame: DEFAULT_FRAME }, Mutex::new(None))
     }
 
     /// The existing checked decoder, with no write capability exposed.
     pub fn read(&self, hash: &Hash) -> Result<impl Read> { self.0.read(hash) }
 
     pub fn read_range(&self, hash: &Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
-        self.0.read_range(hash, offset, len)
+        self.read_range_checked::<Error>(hash, None, offset, len, || Ok(()))
+    }
+
+    /// One scoped plain representation and at most one bounded decoded frame are retained.
+    /// First use verifies the expected name; subsequent ranges never reopen its pathname.
+    /// Descriptor mutation refuses; replacement of its pathname does not change the held object.
+    pub fn read_range_checked<E: From<Error>>(&self, hash: &Hash, expected_len: Option<u64>, offset: u64, len: u64,
+        mut check: impl FnMut() -> std::result::Result<(), E>) -> std::result::Result<Vec<u8>, E> {
+        check()?;
+        let retained = self.slot()?.take();
+        let mut plain = match retained {
+            Some(plain) if plain.hash == *hash => plain,
+            _ => {
+                if self.0.kind(hash)? != Kind::Plain {
+                    return self.0.read_range(hash, offset, len).map_err(E::from);
+                }
+                self.0.open_plain(hash, expected_len, |_| check())?.0
+            }
+        };
+        if expected_len.is_some_and(|len| len != plain.length) {
+            return Err(Error::Corrupt { blob: *hash, what: "expected length differs from opened representation".into() }.into());
+        }
+        let result = plain.range(offset, len, &mut check);
+        if result.is_ok() { self.slot()?.replace(plain); }
+        result
     }
 
     /// Bounded plain-object verification; callback chunks are provisional until success.
     pub fn verify_plain<E: From<Error>>(&self, hash: &Hash, expected_len: u64,
         visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<VerificationStats, E> {
-        self.0.verify_plain(hash, expected_len, visit)
+        self.slot()?.take();
+        let (plain, stats) = self.0.open_plain(hash, Some(expected_len), visit)?;
+        self.slot()?.replace(plain);
+        Ok(stats)
+    }
+
+    fn slot(&self) -> Result<MutexGuard<'_, Option<PlainRead>>> {
+        self.1.lock().map_err(|_| Error::Refused("scoped reader state is poisoned".into()))
     }
 
     /// Check the existing physical representation and content without a write capability.
@@ -446,8 +479,8 @@ impl View {
     }
 }
 
-struct ViewRange<'a> { view: &'a View, pos: u64, end: u64 }
-impl Read for ViewRange<'_> {
+struct ViewRange { view: Arc<View>, pos: u64, end: u64 }
+impl Read for ViewRange {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         use std::os::unix::fs::FileExt;
         let n = out.len().min((self.end - self.pos) as usize);
@@ -456,6 +489,89 @@ impl Read for ViewRange<'_> {
         if n == 0 { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated frame")); }
         self.pos += n as u64;
         Ok(n)
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct Generation { dev: u64, ino: u64, len: u64, mtime: (i64, i64), ctime: (i64, i64) }
+impl Generation {
+    fn of(file: &File) -> io::Result<Self> {
+        let m = file.metadata()?;
+        Ok(Self { dev: m.dev(), ino: m.ino(), len: m.len(), mtime: (m.mtime(), m.mtime_nsec()), ctime: (m.ctime(), m.ctime_nsec()) })
+    }
+}
+struct PlainRead {
+    view: Arc<View>, generation: Generation, hash: Hash,
+    table: Vec<(u64, u32, u32)>, length: u64, current: Option<CachedFrame>, stats: VerificationStats,
+}
+struct CachedFrame { index: usize, bytes: Vec<u8> }
+impl PlainRead {
+    fn unchanged(&self) -> Result<()> {
+        if Generation::of(&self.view.file)? != self.generation {
+            return Err(Error::Corrupt { blob: self.hash, what: "opened representation changed after verification".into() });
+        }
+        Ok(())
+    }
+    fn range<E: From<Error>>(&mut self, offset: u64, len: u64,
+        check: &mut impl FnMut() -> std::result::Result<(), E>) -> std::result::Result<Vec<u8>, E> {
+        self.unchanged()?;
+        if offset.checked_add(len).is_none_or(|end| end > self.length) {
+            return Err(Error::Refused("range past the end".into()).into());
+        }
+        let mut out = Vec::new();
+        let mut start = 0u64;
+        for index in 0..self.table.len() {
+            let (off, c, d) = self.table[index];
+            let end = start + u64::from(d);
+            if start < offset + len && offset < end {
+                check()?;
+                let a = offset.saturating_sub(start);
+                let b = (offset + len).min(end) - start;
+                let reusable = match &self.current {
+                    Some(CachedFrame { index: k, .. }) => *k == index,
+                    None => false,
+                };
+                if !reusable {
+                    self.current = None;
+                    if d as usize <= DEFAULT_FRAME {
+                        let mut bytes = Vec::with_capacity(d as usize);
+                        Store::stream_plain_frame::<E>(&self.view, self.hash, (off, c, d), |chunk| {
+                            check()?;
+                            bytes.extend_from_slice(chunk);
+                            Ok(())
+                        })?;
+                        self.stats.decoded_bytes += u64::from(d);
+                        self.stats.compressed_bytes += u64::from(c);
+                        self.stats.frames += 1;
+                        self.current = Some(CachedFrame { index, bytes });
+                    } else {
+                        // Larger historical writer frames remain supported without a giant
+                        // cache allocation. Fully check the frame before returning selected
+                        // bytes; repeated large-frame ranges deliberately pay a full decode.
+                        let mut position = 0u64;
+                        Store::stream_plain_frame::<E>(&self.view, self.hash, (off, c, d), |chunk| {
+                            check()?;
+                            let next = position + chunk.len() as u64;
+                            let begin = a.max(position);
+                            let finish = b.min(next);
+                            if begin < finish { out.extend_from_slice(&chunk[(begin-position) as usize..(finish-position) as usize]); }
+                            position = next;
+                            Ok(())
+                        })?;
+                        self.stats.decoded_bytes += u64::from(d);
+                        self.stats.compressed_bytes += u64::from(c);
+                        self.stats.frames += 1;
+                    }
+                }
+                if let Some(CachedFrame { bytes, index: cached }) = &self.current {
+                    if *cached == index { out.extend_from_slice(&bytes[a as usize..b as usize]); }
+                }
+                check()?;
+            }
+            start = end;
+        }
+        self.unchanged()?;
+        Ok(out)
     }
 }
 
@@ -567,11 +683,11 @@ impl Store {
         }
     }
 
-    fn view(&self, h: &Hash) -> Result<View> {
+    fn view(&self, h: &Hash) -> Result<Arc<View>> {
         let p = self.locate(h).ok_or(Error::Missing(*h))?;
         let file = File::open(p)?;
         let len = file.metadata()?.len();
-        Ok(View { file, len })
+        Ok(Arc::new(View { file, len }))
     }
 
     fn sealed_footer(v: &View, h: Hash) -> Result<(SealedFooter, u64)> {
@@ -602,7 +718,7 @@ impl Store {
     }
 
     pub fn kind(&self, h: &Hash) -> Result<Kind> {
-        Self::kind_of_view(&self.view(h)?, *h)
+        Self::kind_of_view(self.view(h)?.as_ref(), *h)
     }
 
     /// The base a delta was made against; `None` for plain and non-delta sealed blobs.
@@ -661,28 +777,8 @@ impl Store {
         Ok((tmp, Hash(*name.finalize().as_bytes())))
     }
 
-    /// The seek table: per frame (offset in file, compressed length, decompressed length). Reads only
-    /// the table and every indexed frame header. Only known-size, checksummed zstd frames and
-    /// the no-table-checksum layout written by this crate are supported.
-    fn seek_table(v: &View, h: Hash) -> Result<Vec<(u64, u32, u32)>> {
-        let table = Self::seek_table_checked::<Error>(v, h, || Ok(()))?;
-        // Header lengths alone do not prove physical extents: one entry could swallow a
-        // whole following frame. Use zstd's parser rather than invent a block decoder.
-        for &(off, c, d) in &table {
-            if c as usize <= zstd::zstd_safe::compress_bound(DEFAULT_FRAME) {
-                let src = v.at(off, u64::from(c))?;
-                if zstd::zstd_safe::find_frame_compressed_size(&src).ok() != Some(c as usize) {
-                    return Err(Error::Corrupt { blob: h, what: "seek extent is not one complete frame".into() });
-                }
-            } else {
-                // A corrupt c can span most of the object. Do not allocate c bytes.
-                // Existing larger writer frames remain readable through bounded streaming.
-                Self::stream_plain_frame::<Error>(v, h, (off, c, d), |_| Ok(()))?;
-            }
-        }
-        Ok(table)
-    }
-
+    /// Check the supported table layout and every indexed known-size/checksummed header.
+    /// Actual decoded lengths and exact compressed extents are checked by the streaming core.
     fn seek_table_checked<E: From<Error>>(v: &View, h: Hash,
         mut check: impl FnMut() -> std::result::Result<(), E>) -> std::result::Result<Vec<(u64, u32, u32)>, E> {
         let bad = |what: &str| E::from(Error::Corrupt { blob: h, what: what.to_string() });
@@ -752,10 +848,10 @@ impl Store {
         Ok(out)
     }
 
-    fn stream_plain_frame<E: From<Error>>(v: &View, h: Hash, (off, c, d): (u64, u32, u32),
+    fn stream_plain_frame<E: From<Error>>(v: &Arc<View>, h: Hash, (off, c, d): (u64, u32, u32),
         mut visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<(), E> {
         let corrupt = |what: &str| Error::Corrupt { blob: h, what: what.into() };
-        let input = ViewRange { view: v, pos: off, end: off + u64::from(c) };
+        let input = ViewRange { view: Arc::clone(v), pos: off, end: off + u64::from(c) };
         let mut decoder = zstd::stream::read::Decoder::new(input)
             .map_err(|_| corrupt("invalid frame decoder"))?.single_frame();
         decoder.window_log_max(31).map_err(Error::Io)?;
@@ -1050,21 +1146,36 @@ impl Store {
         let h = *h;
         let v = self.view(&h)?;
         let kind = Self::kind_of_view(&v, h)?;
-        // per frame: (offset in file, offset in content, content length)
-        let (frames, total, sealed, plain_table) = match kind {
-            Kind::Delta { .. } | Kind::Sealed { base: Some(_), .. } => return Err(Error::NotSeekable(h)),
-            Kind::Plain => {
-                let t = Self::seek_table(&v, h)?;
-                let mut pos = 0;
-                let fr: Vec<(u64, u64, u64)> = t.iter().map(|&(o, _, d)| { let r = (o, pos, d as u64); pos += d as u64; r }).collect();
-                (fr, pos, None, t)
+        if kind == Kind::Plain {
+            let table = Self::seek_table_checked::<Error>(&v, h, || Ok(()))?;
+            let total: u64 = table.iter().map(|&(_, _, d)| u64::from(d)).sum();
+            if offset.checked_add(len).is_none_or(|end| end > total) {
+                return Err(Error::Refused("range past the end".into()));
             }
+            let mut out = Vec::new();
+            let mut position = 0u64;
+            for frame in table {
+                Self::stream_plain_frame::<Error>(&v, h, frame, |chunk| {
+                    let end = position + chunk.len() as u64;
+                    let a = offset.max(position);
+                    let b = (offset + len).min(end);
+                    if a < b { out.extend_from_slice(&chunk[(a-position) as usize..(b-position) as usize]); }
+                    position = end;
+                    Ok(())
+                })?;
+            }
+            return Ok(out);
+        }
+        // per frame: (offset in file, offset in content, content length)
+        let (frames, total, sealed) = match kind {
+            Kind::Delta { .. } | Kind::Sealed { base: Some(_), .. } => return Err(Error::NotSeekable(h)),
+            Kind::Plain => unreachable!("plain range handled above"),
             Kind::Sealed { key_ref, .. } => {
                 let (f, _) = Self::sealed_footer(&v, h)?;
                 let (mut o, mut pos) = (0u64, 0u64);
                 let fr: Vec<(u64, u64, u64)> = f.frames.iter().map(|&(c, p)| { let r = (o, pos, p as u64); o += c as u64; pos += p as u64; r }).collect();
                 let dk = Self::data_key(h, &key_ref, unwrap)?;
-                (fr, pos, Some((f, dk)), Vec::new())
+                (fr, pos, Some((f, dk)))
             }
         };
         if offset.checked_add(len).is_none_or(|end| end > total) {
@@ -1077,19 +1188,7 @@ impl Store {
             }
             let content = match &sealed {
                 Some((f, dk)) => Self::open_sealed_frame(&v, h, f, dk, k, foff, start, None)?,
-                None if flen <= DEFAULT_FRAME as u64 && plain_table[k].1 as usize <= zstd::zstd_safe::compress_bound(DEFAULT_FRAME) => Self::plain_frame(&v, h, plain_table[k])?,
-                None => {
-                    let mut position = start;
-                    Self::stream_plain_frame::<Error>(&v, h, plain_table[k], |chunk| {
-                        let end = position + chunk.len() as u64;
-                        let a = offset.max(position);
-                        let b = (offset + len).min(end);
-                        if a < b { out.extend_from_slice(&chunk[(a-position) as usize..(b-position) as usize]); }
-                        position = end;
-                        Ok(())
-                    })?;
-                    continue;
-                },
+                None => unreachable!("sealed range requires footer"),
             };
             let a = offset.saturating_sub(start) as usize;
             let b = ((offset + len).min(start + flen) - start) as usize;
@@ -1148,9 +1247,15 @@ impl Store {
     /// success. Memory is bounded by the seek table, zstd window and fixed IO buffers,
     /// independent of total content size. Delta/sealed encodings are explicitly refused.
     pub fn verify_plain<E: From<Error>>(&self, h: &Hash, expected_len: u64,
-        mut visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<VerificationStats, E> {
+        visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<VerificationStats, E> {
+        self.open_plain(h, Some(expected_len), visit).map(|(_, stats)| stats)
+    }
+
+    fn open_plain<E: From<Error>>(&self, h: &Hash, expected_len: Option<u64>,
+        mut visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<(PlainRead, VerificationStats), E> {
         visit(&[])?;
         let v = self.view(h)?;
+        let generation = Generation::of(&v.file).map_err(Error::Io)?;
         if Self::kind_of_view(&v, *h)? != Kind::Plain {
             return Err(Error::Refused("bounded plain verification requires plain encoding".into()).into());
         }
@@ -1159,21 +1264,29 @@ impl Store {
             + table.iter().map(|(_, c, _)| u64::from(*c).min(18)).sum::<u64>(), ..Default::default() };
         let mut digest = blake3::Hasher::new();
         let corrupt = |what: &str| Error::Corrupt { blob: *h, what: what.into() };
-        for &(off, c, d) in &table {
+        let mut current: Option<CachedFrame> = None;
+        for (index, &(off, c, d)) in table.iter().enumerate() {
             visit(&[])?;
+            drop(current.take());
+            let mut cached = if d as usize <= DEFAULT_FRAME { Some(Vec::with_capacity(d as usize)) } else { None };
             Self::stream_plain_frame::<E>(&v, *h, (off, c, d), |chunk| {
                 digest.update(chunk);
+                if let Some(bytes) = &mut cached { bytes.extend_from_slice(chunk); }
                 visit(chunk)
             })?;
+            current = cached.map(|bytes| CachedFrame { index, bytes });
             stats.decoded_bytes += u64::from(d);
             stats.compressed_bytes += u64::from(c);
             stats.frames += 1;
         }
         visit(&[])?;
-        if stats.decoded_bytes != expected_len || digest.finalize().as_bytes() != &h.0 {
+        if expected_len.is_some_and(|len| len != stats.decoded_bytes) || digest.finalize().as_bytes() != &h.0 {
             return Err(corrupt("content length or expected name mismatch").into());
         }
-        Ok(stats)
+        if Generation::of(&v.file).map_err(Error::Io)? != generation {
+            return Err(corrupt("opened representation changed during verification").into());
+        }
+        Ok((PlainRead { view: v, generation, hash: *h, table, length: stats.decoded_bytes, current, stats }, stats))
     }
 
     /// Reports; never repairs. Streams: a plain blob is hashed frame by frame, a sealed one by its

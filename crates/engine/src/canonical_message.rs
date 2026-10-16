@@ -1018,7 +1018,7 @@ fn field_turn(
                     .checked_sub(range.start)
                     .ok_or(ResolveError::Unbound)?;
                 reader
-                    .read_source_range(
+                    .read_source_range_checked(
                         &snapshot
                             .message_source_input_id(&state.handle.build, b.metadata)
                             .map_err(ResolveError::Store)?,
@@ -1026,6 +1026,13 @@ fn field_turn(
                         state.handle.request.source_binding,
                         range.start,
                         length,
+                        || {
+                            if flag.load(Ordering::Acquire) {
+                                Err(polylogue_store::Error::Cancelled)
+                            } else {
+                                Ok(())
+                            }
+                        },
                     )
                     .map_err(ResolveError::Store)
             },

@@ -152,15 +152,22 @@ fn present(
     let mut pending = Vec::new();
     while offset < source.input.length {
         check()?;
+        let mut stopped = None;
         let chunk = reader
-            .read_source_range(
+            .read_source_range_checked(
                 &source.input.id,
                 source.input.chain,
                 source.binding,
                 offset,
                 (source.input.length - offset).min(65536),
+                || {
+                    check().map_err(|failure| {
+                        stopped = Some(failure);
+                        polylogue_store::Error::Cancelled
+                    })
+                },
             )
-            .map_err(store_failure)?;
+            .map_err(|error| stopped.unwrap_or_else(|| store_failure(error)))?;
         check()?;
         offset += chunk.len() as u64;
         pending.extend_from_slice(&chunk);

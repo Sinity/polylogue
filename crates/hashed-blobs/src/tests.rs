@@ -92,7 +92,7 @@ fn corruption_found_by_the_crate_not_the_filesystem() {
     let h = s.put(&b[..], 3).unwrap();
     let p = file_of(&s, &h);
     let mut f = fs::read(&p).unwrap();
-    let table = { let v = s.view(&h).unwrap(); Store::seek_table(&v, h).unwrap() };
+    let table = { let v = s.view(&h).unwrap(); Store::seek_table_checked::<Error>(&v, h, || Ok(())).unwrap() };
     let (off, c, _) = table[2];
     f[off as usize + c as usize / 2] ^= 0x40;
     fs::write(&p, &f).unwrap();
@@ -102,7 +102,7 @@ fn corruption_found_by_the_crate_not_the_filesystem() {
         v => panic!("verify said {v:?}"),
     }
     assert!(matches!(s.read_range(&h, 2 * FRAME as u64, 10), Err(Error::Corrupt { .. })), "the damaged frame fails a range read");
-    assert_eq!(s.read_range(&h, 0, 10).unwrap(), &b[..10], "undamaged frames still read");
+    assert!(s.read_range(&h, 0, 10).is_err(), "stateless addressing validates the complete frame map");
     assert_eq!(fs::read(&p).unwrap(), f, "verify reports and never repairs");
 }
 
@@ -378,7 +378,7 @@ fn flipped_byte_in_a_raw_block_is_caught_by_the_frame_checksum() {
     let h = s.put(&b[..], 3).unwrap();
     let p = file_of(&s, &h);
     let mut f = fs::read(&p).unwrap();
-    let (off, c, _) = { let v = s.view(&h).unwrap(); Store::seek_table(&v, h).unwrap()[1] };
+    let (off, c, _) = { let v = s.view(&h).unwrap(); Store::seek_table_checked::<Error>(&v, h, || Ok(())).unwrap()[1] };
     f[off as usize + c as usize / 2] ^= 0x01;
     fs::write(&p, &f).unwrap();
     assert!(matches!(s.read_range(&h, FRAME as u64, 100), Err(Error::Corrupt { .. })), "a range read of the damaged frame must fail");
@@ -681,7 +681,8 @@ fn sequential_verification_decodes_once_and_checks_identity_and_length() {
     assert!(s.verify_plain::<Error>(&h, bytes.len() as u64 - 1, |_| Ok(())).is_err());
     let other = s.put(&b"other valid object"[..], 1).unwrap();
     fs::copy(file_of(&s, &other), file_of(&s, &h)).unwrap();
-    assert_eq!(s.read_range(&h, 0, 1).unwrap(), b"o"); // Local range proof boundary.
+    assert_eq!(s.read_range(&h, 0, 1).unwrap(), b"o"); // Stateless range proof boundary.
+    assert!(Reader::new(d.path(), vec![]).read_range(&h, 0, 1).is_err());
     assert!(s.verify_plain::<Error>(&h, 18, |_| Ok(())).is_err());
     let empty = s.put(&b""[..], 1).unwrap();
     assert_eq!(s.verify_plain::<Error>(&empty, 0, |_| Ok(())).unwrap().frames, 1);
@@ -772,4 +773,100 @@ fn frame_size_must_fit_the_written_seek_entry() {
         assert!(matches!(s.put(&b"bytes"[..], 1), Err(Error::Refused(_))));
         assert!(matches!(s.put_sealed(Cursor::new(b"bytes"), 1, &key("key", 7)), Err(Error::Refused(_))));
     }
+}
+
+#[test]
+fn jointly_changed_frame_header_and_seek_length_cannot_displace_a_range() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path(), vec![], 0o600).unwrap().with_frame_size(8);
+    let h = s.put(&b"ABCDEFGHijklmnopQRSTUVWX"[..], 1).unwrap();
+    let path = file_of(&s, &h);
+    let mut bytes = fs::read(&path).unwrap();
+    assert_eq!(bytes[4], 0x24);
+    assert_eq!(bytes[5], 8);
+    let table = bytes.len() - 17 - 3 * 8;
+    bytes[5] ^= 1;
+    bytes[table+12] ^= 1;
+    fs::write(path, bytes).unwrap();
+    assert!(matches!(s.verify(&h), Ok(Verified::Corrupt(_))));
+    assert!(matches!(s.read_range(&h, 9, 1), Err(Error::Corrupt { .. })));
+    let reader = Reader::new(d.path(), vec![]);
+    assert!(matches!(reader.read_range(&h, 9, 1), Err(Error::Corrupt { .. })));
+    assert!(reader.slot().unwrap().is_none());
+}
+
+#[test]
+fn one_verified_representation_reuses_bounded_frames_for_sequential_ranges() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path(), vec![], 0o600).unwrap();
+    let bytes = data(99, 8<<20);
+    let h = s.put(&bytes[..], 1).unwrap();
+    let reader = Reader::new(d.path(), vec![]);
+    let initial = reader.verify_plain::<Error>(&h, bytes.len() as u64, |_| Ok(())).unwrap();
+    for offset in (0..bytes.len()).step_by(65536) {
+        assert_eq!(reader.read_range(&h, offset as u64, 65536).unwrap(), bytes[offset..offset+65536]);
+    }
+    let retained = reader.slot().unwrap();
+    let retained = retained.as_ref().unwrap();
+    let after = retained.stats;
+    assert_eq!(initial.frames, 2);
+    assert_eq!(after.frames - initial.frames, 2);
+    assert_eq!(after.decoded_bytes - initial.decoded_bytes, bytes.len() as u64);
+    assert_eq!(after.compressed_bytes - initial.compressed_bytes, initial.compressed_bytes);
+    assert_eq!(after.metadata_bytes, initial.metadata_bytes);
+    let Some(CachedFrame { bytes: cached, .. }) = &retained.current else { panic!("frame not retained") };
+    assert_eq!(cached.len(), DEFAULT_FRAME);
+    eprintln!("SCOPED_RANGES validation_decoded={} validation_compressed={} metadata={} ranges=128 subsequent_decoded={} subsequent_compressed={} subsequent_metadata={} frame_cache_bytes={}", initial.decoded_bytes, initial.compressed_bytes, initial.metadata_bytes, after.decoded_bytes-initial.decoded_bytes, after.compressed_bytes-initial.compressed_bytes, after.metadata_bytes-initial.metadata_bytes, cached.len());
+}
+
+#[test]
+fn scoped_reader_refuses_mutation_and_cancellation_without_publishing_a_cache() {
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path(), vec![], 0o600).unwrap();
+    let bytes = data(21, 5<<20);
+    let h = s.put(&bytes[..], 1).unwrap();
+    let reader = Reader::new(d.path(), vec![]);
+    reader.verify_plain::<Error>(&h, bytes.len() as u64, |_| Ok(())).unwrap();
+    let path = file_of(&s, &h);
+    // Replace the pathname with another valid object after verification. Never
+    // follow the new name; the held descriptor either serves its original bytes
+    // or conservatively refuses a filesystem generation change from unlink.
+    let other = s.put(&b"different object"[..], 1).unwrap();
+    let replacement = d.path().join("replacement");
+    fs::copy(file_of(&s, &other), &replacement).unwrap();
+    fs::rename(replacement, &path).unwrap();
+    match reader.read_range(&h, 0, 16) {
+        Ok(actual) => assert_eq!(actual, bytes[..16]),
+        Err(Error::Corrupt { .. }) => {},
+        other => panic!("unexpected replacement outcome: {other:?}"),
+    }
+    if let Ok(actual) = reader.read_range(&h, 0, 1) { assert_eq!(actual, bytes[..1]); }
+    let h = s.put(&b"fresh object"[..], 1).unwrap();
+    let mut delivered = 0;
+    assert!(reader.verify_plain::<Error>(&h, 12, |chunk| {
+        delivered += chunk.len();
+        Err(Error::Refused("cancelled".into()))
+    }).is_err());
+    assert_eq!(delivered, 0);
+    assert!(reader.slot().unwrap().is_none());
+}
+
+#[test]
+fn reader_remains_send_and_sync_and_warms_one_frame_without_extra_decoding() {
+    fn shared<T: Send + Sync>() {}
+    shared::<Reader>();
+    let d = tempfile::tempdir().unwrap();
+    let s = Store::open(d.path(), vec![], 0o600).unwrap();
+    let bytes = data(5, 200000);
+    let h = s.put(&bytes[..], 1).unwrap();
+    let reader = Reader::new(d.path(), vec![]);
+    let initial = reader.verify_plain::<Error>(&h, bytes.len() as u64, |_| Ok(())).unwrap();
+    assert_eq!(reader.read_range(&h, 100, 65536).unwrap(), bytes[100..65636]);
+    assert_eq!(reader.slot().unwrap().as_ref().unwrap().stats.decoded_bytes, initial.decoded_bytes);
+    assert!(reader.read_range_checked::<Error>(&h, Some(1), 0, 1, || Ok(())).is_err());
+    assert!(reader.slot().unwrap().is_none());
+    reader.verify_plain::<Error>(&h, bytes.len() as u64, |_| Ok(())).unwrap();
+    fs::write(file_of(&s, &h), b"in-place corruption").unwrap();
+    assert!(matches!(reader.read_range(&h, 0, 1), Err(Error::Corrupt { .. })));
+    assert!(reader.slot().unwrap().is_none());
 }

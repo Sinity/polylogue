@@ -10,6 +10,7 @@ pub fn query(
     plan: &polylogue_model::query::ToolQuery,
     until: Instant,
 ) -> Result<Value, polylogue_store::Error> {
+    let reader = reader.fork()?;
     let population = reader.tool_items(&plan.session)?;
     let mut rows = Vec::new();
     for item in &population.items {
@@ -70,6 +71,11 @@ pub fn read(reader: &ReadHandle, request: &Value, until: Instant) -> Value {
     };
     let Some(reference) = request["reference"].as_str() else {
         return fail("operation reference missing");
+    };
+    // Retained file proof and frame reuse last for this public read operation.
+    let reader = match reader.fork() {
+        Ok(reader) => reader,
+        Err(error) => return fail(error),
     };
     let item = match reader.tool_item(reference) {
         Ok(Some(v)) => v,

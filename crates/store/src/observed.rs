@@ -384,6 +384,18 @@ impl ReadHandle {
         offset: u64,
         length: u64,
     ) -> crate::Result<Vec<u8>> {
+        self.read_source_range_checked(id, chain, binding, offset, length, || Ok(()))
+    }
+    pub fn read_source_range_checked(
+        &self,
+        id: &str,
+        chain: i64,
+        binding: BlobHash,
+        offset: u64,
+        length: u64,
+        mut check: impl FnMut() -> crate::Result<()>,
+    ) -> crate::Result<Vec<u8>> {
+        check()?;
         let file = self.root.join("archive.db");
         let source = self
             .source(id)?
@@ -427,13 +439,14 @@ impl ReadHandle {
                     .map_err(|_| refusal("invalid extent digest"))?,
             );
             result.extend_from_slice(
-                &self.read_blob_range(
+                &self.read_blob_range_checked(
                     hash,
                     u64::try_from(blob_start)
                         .map_err(|_| Error::Range)?
                         .checked_add(position - start)
                         .ok_or(Error::Range)?,
                     take,
+                    &mut check,
                 )?,
             );
             position += take;
@@ -463,7 +476,7 @@ impl ReadHandle {
                     .map_err(|_| refusal("invalid backing digest"))?,
             );
             let length = u64::try_from(length).map_err(|_| Error::Range)?;
-            hashed_blobs::Reader::new(&self.root, vec![]).verify_plain::<Error>(
+            self.blob_reader.verify_plain::<Error>(
                 &hashed_blobs::Hash(*hash.bytes()),
                 length,
                 |_| check(),
@@ -529,6 +542,42 @@ mod tests {
         assert_eq!(
             std::fs::read(physical).unwrap(),
             b"invalid existing dependency"
+        );
+    }
+    #[test]
+    fn selected_extents_reuse_checked_bytes_but_current_metadata_still_refuses() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("archive");
+        let path = root.path().join("source.jsonl");
+        std::fs::write(&path, b"abcdefghij").unwrap();
+        let mut w = Writer::open(&archive).unwrap();
+        acquire(&mut w, &path, "first");
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"klmnopqr")
+            .unwrap();
+        let source = acquire(&mut w, &path, "second");
+        let reader = w.read_handle().unwrap();
+        reader.verify_source(&source, || Ok(())).unwrap();
+        assert_eq!(
+            reader
+                .read_source_range(&source.input.id, 1, source.binding, 8, 6)
+                .unwrap(),
+            b"ijklmn"
+        );
+        let hash = BlobHash::of(b"klmnopqr");
+        w.archive
+            .execute(
+                "UPDATE blob SET state='deleting' WHERE hash=?1",
+                [hash.bytes().as_slice()],
+            )
+            .unwrap();
+        assert!(
+            reader
+                .read_source_range(&source.input.id, 1, source.binding, 10, 2)
+                .is_err()
         );
     }
     #[test]

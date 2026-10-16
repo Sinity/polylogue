@@ -1113,12 +1113,19 @@ impl Actor {
                                         &cancelled,
                                     );
                                 }
-                                let bytes = reader.read_source_range(
+                                let bytes = reader.read_source_range_checked(
                                     &input_id,
                                     input_chain,
                                     hash,
                                     offset,
                                     length,
+                                    || {
+                                        if cancelled.load(Ordering::Acquire) {
+                                            Err(StoreError::Cancelled)
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
                                 )?;
                                 if cancelled.load(Ordering::Acquire) {
                                     return Err(StoreError::Cancelled.into());
@@ -1435,12 +1442,19 @@ fn operation_digest(
                 "mixed representation source candidate",
             ));
         };
-        let bytes = reader.read_source_range(
+        let bytes = reader.read_source_range_checked(
             &input.input.id,
             input.input.chain,
             input.binding,
             *start,
             end - start,
+            || {
+                if cancelled.load(Ordering::Acquire) {
+                    Err(StoreError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            },
         )?;
         let canonical =
             polylogue_model::identity::canonical_record(&bytes, &["timestamp", "ordinal"])

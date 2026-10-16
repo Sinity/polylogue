@@ -180,6 +180,8 @@ pub struct Writer {
 /// Read-only SQLite handles and typed queries; never a raw connection or SQL surface.
 pub struct ReadHandle {
     root: PathBuf,
+    // One opened expected-object representation per read capability; fork starts empty.
+    blob_reader: hashed_blobs::Reader,
     archive: Connection,
     index: Connection,
     embeddings: Connection,
@@ -673,6 +675,7 @@ impl ReadHandle {
     }
     fn owned(root: PathBuf, lock: Arc<File>) -> Result<Self> {
         Ok(Self {
+            blob_reader: hashed_blobs::Reader::new(&root, vec![]),
             archive: open(&root.join("archive.db"), true, true)?,
             index: open(&root.join("index.db"), true, false)?,
             embeddings: open(&root.join("embeddings.db"), true, true)?,
@@ -696,6 +699,16 @@ impl ReadHandle {
         Self::owned(self.root.clone(), Arc::clone(&self._lock))
     }
     pub fn read_blob_range(&self, hash: BlobHash, offset: u64, length: u64) -> Result<Vec<u8>> {
+        self.read_blob_range_checked(hash, offset, length, || Ok(()))
+    }
+    pub fn read_blob_range_checked(
+        &self,
+        hash: BlobHash,
+        offset: u64,
+        length: u64,
+        mut check: impl FnMut() -> Result<()>,
+    ) -> Result<Vec<u8>> {
+        check()?;
         let path = self.root.join("archive.db");
         let size: Option<i64> = db(&path, || {
             self.archive
@@ -711,8 +724,13 @@ impl ReadHandle {
         if offset.checked_add(length).is_none_or(|end| end > size) {
             return Err(Error::Range);
         }
-        let store = hashed_blobs::Reader::new(&self.root, vec![]);
-        Ok(store.read_range(&hashed_blobs::Hash(*hash.bytes()), offset, length)?)
+        self.blob_reader.read_range_checked::<Error>(
+            &hashed_blobs::Hash(*hash.bytes()),
+            Some(size),
+            offset,
+            length,
+            check,
+        )
     }
 }
 use rusqlite::OptionalExtension;
