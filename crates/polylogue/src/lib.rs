@@ -39,6 +39,14 @@ pub struct Running {
     socket: OwnedSocket,
 }
 impl Running {
+    /// One-shot daemon ownership; no socket, actor or ingestion is started.
+    pub fn recover_copy(
+        source: &Path,
+        destination: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<polylogue_store::recovery::RecoveryReport, polylogue_store::Error> {
+        polylogue_store::recovery::recover_copy(source, destination, cancelled)
+    }
     pub fn start(archive: &Path, runtime: &Path) -> Result<Self, String> {
         Self::start_inner(archive, runtime, false)
     }
@@ -227,7 +235,12 @@ fn serve(
         Ok(request) if request == json!({"command":"status"}) => {
             match reader.lock().expect("reader lock").status() {
                 Ok(status) => {
-                    json!({"outcome":"ok","archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","provider-progress","selected-message-terminal-read","selected-session-json-read","session-query-list-prose-v1"],"product_path":"partial"})
+                    let notes = if status.recovery.is_some() {
+                        vec![polylogue_model::RecoveryQualification::NOTE]
+                    } else {
+                        vec![]
+                    };
+                    json!({"outcome":if status.recovery.is_some(){"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","provider-progress","selected-message-terminal-read","selected-session-json-read","session-query-list-prose-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})

@@ -18,3 +18,5 @@ and `sources/claude-code.md` (file/context owns main membership). It does not
 promote source-row completion into complete Session/query coverage. Unknown
 subagent/linked dependency shapes, non-native input catalog qualification,
 portable upstream overlap handling, full export and search remain open.
+
+Controlled copy recovery and archive format 2 follow specification `8c4e2210692282420d7a5ca91dc005b409a668f1`: storage Controlled recovery, archive Recovery qualification, query Results and law 123. The exact-byte manifest digest binds the persisted unknown historical head. Normal startup keeps its guard. Full portable export/import qualification is not claimed; standalone Session JSON carries `recovery` once at top level and keeps degraded result metadata.

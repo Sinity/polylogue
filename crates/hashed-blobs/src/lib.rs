@@ -175,6 +175,9 @@ impl Reader {
     pub fn read_range(&self, hash: &Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
         self.0.read_range(hash, offset, len)
     }
+
+    /// Check the existing physical representation and content without a write capability.
+    pub fn verify(&self, hash: &Hash) -> Result<Verified> { self.0.verify(hash) }
 }
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);

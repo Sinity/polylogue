@@ -14,7 +14,7 @@ notes, kept results, excisions, variants, settings. How bytes are stored is in
   excision to them as to new bytes, and resets every text excision's
   `applied_upto`.
 - **Only gains rows.** No row is updated or deleted, except:
-  `meta` (the write counter); `blob` and `extent`, the physical
+  `meta` (the write counter and archive integrity qualification below); `blob` and `extent`, the physical
   storage of bytes, which the store rewrites when it joins pieces, finishes a
   blob after a crash or re-encodes a delta as plain (the revisions they
   describe do not change); `revision.blake3`, set once from NULL when the
@@ -48,7 +48,7 @@ notes, kept results, excisions, variants, settings. How bytes are stored is in
   backed mode it can be restored from Sinex, but that is recovery, not a
   schema path), so its schema changes by
   migration: an ordered list of SQL steps in the `store` crate, applied at
-  daemon start after copying the file aside, with the step number in
+  daemon start after preserving the pre-migration main/WAL/SHM set under archive ownership, with the step number in
   `PRAGMA user_version`. Before the first release there are none. A step
   runs in bounded batches (one transaction each, so no step holds the writer
   long), and the step number moves only with its last batch, so a stop
@@ -70,10 +70,33 @@ notes, kept results, excisions, variants, settings. How bytes are stored is in
   `store::inputs` (with `store::archive_meta` for the archive's own rows), the only place another storage backend could be added
   (`decisions/sinex.md`).
 
+## Recovery qualification
+
+The controlled-copy recovery path in `storage/README.md` persists one typed
+`meta` value, key `recovery_qualification`. Its versioned value contains
+`latest_acknowledged_head: unknown`, the uncertain-generation reason, affected
+durable tiers/frame positions and the BLAKE3 digest of the preserved-source
+manifest in the recovery receipt. It records archive integrity scope, not a user
+setting, annotation, parser state or index flag. Ordinary writes, successful
+parsing and index rebuild never clear it. The first path has no clearing command.
+
+Every read pins this value with its archive snapshot and exposes it as `recovery`
+(`query.md`, Results); status and zero-row answers carry it too. Complete local
+processing does not erase uncertainty about the recovered historical head.
+
+An older binary must refuse this format before it can ignore the qualification.
+The first native implementation therefore introduces a recovery-aware migration
+step through `PRAGMA user_version`, and tests the actual predecessor binary's
+refusal. An extra meta key under an old format version is insufficient. Normal
+older-format archives retain the owning migration rules above; recovery updates
+only its separately owned destination. This contract is planned, not evidence
+that a migration or recovery command has shipped.
+
 ## Tables
 
 ```sql
--- The write counter (key 'write_counter'), incremented once per transaction.
+-- The write counter (key 'write_counter'), incremented once per transaction,
+-- and typed archive integrity qualification (key 'recovery_qualification').
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 
 -- Machines by /etc/machine-id, with every host name seen with each.

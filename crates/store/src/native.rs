@@ -17,6 +17,58 @@ pub(crate) fn reserve(conn: &Connection) -> i32 {
     unsafe { polylogue_reserve_bytes(conn.handle()) }
 }
 
+/// Linux renameat2 is the publication boundary: an existing destination is never replaced.
+pub(crate) fn publish(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let source = CString::new(source.as_os_str().as_bytes())?;
+    let destination = CString::new(destination.as_os_str().as_bytes())?;
+    // Both strings live through the synchronous syscall. The flag is atomic,
+    // unlike a preceding existence check followed by an ordinary rename.
+    if unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+pub(crate) struct Progress<'a>(&'a Connection);
+impl Drop for Progress<'_> {
+    fn drop(&mut self) {
+        // Remove the callback before its borrowed cancellation flag can expire.
+        unsafe {
+            rusqlite::ffi::sqlite3_progress_handler(self.0.handle(), 0, None, std::ptr::null_mut());
+        }
+    }
+}
+pub(crate) fn cancellation<'a>(
+    conn: &'a Connection,
+    cancelled: &'a std::sync::atomic::AtomicBool,
+) -> Progress<'a> {
+    unsafe extern "C" fn check(value: *mut std::ffi::c_void) -> i32 {
+        // The guard borrows the flag for the whole synchronous SQLite operation.
+        let cancelled = unsafe { &*value.cast::<std::sync::atomic::AtomicBool>() };
+        i32::from(cancelled.load(std::sync::atomic::Ordering::Acquire))
+    }
+    unsafe {
+        rusqlite::ffi::sqlite3_progress_handler(
+            conn.handle(),
+            1000,
+            Some(check),
+            std::ptr::from_ref(cancelled).cast_mut().cast(),
+        );
+    }
+    Progress(conn)
+}
+
 pub(crate) fn no_cow(path: &Path) -> io::Result<()> {
     let file = File::open(path)?;
     let mut fs: libc::statfs = unsafe { std::mem::zeroed() };

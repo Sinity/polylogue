@@ -3,10 +3,10 @@
   "files": [
     {
       "source": "polylogue-spec/spec/storage/archive-db.md",
-      "sha256": "e4514b1a9d3de989a16733c81e3f1a497c35e40e0182f36c9c216dcc1a82fc24",
-      "copied_sha256": "57ba05c64dd5a7a675102edce9eada0e3fe2b2ddaf5bcbb067c50d15fa50455c",
-      "spec_commit": "191adbec3ddf0b39c1ce07ef3bbd555d07ecf795",
-      "sql_sha256": "8944262f62e8db4b8a7ed2700b31b7003edc930fcad810b41c23beb0631ac427"
+      "sha256": "999b8f8333f90a2d868991cc24119e1e07ff1e78611acf3a8f9e58d9208136d4",
+      "copied_sha256": "606d11eec6df857411c943203c74a61da4d7186db58a236e13d7855c15f42061",
+      "spec_commit": "8c4e2210692282420d7a5ca91dc005b409a668f1",
+      "sql_sha256": "d8075ff03f0d9aceaa77b5dc375b00c04497472b8fba22f4e11271340b05a2a9"
     },
     {
       "source": "polylogue-spec/spec/storage/index-db.md",
@@ -21,5 +21,5 @@
       "copied_sha256": "015c0adb3782df00357a7f4005ce78e04a64a947750c8badc550886128813566"
     }
   ],
-  "snapshot_normalization": "One final newline in copied Markdown; SQL fences otherwise unchanged."
+  "snapshot_normalization": "One final newline. The archive recovery clauses follow8c4e221; note_target seen_hash retains its separately pinned predecessor comment, so this delivery does not adopt the unrelated authored-note contract or alter existing sqlite_schema text."
 }
