@@ -4497,14 +4497,6 @@ mod tests {
             .begin_compatible_source_selection(&source, 4096)
             .unwrap();
         assert!(matches!(
-            work.advance(&reader, 0, &std::sync::atomic::AtomicBool::new(false)),
-            Err(Error::ParserAdmission { .. })
-        ));
-        let work = f
-            .writer
-            .begin_compatible_source_selection(&source, 4096)
-            .unwrap();
-        assert!(matches!(
             work.advance(&reader, 4096, &std::sync::atomic::AtomicBool::new(true)),
             Err(Error::Cancelled)
         ));
@@ -4512,6 +4504,16 @@ mod tests {
             f.scalar("SELECT count(*) FROM message_body_compatibility"),
             0
         );
+        compatibility_input(&mut f, b"snapshot-two", &[]);
+        let other = compatible_body(&mut f, b"text", b"null", 1, b"{}");
+        let work = f
+            .writer
+            .begin_compatible_source_selection(&other, 4096)
+            .unwrap();
+        assert!(matches!(
+            work.advance(&reader, 0, &std::sync::atomic::AtomicBool::new(false)),
+            Err(Error::ParserAdmission { .. })
+        ));
         let proof = compatible_ready(&mut f, &source).unwrap().unwrap();
         f.writer
             ._index
@@ -4565,7 +4567,20 @@ mod tests {
         f.writer
             .install_compatible_source_selection(proof, 4096)
             .unwrap();
+        let old_head = f.head.clone();
+        compatibility_input(&mut f, b"second reparse snapshot", &[]);
+        let old_other = compatible_body(&mut f, b"old interpretation", b"null", 1, b"{}");
+        let old_other_head = f.head.clone();
+        let both = compatible_ready(&mut f, &old_other).unwrap().unwrap();
+        f.writer
+            .install_compatible_source_selection(both, 4096)
+            .unwrap();
+        assert_eq!(
+            f.scalar("SELECT count(*) FROM message_body_compatibility"),
+            2
+        );
         let stale = compatible_ready(&mut f, &old).unwrap().unwrap();
+        f.head = old_head;
         let reader = f.writer.read_handle().unwrap();
         let pinned = reader.selected_message(&f.message).unwrap().unwrap();
         let length = f.head.acquired_upto;
@@ -4603,14 +4618,49 @@ mod tests {
         let new = compatible_body(&mut f, b"new interpretation", b"null", 1, b"{}");
         assert_eq!(
             f.scalar("SELECT count(*) FROM message_candidate WHERE eligible=1"),
-            1
+            2
         );
         assert!(
             f.writer
                 .install_compatible_source_selection(stale, 4096)
                 .is_err()
         );
-        let proof = compatible_ready(&mut f, &new).unwrap().unwrap();
+        // Until the other input is reparsed, differing parser/body witnesses
+        // are still contested; one reparse cannot overrule an independent input.
+        assert!(compatible_ready(&mut f, &new).unwrap().is_none());
+        f.head = f
+            .writer
+            .begin_parser(&parser_state::Basis {
+                input_pk: old_other_head.token.input_pk,
+                chain: old_other_head.token.chain,
+                parser_version: 4,
+                digest: [8; 32],
+                acquired_upto: old_other_head.acquired_upto,
+                companions_json: None,
+                excisions_seen: 0,
+            })
+            .unwrap();
+        f.head = parser_state::write_step(
+            &mut f.writer._index,
+            &f.root.join("index.db"),
+            &f.head,
+            parser_state::Progress {
+                inspected_upto: old_other_head.acquired_upto,
+                parsed_upto: old_other_head.acquired_upto,
+                phase: parser_state::Phase::Parsing,
+                finalization_pending: true,
+                counts: Default::default(),
+            },
+            &[],
+            parser_state::Budget {
+                cells: 0,
+                encoded_bytes: 0,
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        let other_new = compatible_body(&mut f, b"new interpretation", b"null", 1, b"{}");
+        let proof = compatible_ready(&mut f, &other_new).unwrap().unwrap();
         f.writer
             .install_compatible_source_selection(proof, 4096)
             .unwrap();

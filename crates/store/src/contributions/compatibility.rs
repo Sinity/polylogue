@@ -31,6 +31,7 @@ pub struct CompatibleSelection {
     carrier: Option<(String, i64)>,
     hashing: Option<BodyDigest>,
     complete: bool,
+    singleton: bool,
 }
 pub enum CompatibilityTurn {
     Progress(CompatibleSelection),
@@ -413,6 +414,10 @@ impl CompatibleSelection {
         if reader.root.join("index.db") != self.path || self.complete {
             return Err(changed());
         }
+        if self.singleton {
+            self.complete = true;
+            return Ok(CompatibilityTurn::Ready(self));
+        }
         if let Some(mut hashing) = self.hashing.take() {
             match hashing.advance(reader, allowance) {
                 Err(Error::MessagePreparationPending) => return Ok(CompatibilityTurn::Contested),
@@ -492,6 +497,11 @@ impl Writer {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
         })?;
+        // A singleton needs no cross-input equality or import interpretation
+        // witness. The immutable source certificate and membership fence suffice.
+        let singleton: bool = db(&path, || {
+            self._index.query_row("SELECT NOT EXISTS(SELECT 1 FROM message_candidate WHERE message_pk=?1 AND eligible=1 AND pk<>?2 LIMIT 1)",params![source.body.message,source.candidate],|r|r.get(0))
+        })?;
         Ok(CompatibleSelection {
             path,
             source: source.clone(),
@@ -499,9 +509,14 @@ impl Writer {
             epoch,
             after: 0,
             digest: None,
-            carrier: None,
+            carrier: if singleton {
+                Some((String::new(), source.body.pk))
+            } else {
+                None
+            },
             hashing: None,
             complete: false,
+            singleton,
         })
     }
     pub fn certify_body_compatibility(&mut self, proof: CompatibilityCertificate) -> Result<()> {
@@ -536,7 +551,10 @@ impl Writer {
         proof: CompatibleSelection,
         allowance: usize,
     ) -> Result<SourceSelection> {
-        if !proof.complete || proof.digest.is_none() || proof.hashing.is_some() {
+        if !proof.complete
+            || (!proof.singleton && proof.digest.is_none())
+            || proof.hashing.is_some()
+        {
             return Err(Error::MessagePreparationPending);
         }
         let path = self.root.join("index.db");

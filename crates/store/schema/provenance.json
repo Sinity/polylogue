@@ -12,7 +12,7 @@
       "source": "polylogue-spec/spec/storage/index-db.md",
       "sha256": "1c7e9c160531040fc7f7afe861cf24ed042a0ad53afd6764125a068c11ae7426",
       "copied_sha256": "1c7e9c160531040fc7f7afe861cf24ed042a0ad53afd6764125a068c11ae7426",
-      "spec_commit": "6ada496796a044e2e65ed1a5de3eda09280bce4b",
+      "spec_commit": "aca97f216bc3c56a81f4b2523b81744ce42c6454",
       "sql_sha256": "b9dc6ff1215f1ad27bb97461dcccb8db7413b1757b9c13c515c6c2ce3564bc6b"
     },
     {

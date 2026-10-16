@@ -40,7 +40,7 @@ pub const INDEX_VERSION: u32 = 19;
 /// Exact owning forward-schema revision, independently qualified from inbox index8.
 pub const INDEX_SQL_BLAKE3: &str =
     "194b3aa184952a2e67e911d6260b53df50669ebe922a5d2d7404332e46e42b0a";
-pub const INDEX_SPEC_COMMIT: &str = "6ada496796a044e2e65ed1a5de3eda09280bce4b";
+pub const INDEX_SPEC_COMMIT: &str = "aca97f216bc3c56a81f4b2523b81744ce42c6454";
 const ARCHIVE_SQL: &str = include_str!("../schema/archive.sql");
 const INDEX_SQL: &str = include_str!("../schema/index.sql");
 const EMBEDDINGS_SQL: &str = include_str!("../schema/embeddings.sql");
