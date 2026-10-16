@@ -9,13 +9,10 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
-use std::{
-    io::Read,
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-};
+use std::{io::Read, os::unix::fs::OpenOptionsExt};
 const ENTRIES: usize = 512;
 const FILE_BYTES: u64 = 16 * 1024 * 1024;
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub home: PathBuf,
@@ -60,6 +57,8 @@ pub struct Acquisition {
     pub retained_count: usize,
     pub retained_omitted: usize,
     pub retained_count_unit: &'static str,
+    /// Known union-prefix paths deferred by the finite startup admission.
+    pub deferred_rollout_paths: usize,
     #[serde(skip)]
     pub admitted: Vec<String>,
     pub refused_count: usize,
@@ -179,16 +178,296 @@ fn enumerate(
     }
     Ok(())
 }
-impl Writer {
-    pub fn acquire_codex_home(
+/// One bounded discovery pass. SQLite catalog reads stay in store; callers may
+/// run this outside the single writer. Membership never gates independent paths.
+pub struct Discovery {
+    pub catalog: Availability,
+    pub rollouts: Availability,
+    pub history_path: PathBuf,
+    pub candidates: Vec<Candidate>,
+    pub deferred_rollout_paths: usize,
+}
+#[derive(Clone, Debug)]
+pub struct Candidate {
+    path: PathBuf,
+    format: InputFormat,
+}
+impl Candidate {
+    pub fn observation_id(&self, request: &str, seen_at: i64) -> crate::Result<String> {
+        let path_text = self
+            .path
+            .to_str()
+            .ok_or_else(|| refused("Codex path must be UTF-8"))?;
+        let mut digest = blake3::Hasher::new();
+        for value in [
+            "polylogue.configured-codex-observation.v1",
+            request,
+            self.format.name(),
+            path_text,
+        ] {
+            digest.update(&(value.len() as u64).to_be_bytes());
+            digest.update(value.as_bytes());
+        }
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+        let millis = u64::try_from(seen_at).map_err(|_| Error::Range)? / 1000;
+        if millis > 0xffffffffffff {
+            return Err(Error::Range);
+        }
+        bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
+        bytes[6] = (bytes[6] & 0x0f) | 0x70;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        Ok(format!(
+            "{}-{}-{}-{}-{}",
+            &hex[..8],
+            &hex[8..12],
+            &hex[12..16],
+            &hex[16..20],
+            &hex[20..]
+        ))
+    }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+    pub fn format(&self) -> InputFormat {
+        self.format
+    }
+    pub fn prompt(path: PathBuf) -> Self {
+        Self {
+            path,
+            format: InputFormat::CodexPromptHistory,
+        }
+    }
+    pub fn declared_length(&self) -> crate::Result<u64> {
+        let m = fs::symlink_metadata(&self.path)?;
+        let limit = if self.format == InputFormat::CodexPromptHistory {
+            1024 * 1024
+        } else {
+            FILE_BYTES
+        };
+        if !m.is_file() || m.len() > limit {
+            return Err(refused(
+                "Codex source requires a regular file within its finite byte admission",
+            ));
+        }
+        Ok(m.len())
+    }
+    pub fn fingerprint(
+        &self,
+        cancel: &AtomicBool,
+        remaining: u64,
+    ) -> crate::Result<(crate::BlobHash, u64)> {
+        self.with_file(cancel, |file, limit| {
+            let length = file.metadata()?.len();
+            let limit = limit.min(remaining);
+            if length > limit {
+                return Err(refused("Codex scan exceeds remaining byte admission"));
+            }
+            let mut file = file.take(length + 1);
+            let mut digest = blake3::Hasher::new();
+            let mut total = 0u64;
+            let mut chunk = [0u8; 65536];
+            loop {
+                check(cancel)?;
+                let count = file.read(&mut chunk)?;
+                if count == 0 {
+                    break;
+                }
+                total += count as u64;
+                if total > limit {
+                    return Err(refused("Codex source changed beyond admission"));
+                }
+                digest.update(&chunk[..count]);
+            }
+            Ok((
+                crate::BlobHash::from_bytes(*digest.finalize().as_bytes()),
+                total,
+            ))
+        })
+    }
+    fn with_file<T>(
+        &self,
+        cancel: &AtomicBool,
+        work: impl FnOnce(&mut fs::File, u64) -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        use std::os::unix::fs::MetadataExt;
+        check(cancel)?;
+        let metadata = fs::symlink_metadata(&self.path)?;
+        let limit = if self.format == InputFormat::CodexPromptHistory {
+            1024 * 1024
+        } else {
+            FILE_BYTES
+        };
+        if !metadata.is_file() || metadata.len() > limit {
+            return Err(refused(
+                "Codex source requires a regular file within its finite byte admission",
+            ));
+        }
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(&self.path)?;
+        let before = file.metadata()?;
+        if !before.is_file()
+            || before.len() != metadata.len()
+            || before.ino() != metadata.ino()
+            || before.dev() != metadata.dev()
+        {
+            return Err(refused("Codex source changed before capture"));
+        }
+        let result = work(&mut file, limit)?;
+        let after = file.metadata()?;
+        if after.len() != before.len()
+            || after.mtime() != before.mtime()
+            || after.mtime_nsec() != before.mtime_nsec()
+            || after.ctime() != before.ctime()
+            || after.ctime_nsec() != before.ctime_nsec()
+        {
+            return Err(refused("Codex source changed during capture"));
+        }
+        check(cancel)?;
+        Ok(result)
+    }
+}
+impl crate::BlobCapture {
+    /// The same bounded stable-descriptor capture for startup and continuation.
+    pub fn capture_codex_candidate(
+        &self,
+        candidate: &Candidate,
+        expected_length: u64,
+        cancel: &AtomicBool,
+    ) -> crate::Result<crate::PreparedBlob> {
+        candidate.with_file(cancel, |file, limit| {
+            let length = file.metadata()?.len();
+            if length != expected_length {
+                return Err(refused("Codex source length changed after byte admission"));
+            }
+            let proof = self.capture(file.take(length + 1), cancel)?;
+            if proof.length() != length || proof.length() > limit {
+                return Err(refused("Codex source changed beyond admission"));
+            }
+            Ok(proof)
+        })
+    }
+}
+fn read_catalog(
+    home: &Path,
+    catalog_path: PathBuf,
+    paths: &mut BTreeSet<PathBuf>,
+    cancel: &AtomicBool,
+) -> crate::Result<Availability> {
+    let state = (|| -> crate::Result<Availability> {
+        let metadata = fs::symlink_metadata(&catalog_path)?;
+        if !metadata.is_file() || metadata.len() > FILE_BYTES {
+            return Err(refused(
+                "Codex catalog requires a regular file of at most 16 MiB",
+            ));
+        }
+        let connection = Connection::open_with_flags(
+            &catalog_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(|e| refused(e))?;
+        connection
+            .busy_timeout(std::time::Duration::from_millis(100))
+            .map_err(refused)?;
+        connection
+            .execute_batch("BEGIN DEFERRED")
+            .map_err(refused)?;
+        let mut statement=connection.prepare("SELECT CASE WHEN length(CAST(rollout_path AS BLOB))<=65536 THEN rollout_path END FROM threads ORDER BY id LIMIT 513").map_err(refused)?;
+        let mut rows = statement.query([]).map_err(refused)?;
+        let mut count = 0;
+        while let Some(row) = rows.next().map_err(refused)? {
+            check(cancel)?;
+            count += 1;
+            if count > ENTRIES {
+                return Err(refused("Codex thread catalog exceeds 512 rows"));
+            }
+            let path: String = row.get(0).map_err(refused)?;
+            if path.len() > 65536 {
+                return Err(refused("Codex catalog path exceeds admission"));
+            }
+            paths.insert(resolve(&home, Path::new(&path))?);
+        }
+        Ok(available(catalog_path.clone(), count, "thread_rows"))
+    })();
+    let state = match state {
+        Ok(v) => v,
+        Err(Error::Cancelled) => return Err(Error::Cancelled),
+        Err(e) => unavailable(catalog_path, e),
+    };
+    Ok(state)
+}
+pub fn discover(config: &Config, cancel: &AtomicBool) -> crate::Result<Discovery> {
+    check(cancel)?;
+    if !config.home.is_absolute() || config.machine.is_empty() || config.host.is_empty() {
+        return Err(refused(
+            "absolute Codex home and nonempty machine/host required",
+        ));
+    }
+    let home = fs::canonicalize(&config.home)?;
+    if !home.is_dir() {
+        return Err(refused("Codex home must be a directory"));
+    }
+    let rollout_path = resolve(&home, &config.rollouts)?;
+    let history_path = resolve(&home, &config.history)?;
+    let catalog_path = resolve(&home, &config.catalog)?;
+    let mut paths = BTreeSet::new();
+    let mut visited = 0;
+    let rollout_state = match enumerate(&rollout_path, 0, &mut visited, &mut paths, cancel) {
+        Ok(()) => available(rollout_path, paths.len(), "rollout_paths"),
+        Err(Error::Cancelled) => return Err(Error::Cancelled),
+        Err(e) => unavailable(rollout_path, e),
+    };
+    let catalog_state = read_catalog(&home, catalog_path, &mut paths, cancel)?;
+    let deferred_rollout_paths = paths.len().saturating_sub(ENTRIES);
+    let candidates = paths
+        .into_iter()
+        .take(ENTRIES)
+        .map(|path| Candidate {
+            path,
+            format: InputFormat::CodexRollout,
+        })
+        .collect();
+    Ok(Discovery {
+        catalog: catalog_state,
+        rollouts: rollout_state,
+        history_path,
+        candidates,
+        deferred_rollout_paths,
+    })
+}
+/// A single configured rollout-tree traversal retains at most nine directory
+/// iterators. A bounded turn advances them; exhaustion never restarts a prefix.
+#[derive(Default)]
+pub struct RolloutCursor {
+    root: Option<PathBuf>,
+    stack: Vec<(usize, fs::ReadDir)>,
+    identity: Option<(u64, u64)>,
+    cycle: u64,
+    cycle_paths: usize,
+    cycle_failed: bool,
+}
+pub struct DiscoveryTurn {
+    pub discovery: Discovery,
+    pub cycle: u64,
+    pub cycle_complete: bool,
+    pub visited_entries: usize,
+}
+impl RolloutCursor {
+    pub fn next_turn(
         &mut self,
         config: &Config,
-        request: &str,
-        seen_at: i64,
+        entry_budget: usize,
         cancel: &AtomicBool,
-    ) -> crate::Result<Acquisition> {
-        self.check_import_acquisition()?;
+    ) -> crate::Result<DiscoveryTurn> {
         check(cancel)?;
+        if entry_budget == 0 || entry_budget > ENTRIES {
+            return Err(refused("Codex enumeration turn requires 1..512 entries"));
+        }
         if !config.home.is_absolute() || config.machine.is_empty() || config.host.is_empty() {
             return Err(refused(
                 "absolute Codex home and nonempty machine/host required",
@@ -201,62 +480,185 @@ impl Writer {
         let rollout_path = resolve(&home, &config.rollouts)?;
         let history_path = resolve(&home, &config.history)?;
         let catalog_path = resolve(&home, &config.catalog)?;
+        use std::os::unix::fs::MetadataExt;
+        let identity = fs::symlink_metadata(&rollout_path)
+            .ok()
+            .filter(|m| m.is_dir())
+            .map(|m| (m.dev(), m.ino()));
+        if self.root.as_ref() != Some(&rollout_path) || self.identity != identity {
+            self.stack.clear();
+            self.root = Some(rollout_path.clone());
+            self.identity = identity;
+        }
+        if self.stack.is_empty() {
+            self.cycle = self.cycle.saturating_add(1);
+            self.cycle_paths = 0;
+            self.cycle_failed = false;
+            match fs::read_dir(&rollout_path) {
+                Ok(entries) => self.stack.push((0, entries)),
+                Err(e) => {
+                    let mut paths = BTreeSet::new();
+                    let catalog = read_catalog(&home, catalog_path, &mut paths, cancel)?;
+                    let candidates = paths
+                        .into_iter()
+                        .map(|path| Candidate {
+                            path,
+                            format: InputFormat::CodexRollout,
+                        })
+                        .collect();
+                    return Ok(DiscoveryTurn {
+                        discovery: Discovery {
+                            catalog,
+                            rollouts: unavailable(rollout_path, e),
+                            history_path,
+                            candidates,
+                            deferred_rollout_paths: 0,
+                        },
+                        cycle: self.cycle,
+                        cycle_complete: false,
+                        visited_entries: 0,
+                    });
+                }
+            }
+        }
         let mut paths = BTreeSet::new();
         let mut visited = 0;
-        let rollout_state = match enumerate(&rollout_path, 0, &mut visited, &mut paths, cancel) {
-            Ok(()) => available(rollout_path, paths.len(), "rollout_paths"),
-            Err(Error::Cancelled) => return Err(Error::Cancelled),
-            Err(e) => unavailable(rollout_path, e),
-        };
-        // A pinned read transaction owns this finite catalog snapshot. It is
-        // separate evidence from independently enumerated rollout snapshots.
-        let catalog_state = (|| -> crate::Result<Availability> {
-            let metadata = fs::symlink_metadata(&catalog_path)?;
-            if !metadata.is_file() || metadata.len() > FILE_BYTES {
-                return Err(refused(
-                    "Codex catalog requires a regular file of at most 16 MiB",
-                ));
-            }
-            let connection = Connection::open_with_flags(
-                &catalog_path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY
-                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                    | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-            )
-            .map_err(|e| refused(e))?;
-            connection
-                .busy_timeout(std::time::Duration::from_millis(100))
-                .map_err(refused)?;
-            connection
-                .execute_batch("BEGIN DEFERRED")
-                .map_err(refused)?;
-            let mut statement=connection.prepare("SELECT CASE WHEN length(CAST(rollout_path AS BLOB))<=65536 THEN rollout_path END FROM threads ORDER BY id LIMIT 513").map_err(refused)?;
-            let mut rows = statement.query([]).map_err(refused)?;
-            let mut count = 0;
-            while let Some(row) = rows.next().map_err(refused)? {
-                check(cancel)?;
-                count += 1;
-                if count > ENTRIES {
-                    return Err(refused("Codex thread catalog exceeds 512 rows"));
+        let mut failure = None;
+        while visited < entry_budget && !self.stack.is_empty() {
+            check(cancel)?;
+            let (depth, next) = {
+                let (depth, entries) = self.stack.last_mut().expect("cursor directory");
+                (*depth, entries.next())
+            };
+            let entry = match next {
+                None => {
+                    self.stack.pop();
+                    continue;
                 }
-                let path: String = row.get(0).map_err(refused)?;
-                if path.len() > 65536 {
-                    return Err(refused("Codex catalog path exceeds admission"));
+                Some(Err(e)) => {
+                    self.stack.pop();
+                    self.cycle_failed = true;
+                    failure = Some(e.to_string());
+                    break;
                 }
-                paths.insert(resolve(&home, Path::new(&path))?);
+                Some(Ok(entry)) => entry,
+            };
+            visited += 1;
+            let kind = match entry.file_type() {
+                Ok(kind) => kind,
+                Err(e) => {
+                    self.cycle_failed = true;
+                    failure = Some(e.to_string());
+                    break;
+                }
+            };
+            if kind.is_symlink() {
+                self.cycle_failed = true;
+                failure = Some("Codex rollout enumeration encountered a symlink".into());
+                break;
             }
-            Ok(available(catalog_path.clone(), count, "thread_rows"))
-        })();
-        let catalog_state = match catalog_state {
-            Ok(v) => v,
-            Err(Error::Cancelled) => return Err(Error::Cancelled),
-            Err(e) => unavailable(catalog_path, e),
-        };
-        if paths.len() > ENTRIES {
-            return Err(refused(
-                "Codex combined rollout acquisition exceeds 512 files",
-            ));
+            if kind.is_dir() {
+                if depth >= 8 {
+                    self.cycle_failed = true;
+                    failure = Some("Codex rollout directory depth exceeds 8".into());
+                    break;
+                }
+                match fs::read_dir(entry.path()) {
+                    Ok(entries) => self.stack.push((depth + 1, entries)),
+                    Err(e) => {
+                        self.cycle_failed = true;
+                        failure = Some(e.to_string());
+                        break;
+                    }
+                }
+            } else if kind.is_file()
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|s| s.starts_with("rollout-") && s.ends_with(".jsonl"))
+            {
+                self.cycle_paths = self.cycle_paths.saturating_add(1);
+                paths.insert(entry.path());
+            }
         }
+        let complete = self.stack.is_empty();
+        let rollouts = if let Some(error) = failure {
+            unavailable(rollout_path, error)
+        } else if self.cycle_failed {
+            unavailable(
+                rollout_path,
+                "current enumeration cycle encountered an unavailable/refused entry",
+            )
+        } else if complete {
+            available(rollout_path, self.cycle_paths, "rollout_paths")
+        } else {
+            let mut state = available(rollout_path, 0, "rollout_paths");
+            state.state = "partial";
+            state.entries = None;
+            state.reason =
+                Some("bounded enumeration cycle unfinished; later turns continue".into());
+            state
+        };
+        let mut catalog_paths = BTreeSet::new();
+        let catalog = read_catalog(&home, catalog_path, &mut catalog_paths, cancel)?;
+        // Both independently admitted prefixes remain owed. The candidate batch
+        // is bounded by their union (1024 paths), then drains in 512-request turns.
+        paths.extend(catalog_paths);
+        let candidates = paths
+            .into_iter()
+            .map(|path| Candidate {
+                path,
+                format: InputFormat::CodexRollout,
+            })
+            .collect();
+        Ok(DiscoveryTurn {
+            discovery: Discovery {
+                catalog,
+                rollouts,
+                history_path,
+                candidates,
+                deferred_rollout_paths: 0,
+            },
+            cycle: self.cycle,
+            cycle_complete: complete,
+            visited_entries: visited,
+        })
+    }
+}
+impl Writer {
+    pub fn known_configured_snapshot(
+        &mut self,
+        candidate: &Candidate,
+        hash: crate::BlobHash,
+        machine: &str,
+        host: &str,
+        path: &str,
+    ) -> crate::Result<Option<crate::RetainedInput>> {
+        use rusqlite::OptionalExtension;
+        self.check_import_acquisition()?;
+        let file = self.root.join("archive.db");
+        let id: Option<String> = crate::db(&file, || {
+            self.archive.query_row("SELECT i.id FROM input i JOIN observation o ON o.input=i.id JOIN machine m ON m.id=o.machine WHERE i.format=?1 AND i.original_hash=?2 AND i.context_json='[]' AND o.class='imported' AND o.machine=?3 AND o.path=?4 AND m.host=?5 AND i.id=?6 LIMIT 1",rusqlite::params![candidate.format.name(),hash.bytes().as_slice(),machine,path,host,polylogue_model::InputId::imported(&hash,candidate.format.name(),&[]).as_str()],|row|row.get(0)).optional()
+        })?;
+        match id {
+            Some(id) => Ok(self.immutable_import(&id)?.map(|i| i.input)),
+            None => Ok(None),
+        }
+    }
+    pub fn acquire_codex_home(
+        &mut self,
+        config: &Config,
+        request: &str,
+        seen_at: i64,
+        cancel: &AtomicBool,
+    ) -> crate::Result<Acquisition> {
+        self.check_import_acquisition()?;
+        let plan = discover(config, cancel)?;
+        let deferred_rollout_paths = plan.deferred_rollout_paths;
+        let catalog_state = plan.catalog;
+        let rollout_state = plan.rollouts;
+        let history_path = plan.history_path;
+        let paths = plan.candidates.into_iter().map(|c| c.path);
         let mut retained = Vec::new();
         let mut failures = Vec::new();
         let mut total = 0;
@@ -271,7 +673,9 @@ impl Writer {
                 &mut total,
                 cancel,
             ) {
-                Ok(source) => retained.push(source.input.id),
+                Ok(source) => {
+                    retained.push(source.input.id);
+                }
                 Err(Error::Cancelled) => return Err(Error::Cancelled),
                 Err(e) => failures.push(unavailable(path, e)),
             }
@@ -313,6 +717,7 @@ impl Writer {
             retained_omitted: retained_count - retained.len(),
             retained_count,
             retained_count_unit: "successful_source_attempts",
+            deferred_rollout_paths,
             admitted,
             retained,
             prompt_input,
@@ -342,79 +747,23 @@ impl Writer {
         total: &mut u64,
         cancel: &AtomicBool,
     ) -> crate::Result<RetainedSource> {
-        let metadata = fs::symlink_metadata(path)?;
-        if !metadata.is_file() || metadata.len() > FILE_BYTES {
-            return Err(refused(
-                "Codex source requires a regular file of at most 16 MiB",
-            ));
-        }
-        *total = total.checked_add(metadata.len()).ok_or(Error::Range)?;
+        let candidate = Candidate {
+            path: path.to_path_buf(),
+            format,
+        };
+        let size = fs::symlink_metadata(path)?.len();
+        *total = total.checked_add(size).ok_or(Error::Range)?;
         if *total > 32 * 1024 * 1024 {
             return Err(refused("Codex startup capture exceeds 32 MiB"));
         }
-        if format == InputFormat::CodexPromptHistory && metadata.len() > 1024 * 1024 {
-            return Err(refused("Codex prompt history exceeds 1 MiB"));
-        }
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-            .open(path)?;
-        let before = file.metadata()?;
-        if !before.is_file()
-            || before.len() != metadata.len()
-            || before.ino() != metadata.ino()
-            || before.dev() != metadata.dev()
-        {
-            return Err(refused("Codex source changed before capture"));
-        }
         let proof = self
             .blob_capture()?
-            .capture((&mut file).take(before.len() + 1), cancel)?;
-        let after = file.metadata()?;
-        if proof.length() != before.len()
-            || after.len() != before.len()
-            || after.mtime() != before.mtime()
-            || after.mtime_nsec() != before.mtime_nsec()
-            || after.ctime() != before.ctime()
-            || after.ctime_nsec() != before.ctime_nsec()
-        {
-            return Err(refused("Codex source changed during capture"));
-        }
+            .capture_codex_candidate(&candidate, size, cancel)?;
         let hash = self.retain_captured_blob(proof)?;
         let path_text = path
             .to_str()
             .ok_or_else(|| refused("Codex path must be UTF-8"))?;
-        // Keep the existing UUIDv7 observation/request contract. The startup
-        // request supplies randomness; domain-framed file metadata distinguishes
-        // the owned actions within that one acquisition time.
-        let mut digest = blake3::Hasher::new();
-        for value in [
-            "polylogue.configured-codex-observation.v1",
-            request,
-            format.name(),
-            path_text,
-        ] {
-            digest.update(&(value.len() as u64).to_be_bytes());
-            digest.update(value.as_bytes());
-        }
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
-        let millis = u64::try_from(seen_at).map_err(|_| Error::Range)? / 1000;
-        if millis > 0xffffffffffff {
-            return Err(Error::Range);
-        }
-        bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
-        bytes[6] = (bytes[6] & 0x0f) | 0x70;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let id = format!(
-            "{}-{}-{}-{}-{}",
-            &hex[..8],
-            &hex[8..12],
-            &hex[12..16],
-            &hex[16..20],
-            &hex[20..]
-        );
+        let id = candidate.observation_id(request, seen_at)?;
         let input = self.retain_immutable_input(
             hash,
             format,
@@ -470,63 +819,4 @@ impl ReadHandle {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn config(home: &Path) -> Config {
-        Config {
-            home: home.into(),
-            machine: "synthetic".into(),
-            host: "synthetic".into(),
-            rollouts: rollouts(),
-            history: history(),
-            catalog: catalog(),
-        }
-    }
-    #[test]
-    fn unavailable_catalog_does_not_gate_rollout_and_cancel_does_not_mutate() {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path().join("home");
-        fs::create_dir(&home).unwrap();
-        fs::create_dir(home.join("sessions")).unwrap();
-        fs::write(home.join("sessions/rollout-one.jsonl"), b"{}\n").unwrap();
-        fs::write(home.join("state_5.sqlite"), b"broken catalog").unwrap();
-        fs::write(home.join("history.jsonl"), b"").unwrap();
-        let mut writer = Writer::open(&root.path().join("archive")).unwrap();
-        let before = writer.status().unwrap().write_counter;
-        assert!(matches!(
-            writer.acquire_codex_home(&config(&home), "cancelled", 1, &AtomicBool::new(true)),
-            Err(Error::Cancelled)
-        ));
-        assert_eq!(writer.status().unwrap().write_counter, before);
-        let report = writer
-            .acquire_codex_home(&config(&home), "first", 1, &AtomicBool::new(false))
-            .unwrap();
-        assert_eq!(report.catalog.state, "unavailable");
-        assert_eq!(report.catalog.entries, None);
-        assert_eq!(report.rollouts.entries, Some(1));
-        assert_eq!(report.retained.len(), 2);
-        assert_eq!(report.history.state, "accessible_empty");
-        assert_eq!(
-            writer
-                .read_handle()
-                .unwrap()
-                .codex_prompt_sources()
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-    #[test]
-    fn relative_resolution_refuses_parent_escape_and_symlinks() {
-        let root = tempfile::tempdir().unwrap();
-        let home = root.path();
-        fs::create_dir(home.join("sessions")).unwrap();
-        assert_eq!(
-            resolve(home, Path::new("sessions/rollout-one.jsonl")).unwrap(),
-            home.join("sessions/rollout-one.jsonl")
-        );
-        assert!(resolve(home, Path::new("../escape")).is_err());
-        std::os::unix::fs::symlink(home.join("sessions"), home.join("linked")).unwrap();
-        assert!(resolve(home, Path::new("linked/rollout-one.jsonl")).is_err());
-    }
-}
+mod tests;

@@ -49,7 +49,7 @@ coverage limits.
 
 ## Configured Codex home subset
 
-Explicit `codex_home` startup configuration discovers a finite set of rollout snapshots independently of thread catalog membership. Retained prompt-history references stay separate from conversations, with pending coverage and source provenance in status and query replies. The [configured discovery guide](docs/rewrite/codex-configured-discovery.md) describes relative paths, admission, missing versus empty evidence, and retained reads after source removal. General source reconciliation remains unfinished.
+Explicit `codex_home` configuration discovers rollout snapshots independently of thread catalog membership, then advances the same home in bounded turns with a one-second pause through the existing owner queues. Each turn admits at most 512 candidate evaluations and 32 MiB of charged source bytes, then releases capacity for the next turn. A bounded directory cursor progresses beyond earlier prefixes; unchanged content adds no observations. `--until-idle` handles the startup snapshot only. Retained prompt-history references stay separate from conversations, with pending coverage and source provenance in status and query replies. The [configured discovery guide](docs/rewrite/codex-configured-discovery.md) describes relative paths, admission, missing versus empty evidence, and retained reads after source removal. General source reconciliation remains unfinished.
 
 ## Observed Claude source subset
 

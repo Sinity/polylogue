@@ -203,10 +203,10 @@ fn run_codex(
     out: &mut impl Write,
 ) -> Result<i32, Failure> {
     let (mut running, acquisition) =
-        polylogue::Running::start_codex(archive, runtime, config, id, seen_at, stop)
+        polylogue::Running::start_codex(archive, runtime, config, id, seen_at, stop, !until_idle)
             .map_err(io_error)?;
     eprintln!(
-        "listening: {} (finite configured Codex snapshots; no watcher)",
+        "listening: {} (bounded configured Codex polling; startup-only with --until-idle)",
         running.socket().display()
     );
     if !until_idle {

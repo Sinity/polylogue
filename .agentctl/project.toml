@@ -153,3 +153,13 @@ result = "exit"
 timeout_seconds = 600
 scratch = "nvme"
 cache = "none"
+
+[operations.configured_codex_continuation_demo]
+description = "Exercise bounded configured Codex continuation through actual CLI and official SDK MCP clients"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-codex-continuation.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"
