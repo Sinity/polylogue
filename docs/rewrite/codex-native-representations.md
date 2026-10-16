@@ -76,7 +76,9 @@ exact argv and is not treated as byte-equal core command evidence.
 
 The population reports retained representations, decoded selected items, source
 row dispositions and correspondence independently. The full retained-item
-population remains explicitly unknown (`retained_items: null`). A source with unknown rows
+population remains explicitly unknown (`retained_items: null`). When
+correspondence is unresolved, aggregate `tool_calls` and `failed` are also null;
+`known_agent_items` describes the proved subset and supplies no total-count bound. A source with unknown rows
 keeps coverage degraded. A contested Message merge stays unavailable while independently proved
 Session-owned operations can still publish; `import --wait` reports that partial
 usability without certifying the contested rows. The query always reports incomplete general Session

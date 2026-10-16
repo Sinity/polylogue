@@ -72,6 +72,8 @@ def verify_case(binary,output,order,wrappers=False):
         # Both wrappers overlap the same child. They do not add counted commands.
         commands=[row for row in calls['rows']if row['kind']=='CommandExecution']
         assert len(commands)==1,calls
+        assert calls['population']['tool_calls'] == 1 and calls['population']['correspondence_complete'], calls
+        assert calls['population']['retained_items'] is None, calls
         operation=commands[0]
         result=run.cli([operation['ref'],'read','--budget','20000'])
         facts=result['shown'][0]['operation']
@@ -145,6 +147,7 @@ def qualification_controls(binary, output):
         assert len(calls['rows']) == 2, calls
         assert len({row['id'] for row in calls['rows']}) == 2, calls
         assert not calls['population']['correspondence_complete'], calls
+        assert calls['population']['tool_calls'] is None and calls['population']['failed'] is None, calls
         assert query(run, text='unique-output')[1]['count'] == 1
         omitted = next(row for row in calls['rows'] if row['turn'] == 'T')
         facts = run.cli([omitted['ref'], 'read', '--budget', '20000'])['shown'][0]['operation']

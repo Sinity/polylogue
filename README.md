@@ -103,8 +103,8 @@ resource qualification remain unfinished. Its current source scheduling follows
 one imported input to provider EOF; cross-input fair parse rounds and complete Session
 finalization are still owed. Known selected prose is searchable with explicit population qualifications; provider EOF does not remove them.
 
-The canonical worker prepares Codex Text/Thinking and supported
-Claude Messages through the same durable private roots and field-origin checks,
+The canonical worker prepares Codex Text/Thinking, supported direct tool
+fields and supported Claude Messages through the same durable private roots and field-origin checks,
 then selects a whole certified source body. Claude signatures and derived tool
 reasons are retained without increasing source-presence rank. Declared legacy
 call identity uses the proved source Session and supplied call ID; global
