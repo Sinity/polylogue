@@ -82,3 +82,14 @@ result = "exit"
 timeout_seconds = 300
 scratch = "nvme"
 cache = "none"
+
+
+[operations.mcp_read_demo]
+description = "Exercise the actual SDK stdio reader with independent native fixtures and downstream cancellation controls"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-mcp-read.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 300
+scratch = "nvme"
+cache = "none"

@@ -26,7 +26,7 @@ fn unsupported_features_and_bad_arguments_never_return_empty_success() {
     let archive = temp.path().join("not-created");
     for args in [
         vec!["search", "anything"],
-        vec!["mcp"],
+        vec!["mcp", "--unknown"],
         vec!["daemon", "--until-idle"],
         vec!["--unknown"],
         vec!["config", "set", "secret", "value"],
@@ -130,4 +130,59 @@ fn actual_daemon_and_client_restart_in_owned_state() {
     first.0.wait().unwrap();
     let mut second = start();
     wait_status(&mut second);
+}
+
+#[test]
+fn mcp_discovers_only_supported_tools_without_a_daemon_or_archive_creation() {
+    use serde_json::{Value, json};
+    use std::{io::Write, process::Stdio};
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("not-created");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_polylogue"))
+        .args(["--archive", archive.to_str().unwrap(), "mcp"])
+        .env_remove("XDG_RUNTIME_DIR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let meta = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}});
+    for (id, method) in [(1, "server/discover"), (2, "tools/list")] {
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc":"2.0","id":id,"method":method,"params":{"_meta":meta}})
+        )
+        .unwrap();
+    }
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let responses: Vec<Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let discovery = responses.iter().find(|r| r["id"] == 1).unwrap();
+    assert!(
+        discovery["result"]["supportedVersions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("2026-07-28"))
+    );
+    let listing = responses.iter().find(|r| r["id"] == 2).unwrap();
+    assert_eq!(listing["result"]["resultType"], "complete");
+    let tools = listing["result"]["tools"].as_array().unwrap();
+    assert_eq!(
+        tools
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["status", "search", "read"]
+    );
+    for tool in tools {
+        assert_eq!(tool["outputSchema"]["required"], json!(["outcome"]));
+    }
+    assert!(!archive.exists());
 }
