@@ -170,12 +170,9 @@ the public ordinal; the mapper proves membership and the selected block root
 owns correspondence. Thinking text and encryption may remain unknown. These
 primitives do not certify source completeness or select a canonical body.
 
-`select_uncontested_source_message` activates one certified source body only
-when an indexed probe finds no competing eligible input candidate. Selection,
-index counter and session change marker commit together. A competing candidate
-keeps the prior selected body intact and leaves merge work pending. This first
-Codex path does not implement the full chain/input fold, fill, conflicts,
-operation summaries or search publication.
+`begin_compatible_source_selection` starts a conservative complete-body equality proof. Worker turns visit one immutable field/block/candidate at a time using integrity-ready value summaries. The certificate also binds source evidence, supplied rank, parser/context and explicitly recorded source order. Unknown, unequal, conflict or unsupported operation shapes stay contested; this does not implement nested version ranking or missing-field fill. Each input keeps its own source projection, immutable origin descriptors and exact spans. Equal carriers use the validated content-derived imported InputId as a provenance tie, so both import orders retain the same preferred field origin and all input citations. The typed writer fences the eligible-membership revision (including withdraw/re-add), removal epoch, source predecessor and index generation before selection. A fixed per-body digest owns no payload lease and disappears with that body's bounded retirement.
+
+Startup supports only the known disposable index18 to index19 transition. Under the existing writer lock it readback-verifies and syncs the exact old index/main/WAL/SHM set under `migrations/`, publishes a synced replacement marker, and uses ordinary fresh-index initialization plus retained-input recovery. A validated marker resumes interrupted removal or discards a partial fresh index before any actor work. The marker is removed only after the new schema commits. Catch-up remains unavailable or degraded until its real obligations settle. Archive/blob/recovery authority is preserved; unknown/newer versions, unsafe siblings and busy ownership refuse. This offline transition does not qualify side-by-side serving/swap.
 
 `message_reference` resolves an opaque Message ID through its stored Session
 relation and distinguishes absent from not-yet-selected bodies. `block_at`

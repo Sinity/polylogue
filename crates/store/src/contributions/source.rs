@@ -11,14 +11,14 @@ const PREFIX: &[u8] = b"message-source-v1\0";
 const FIXED: usize = PREFIX.len() + 8 * 4;
 #[derive(Clone, Debug)]
 pub struct SourceProjection {
-    body: BodyId,
-    logical: [u8; 32],
-    candidate: i64,
-    predecessor: Token,
+    pub(super) body: BodyId,
+    pub(super) logical: [u8; 32],
+    pub(super) candidate: i64,
+    pub(super) predecessor: Token,
     message: MessageId,
     evidence_revision: u64,
     hash: BlobHash,
-    reference: Vec<u8>,
+    pub(super) reference: Vec<u8>,
 }
 impl SourceProjection {
     pub fn body(&self) -> &BodyId {
@@ -105,7 +105,7 @@ fn decode(bytes: &[u8]) -> Result<(i64, i64, i64, &[u8])> {
     }
     Ok((body, candidate, step, &bytes[FIXED..]))
 }
-fn read_current(
+pub(super) fn read_current(
     connection: &rusqlite::Connection,
     path: &std::path::Path,
     token: &Token,
@@ -260,7 +260,7 @@ impl crate::parser_state::Snapshot {
             return Ok(None);
         };
         let selected: bool = db(&self.path, || {
-            self.db.query_row("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND session_pk=?2 AND selected_body_pk=?3 AND hidden=0)",params![source.body.message,source.body.session,source.body.pk],|r|r.get(0))
+            self.db.query_row("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND session_pk=?2 AND hidden=0 AND (selected_body_pk=?3 OR EXISTS(SELECT 1 FROM message_body_compatibility own JOIN message_body_compatibility chosen ON chosen.digest=own.digest JOIN message_body b ON b.pk=chosen.body_pk JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE own.body_pk=?3 AND chosen.body_pk=message.selected_body_pk AND b.ready=1 AND c.eligible=1 AND b.removal_epoch=message.removal_epoch)))",params![source.body.message,source.body.session,source.body.pk],|r|r.get(0))
         })?;
         if !selected {
             return Err(Error::MessagePredecessorChanged);

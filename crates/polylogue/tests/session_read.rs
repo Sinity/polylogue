@@ -1127,3 +1127,94 @@ fn metadata_only_source_is_not_a_complete_empty_selection() {
             .contains("no published catalog owner")
     }));
 }
+
+#[test]
+fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citation_after_restart() {
+    let mut world = World::new();
+    let path = world.input("compatible-snapshot.jsonl", MORROW);
+    let base = wait_import(&world, &path, "01900000-0000-7000-8000-000000000700", "30");
+    assert_eq!(base.status.code(), Some(0), "{base:?}; {}", world.log());
+    let base: Value = serde_json::from_slice(&base.stdout).unwrap();
+    let base_input = base["retained"]["id"].as_str().unwrap();
+    let before = world.read(&reference(), base_input, 12);
+    let last = fixture_records().last().unwrap()["uuid"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let records = [
+        json!({"type":"user","uuid":"compatible-append-user","sessionId":SID,"timestamp":"2026-10-16T00:00:00.000Z","parentUuid":last,"isSidechain":false,"promptSource":"typed","message":{"role":"user","content":"Neutral appended request"}}),
+        json!({"type":"assistant","uuid":"compatible-append-model","sessionId":SID,"timestamp":"2026-10-16T00:01:00.000Z","parentUuid":"compatible-append-user","isSidechain":false,"requestId":"compatible-request","message":{"id":"compatible-response","role":"assistant","model":"claude-neutral-control","content":[{"type":"text","text":"Neutral appended response"}],"stop_reason":"end_turn"}}),
+    ];
+    let mut stream = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    for record in records {
+        writeln!(stream, "{record}").unwrap()
+    }
+    stream.sync_all().unwrap();
+    drop(stream);
+    let appended = wait_import(&world, &path, "01900000-0000-7000-8000-000000000701", "30");
+    assert_eq!(
+        appended.status.code(),
+        Some(0),
+        "{appended:?}; {}",
+        world.log()
+    );
+    let appended: Value = serde_json::from_slice(&appended.stdout).unwrap();
+    assert_eq!(appended["source_rows"]["state"], "settled");
+    let input = appended["retained"]["id"].as_str().unwrap();
+    let after = world.read(&reference(), input, 14);
+    let messages = after["messages"].as_array().unwrap();
+    for (prior, current) in before["messages"].as_array().unwrap().iter().zip(messages) {
+        for field in ["id", "role", "at", "blocks"] {
+            assert_eq!(current[field], prior[field], "{field}")
+        }
+        let sources = current["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 2, "{sources:?}");
+        let mut inputs = sources
+            .iter()
+            .map(|s| s["input"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        inputs.sort();
+        let mut expected = vec![base_input, input];
+        expected.sort();
+        assert_eq!(inputs, expected);
+    }
+    assert!(
+        messages[12]["id"]
+            .as_str()
+            .unwrap()
+            .ends_with(":compatible-append-user")
+    );
+    assert!(
+        messages[13]["id"]
+            .as_str()
+            .unwrap()
+            .ends_with(":compatible-append-model")
+    );
+    fs::remove_file(&path).unwrap();
+    // This equality slice qualifies stopped restart. SIGKILL with a reused
+    // current-generation WAL retains the existing explicit recovery boundary.
+    let mut stopped = world.child.take().unwrap();
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &stopped.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(status) = stopped.0.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    }
+    drop(stopped);
+    world.start();
+    let replay = wait_import(&world, &path, "01900000-0000-7000-8000-000000000701", "30");
+    assert_eq!(replay.status.code(), Some(0), "{replay:?}; {}", world.log());
+    let replay: Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(replay["retained"], appended["retained"]);
+    assert_eq!(world.read(&reference(), input, 14), after);
+}

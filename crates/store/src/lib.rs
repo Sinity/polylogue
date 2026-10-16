@@ -36,11 +36,11 @@ mod wal;
 pub const ARCHIVE_VERSION: u32 = 2;
 pub const ARCHIVE_SPEC_COMMIT: &str = "8c4e2210692282420d7a5ca91dc005b409a668f1";
 pub const EMBEDDINGS_VERSION: u32 = 0;
-pub const INDEX_VERSION: u32 = 18;
+pub const INDEX_VERSION: u32 = 19;
 /// Exact owning forward-schema revision, independently qualified from inbox index8.
 pub const INDEX_SQL_BLAKE3: &str =
-    "b6706f639512e78b17ab0b40f460e6d7885da630674ebdd40ebc22cd66997cc8";
-pub const INDEX_SPEC_COMMIT: &str = "31493073f9008dfb1f385ed7d1e7324409429db6";
+    "194b3aa184952a2e67e911d6260b53df50669ebe922a5d2d7404332e46e42b0a";
+pub const INDEX_SPEC_COMMIT: &str = "6ada496796a044e2e65ed1a5de3eda09280bce4b";
 const ARCHIVE_SQL: &str = include_str!("../schema/archive.sql");
 const INDEX_SQL: &str = include_str!("../schema/index.sql");
 const EMBEDDINGS_SQL: &str = include_str!("../schema/embeddings.sql");
@@ -591,6 +591,7 @@ impl Writer {
         }
         let mut lock = startup_lock(&root, empty, true)?;
         wal::validate(&root, cancelled)?;
+        let index_rebuild = recovery::begin_index_rebuild(&root, cancelled)?;
         recovery::migrate(&root, cancelled)?;
         preflight(&root)?;
         wal::check_cancel(cancelled)?;
@@ -607,6 +608,9 @@ impl Writer {
             EMBEDDINGS_VERSION,
             true,
         )?;
+        if let Some(proof) = index_rebuild {
+            recovery::finish_index_rebuild(&root, proof, cancelled)?;
+        }
         hashed_blobs::Store::open(&root, vec![], 0o600)?;
         private_dir(&root.join("blobs"))?;
         private_dir(&root.join("blobs/tmp"))?;

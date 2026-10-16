@@ -6,6 +6,8 @@ mod blocks;
 pub use blocks::{
     BlockKind, BlockPresence, MessageLayout, ProjectionState, ProjectionStep, ToolAction,
 };
+mod compatibility;
+pub use compatibility::{CompatibilityCertificate, CompatibilityTurn, CompatibleSelection};
 mod completion;
 pub use completion::PreparedProjection;
 mod directory;
