@@ -294,6 +294,9 @@ pub(crate) enum CanonicalPosition {
     Audit(Box<crate::source_rows::Audit>),
     Codex(usize),
     ToolsAfter(Option<String>),
+    // Publish independently proved Session operations before preserving a
+    // contested Message diagnostic; this never certifies the source complete.
+    ToolsBeforeFailure(Option<String>, String),
     ClaudeAfter(Option<crate::state::claude::PendingCursor>),
     ClaudeMessage(
         crate::state::claude::PendingCursor,
@@ -312,9 +315,10 @@ impl CanonicalPosition {
         match self {
             Self::Codex(n) => Ok(Self::Codex(n.checked_add(1).ok_or(StoreError::Range)?)),
             Self::ClaudeMessage(cursor, _) => Ok(Self::ClaudeAfter(Some(cursor))),
-            Self::ToolsAfter(_) | Self::Audit(_) | Self::ClaudeAfter(_) => {
-                Err(Error::InvalidRequest("no current Claude Message"))
-            }
+            Self::ToolsAfter(_)
+            | Self::ToolsBeforeFailure(_, _)
+            | Self::Audit(_)
+            | Self::ClaudeAfter(_) => Err(Error::InvalidRequest("no current Claude Message")),
         }
     }
     pub(crate) fn logical_key(&self) -> Result<Option<[u8; 32]>> {
@@ -327,7 +331,10 @@ impl CanonicalPosition {
                 h.update(p.message.as_str().as_bytes());
                 Ok(Some(*h.finalize().as_bytes()))
             }
-            Self::ToolsAfter(_) | Self::Audit(_) | Self::ClaudeAfter(_) => Ok(None),
+            Self::ToolsAfter(_)
+            | Self::ToolsBeforeFailure(_, _)
+            | Self::Audit(_)
+            | Self::ClaudeAfter(_) => Ok(None),
         }
     }
 }
@@ -689,7 +696,12 @@ impl Actor {
                                 self.active = Some(Active::Canonical(
                                     job.input,
                                     job.head,
-                                    CanonicalPosition::ToolsAfter(Some(id)),
+                                    match job.position {
+                                        CanonicalPosition::ToolsBeforeFailure(_, reason) => {
+                                            CanonicalPosition::ToolsBeforeFailure(Some(id), reason)
+                                        }
+                                        _ => CanonicalPosition::ToolsAfter(Some(id)),
+                                    },
                                     None,
                                 ))
                             }
@@ -744,20 +756,59 @@ impl Actor {
                     Ok(CanonicalTurn::Selected(turn)) => {
                         use polylogue_store::contributions::CompatibilityTurn;
                         match turn {
-                            CompatibilityTurn::Progress(selection) => self.active=Some(Active::Selecting(job.input,job.head,job.position,selection)),
-                            CompatibilityTurn::Certified(selection,certificate) => {
+                            CompatibilityTurn::Progress(selection) => {
+                                self.active = Some(Active::Selecting(
+                                    job.input,
+                                    job.head,
+                                    job.position,
+                                    selection,
+                                ))
+                            }
+                            CompatibilityTurn::Certified(selection, certificate) => {
                                 match self.writer.certify_body_compatibility(certificate) {
-                                    Ok(())=>self.active=Some(Active::Selecting(job.input,job.head,job.position,selection)),
-                                    Err(e)=>self.fail(&job.head,format!("canonical compatibility: {e}"))?,
+                                    Ok(()) => {
+                                        self.active = Some(Active::Selecting(
+                                            job.input,
+                                            job.head,
+                                            job.position,
+                                            selection,
+                                        ))
+                                    }
+                                    Err(e) => self
+                                        .fail(&job.head, format!("canonical compatibility: {e}"))?,
                                 }
-                            },
+                            }
                             CompatibilityTurn::Ready(selection) => {
-                                match self.writer.install_compatible_source_selection(selection,65536) {
-                                    Ok(_)=>self.active=Some(Active::Canonical(job.input,job.head,job.position.next()?,None)),
-                                    Err(e)=>self.fail(&job.head,format!("canonical selection: {e}"))?,
+                                match self
+                                    .writer
+                                    .install_compatible_source_selection(selection, 65536)
+                                {
+                                    Ok(_) => {
+                                        self.active = Some(Active::Canonical(
+                                            job.input,
+                                            job.head,
+                                            job.position.next()?,
+                                            None,
+                                        ))
+                                    }
+                                    Err(e) => {
+                                        self.fail(&job.head, format!("canonical selection: {e}"))?
+                                    }
                                 }
-                            },
-                            CompatibilityTurn::Contested=>self.fail(&job.head,"canonical Message has incompatible or unsupported input candidates; merge remains pending".into())?,
+                            }
+                            CompatibilityTurn::Contested => {
+                                let reason = "canonical Message has incompatible or unsupported input candidates; merge remains pending".to_owned();
+                                if job.input.format == InputFormat::CodexRollout {
+                                    self.active = Some(Active::Canonical(
+                                        job.input,
+                                        job.head,
+                                        CanonicalPosition::ToolsBeforeFailure(None, reason),
+                                        None,
+                                    ));
+                                } else {
+                                    self.fail(&job.head, reason)?;
+                                }
+                            }
                         }
                     }
                     Ok(CanonicalTurn::Pending(cursor, pending)) => {
@@ -767,6 +818,14 @@ impl Actor {
                             CanonicalPosition::ClaudeMessage(cursor, pending),
                             None,
                         ));
+                    }
+                    Ok(CanonicalTurn::Done)
+                        if matches!(job.position, CanonicalPosition::ToolsBeforeFailure(_, _)) =>
+                    {
+                        let CanonicalPosition::ToolsBeforeFailure(_, reason) = job.position else {
+                            unreachable!()
+                        };
+                        self.fail(&job.head, reason)?;
                     }
                     Ok(CanonicalTurn::Done) if job.head.status == "waiting_tail" => {
                         // Complete Claude prefix rows may publish while its
@@ -839,7 +898,7 @@ impl Actor {
                 // A failed admitted install may still own unsealed work. Its
                 // retained diagnostic is unavailability, never a waiting tail.
                 source_rows.state = polylogue_model::settlement::SourceRowState::Unavailable {
-                    usable_result: false,
+                    usable_result: self.writer.source_has_tool_items(&input.input)?,
                     notes: vec![reason.clone()],
                     record_errors: head.counts.undecodable,
                 };
@@ -1142,7 +1201,10 @@ impl Actor {
                                     )?));
                                 }
                                 let tools_after = match &work_position {
-                                    CanonicalPosition::ToolsAfter(after) => Some(after.clone()),
+                                    CanonicalPosition::ToolsAfter(after)
+                                    | CanonicalPosition::ToolsBeforeFailure(after, _) => {
+                                        Some(after.clone())
+                                    }
                                     CanonicalPosition::Codex(ordinal) => {
                                         let attempt = crate::state::codex::Attempt::new(
                                             &snapshot,

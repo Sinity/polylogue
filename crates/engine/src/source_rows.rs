@@ -269,7 +269,7 @@ impl Audit {
             .take()
             .unwrap_or_else(|| CanonicalPosition::first(input.format));
         match position {
-            CanonicalPosition::ToolsAfter(_) => {
+            CanonicalPosition::ToolsAfter(_) | CanonicalPosition::ToolsBeforeFailure(_, _) => {
                 self.usable = head.counts.used > 0;
             }
             CanonicalPosition::Audit(_) => {

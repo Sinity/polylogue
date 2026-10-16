@@ -104,6 +104,14 @@ fn bytes(c: &Connection, p: &Path, pk: i64, allowance: usize) -> Result<Vec<u8>>
     Ok(out)
 }
 impl Writer {
+    /// Independent partial usability survives a failed Message merge. This
+    /// witnesses a ready operation, never source-row or Session completion.
+    pub fn source_has_tool_items(&self, input: &crate::RetainedInput) -> Result<bool> {
+        let p = self.root.join("index.db");
+        db(&p, || {
+            self._index.query_row("SELECT EXISTS(SELECT 1 FROM tool_item_source s JOIN tool_item_version v ON v.pk=s.tool_item_version_pk WHERE s.input_pk=?1 AND s.source_chain=?2 AND v.ready=1)", params![input.input_pk,input.chain], |r|r.get(0))
+        })
+    }
     /// Caller supplies one already-decoded operation from this pinned parser
     /// snapshot. Publication is idempotent by exact input and evidence digest.
     pub fn publish_tool_item(
@@ -273,7 +281,9 @@ impl Writer {
                 )
                 .optional()
             })?;
-            if let Some(owner) = owner {
+            let owner = owner
+                .ok_or_else(|| bad("declared operation Message identity has not been published"))?;
+            {
                 let (start, end) = operation
                     .origins
                     .iter()

@@ -71,11 +71,15 @@ bodies qualify correspondence and are excluded from a proved call count.
 
 Core command argv remains a vector; recorded shell/UI display text stays text.
 The adapter does not approximate the provider's command-presentation renderer.
+That renderer shell-quotes and redacts command text; its UI text cannot recover
+exact argv and is not treated as byte-equal core command evidence.
 
 The population reports retained representations, decoded selected items, source
 row dispositions and correspondence independently. The full retained-item
 population remains explicitly unknown (`retained_items: null`). A source with unknown rows
-keeps coverage degraded. The query always reports incomplete general Session
+keeps coverage degraded. A contested Message merge stays unavailable while independently proved
+Session-owned operations can still publish; `import --wait` reports that partial
+usability without certifying the contested rows. The query always reports incomplete general Session
 coverage: a physical paginated projection supplies neither request boundaries
 nor proof that the entire Session was acquired. Current-row selection prefers a
 present result, present output and independently proved Message association;
