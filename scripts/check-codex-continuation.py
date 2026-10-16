@@ -217,7 +217,15 @@ def bounds(binary,output):
         revised=await_facts(run,expected+['later appended invocation after fair revisit'])
         revisit_delay=time.monotonic()-began
         witnesses(revised['later appended invocation after fair revisit'][1],raw+suffix)
-        assert run.cli([old[0],'read','--budget','20000'])['shown']==old[1]['shown']
+        retained=run.cli([old[0],'read','--budget','20000'])['shown'][0]
+        previous=old[1]['shown'][0]
+        # The exact operation version stays readable. A new immutable snapshot
+        # adds representations and may rebuild the association's local row ID.
+        assert retained['id']==previous['id']
+        assert retained['operation']==previous['operation']
+        assert retained['selected'] and not retained['conflicting_representations']
+        assert all(source in retained['sources'] for source in previous['sources'])
+        assert all(source in retained['representations'] for source in previous['representations'])
         settled=wait(run,lambda v:v['continuation']['successful_snapshots']>=649,timeout=120)
         cycles=settled['continuation']['enumeration_cycles_completed']
         stable=wait(run,lambda v:v['continuation']['enumeration_cycles_completed']>=cycles+2,timeout=120)
