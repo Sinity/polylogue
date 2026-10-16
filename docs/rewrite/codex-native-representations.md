@@ -114,7 +114,9 @@ coverage: a physical paginated projection supplies neither request boundaries
 nor proof that the entire Session was acquired. Current-row selection prefers a
 present result, present output and independently proved Message association;
 all historical versions remain addressable. Selected-body source availability
-is checked on every read. Unavailable selected bytes produce an error with no
+is checked on every read. Each cited rollout record must match its recorded
+canonical hash (with only the pinned top-level timestamp/ordinal exclusions);
+physical-history evidence must match the full retained snapshot digest. Unavailable selected bytes produce an error with no
 shown body, even if a normalized copy exists. An unavailable alternative does
 not invalidate an independent selected representation.
 

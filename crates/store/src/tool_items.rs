@@ -558,7 +558,7 @@ fn citations(
 }
 #[derive(Default)]
 struct Verification {
-    ranges: std::collections::BTreeSet<(String, i64, u64, u64)>,
+    ranges: std::collections::BTreeSet<(String, i64, u64, u64, Option<[u8; 32]>)>,
     bytes: u64,
 }
 fn verify_sources(
@@ -567,10 +567,17 @@ fn verify_sources(
     verified: &mut Verification,
 ) -> Result<()> {
     for source in sources {
-        if !verified
-            .ranges
-            .insert((source.input.clone(), source.chain, source.start, source.end))
-        {
+        let expected = match &source.origin {
+            ToolOrigin::Rollout { raw_hash, .. } => Some(*raw_hash),
+            ToolOrigin::History { .. } => None,
+        };
+        if !verified.ranges.insert((
+            source.input.clone(),
+            source.chain,
+            source.start,
+            source.end,
+            expected,
+        )) {
             continue;
         }
         let length = source.end.checked_sub(source.start).ok_or(Error::Range)?;
@@ -587,6 +594,19 @@ fn verify_sources(
         if source.end < source.start {
             return Err(Error::Range);
         }
+        let mut record = if matches!(source.origin, ToolOrigin::Rollout { .. }) {
+            // The admitted JSONL framer excludes the newline and admits at
+            // most 1 MiB per record. Verify only this contributing record.
+            if length > 1024 * 1024 {
+                return Err(Error::ParserAdmission {
+                    resource: "operation rollout evidence bytes",
+                    required: length,
+                });
+            }
+            Some(Vec::with_capacity(length as usize))
+        } else {
+            None
+        };
         let mut at = source.start;
         let mut hash = blake3::Hasher::new();
         while at < source.end {
@@ -601,7 +621,20 @@ fn verify_sources(
                 return Err(bad("operation retained source range unavailable"));
             }
             hash.update(&chunk);
+            if let Some(record) = &mut record {
+                record.extend_from_slice(&chunk);
+            }
             at += chunk.len() as u64;
+        }
+        if let ToolOrigin::Rollout { raw_hash, .. } = &source.origin {
+            let canonical = polylogue_model::identity::canonical_record(
+                record.as_deref().unwrap_or_default(),
+                &["timestamp", "ordinal"],
+            )
+            .map_err(|e| bad(e.to_string()))?;
+            if blake3::hash(&canonical).as_bytes() != raw_hash {
+                return Err(bad("operation rollout source evidence hash differs"));
+            }
         }
         if matches!(source.origin, ToolOrigin::History { .. })
             && (source.start != 0
@@ -838,6 +871,55 @@ impl ReadHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn same_range_with_a_different_expected_rollout_hash_is_not_cached_as_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic.jsonl");
+        let raw = br#"{"value":"retained","timestamp":"volatile"}"#;
+        std::fs::write(&path, raw).unwrap();
+        let mut writer = Writer::open(&dir.path().join("archive")).unwrap();
+        let source = writer
+            .acquire_claude_main(
+                &path,
+                "synthetic-machine",
+                "synthetic-host",
+                "synthetic-input",
+                1,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap();
+        let canonical =
+            polylogue_model::identity::canonical_record(raw, &["timestamp", "ordinal"]).unwrap();
+        let good = Citation {
+            input: source.input.id,
+            chain: source.input.chain,
+            start: 0,
+            end: raw.len() as u64,
+            origin: ToolOrigin::Rollout {
+                tag: "call".into(),
+                start: 0,
+                end: raw.len() as u64,
+                raw_hash: *blake3::hash(&canonical).as_bytes(),
+            },
+            version_hash: "synthetic-version".into(),
+            constructor: CODEX_CONSTRUCTOR.into(),
+            adapter_revision: CODEX_REVISION.into(),
+        };
+        let mut different = good.clone();
+        different.origin = ToolOrigin::Rollout {
+            tag: "status".into(),
+            start: 0,
+            end: raw.len() as u64,
+            raw_hash: [0; 32],
+        };
+        let reader = writer.read_handle().unwrap();
+        assert!(verify_sources(&reader, &[good.clone()], &mut Verification::default()).is_ok());
+        let mut verified = Verification::default();
+        assert!(matches!(
+            verify_sources(&reader, &[good, different], &mut verified),
+            Err(Error::Invariant(message)) if message == "operation rollout source evidence hash differs"
+        ));
+    }
     #[test]
     fn deduplicated_metadata_versions_acquire_leases_but_text_shares_one_owner() {
         let dir = tempfile::tempdir().unwrap();
