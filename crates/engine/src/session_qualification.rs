@@ -28,6 +28,7 @@ pub struct Qualification {
     pub up_to_date: bool,
     pub active_messages: BTreeSet<String>,
     document: bool,
+    exact: bool,
     metadata_conflicts: BTreeSet<String>,
     own_topology_unknown: bool,
 }
@@ -95,8 +96,8 @@ impl Qualification {
         }
         json!({"outcome":if self.complete() {"ok"} else {"degraded"},
             "notes":self.notes(), "unknown":unknown,
-            "settlement":{"scope":"exact_session","operation":if self.document{"normalized_read"}else{"selection"},"state":if self.complete(){"settled"}else if self.pending_inputs>0{"pending"}else if self.unavailable_inputs>0||self.record_errors>0{"unavailable"}else{"unsupported"},
-                "target_basis":{"archive_counter":catalog.source_archive_counter(),"inputs":self.basis},
+            "settlement":{"scope":if self.exact{"exact_session"}else{"session_selection"},"operation":if self.document{"normalized_read"}else{"selection"},"state":if self.complete(){"settled"}else if self.pending_inputs>0{"pending"}else if self.unavailable_inputs>0||self.record_errors>0{"unavailable"}else{"unsupported"},
+                "target_basis":{"archive_counter":catalog.source_archive_counter(),"recipe":"native-session-v1","configuration":"fixed-immutable-native-context-v1","inputs":self.basis},
                 "serving_view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()}}})
     }
 }
@@ -170,9 +171,7 @@ fn qualify_operation(
     let exact = plan.id.as_deref().filter(|_| {
         plan.text.is_empty() && plan.origin.as_deref().is_none_or(|o| o == "claude-code")
     });
-    if exact.is_none() {
-        result.unsupported.insert("Complete settlement is supported only for an exact Claude Code Session without prose search".into());
-    }
+    result.exact = exact.is_some();
     let mut cursor = None;
     let mut dependency_bytes = 0usize;
     loop {
@@ -470,6 +469,9 @@ fn qualify_operation(
                 .unsupported
                 .insert("Retained Session contributions have no published catalog owner".into());
         }
+    }
+    if exact.is_none() && result.interpreted_nonempty_inputs > 0 {
+        result.unsupported.insert("Complete nonempty settlement is supported only for an exact Claude Code Session without prose search".into());
     }
     if result.own_topology_unknown {
         result.active_messages.clear();

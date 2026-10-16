@@ -173,7 +173,9 @@ pub fn execute(
     if recovery.is_some() {
         notes.push(polylogue_model::RecoveryQualification::NOTE.to_owned());
     }
-    if plan.id.is_none() || !plan.text.is_empty() {
+    if (plan.id.is_none() || !plan.text.is_empty())
+        && (sessions > 0 || known_messages > 0 || qualification.interpreted_nonempty_inputs > 0)
+    {
         notes.push("Only the known selected Session/Message catalog was searched; Session metadata reductions, linked/subagent expansion, inherited/copy classification and complete source populations remain pending.".to_owned());
     }
     if corpus.is_some() && sessions > 0 {
