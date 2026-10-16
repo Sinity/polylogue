@@ -353,8 +353,11 @@ mod tests {
     }
     #[test]
     fn daemon_and_client_preserve_typed_unknown_input_failure() {
-        let (dir, writer, _) = source(b"neutral");
-        let socket = dir.path().join("read.sock");
+        let (_dir, writer, _) = source(b"neutral");
+        // Keep only socket dentries under a short owned runtime path. Archive
+        // data follows the managed TMPDIR, which may exceed Unix socket limits.
+        let runtime = tempfile::tempdir_in("/tmp").unwrap();
+        let socket = runtime.path().join("read.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let reader = Mutex::new(writer.read_handle().unwrap());
         let server = std::thread::spawn(move || {
