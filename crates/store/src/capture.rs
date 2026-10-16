@@ -38,21 +38,13 @@ impl PreparedBlob {
         self.stored_size
     }
 }
-struct Counted<'a, R> {
+struct Counted<R> {
     reader: R,
-    cancelled: &'a AtomicBool,
     length: u64,
 }
-impl<R: Read> Read for Counted<'_, R> {
+impl<R: Read> Read for Counted<R> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        if self.cancelled.load(Ordering::Acquire) {
-            // Interrupted is retried by many Read helpers, potentially forever.
-            return Err(io::Error::other("blob capture cancelled"));
-        }
         let count = self.reader.read(bytes)?;
-        if self.cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::other("blob capture cancelled"));
-        }
         self.length = self
             .length
             .checked_add(
@@ -61,45 +53,6 @@ impl<R: Read> Read for Counted<'_, R> {
             .ok_or_else(|| io::Error::other("blob length overflow"))?;
         Ok(count)
     }
-}
-// The reviewed decoder owns the file format. This helper only streams its
-// uncompressed bytes, checks cancellation, and verifies the content receipt.
-fn verify_plain(
-    mut reader: impl Read,
-    expected: hashed_blobs::Hash,
-    length: u64,
-    cancelled: &AtomicBool,
-) -> Result<()> {
-    let mut digest = blake3::Hasher::new();
-    let mut total = 0_u64;
-    let mut chunk = [0_u8; 64 * 1024];
-    loop {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(Error::Cancelled);
-        }
-        let count = match reader.read(&mut chunk) {
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            result => result?,
-        };
-        if cancelled.load(Ordering::Acquire) {
-            return Err(Error::Cancelled);
-        }
-        if count == 0 {
-            break;
-        }
-        total = total
-            .checked_add(u64::try_from(count).map_err(|_| Error::Range)?)
-            .ok_or(Error::Range)?;
-        digest.update(&chunk[..count]);
-    }
-    if total != length || digest.finalize().as_bytes() != &expected.0 {
-        return Err(hashed_blobs::Error::Corrupt {
-            blob: expected,
-            what: "captured CAS digest or length mismatch".into(),
-        }
-        .into());
-    }
-    Ok(())
 }
 impl BlobCapture {
     /// Explicit regular-file import only. Nonblocking/no-follow open prevents
@@ -129,12 +82,14 @@ impl BlobCapture {
             return Err(Error::Cancelled);
         }
         let blobs = hashed_blobs::Store::open(&self.root, vec![], 0o600)?;
-        let mut counted = Counted {
-            reader,
-            cancelled,
-            length: 0,
-        };
-        let result = blobs.put(&mut counted, 3);
+        let mut counted = Counted { reader, length: 0 };
+        let result = blobs.put_plain_checked::<Error>(&mut counted, 3, || {
+            if cancelled.load(Ordering::Acquire) {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
         if cancelled.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
         }
@@ -146,7 +101,13 @@ impl BlobCapture {
         }
         // put may deduplicate against an existing filename. Certify those actual
         // retained bytes, not just the hash computed from the incoming stream.
-        verify_plain(blobs.read(&hash)?, hash, counted.length, cancelled)?;
+        blobs.verify_plain::<Error>(&hash, counted.length, |_| {
+            if cancelled.load(Ordering::Acquire) {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        })?;
         private_dir(&self.root.join("blobs").join(&hash.hex()[..2]))?;
         let stored_size = blobs.stored_size(&hash)?;
         if cancelled.load(Ordering::Acquire) {
@@ -475,67 +436,6 @@ mod tests {
 #[cfg(test)]
 mod cooperative_tests {
     use super::*;
-    #[test]
-    fn verification_cancels_between_reads_and_preserves_read_failure() {
-        struct Cancels<'a> {
-            cancelled: &'a AtomicBool,
-            calls: usize,
-        }
-        impl Read for Cancels<'_> {
-            fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
-                self.calls += 1;
-                b[0] = b'x';
-                self.cancelled.store(true, Ordering::Release);
-                Ok(1)
-            }
-        }
-        let flag = AtomicBool::new(false);
-        let mut reader = Cancels {
-            cancelled: &flag,
-            calls: 0,
-        };
-        assert!(matches!(
-            verify_plain(&mut reader, hashed_blobs::Hash::of(b"x"), 1, &flag),
-            Err(Error::Cancelled)
-        ));
-        assert_eq!(reader.calls, 1);
-        struct Fails;
-        impl Read for Fails {
-            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-                Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "verification denied",
-                ))
-            }
-        }
-        match verify_plain(
-            Fails,
-            hashed_blobs::Hash::of(b""),
-            0,
-            &AtomicBool::new(false),
-        ) {
-            Err(Error::Io(e)) => assert_eq!(e.kind(), io::ErrorKind::PermissionDenied),
-            _ => panic!("verification IO failure was not preserved"),
-        }
-        assert!(
-            verify_plain(
-                &b"body"[..],
-                hashed_blobs::Hash::of(b"body"),
-                4,
-                &AtomicBool::new(false)
-            )
-            .is_ok()
-        );
-        assert!(
-            verify_plain(
-                &b"body"[..],
-                hashed_blobs::Hash::of(b"body"),
-                5,
-                &AtomicBool::new(false)
-            )
-            .is_err()
-        );
-    }
     #[test]
     fn explicit_file_capture_refuses_fifo_symlink_and_nonregular_descriptor() {
         use std::os::unix::fs::symlink;

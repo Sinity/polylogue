@@ -32,7 +32,7 @@ Archive format **2** persists this qualification in `archive.db`, and older bina
 
 The declared AgentCTL operations run the Nix build/check and development-shell commands. `cargo run -p xtask -- check` checks target formatting, actual Cargo dependency boundaries and workspace tests. A synthetic Cargo-edge mutation and compile-fail examples demonstrate forbidden access. `.githooks` contains successor hooks; in linked worktrees select them through per-worktree Git configuration, never by changing another checkout's shared hook configuration.
 
-`crates/credential-output` owns the shared pure streaming credential presentation engine; terminal and Session rendering use it without changing their response limits. `crates/model` is pure. Only `crates/store` owns SQLite connections; public handles expose typed operations. `crates/hashed-blobs` is the reviewed shared file layer plus an explicit read-only capability, documented in [source provenance](docs/shared-crate-source.json). The owner publishes the reviewed file layer as `hashed-blobs-v0.1.0`; consumer pins require their own verification. [Store limits](crates/store/README.md) distinguish these primitives from complete input acquisition and recovery.
+`crates/credential-output` owns the shared pure streaming credential presentation engine; terminal and Session rendering use it without changing their response limits. `crates/model` is pure. Only `crates/store` owns SQLite connections; public handles expose typed operations. `crates/hashed-blobs` is the reviewed shared file layer plus an explicit read-only capability, documented in [source provenance](docs/shared-crate-source.json). The immutable `hashed-blobs-v0.1.0` release remains consumed; the prepared 0.1.1 repair follows the [shared release procedure](docs/shared-file-layer-release.md), with independently verified consumer pins. [Store limits](crates/store/README.md) distinguish these primitives from complete input acquisition and recovery.
 
 ## Explicit Codex operation representations
 
@@ -49,7 +49,7 @@ coverage limits.
 
 ## Configured Codex home subset
 
-Explicit `codex_home` startup configuration discovers a finite set of rollout snapshots independently of thread catalog membership. Retained prompt-history references stay separate from conversations, with pending coverage and source provenance in status and query replies. The [configured discovery guide](docs/rewrite/codex-configured-discovery.md) describes relative paths, admission, missing versus empty evidence, and retained reads after source removal. General source reconciliation remains unfinished.
+Explicit `codex_home` configuration discovers rollout snapshots independently of thread catalog membership, then advances the same home in bounded turns with a one-second pause through the existing owner queues. Each turn admits at most 512 candidate evaluations and 32 MiB of charged source bytes, then releases capacity for the next turn. A bounded directory cursor progresses beyond earlier prefixes; unchanged content adds no observations. `--until-idle` handles the startup snapshot only. Retained prompt-history references stay separate from conversations, with pending coverage and source provenance in status and query replies. The [configured discovery guide](docs/rewrite/codex-configured-discovery.md) describes relative paths, admission, missing versus empty evidence, and retained reads after source removal. General source reconciliation remains unfinished.
 
 ## Observed Claude source subset
 

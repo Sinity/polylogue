@@ -155,6 +155,10 @@ collector is wired.
 
 `BlobCapture` holds archive lock authority without SQLite capability. It streams
 and verifies bytes on a worker before opaque proof admission writes metadata.
+Retained-source verification and ranges share the file layer's bounded decoder and
+opened-representation lifetime; ReadHandle keeps one retained slot and rechecks SQL
+admission on each range. Public operation reads fork that capability per request.
+The [file-layer contract](../hashed-blobs/README.md) owns cache, concurrency and codec limits.
 `client_request` and the import observation commit together; an unchanged retry
 replays the retained result before opening its provider path. Archive commit
 precedes repairable disposable `input_ref` registration. Capture cancellation is

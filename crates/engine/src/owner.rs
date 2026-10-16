@@ -121,13 +121,39 @@ pub struct Progress {
     pub active: bool,
     pub source_rows: polylogue_model::settlement::SourceRows,
 }
+#[derive(Debug)]
+pub struct ConfiguredImport {
+    pub input: RetainedInput,
+    pub acquired: bool,
+}
+enum ImportReply {
+    Ordinary(Reply<RetainedInput>),
+    Configured(Reply<ConfiguredImport>),
+}
+impl ImportReply {
+    fn send(self, result: Result<RetainedInput>, acquired: bool) {
+        match self {
+            Self::Ordinary(reply) => {
+                let _ = reply.send(result);
+            }
+            Self::Configured(reply) => {
+                let _ = reply.send(result.map(|input| ConfiguredImport { input, acquired }));
+            }
+        }
+    }
+}
 enum Message {
     Note(
         polylogue_model::authored::WriteNote,
         Instant,
         Reply<AuthoredReply>,
     ),
-    Import(ImportRequest, Reply<RetainedInput>),
+    Import(
+        ImportRequest,
+        Option<(polylogue_store::configured_codex::Candidate, BlobHash, u64)>,
+        ImportReply,
+    ),
+    CheckAcquisition(Reply<()>),
     Progress(String, Reply<Progress>),
     Retry(String, Reply<()>),
     Captured(Result<PreparedBlob>),
@@ -173,6 +199,38 @@ impl Handle {
                 "Claude companions require the configured main acquisition path",
             ));
         }
+        self.validate_import(&request, false)?;
+        let (reply, rx) = mpsc::sync_channel(1);
+        self.send(Message::Import(request, None, ImportReply::Ordinary(reply)))?;
+        Ok(rx)
+    }
+    pub fn try_configured_import(
+        &self,
+        request: ImportRequest,
+        candidate: polylogue_store::configured_codex::Candidate,
+        expected: BlobHash,
+        expected_length: u64,
+    ) -> Result<Receiver<Result<ConfiguredImport>>> {
+        if candidate.path() != request.path || candidate.format() != request.format {
+            return Err(Error::InvalidRequest(
+                "configured candidate does not match import",
+            ));
+        }
+        self.validate_import(&request, true)?;
+        let (reply, rx) = mpsc::sync_channel(1);
+        self.send(Message::Import(
+            request,
+            Some((candidate, expected, expected_length)),
+            ImportReply::Configured(reply),
+        ))?;
+        Ok(rx)
+    }
+    pub fn try_check_import_acquisition(&self) -> Result<Receiver<Result<()>>> {
+        let (reply, rx) = mpsc::sync_channel(1);
+        self.send(Message::CheckAcquisition(reply))?;
+        Ok(rx)
+    }
+    fn validate_import(&self, request: &ImportRequest, configured: bool) -> Result<()> {
         let o = &request.observation;
         let required = request
             .path
@@ -189,10 +247,11 @@ impl Handle {
                     .map(|v| v.len().saturating_add(8))
                     .fold(0usize, usize::saturating_add),
             );
-        if required > REQUEST_BYTES || request.metadata_allowance > REQUEST_BYTES {
+        let maximum = if configured { 131072 } else { REQUEST_BYTES };
+        if required > maximum || request.metadata_allowance > maximum {
             return Err(Error::RequestTooLarge {
                 required: required.max(request.metadata_allowance),
-                maximum: REQUEST_BYTES,
+                maximum,
             });
         }
         // Reject excessive declarations before allocating the borrowed slice.
@@ -204,9 +263,7 @@ impl Handle {
                 "capture path must be absolute and exactly match supplied observation.path",
             ));
         }
-        let (reply, rx) = mpsc::sync_channel(1);
-        self.send(Message::Import(request, reply))?;
-        Ok(rx)
+        Ok(())
     }
     pub fn try_progress(&self, input_id: &str) -> Result<Receiver<Result<Progress>>> {
         check_id(input_id)?;
@@ -280,11 +337,12 @@ impl Drop for Owner {
     }
 }
 struct CaptureJob {
+    expected: Option<BlobHash>,
     format: InputFormat,
     context: Vec<String>,
     observation: Observation,
     allowance: usize,
-    reply: Reply<RetainedInput>,
+    reply: ImportReply,
     join: JoinHandle<()>,
 }
 struct ComputeJob {
@@ -422,11 +480,30 @@ impl Actor {
         self.inner.cancelled.store(true, Ordering::Release);
         self.active = None;
     }
+    fn observe_stop(&mut self) {
+        if self.inner.cancelled.load(Ordering::Acquire) && !self.stopping {
+            self.begin_stop();
+        }
+    }
+    fn stop_for_completion<T>(&mut self, result: &Result<T>) -> bool {
+        self.observe_stop();
+        // A worker's typed cancellation is lifecycle evidence even if shutdown
+        // arrived after dispatch. Never turn it into a durable parser defect.
+        if matches!(
+            result,
+            Err(Error::Stopped
+                | Error::Store(StoreError::Cancelled)
+                | Error::Source(source_turn::Error::Store(StoreError::Cancelled))
+                | Error::Canonical(canonical_message::Error::Store(StoreError::Cancelled))
+                | Error::Canonical(canonical_message::Error::Cancelled))
+        ) {
+            self.begin_stop();
+        }
+        self.stopping
+    }
     fn run(mut self, rx: Receiver<Message>) -> Result<()> {
         loop {
-            if self.inner.cancelled.load(Ordering::Acquire) && !self.stopping {
-                self.begin_stop();
-            }
+            self.observe_stop();
             let immediate = !self.stopping
                 && self.compute.is_none()
                 && self.canonical.is_none()
@@ -494,6 +571,8 @@ impl Actor {
         }
     }
     fn message(&mut self, message: Message) -> Result<()> {
+        // recv_timeout may have blocked since the loop's stop observation.
+        self.observe_stop();
         match message {
             Message::Note(request, deadline, reply) => {
                 let result = if self.stopping {
@@ -516,9 +595,9 @@ impl Actor {
                 };
                 let _ = reply.send(result);
             }
-            Message::Import(request, reply) => {
+            Message::Import(request, configured, reply) => {
                 if self.stopping {
-                    let _ = reply.send(Err(Error::Stopped));
+                    let _ = reply.send(Err(Error::Stopped), false);
                     return Ok(());
                 }
                 let replay = self.writer.replay_immutable_import(
@@ -533,6 +612,29 @@ impl Actor {
                 );
                 match replay {
                     Ok(Some(input)) => {
+                        if let Some((candidate, hash, _)) = &configured {
+                            if let Err(error) = self.writer.check_import_acquisition() {
+                                reply.send(Err(error.into()), false);
+                                return Ok(());
+                            }
+                            if input.id
+                                != polylogue_model::InputId::imported(
+                                    hash,
+                                    candidate.format().name(),
+                                    &[],
+                                )
+                                .as_str()
+                            {
+                                reply.send(
+                                    Err(StoreError::ClientRequestConflict {
+                                        id: request.observation.id.clone(),
+                                    }
+                                    .into()),
+                                    false,
+                                );
+                                return Ok(());
+                            }
+                        }
                         self.scan_again = true;
                         if !self.scanning
                             && self.active.is_none()
@@ -541,27 +643,46 @@ impl Actor {
                         {
                             self.restart_scan();
                         }
-                        let _ = reply.send(Ok(input));
+                        let _ = reply.send(Ok(input), false);
                         return Ok(());
                     }
                     Err(e) => {
-                        let _ = reply.send(Err(e.into()));
+                        let _ = reply.send(Err(e.into()), false);
                         return Ok(());
                     }
                     Ok(None) => {}
                 }
+                if let Some((candidate, hash, _)) = &configured {
+                    match self.writer.known_configured_snapshot(
+                        candidate,
+                        *hash,
+                        &request.observation.machine,
+                        &request.observation.host,
+                        &request.observation.path,
+                    ) {
+                        Ok(Some(input)) => {
+                            reply.send(Ok(input), false);
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            reply.send(Err(error.into()), false);
+                            return Ok(());
+                        }
+                        Ok(None) => {}
+                    }
+                }
                 if self.capture.is_some() {
-                    let _ = reply.send(Err(Error::Busy));
+                    let _ = reply.send(Err(Error::Busy), false);
                     return Ok(());
                 }
                 if let Err(e) = self.writer.check_import_acquisition() {
-                    let _ = reply.send(Err(e.into()));
+                    let _ = reply.send(Err(e.into()), false);
                     return Ok(());
                 }
                 let capture = match self.writer.blob_capture() {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ = reply.send(Err(e.into()));
+                        let _ = reply.send(Err(e.into()), false);
                         return Ok(());
                     }
                 };
@@ -569,11 +690,14 @@ impl Actor {
                 let sender = self.inner.sender.clone();
                 let path = request.path;
                 let history = request.format == InputFormat::CodexHistorySqlite;
+                let expected = configured.as_ref().map(|(_, hash, _)| *hash);
                 let join = thread::Builder::new()
                     .name("polylogue-capture".into())
                     .spawn(move || {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            if history {
+                            if let Some((candidate, _, length)) = configured {
+                                capture.capture_codex_candidate(&candidate, length, &cancelled)
+                            } else if history {
                                 capture.capture_history_snapshot(&path, &cancelled)
                             } else {
                                 capture.capture_regular_file(&path, &cancelled)
@@ -586,6 +710,7 @@ impl Actor {
                 match join {
                     Ok(join) => {
                         self.capture = Some(CaptureJob {
+                            expected,
                             format: request.format,
                             context: request.context,
                             observation: request.observation,
@@ -595,9 +720,17 @@ impl Actor {
                         })
                     }
                     Err(e) => {
-                        let _ = reply.send(Err(StoreError::Io(e).into()));
+                        let _ = reply.send(Err(StoreError::Io(e).into()), false);
                     }
                 }
+            }
+            Message::CheckAcquisition(reply) => {
+                let result = if self.stopping {
+                    Err(Error::Stopped)
+                } else {
+                    self.writer.check_import_acquisition().map_err(Error::Store)
+                };
+                let _ = reply.send(result);
             }
             Message::Progress(id, reply) => {
                 let result = if self.stopping {
@@ -622,11 +755,16 @@ impl Actor {
                     return Err(Error::InvalidRequest("unexpected capture completion"));
                 };
                 job.join.join().map_err(|_| Error::WorkerPanicked)?;
-                if self.stopping {
-                    let _ = job.reply.send(Err(Error::Stopped));
+                if self.stop_for_completion(&result) {
+                    let _ = job.reply.send(Err(Error::Stopped), false);
                     return Ok(());
                 }
                 let result = result.and_then(|proof| {
+                    if job.expected.is_some_and(|hash| hash != proof.hash()) {
+                        return Err(Error::InvalidEvidence(
+                            "configured source changed after discovery; retry next pass".into(),
+                        ));
+                    }
                     let hash = self.writer.retain_captured_blob(proof)?;
                     Ok(self.writer.retain_immutable_input(
                         hash,
@@ -646,14 +784,14 @@ impl Actor {
                         self.restart_scan();
                     }
                 }
-                let _ = job.reply.send(result);
+                let _ = job.reply.send(result, true);
             }
             Message::Computed(result) => {
                 let Some(job) = self.compute.take() else {
                     return Err(Error::InvalidRequest("unexpected source completion"));
                 };
                 job.join.join().map_err(|_| Error::WorkerPanicked)?;
-                if self.stopping {
+                if self.stop_for_completion(&result) {
                     return Ok(());
                 }
                 match result {
@@ -691,7 +829,7 @@ impl Actor {
                     .take()
                     .ok_or(Error::InvalidRequest("unexpected canonical completion"))?;
                 job.join.join().map_err(|_| Error::WorkerPanicked)?;
-                if self.stopping {
+                if self.stop_for_completion(&result) {
                     return Ok(());
                 }
                 match result {
@@ -960,6 +1098,10 @@ impl Actor {
         self.recovery_error = None;
     }
     fn fail(&mut self, head: &Head, details: String) -> Result<()> {
+        self.observe_stop();
+        if self.stopping {
+            return Ok(());
+        }
         let details = diagnostic(details);
         self.writer
             .record_parser_failure(&head.token, Some(&details), DETAIL_BYTES)?;
@@ -1113,12 +1255,19 @@ impl Actor {
                                         &cancelled,
                                     );
                                 }
-                                let bytes = reader.read_source_range(
+                                let bytes = reader.read_source_range_checked(
                                     &input_id,
                                     input_chain,
                                     hash,
                                     offset,
                                     length,
+                                    || {
+                                        if cancelled.load(Ordering::Acquire) {
+                                            Err(StoreError::Cancelled)
+                                        } else {
+                                            Ok(())
+                                        }
+                                    },
                                 )?;
                                 if cancelled.load(Ordering::Acquire) {
                                     return Err(StoreError::Cancelled.into());
@@ -1435,12 +1584,19 @@ fn operation_digest(
                 "mixed representation source candidate",
             ));
         };
-        let bytes = reader.read_source_range(
+        let bytes = reader.read_source_range_checked(
             &input.input.id,
             input.input.chain,
             input.binding,
             *start,
             end - start,
+            || {
+                if cancelled.load(Ordering::Acquire) {
+                    Err(StoreError::Cancelled)
+                } else {
+                    Ok(())
+                }
+            },
         )?;
         let canonical =
             polylogue_model::identity::canonical_record(&bytes, &["timestamp", "ordinal"])
@@ -1669,6 +1825,8 @@ mod tests {
             metadata_allowance: 4096,
         }
     }
+    mod cancellation;
+    mod configured;
     fn owner(root: &Path) -> Owner {
         Owner::start(
             Writer::open(root).unwrap(),

@@ -18,14 +18,14 @@ S = native.S
 P = 'prompt-only:synthetic'
 
 class Run(mcp.Run):
-    def start(self):
+    def start(self, timeout=30):
         args = ['daemon', '--config', self.output / 'config.json', '--json']
         output = self.output / ('startup-' + str(len(self.calls)) + '.json')
         self.calls.append({'launch': self.command(args), 'stdout': output.name})
         with output.open('wb') as stdout:
             self.daemon = subprocess.Popen(self.command(args), env=self.env,
                                            stdout=stdout, stderr=self.daemon_log)
-        until = time.monotonic() + 30
+        until = time.monotonic() + timeout
         while True:
             value = self.cli(['status'], allowed=(0, 4, 5, 6))
             if value and value.get('acquisition'):
