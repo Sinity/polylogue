@@ -37,9 +37,9 @@ pub(crate) fn frame(out: &mut impl Write, value: Value) -> io::Result<()> {
 // Masking can expand dense short credentials far beyond the input piece.
 // Encode settled output into bounded frames; the masker still owns undecided
 // bytes. UTF-8 fragments across individual Write calls retain at most3 bytes.
-pub(crate) fn text_frames<T>(
-    stream: &mut UnixStream,
-    run: impl FnOnce(&mut TextFrames<'_>) -> io::Result<T>,
+pub(crate) fn text_frames<W: Write, T>(
+    stream: &mut W,
+    run: impl FnOnce(&mut TextFrames<'_, W>) -> io::Result<T>,
 ) -> io::Result<T> {
     let mut output = TextFrames {
         stream,
@@ -49,11 +49,11 @@ pub(crate) fn text_frames<T>(
     output.emit(true)?;
     Ok(result)
 }
-pub(crate) struct TextFrames<'a> {
-    stream: &'a mut UnixStream,
+pub(crate) struct TextFrames<'a, W: Write> {
+    stream: &'a mut W,
     bytes: Vec<u8>,
 }
-impl TextFrames<'_> {
+impl<W: Write> TextFrames<'_, W> {
     fn emit(&mut self, complete: bool) -> io::Result<()> {
         let valid = match std::str::from_utf8(&self.bytes) {
             Ok(_) => self.bytes.len(),
@@ -71,7 +71,7 @@ impl TextFrames<'_> {
         Ok(())
     }
 }
-impl Write for TextFrames<'_> {
+impl<W: Write> Write for TextFrames<'_, W> {
     fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
         let length = bytes.len();
         while !bytes.is_empty() {

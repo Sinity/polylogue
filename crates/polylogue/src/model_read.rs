@@ -787,27 +787,44 @@ pub(crate) fn serve(
     let value = execute(reader, request, until, &mut || {
         crate::session_read::peer_gone(&peer)
     });
-    stream.set_write_timeout(Some(std::time::Duration::from_secs(30)))?;
-    crate::reference_read::frame(stream, json!({"type":"model-page"}))?;
-    crate::reference_read::text_frames(stream, |out| {
-        serde_json::to_writer(out, &value).map_err(io::Error::other)
+    write_response_until(stream, &value, until)
+}
+fn write_response_until(
+    stream: &std::os::unix::net::UnixStream,
+    value: &Value,
+    until: Instant,
+) -> io::Result<()> {
+    let mut output = crate::MetadataTransport {
+        stream: stream.try_clone()?,
+        deadline: Some(until),
+    };
+    crate::reference_read::frame(&mut output, json!({"type":"model-page"}))?;
+    crate::reference_read::text_frames(&mut output, |out| {
+        serde_json::to_writer(out, value).map_err(|error| {
+            io::Error::new(
+                error.io_error_kind().unwrap_or(io::ErrorKind::InvalidData),
+                error,
+            )
+        })
     })?;
-    crate::reference_read::frame(stream, json!({"type":"end"}))
+    crate::reference_read::frame(&mut output, json!({"type":"end"}))
 }
 pub fn request(socket: &std::path::Path, request: &Value) -> io::Result<Value> {
+    request_until(
+        socket,
+        request,
+        Instant::now() + std::time::Duration::from_secs(30),
+    )
+}
+fn request_until(socket: &std::path::Path, request: &Value, until: Instant) -> io::Result<Value> {
     use std::io::BufRead;
-    let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
-    let until = Instant::now() + std::time::Duration::from_secs(30);
-    stream.set_write_timeout(Some(std::time::Duration::from_secs(30)))?;
+    let mut stream = crate::metadata_transport(socket, Some(until))?;
     crate::reference_read::frame(&mut stream, request.clone())?;
     let mut reader = std::io::BufReader::new(stream);
     let mut bytes = Vec::new();
     let mut started = false;
     loop {
-        let remaining = until
-            .checked_duration_since(Instant::now())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "model read deadline"))?;
-        reader.get_ref().set_read_timeout(Some(remaining))?;
+        crate::remaining(Some(until))?;
         let mut line = String::new();
         reader
             .by_ref()
@@ -831,12 +848,15 @@ pub fn request(socket: &std::path::Path, request: &Value) -> io::Result<Value> {
                 bytes.extend_from_slice(data.as_bytes());
             }
             Some("end") if started => {
-                return serde_json::from_slice(&bytes).map_err(io::Error::other);
+                let page = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+                crate::remaining(Some(until))?;
+                return Ok(page);
             }
             _ => return Err(io::Error::other("unexpected model frame")),
         }
     }
 }
+
 /// Either model flag selects this operation. Conflicting formats/destinations
 /// and unsupported rendering arguments are refused before contacting the owner.
 pub fn cli(args: &[String]) -> Result<Option<Value>, Value> {
@@ -931,5 +951,85 @@ mod window_stop_tests {
         };
         assert!(w.write_all("🙂".as_bytes()).is_err());
         assert!(w.full);
+    }
+}
+
+#[cfg(test)]
+mod transport_deadline_tests {
+    use super::*;
+    use std::{
+        io::{BufRead, BufReader},
+        os::unix::net::{UnixListener, UnixStream},
+        thread,
+        time::Duration,
+    };
+    #[test]
+    fn model_transport_trickled_frame_cannot_renew_the_absolute_read_deadline() {
+        let short = tempfile::tempdir_in("/tmp").unwrap();
+        let path = short.path().join("socket");
+        let listener = UnixListener::bind(&path).unwrap();
+        let peer = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            crate::reference_read::frame(&mut stream, json!({"type":"model-page"})).unwrap();
+            let mut disconnected = false;
+            let frame = serde_json::to_vec(&json!({"type":"text","data":"x".repeat(50)})).unwrap();
+            for byte in frame {
+                if stream.write_all(&[byte]).is_err() {
+                    disconnected = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert!(disconnected, "trickled peer retained the client transport");
+        });
+        let started = Instant::now();
+        let error = request_until(
+            &path,
+            &json!({"command":"model-read","reference":"synthetic","budget_tokens":4000}),
+            started + Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(700));
+        peer.join().unwrap();
+    }
+    #[test]
+    fn model_transport_blocked_response_uses_the_original_absolute_write_deadline() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        socket2::SockRef::from(&stream)
+            .set_send_buffer_size(4096)
+            .unwrap();
+        let page = json!({"synthetic_transport_control":"z".repeat(1_000_000)});
+        let started = Instant::now();
+        let error =
+            write_response_until(&stream, &page, started + Duration::from_millis(100)).unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(700));
+        // Render/qualification time cannot buy a fresh output timeout either.
+        assert_eq!(
+            write_response_until(&stream, &json!({}), started)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
     }
 }

@@ -33,6 +33,7 @@ def row(native, text, parent=None, sid=SID, ordinal=0):
 class Run:
     def __init__(self, binary, output):
         self.binary, self.output, self.calls = binary, output, []
+        self.sources = {}
         self.env = dict(os.environ, TMPDIR=str(output / "tmp"))
         (output / "tmp").mkdir()
         # Unix-socket dentries only. All retained data and captures use --output.
@@ -45,13 +46,22 @@ class Run:
         return [str(self.binary), "--archive", str(self.output / "archive"), *map(str, args)]
 
     def cli(self, args, allowed=(0, 5)):
-        result = subprocess.run(self.command(args), env=self.env, capture_output=True, timeout=45)
         name = f"command-{len(self.calls):04}"
-        (self.output / (name + ".stdout")).write_bytes(result.stdout)
-        (self.output / (name + ".stderr")).write_bytes(result.stderr)
-        self.calls.append({"arguments": list(map(str, args)), "exit": result.returncode,
-                           "stdout": name + ".stdout", "stderr": name + ".stderr"})
-        assert result.returncode in allowed, (self.calls[-1], result.stderr.decode(errors="replace"))
+        attempt = {"arguments": list(map(str, args)), "argv": self.command(args),
+                   "exit": None, "status": "attempted",
+                   "stdout": name + ".stdout", "stderr": name + ".stderr"}
+        self.calls.append(attempt)
+        try:
+            result = subprocess.run(attempt["argv"], env=self.env, capture_output=True, timeout=45)
+        except subprocess.TimeoutExpired as error:
+            (self.output / attempt["stdout"]).write_bytes(error.stdout or b"")
+            (self.output / attempt["stderr"]).write_bytes(error.stderr or b"")
+            attempt.update(status="timeout", timeout_seconds=45)
+            raise
+        (self.output / attempt["stdout"]).write_bytes(result.stdout)
+        (self.output / attempt["stderr"]).write_bytes(result.stderr)
+        attempt.update(exit=result.returncode, status="completed")
+        assert result.returncode in allowed, (attempt, result.stderr.decode(errors="replace"))
         return json.loads(result.stdout) if result.stdout else None
 
     def start(self):
@@ -80,6 +90,7 @@ class Run:
         reply = self.cli(["import", path, "--format", "claude-code-jsonl", "--context", context,
                           "--wait", "--wait-timeout", "30"])
         assert reply["source_rows"]["state"] == "settled", reply
+        self.sources[reply["retained"]["id"]] = path.read_bytes()
         return path
 
     def read(self, call, budget=None):
@@ -88,7 +99,27 @@ class Run:
             args += ["--budget", str(budget)]
         if "continuation" in call:
             args += ["--continuation", call["continuation"]]
-        return self.cli(args, allowed=(0, 2, 3, 5))
+        page = self.cli(args, allowed=(0, 2, 3, 4, 5))
+        for shown in page.get("shown", []):
+            for source in shown["sources"]:
+                raw = self.sources[source["input"]][source["start"]:source["end"]]
+                records = [json.loads(line) for line in raw.splitlines() if line.strip()]
+                assert records and all("uuid" in record for record in records)
+                assert all("message:claude-code:" + record["sessionId"] + ":" + record["uuid"] == shown["message"] for record in records), (shown, records)
+            for origin in shown["field_origins"]:
+                data = self.sources[origin["binding"]["input"]]
+                for selected in origin["selection"]["inputs"]:
+                    record = selected["record"]
+                    value = json.loads(data[record["start"]:record["end"]])
+                    assert "message:claude-code:" + value["sessionId"] + ":" + value["uuid"] == shown["message"]
+                    # Verify source selectors against known original records;
+                    # displayed text is checked separately after transformation.
+                    for component in selected["path"]:
+                        assert len(component) == 1
+                        key = component.get("Key", component.get("Index"))
+                        value = value[key]
+                    assert isinstance(value, str)
+        return page
 
 
 def verify(run):
@@ -194,20 +225,32 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     run = Run(binary, output)
     report = {"binary": str(binary), "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
+    failure = None
     try:
         run.start()
         report.update(verify(run), outcome="ok")
     except BaseException as error:
+        failure = error
         report.update(outcome="failed", error=repr(error))
-        raise
     finally:
-        run.stop()
-        run.daemon_log.close()
-        run.socket_owner.cleanup()
+        cleanup_errors = []
+        for label, cleanup in [("daemon", run.stop), ("daemon_log", run.daemon_log.close),
+                               ("socket_directory", run.socket_owner.cleanup)]:
+            try:
+                cleanup()
+            except BaseException as error:
+                cleanup_errors.append({"owner": label, "error": repr(error)})
+        if cleanup_errors:
+            report.update(outcome="failed", cleanup_errors=cleanup_errors)
         report["commands"] = run.calls
         report["daemon_reaped"] = run.daemon is None
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         print(compact({k: v for k, v in report.items() if k != "commands"}))
+    if failure is not None:
+        raise failure
+    if cleanup_errors:
+        raise RuntimeError("cleanup failed; report.json retains each error")
+
 
 
 if __name__ == "__main__":
