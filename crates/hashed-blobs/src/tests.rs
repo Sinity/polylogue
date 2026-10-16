@@ -886,3 +886,4 @@ fn assembled_extents_refuse_arithmetic_overflow() {
 
 
 mod acquisition;
+mod decoder_cancellation;

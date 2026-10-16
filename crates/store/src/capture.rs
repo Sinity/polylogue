@@ -38,21 +38,13 @@ impl PreparedBlob {
         self.stored_size
     }
 }
-struct Counted<'a, R> {
+struct Counted<R> {
     reader: R,
-    cancelled: &'a AtomicBool,
     length: u64,
 }
-impl<R: Read> Read for Counted<'_, R> {
+impl<R: Read> Read for Counted<R> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        if self.cancelled.load(Ordering::Acquire) {
-            // Interrupted is retried by many Read helpers, potentially forever.
-            return Err(io::Error::other("blob capture cancelled"));
-        }
         let count = self.reader.read(bytes)?;
-        if self.cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::other("blob capture cancelled"));
-        }
         self.length = self
             .length
             .checked_add(
@@ -92,7 +84,6 @@ impl BlobCapture {
         let blobs = hashed_blobs::Store::open(&self.root, vec![], 0o600)?;
         let mut counted = Counted {
             reader,
-            cancelled,
             length: 0,
         };
         let result = blobs.put_plain_checked::<Error>(&mut counted, 3, || {

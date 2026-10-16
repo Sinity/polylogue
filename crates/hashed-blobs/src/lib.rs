@@ -481,11 +481,24 @@ impl View {
     }
 }
 
-struct ViewRange { view: Arc<View>, pos: u64, end: u64 }
-impl Read for ViewRange {
+// The decoder can consume many zero-output blocks inside one read call. Poll
+// physical reads too, preserving the caller's typed failure outside the io bridge.
+struct ViewRange<'a, F, E> {
+    view: Arc<View>,
+    pos: u64,
+    end: u64,
+    visit: &'a std::cell::RefCell<F>,
+    stopped: &'a std::cell::RefCell<Option<E>>,
+}
+impl<F, E> Read for ViewRange<'_, F, E>
+where F: FnMut(&[u8]) -> std::result::Result<(), E> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         use std::os::unix::fs::FileExt;
-        let n = out.len().min((self.end - self.pos) as usize);
+        if let Err(error) = (self.visit.borrow_mut())(&[]) {
+            self.stopped.borrow_mut().replace(error);
+            return Err(io::Error::other("caller stopped plain decoding"));
+        }
+        let n = out.len().min(65536).min((self.end - self.pos) as usize);
         if n == 0 { return Ok(0); }
         let n = self.view.file.read_at(&mut out[..n], self.pos)?;
         if n == 0 { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated frame")); }
@@ -845,7 +858,15 @@ impl Store {
         if tlen > v.len {
             return Err(bad("seek table length"));
         }
-        let table = v.tail(tlen).map_err(Error::Io)?;
+        let mut table = Vec::new();
+        table.try_reserve_exact(tlen as usize)
+            .map_err(|error| Error::Io(io::Error::other(error)))?;
+        table.resize(tlen as usize, 0);
+        for (i, chunk) in table.chunks_mut(65536).enumerate() {
+            use std::os::unix::fs::FileExt;
+            check()?;
+            v.file.read_exact_at(chunk, v.len - tlen + (i * 65536) as u64).map_err(Error::Io)?;
+        }
         if u32_at(&table, 0) != SEEK_SKIP_MAGIC {
             return Err(bad("seek table magic"));
         }
@@ -884,24 +905,35 @@ impl Store {
     }
 
     fn stream_plain_frame<E: From<Error>>(v: &Arc<View>, h: Hash, (off, c, d): (u64, u32, u32),
-        mut visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<(), E> {
+        visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<(), E> {
         let corrupt = |what: &str| Error::Corrupt { blob: h, what: what.into() };
-        let input = ViewRange { view: Arc::clone(v), pos: off, end: off + u64::from(c) };
+        let visit = std::cell::RefCell::new(visit);
+        let stopped = std::cell::RefCell::new(None);
+        let input = ViewRange {
+            view: Arc::clone(v), pos: off, end: off + u64::from(c),
+            visit: &visit, stopped: &stopped,
+        };
         let mut decoder = zstd::stream::read::Decoder::new(input)
             .map_err(|_| corrupt("invalid frame decoder"))?.single_frame();
         decoder.window_log_max(31).map_err(Error::Io)?;
         let mut decoded = 0u64;
         let mut buf = [0u8; 65536];
         loop {
-            visit(&[])?;
-            let n = decoder.read(&mut buf).map_err(|error| {
+            (visit.borrow_mut())(&[])?;
+            let read = decoder.read(&mut buf);
+            // io::Read cannot carry E; recover the original caller failure before
+            // classifying decoder/checksum errors. Both cells live only for this call.
+            if let Some(error) = stopped.borrow_mut().take() {
+                return Err(error);
+            }
+            let n = read.map_err(|error| {
                 if error.raw_os_error().is_some() { Error::Io(error) }
                 else { corrupt("plain frame decode/checksum") }
             })?;
             if n == 0 { break; }
             decoded += n as u64;
             if decoded > u64::from(d) { return Err(corrupt("frame exceeds seek length").into()); }
-            visit(&buf[..n])?;
+            (visit.borrow_mut())(&buf[..n])?;
         }
         let input = decoder.finish();
         if decoded != u64::from(d) || input.get_ref().pos - input.buffer().len() as u64 != off + u64::from(c) {
