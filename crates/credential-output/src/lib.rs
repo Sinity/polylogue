@@ -490,6 +490,10 @@ impl Masker {
             Ok(())
         }
     }
+    /// Each settled scalar or complete replacement marker is supplied to
+    /// write_all as one atom. Display-fitting sinks must accept that whole
+    /// atom or return an error. Ordinary streams may short-write as usual and
+    /// receive identical bytes.
     pub fn push(&mut self, text: &str, sink: &mut impl Write) -> io::Result<()> {
         self.check_open()?;
         let result = text.chars().try_for_each(|c| self.step(c, sink));
@@ -761,7 +765,7 @@ impl Masker {
                     .rendered
                     .is_some_and(|last| r.start < last.end && last.start < r.end)
                 {
-                    write!(sink, "[credential: {}, masked]", r.kind)?;
+                    sink.write_all(format!("[credential: {}, masked]", r.kind).as_bytes())?;
                     self.rendered = Some(r);
                 } else if let Some(last) = &mut self.rendered {
                     last.end = last.end.max(r.end);

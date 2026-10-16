@@ -2,6 +2,7 @@
 use polylogue_engine::owner::{Handle, Owner};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, Writer};
+pub mod model_read;
 mod output_json;
 mod protocol;
 pub mod reference_read;
@@ -241,7 +242,7 @@ fn serve(
                     } else {
                         vec![]
                     };
-                    json!({"outcome":if status.recovery.is_some(){"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","provider-progress","selected-message-terminal-read","selected-session-json-read","session-query-list-prose-v1"],"product_path":"partial"})
+                    json!({"outcome":if status.recovery.is_some(){"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"capabilities":["schema","status","context-qualified-immutable-retention","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})
@@ -250,6 +251,9 @@ fn serve(
         }
         Ok(request) if request["command"] == "query" => {
             return session_query::serve(&mut stream, &request, reader).map_err(|e| e.to_string());
+        }
+        Ok(request) if request["command"] == "model-read" => {
+            return model_read::serve(&mut stream, &request, reader).map_err(|e| e.to_string());
         }
         Ok(request) if request["command"] == "session-read" => {
             return session_read::serve(&mut stream, &request, reader).map_err(|e| e.to_string());

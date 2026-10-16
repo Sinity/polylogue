@@ -66,7 +66,7 @@ struct BodyDigest {
 
 /// Frame each SQLite scalar including null/type/length. Rows are borrowed;
 /// metadata admission precedes hashing and no normalized payload is decoded.
-fn hash_row(
+pub(super) fn hash_row(
     connection: &Connection,
     path: &Path,
     sql: &str,

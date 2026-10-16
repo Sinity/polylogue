@@ -21,6 +21,21 @@ fn error(kind: ErrorKind, message: impl Into<String>) -> Failure {
 fn io_error(error: impl ToString) -> Failure {
     Failure::new(ErrorKind::Io, error.to_string())
 }
+fn model_read_io_error(error: io::Error) -> Failure {
+    let kind = match error.kind() {
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ErrorKind::Timeout,
+        _ => ErrorKind::Io,
+    };
+    let mut failure = Failure::new(kind, format!("bounded model transport: {error}"));
+    if failure.kind == ErrorKind::Timeout {
+        let suggestion =
+            "Use a narrower Message/block reference or a smaller display budget before retrying.";
+        failure.message.push_str(". ");
+        failure.message.push_str(suggestion);
+        failure.suggestion = Some(suggestion.into());
+    }
+    failure
+}
 fn schema() -> serde_json::Value {
     json!({"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Polylogue foundation configuration","type":"object","properties":{"archive":{"type":"string","description":"CLI --archive; default XDG_DATA_HOME/polylogue"}},"additionalProperties":false})
 }
@@ -45,7 +60,7 @@ fn run() -> Result<i32, Failure> {
     }
     let mut out = io::stdout().lock();
     if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|SID export --format json --to DIR|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Exact native Session JSON directory export shares the pinned read; general exports and MCP remain unavailable.").map_err(io_error)?;
+        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|REF read --budget TOKENS [--continuation TOKEN]|SID export --format json --to DIR|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Exact native Session JSON directory export shares the pinned read. Bounded model reads support retained Text/Thinking selections, within-block continuation and measured structured budgets; included tool kinds and extra rendering options refuse. General exports and MCP remain unavailable.").map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -95,6 +110,8 @@ fn run() -> Result<i32, Failure> {
         writeln!(out).map_err(io_error)?;
         return Ok(5);
     }
+    let model_read = polylogue::model_read::cli(&args)
+        .map_err(|v| error(ErrorKind::InvalidQuery, v.to_string()))?;
     let terminal_read = args.first().is_some_and(|s| s.starts_with("message:"))
         && (args.len() == 2 && args[1] == "read"
             || args.len() == 4 && args[1..] == ["read", "--format", "terminal"]);
@@ -140,7 +157,9 @@ fn run() -> Result<i32, Failure> {
     } else {
         None
     };
-    let command = if session_export || session_json || session_terminal {
+    let command = if let Some(request) = &model_read {
+        Some(request.clone())
+    } else if session_export || session_json || session_terminal {
         Some(json!({"command":"session-read","reference":args[0],"format":"json"}))
     } else if terminal_read {
         Some(json!({"command":"read","reference":args[0],"format":"terminal"}))
@@ -278,6 +297,13 @@ fn run() -> Result<i32, Failure> {
         }
         return reply_exit_code(&value);
     }
+    if let Some(request) = &model_read {
+        let value =
+            polylogue::model_read::request(&socket, request).map_err(model_read_io_error)?;
+        serde_json::to_writer(&mut out, &value).map_err(io_error)?;
+        writeln!(out).map_err(io_error)?;
+        return reply_exit_code(&value);
+    }
     if terminal_read || session_json || session_terminal {
         let reply = if session_json {
             polylogue::session_read::request(&socket, &args[0], &mut out)
@@ -375,6 +401,25 @@ fn reply_exit_code(value: &serde_json::Value) -> Result<i32, Failure> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn model_transport_deadlines_preserve_timeout_exit_seven() {
+        for kind in [io::ErrorKind::TimedOut, io::ErrorKind::WouldBlock] {
+            let failure = model_read_io_error(io::Error::new(kind, "synthetic deadline"));
+            assert_eq!(failure.kind, ErrorKind::Timeout);
+            assert_eq!(failure.outcome().exit_code(), 7);
+            assert!(failure.suggestion.is_some());
+            assert!(!failure.retryable);
+            assert!(failure.message.contains("narrower Message/block reference"));
+        }
+        assert_eq!(
+            model_read_io_error(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "synthetic frame"
+            ))
+            .kind,
+            ErrorKind::Io
+        );
+    }
     #[test]
     fn remote_outcomes_preserve_typed_exit_codes() {
         for kind in [

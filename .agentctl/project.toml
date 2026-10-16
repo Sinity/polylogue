@@ -72,3 +72,13 @@ timeout_seconds = 1800
 
 scratch = "nvme"
 cache = "none"
+
+[operations.bounded_read_demo]
+description = "Exercise one explicit binary through independent retained CLI bounded-read controls"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-bounded-read.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 300
+scratch = "nvme"
+cache = "none"

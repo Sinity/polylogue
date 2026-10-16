@@ -1198,3 +1198,376 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
     assert_eq!(replay["retained"], appended["retained"]);
     assert_eq!(world.read(&reference(), input, 14), after);
 }
+
+fn model_fixture(huge: &str, extra: bool) -> Vec<u8> {
+    let mut rows =
+        vec![json!({"type":"ai-title","aiTitle":"Bounded neutral control","sessionId":SID})];
+    let mut parent = Value::Null;
+    let entries = if extra {
+        vec![
+            ("bounded-first", "A repeated neutral passage."),
+            ("bounded-huge", huge),
+            ("bounded-repeat", "A repeated neutral passage."),
+            ("bounded-appended", "Later unrelated neutral fact."),
+        ]
+    } else {
+        vec![
+            ("bounded-first", "A repeated neutral passage."),
+            ("bounded-huge", huge),
+            ("bounded-repeat", "A repeated neutral passage."),
+        ]
+    };
+    for (i, (id, text)) in entries.into_iter().enumerate() {
+        rows.push(json!({"type":"user","uuid":id,"parentUuid":parent,"sessionId":SID,"isSidechain":false,"timestamp":format!("2026-10-01T08:{i:02}:00.000Z"),"promptSource":"typed","message":{"role":"user","content":text}}));
+        parent = json!(id);
+    }
+    rows.into_iter()
+        .flat_map(|v| (v.to_string() + "\n").into_bytes())
+        .collect()
+}
+fn model_ref(native: &str) -> String {
+    let sid = polylogue_model::SessionId::from_stored(reference()).unwrap();
+    format!(
+        "block:{}",
+        polylogue_model::BlockId::new(polylogue_model::MessageId::new(sid, native).unwrap(), 0)
+            .as_str()
+    )
+}
+fn model_call(world: &World, call: &Value, budget: Option<u64>) -> Value {
+    let mut args = vec![call["ref"].as_str().unwrap().to_owned(), "read".to_owned()];
+    if let Some(b) = budget {
+        args.extend(["--budget".into(), b.to_string()]);
+    }
+    if let Some(c) = call["continuation"].as_str() {
+        args.extend(["--continuation".into(), c.into()]);
+    }
+    let out = world.cli(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(
+        matches!(out.status.code(), Some(0 | 2 | 3 | 4 | 5 | 7)),
+        "{out:?}; daemon {}",
+        world.log()
+    );
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {out:?}"))
+}
+#[test]
+fn model_cli_follows_only_emitted_calls_through_unicode_middle_and_repeated_identities() {
+    let world = World::new();
+    let huge = format!(
+        "BEGIN BLUE\n{}MIDDLE AMBER\n{}END GREEN\n",
+        "🙂e\u{301} \"\\\u{1b} [neutral] ".repeat(1700),
+        "λ東京🙂 ".repeat(1900)
+    );
+    let secret = format!("ghp_{}", "A".repeat(36));
+    let huge = format!("{} {secret} {}", "n".repeat(4090), huge);
+    let input = world.input("bounded.jsonl", &model_fixture(&huge, false));
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000800");
+    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    let expected = [
+        ("bounded-first", "A repeated neutral passage.".to_owned()),
+        (
+            "bounded-huge",
+            huge.replace('\u{1b}', "\\x1b")
+                .replace(&secret, "[credential: GitHub token, masked]"),
+        ),
+        ("bounded-repeat", "A repeated neutral passage.".to_owned()),
+    ];
+    let mut call = json!({"ref":reference()});
+    let mut budget = 1700;
+    let mut expected_index = 0;
+    let mut scalar = 0u64;
+    let mut reconstructed = String::new();
+    let mut pages = 0;
+    loop {
+        let page = model_call(&world, &call, Some(budget));
+        assert_ne!(page["outcome"], "error", "{page}");
+        assert!((serde_json::to_vec(&page).unwrap().len() as u64).div_ceil(4) <= budget);
+        assert!(!page.to_string().contains(&secret));
+        assert_eq!(page["rendered_as"], "native-model-read-v1");
+        assert_eq!(page["session"]["display_title"], "Bounded neutral control");
+        assert!(page["settlement"].is_object());
+        assert!(page["up_to_date"].is_boolean());
+        let spans = page["shown"].as_array().unwrap();
+        assert_eq!(spans.len(), 1);
+        let span = &spans[0];
+        let (native, body) = &expected[expected_index];
+        assert_eq!(span["block"], model_ref(native));
+        assert_eq!(span["written_by"], "human");
+        assert_eq!(span["display_start"], scalar);
+        let text = span["text"].as_str().unwrap();
+        assert!(!text.is_empty());
+        assert_eq!(
+            span["display_end"].as_u64().unwrap() - scalar,
+            text.chars().count() as u64
+        );
+        assert!(!span["sources"].as_array().unwrap().is_empty());
+        for source in span["sources"].as_array().unwrap() {
+            assert!(source["start"].as_u64().unwrap() < source["end"].as_u64().unwrap());
+        }
+        reconstructed.push_str(text);
+        scalar += text.chars().count() as u64;
+        if reconstructed == *body {
+            expected_index += 1;
+            scalar = 0;
+            reconstructed.clear();
+        }
+        pages += 1;
+        assert!(pages < 250);
+        if page["next"].is_null() {
+            break;
+        }
+        let next = page["next"].clone();
+        assert_ne!(next, call);
+        if pages == 2 {
+            let grow = model_call(&world, &next, Some(2200));
+            let shrink = model_call(&world, &next, Some(1300));
+            assert_eq!(
+                grow["shown"][0]["display_start"],
+                shrink["shown"][0]["display_start"]
+            );
+            assert!(
+                grow["shown"][0]["display_end"].as_u64().unwrap()
+                    > shrink["shown"][0]["display_end"].as_u64().unwrap()
+            );
+            let tiny = model_call(&world, &next, Some(128));
+            assert_eq!(tiny["error"]["reason"], "insufficient_budget");
+            assert!(serde_json::to_vec(&tiny).unwrap().len().div_ceil(4) <= 128);
+            let sufficient = tiny["error"]["sufficient_budget"].as_u64().unwrap();
+            let retry = model_call(&world, &next, Some(sufficient));
+            assert_ne!(retry["outcome"], "error", "{retry}");
+            assert_eq!(
+                retry["shown"][0]["display_start"],
+                grow["shown"][0]["display_start"]
+            );
+        }
+        call = next;
+        budget = if pages % 2 == 0 { 1700 } else { 1500 };
+    }
+    assert_eq!(expected_index, 3);
+    assert!(pages > 10);
+    fs::remove_file(&input).unwrap();
+    // This world remains running here; restart qualification is in the second control.
+}
+#[test]
+fn model_exact_block_append_restart_wrong_ref_options_and_selected_edit_refuse_correctly() {
+    let mut world = World::new();
+    let huge = "Neutral🙂 ".repeat(6000);
+    let input = world.input("bounded.jsonl", &model_fixture(&huge, false));
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000801");
+    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    let first = model_call(
+        &world,
+        &json!({"ref":model_ref("bounded-huge")}),
+        Some(1600),
+    );
+    assert_ne!(first["outcome"], "error", "{first}");
+    let next = first["next"].clone();
+    assert!(next.is_object());
+    let session = model_call(&world, &json!({"ref":reference()}), Some(1600));
+    let session_next = session["next"].clone();
+    let mut wrong = next.clone();
+    wrong["ref"] = json!(model_ref("bounded-repeat"));
+    assert_eq!(
+        model_call(&world, &wrong, None)["error"]["reason"],
+        "cross_reference_continuation"
+    );
+    let out = world.cli(&[
+        &model_ref("bounded-huge"),
+        "read",
+        "--budget",
+        "1600",
+        "--view",
+        "raw",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        model_call(&world, &json!({"ref":"note:unknown"}), Some(1600))["error"]["kind"],
+        "not_yet_available"
+    );
+    let tiny = model_call(&world, &json!({"ref":model_ref("bounded-huge")}), Some(1));
+    assert_eq!(tiny["error"]["minimum_budget"], 128);
+    assert!(serde_json::to_vec(&tiny).unwrap().len().div_ceil(4) <= 128);
+    // This supported unrelated main source cannot replace the selected donor.
+    // A complete competing snapshot below can change its preferred origin.
+    let other = "7f3a2c10-0002-4000-8000-000000000002";
+    let extra = json!({"type":"user","uuid":"unrelated-message","parentUuid":null,"sessionId":other,"isSidechain":false,"timestamp":"2026-10-01T08:03:00.000Z","promptSource":"typed","message":{"role":"user","content":"Later unrelated neutral fact."}});
+    let append = world.input("unrelated.jsonl", (extra.to_string() + "\n").as_bytes());
+    let out = wait_import_context(
+        &world,
+        &append,
+        "01900000-0000-7000-8000-000000000802",
+        "20",
+        &["claude-main", other],
+    );
+    assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
+    let resumed = model_call(&world, &next, None);
+    assert_ne!(resumed["outcome"], "error", "{resumed}");
+    assert_eq!(
+        resumed["shown"][0]["display_start"],
+        first["shown"][0]["display_end"]
+    );
+    let competing = world.input("same-text-new-origin.jsonl", &model_fixture(&huge, true));
+    let receipt = world.import(&competing, "01900000-0000-7000-8000-000000000804");
+    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 4);
+    assert_eq!(
+        model_call(&world, &session_next, None)["error"]["reason"],
+        "stale_read"
+    );
+    assert_eq!(
+        model_call(&world, &next, None)["error"]["reason"],
+        "stale_read"
+    );
+    fs::remove_file(&competing).unwrap();
+    fs::remove_file(&input).unwrap();
+    fs::remove_file(&append).unwrap();
+    world.restart();
+    assert_eq!(
+        model_call(&world, &next, None)["error"]["reason"],
+        "invalid_continuation"
+    );
+    let fresh = model_call(
+        &world,
+        &json!({"ref":model_ref("bounded-huge")}),
+        Some(1600),
+    );
+    assert_ne!(fresh["outcome"], "error", "{fresh}");
+    assert_eq!(fresh["shown"][0]["display_start"], 0);
+    // Content replacement is checked through the native importer, never SQL.
+    let edit = world.input(
+        "edited.jsonl",
+        &model_fixture(&(huge + " selected edit"), true),
+    );
+    let receipt = world.import(&edit, "01900000-0000-7000-8000-000000000803");
+    let until = Instant::now() + WAIT;
+    loop {
+        let progress = world.raw_progress(receipt["retained"]["id"].as_str().unwrap());
+        if !progress["failure"].is_null() {
+            break;
+        }
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(5));
+    }
+    let after = model_call(&world, &fresh["next"], Some(1600));
+    assert_eq!(
+        after["error"]["reason"],
+        "current_selected_basis_unavailable"
+    );
+    assert!(after["outcome"] == "error", "{after}");
+}
+
+#[test]
+fn model_mixed_session_refuses_unimplemented_included_tool_blocks_before_content() {
+    let world = World::new();
+    let input = world.input("mixed.jsonl", MORROW);
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000805");
+    world.read(
+        &reference(),
+        receipt["retained"]["id"].as_str().unwrap(),
+        12,
+    );
+    let page = model_call(&world, &json!({"ref":reference()}), Some(4000));
+    assert_eq!(page["error"]["reason"], "unsupported_model_block_kind");
+    assert!(page.get("shown").is_none());
+    assert!(page.get("next").is_none());
+}
+
+#[test]
+fn model_disconnect_and_expired_deadline_release_the_reader_without_source_owner_cancellation() {
+    let mut world = World::new();
+    let body = "Neutral🙂 ".repeat(9000);
+    let input = world.input("disconnect.jsonl", &model_fixture(&body, false));
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000806");
+    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    let socket = polylogue::socket_path(&fs::canonicalize(&world.archive).unwrap(), &world.runtime);
+    let mut peer = UnixStream::connect(socket).unwrap();
+    writeln!(peer,"{}",json!({"command":"model-read","reference":model_ref("bounded-huge"),"budget_tokens":1000000})).unwrap();
+    drop(peer);
+    let before = Instant::now();
+    assert_eq!(world.cli(&["status"]).status.code(), Some(0));
+    assert!(before.elapsed() < Duration::from_secs(3));
+    assert_ne!(
+        model_call(
+            &world,
+            &json!({"ref":model_ref("bounded-huge")}),
+            Some(1800)
+        )["outcome"],
+        "error"
+    );
+    // Reuse the real retained reader with an already expired shared deadline.
+    world.kill();
+    let reader = std::sync::Mutex::new(polylogue_store::ReadHandle::open(&world.archive).unwrap());
+    let request =
+        json!({"command":"model-read","reference":model_ref("bounded-huge"),"budget_tokens":1800});
+    let expired = polylogue::model_read::execute(
+        &reader,
+        &request,
+        Instant::now() - Duration::from_secs(1),
+        &mut || false,
+    );
+    assert_eq!(expired["error"]["reason"], "reader_cancelled_or_deadline");
+    assert_eq!(expired["error"]["kind"], "timeout");
+    assert_eq!(
+        serde_json::from_value::<polylogue_model::types::Failure>(expired["error"].clone())
+            .unwrap()
+            .outcome()
+            .exit_code(),
+        7
+    );
+    assert!(expired.get("shown").is_none());
+    let fresh = polylogue::model_read::execute(
+        &reader,
+        &request,
+        Instant::now() + Duration::from_secs(30),
+        &mut || false,
+    );
+    assert_ne!(fresh["outcome"], "error", "{fresh}");
+}
+
+#[test]
+fn model_late_native_metadata_growth_retries_same_cursor_without_rewinding() {
+    let world = World::new();
+    let huge = "Neutral🙂 ".repeat(9000);
+    let bytes = model_fixture(&huge, false);
+    let no_title = bytes
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice::<Value>(line).unwrap())
+        .filter(|r| r["type"] != "ai-title")
+        .flat_map(|r| (r.to_string() + "\n").into_bytes())
+        .collect::<Vec<_>>();
+    let input = world.input("late-no-title.jsonl", &no_title);
+    let receipt = world.import(&input, "01900000-0000-7000-8000-000000000807");
+    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    let mut call = json!({"ref":model_ref("bounded-huge")});
+    let start = loop {
+        let page = model_call(&world, &call, Some(1800));
+        assert_ne!(page["outcome"], "error", "{page}");
+        let end = page["shown"][0]["display_end"].as_u64().unwrap();
+        call = page["next"].clone();
+        assert!(call.is_object());
+        if end > 10000 {
+            break end;
+        }
+    };
+    let title = "Neutral title ".to_owned() + &"q".repeat(131073);
+    let metadata = world.input(
+        "late-title.jsonl",
+        (json!({"type":"ai-title","aiTitle":title,"sessionId":SID}).to_string() + "\n").as_bytes(),
+    );
+    let receipt = world.import(&metadata, "01900000-0000-7000-8000-000000000808");
+    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    let refusal = model_call(&world, &call, Some(1800));
+    assert_eq!(
+        refusal["error"]["reason"], "insufficient_budget",
+        "{refusal}"
+    );
+    assert!(refusal.get("shown").is_none());
+    assert!(serde_json::to_vec(&refusal).unwrap().len().div_ceil(4) <= 128);
+    let sufficient = refusal["error"]["sufficient_budget"].as_u64().unwrap();
+    assert!(sufficient > 32768);
+    let retry = model_call(&world, &call, Some(sufficient));
+    assert_ne!(retry["outcome"], "error", "{retry}");
+    assert_eq!(retry["shown"][0]["display_start"], start);
+    assert_eq!(retry["session"]["display_title"], title);
+    assert!((serde_json::to_vec(&retry).unwrap().len() as u64).div_ceil(4) <= sufficient);
+}
