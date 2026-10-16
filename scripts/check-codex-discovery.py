@@ -98,13 +98,22 @@ def lifecycle(binary, output):
         body = read['shown'][0]
         assert body['operation']['output'] == 'independent retained output', body
         # Raw source facts are independent of the product's parser output.
-        source = body['sources'][0]
-        origin = source['origin']
-        assert origin['representation'] == 'rollout', source
-        cited = json.loads(before_bytes[origin['start']:origin['end']])
-        assert cited['type'] == 'event_msg' and cited['payload']['type'] == 'item_completed', cited
-        assert cited['payload']['thread_id'] == S and cited['payload']['turn_id'] == 'T', cited
-        assert cited['payload']['item']['id'] == 'C' and cited['payload']['item']['aggregated_output'] == 'independent retained output', cited
+        by_tag = {}
+        for source in body['sources']:
+            origin = source['origin']
+            assert origin['representation'] == 'rollout', source
+            assert source['start'] == origin['start'] and source['end'] == origin['end'], source
+            by_tag[origin['tag']] = json.loads(before_bytes[origin['start']:origin['end']])
+        assert set(by_tag) == {'call', 'result', 'status'}, by_tag
+        call, result, completed = (by_tag[tag] for tag in ('call', 'result', 'status'))
+        assert call['type'] == 'response_item' and call['payload']['type'] == 'function_call'
+        assert call['payload']['call_id'] == 'C' and call['payload']['name'] == 'exec_command'
+        assert json.loads(call['payload']['arguments']) == {'cmd': 'same command'}
+        assert result['type'] == 'response_item' and result['payload']['type'] == 'function_call_output'
+        assert result['payload']['call_id'] == 'C' and result['payload']['output'] == 'independent retained output'
+        assert completed['type'] == 'event_msg' and completed['payload']['type'] == 'item_completed'
+        assert completed['payload']['thread_id'] == S and completed['payload']['turn_id'] == 'T'
+        assert completed['payload']['item']['id'] == 'C' and completed['payload']['item']['aggregated_output'] == 'independent retained output'
         search = run.cli(['origin:codex', '--json'])
         assert all(row['id'] != 'codex:' + P for row in search['rows']), search
         assert one_pending(search) == pending
