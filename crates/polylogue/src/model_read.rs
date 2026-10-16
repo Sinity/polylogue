@@ -245,10 +245,7 @@ fn select(reader: &ReadHandle, reference: &str) -> Result<Selection, Value> {
         (Some(m), Some(slot))
     } else if let Some(id) = reference.strip_prefix("message:") {
         (Some(message(reader, id)?), None)
-    } else if reference.starts_with("note:")
-        || reference.starts_with("page:")
-        || reference.starts_with("result:")
-    {
+    } else if reference.starts_with("page:") || reference.starts_with("result:") {
         return Err(unavailable("unsupported_reference_kind"));
     } else {
         (None, None)

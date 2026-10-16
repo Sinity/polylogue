@@ -13,6 +13,7 @@
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = [ pkgs.zstd ];
         doCheck = true;
+        cargoTestFlags = [ "--no-fail-fast" ];
         postCheck = "cargo run --offline --locked -p xtask -- boundaries";
       };
     in {

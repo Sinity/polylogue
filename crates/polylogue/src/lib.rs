@@ -326,7 +326,8 @@ pub fn request_value_until(
 ) -> Result<Value, io::Error> {
     request_metadata(socket, value, Some(deadline), None)
 }
-/// A cancellable read-only metadata request, sharing the normal decoder.
+/// A cancellable metadata request, sharing the normal decoder. Closing its
+/// transport does not undo a write already accepted by the archive owner.
 pub fn request_value_cancellable(
     socket: &Path,
     value: &Value,

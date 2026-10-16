@@ -1454,7 +1454,15 @@ fn model_exact_block_append_restart_wrong_ref_options_and_selected_edit_refuse_c
     assert!(out.stdout.is_empty());
     assert_eq!(
         model_call(&world, &json!({"ref":"note:unknown"}), Some(1600))["error"]["kind"],
-        "not_yet_available"
+        "invalid_query"
+    );
+    assert_eq!(
+        model_call(
+            &world,
+            &json!({"ref":"note:01900000-0000-7000-8000-999999999999"}),
+            Some(1600)
+        )["error"]["kind"],
+        "not_found"
     );
     let tiny = model_call(&world, &json!({"ref":model_ref("bounded-huge")}), Some(1));
     assert_eq!(tiny["error"]["minimum_budget"], 128);
