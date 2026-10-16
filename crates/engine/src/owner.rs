@@ -489,7 +489,7 @@ impl Actor {
                         .authored_recovery()
                         .and_then(|recovery| {
                             self.writer
-                                .write_note(&request)
+                                .write_note_until(&request, deadline)
                                 .map(|revision| AuthoredReply { revision, recovery })
                         })
                         .map_err(Error::Store)

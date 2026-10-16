@@ -69,7 +69,7 @@ class Run:
                                        stdout=subprocess.DEVNULL, stderr=self.daemon_log)
         until = time.monotonic() + 15
         while True:
-            result = self.cli(["status"], allowed=(0, 4, 6))
+            result = self.cli(["status"], allowed=(0, 4, 5, 6))
             if result and result.get("outcome") != "error":
                 return
             assert self.daemon.poll() is None, "daemon exited"

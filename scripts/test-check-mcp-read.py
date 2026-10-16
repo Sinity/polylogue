@@ -44,15 +44,16 @@ class EvidenceTests(unittest.TestCase):
 
     def test_full_discovery_is_precise_and_does_not_advertise_collapsed_modes(self):
         tool={'inputSchema':{'required':['ref'],'properties':{
-            'ref':{},'budget_tokens':{},'continuation':{},'branches':{'type':'boolean'},'view':{'enum':['dialogue','transcript']},
+            'ref':{},'budget_tokens':{},'continuation':{},'branches':{'type':'boolean'},'view':{'enum':['dialogue','transcript','history','withdrawals','current','value','annotations']},
             **{key:{'enum':['full']} for key in ('tools','thinking','harness')}}},
             'description':'Explicit view:transcript, 65536-byte normalized admission'}
         mcp.validate_read_discovery(tool)
-        for mutation in ('missing tools','extra mode','missing transcript','old help','wrong branches type'):
+        for mutation in ('missing tools','extra mode','missing transcript','old help','wrong branches type','missing authored page'):
             broken=json.loads(json.dumps(tool))
             if mutation=='missing tools': broken['inputSchema']['properties'].pop('tools')
             elif mutation=='extra mode': broken['inputSchema']['properties']['harness']['enum'].append('collapsed')
             elif mutation=='missing transcript': broken['inputSchema']['properties']['view']['enum']=['dialogue']
+            elif mutation=='missing authored page': broken['inputSchema']['properties']['view']['enum'].remove('history')
             elif mutation=='old help': broken['description']='Text only'
             else: broken['inputSchema']['properties']['branches']['type']='string'
             with self.subTest(mutation=mutation),self.assertRaises(AssertionError):

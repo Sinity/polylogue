@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const REQUEST_BYTES: usize = 65536;
 pub const MAX_TARGETS: usize = 8;
-pub const MAX_GRAPH: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

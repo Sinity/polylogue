@@ -153,7 +153,7 @@ fn check(until: Instant, cancel: &mut dyn FnMut() -> bool) -> Result<(), Value> 
         Ok(())
     }
 }
-fn key() -> io::Result<&'static [u8; 32]> {
+pub(crate) fn key() -> io::Result<&'static [u8; 32]> {
     static KEY: OnceLock<[u8; 32]> = OnceLock::new();
     if let Some(key) = KEY.get() {
         return Ok(key);
@@ -162,10 +162,10 @@ fn key() -> io::Result<&'static [u8; 32]> {
     std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(KEY.get_or_init(|| bytes))
 }
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
-fn unhex(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 != 0 {
         return None;
     }
@@ -580,9 +580,10 @@ pub fn execute(
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
 ) -> Value {
-    if request["reference"]
-        .as_str()
-        .is_some_and(|r| r.starts_with("note:"))
+    if request["view"] == "annotations"
+        || request["reference"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("note:"))
     {
         return match reader.lock() {
             Ok(reader) => crate::authored::read(request, &reader, until, cancel),
@@ -736,12 +737,15 @@ fn run(
             .lock()
             .map_err(|_| unavailable("reader_lock_poisoned"))?;
         let snapshot = stored(reader.authored_snapshot())?;
-        let notes = crate::authored::backlinks(&snapshot, &reader, reference, until, cancel)?;
-        if notes["families"].as_array().is_some_and(|v| !v.is_empty()) {
-            let notes = crate::authored::fit(notes, MAX_BUDGET, false, until);
-            if notes["outcome"] == "error" {
-                return Err(notes);
-            }
+        let notes = crate::authored::bounded_backlinks(
+            &snapshot, &reader, reference, budget, until, cancel,
+        );
+        if notes["complete"] == false {
+            qualification["outcome"] = json!("degraded");
+            qualification["notes"].as_array_mut().expect("notes").push(json!("Authored associations are incomplete in this primary-content page; follow the named authored follow-up calls. This page does not certify complete authored context."));
+        }
+        if notes["complete"] == false || notes["families"].as_array().is_some_and(|v| !v.is_empty())
+        {
             Some(notes)
         } else {
             None
@@ -759,7 +763,15 @@ fn run(
     }
     basis.update(reference.as_bytes());
     if let Some(notes) = &authored_notes {
-        basis.update(&serde_json::to_vec(notes).expect("authored metadata"));
+        // Context authority is the retained authored counter, independently of
+        // how much side metadata fits this page's presentation budget.
+        basis.update(b"authored-context-v1\0");
+        basis.update(
+            &notes["archive_counter"]
+                .as_u64()
+                .expect("authored counter")
+                .to_le_bytes(),
+        );
     }
     let mut count = 0u64;
     let mut omitted = Omissions::default();
@@ -1014,6 +1026,12 @@ fn run(
         page["up_to_date"] = json!(q.up_to_date);
         page["recovery"] = json!(recovery);
         page["omitted"] = omitted.value(view);
+        page["primary_content_complete"] = json!(next.is_null());
+        page["authored_associations_complete"] = json!(
+            authored_notes
+                .as_ref()
+                .is_none_or(|n| n["complete"] == true)
+        );
         page["next"] = next;
         page["authority"] =
             json!("current selected-body visibility; native privacy/removal products unavailable");
@@ -1258,7 +1276,18 @@ pub fn cli(args: &[String]) -> Result<Option<Value>, Value> {
         let value = args
             .get(i + 1)
             .ok_or_else(|| refusal("missing_option_value"))?;
-        if key == "view" && !matches!(value.as_str(), "dialogue" | "transcript") {
+        if key == "view"
+            && !matches!(
+                value.as_str(),
+                "dialogue"
+                    | "transcript"
+                    | "history"
+                    | "withdrawals"
+                    | "current"
+                    | "value"
+                    | "annotations"
+            )
+        {
             return Err(refusal("unsupported_view"));
         }
         r[key] = if key == "budget_tokens" {
