@@ -38,6 +38,7 @@ pub struct Item {
     pub operation: Operation,
     pub sources: Vec<Citation>,
     pub representations: Vec<Citation>,
+    pub representations_complete: bool,
     pub associations: Vec<Association>,
     pub conflicting_representations: bool,
     pub selected: bool,
@@ -508,13 +509,20 @@ fn associations(reader: &ReadHandle, version: i64) -> Result<Vec<Association>> {
     }
     Ok(out)
 }
-fn citations(reader: &ReadHandle, id: &str, version: Option<i64>) -> Result<Vec<Citation>> {
+// Alternative metadata is a preview, independent of exact-body admission.
+const REPRESENTATION_PREVIEW_LIMIT: usize = 16;
+fn citations(
+    reader: &ReadHandle,
+    id: &str,
+    version: Option<i64>,
+    limit: usize,
+) -> Result<(Vec<Citation>, bool)> {
     let p = reader.root.join("index.db");
     let mut s = db(&p, || {
-        reader.index.prepare("SELECT i.id,s.source_chain,s.source_start,s.source_end,s.field,s.constructor,lower(hex(v.version_hash)) FROM tool_item_source s JOIN input_ref i ON i.pk=s.input_pk JOIN tool_item_version v ON v.pk=s.tool_item_version_pk JOIN tool_item t ON t.pk=s.tool_item_pk WHERE t.id=?1 AND (?2 IS NULL OR v.pk=?2) ORDER BY i.id,v.pk,s.source_start,s.slot LIMIT 4097")
+        reader.index.prepare("SELECT i.id,s.source_chain,s.source_start,s.source_end,s.field,s.constructor,lower(hex(v.version_hash)) FROM tool_item_source s JOIN input_ref i ON i.pk=s.input_pk JOIN tool_item_version v ON v.pk=s.tool_item_version_pk JOIN tool_item t ON t.pk=s.tool_item_pk WHERE t.id=?1 AND (?2 IS NULL OR v.pk=?2) ORDER BY i.id,v.pk,s.source_start,s.slot LIMIT ?3")
     })?;
-    let raw = db(&p, || {
-        s.query_map(params![id, version], |r| {
+    let mut raw = db(&p, || {
+        s.query_map(params![id, version, (limit + 1) as i64], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
@@ -527,13 +535,10 @@ fn citations(reader: &ReadHandle, id: &str, version: Option<i64>) -> Result<Vec<
         })?
         .collect::<rusqlite::Result<Vec<_>>>()
     })?;
-    if raw.len() > 4096 {
-        return Err(Error::ParserAdmission {
-            resource: "operation source citations",
-            required: raw.len() as u64,
-        });
-    }
-    raw.into_iter()
+    let complete = raw.len() <= limit;
+    raw.truncate(limit);
+    let citations = raw
+        .into_iter()
         .map(
             |(input, chain, start, end, origin, constructor, version_hash)| {
                 Ok(Citation {
@@ -548,11 +553,12 @@ fn citations(reader: &ReadHandle, id: &str, version: Option<i64>) -> Result<Vec<
                 })
             },
         )
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok((citations, complete))
 }
 #[derive(Default)]
 struct Verification {
-    ranges: std::collections::BTreeSet<(String, i64, u64, u64)>,
+    ranges: std::collections::BTreeSet<(String, i64, u64, u64, Option<[u8; 32]>)>,
     bytes: u64,
 }
 fn verify_sources(
@@ -561,10 +567,17 @@ fn verify_sources(
     verified: &mut Verification,
 ) -> Result<()> {
     for source in sources {
-        if !verified
-            .ranges
-            .insert((source.input.clone(), source.chain, source.start, source.end))
-        {
+        let expected = match &source.origin {
+            ToolOrigin::Rollout { raw_hash, .. } => Some(*raw_hash),
+            ToolOrigin::History { .. } => None,
+        };
+        if !verified.ranges.insert((
+            source.input.clone(),
+            source.chain,
+            source.start,
+            source.end,
+            expected,
+        )) {
             continue;
         }
         let length = source.end.checked_sub(source.start).ok_or(Error::Range)?;
@@ -581,6 +594,19 @@ fn verify_sources(
         if source.end < source.start {
             return Err(Error::Range);
         }
+        let mut record = if matches!(source.origin, ToolOrigin::Rollout { .. }) {
+            // The admitted JSONL framer excludes the newline and admits at
+            // most 1 MiB per record. Verify only this contributing record.
+            if length > 1024 * 1024 {
+                return Err(Error::ParserAdmission {
+                    resource: "operation rollout evidence bytes",
+                    required: length,
+                });
+            }
+            Some(Vec::with_capacity(length as usize))
+        } else {
+            None
+        };
         let mut at = source.start;
         let mut hash = blake3::Hasher::new();
         while at < source.end {
@@ -595,7 +621,20 @@ fn verify_sources(
                 return Err(bad("operation retained source range unavailable"));
             }
             hash.update(&chunk);
+            if let Some(record) = &mut record {
+                record.extend_from_slice(&chunk);
+            }
             at += chunk.len() as u64;
+        }
+        if let ToolOrigin::Rollout { raw_hash, .. } = &source.origin {
+            let canonical = polylogue_model::identity::canonical_record(
+                record.as_deref().unwrap_or_default(),
+                &["timestamp", "ordinal"],
+            )
+            .map_err(|e| bad(e.to_string()))?;
+            if blake3::hash(&canonical).as_bytes() != raw_hash {
+                return Err(bad("operation rollout source evidence hash differs"));
+            }
         }
         if matches!(source.origin, ToolOrigin::History { .. })
             && (source.start != 0
@@ -642,9 +681,16 @@ fn load_item(
                 .map_err(|e| bad(e.to_string()))?,
         );
     }
-    let sources = citations(reader, &reference, Some(version))?;
+    let (sources, sources_complete) = citations(reader, &reference, Some(version), 4096)?;
+    if !sources_complete {
+        return Err(Error::ParserAdmission {
+            resource: "operation source citations",
+            required: 4097,
+        });
+    }
     verify_sources(reader, &sources, verified)?;
-    let representations = citations(reader, &reference, None)?;
+    let (representations, representations_complete) =
+        citations(reader, &reference, None, REPRESENTATION_PREVIEW_LIMIT)?;
     let associations = associations(reader, version)?;
     let selected: bool = db(&p, || {
         reader.index.query_row(
@@ -663,6 +709,7 @@ fn load_item(
         operation,
         sources,
         representations,
+        representations_complete,
         associations,
         conflicting_representations,
         selected,
@@ -824,6 +871,55 @@ impl ReadHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn same_range_with_a_different_expected_rollout_hash_is_not_cached_as_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic.jsonl");
+        let raw = br#"{"value":"retained","timestamp":"volatile"}"#;
+        std::fs::write(&path, raw).unwrap();
+        let mut writer = Writer::open(&dir.path().join("archive")).unwrap();
+        let source = writer
+            .acquire_claude_main(
+                &path,
+                "synthetic-machine",
+                "synthetic-host",
+                "synthetic-input",
+                1,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap();
+        let canonical =
+            polylogue_model::identity::canonical_record(raw, &["timestamp", "ordinal"]).unwrap();
+        let good = Citation {
+            input: source.input.id,
+            chain: source.input.chain,
+            start: 0,
+            end: raw.len() as u64,
+            origin: ToolOrigin::Rollout {
+                tag: "call".into(),
+                start: 0,
+                end: raw.len() as u64,
+                raw_hash: *blake3::hash(&canonical).as_bytes(),
+            },
+            version_hash: "synthetic-version".into(),
+            constructor: CODEX_CONSTRUCTOR.into(),
+            adapter_revision: CODEX_REVISION.into(),
+        };
+        let mut different = good.clone();
+        different.origin = ToolOrigin::Rollout {
+            tag: "status".into(),
+            start: 0,
+            end: raw.len() as u64,
+            raw_hash: [0; 32],
+        };
+        let reader = writer.read_handle().unwrap();
+        assert!(verify_sources(&reader, &[good.clone()], &mut Verification::default()).is_ok());
+        let mut verified = Verification::default();
+        assert!(matches!(
+            verify_sources(&reader, &[good, different], &mut verified),
+            Err(Error::Invariant(message)) if message == "operation rollout source evidence hash differs"
+        ));
+    }
     #[test]
     fn deduplicated_metadata_versions_acquire_leases_but_text_shares_one_owner() {
         let dir = tempfile::tempdir().unwrap();

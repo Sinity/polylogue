@@ -79,8 +79,14 @@ Native UI items do not manufacture Messages.
 ## Presence and qualification
 
 Each version retains its own body, presence facts, constructor and source
-citations. `representations` additionally lists alternative immutable witnesses;
-those alternatives are not claimed to contribute to the selected body. A core
+citations. `representations` is a preview of at most 16 alternative source
+citations, ordered by input ID, immutable version and source range. These
+alternatives do not contribute to the requested body. `representations_complete`
+states whether the preview covers the retained history. A truncated preview adds
+`operation_representation_history` to `missing`; it supplies no history cursor.
+Already-known exact version references remain readable independently of this
+preview. Own source verification and conflict qualification across every retained
+version remain required even when the preview is incomplete. A core
 explicit empty `aggregated_output` is `output: ""`. The pinned UI conversion
 filters that empty display text, producing `output: null` while retaining a
 present result. Neither means missing result. A call without a completed result
@@ -108,7 +114,9 @@ coverage: a physical paginated projection supplies neither request boundaries
 nor proof that the entire Session was acquired. Current-row selection prefers a
 present result, present output and independently proved Message association;
 all historical versions remain addressable. Selected-body source availability
-is checked on every read. Unavailable selected bytes produce an error with no
+is checked on every read. Each cited rollout record must match its recorded
+canonical hash (with only the pinned top-level timestamp/ordinal exclusions);
+physical-history evidence must match the full retained snapshot digest. Unavailable selected bytes produce an error with no
 shown body, even if a normalized copy exists. An unavailable alternative does
 not invalidate an independent selected representation.
 
@@ -120,7 +128,8 @@ to 2 MiB, with at most 16 wrapper-overlap witnesses and 16 direct anchors.
 One publication attaches at most 17 selected association leaves through the
 existing fixed-depth persistent directories. Existing chunked immutable values
 hold admitted bodies. Population
-reads admit 4096 selected items, 4096 citations per item, 32 MiB of selected-source
+reads admit 4096 selected items, 4096 own-source citations per item, 16 preview
+citations per item, 32 MiB of selected-source
 byte verification and 4 MiB encoded data.
 Read display budgets are 1 through 1048576 estimated tokens and must fit the
 whole operation; operation-output continuations and resource qualification for
@@ -143,3 +152,14 @@ arrival orders, wrapper ambiguity, turn/legacy/classification controls,
 provisional references, restart, same-request retry and unavailable bytes.
 
 [Configured startup discovery](codex-configured-discovery.md) independently enumerates a bounded explicit Codex home and preserves prompt-history uncertainty through this same retained operation path.
+
+The finite `--operation-growth` profile admits at most 242 synthetic snapshots
+of one scoped native command with 16 recorded wrapper overlaps. Each own body
+has 17 small source citations and fixed output. It preserves import settlement
+failures separately from exact-read results. `--growth-replay DIR` copies an
+existing isolated profile archive for read controls; `--growth-recover` uses the
+ordinary stopped-archive recovery command instead, retaining its qualification.
+`--expect-growth-readable` requires ordinary-budget CLI/MCP value parity and
+checks wrong versions, changed/missing own bytes and independent historical
+source availability. This profile does not certify import scheduling performance
+or claim that the unchanged binary reached its 4096-citation hard refusal.

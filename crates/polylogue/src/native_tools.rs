@@ -29,13 +29,20 @@ pub fn query(
         }) {
             continue;
         }
-        rows.push(json!({"id":item.reference,"ref":format!("{}@{}",item.reference,item.version_hash),"session":item.operation.session,"turn":item.operation.turn,"invocation":item.operation.invocation,"kind":item.operation.kind,"agent_class":item.operation.agent_class,"correspondence":item.operation.correspondence,"conflicting_representations":item.conflicting_representations,"result_present":item.operation.result_present,"output_present":item.operation.output.is_some(),"outcome":item.operation.outcome,"message":item.operation.message,"wrapper":item.operation.wrapper,"wrapper_overlaps":item.operation.wrapper_overlaps,"sources":item.sources,"representations":item.representations,"associations":item.associations}));
+        rows.push(json!({"id":item.reference,"ref":format!("{}@{}",item.reference,item.version_hash),"session":item.operation.session,"turn":item.operation.turn,"invocation":item.operation.invocation,"kind":item.operation.kind,"agent_class":item.operation.agent_class,"correspondence":item.operation.correspondence,"conflicting_representations":item.conflicting_representations,"result_present":item.operation.result_present,"output_present":item.operation.output.is_some(),"outcome":item.operation.outcome,"message":item.operation.message,"wrapper":item.operation.wrapper,"wrapper_overlaps":item.operation.wrapper_overlaps,"sources":item.sources,"representations":item.representations,"representations_complete":item.representations_complete,"associations":item.associations}));
         if rows.len() == plan.limit {
             break;
         }
     }
+    let mut missing = vec!["general_session_coverage"];
+    if rows
+        .iter()
+        .any(|row| row["representations_complete"] == false)
+    {
+        missing.push("operation_representation_history");
+    }
     Ok(
-        json!({"outcome":"degraded","unit":if plan.calls_only{"tool_calls"}else{"tool_items"},"count":rows.len(),"rows":rows,"population":{"retained_items":null,"decoded_items":population.items.len(),"established_items":population.items.iter().filter(|i|i.operation.correspondence=="established" && !i.conflicting_representations).count(),"retained_source_rows":population.retained_rows,"decoded_source_rows":population.decoded_rows,"unsupported_source_rows":population.unsupported_rows,"retained_representations":population.retained_representations,"tool_calls":population.correspondence_complete.then_some(population.tool_calls),"failed":(population.correspondence_complete && population.outcomes_complete).then_some(population.failed),"outcomes_complete":population.outcomes_complete,"known_failed_items":population.failed,"known_agent_items":population.tool_calls,"correspondence_complete":population.correspondence_complete},"notes":["Exact imported operation subset only; Session boundaries, source acquisition and general tool schemas remain incomplete."],"missing":["general_session_coverage"],"up_to_date":false}),
+        json!({"outcome":"degraded","unit":if plan.calls_only{"tool_calls"}else{"tool_items"},"count":rows.len(),"rows":rows,"population":{"retained_items":null,"decoded_items":population.items.len(),"established_items":population.items.iter().filter(|i|i.operation.correspondence=="established" && !i.conflicting_representations).count(),"retained_source_rows":population.retained_rows,"decoded_source_rows":population.decoded_rows,"unsupported_source_rows":population.unsupported_rows,"retained_representations":population.retained_representations,"tool_calls":population.correspondence_complete.then_some(population.tool_calls),"failed":(population.correspondence_complete && population.outcomes_complete).then_some(population.failed),"outcomes_complete":population.outcomes_complete,"known_failed_items":population.failed,"known_agent_items":population.tool_calls,"correspondence_complete":population.correspondence_complete},"notes":["Exact imported operation subset only; Session boundaries, source acquisition and general tool schemas remain incomplete."],"missing":missing,"up_to_date":false}),
     )
 }
 pub fn read(reader: &ReadHandle, request: &Value, until: Instant) -> Value {
@@ -72,7 +79,11 @@ pub fn read(reader: &ReadHandle, request: &Value, until: Instant) -> Value {
     if Instant::now() >= until {
         return fail("operation read deadline");
     }
-    let result = json!({"outcome":"degraded","reference":reference,"shown":[{"kind":"tool_item","selected":item.selected,"id":item.reference,"version_hash":item.version_hash,"operation":item.operation,"conflicting_representations":item.conflicting_representations,"sources":item.sources,"representations":item.representations,"associations":item.associations}],"next":null,"notes":["Imported operation evidence does not certify complete Session or provider history."],"missing":["general_session_coverage"],"up_to_date":false});
+    let mut missing = vec!["general_session_coverage"];
+    if !item.representations_complete {
+        missing.push("operation_representation_history");
+    }
+    let result = json!({"outcome":"degraded","reference":reference,"shown":[{"kind":"tool_item","selected":item.selected,"id":item.reference,"version_hash":item.version_hash,"operation":item.operation,"conflicting_representations":item.conflicting_representations,"sources":item.sources,"representations":item.representations,"representations_complete":item.representations_complete,"associations":item.associations}],"next":null,"notes":["Imported operation evidence does not certify complete Session or provider history."],"missing":missing,"up_to_date":false});
     if let Err(e) = identities(&item, until) {
         return fail(e);
     }

@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sqlite3
+import shutil
 import subprocess
 import time
 
@@ -384,15 +385,167 @@ def unresolved_overlap_control(binary, output):
         close_run(run, output)
 
 
+def conflict_and_privacy_control(binary, output):
+    run = mcp.Run(binary, output)
+    try:
+        run.start()
+        secret = 'Bearer ' + 'A' * 20
+        first = output / 'first.sqlite'
+        history(first, [native_item(output=secret)])
+        imported(run, first, 'codex-history-sqlite')
+        selected = query(run)[1]['rows'][0]
+        before = run.cli([selected['ref'], 'read', '--budget', '20000'])
+        assert before['shown'][0]['operation']['output'] != secret and secret not in compact(before), before
+        conflict = output / 'conflict.sqlite'
+        history(conflict, [native_item(output='different-result', status='completed', exit_code=0)])
+        imported(run, conflict, 'codex-history-sqlite')
+        calls = query(run)[1]
+        assert calls['count'] == 0 and not calls['population']['correspondence_complete'], calls
+        after = run.cli([selected['ref'], 'read', '--budget', '20000'])
+        shown = after['shown'][0]
+        assert shown['conflicting_representations'] and shown['representations_complete'], shown
+        assert shown['operation'] == before['shown'][0]['operation'] and secret not in compact(after), after
+        run.client = mcp.Client(run)
+        remote = run.client.tool('read', {'ref': selected['ref'], 'budget_tokens': 20000})
+        assert remote['structuredContent']['shown'] == after['shown'] and secret not in compact(remote), remote
+        run.client.close(); run.client = None
+        return {'before': before, 'after': after, 'calls': calls}
+    finally:
+        close_run(run, output)
+
+
+def operation_growth_control(binary, output, replay=None, expect_readable=False, recover=False):
+    """Small native bodies, independently bounded alternative history metadata."""
+    report = {'snapshots': [], 'reads': {}, 'replay': str(replay) if replay else None}
+    if replay:
+        prior = json.loads((replay / 'growth-report.json').read_text())
+        report['snapshots'] = prior['snapshots']
+        report['reads'] = {k: v for k, v in prior['reads'].items() if k.startswith('baseline-')}
+        if recover:
+            argv = [str(binary), '--archive', str(replay / 'archive'), 'recover', '--to', str(output / 'archive')]
+            result = subprocess.run(argv, capture_output=True, timeout=120)
+            (output / 'recovery.stdout').write_bytes(result.stdout)
+            (output / 'recovery.stderr').write_bytes(result.stderr)
+            report['recovery'] = {'argv': argv, 'exit': result.returncode, 'receipt': json.loads(result.stdout)}
+            assert result.returncode == 5, report['recovery']
+        else:
+            shutil.copytree(replay / 'archive', output / 'archive')
+        refs = [report['reads']['baseline-' + str(n)]['shown'][0]['id'] + '@' +
+                report['reads']['baseline-' + str(n)]['shown'][0]['version_hash'] for n in range(2)]
+    run = mcp.Run(binary, output)
+    try:
+        run.start()
+        if not replay:
+            path = output / 'growth.jsonl'
+            rollout(path, output='fixed-small-output')
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            wrappers = [{'type': 'response_item', 'payload': {
+                'type': 'function_call', 'id': 'message-W' + str(n),
+                'call_id': 'W' + str(n), 'name': 'exec', 'arguments': '{}'}} for n in range(16)]
+            rows = [rows[0], rows[1], *wrappers, rows[-1]]
+            refs = []
+            # At most 242 snapshots, each with 17 small own-source citations.
+            # Keep an import's pending/error receipt distinct from usability.
+            for revision in range(242):
+                for number, wrapper in enumerate(rows[2:-1]):
+                    wrapper['payload']['id'] = 'message-W' + str(number) + '-snapshot-' + str(revision)
+                rows[-1]['payload']['item']['duration'] = {'secs': revision, 'nanos': 0}
+                path.write_text(''.join(compact(row) + '\n' for row in rows))
+                receipt = run.cli(['import', path, '--format', 'codex-rollout', '--wait', '--wait-timeout', '30'],
+                                  allowed=(0, 2, 3, 4, 5, 7))
+                report['snapshots'].append(receipt)
+                assert receipt and receipt.get('retained'), receipt
+                if receipt['outcome'] == 'error':
+                    report['admission_stop'] = receipt
+                    break
+                if revision < 2:
+                    selected = query(run)[1]['rows'][0]
+                    refs.append(selected['ref'])
+                    report['reads']['baseline-' + str(revision)] = run.cli([selected['ref'], 'read', '--budget', '20000'])
+        identity = refs[0].split('@')[0]
+        targets = {'current': identity, 'exact-first': refs[0], 'exact-later': refs[1]}
+        for name, reference in targets.items():
+            report['reads'][name] = run.cli([reference, 'read', '--budget', '20000'], allowed=(0, 2, 3, 4, 5, 7))
+        # A generous diagnostic read measures materialized metadata separately
+        # from admission receipts; it is not the ordinary-budget acceptance.
+        report['generous'] = run.cli([refs[0], 'read', '--budget', '1000000'], allowed=(0, 2, 3, 4, 5, 7))
+        run.client = mcp.Client(run)
+        report['mcp'] = {name: run.client.tool('read', {'ref': ref, 'budget_tokens': 20000}) for name, ref in targets.items()}
+        run.client.close(); run.client = None
+        report['identity'] = identity
+        report['cohorts'] = {
+            'retained_requests': sum(bool(r.get('retained')) for r in report['snapshots']),
+            'waited_usable_results': sum(r.get('source_rows', {}).get('usable_result', False) for r in report['snapshots']),
+            'settled_source_rows': sum(r.get('source_rows', {}).get('state') == 'settled' for r in report['snapshots']),
+            'pending_source_rows': sum(r.get('source_rows', {}).get('state') == 'pending' for r in report['snapshots'])}
+        if expect_readable:
+            for name in targets:
+                shown = report['reads'][name]['shown'][0]
+                assert report['mcp'][name]['structuredContent']['shown'] == [shown], report['mcp'][name]
+                assert shown['operation']['output'] == 'fixed-small-output' and len(shown['sources']) == 17, shown
+                assert not shown['conflicting_representations'], shown
+                assert len(shown['representations']) == 16 and not shown['representations_complete'], shown
+                assert 'operation_representation_history' in report['reads'][name]['missing'], report['reads'][name]
+            for n, name in enumerate(['exact-first', 'exact-later']):
+                assert report['reads'][name]['shown'][0]['operation'] == report['reads']['baseline-' + str(n)]['shown'][0]['operation']
+                assert report['reads'][name]['shown'][0]['sources'] == report['reads']['baseline-' + str(n)]['shown'][0]['sources']
+            report['integrity'] = growth_integrity(run, report, refs)
+        return report
+    finally:
+        (output / 'growth-report.json').write_text(json.dumps(report, indent=2) + '\n')
+        close_run(run, output)
+
+
+def growth_integrity(run, report, refs):
+    controls = {}
+    wrong = refs[0].split('@')[0] + '@' + '0' * 64
+    controls['wrong-version'] = run.cli([wrong, 'read', '--budget', '20000'], allowed=(0, 2, 3, 4, 5, 7))
+    assert controls['wrong-version']['outcome'] == 'error' and not controls['wrong-version'].get('shown')
+    inputs = {r['retained']['id']: r['source_rows']['basis']['original_hash'] for r in report['snapshots']}
+    def blob(reference):
+        source = reference['shown'][0]['sources'][0]['input']
+        digest = inputs[source]
+        return run.output / 'archive' / 'blobs' / digest[:2] / (digest + '.zst')
+    first = blob(report['reads']['exact-first'])
+    later = blob(report['reads']['exact-later'])
+    saved = first.with_suffix('.saved')
+    run.stop(); first.rename(saved)
+    try:
+        shutil.copyfile(later, first)
+        run.start()
+        controls['changed-own-bytes'] = run.cli([refs[0], 'read', '--budget', '20000'], allowed=(0, 2, 3, 4, 5, 7))
+        assert controls['changed-own-bytes']['outcome'] == 'error' and not controls['changed-own-bytes'].get('shown')
+        run.stop(); first.unlink()
+        run.start()
+        controls['missing-own-bytes'] = run.cli([refs[0], 'read', '--budget', '20000'], allowed=(0, 2, 3, 4, 5, 7))
+        assert controls['missing-own-bytes']['outcome'] == 'error' and not controls['missing-own-bytes'].get('shown')
+        controls['independent-later'] = run.cli([refs[1], 'read', '--budget', '20000'])
+        assert controls['independent-later']['shown'][0]['operation'] == report['reads']['exact-later']['shown'][0]['operation']
+    finally:
+        run.stop()
+        if first.exists():
+            first.unlink()
+        saved.rename(first)
+    return controls
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--operation-growth', action='store_true')
+    parser.add_argument('--growth-replay', type=Path)
+    parser.add_argument('--expect-growth-readable', action='store_true')
+    parser.add_argument('--growth-recover', action='store_true')
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
     args.output.mkdir(parents=True, exist_ok=False)
     report = {'binary': str(binary), 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(), 'outcome': 'failed'}
     try:
+        if args.operation_growth:
+            report['operation-growth'] = operation_growth_control(binary, args.output, args.growth_replay, args.expect_growth_readable, args.growth_recover)
+            report['outcome'] = 'observed'
+            return
         results = []
         for name, order, wrappers in [('native-first', 'NR', False), ('rollout-first', 'RN', False), ('unowned', 'NR', True)]:
             path = args.output / name
@@ -401,7 +554,7 @@ def main():
         assert results[0]['reference'] == results[1]['reference']
         assert results[0]['selected'] == results[1]['selected']
         report['cases'] = results
-        for name, verifier in [('qualification', qualification_controls), ('refine-PNF', lambda b, p: refinement_control(b, p, 'PNF')), ('refine-NFP', lambda b, p: refinement_control(b, p, 'NFP')), ('unavailable', unavailable_control), ('missing-wrong-session', missing_and_wrong_session_controls), ('chunked-output', chunked_output_control), ('giant-admission', giant_admission_control), ('command-representations', command_representation_control), ('unresolved-overlap', unresolved_overlap_control)]:
+        for name, verifier in [('qualification', qualification_controls), ('refine-PNF', lambda b, p: refinement_control(b, p, 'PNF')), ('refine-NFP', lambda b, p: refinement_control(b, p, 'NFP')), ('unavailable', unavailable_control), ('missing-wrong-session', missing_and_wrong_session_controls), ('chunked-output', chunked_output_control), ('giant-admission', giant_admission_control), ('command-representations', command_representation_control), ('unresolved-overlap', unresolved_overlap_control), ('conflict-privacy', conflict_and_privacy_control)]:
             path = args.output / name
             path.mkdir()
             report[name] = verifier(binary, path)
