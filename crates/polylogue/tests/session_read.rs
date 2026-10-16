@@ -1367,28 +1367,29 @@ fn model_cli_follows_only_emitted_calls_through_unicode_middle_and_repeated_iden
         assert!(page["settlement"].is_object());
         assert!(page["up_to_date"].is_boolean());
         let spans = page["shown"].as_array().unwrap();
-        assert_eq!(spans.len(), 1);
-        let span = &spans[0];
-        let (native, body) = &expected[expected_index];
-        assert_eq!(span["block"], model_ref(native));
-        assert_eq!(span["written_by"], "human");
-        assert_eq!(span["display_start"], scalar);
-        let text = span["text"].as_str().unwrap();
-        assert!(!text.is_empty());
-        assert_eq!(
-            span["display_end"].as_u64().unwrap() - scalar,
-            text.chars().count() as u64
-        );
-        assert!(!span["sources"].as_array().unwrap().is_empty());
-        for source in span["sources"].as_array().unwrap() {
-            assert!(source["start"].as_u64().unwrap() < source["end"].as_u64().unwrap());
-        }
-        reconstructed.push_str(text);
-        scalar += text.chars().count() as u64;
-        if reconstructed == *body {
-            expected_index += 1;
-            scalar = 0;
-            reconstructed.clear();
+        assert!(!spans.is_empty());
+        for span in spans {
+            let (native, body) = &expected[expected_index];
+            assert_eq!(span["block"], model_ref(native));
+            assert_eq!(span["written_by"], "human");
+            assert_eq!(span["display_start"], scalar);
+            let text = span["text"].as_str().unwrap();
+            assert!(!text.is_empty());
+            assert_eq!(
+                span["display_end"].as_u64().unwrap() - scalar,
+                text.chars().count() as u64
+            );
+            assert!(!span["sources"].as_array().unwrap().is_empty());
+            for source in span["sources"].as_array().unwrap() {
+                assert!(source["start"].as_u64().unwrap() < source["end"].as_u64().unwrap());
+            }
+            reconstructed.push_str(text);
+            scalar += text.chars().count() as u64;
+            if reconstructed == *body {
+                expected_index += 1;
+                scalar = 0;
+                reconstructed.clear();
+            }
         }
         pages += 1;
         assert!(pages < 250);
@@ -1589,25 +1590,26 @@ fn model_dialogue_keeps_the_unchanged_morrow_selection_and_truthful_omissions() 
             json!({"thinking":1,"tool_call":6,"tool_result":6})
         );
         assert_eq!(page["omitted"]["by_author"], json!({"model":7,"harness":6}));
-        let row = &rows[wanted[seen] - 1];
-        let expected = row["message"]["content"]
-            .as_str()
-            .unwrap_or_else(|| row["message"]["content"][0]["text"].as_str().unwrap());
-        let span = &page["shown"][0];
-        assert_eq!(span["text"], expected);
-        let uuid = row["uuid"].as_str().unwrap();
-        assert_eq!(span["message"], format!("message:{}:{uuid}", reference()));
-        assert_eq!(span["block"], format!("block:{}:{uuid}:0", reference()));
-        assert_eq!(
-            span["written_by"],
-            if row["type"] == "user" {
-                "human"
-            } else {
-                "model"
-            }
-        );
-        assert!(!span["sources"].as_array().unwrap().is_empty());
-        seen += 1;
+        for span in page["shown"].as_array().unwrap() {
+            let row = &rows[wanted[seen] - 1];
+            let expected = row["message"]["content"]
+                .as_str()
+                .unwrap_or_else(|| row["message"]["content"][0]["text"].as_str().unwrap());
+            assert_eq!(span["text"], expected);
+            let uuid = row["uuid"].as_str().unwrap();
+            assert_eq!(span["message"], format!("message:{}:{uuid}", reference()));
+            assert_eq!(span["block"], format!("block:{}:{uuid}:0", reference()));
+            assert_eq!(
+                span["written_by"],
+                if row["type"] == "user" {
+                    "human"
+                } else {
+                    "model"
+                }
+            );
+            assert!(!span["sources"].as_array().unwrap().is_empty());
+            seen += 1;
+        }
         if page["next"].is_null() {
             break;
         }
@@ -1703,14 +1705,20 @@ fn model_dialogue_and_exact_blocks_preserve_hidden_pem_and_independent_structure
         format!("{} open🙂", "A".repeat(36)),
         "Next Message is independent.".to_owned(),
     ];
-    for text in expected {
+    let mut texts = expected.iter();
+    loop {
         let page = model_call(&world, &call, Some(4000));
         assert_ne!(page["outcome"], "error", "{page}");
-        assert_eq!(page["shown"][0]["text"], text);
+        for shown in page["shown"].as_array().unwrap() {
+            assert_eq!(shown["text"], *texts.next().expect("unexpected fragment"));
+        }
         assert!(!page.to_string().contains("STILL HIDDEN"));
         call = page["next"].clone();
+        if call.is_null() {
+            break;
+        }
     }
-    assert!(call.is_null());
+    assert!(texts.next().is_none());
     let page = model_call(
         &world,
         &json!({"ref":mixed_block("mixed-result",1)}),
