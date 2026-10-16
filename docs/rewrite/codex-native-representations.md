@@ -97,7 +97,8 @@ reads admit 4096 selected items, 4096 citations per item, 32 MiB of selected-sou
 byte verification and 4 MiB encoded data.
 Read display budgets are 1 through 1048576 estimated tokens and must fit the
 whole operation; operation-output continuations and resource qualification for
-larger bodies remain unavailable. Admission failures retain owed work and never
+larger bodies remain unavailable. The inherited rollout framer additionally
+limits one raw record to 1 MiB. Admission failures retain owed work and never
 claim a complete empty population.
 
 The existing archive/index schema owns these records; this change uses its

@@ -103,14 +103,31 @@ fn bytes(c: &Connection, p: &Path, pk: i64, allowance: usize) -> Result<Vec<u8>>
     }
     Ok(out)
 }
+fn published_for_source(c: &Connection, p: &Path, input: i64, chain: i64) -> Result<bool> {
+    db(p, || {
+        c.query_row("SELECT EXISTS(SELECT 1 FROM tool_item_source s JOIN tool_item_version v ON v.pk=s.tool_item_version_pk WHERE s.input_pk=?1 AND s.source_chain=?2 AND v.ready=1)", params![input,chain], |r|r.get(0))
+    })
+}
+impl crate::parser_state::Snapshot {
+    pub fn source_has_tool_items(&self) -> Result<bool> {
+        published_for_source(
+            &self.db,
+            &self.path,
+            self.head.token.input_pk,
+            self.head.token.chain,
+        )
+    }
+}
 impl Writer {
     /// Independent partial usability survives a failed Message merge. This
     /// witnesses a ready operation, never source-row or Session completion.
     pub fn source_has_tool_items(&self, input: &crate::RetainedInput) -> Result<bool> {
-        let p = self.root.join("index.db");
-        db(&p, || {
-            self._index.query_row("SELECT EXISTS(SELECT 1 FROM tool_item_source s JOIN tool_item_version v ON v.pk=s.tool_item_version_pk WHERE s.input_pk=?1 AND s.source_chain=?2 AND v.ready=1)", params![input.input_pk,input.chain], |r|r.get(0))
-        })
+        published_for_source(
+            &self._index,
+            &self.root.join("index.db"),
+            input.input_pk,
+            input.chain,
+        )
     }
     /// Caller supplies one already-decoded operation from this pinned parser
     /// snapshot. Publication is idempotent by exact input and evidence digest.
