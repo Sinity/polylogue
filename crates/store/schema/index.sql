@@ -139,6 +139,7 @@ CREATE TABLE message_body (
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
   parser_version    INTEGER NOT NULL,       -- exact source interpretation basis; not a deletion/completion cursor
+  source_sequence   INTEGER CHECK(source_sequence>=0), -- candidate's supplied Session order; NULL unrecorded, never inferred from the current head
   CHECK(ready=0 OR (preferred_candidate_pk IS NOT NULL AND version_hash IS NOT NULL)),
   FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
   FOREIGN KEY(preferred_candidate_pk,message_pk,session_pk,input_pk,version_hash,preferred_ready)
@@ -150,8 +151,19 @@ CREATE TABLE message_body (
   FOREIGN KEY(field_root_pk,message_pk,session_pk,field_root_kind,root_state)
     REFERENCES message_body_node(pk,message_pk,session_pk,kind,state),
   UNIQUE(pk,message_pk,session_pk),
-  UNIQUE(pk,message_pk,session_pk,ready)
+  UNIQUE(pk,message_pk,session_pk,ready),
+  UNIQUE(pk,ready)
 ) STRICT;
+-- Derived normalized-body equality, never raw source version evidence. The typed
+-- producer visits the complete immutable body before issuing this certificate.
+-- One fixed child of a body owns no payload lease; body retirement removes it.
+CREATE TABLE message_body_compatibility (
+  body_pk INTEGER PRIMARY KEY,
+  body_ready INTEGER NOT NULL DEFAULT 1 CHECK(body_ready=1),
+  digest BLOB NOT NULL CHECK(length(digest)=32),
+  FOREIGN KEY(body_pk,body_ready) REFERENCES message_body(pk,ready) ON DELETE CASCADE
+) STRICT;
+
 CREATE INDEX message_body_owner ON message_body(message_pk,session_pk);
 CREATE INDEX message_body_input ON message_body(input_pk);
 CREATE INDEX message_body_preferred ON message_body(preferred_candidate_pk);
@@ -212,11 +224,26 @@ CREATE UNIQUE INDEX message_candidate_effective ON message_candidate(
   message_pk,input_pk,chain,revision,logical_key) WHERE eligible=1;
 CREATE INDEX message_candidate_input ON message_candidate(input_pk,chain,revision);
 CREATE INDEX message_candidate_owner ON message_candidate(message_pk,session_pk);
+CREATE INDEX message_candidate_eligible_cursor ON message_candidate(message_pk,pk) WHERE eligible=1;
 CREATE INDEX message_candidate_body ON message_candidate(body_pk) WHERE body_pk IS NOT NULL;
 CREATE INDEX message_candidate_required_body ON message_candidate(body_pk) WHERE eligible=1; -- fixed liveness probe without scanning retired pointers
 CREATE INDEX message_candidate_chain_rank ON message_candidate(message_pk,input_pk,chain,
   finish DESC,route DESC,source_blocks DESC,source_text_blocks DESC,source_fields DESC,
   revision_length DESC,version_hash DESC) WHERE eligible=1;
+
+-- Fence every eligible-membership change, including withdraw/re-add ABA.
+CREATE TRIGGER message_candidate_membership_insert AFTER INSERT ON message_candidate
+WHEN NEW.eligible=1 BEGIN
+  UPDATE message SET contributor_revision=contributor_revision+1 WHERE pk=NEW.message_pk;
+END;
+CREATE TRIGGER message_candidate_membership_update AFTER UPDATE OF eligible ON message_candidate
+WHEN OLD.eligible<>NEW.eligible BEGIN
+  UPDATE message SET contributor_revision=contributor_revision+1 WHERE pk=NEW.message_pk;
+END;
+CREATE TRIGGER message_candidate_membership_delete AFTER DELETE ON message_candidate
+WHEN OLD.eligible=1 BEGIN
+  UPDATE message SET contributor_revision=contributor_revision+1 WHERE pk=OLD.message_pk;
+END;
 
 -- Representatives retain roots, including eligible missing-field donors, not
 -- merely the previous global winner. Edits publish a proved current head or an

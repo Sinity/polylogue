@@ -282,7 +282,7 @@ impl Writer {
                 WrittenBy::Unknown => "unknown",
             };
             db(&path, || {
-                tx.execute("INSERT INTO message_body(message_pk,session_pk,basis_digest,contributor_revision,removal_epoch,layout,role,written_by,input_pk,source_chain,parser_version) VALUES(?1,?2,?3,?4,?5,'flat',?6,?7,?8,?9,?10)",params![message,session,digest.as_slice(),contributor,removal,role,by,source.predecessor.input_pk,source.predecessor.chain,head.parser_version])
+                tx.execute("INSERT INTO message_body(message_pk,session_pk,basis_digest,contributor_revision,removal_epoch,layout,role,written_by,input_pk,source_chain,parser_version,source_sequence) VALUES(?1,?2,?3,?4,?5,'flat',?6,?7,?8,?9,?10,?11)",params![message,session,digest.as_slice(),contributor,removal,role,by,source.predecessor.input_pk,source.predecessor.chain,head.parser_version,sequence])
             })?;
             let body = tx.last_insert_rowid();
             let route = match source.route {
@@ -922,6 +922,7 @@ fn encoded_key(value: &impl serde::Serialize, lower: usize, allowance: usize) ->
 
 #[cfg(test)]
 mod tests {
+    use super::super::SelectCompatibleSourceForTest as _;
     use super::*;
     use crate::contributions::Retirement;
     use crate::{ImportObservation, InputFormat};
@@ -3154,7 +3155,7 @@ mod tests {
         f.writer._index.execute_batch("CREATE TRIGGER refuse_selected_session BEFORE UPDATE OF changed ON session BEGIN SELECT RAISE(ABORT,'synthetic selected session failure'); END;").unwrap();
         assert!(
             f.writer
-                .select_uncontested_source_message(&source, 4096)
+                .select_compatible_source_message_for_test(&source, 4096)
                 .is_err()
         );
         assert!(reader.selected_message(&f.message).unwrap().is_none());
@@ -3168,13 +3169,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             f.writer
-                .select_uncontested_source_message(&source, 4096)
+                .select_compatible_source_message_for_test(&source, 4096)
                 .unwrap(),
             SourceSelection::Selected
         );
         assert_eq!(
             f.writer
-                .select_uncontested_source_message(&source, 4096)
+                .select_compatible_source_message_for_test(&source, 4096)
                 .unwrap(),
             SourceSelection::AlreadySelected
         );
@@ -3247,13 +3248,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             f.writer
-                .select_uncontested_source_message(&other, 4096)
+                .select_compatible_source_message_for_test(&other, 4096)
                 .unwrap(),
             SourceSelection::Contested
         );
         assert_eq!(
             f.writer
-                .select_uncontested_source_message(&source, 4096)
+                .select_compatible_source_message_for_test(&source, 4096)
                 .unwrap(),
             SourceSelection::Contested
         );
@@ -3362,7 +3363,7 @@ mod tests {
             .publish_source_projection(&prepared, None, b"synthetic selected evidence", 4096)
             .unwrap();
         f.writer
-            .select_uncontested_source_message(&source, 4096)
+            .select_compatible_source_message_for_test(&source, 4096)
             .unwrap();
         let MessageLookup::Ready(view) =
             reader.message_reference(f.message.as_str(), 4096).unwrap()
@@ -3878,7 +3879,7 @@ mod tests {
             .publish_source_projection(&done, None, b"old", 4096)
             .unwrap();
         f.writer
-            .select_uncontested_source_message(&old, 4096)
+            .select_compatible_source_message_for_test(&old, 4096)
             .unwrap();
         reparse_source_fixture(&mut f);
         let new = f.prepare().unwrap().build;
@@ -3946,7 +3947,7 @@ mod tests {
             old.body()
         );
         f.writer
-            .select_uncontested_source_message(&replacement, 4096)
+            .select_compatible_source_message_for_test(&replacement, 4096)
             .unwrap();
         let f = f.reopen();
         assert_eq!(
@@ -3977,7 +3978,7 @@ mod tests {
                 .publish_source_projection(&done, None, b"old", 4096)
                 .unwrap();
             f.writer
-                .select_uncontested_source_message(&old, 4096)
+                .select_compatible_source_message_for_test(&old, 4096)
                 .unwrap();
             if damage == "missing same generation" {
                 advance_source_fixture(&mut f);
@@ -4138,10 +4139,565 @@ mod tests {
             );
             assert_eq!(
                 f.writer
-                    .select_uncontested_source_message(&replacement, 4096)
+                    .select_compatible_source_message_for_test(&replacement, 4096)
                     .unwrap(),
                 super::super::SourceSelection::Contested
             );
         }
+    }
+    fn compatibility_input(f: &mut Fixture, raw: &[u8], context: &[&str]) -> String {
+        let blob = f.writer.put_file_blob(raw).unwrap();
+        let format = if context.is_empty() {
+            InputFormat::CodexRollout
+        } else {
+            InputFormat::ClaudeCodeJsonl
+        };
+        let input = f
+            .writer
+            .retain_immutable_input(
+                blob,
+                format,
+                context,
+                &ImportObservation {
+                    id: std::str::from_utf8(raw).unwrap(),
+                    machine: "synthetic",
+                    host: "synthetic",
+                    path: "synthetic/compatible",
+                    seen_at: 0,
+                },
+                4096,
+            )
+            .unwrap();
+        f.head = f
+            .writer
+            .begin_parser(&parser_state::Basis {
+                input_pk: input.input_pk,
+                chain: input.chain,
+                parser_version: 3,
+                digest: [7; 32],
+                acquired_upto: input.length,
+                companions_json: None,
+                excisions_seen: 0,
+            })
+            .unwrap();
+        f.head = parser_state::write_step(
+            &mut f.writer._index,
+            &f.root.join("index.db"),
+            &f.head,
+            parser_state::Progress {
+                inspected_upto: input.length,
+                parsed_upto: input.length,
+                phase: parser_state::Phase::Parsing,
+                finalization_pending: true,
+                counts: Default::default(),
+            },
+            &[],
+            parser_state::Budget {
+                cells: 0,
+                encoded_bytes: 0,
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        input.id
+    }
+    fn compatible_body(
+        f: &mut Fixture,
+        text: &[u8],
+        parent: &[u8],
+        time: i64,
+        origin: &[u8],
+    ) -> super::super::SourceProjection {
+        compatible_body_sequence(f, text, parent, time, origin, 0)
+    }
+    fn compatible_body_sequence(
+        f: &mut Fixture,
+        text: &[u8],
+        parent: &[u8],
+        time: i64,
+        origin: &[u8],
+        sequence: u64,
+    ) -> super::super::SourceProjection {
+        use super::super::{BlockKind, BlockPresence, ProjectionStep, SourceRange};
+        use polylogue_model::{
+            BlobHash,
+            merge::{FinishState, MessageField, Slot},
+        };
+        let build = f
+            .writer
+            .prepare_message(
+                Identity {
+                    session: &f.session,
+                    origin: &f.origin,
+                    native_session: "session:with:colons",
+                    session_kind: SessionKind::Main,
+                    message: &f.message,
+                    sequence,
+                    role: Role::Assistant,
+                    written_by: WrittenBy::Model,
+                },
+                Source {
+                    predecessor: &f.head.token,
+                    revision: 1,
+                    evidence_revision: 1,
+                    logical_key: [3; 32],
+                    route: RouteKind::Native,
+                },
+                4096,
+            )
+            .unwrap()
+            .build;
+        let value = f
+            .writer
+            .begin_message_value(&build, values::Codec::Utf8, text.len() as u64)
+            .unwrap();
+        for (i, chunk) in text.chunks(values::MAX_CHUNK).enumerate() {
+            f.writer
+                .append_value_chunk(
+                    &value.id,
+                    (i * values::MAX_CHUNK) as u64,
+                    chunk,
+                    values::MAX_CHUNK,
+                )
+                .unwrap();
+        }
+        let reader = f.writer.read_handle().unwrap();
+        let mut proof = reader.validate_value(&value.id).unwrap();
+        while !proof.progress().complete {
+            proof.advance(&reader, values::MAX_CHUNK).unwrap();
+        }
+        f.writer.seal_message_value(&build, &proof).unwrap();
+        f.writer
+            .write_block(
+                &build,
+                0,
+                0,
+                BlockKind::Text,
+                BlockPresence {
+                    source_block: true,
+                    source_text: !text.is_empty(),
+                },
+                &ProjectionStep {
+                    expected_sequence: 0,
+                    next_cursor: b"block",
+                },
+                4096,
+            )
+            .unwrap();
+        seal_owned_json(f, &build, ValuePurpose::Normalized, parent);
+        seal_owned_json(f, &build, ValuePurpose::Origin, origin);
+        f.writer
+            .write_message_field(
+                &build,
+                &Slot::Message(MessageField::Parent),
+                Some(time),
+                true,
+                &ProjectionStep {
+                    expected_sequence: 1,
+                    next_cursor: b"parent",
+                },
+                4096,
+            )
+            .unwrap();
+        f.writer
+            .add_message_source(
+                &build,
+                SourceRange {
+                    start: 0,
+                    end: f.head.parsed_upto,
+                },
+                &ProjectionStep {
+                    expected_sequence: 2,
+                    next_cursor: b"source",
+                },
+                4096,
+            )
+            .unwrap();
+        let done = f
+            .writer
+            .finish_message_projection(
+                &build,
+                &ProjectionStep {
+                    expected_sequence: 3,
+                    next_cursor: b"done",
+                },
+                BlobHash::of(b"identical raw version evidence"),
+                FinishState::Unknown,
+                4096,
+            )
+            .unwrap();
+        f.writer
+            .publish_source_projection(&done, None, b"same source head", 4096)
+            .unwrap()
+    }
+    fn compatible_ready(
+        f: &mut Fixture,
+        source: &super::super::SourceProjection,
+    ) -> Result<Option<super::super::CompatibleSelection>> {
+        use super::super::CompatibilityTurn;
+        let mut work = f.writer.begin_compatible_source_selection(source, 4096)?;
+        let reader = f.writer.read_handle()?;
+        for _ in 0..10000 {
+            work = match work.advance(&reader, 4096, &std::sync::atomic::AtomicBool::new(false))? {
+                CompatibilityTurn::Progress(w) => w,
+                CompatibilityTurn::Certified(w, c) => {
+                    f.writer.certify_body_compatibility(c)?;
+                    w
+                }
+                CompatibilityTurn::Ready(w) => return Ok(Some(w)),
+                CompatibilityTurn::Contested => return Ok(None),
+            };
+        }
+        panic!("compatibility failed to make bounded progress")
+    }
+    #[test]
+    fn compatible_snapshots_are_one_body_with_order_independent_origins_and_all_exact_citations() {
+        use super::super::{FieldRead, SourceStep};
+        use polylogue_model::{
+            BlockSlot,
+            merge::{MessageField, Slot},
+        };
+        let mut outcomes = Vec::new();
+        for order in [[0, 1], [1, 0]] {
+            let mut f = Fixture::new();
+            let mut ids = Vec::new();
+            let mut sources = Vec::new();
+            for i in order {
+                let id = compatibility_input(
+                    &mut f,
+                    if i == 0 { b"snapshot-a" } else { b"snapshot-b" },
+                    &[],
+                );
+                let origin = if i == 0 {
+                    br#"{"witness":"a"}"#.as_slice()
+                } else {
+                    br#"{"witness":"b"}"#.as_slice()
+                };
+                let source = compatible_body(&mut f, &vec![b'x'; 131073], b"null", 1, origin);
+                let proof = compatible_ready(&mut f, &source).unwrap().unwrap();
+                f.writer
+                    .install_compatible_source_selection(proof, 4096)
+                    .unwrap();
+                ids.push(id);
+                sources.push((f.head.clone(), source));
+            }
+            let reader = f.writer.read_handle().unwrap();
+            let view = reader.selected_message(&f.message).unwrap().unwrap();
+            let FieldRead::Value(field) = view
+                .field(&Slot::Message(MessageField::Parent), 4096)
+                .unwrap()
+                .unwrap()
+            else {
+                panic!("conflict")
+            };
+            let origin = field.origin_range(0, 4096).unwrap().unwrap().bytes;
+            assert_eq!(
+                view.block(BlockSlot::Item(0))
+                    .unwrap()
+                    .unwrap()
+                    .text_range(131072, 1)
+                    .unwrap()
+                    .unwrap()
+                    .bytes,
+                b"x"
+            );
+            let mut cursor = None;
+            let mut citations = Vec::new();
+            let mut preferred = Vec::new();
+            loop {
+                match view.next_source(cursor.as_ref(), 4096).unwrap() {
+                    SourceStep::Continue { cursor: c } => cursor = Some(c),
+                    SourceStep::Span { cursor: c, source } => {
+                        if source.preferred {
+                            preferred.push(source.input.clone())
+                        }
+                        citations.push((source.input, source.chain, source.start, source.end));
+                        cursor = Some(c)
+                    }
+                    SourceStep::End => break,
+                }
+            }
+            assert_eq!(preferred, vec![ids.iter().min().unwrap().clone()]);
+            assert_eq!(citations.len(), 2);
+            assert!(
+                citations
+                    .iter()
+                    .all(|(_, chain, start, end)| (*chain, *start, *end) == (1, 0, 10))
+            );
+            for (head, source) in sources {
+                let snapshot = f.writer.parser_snapshot(&head.token).unwrap();
+                let own = snapshot
+                    .selected_source_projection(&[3; 32], 4096)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(own.body(), source.body());
+                assert_eq!(own.evidence_guard(), source.evidence_guard());
+            }
+            citations.sort();
+            outcomes.push((origin, citations, preferred));
+        }
+        assert_eq!(outcomes[0], outcomes[1]);
+    }
+    #[test]
+    fn compatibility_equal_raw_evidence_cannot_hide_normalized_text_parent_time_or_context_disagreement()
+     {
+        for variant in 0..5 {
+            let mut f = Fixture::new();
+            compatibility_input(&mut f, b"first snapshot", &[]);
+            let first = compatible_body(&mut f, b"same text", b"null", 1, b"{}");
+            let proof = compatible_ready(&mut f, &first).unwrap().unwrap();
+            f.writer
+                .install_compatible_source_selection(proof, 4096)
+                .unwrap();
+            compatibility_input(
+                &mut f,
+                b"second snapshot",
+                if variant == 3 {
+                    &["claude-main", "context-session"]
+                } else {
+                    &[]
+                },
+            );
+            let second = compatible_body_sequence(
+                &mut f,
+                if variant == 0 {
+                    b"different text"
+                } else {
+                    b"same text"
+                },
+                if variant == 1 {
+                    b"\"other-parent\""
+                } else {
+                    b"null"
+                },
+                if variant == 2 { 2 } else { 1 },
+                b"{}",
+                if variant == 4 { 1 } else { 0 },
+            );
+            assert_eq!(first.version_hash(), second.version_hash());
+            assert!(
+                compatible_ready(&mut f, &second).unwrap().is_none(),
+                "variant {variant}"
+            );
+            assert_eq!(
+                f.scalar("SELECT selected_body_pk FROM message"),
+                first.body().pk
+            );
+        }
+    }
+    #[test]
+    fn compatibility_selection_fences_membership_aba_removal_admission_and_cancellation() {
+        use super::super::CompatibilityTurn;
+        let mut f = Fixture::new();
+        compatibility_input(&mut f, b"snapshot-one", &[]);
+        let source = compatible_body(&mut f, b"text", b"null", 1, b"{}");
+        let reader = f.writer.read_handle().unwrap();
+        let work = f
+            .writer
+            .begin_compatible_source_selection(&source, 4096)
+            .unwrap();
+        assert!(matches!(
+            work.advance(&reader, 4096, &std::sync::atomic::AtomicBool::new(true)),
+            Err(Error::Cancelled)
+        ));
+        assert_eq!(
+            f.scalar("SELECT count(*) FROM message_body_compatibility"),
+            0
+        );
+        compatibility_input(&mut f, b"snapshot-two", &[]);
+        let other = compatible_body(&mut f, b"text", b"null", 1, b"{}");
+        let work = f
+            .writer
+            .begin_compatible_source_selection(&other, 4096)
+            .unwrap();
+        assert!(matches!(
+            work.advance(&reader, 0, &std::sync::atomic::AtomicBool::new(false)),
+            Err(Error::ParserAdmission { .. })
+        ));
+        let proof = compatible_ready(&mut f, &source).unwrap().unwrap();
+        f.writer
+            ._index
+            .execute(
+                "UPDATE message_candidate SET eligible=0 WHERE pk=?1",
+                [source.candidate],
+            )
+            .unwrap();
+        f.writer
+            ._index
+            .execute(
+                "UPDATE message_candidate SET eligible=1 WHERE pk=?1",
+                [source.candidate],
+            )
+            .unwrap();
+        assert!(matches!(
+            f.writer.install_compatible_source_selection(proof, 4096),
+            Err(Error::MessagePredecessorChanged)
+        ));
+        let proof = compatible_ready(&mut f, &source).unwrap().unwrap();
+        f.writer
+            ._index
+            .execute(
+                "UPDATE message SET removal_epoch=removal_epoch+1,hidden=1",
+                [],
+            )
+            .unwrap();
+        assert!(
+            f.writer
+                .install_compatible_source_selection(proof, 4096)
+                .is_err()
+        );
+        assert!(matches!(
+            f.writer.begin_compatible_source_selection(&source, 4096),
+            Err(Error::Invariant(_))
+        ));
+        // A cancelled or stale attempt carries no durable partial selection.
+        assert_eq!(
+            f.scalar("SELECT count(*) FROM message WHERE selected_body_pk IS NOT NULL"),
+            0
+        );
+        let _ = std::mem::size_of::<CompatibilityTurn>();
+    }
+    #[test]
+    fn compatibility_reparse_withdraws_old_membership_and_retired_body_drops_its_certificate() {
+        use super::super::BodyRetirement;
+        let mut f = Fixture::new();
+        compatibility_input(&mut f, b"reparse snapshot", &[]);
+        let old = compatible_body(&mut f, b"old interpretation", b"null", 1, b"{}");
+        let proof = compatible_ready(&mut f, &old).unwrap().unwrap();
+        f.writer
+            .install_compatible_source_selection(proof, 4096)
+            .unwrap();
+        let old_head = f.head.clone();
+        compatibility_input(&mut f, b"second reparse snapshot", &[]);
+        let old_other = compatible_body(&mut f, b"old interpretation", b"null", 1, b"{}");
+        let old_other_head = f.head.clone();
+        let both = compatible_ready(&mut f, &old_other).unwrap().unwrap();
+        f.writer
+            .install_compatible_source_selection(both, 4096)
+            .unwrap();
+        assert_eq!(
+            f.scalar("SELECT count(*) FROM message_body_compatibility"),
+            2
+        );
+        let stale = compatible_ready(&mut f, &old).unwrap().unwrap();
+        f.head = old_head;
+        let reader = f.writer.read_handle().unwrap();
+        let pinned = reader.selected_message(&f.message).unwrap().unwrap();
+        let length = f.head.acquired_upto;
+        f.head = f
+            .writer
+            .begin_parser(&parser_state::Basis {
+                input_pk: f.head.token.input_pk,
+                chain: f.head.token.chain,
+                parser_version: 4,
+                digest: [8; 32],
+                acquired_upto: length,
+                companions_json: None,
+                excisions_seen: 0,
+            })
+            .unwrap();
+        f.head = parser_state::write_step(
+            &mut f.writer._index,
+            &f.root.join("index.db"),
+            &f.head,
+            parser_state::Progress {
+                inspected_upto: length,
+                parsed_upto: length,
+                phase: parser_state::Phase::Parsing,
+                finalization_pending: true,
+                counts: Default::default(),
+            },
+            &[],
+            parser_state::Budget {
+                cells: 0,
+                encoded_bytes: 0,
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        let new = compatible_body(&mut f, b"new interpretation", b"null", 1, b"{}");
+        assert_eq!(
+            f.scalar("SELECT count(*) FROM message_candidate WHERE eligible=1"),
+            2
+        );
+        assert!(
+            f.writer
+                .install_compatible_source_selection(stale, 4096)
+                .is_err()
+        );
+        // Until the other input is reparsed, differing parser/body witnesses
+        // are still contested; one reparse cannot overrule an independent input.
+        assert!(compatible_ready(&mut f, &new).unwrap().is_none());
+        f.head = f
+            .writer
+            .begin_parser(&parser_state::Basis {
+                input_pk: old_other_head.token.input_pk,
+                chain: old_other_head.token.chain,
+                parser_version: 4,
+                digest: [8; 32],
+                acquired_upto: old_other_head.acquired_upto,
+                companions_json: None,
+                excisions_seen: 0,
+            })
+            .unwrap();
+        f.head = parser_state::write_step(
+            &mut f.writer._index,
+            &f.root.join("index.db"),
+            &f.head,
+            parser_state::Progress {
+                inspected_upto: old_other_head.acquired_upto,
+                parsed_upto: old_other_head.acquired_upto,
+                phase: parser_state::Phase::Parsing,
+                finalization_pending: true,
+                counts: Default::default(),
+            },
+            &[],
+            parser_state::Budget {
+                cells: 0,
+                encoded_bytes: 0,
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        let other_new = compatible_body(&mut f, b"new interpretation", b"null", 1, b"{}");
+        let proof = compatible_ready(&mut f, &other_new).unwrap().unwrap();
+        f.writer
+            .install_compatible_source_selection(proof, 4096)
+            .unwrap();
+        assert_eq!(
+            pinned
+                .block(polylogue_model::BlockSlot::Item(0))
+                .unwrap()
+                .unwrap()
+                .text_range(0, 4096)
+                .unwrap()
+                .unwrap()
+                .bytes,
+            b"old interpretation"
+        );
+        drop(pinned);
+        drop(reader);
+        assert_eq!(
+            f.writer.retire_message_body(old.body()).unwrap(),
+            BodyRetirement::DetachedCandidate
+        );
+        // A body with roots uses the existing bounded root-release path first.
+        for _ in 0..10 {
+            if f.writer.retire_message_body(old.body()).unwrap() == BodyRetirement::Missing {
+                break;
+            }
+        }
+        assert_eq!(
+            f.scalar(&format!(
+                "SELECT count(*) FROM message_body_compatibility WHERE body_pk={}",
+                old.body().pk
+            )),
+            0
+        );
+        assert!(
+            f.writer
+                .current_source_projection(&old.predecessor, &[3; 32], 4096)
+                .is_err()
+        );
     }
 }

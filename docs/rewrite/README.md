@@ -10,7 +10,7 @@ required canonical effects (owning CLI/law clarification `6ee7ec4`). Its typed
 Session JSON carries its actual degraded result metadata under the export
 qualification contract `a9947de`; current import/export roundtrip propagation
 and complete ordinary clients remain unqualified. These prose changes do not
-change the separately pinned index18 schema.
+change the separately pinned index schema.
 
 Exact native Session qualification follows the current requested-settlement,
 Claude membership, model, rendering and export contracts at specification
@@ -26,3 +26,5 @@ acquisition, full export and full Morrow/M1 acceptance remain open. The top-leve
 README owns the current commands and limits. No canonical DDL changed.
 
 Controlled copy recovery and archive format 2 follow specification `8c4e2210692282420d7a5ca91dc005b409a668f1`: storage Controlled recovery, archive Recovery qualification, query Results and law 123. The exact-byte manifest digest binds the persisted unknown historical head. Normal startup keeps its guard. Full portable export/import qualification is not claimed; standalone Session JSON carries `recovery` once at top level and keeps degraded result metadata.
+
+Complete immutable-snapshot compatibility and index19 follow `aca97f216bc3c56a81f4b2523b81744ce42c6454` (storage/index-db). The certificate requires identical normalized bodies, raw evidence, context, parser/rank and supplied source sequence. It preserves each candidate origin and exact citations; nonidentical ranking/fill remains unfinished. The known stopped-startup index18→19 replacement preserves its exact predecessor file set and reparses retained sources through ordinary recovery. Full online generation handoff is unqualified.

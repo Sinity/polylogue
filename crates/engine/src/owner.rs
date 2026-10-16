@@ -1,5 +1,5 @@
 //! Single Writer actor for retained immutable imports and provider-state progress
-//! plus uncontested source Message materialization through one shared core.
+//! plus compatible source Message materialization through one shared core.
 //! Capture, provider interpretation and canonical encoding run outside the actor.
 //! Search, contested merges and complete history coverage remain pending.
 use crate::{
@@ -308,6 +308,7 @@ impl CanonicalPosition {
     }
 }
 enum CanonicalTurn {
+    Selected(polylogue_store::contributions::CompatibilityTurn),
     Audited(crate::source_rows::Turn),
     Action(canonical_message::Action),
     Pending(
@@ -324,6 +325,12 @@ struct CanonicalJob {
     join: JoinHandle<()>,
 }
 enum Active {
+    Selecting(
+        ImmutableImport,
+        Head,
+        CanonicalPosition,
+        polylogue_store::contributions::CompatibleSelection,
+    ),
     Begin(ImmutableImport),
     Recover(ImmutableImport, Head),
     Compute(ImmutableImport, Head, Option<CommittedContinuation>),
@@ -438,7 +445,8 @@ impl Actor {
                 | Active::Recover(i, _)
                 | Active::Compute(i, _, _)
                 | Active::Install(i, _, _, _)
-                | Active::Canonical(i, _, _, _),
+                | Active::Canonical(i, _, _, _)
+                | Active::Selecting(i, _, _, _),
             ) => Some(&i.input.id),
             None => None,
         }
@@ -632,18 +640,45 @@ impl Actor {
                                 canonical_message::Applied::Source(source)
                                 | canonical_message::Applied::Existing(source),
                             ) => {
-                                match self.writer.select_uncontested_source_message(&source, 65536) {
-                                Ok(polylogue_store::contributions::SourceSelection::Contested) => self.fail(&job.head, "canonical Message has competing input candidates; merge remains pending".into())?,
-                                Ok(_) => {
-                                    let next = job.position.next()?;
-                                    self.active = Some(Active::Canonical(job.input, job.head, next, None));
+                                match self
+                                    .writer
+                                    .begin_compatible_source_selection(&source, 65536)
+                                {
+                                    Ok(selection) => {
+                                        self.active = Some(Active::Selecting(
+                                            job.input,
+                                            job.head,
+                                            job.position,
+                                            selection,
+                                        ))
+                                    }
+                                    Err(e) => {
+                                        self.fail(&job.head, format!("canonical selection: {e}"))?
+                                    }
                                 }
-                                Err(e) => self.fail(&job.head, format!("canonical selection: {e}"))?,
-                            }
                             }
                             Err(e) => {
                                 self.fail(&job.head, format!("canonical {operation}: {e}"))?
                             }
+                        }
+                    }
+                    Ok(CanonicalTurn::Selected(turn)) => {
+                        use polylogue_store::contributions::CompatibilityTurn;
+                        match turn {
+                            CompatibilityTurn::Progress(selection) => self.active=Some(Active::Selecting(job.input,job.head,job.position,selection)),
+                            CompatibilityTurn::Certified(selection,certificate) => {
+                                match self.writer.certify_body_compatibility(certificate) {
+                                    Ok(())=>self.active=Some(Active::Selecting(job.input,job.head,job.position,selection)),
+                                    Err(e)=>self.fail(&job.head,format!("canonical compatibility: {e}"))?,
+                                }
+                            },
+                            CompatibilityTurn::Ready(selection) => {
+                                match self.writer.install_compatible_source_selection(selection,65536) {
+                                    Ok(_)=>self.active=Some(Active::Canonical(job.input,job.head,job.position.next()?,None)),
+                                    Err(e)=>self.fail(&job.head,format!("canonical selection: {e}"))?,
+                                }
+                            },
+                            CompatibilityTurn::Contested=>self.fail(&job.head,"canonical Message has incompatible or unsupported input candidates; merge remains pending".into())?,
                         }
                     }
                     Ok(CanonicalTurn::Pending(cursor, pending)) => {
@@ -922,6 +957,34 @@ impl Actor {
                     });
                 match join {
                     Ok(join) => self.compute = Some(ComputeJob { input, head, join }),
+                    Err(e) => self.fail(&head, e.to_string())?,
+                }
+            }
+            Active::Selecting(input, head, position, selection) => {
+                let reader = self.writer.read_handle()?;
+                let cancelled = Arc::clone(&self.inner.cancelled);
+                let sender = self.inner.sender.clone();
+                let join = thread::Builder::new()
+                    .name("polylogue-compatible-source".into())
+                    .spawn(move || {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            selection.advance(&reader, 65536, &cancelled)
+                        }))
+                        .map_err(|_| Error::WorkerPanicked)
+                        .and_then(|r| r.map_err(Error::Store))
+                        .map(CanonicalTurn::Selected);
+                        let _ = sender.send(Message::CanonicalComputed(result));
+                    });
+                match join {
+                    Ok(join) => {
+                        self.canonical = Some(CanonicalJob {
+                            input,
+                            head,
+                            position,
+                            handle: None,
+                            join,
+                        })
+                    }
                     Err(e) => self.fail(&head, e.to_string())?,
                 }
             }

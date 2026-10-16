@@ -5,6 +5,8 @@ use polylogue_model::{
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
+mod index_transition;
+pub(crate) use index_transition::{begin_index_rebuild, finish_index_rebuild};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -13,7 +15,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 struct Entry {
     path: String,
     length: u64,

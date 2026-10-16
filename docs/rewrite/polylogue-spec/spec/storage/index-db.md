@@ -86,6 +86,10 @@ A provider contributes addressable groups, blocks and source-field facts. `messa
 
 A source candidate retains its exact parser-state generation, committed step and source-basis digest independently of its full preparation digest. Alongside its input/chain, archive revision, logical candidate key, evidence revision and index incarnation, those coordinates reconstruct the preparation predecessor even after disposable parser cells retire. The typed writer checks that predecessor against the retained preparation digest before using it as authority. A newly admitted parser generation may atomically publish the replacement and withdraw only the identified eligible predecessor for the same Message/input/chain/archive revision/logical candidate when its verified generation is strictly older. An absent current-generation receipt alone grants no authority: a same-generation missing receipt, inconsistent coordinates/digest, or unmatched candidate refuses. Other archive revisions and deliberately distinct logical candidates are not retired by this transition. Parser-version numbers, candidate PKs, arrival order and payload-hash order do not choose the predecessor. The old selected body and pinned readers remain coherent until ordinary per-Message activation and bounded retirement; this transition neither switches a whole Session nor qualifies a general index rebuild. These coordinates have no fabricated defaults and survive source-body detachment with the immutable certificate.
 
+A conservative complete-body compatibility certificate may avoid a general fold only for eligible immutable imported snapshots with the same interpretation context, parser, source-evidence digest and source rank, whose entire normalized bodies and explicitly retained source sequence agree. Its domain-separated digest frames normalized scalar values, complete ordered block structure and semantic field values (including suppliedness and time) using integrity-ready value codec/length/hash summaries. Source coordinates and origin descriptors remain owned by each candidate; equal evidence hashes alone do not certify equality. Unknown comparisons, conflicting values, operation shapes not covered by the certificate and ambiguous multiple candidates within one input remain unresolved. The carrier among equal bodies uses the validated content-derived imported InputId as a provenance tie only, so import arrival never changes the preferred origin. Every contributing input retains its own exact citations and source projection. A body owns at most one disposable `message_body_compatibility` row; deleting that body removes the row without retaining payload. Readiness and exact immutable body identity fence certificate publication. The Message's contributor revision advances on each eligible-membership change, including withdrawal and re-addition; a streamed selection checks that revision, index incarnation and removal epoch before installing a carrier. Removal invalidates reads; reparse requires fresh eligible source certificates. This narrow equality path neither ranks nonidentical versions nor implements missing-field fill.
+
+The first native realization may rebuild a known predecessor disposable index during stopped daemon startup under its existing writer ownership. Before touching the old index it preserves and syncs its exact main/WAL/SHM file set with readback verification. A synced, versioned transition marker authorizes restart to discard only residual old or partial replacement index files. Fresh schema initialization and ordinary retained-input recovery rederive the index; deleting the marker follows the schema commit and precedes actor work. Unknown/newer versions and unsafe or busy archives refuse. Source bytes, durable archive state and recovery qualification remain authoritative. Catch-up must remain unavailable or degraded until the requested obligations actually settle. This offline transition does not qualify concurrent serving or a side-by-side generation swap.
+
 `message_build` owns the pinned contributor/removal basis and scalar phase/cursors. Its bounded frontier leases nodes while preparing copy-on-write paths. Its active-value reference is a durable producer lease while normalized bytes are appended/verified; readiness transfers that reference to its field/text owner, and abort releases it before bounded payload retirement. A build may also own one `active_block_pk`, with the same Message/session ownership as the build. This block is private: before installation no body directory or tool summary may reference it. Its text/value and field-root leases are durable while individual fields are prepared; only this exclusive preparation may change its field-root pointer. Installation atomically transfers the block into the prepared body directory, clears the active pointer and commits the exact source cursor. It does not copy all fields. A block reached through an immutable directory is immutable. Completion refuses an active block or active value. Abort first releases the active value and active block ownership, then drains their known field/text/node/value references through bounded retirement; collection checks active-block ownership through its index. Source block/text/field summaries come from mapper witnesses, with block-local field counts included exactly once; an empty Text contributes zero to every criterion. Thinking encryption is nullable: unknown never becomes false. Outer group directories reference local block directories; a replacement copies at most the affected radix16 paths, without shifting later block payload rows. Field directories retain source-slot donors independently of filled output. Block-local semantic field keys omit the final public block ordinal: the selected block root establishes correspondence. Distinct blocks of one candidate may supply the same local key. The typed writer enforces at most one fact for that key in each root before insertion; fact identity is not globally unique by candidate and key. A donor from another block still requires explicit semantic correspondence. A selected field root may instead contain an occupied conflict marker for a semantic slot: ordinary scalar output is unknown, and lower-authority fill cannot replace it. The marker enters a shared immutable witness directory retaining its exact fact references, so a pinned historical body never resolves the conflict through today's mutable input choices. The marker is derived resolution, never an additional source-supplied fact or rank contribution. Typed readiness verifies at least two unequal canonical typed values at equal top authority/version; an empty or agreeing witness set cannot certify a conflict. An immutable node owns at most16 edges; internal height strictly decreases, group leaves enter block roots, field conflict leaves enter witness roots, and final leaves reference blocks or field facts. Witness leaves cannot contain conflicts or other directory kinds, so this additional shared subtree introduces no cycle. Cached counts are computed from those children by the typed writer before sealing the node. No ready node or ready body is mutated.
 
 Bodies, representatives, frontier rows and incoming edges acquire/release node references in their small owning transaction. A zero-reference node is claimed as `retiring` before draining at most the admitted edge count; acquisition cannot attach a retiring node. Retirement releases children by stable keysets, then removes the empty owner. Payload/fact/value cleanup likewise checks remaining references and drains bounded chunks. No cascade, giant ID list or whole-body map is used. SQLite readers pinned before retirement retain their old complete graph through WAL. Index collection cannot delete archive-owned source bytes.
@@ -286,6 +290,7 @@ CREATE TABLE message_body (
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
   parser_version    INTEGER NOT NULL,       -- exact source interpretation basis; not a deletion/completion cursor
+  source_sequence   INTEGER CHECK(source_sequence>=0), -- candidate's supplied Session order; NULL unrecorded, never inferred from the current head
   CHECK(ready=0 OR (preferred_candidate_pk IS NOT NULL AND version_hash IS NOT NULL)),
   FOREIGN KEY(message_pk,session_pk) REFERENCES message(pk,session_pk),
   FOREIGN KEY(preferred_candidate_pk,message_pk,session_pk,input_pk,version_hash,preferred_ready)
@@ -297,8 +302,19 @@ CREATE TABLE message_body (
   FOREIGN KEY(field_root_pk,message_pk,session_pk,field_root_kind,root_state)
     REFERENCES message_body_node(pk,message_pk,session_pk,kind,state),
   UNIQUE(pk,message_pk,session_pk),
-  UNIQUE(pk,message_pk,session_pk,ready)
+  UNIQUE(pk,message_pk,session_pk,ready),
+  UNIQUE(pk,ready)
 ) STRICT;
+-- Derived normalized-body equality, never raw source version evidence. The typed
+-- producer visits the complete immutable body before issuing this certificate.
+-- One fixed child of a body owns no payload lease; body retirement removes it.
+CREATE TABLE message_body_compatibility (
+  body_pk INTEGER PRIMARY KEY,
+  body_ready INTEGER NOT NULL DEFAULT 1 CHECK(body_ready=1),
+  digest BLOB NOT NULL CHECK(length(digest)=32),
+  FOREIGN KEY(body_pk,body_ready) REFERENCES message_body(pk,ready) ON DELETE CASCADE
+) STRICT;
+
 CREATE INDEX message_body_owner ON message_body(message_pk,session_pk);
 CREATE INDEX message_body_input ON message_body(input_pk);
 CREATE INDEX message_body_preferred ON message_body(preferred_candidate_pk);
@@ -359,11 +375,26 @@ CREATE UNIQUE INDEX message_candidate_effective ON message_candidate(
   message_pk,input_pk,chain,revision,logical_key) WHERE eligible=1;
 CREATE INDEX message_candidate_input ON message_candidate(input_pk,chain,revision);
 CREATE INDEX message_candidate_owner ON message_candidate(message_pk,session_pk);
+CREATE INDEX message_candidate_eligible_cursor ON message_candidate(message_pk,pk) WHERE eligible=1;
 CREATE INDEX message_candidate_body ON message_candidate(body_pk) WHERE body_pk IS NOT NULL;
 CREATE INDEX message_candidate_required_body ON message_candidate(body_pk) WHERE eligible=1; -- fixed liveness probe without scanning retired pointers
 CREATE INDEX message_candidate_chain_rank ON message_candidate(message_pk,input_pk,chain,
   finish DESC,route DESC,source_blocks DESC,source_text_blocks DESC,source_fields DESC,
   revision_length DESC,version_hash DESC) WHERE eligible=1;
+
+-- Fence every eligible-membership change, including withdraw/re-add ABA.
+CREATE TRIGGER message_candidate_membership_insert AFTER INSERT ON message_candidate
+WHEN NEW.eligible=1 BEGIN
+  UPDATE message SET contributor_revision=contributor_revision+1 WHERE pk=NEW.message_pk;
+END;
+CREATE TRIGGER message_candidate_membership_update AFTER UPDATE OF eligible ON message_candidate
+WHEN OLD.eligible<>NEW.eligible BEGIN
+  UPDATE message SET contributor_revision=contributor_revision+1 WHERE pk=NEW.message_pk;
+END;
+CREATE TRIGGER message_candidate_membership_delete AFTER DELETE ON message_candidate
+WHEN OLD.eligible=1 BEGIN
+  UPDATE message SET contributor_revision=contributor_revision+1 WHERE pk=OLD.message_pk;
+END;
 
 -- Representatives retain roots, including eligible missing-field donors, not
 -- merely the previous global winner. Edits publish a proved current head or an

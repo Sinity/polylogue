@@ -1,6 +1,6 @@
 # Polylogue Rust foundation
 
-This repository contains the standalone Rust foundation. It implements foundation identity/value contracts, durable SQLite schema checks, shared content files, one archive writer, read-only handles and a real daemon/status client. Explicit immutable Codex and context-declared Claude regular-file imports and provider-state progress are registered. Selected uncontested Messages have a streaming terminal reference read, and exact native Claude Session reads can prove a supported normalized JSON/terminal shape. Session listing and human/model prose search share one typed daemon query; general queries retain explicit degraded coverage. Full canonical finalization, export, MCP and HTTP remain unfinished. Status reports `product_path: "partial"`; an initialized empty schema is not a completed ingestion or M1 demonstration.
+This repository contains the standalone Rust foundation. It implements foundation identity/value contracts, durable SQLite schema checks, shared content files, one archive writer, read-only handles and a real daemon/status client. Explicit immutable Codex and context-declared Claude regular-file imports and provider-state progress are registered. Selected source Messages have a streaming terminal reference read, and exact native Claude Session reads can prove a supported normalized JSON/terminal shape. Session listing and human/model prose search share one typed daemon query; general queries retain explicit degraded coverage. Full canonical finalization, export, MCP and HTTP remain unfinished. Status reports `product_path: "partial"`; an initialized empty schema is not a completed ingestion or M1 demonstration.
 
 ## Build and run
 
@@ -79,13 +79,12 @@ resource qualification remain unfinished. Its current source scheduling follows
 one imported input to provider EOF; cross-input fair parse rounds and complete Session
 finalization are still owed. Known selected prose is searchable with explicit population qualifications; provider EOF does not remove them.
 
-The canonical worker prepares uncontested Codex Text/Thinking and supported
+The canonical worker prepares Codex Text/Thinking and supported
 Claude Messages through the same durable private roots and field-origin checks,
 then selects a whole certified source body. Claude signatures and derived tool
 reasons are retained without increasing source-presence rank. Declared legacy
 call identity uses the proved source Session and supplied call ID; global
-pairing and cross-input operation selection remain unfinished. Terminal Message-reference, Session JSON and known Session query reads are exposed; export remains unavailable. Competing inputs, unsupported operations and unresolved
-mapping remain pending; complete qualification is limited to the exact shape above. Hash validation is
+pairing and cross-input operation selection remain unfinished. Terminal Message-reference, Session JSON and known Session query reads are exposed; export remains unavailable. Complete immutable snapshots with identical source evidence, interpretation context, rank, normalized Message bodies and source order share one selected content carrier while retaining each input's exact citations and origins. The carrier uses the validated content-derived InputId as a provenance tie, independent of import arrival. Unequal bodies, ambiguous within-input versions, unsupported operations and unresolved mapping remain pending; complete qualification is limited to the exact shape above. Hash validation is
 cooperative off actor but can still process a whole Message/value per worker
 call, and normalized-leaf windowing can repeat serialization. These costs have
 not earned bounded worker-turn or append-local resource acceptance.
