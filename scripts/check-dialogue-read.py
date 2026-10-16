@@ -222,11 +222,9 @@ def verify(run):
         assert read(run, client, wrong, 2200)['error']['reason'] == 'stale_read'
         wrong = dict(cursor, ref=block('model', 6))
         assert read(run, client, wrong, 2200)['error']['reason'] == 'cross_reference_continuation'
-        unsupported = read(run, client, {'ref': REF, 'view': 'transcript'}, 2200)
-        if client is None:
-            assert unsupported is None
-        else:
-            assert unsupported['error']['kind'] == 'invalid_query'
+        incomplete = read(run, client, {'ref': REF, 'view': 'transcript'}, 2200)
+        assert incomplete['error']['kind'] == 'invalid_query', incomplete
+        assert incomplete['error']['reason'] == 'transcript_requires_full_tools_thinking_harness', incomplete
     # A changed selected Message invalidates existing dialogue continuation.
     changed = json.loads(json.dumps(rows))
     changed[2]['message']['content'][7]['text'] += ' selected edit'
