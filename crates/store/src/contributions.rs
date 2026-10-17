@@ -24,7 +24,9 @@ pub use reads::{
     SourceSpan, SourceStep, ToolResultHeader,
 };
 mod retirement;
+mod small_field;
 mod source;
+pub use small_field::SmallField;
 mod superseded;
 pub use source::{SourceProjection, SourceSelection};
 pub(crate) mod writer;

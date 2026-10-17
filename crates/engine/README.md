@@ -117,3 +117,14 @@ not prove linked/global dependencies or full Session/search completeness.
 
 
 `session_query` executes the registered typed Session subset against the existing pinned catalog. Admission dependencies qualify the searched population independently of matching rows. Selected human/model Text blocks build a query-local store-owned FTS corpus; all candidates are visited before matching/sorting/limit, while stored structured channels and origin readers retain their ownership. Queries expose known selected Message counts/times and retained hit references, never complete Session reductions. Current removal authority is checked again after evaluation. Canonical distinct-text relevance remains unavailable; the response discloses known activity order. General planner/paging, persistent search publication, linked subagent promotion, snippets and whole-corpus resource acceptance remain open.
+
+Small field installation keeps the same source-selector verification. When the
+normalized JSON value and its origin descriptor each fit the current value chunk
+and read limit, and both chunks plus field key and next cursor fit metadata
+admission, the worker verifies and hashes them before returning one typed field
+operation. The store atomically installs their values, leases, field and cursor.
+Existing producers and larger values retain the streaming path. Claude citations
+coalesce only adjacent immediate-field donors with the same exact record range;
+interleaved correction donors remain separate groups. These scheduling changes
+preserve interpretation versions and immutable evidence recipes. They do not
+establish a total worker-time or history-cost bound.

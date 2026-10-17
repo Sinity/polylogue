@@ -470,6 +470,27 @@ fn leaf<'a>(
     Ok(ValueSource::Leaf { subject, slot })
 }
 
+// This one admitted map is already charged by View. Only adjacent equal
+// ranges coalesce; correction donors A/B/A retain three ordered groups. The
+// durable cursor still names the last covered qualified path, including when
+// resuming a cursor written by the uncoalesced materializer.
+fn consecutive_origins(
+    origins: &source::origins::RecordOrigins,
+    after: Option<&[String]>,
+    range: polylogue_sources::selection::RecordRange,
+    flag: &AtomicBool,
+) -> Result<Option<Vec<String>>> {
+    let mut last = after.map(<[String]>::to_vec);
+    while let Some((key, origin)) = origins.next(last.as_deref()) {
+        cancelled(flag)?;
+        if origin.record != range {
+            break;
+        }
+        last = Some(key.to_vec());
+    }
+    Ok(last)
+}
+
 pub(super) fn compute(
     snapshot: &Snapshot,
     reader: &ReadHandle,
@@ -555,25 +576,34 @@ pub(super) fn compute(
                     .origins
                     .envelope
                     .ok_or(Error::Unsupported("Claude record provenance unavailable"))?;
+                let after = consecutive_origins(&c.origins, None, range, flag)?;
                 return cite(
                     state,
                     &mut cursor,
                     Cursor::Citations {
                         item,
-                        after: None,
+                        after,
                         envelope: true,
                     },
                     range,
                     b,
                 );
             }
+            let previous = match after.as_ref() {
+                Some(key) => c.origins.fields.get(key).map(|o| o.record),
+                None => c.origins.envelope,
+            };
+            let after = match previous {
+                Some(range) => consecutive_origins(&c.origins, after.as_deref(), range, flag)?,
+                None => after,
+            };
             if let Some((key, origin)) = c.origins.next(after.as_deref()) {
                 return cite(
                     state,
                     &mut cursor,
                     Cursor::Citations {
                         item,
-                        after: Some(key.to_vec()),
+                        after: consecutive_origins(&c.origins, Some(key), origin.record, flag)?,
                         envelope: true,
                     },
                     origin.record,
@@ -1465,3 +1495,7 @@ fn feed_parts(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "claude/coalescing_tests.rs"]
+mod coalescing_tests;

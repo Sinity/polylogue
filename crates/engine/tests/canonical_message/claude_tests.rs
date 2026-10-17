@@ -700,3 +700,6 @@ mod record_extras;
 mod parents;
 #[path = "claude_result_metadata.rs"]
 mod result_metadata;
+
+#[path = "claude_small_fields.rs"]
+mod small_fields;

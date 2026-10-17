@@ -256,3 +256,12 @@ request using its retained, matching format-3 binary, then open with format 4. T
 qualified format-3 source is `5ddb6975dafae5b79030dabb6c2d6a19cb29ab47`; retain its
 matching binary alongside pending recovery material. There is no new-binary
 resume path for an old pending action or reset of its cut.
+
+`SmallField` carries two immutable worker-hashed JSON chunks for one field. Its
+writer operation charges both payloads, the field key and projection cursor,
+refuses existing producers, and uses the existing sealing/deduplication and
+field-root installation helpers in one transaction. Value/origin aliases retain
+two ownership counts. Predecessor or cursor failure rolls back allocations,
+leases and field-tree edits together. This is an atomic small-field operation,
+not a batch of arbitrary mutations; source-selector authority remains in the
+engine and large/in-flight producers keep their streaming protocol.

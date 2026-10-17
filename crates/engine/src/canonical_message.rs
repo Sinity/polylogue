@@ -24,7 +24,7 @@ use polylogue_store::{
     Error as StoreError, ReadHandle, Writer,
     contributions::{
         BlockKind, BlockPresence, Build, Identity, MessageLayout, Preparation, PreparedProjection,
-        ProjectionState, ProjectionStep, Source, SourceProjection, SourceRange,
+        ProjectionState, ProjectionStep, SmallField, Source, SourceProjection, SourceRange,
     },
     parser_state::{Budget, Snapshot, Token},
     values,
@@ -269,6 +269,7 @@ impl Action {
                 Change::Append { .. } => "value_append",
                 Change::Seal(_) => "value_seal",
                 Change::Field { .. } => "field",
+                Change::SmallField { .. } => "small_field",
                 Change::BeginBlock { .. } => "block_begin",
                 Change::Command(_) => "tool_command",
                 Change::Install(_) => "block_install",
@@ -383,6 +384,14 @@ enum Change {
     },
     Seal(values::Validation),
     Field {
+        slot: Slot,
+        time: Option<i64>,
+        block: bool,
+        supplied: bool,
+        next: Vec<u8>,
+    },
+    SmallField {
+        field: SmallField,
         slot: Slot,
         time: Option<i64>,
         block: bool,
@@ -971,6 +980,65 @@ impl<'a> FieldDescriptor<'a> {
         })
     }
 }
+fn verify_selected_field(
+    snapshot: &Snapshot,
+    reader: &ReadHandle,
+    state: &State,
+    selection: &FieldSelector<'_>,
+    expected_length: u64,
+    expected_hash: BlobHash,
+    b: Budgets,
+    flag: &AtomicBool,
+) -> Result<()> {
+    let mut value = DigestSink::new(flag);
+    let evaluated = selection.write_value(
+        reader,
+        |range| {
+            if flag.load(Ordering::Acquire) {
+                return Err(ResolveError::Cancelled);
+            }
+            if !snapshot
+                .has_message_source(&state.handle.build, cited(range))
+                .map_err(ResolveError::Store)?
+            {
+                return Err(ResolveError::Unbound);
+            }
+            let length = range
+                .end
+                .checked_sub(range.start)
+                .ok_or(ResolveError::Unbound)?;
+            reader
+                .read_source_range_checked(
+                    &snapshot
+                        .message_source_input_id(&state.handle.build, b.metadata)
+                        .map_err(ResolveError::Store)?,
+                    snapshot.head.token.chain,
+                    state.handle.request.source_binding,
+                    range.start,
+                    length,
+                    || {
+                        if flag.load(Ordering::Acquire) {
+                            Err(polylogue_store::Error::Cancelled)
+                        } else {
+                            Ok(())
+                        }
+                    },
+                )
+                .map_err(ResolveError::Store)
+        },
+        b.read.encoded_bytes,
+        &mut value,
+    );
+    cancelled(flag)?;
+    evaluated?;
+    if value.length != expected_length || value.digest() != expected_hash {
+        return Err(Error::Invariant(
+            "source selector output differs from normalized field value",
+        ));
+    }
+    Ok(())
+}
+
 fn field_turn(
     snapshot: &Snapshot,
     reader: &ReadHandle,
@@ -985,6 +1053,70 @@ fn field_turn(
     flag: &AtomicBool,
 ) -> Result<Action> {
     let selection = witness.selection;
+    if state.preparation.active_value.is_none()
+        && state.preparation.active_origin_value.is_none()
+        && cursor.verified.is_none()
+    {
+        let limit = b
+            .value_chunk
+            .min(values::MAX_CHUNK)
+            .min(b.read.encoded_bytes)
+            .min(b.metadata);
+        if limit > 0 {
+            let (length, bytes) = encode_window(&source, 0, limit, flag)?;
+            if length == bytes.len() as u64 {
+                let binding = Binding {
+                    input: input_id,
+                    chain: state.handle.build.predecessor().chain,
+                };
+                let descriptor = ValueSource::Descriptor { selection, binding };
+                let (origin_length, origin) = encode_window(&descriptor, 0, limit, flag)?;
+                if origin_length == origin.len() as u64 {
+                    cancelled(flag)?;
+                    let field = SmallField::prepare(bytes, origin, limit)?;
+                    let next_cursor = Cursor {
+                        source: cursor.source.clone(),
+                        stage: next.clone(),
+                        verified: None,
+                    };
+                    let encoded = bounded_json(&next_cursor, b.metadata)?;
+                    let step = ProjectionStep {
+                        expected_sequence: state.projection.sequence,
+                        next_cursor: &encoded,
+                    };
+                    match field.admit(witness.slot, block, &step, b.metadata) {
+                        Ok(()) => {
+                            verify_selected_field(
+                                snapshot,
+                                reader,
+                                state,
+                                &selection,
+                                field.value_length(),
+                                BlobHash::from_bytes(field.value_hash()),
+                                b,
+                                flag,
+                            )?;
+                            cancelled(flag)?;
+                            return Ok(action(
+                                state,
+                                b,
+                                Change::SmallField {
+                                    field,
+                                    slot: witness.slot.clone(),
+                                    time: witness.time,
+                                    block,
+                                    supplied: witness.supplied,
+                                    next: encoded,
+                                },
+                            ));
+                        }
+                        Err(StoreError::ParserAdmission { .. }) => {} // ordinary streaming remains available
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            }
+        }
+    }
     if let ValueTurn::Action(change) =
         value_turn(reader, state, source, values::Codec::Json, b, flag)?
     {
@@ -1024,52 +1156,16 @@ fn field_turn(
                 "unverified origin producer cannot attach to field",
             ));
         }
-        let mut value = DigestSink::new(flag);
-        let evaluated = selection.write_value(
+        verify_selected_field(
+            snapshot,
             reader,
-            |range| {
-                if flag.load(Ordering::Acquire) {
-                    return Err(ResolveError::Cancelled);
-                }
-                if !snapshot
-                    .has_message_source(&state.handle.build, cited(range))
-                    .map_err(ResolveError::Store)?
-                {
-                    return Err(ResolveError::Unbound);
-                }
-                let length = range
-                    .end
-                    .checked_sub(range.start)
-                    .ok_or(ResolveError::Unbound)?;
-                reader
-                    .read_source_range_checked(
-                        &snapshot
-                            .message_source_input_id(&state.handle.build, b.metadata)
-                            .map_err(ResolveError::Store)?,
-                        snapshot.head.token.chain,
-                        state.handle.request.source_binding,
-                        range.start,
-                        length,
-                        || {
-                            if flag.load(Ordering::Acquire) {
-                                Err(polylogue_store::Error::Cancelled)
-                            } else {
-                                Ok(())
-                            }
-                        },
-                    )
-                    .map_err(ResolveError::Store)
-            },
-            b.read.encoded_bytes,
-            &mut value,
-        );
-        cancelled(flag)?;
-        evaluated?;
-        if value.length != active.length || value.digest() != value_hash {
-            return Err(Error::Invariant(
-                "source selector output differs from normalized field value",
-            ));
-        }
+            state,
+            &selection,
+            active.length,
+            value_hash,
+            b,
+            flag,
+        )?;
         cursor.verified = Some(Verified {
             value_hash,
             value_length: active.length,
@@ -1638,6 +1734,28 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                             guard.metadata,
                         )?;
                     }
+                }
+                Change::SmallField {
+                    field,
+                    slot,
+                    time,
+                    block,
+                    supplied,
+                    next,
+                } => {
+                    writer.write_small_field(
+                        build,
+                        &slot,
+                        time,
+                        supplied,
+                        block,
+                        &field,
+                        &ProjectionStep {
+                            expected_sequence: guard.sequence,
+                            next_cursor: &next,
+                        },
+                        guard.metadata,
+                    )?;
                 }
                 Change::BeginBlock {
                     group,

@@ -232,58 +232,11 @@ impl Writer {
         allowance: usize,
     ) -> Result<()> {
         admit(step, allowance)?;
-        if supplied
-            && matches!(
-                slot,
-                polylogue_model::merge::Slot::Block {
-                    field: polylogue_model::merge::BlockField::ThinkingSignature,
-                    ..
-                }
-            )
-        {
-            return Err(Error::Invariant(
-                "thinking signature cannot supply content rank".into(),
-            ));
-        }
         let key = writer::block_field_key(slot, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
         writer::check(&tx, &path, build)?;
-        let block = active_block(&tx, &path, build)?;
-        let empty:bool=db(&path,||tx.query_row("SELECT b.kind='text' AND v.length=0 FROM block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN body_value v ON v.pk=t.value_pk WHERE b.pk=?1",[block],|r|r.get::<_,Option<bool>>(0)))?.unwrap_or(false);
-        if supplied && empty {
-            return Err(Error::Invariant(
-                "empty Text cannot supply field rank".into(),
-            ));
-        }
-        if matches!(
-            slot,
-            polylogue_model::merge::Slot::Block {
-                field: polylogue_model::merge::BlockField::Tool,
-                ..
-            }
-        ) {
-            let call = active_call(&tx, &path, build, block)?;
-            let value = active_value(&tx, &path, build, values::Codec::Json)?;
-            if db(&path, || {
-                tx.execute("UPDATE body_value SET incoming=incoming+1 WHERE pk=?1 AND state='ready' AND incoming>0",[value])
-            })? != 1
-            {
-                return Err(Error::ValueNotReady);
-            }
-            if db(&path, || {
-                tx.execute(
-                    "UPDATE tool_call SET tool_value_pk=?2 WHERE pk=?1 AND tool_value_pk IS NULL",
-                    params![call, value],
-                )
-            })? != 1
-            {
-                return Err(Error::Invariant(
-                    "private call already has its Tool field".into(),
-                ));
-            }
-        }
-        writer::write_field_in(&tx, &path, build, &key, Some(block), source_time, supplied)?;
+        write_field_in(&tx, &path, build, slot, &key, source_time, supplied)?;
         commit_cursor(&tx, &path, build, step)?;
         db(&path, || tx.commit())?;
         Ok(())
@@ -458,6 +411,66 @@ fn refuse_origin(tx: &Transaction<'_>, path: &Path, build: &Build) -> Result<()>
     }
     Ok(())
 }
+pub(super) fn write_field_in(
+    tx: &Transaction<'_>,
+    path: &std::path::Path,
+    build: &Build,
+    slot: &polylogue_model::merge::Slot,
+    key: &[u8],
+    source_time: Option<i64>,
+    supplied: bool,
+) -> Result<()> {
+    if supplied
+        && matches!(
+            slot,
+            polylogue_model::merge::Slot::Block {
+                field: polylogue_model::merge::BlockField::ThinkingSignature,
+                ..
+            }
+        )
+    {
+        return Err(Error::Invariant(
+            "thinking signature cannot supply content rank".into(),
+        ));
+    }
+    let block = active_block(tx, path, build)?;
+    let empty:bool=db(path,||tx.query_row("SELECT b.kind='text' AND v.length=0 FROM block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN body_value v ON v.pk=t.value_pk WHERE b.pk=?1",[block],|r|r.get::<_,Option<bool>>(0)))?.unwrap_or(false);
+    if supplied && empty {
+        return Err(Error::Invariant(
+            "empty Text cannot supply field rank".into(),
+        ));
+    }
+    if matches!(
+        slot,
+        polylogue_model::merge::Slot::Block {
+            field: polylogue_model::merge::BlockField::Tool,
+            ..
+        }
+    ) {
+        let call = active_call(tx, path, build, block)?;
+        let value = active_value(tx, path, build, values::Codec::Json)?;
+        if db(path, || {
+            tx.execute("UPDATE body_value SET incoming=incoming+1 WHERE pk=?1 AND state='ready' AND incoming>0",[value])
+        })? != 1
+        {
+            return Err(Error::ValueNotReady);
+        }
+        if db(path, || {
+            tx.execute(
+                "UPDATE tool_call SET tool_value_pk=?2 WHERE pk=?1 AND tool_value_pk IS NULL",
+                params![call, value],
+            )
+        })? != 1
+        {
+            return Err(Error::Invariant(
+                "private call already has its Tool field".into(),
+            ));
+        }
+    }
+    writer::write_field_in(tx, path, build, key, Some(block), source_time, supplied)?;
+    Ok(())
+}
+
 fn active_block(tx: &Transaction<'_>, path: &Path, build: &Build) -> Result<i64> {
     let block: Option<i64> = db(path, || {
         tx.query_row(

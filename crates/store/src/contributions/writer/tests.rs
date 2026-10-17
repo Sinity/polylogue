@@ -3,6 +3,7 @@ use super::*;
 use crate::contributions::Retirement;
 use crate::{ImportObservation, InputFormat};
 use polylogue_model::merge::{MessageField, Slot};
+mod small_fields;
 mod superseded;
 struct Fixture {
     dir: tempfile::TempDir,
