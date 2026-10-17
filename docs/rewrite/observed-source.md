@@ -398,7 +398,8 @@ its supplied `logicalParentUuid`, including a summary record between that
 boundary and the next Message. The first contribution owns a folded Message's
 parent. Late records can discharge the retained obligation on a newer snapshot.
 Absent records, invalid relations, conflicting UUID identities, cross-Session
-edges and cycles remain typed unavailable outcomes, including at complete EOF.
+edges, grouped self-references and cycles among skipped records remain typed
+unavailable outcomes, including at complete EOF.
 There is no separate graph or retry scheduler.
 
 Retained relation nodes keep field fingerprints for effective duplicate
@@ -411,8 +412,13 @@ value evidence before selected metadata. These units exclude storage positions
 and unrelated event payloads. Direct parent histories retain the original
 `ParentReferenceV1` descriptor and evidence sequence; traversed relations use
 `ParentViaRecordsV1`. Existing encoded-state, point-read and metadata allowances
-admit nodes and temporary traversal/proof state. This does not bound total
-history work, decoded allocation or worker duration, and raises no allowances.
+admit nodes and temporary traversal/proof state. Traversal stops at the nearest
+Message without walking that Message's ancestry.
+Direct parent lookup therefore does not grow with conversation depth. Global
+Message-tree validation and active-path membership remain explicitly unresolved;
+a nearest-parent proof does not certify global acyclicity. This does not bound
+total history work, decoded allocation or worker duration, and raises no
+allowances.
 
 The combined parser replay identities are Claude 16 and Codex 11, and
 the retained upgrade fixture's baseline remains 8. Existing immutable selector,

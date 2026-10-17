@@ -1314,7 +1314,6 @@ fn proof(
         }
     }
     let first = contribution(snapshot, head, 0, b, flag)?;
-    parent::validate_acyclic(&view, head, &first, b.metadata, flag)?;
     let parent_relations = parent::relations(&first);
     bounded_json(&parent_relations, b.metadata)?;
     let count = response

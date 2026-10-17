@@ -34,9 +34,8 @@ fn native(value: &RetainedJson) -> Result<Option<polylogue_model::NativeId>> {
 fn key(n: &polylogue_model::NativeId) -> Result<String> {
     serde_json::to_string(n).map_err(|e| Error::Source(e.to_string()))
 }
-/// Point-read walks stop at the nearest Message for the normalized edge. A
-/// second walk checks the first-contribution tree for cycles, without folding
-/// other responses or making them suppliers of this Message's parent value.
+/// Stop at the nearest Message. Cycles among skipped records and a grouped
+/// self-reference refuse here; this is not global tree/active-path validation.
 fn walk(
     view: &View<'_>,
     head: &Head,
@@ -84,59 +83,6 @@ fn walk(
         }
     }
     Ok(None)
-}
-pub(super) fn validate_acyclic(
-    view: &View<'_>,
-    head: &Head,
-    first: &Contribution,
-    allowance: usize,
-    flag: &AtomicBool,
-) -> Result<()> {
-    let raw = RetainedJson::parse(&first.raw).map_err(|e| Error::Source(e.to_string()))?;
-    let parent = raw.get("parentUuid").map(native).transpose()?.flatten();
-    // Sidechain main-parent linkage was explicitly reclassified by the source.
-    if !first
-        .projection
-        .facts
-        .iter()
-        .any(|f| matches!(f.field, Field::FirstMessage(MessageField::Parent)))
-    {
-        return Ok(());
-    }
-    let mut visited = BTreeSet::new();
-    visited.insert(first.uuid.clone());
-    let address = walk(view, head, parent, &mut visited, allowance, None, flag)?;
-    if let Some(address) = &address {
-        let mut ancestor = address.clone();
-        let mut messages = BTreeSet::new();
-        messages.insert(head.pending.message.as_str().to_owned());
-        loop {
-            cancelled(flag)?;
-            if !messages.insert(ancestor.message.as_str().to_owned()) {
-                return Err(unresolved("Claude retained Message parent cycle"));
-            }
-            bounded_json(&(&visited, &messages), allowance)?;
-            let previous = callback(view, view.contribution(&ancestor.message, 0))?
-                .ok_or_else(|| unresolved("Claude ancestor contribution unavailable"))?;
-            let raw =
-                RetainedJson::parse(&previous.raw).map_err(|e| Error::Source(e.to_string()))?;
-            if !previous
-                .projection
-                .facts
-                .iter()
-                .any(|f| matches!(f.field, Field::FirstMessage(MessageField::Parent)))
-            {
-                break;
-            }
-            let parent = raw.get("parentUuid").map(native).transpose()?.flatten();
-            let Some(next) = walk(view, head, parent, &mut visited, allowance, None, flag)? else {
-                break;
-            };
-            ancestor = next;
-        }
-        bounded_json(&(&visited, &messages), allowance)?;
-    }
-    Ok(())
 }
 pub(super) fn qualify(
     view: &View<'_>,

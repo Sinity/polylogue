@@ -118,7 +118,7 @@ fn absent_wrong_type_cross_scope_cycles_and_compaction_without_logical_parent_st
             + &b),
         0,
     );
-    refuse(&(message("a", Some("b")) + &message("b", Some("a"))), 0);
+    refuse(&message("b", Some("b")), 0);
     refuse(
         &(event(
             "x",
@@ -245,5 +245,43 @@ fn relation_value_or_donor_must_match_original_retained_record_before_certificat
             }
         }
         assert!(refused);
+    }
+}
+#[test]
+fn a_long_valid_tree_keeps_direct_parent_point_read_count_independent_of_ancestry() {
+    for count in [2, 128] {
+        let mut raw = String::new();
+        for n in 0..count {
+            let parent = (n > 0).then(|| format!("neutral-{:03}", n - 1));
+            raw += &message(&format!("neutral-{n:03}"), parent.as_deref());
+        }
+        let (mut w, p) = make_world(raw.as_bytes(), raw.as_bytes());
+        let req = request(&w, &p[count - 1]);
+        let h = begin(&mut w, &req);
+        let mut budget = work_budget();
+        budget.metadata = 8192;
+        budget.read.cells = 2;
+        assert!(matches!(
+            w.compute_with(&h, budget),
+            Err(m::Error::Store(polylogue_store::Error::ParserAdmission {
+                resource: "Claude state point attempts",
+                required: 3
+            }))
+        ));
+        budget.read.cells = 3;
+        let source = loop {
+            let action = w.compute_with(&h, budget).unwrap();
+            if let m::Applied::Source(source) = m::apply(&mut w.writer, action).unwrap() {
+                break source;
+            }
+        };
+        assert_eq!(
+            value(
+                &selected(&mut w, &source),
+                &Slot::Message(MessageField::Parent)
+            )
+            .0["id"],
+            p[count - 2].message.as_str()
+        );
     }
 }

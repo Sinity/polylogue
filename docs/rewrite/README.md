@@ -40,3 +40,10 @@ The early authored correction tracer follows `plan/slices.md`, `user-data.md`, C
 Retained Claude identity/value support follows `model.md`, `rendering.md` (opaque model-page values), `export-format.md` and CLI/MCP contracts at specification `5551b6e3796f968011323e436f0c72f5339832b4`. Shared retained types preserve numeric tokens and native UTF-16 facts; interpreted-text repairs are separate diagnostics. Model pages frame supported opaque fields and complete field-origin entries after privacy assessment, while normalized Session documents stream original-value JSON. Native index20 adopts the explicit encoding sidecar; predecessor index18/index19 and interrupted replacement markers refuse before replacement. The top-level README owns the supported fresh-archive scope and remaining codec, reimport and provider limits. Other copied contract files retain their recorded snapshot versions.
 
 The Block kind table and opaque provider-extra containers in the retained `model.md` follow specification `730a2445` (only that section). Typed Thinking `data` remains separate from `attrs`; field-origin names and bounded metadata use the same containers. The remainder retains its separately recorded snapshot basis. This clarification does not interpret unsupported provider effects or upgrade settlement.
+
+Only the Tool calls result-content and result-sidecar paragraphs in the retained
+Claude source contract follow specification
+`784c1517623621fd90745a31a24be6108e4f2ec2`. They define finite opaque sidecars,
+sole-result string carriers and ordered `content_items` references. Other copied
+sections keep their separately recorded bases. This does not qualify unsupported
+images/documents, global tree membership or complete real-source restoration.
