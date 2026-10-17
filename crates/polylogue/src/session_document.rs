@@ -25,6 +25,7 @@ pub(crate) struct Coverage {
     pub messages: u64,
     pub catalog: SessionCoverage,
     pub qualification: Value,
+    pub incomplete_reasons: Vec<String>,
     pub recovery: Option<polylogue_model::RecoveryQualification>,
 }
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -187,8 +188,10 @@ pub(crate) fn write_with_cancel(
         }
     })?;
     let mut qualification = source_qualification.result(&session.catalog());
+    let mut incomplete_reasons = source_qualification.incomplete_reasons();
     let recovery = stored(session.recovery())?;
     if recovery.is_some() {
+        incomplete_reasons.push(polylogue_model::RecoveryQualification::NOTE.into());
         qualification["outcome"] = json!("degraded");
         qualification["notes"]
             .as_array_mut()
@@ -340,6 +343,7 @@ pub(crate) fn write_with_cancel(
         messages,
         catalog,
         qualification,
+        incomplete_reasons,
         recovery,
     })
 }

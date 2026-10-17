@@ -30,6 +30,7 @@ def sha(path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--binary', type=Path, required=True)
+    parser.add_argument('--artifact-kind', choices=('checked-package', 'smoke-package'), required=True)
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--candidate', required=True)
     parser.add_argument('--package-source', required=True,
@@ -105,6 +106,7 @@ def main():
     assert len(extra_by_message) == 1, 'opaque-extra fixture coverage changed'
     archive = args.output / 'archive'
     report = {'candidate': args.candidate, 'package_source': package_source,
+              'artifact_kind': args.artifact_kind,
               'runtime_unchanged': True, 'nonruntime_changes': nonruntime_changes,
               'runner_sha256': sha(Path(__file__).resolve()), 'binary': str(args.binary), 'binary_sha256': sha(args.binary),
               'spec': spec_pin, 'oracle_sha256': sha(Path(oracle.__file__)),
@@ -179,6 +181,14 @@ def main():
             budgets = (4000, 16000) if phase == 'initial' else (16000,)
             for budget in budgets:
                 page = sdk('message:' + expected['message_ref'], budget, phase + '-' + str(index) + '-' + str(budget))
+                assert page['outcome'] == 'ok' and page['settlement']['state'] == 'settled', page
+                assert page['diagnostics']['text_repairs'] == (1 if expected['session_native'] == 'unicode-main' else 0), page
+                source_name = next(name for name, context in facts['contexts'].items()
+                                   if context[1] == expected['session_native'])
+                source_basis = page['settlement']['target_basis']['inputs']
+                assert len(source_basis) == 1 and source_basis[0]['input'] == bindings[source_name]['id'], source_basis
+                assert source_basis[0]['chain'] == bindings[source_name]['chain']
+                assert source_basis[0]['original_hash'] == bindings[source_name]['original_hash']
                 shown = page['shown']
                 assert all(fragment['message'] == 'message:' + expected['message_ref'] for fragment in shown)
                 assert all(fragment['session'] == expected['session_ref'] for fragment in shown)

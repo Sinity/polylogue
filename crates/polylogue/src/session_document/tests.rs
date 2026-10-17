@@ -849,3 +849,6 @@ fn model_metadata_wraps_whole_opaque_values_after_privacy() {
     opaque_value(&mut encoder, &original, deadline, false).unwrap();
     assert_eq!(encoder.finish().unwrap(), original.canonical());
 }
+
+#[path = "tests/reference_guard.rs"]
+mod reference_guard;

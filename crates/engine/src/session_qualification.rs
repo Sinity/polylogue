@@ -74,6 +74,13 @@ impl Qualification {
             && self.unsupported.is_empty()
     }
     pub fn notes(&self) -> Vec<String> {
+        self.reason_notes(true)
+    }
+    /// Causes of incomplete coverage, excluding known interpreted-text repairs.
+    pub fn incomplete_reasons(&self) -> Vec<String> {
+        self.reason_notes(false)
+    }
+    fn reason_notes(&self, include_diagnostics: bool) -> Vec<String> {
         let mut notes = self.unsupported.iter().cloned().collect::<Vec<_>>();
         for (count, detail) in [
             (
@@ -81,7 +88,11 @@ impl Qualification {
                 "undecodable complete records in relevant retained inputs",
             ),
             (
-                self.text_repairs,
+                if include_diagnostics {
+                    self.text_repairs
+                } else {
+                    0
+                },
                 "unpaired UTF-16 code units repaired in interpreted source text",
             ),
             (
@@ -352,8 +363,23 @@ fn qualify_operation(
                                     if cancelled() {
                                         return Err(Error::Cancelled);
                                     }
-                                    let contribution:polylogue_sources::claude_code::keyed::Contribution=cell(session,&dependency,claude::CONTRIBUTION,&(pending.message.session().as_str(),pending.message.as_str(),item),allowance)?.ok_or_else(||Error::Invariant("missing foreign Session contribution".into()))?;
-                                    if contribution.blocks.iter().any(|block|matches!(block,polylogue_model::BlockContent::Text{text} if exact.is_some_and(|id|text.contains(id) || id.strip_prefix("claude-code:").is_some_and(|native|text.contains(native))))) {possible=true;}
+                                    let key = (
+                                        pending.message.session().as_str(),
+                                        pending.message.as_str(),
+                                        item,
+                                    );
+                                    let contribution: polylogue_sources::claude_code::keyed::Contribution =
+                                        cell(session, &dependency, claude::CONTRIBUTION, &key, allowance)?
+                                            .ok_or_else(|| Error::Invariant("missing foreign Session contribution".into()))?;
+                                    // A native suffix can be an ordinary word or
+                                    // letter. Only the full public ID supplies
+                                    // possible reference evidence in this scan.
+                                    if contribution.blocks.iter().any(|block| {
+                                        matches!(block, polylogue_model::BlockContent::Text { text }
+                                            if exact.is_some_and(|id| text.contains(id)))
+                                    }) {
+                                        possible = true;
+                                    }
                                 }
                             }
                         }

@@ -21,6 +21,19 @@ const TIME: Duration = Duration::from_secs(30);
 fn failed(kind: ErrorKind, message: impl ToString) -> Value {
     json!({"type":"end","outcome":"error","error":Failure::new(kind,message.to_string())})
 }
+fn completion(qualification: &Value, incomplete_reasons: &[String]) -> Value {
+    let complete = qualification["outcome"] == "ok";
+    // Advisory diagnostics (such as a counted text repair) can accompany a
+    // complete read. They are not missing content and must not invalidate its
+    // strictly checked completion frame.
+    let mut end = json!({"type":"end","outcome":qualification["outcome"],
+        "canonical_complete":complete,"missing":incomplete_reasons,"notes":qualification["notes"],
+        "unknown":qualification["unknown"]});
+    if let Some(diagnostics) = qualification.get("diagnostics") {
+        end["diagnostics"] = diagnostics.clone();
+    }
+    end
+}
 pub(crate) fn serve(
     stream: &mut UnixStream,
     request: &Value,
@@ -83,9 +96,14 @@ pub(crate) fn serve(
                 e,
             )
         })?;
-        let complete = coverage.qualification["outcome"] == "ok";
-        let mut end = json!({"type":"end","outcome":coverage.qualification["outcome"],"canonical_complete":complete,"messages":coverage.messages,"missing":coverage.qualification["notes"],"notes":coverage.qualification["notes"],"unknown":coverage.qualification["unknown"],
-            "view":format!("{}:{}",session.position().generation,session.position().counter),"up_to_date":coverage.up_to_date});
+        let mut end = completion(&coverage.qualification, &coverage.incomplete_reasons);
+        end["messages"] = json!(coverage.messages);
+        end["view"] = json!(format!(
+            "{}:{}",
+            session.position().generation,
+            session.position().counter
+        ));
+        end["up_to_date"] = json!(coverage.up_to_date);
         if let Some(recovery) = coverage.recovery {
             end["recovery"] = json!(recovery);
         }
@@ -379,6 +397,9 @@ mod tests {
         let expected = "opaque:session:with:colons";
         let mut complete = end();
         complete["canonical_complete"] = json!(true);
+        let mut false_complete = end();
+        false_complete["outcome"] = json!("ok");
+        false_complete["canonical_complete"] = json!(true);
         let mut missing = end();
         missing["missing"] = json!([]);
         for frames in [
@@ -386,6 +407,7 @@ mod tests {
             vec![end()],
             vec![header(), header(), end()],
             vec![header(), complete],
+            vec![header(), false_complete],
             vec![header(), missing],
             vec![json!({"type":"text","data":"private"}), end()],
         ] {

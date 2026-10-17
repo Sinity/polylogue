@@ -98,6 +98,7 @@ Use the checked binary's actual source commit, not a branch name:
 
 ```sh
 python3 scripts/check-native-identity.py \
+  --artifact-kind checked-package \
   --binary /absolute/checked/polylogue --source /absolute/native-checkout \
   --candidate CURRENT_COMMIT --package-source CHECKED_PACKAGE_COMMIT \
   --spec-repo /absolute/spec --spec-revision SPEC_COMMIT \
@@ -112,6 +113,8 @@ The runner extracts the corpus and independent oracle from the pinned spec and
 freezes the supplied SDK client and its collector. Package and current source
 must match except for this runner and README. This finite regression does not
 qualify installed migration, unsupported reimport or every export clause above.
+An early package built without checks must use `--artifact-kind smoke-package`;
+its successful client run does not replace the normal checked-package gate.
 
 ## Delivery boundary
 
