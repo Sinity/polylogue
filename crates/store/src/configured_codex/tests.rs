@@ -238,3 +238,50 @@ fn relative_resolution_refuses_parent_escape_and_symlinks() {
     std::os::unix::fs::symlink(home.join("sessions"), home.join("linked")).unwrap();
     assert!(resolve(home, Path::new("linked/rollout-one.jsonl")).is_err());
 }
+
+#[test]
+fn missing_prompt_and_physical_sources_count_as_failed_capture_attempts() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::write(home.join("sessions/rollout-present.jsonl"), b"{}\n").unwrap();
+    let catalog = Connection::open(home.join("state_5.sqlite")).unwrap();
+    catalog
+        .execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY,rollout_path TEXT NOT NULL)")
+        .unwrap();
+    drop(catalog);
+    let mut config = config(&home);
+    config.paginated_history = Some("missing-history.sqlite".into());
+    let mut writer = Writer::open(&root.path().join("archive")).unwrap();
+    let report = writer
+        .acquire_codex_home(&config, "mixed-attempts", 1, &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(report.catalog.state, "accessible_empty");
+    assert_eq!(report.rollouts.entries, Some(1));
+    assert_eq!(report.retained_count, 1);
+    assert_eq!(report.retained_count_unit, "successful_source_attempts");
+    assert_eq!(report.refused_count, 2);
+    assert_eq!(report.refused_omitted, 0);
+    let mut actual = report
+        .refused
+        .iter()
+        .map(|state| {
+            assert_eq!(state.state, "unavailable");
+            assert_eq!(state.entries, None);
+            state.path.clone().unwrap()
+        })
+        .collect::<Vec<_>>();
+    actual.sort();
+    let mut expected = vec![
+        home.join("history.jsonl"),
+        home.join("missing-history.sqlite"),
+    ];
+    expected.sort();
+    assert_eq!(actual, expected);
+    assert_eq!(report.history.state, "unavailable");
+    assert_eq!(report.history.entries, None);
+    assert_eq!(report.paginated_history.unwrap().state, "unavailable");
+    assert!(report.paginated_input.is_none());
+    assert!(report.prompt_input.is_none());
+    assert_eq!(report.conversation_coverage, None);
+}

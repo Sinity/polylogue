@@ -730,7 +730,11 @@ impl Writer {
                 state
             }
             Err(Error::Cancelled) => return Err(Error::Cancelled),
-            Err(e) => unavailable(history_path, e),
+            Err(e) => {
+                let state = unavailable(history_path, e);
+                failures.push(state.clone());
+                state
+            }
         };
         let mut paginated_input = None;
         let paginated_history = if let Some(path) = paginated_path(config)? {
@@ -762,7 +766,11 @@ impl Writer {
                     available(path, 1, "retained_snapshots")
                 }
                 Err(Error::Cancelled) => return Err(Error::Cancelled),
-                Err(e) => unavailable(path, e),
+                Err(e) => {
+                    let state = unavailable(path, e);
+                    failures.push(state.clone());
+                    state
+                }
             })
         } else {
             None
