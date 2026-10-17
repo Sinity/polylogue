@@ -14,7 +14,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 10;
+pub const PARSER_VERSION: u32 = 11;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {

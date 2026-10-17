@@ -257,3 +257,16 @@ index. Its retained acceptance fixtures belong to that exact binary and source;
 current exact-schema validation may refuse them. Formats 1 through 3 retain
 the preserving upgrade route described above. No installed format-4 archive
 compatibility is claimed for those unpublished candidates.
+
+Claude parser version 11 admits supplied boolean `toolUseResult.isImage` and
+`toolUseResult.noOutputExpected` as named execution metadata. Each present value
+has its exact retained source path and ordinary JSON leaf selection. Absence
+adds no default; neither flag infers image content, outcome, or missing output.
+Wrong types and unknown metadata still leave mapping obligations pending.
+
+The parser-version basis changes normal retained-source interpretation, so a
+retained contribution parsed by an older version is re-evaluated before it can
+be current. This also re-applies the existing later-fragment parent resolution
+repair. Selection codec 1 and adapter recipe 2 keep their existing meanings;
+no archive reset, provider edit, or new recovery operation is required by this
+mapping change. This does not establish complete source restoration.
