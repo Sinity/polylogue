@@ -713,7 +713,7 @@ impl ReadHandle {
         hash: BlobHash,
         offset: u64,
         length: u64,
-        mut check: impl FnMut() -> Result<()>,
+        check: impl FnMut() -> Result<()>,
     ) -> Result<Vec<u8>> {
         self.read_blob_range_using(&self.blob_reader, false, hash, offset, length, check)
     }
