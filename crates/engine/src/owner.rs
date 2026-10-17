@@ -12,7 +12,7 @@ use crate::{
 use polylogue_model::BlobHash;
 use polylogue_sources::{claude_code, codex, frame::StepBudget};
 use polylogue_store::{
-    Error as StoreError, ImportObservation, InputFormat, PreparedBlob, RetainedInput,
+    Error as StoreError, ImportObservation, InputFormat, PreparedBlob, ReadHandle, RetainedInput,
     RetainedSource, Writer,
     parser_state::{Basis, Budget, Head},
 };
@@ -480,7 +480,7 @@ struct CanonicalJob {
     head: Head,
     position: CanonicalPosition,
     handle: Option<canonical_message::Handle>,
-    join: JoinHandle<()>,
+    join: JoinHandle<ReadHandle>,
 }
 enum Active {
     Selecting(
@@ -514,6 +514,10 @@ struct Actor {
     history_budget: polylogue_store::history_pages::turns::Budget,
     compute: Option<ComputeJob>,
     canonical: Option<CanonicalJob>,
+    // One worker owns this reader at a time. Returning the idle connections
+    // avoids reparsing the SQLite schema on every field turn. Individual store
+    // operations still establish fresh views; no transaction spans actor turns.
+    canonical_reader: Option<ReadHandle>,
     active: Option<Active>,
     after: String,
     scanning: bool,
@@ -533,6 +537,7 @@ impl Actor {
             history_budget: polylogue_store::history_pages::turns::Budget::default(),
             compute: None,
             canonical: None,
+            canonical_reader: None,
             active: None,
             after: String::new(),
             scanning: true,
@@ -1032,7 +1037,7 @@ impl Actor {
                     .canonical
                     .take()
                     .ok_or(Error::InvalidRequest("unexpected canonical completion"))?;
-                job.join.join().map_err(|_| Error::WorkerPanicked)?;
+                self.canonical_reader = Some(job.join.join().map_err(|_| Error::WorkerPanicked)?);
                 if self.stop_for_completion(&result) {
                     return Ok(());
                 }
@@ -1311,6 +1316,12 @@ impl Actor {
             .record_parser_failure(&head.token, Some(&details), DETAIL_BYTES)?;
         Ok(())
     }
+    fn take_canonical_reader(&mut self) -> Result<ReadHandle> {
+        match self.canonical_reader.take() {
+            Some(reader) => Ok(reader),
+            None => Ok(self.writer.read_handle()?),
+        }
+    }
     fn tick(&mut self) -> Result<()> {
         if self.compute.is_some() || self.canonical.is_some() {
             return Ok(());
@@ -1506,7 +1517,7 @@ impl Actor {
                 }
             }
             Active::Selecting(input, head, position, selection) => {
-                let reader = self.writer.read_handle()?;
+                let reader = self.take_canonical_reader()?;
                 let cancelled = Arc::clone(&self.inner.cancelled);
                 let sender = self.inner.sender.clone();
                 let join = thread::Builder::new()
@@ -1519,6 +1530,7 @@ impl Actor {
                         .and_then(|r| r.map_err(Error::Store))
                         .map(CanonicalTurn::Selected);
                         let _ = sender.send(Message::CanonicalComputed(result));
+                        reader
                     });
                 match join {
                     Ok(join) => {
@@ -1535,7 +1547,7 @@ impl Actor {
             }
             Active::Canonical(input, head, position, handle) => {
                 let snapshot = self.writer.parser_snapshot(&head.token)?;
-                let reader = self.writer.read_handle()?;
+                let reader = self.take_canonical_reader()?;
                 let state = handle
                     .as_ref()
                     .map(|h| canonical_message::inspect(&mut self.writer, h, 65536))
@@ -1704,6 +1716,7 @@ impl Actor {
                         .map_err(|_| Error::WorkerPanicked)
                         .and_then(|r| r);
                         let _ = sender.send(Message::CanonicalComputed(result));
+                        reader
                     });
                 match join {
                     Ok(join) => {
