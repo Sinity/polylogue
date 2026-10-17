@@ -326,20 +326,49 @@ pub struct Snapshot {
     // Drop the SQLite snapshot before releasing its retained archive authority.
     _lock: std::sync::Arc<std::fs::File>,
 }
-impl Snapshot {
-    fn open(path: &Path, expected: &Token, lock: std::sync::Arc<std::fs::File>) -> Result<Self> {
-        let db = crate::open(path, true, false)?;
-        sql!(path, db.execute_batch("BEGIN DEFERRED"))?;
-        let head = current(&db, path, expected)?; // Establishes the actual read snapshot now.
-        prepared::ensure_idle(&db, path, expected)?;
+/// Idle parser connection. It retains schema/page caches but no read transaction.
+/// Each snapshot must establish and check its own current source predecessor.
+pub struct ParserReader {
+    db: Connection,
+    path: std::path::PathBuf,
+    lock: std::sync::Arc<std::fs::File>,
+}
+impl ParserReader {
+    fn open(path: &Path, lock: std::sync::Arc<std::fs::File>) -> Result<Self> {
+        Ok(Self {
+            db: crate::open(path, true, false)?,
+            path: path.to_owned(),
+            lock,
+        })
+    }
+    pub fn snapshot(self, expected: &Token) -> Result<Snapshot> {
+        let Self { db, path, lock } = self;
+        sql!(&path, db.execute_batch("BEGIN DEFERRED"))?;
+        let head = current(&db, &path, expected)?;
+        prepared::ensure_idle(&db, &path, expected)?;
         if head.status == "retired" {
             return Err(StoreError::ParserPredecessorChanged);
         }
-        Ok(Self {
+        Ok(Snapshot {
             db,
-            path: path.to_owned(),
+            path,
             head,
             _lock: lock,
+        })
+    }
+}
+impl Snapshot {
+    fn open(path: &Path, expected: &Token, lock: std::sync::Arc<std::fs::File>) -> Result<Self> {
+        ParserReader::open(path, lock)?.snapshot(expected)
+    }
+    /// Release the pinned view before applying worker output. Only the idle
+    /// connection is reusable; a later snapshot never resumes this read view.
+    pub fn into_reader(self) -> Result<ParserReader> {
+        sql!(&self.path, self.db.execute_batch("ROLLBACK"))?;
+        Ok(ParserReader {
+            db: self.db,
+            path: self.path,
+            lock: self._lock,
         })
     }
     pub fn cell(&self, namespace: &str, key: &[u8], allowance: usize) -> Result<Option<Vec<u8>>> {
@@ -782,6 +811,12 @@ impl crate::Writer {
             std::sync::Arc::clone(&self._lock),
         )
     }
+    pub fn parser_reader(&self) -> Result<ParserReader> {
+        ParserReader::open(
+            &self.root.join("index.db"),
+            std::sync::Arc::clone(&self._lock),
+        )
+    }
 }
 impl crate::ReadHandle {
     pub fn parser_snapshot(&self, predecessor: &Token) -> Result<Snapshot> {
@@ -797,6 +832,7 @@ impl crate::ReadHandle {
 mod tests {
     use super::*;
     use crate::Writer;
+    mod reused_reader;
     fn fixture() -> (tempfile::TempDir, std::path::PathBuf, Writer, i64) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("archive");

@@ -154,6 +154,14 @@ pub(crate) fn block_name(field: BlockField) -> &'static str {
         BlockField::ProducedBy => "produced_by",
     }
 }
+/// Provider extra containers never share a key with a typed block payload.
+pub(crate) fn block_extra_container(kind: &str) -> &'static str {
+    if matches!(kind, "tool_call" | "tool_result") {
+        "data"
+    } else {
+        "attrs"
+    }
+}
 fn member<W: Write>(e: &mut Encoder<W>, name: &str, value: &Value) -> io::Result<()> {
     e.syntax(b",")?;
     e.key(name)?;
@@ -677,24 +685,16 @@ fn write_block_fields<W: Write>(
         }
         cursor = Some(entry.cursor);
     }
+    let container = block_extra_container(&b.kind);
     if !model_page {
         let mut fields = ordered(b.ordered_extras(LEAF, deadline, cancelled))?;
-        if !matches!(b.kind.as_str(), "tool_result" | "tool_call") {
-            if ordered(fields.next(deadline, cancelled))?.is_some() {
-                return Err(invalid("block extra export mapping unavailable"));
-            }
-            return Ok(());
-        }
-        return write_ordered_extras(&mut fields, "data", e, deadline, cancelled);
+        return write_ordered_extras(&mut fields, container, e, deadline, cancelled);
     }
     let mut cursor = None;
-    let mut opaque = OpaqueFields::new("data", model_page);
+    let mut opaque = OpaqueFields::new(container, model_page);
     while let Some(entry) = stored(b.next_field(cursor.as_ref(), LEAF))? {
         check(deadline)?;
         if let BlockFieldAddress::Extra(key) = entry.address {
-            if b.kind != "tool_result" && b.kind != "tool_call" {
-                return Err(invalid("block extra export mapping unavailable"));
-            }
             let bytes = field_bytes(&resolved(entry.value)?, false)?
                 .ok_or_else(|| invalid("missing block extra"))?;
             opaque.push(e, &key, &bytes)?;
@@ -772,7 +772,9 @@ fn write_origins<W: Write>(
             check(deadline)?;
             let name = match &entry.address {
                 BlockFieldAddress::Field(kind) => format!("blocks[{index}].{}", block_name(*kind)),
-                BlockFieldAddress::Extra(key) => format!("blocks[{index}].data.{key}"),
+                BlockFieldAddress::Extra(key) => {
+                    format!("blocks[{index}].{}.{key}", block_extra_container(&b.kind))
+                }
             };
             origin(e, &resolved(entry.value)?, &name, &mut first)?;
             cursor = Some(entry.cursor);

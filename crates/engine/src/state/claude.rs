@@ -6,8 +6,8 @@ use std::io::{self, Write};
 
 use polylogue_model::{Event, Link, MessageId, SessionId};
 use polylogue_sources::claude_code::keyed::{
-    BodyPayload, Contribution, Header, LinkKey, PendingMessage, ReadView, RecordAddress,
-    ResponseCell, ResponseKey, SessionCell,
+    BackgroundAddress, BodyPayload, Contribution, Header, LinkKey, PendingMessage, ReadView,
+    RecordAddress, ResponseCell, ResponseKey, SessionCell,
 };
 use polylogue_sources::claude_code::{PARSER_VERSION, StepOutput};
 use polylogue_sources::frame::Counts;
@@ -21,6 +21,8 @@ pub(crate) const SESSION: &str = "claude.session.v1";
 pub(crate) const RESPONSE: &str = "claude.response.v1";
 const SIDE: &str = "claude.side.v1";
 const LINK: &str = "claude.link.v1";
+const BACKGROUND: &str = "claude.background.v1";
+const OCCURRENCE: &str = "claude.occurrence.v1";
 const RECORD: &str = "claude.record.v1";
 pub(crate) const CONTRIBUTION: &str = "claude.contribution.v1";
 const BODY: &str = "claude.body.v1";
@@ -208,6 +210,12 @@ impl View<'_> {
 }
 impl ReadView for View<'_> {
     type Error = String;
+    fn background(&self, task: &str) -> std::result::Result<Option<BackgroundAddress>, String> {
+        self.callback(|| self.get(BACKGROUND, task))
+    }
+    fn occurrence(&self, hash: &str) -> std::result::Result<u64, String> {
+        self.callback(|| Ok(self.get(OCCURRENCE, hash)?.unwrap_or(0)))
+    }
     fn header(&self) -> std::result::Result<Header, String> {
         self.callback(|| self.read_header())
     }
@@ -386,6 +394,8 @@ pub fn encode_step(
         .saturating_add(delta.sessions.len())
         .saturating_add(delta.responses.len())
         .saturating_add(delta.addresses.len())
+        .saturating_add(delta.occurrences.len())
+        .saturating_add(delta.backgrounds.len())
         .saturating_add(delta.contributions.len())
         .saturating_add(delta.sides.len())
         .saturating_add(delta.links.len())
@@ -409,6 +419,12 @@ pub fn encode_step(
             &(session, key.role, &key.response, &key.request),
             Some(cell),
         )?;
+    }
+    for (task, address) in &delta.backgrounds {
+        encoder.put(BACKGROUND, task, Some(address))?;
+    }
+    for (hash, count) in &delta.occurrences {
+        encoder.put(OCCURRENCE, hash, Some(count))?;
     }
     for (session, uuid, cell) in &delta.addresses {
         encoder.put(RECORD, &(session, uuid), Some(cell))?;

@@ -157,7 +157,7 @@ impl ResponseCell {
     /// An owner reduces each semantic slot once, not once per source record.
     pub fn selected_unit(&self, index: u8) -> Option<SelectedUnit> {
         let i = usize::from(index);
-        if i >= 4 {
+        if i >= 6 {
             return None;
         }
         let mut facts = self.selected_facts[i].clone();
@@ -238,8 +238,20 @@ impl Contribution {
                                 .ok_or("Claude projection cursor overflow")?;
                             continue;
                         }
+                        let raw = if matches!(
+                            fact.selection.as_ref().map(|s| &s.transform),
+                            Some(super::selection::Transform::BackgroundV1 { .. })
+                        ) {
+                            &self
+                                .completion
+                                .as_ref()
+                                .ok_or("background fact lost its notification")?
+                                .raw
+                        } else {
+                            &self.raw
+                        };
                         let source: Value =
-                            serde_json::from_slice(&self.raw).map_err(|e| e.to_string())?;
+                            serde_json::from_slice(raw).map_err(|e| e.to_string())?;
                         let value = at(&source, &fact.source_path)
                             .ok_or("Claude presence fact lost its raw value")?
                             .clone();
@@ -271,8 +283,20 @@ impl Contribution {
                 },
                 6 => {
                     if let Some(fact) = self.projection.retained.get(n) {
+                        let raw = if matches!(
+                            fact.selection.as_ref().map(|s| &s.transform),
+                            Some(super::selection::Transform::BackgroundV1 { .. })
+                        ) {
+                            &self
+                                .completion
+                                .as_ref()
+                                .ok_or("background fact lost its notification")?
+                                .raw
+                        } else {
+                            &self.raw
+                        };
                         let source: Value =
-                            serde_json::from_slice(&self.raw).map_err(|e| e.to_string())?;
+                            serde_json::from_slice(raw).map_err(|e| e.to_string())?;
                         let value = at(&source, &fact.source_path)
                             .ok_or("Claude retained leaf lost its raw value")?
                             .clone();
@@ -283,13 +307,15 @@ impl Contribution {
                         })
                     } else {
                         cursor.phase = 8;
-                        return Ok(None);
+                        cursor.position = 0;
+                        continue;
                     }
                 }
                 7 => Some(
                     self.signature_unit(item, cursor.position)?
                         .ok_or("signature cursor lost its thinking signature")?,
                 ),
+                8 => self.completion_unit(item).map(Unit::Evidence),
                 _ => return Ok(None),
             };
             if cursor.phase == 1
@@ -302,7 +328,7 @@ impl Contribution {
                     .position
                     .checked_add(1)
                     .ok_or("Claude signature cursor overflow")?;
-            } else if matches!(cursor.phase, 0 | 4) {
+            } else if matches!(cursor.phase, 0 | 4 | 8) {
                 cursor.phase += 1;
                 cursor.position = 0;
             } else if unit.is_some() {
@@ -379,7 +405,20 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
                                 path(&["message", "usage", name]),
                                 revision,
                             )
+                        } else if field != UsageField::ServiceTier || !value.is_null() {
+                            extra(
+                                &mut facts,
+                                None,
+                                path(&["message", "usage", name]),
+                                revision,
+                            )
                         }
+                    } else if matches!(
+                        name,
+                        "inference_geo" | "iterations" | "server_tool_use" | "speed"
+                    ) {
+                        // These named members are opaque provider evidence in
+                        // the selected whole usage object, never new counters.
                     } else if matches!(name, "cache_creation" | "output_tokens_details") {
                         if let Some(members) = value.as_object() {
                             for (native_key, value) in members {
@@ -400,11 +439,20 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
                                 if let Some(field) = field {
                                     if value.as_u64().is_some() {
                                         add(&mut facts, Field::Usage(field), p, revision)
+                                    } else {
+                                        extra(&mut facts, None, p, revision)
                                     }
                                 } else {
                                     extra(&mut facts, None, p, revision)
                                 }
                             }
+                        } else {
+                            extra(
+                                &mut facts,
+                                None,
+                                path(&["message", "usage", name]),
+                                revision,
+                            )
                         }
                     } else {
                         extra(
@@ -414,6 +462,19 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
                             revision,
                         )
                     }
+                }
+                if ["inference_geo", "iterations", "server_tool_use", "speed"]
+                    .iter()
+                    .any(|key| raw.get(key).is_some())
+                {
+                    add(
+                        &mut facts,
+                        Field::SelectedExtra {
+                            key: "provider_usage".into(),
+                        },
+                        path(&["message", "usage"]),
+                        revision,
+                    );
                 }
             }
         }
@@ -433,6 +494,18 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
             &mut facts,
             Field::SelectedMessage(MessageField::CompletedAt),
             path(&["timestamp"]),
+            revision,
+        ),
+        4 if super::usd_nanos(raw).is_some() => add(
+            &mut facts,
+            Field::Usage(UsageField::ProviderCostNusd),
+            path(&["costUSD"]),
+            revision,
+        ),
+        5 if raw.as_u64().is_some() => add(
+            &mut facts,
+            Field::SelectedMessage(MessageField::DurationMs),
+            path(&["durationMs"]),
             revision,
         ),
         _ => {}
@@ -512,9 +585,8 @@ pub(super) fn record(
                 | "isAbortedMidStream"
                 | "thinkingDurationMs" => {}
                 "toolUseResult" | "toolDenialKind" => {} // reduced once on its attributed result below
-                "costUSD" | "durationMs" => result
-                    .obligations
-                    .push(CountingObligation::UnmappedField { path: path(&[key]) }),
+                "costUSD" if super::usd_nanos(value).is_some() => {}
+                "durationMs" if value.as_u64().is_some() => {}
                 "origin" => {
                     if let Some(origin) = value.as_object() {
                         for (native_name, value) in origin {
@@ -548,7 +620,7 @@ pub(super) fn record(
                 key,
                 "id" | "role" | "type" | "model" | "content" | "usage" | "stop_reason" | "ttftMs"
             ) {
-                if key == "stop_sequence" {
+                if matches!(key, "stop_sequence" | "stop_details") {
                     add(
                         &mut result.facts,
                         Field::SelectedExtra {

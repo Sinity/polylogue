@@ -184,3 +184,84 @@ fn actual_request_conflict_and_invalid_identity_are_typed_before_source_open() {
     assert_eq!(invalid["error"]["kind"], "invalid_query", "{invalid}");
     assert_eq!(import(running.socket(), &first, id)["outcome"], "ok");
 }
+
+#[test]
+fn ignored_state_turns_keep_peers_usable_and_resume_exact_accounting() {
+    use std::io::Write;
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
+    let runtime = runtime_owner.path().join("runtime");
+    let path = temp.path().join("states.jsonl");
+    let peer_path = temp.path().join("peer.jsonl");
+    let states = 65_536_u64;
+    let mut stream = fs::File::create(&path).unwrap();
+    writeln!(
+        stream,
+        "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"state-turns\"}}}}"
+    )
+    .unwrap();
+    for sequence in 0..states {
+        writeln!(
+            stream,
+            "{{\"record_type\":\"state\",\"sequence\":{sequence}}}"
+        )
+        .unwrap();
+    }
+    stream.sync_all().unwrap();
+    let length = stream.metadata().unwrap().len();
+    drop(stream);
+    fs::write(
+        &peer_path,
+        b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"state-peer\"}}\n",
+    )
+    .unwrap();
+    let mut running = Running::start(&archive, &runtime).unwrap();
+    let retained = import(
+        running.socket(),
+        &path,
+        "01900000-0000-7000-8000-000000000021",
+    );
+    assert_eq!(retained["outcome"], "ok", "{retained}");
+    let id = retained["retained"]["id"].as_str().unwrap().to_owned();
+    let prefix = wait(running.socket(), &id, |v| {
+        v["parser"]["records"]["ignored"]
+            .as_u64()
+            .is_some_and(|n| n > 0 && n < states)
+    });
+    // An ordinary read and a second acquisition remain serviceable while the
+    // bounded ignored-state computation is unfinished.
+    assert_eq!(request(running.socket()).unwrap()["outcome"], "ok");
+    let peer = import(
+        running.socket(),
+        &peer_path,
+        "01900000-0000-7000-8000-000000000022",
+    );
+    assert_eq!(peer["outcome"], "ok", "{peer}");
+    let during = progress(running.socket(), &id);
+    assert!(
+        during["parser"]["parsed_upto"].as_u64().unwrap() < length,
+        "{during}"
+    );
+    running.stop();
+    drop(running);
+    fs::remove_file(&path).unwrap();
+    let running = Running::start(&archive, &runtime).unwrap();
+    let eof = wait(running.socket(), &id, |v| {
+        v["parser"]["parsed_upto"] == length
+    });
+    assert!(
+        eof["parser"]["parsed_upto"].as_u64().unwrap()
+            > prefix["parser"]["parsed_upto"].as_u64().unwrap()
+    );
+    assert_eq!(
+        eof["parser"]["records"],
+        json!({"framed":states+1,"used":1,"ignored":states,"unrecognized":0,"undecodable":0})
+    );
+    // This distinguishes bounded batching from the former 32-record durable
+    // scheduling amplification, without making wall-clock speed an oracle.
+    assert!(
+        eof["parser"]["step"].as_u64().unwrap() < states / 32,
+        "{eof}"
+    );
+}

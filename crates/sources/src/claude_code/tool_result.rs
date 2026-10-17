@@ -147,7 +147,6 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
                 || m.get("status").and_then(Value::as_str) == Some("async_launched")
         })
     {
-        unresolved.push(p(&["toolUseResult"]));
         outcome = ToolOutcome::Unknown {
             reason: UnknownReason::BackgroundNeverReported,
         };
@@ -173,6 +172,8 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
     if exit.is_none() {
         exit = output.as_deref().and_then(super::exit_code_in);
     }
+    // Supplied boolean flags are execution metadata only. They do not infer
+    // image content, outcome, or output absence. Missing flags stay absent.
     let mut data = std::collections::BTreeMap::new();
     let mut data_paths = Vec::new();
     if let Some(meta) = meta.and_then(Value::as_object) {
@@ -189,8 +190,10 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
                     | "totalToolUseCount"
                     | "totalDurationMs"
                     | "returnCodeInterpretation"
-            ) || (key == &polylogue_model::NativeId::unicode("interrupted")
-                && value.as_bool() == Some(false))
+            ) || (matches!(key.as_str(), "isImage" | "noOutputExpected")
+                && value.as_bool().is_some())
+                || (key == &polylogue_model::NativeId::unicode("interrupted")
+                    && value.as_bool() == Some(false))
             {
                 data.insert(key.clone(), value.opaque());
                 data_paths.push((key.as_str().to_owned(), p(&["toolUseResult", key.as_str()])));

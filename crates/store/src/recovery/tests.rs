@@ -185,7 +185,7 @@ fn healthy_v1_migration_preserves_siblings_and_never_creates_recovery_qualificat
     let before = inventory(&source, &cancel).unwrap();
     assert!(ReadHandle::open(&source).is_err());
     let writer = Writer::open(&source).unwrap();
-    assert_eq!(writer.status().unwrap().archive_version, 3);
+    assert_eq!(writer.status().unwrap().archive_version, 4);
     assert_eq!(writer.status().unwrap().write_counter, expected + 1);
     assert!(writer.status().unwrap().recovery.is_none());
     drop(writer);

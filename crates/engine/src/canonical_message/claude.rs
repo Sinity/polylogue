@@ -203,8 +203,14 @@ pub(super) enum Cursor {
         after: Option<Vec<String>>,
         envelope: bool,
     },
+    CompletionCitation {
+        item: u64,
+    },
     SelectedCitations {
         index: u8,
+    },
+    RecordExtraCitations {
+        after: Option<String>,
     },
     AuthorCitation,
     Layout,
@@ -223,6 +229,9 @@ pub(super) enum Cursor {
     Selected {
         index: u8,
         fact: usize,
+    },
+    RecordExtras {
+        after: Option<String>,
     },
     Finish,
 }
@@ -294,7 +303,9 @@ fn local(field: &Field) -> Option<u32> {
 fn is_message(field: &Field, item: u64) -> bool {
     match field {
         Field::FirstMessage(_) => item == 0,
-        Field::Extra { local: None, .. } => true,
+        // Immediate record extras have one source-selected response winner.
+        // Keep nested unknown paths on their existing explicit refusal route.
+        Field::Extra { local: None, path } => path.len() != 1,
         _ => false,
     }
 }
@@ -370,11 +381,41 @@ fn leaf<'a>(
                 .ok_or(Error::Invariant("Claude extra lost its value"))?;
             return Ok(ValueSource::Opaque(value.clone().into_opaque()));
         }
-        Field::Extra { .. } => {
-            return Err(Error::UnsupportedField {
-                path: fact.source_path.clone(),
-                reason: "Claude block extra normalization remains pending",
-            });
+        Field::Extra {
+            local: Some(local),
+            path,
+        } => {
+            // One immediate provider block member; nested paths cannot be
+            // flattened into this block's extra-key namespace.
+            let [message, content, index, key] = path.as_slice() else {
+                return Err(Error::UnsupportedField {
+                    path: path.clone(),
+                    reason: "Claude nested block extra remains unsupported",
+                });
+            };
+            if message != "message"
+                || content != "content"
+                || index.parse::<u32>().ok() != Some(*local)
+            {
+                return Err(Error::UnsupportedField {
+                    path: path.clone(),
+                    reason: "Claude block extra address is ambiguous",
+                });
+            }
+            let c = c.ok_or(Error::Invariant("Claude block extra lost its contribution"))?;
+            if c.projection.facts.iter().any(|fact| matches!(&fact.field,
+                Field::ResultData {local: found, key: selected} if found == local && selected == key)) {
+                return Err(Error::UnsupportedField { path: path.clone(), reason: "Claude block extra conflicts with selected structured data" });
+            }
+            let raw = RetainedJson::parse(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
+            let value = raw
+                .get("message")
+                .and_then(|v| v.get("content"))
+                .and_then(RetainedJson::as_array)
+                .and_then(|v| v.get(*local as usize))
+                .and_then(|v| v.get(key))
+                .ok_or(Error::Invariant("Claude block extra lost its raw value"))?;
+            return Ok(ValueSource::Opaque(value.clone().into_opaque()));
         }
         Field::Block { .. } => {
             let Slot::Block { block, .. } = slot else {
@@ -441,6 +482,7 @@ pub(super) fn compute(
         Cursor::Author { .. }
             | Cursor::MessageFields { .. }
             | Cursor::Selected { .. }
+            | Cursor::RecordExtras { .. }
             | Cursor::Block {
                 phase: BlockPhase::Fields(_) | BlockPhase::Retained(_) | BlockPhase::Signature,
                 ..
@@ -498,30 +540,41 @@ pub(super) fn compute(
                     b,
                 );
             }
-            progress(
-                state,
-                &mut cursor,
-                Cursor::Citations {
-                    item: item
-                        .checked_add(1)
-                        .ok_or(Error::Invariant("Claude contribution cursor overflow"))?,
-                    after: None,
-                    envelope: false,
-                },
-                b,
-            )
+            progress(state, &mut cursor, Cursor::CompletionCitation { item }, b)
+        }
+        Cursor::CompletionCitation { item } => {
+            let c = contribution(snapshot, head, item, b.read)?;
+            let next = Cursor::Citations {
+                item: item
+                    .checked_add(1)
+                    .ok_or(Error::Invariant("Claude contribution cursor overflow"))?,
+                after: None,
+                envelope: false,
+            };
+            // The named completion supplies fields of the earlier launch
+            // Message. Cite only that retained record before evaluating them.
+            match c.completion {
+                Some(completion) => cite(state, &mut cursor, next, completion.range, b),
+                None => progress(state, &mut cursor, next, b),
+            }
         }
         Cursor::SelectedCitations { index } => {
-            if index >= 5 {
-                return progress(state, &mut cursor, Cursor::AuthorCitation, b);
+            if index >= 8 {
+                return progress(
+                    state,
+                    &mut cursor,
+                    Cursor::RecordExtraCitations { after: None },
+                    b,
+                );
             }
             let next = Cursor::SelectedCitations { index: index + 1 };
-            if index == 4 {
-                return match r
-                    .stop_sequence
-                    .as_ref()
-                    .and_then(|fact| fact.selection.as_ref())
-                {
+            if index >= 6 {
+                let extra = if index == 6 {
+                    &r.stop_sequence
+                } else {
+                    &r.stop_details
+                };
+                return match extra.as_ref().and_then(|fact| fact.selection.as_ref()) {
                     Some(selection) => cite(
                         state,
                         &mut cursor,
@@ -529,7 +582,7 @@ pub(super) fn compute(
                         selection
                             .inputs
                             .first()
-                            .ok_or(Error::Unsupported("Claude stop_sequence donor missing"))?
+                            .ok_or(Error::Unsupported("Claude selected extra donor missing"))?
                             .record,
                         b,
                     ),
@@ -540,6 +593,38 @@ pub(super) fn compute(
                 Some(origin) => cite(state, &mut cursor, next, origin.record, b),
                 None => progress(state, &mut cursor, next, b),
             }
+        }
+        Cursor::RecordExtraCitations { after } => {
+            use std::ops::Bound::{Excluded, Unbounded};
+            let next = match &after {
+                Some(key) => r
+                    .record_extras
+                    .range((Excluded(key.clone()), Unbounded))
+                    .next(),
+                None => r.record_extras.iter().next(),
+            };
+            let Some((key, extra)) = next else {
+                return progress(state, &mut cursor, Cursor::AuthorCitation, b);
+            };
+            // A selected supplier can outlive the effective contribution's
+            // current donor map. Bind its own retained record explicitly.
+            let donor = extra
+                .fact
+                .selection
+                .as_ref()
+                .and_then(|selection| selection.inputs.first())
+                .ok_or(Error::Unsupported(
+                    "Claude selected record extra donor missing",
+                ))?;
+            cite(
+                state,
+                &mut cursor,
+                Cursor::RecordExtraCitations {
+                    after: Some(key.clone()),
+                },
+                donor.record,
+                b,
+            )
         }
         Cursor::AuthorCitation => {
             let author = r
@@ -645,13 +730,21 @@ pub(super) fn compute(
             )
         }
         Cursor::Selected { index, fact } => {
-            if index >= 5 {
-                return progress(state, &mut cursor, Cursor::Finish, b);
+            if index >= 8 {
+                return progress(state, &mut cursor, Cursor::RecordExtras { after: None }, b);
             }
-            if index == 4 {
-                let next = Stage::Claude(Cursor::Finish);
-                let Some(value) = &r.stop_sequence else {
-                    return progress(state, &mut cursor, Cursor::Finish, b);
+            if index >= 6 {
+                let next = Cursor::Selected {
+                    index: index + 1,
+                    fact: 0,
+                };
+                let extra = if index == 6 {
+                    &r.stop_sequence
+                } else {
+                    &r.stop_details
+                };
+                let Some(value) = extra else {
+                    return progress(state, &mut cursor, next, b);
                 };
                 let slot = slot(&value.field)?;
                 return field_turn(
@@ -662,7 +755,7 @@ pub(super) fn compute(
                     field(value, &slot, true)?,
                     leaf(value, &slot, &r, None, None)?,
                     false,
-                    next,
+                    Stage::Claude(next),
                     &input,
                     b,
                     flag,
@@ -696,6 +789,36 @@ pub(super) fn compute(
                     fact: fact
                         .checked_add(1)
                         .ok_or(Error::Invariant("Claude selected fact overflow"))?,
+                }),
+                &input,
+                b,
+                flag,
+            )
+        }
+        Cursor::RecordExtras { after } => {
+            use std::ops::Bound::{Excluded, Unbounded};
+            let next = match &after {
+                Some(key) => r
+                    .record_extras
+                    .range((Excluded(key.clone()), Unbounded))
+                    .next(),
+                None => r.record_extras.iter().next(),
+            };
+            let Some((key, extra)) = next else {
+                return progress(state, &mut cursor, Cursor::Finish, b);
+            };
+            let c = contribution(snapshot, head, extra.item, b.read)?;
+            let slot = slot(&extra.fact.field)?;
+            field_turn(
+                snapshot,
+                reader,
+                state,
+                &mut cursor,
+                field(&extra.fact, &slot, true)?,
+                leaf(&extra.fact, &slot, &r, Some(&c), None)?,
+                false,
+                Stage::Claude(Cursor::RecordExtras {
+                    after: Some(key.clone()),
                 }),
                 &input,
                 b,
@@ -1055,8 +1178,12 @@ fn proof(
 ) -> Result<Proof> {
     let view = View::new(snapshot, b.read)?;
     let response = response(&view, head)?;
-    let mut baseline: [Option<Vec<u8>>; 5] = Default::default();
+    let mut baseline: [Option<Vec<u8>>; 8] = Default::default();
+    // Locators only, restricted to the admitted selected key set. Do not retain
+    // a second map of historical values. Charge scratch encoding after updates.
+    let mut extra_baseline = std::collections::BTreeMap::<String, u64>::new();
     let mut bodies = 0u64;
+    let mut completions = 0u64;
     for item in 0..response.items {
         cancelled(flag)?;
         let c = contribution(snapshot, head, item, b.read)?;
@@ -1067,6 +1194,21 @@ fn proof(
             if current.is_some() {
                 *previous = current
             }
+        }
+        for fact in &c.projection.facts {
+            if let Field::Extra { local: None, path } = &fact.field {
+                if let [key] = path.as_slice() {
+                    if response.record_extras.contains_key(key) {
+                        extra_baseline.insert(key.clone(), item);
+                        bounded_json(&extra_baseline, b.metadata)?;
+                    }
+                }
+            }
+        }
+        if c.completion.is_some() {
+            completions = completions
+                .checked_add(1)
+                .ok_or(Error::Invariant("Claude completion count overflow"))?;
         }
         let mut previous = None;
         for body in &c.bodies {
@@ -1082,10 +1224,26 @@ fn proof(
         }
     }
     let metadata = response.metadata_units(&baseline);
+    // Keys/tags only: selected raw values remain in the admitted response cell.
+    let mut extra_corrections = Vec::<(&str, String)>::new();
+    for (key, selected) in &response.record_extras {
+        cancelled(flag)?;
+        let item = extra_baseline.get(key).ok_or(Error::Invariant(
+            "Claude selected extra baseline unavailable",
+        ))?;
+        let c = contribution(snapshot, head, *item, b.read)?;
+        let raw = c.record_extra_raw(key).map_err(Error::Source)?;
+        if selected.raw != raw {
+            extra_corrections.push((key, source::keyed::SelectedRecordExtra::correction_tag(key)));
+            bounded_json(&(&extra_baseline, &extra_corrections), b.metadata)?;
+        }
+    }
     let count = response
         .items
         .checked_add(metadata.len() as u64)
+        .and_then(|n| n.checked_add(extra_corrections.len() as u64))
         .and_then(|n| n.checked_add(bodies))
+        .and_then(|n| n.checked_add(completions))
         .ok_or(Error::Invariant("Claude evidence count overflow"))?;
     if count == 0 {
         return Err(Error::Unsupported(
@@ -1109,8 +1267,26 @@ fn proof(
             flag,
         )?;
     }
+    for item in 0..response.items {
+        cancelled(flag)?;
+        let c = contribution(snapshot, head, item, b.read)?;
+        if let Some(unit) = c.completion_unit(item) {
+            feed(&mut framer, unit, false, b, flag)?;
+        }
+    }
     for unit in metadata {
         feed(&mut framer, unit, false, b, flag)?
+    }
+    for (key, tag) in extra_corrections {
+        feed_parts(
+            &mut framer,
+            &tag,
+            Some(&response.record_extras[key].raw),
+            None,
+            false,
+            b,
+            flag,
+        )?;
     }
     for item in 0..response.items {
         cancelled(flag)?;
@@ -1138,16 +1314,27 @@ fn feed(
     flag: &AtomicBool,
 ) -> Result<()> {
     use source::keyed::EvidenceUnit;
+    let (tag, json, body) = match unit {
+        EvidenceUnit::Json { tag, canonical, .. } => (tag, Some(canonical), None),
+        EvidenceUnit::Body { tag, payload } => (tag, None, Some(payload)),
+    };
+    feed_parts(f, &tag, json.as_deref(), body.as_ref(), single, b, flag)
+}
+fn feed_parts(
+    f: &mut Framer,
+    tag: &str,
+    json: Option<&[u8]>,
+    body: Option<&source::keyed::BodyPayload>,
+    single: bool,
+    b: Budgets,
+    flag: &AtomicBool,
+) -> Result<()> {
     let chunk = usize::try_from(b.hash_bytes)
         .unwrap_or(usize::MAX)
         .min(65536);
     if chunk == 0 {
         return Err(Error::Invariant("Claude evidence chunk allowance is zero"));
     }
-    let (tag, json, body) = match unit {
-        EvidenceUnit::Json { tag, canonical, .. } => (tag, Some(canonical), None),
-        EvidenceUnit::Body { tag, payload } => (tag, None, Some(payload)),
-    };
     if !single {
         let fixed = 17u64
             .checked_add(tag.len() as u64)
@@ -1159,7 +1346,7 @@ fn feed(
         } else {
             f.begin_body(tag.len() as u64).map_err(Error::Evidence)?
         }
-        // Provider tags here contain only ASCII integers and fixed ASCII labels.
+        // Provider tags use fixed ASCII labels, integers and hex-encoded keys.
         if !tag.is_ascii() {
             return Err(Error::Invariant("Claude evidence tag is not ASCII"));
         }

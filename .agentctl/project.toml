@@ -203,3 +203,13 @@ result = "exit"
 timeout_seconds = 600
 scratch = "nvme"
 cache = "none"
+
+[operations.configured_claude_projects_demo]
+description = "Exercise explicit synthetic Claude projects discovery, continuation, retained context and preserving upgrade through CLI and official SDK"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-claude-projects.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 1800
+scratch = "nvme"
+cache = "none"

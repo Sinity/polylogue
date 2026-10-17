@@ -17,6 +17,7 @@ use std::{
 #[serde(deny_unknown_fields)]
 struct Config {
     claude_main: Option<Source>,
+    claude_projects: Option<polylogue_store::configured_claude::Config>,
     codex_home: Option<polylogue_store::configured_codex::Config>,
 }
 #[derive(Deserialize)]
@@ -77,11 +78,24 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
             format!("source configuration: {e}"),
         )
     })?;
-    if config.claude_main.is_some() == config.codex_home.is_some() {
+    if usize::from(config.claude_main.is_some())
+        + usize::from(config.codex_home.is_some())
+        + usize::from(config.claude_projects.is_some())
+        != 1
+    {
         return Err(error(
             ErrorKind::InvalidQuery,
-            "configure exactly one of claude_main or codex_home",
+            "configure exactly one of claude_main, claude_projects or codex_home",
         ));
+    }
+    if let Some(projects) = &config.claude_projects {
+        projects.validate().map_err(io_error)?;
+        if until_idle {
+            return Err(error(
+                ErrorKind::NotYetAvailable,
+                "finite projects-directory settlement is not available; use the continuing configured daemon and qualified reads",
+            ));
+        }
     }
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -99,6 +113,25 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
     let stop = Arc::new(AtomicBool::new(false));
     let signalled = Arc::clone(&stop);
     ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
+    if let Some(projects) = config.claude_projects {
+        let mut running =
+            polylogue::Running::start_claude_projects(archive, &runtime, &projects, &id, &stop)
+                .map_err(io_error)?;
+        eprintln!(
+            "listening: {} (configured Claude projects; bounded discovery and acquisition)",
+            running.socket().display()
+        );
+        if json_output {
+            serde_json::to_writer(&mut *out,&json!({"outcome":"degraded","acquisition":"configured-claude-projects-v1","scope":"discovery_pending"})).map_err(io_error)?;
+            writeln!(out).map_err(io_error)?;
+            out.flush().map_err(io_error)?;
+        }
+        while !stop.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        running.stop();
+        return Ok(0);
+    }
     if let Some(codex) = config.codex_home {
         return run_codex(
             archive,

@@ -4,7 +4,7 @@ use polylogue_model::{
     BlobHash, BlockContent, LinkHow, LinkKind, Message, MessageId, Role, Session,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -60,15 +60,38 @@ pub struct ResponseCell {
     pub items: u64,
     pub revision: u64,
     /// Selected raw usage, stop_reason, model, timestamp, in this fixed order.
-    pub selected: [Option<Vec<u8>>; 4],
+    pub selected: [Option<Vec<u8>>; 6],
     pub incomplete_bodies: u64,
-    pub selected_from: [Option<u64>; 4],
-    pub selected_facts: [Vec<super::projection::Fact>; 4],
-    pub selected_origins: [Option<crate::selection::SelectedRaw>; 4],
+    pub selected_from: [Option<u64>; 6],
+    pub selected_facts: [Vec<super::projection::Fact>; 6],
+    pub selected_origins: [Option<crate::selection::SelectedRaw>; 6],
     /// Fixed extra leaf selected by the provider, with its exact original donor.
     pub stop_sequence: Option<super::projection::Fact>,
     /// Canonical RAW selected subtree, independently of normalized attrs.
     pub stop_sequence_raw: Option<Vec<u8>>,
+    /// Opaque supplied response metadata, with no finish/status interpretation.
+    pub stop_details: Option<super::projection::Fact>,
+    pub stop_details_raw: Option<Vec<u8>>,
+    /// One last actually supplied immediate record extra per exact attrs key.
+    /// Encoded with this response under the existing parser-state admission.
+    pub record_extras: BTreeMap<String, SelectedRecordExtra>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedRecordExtra {
+    pub item: u64,
+    pub fact: super::projection::Fact,
+    pub raw: Vec<u8>,
+}
+impl SelectedRecordExtra {
+    /// ASCII hex of exact UTF-8 key bytes keeps the existing framing tag policy.
+    pub fn correction_tag(key: &str) -> String {
+        use std::fmt::Write;
+        let mut tag = String::from("response/record_extra/");
+        for byte in key.bytes() {
+            write!(&mut tag, "{byte:02x}").expect("writing to String");
+        }
+        tag
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordAddress {
@@ -88,6 +111,21 @@ pub struct RequiredBody {
     pub payload: Option<BodyPayload>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundAddress {
+    pub session: String,
+    pub response: ResponseKey,
+    pub message: MessageId,
+    pub item: u64,
+    pub local: u32,
+    pub call: String,
+    pub ambiguous: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundCompletion {
+    pub raw: Vec<u8>,
+    pub range: crate::selection::RecordRange,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contribution {
     pub uuid: String,
     /// Effective raw field-presence overlay; exact numeric tokens survive.
@@ -96,6 +134,7 @@ pub struct Contribution {
     /// Stable contribution-local positions, not final response BlockIds.
     pub blocks: Vec<BlockContent>,
     pub bodies: Vec<RequiredBody>,
+    pub completion: Option<BackgroundCompletion>,
     pub projection: super::projection::RecordFacts,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -120,6 +159,8 @@ pub struct Delta {
     pub sessions: Vec<SessionCell>,
     pub responses: Vec<(String, ResponseKey, ResponseCell)>,
     pub addresses: Vec<(String, String, RecordAddress)>,
+    pub occurrences: Vec<(String, u64)>,
+    pub backgrounds: Vec<(String, BackgroundAddress)>,
     pub contributions: Vec<(MessageId, u64, Contribution)>,
     pub sides: Vec<(String, String)>,
     pub links: Vec<LinkKey>,
@@ -129,6 +170,8 @@ pub struct Delta {
 pub trait ReadView {
     type Error: std::fmt::Display;
     fn header(&self) -> Result<Header, Self::Error>;
+    fn occurrence(&self, hash: &str) -> Result<u64, Self::Error>;
+    fn background(&self, task: &str) -> Result<Option<BackgroundAddress>, Self::Error>;
     fn session(&self, native: &str) -> Result<Option<SessionCell>, Self::Error>;
     fn response(
         &self,
@@ -149,6 +192,12 @@ pub trait ReadView {
 }
 impl<T: ReadView + ?Sized> ReadView for &T {
     type Error = T::Error;
+    fn occurrence(&self, hash: &str) -> Result<u64, Self::Error> {
+        (**self).occurrence(hash)
+    }
+    fn background(&self, task: &str) -> Result<Option<BackgroundAddress>, Self::Error> {
+        (**self).background(task)
+    }
     fn header(&self) -> Result<Header, Self::Error> {
         (**self).header()
     }
@@ -190,6 +239,8 @@ pub struct MemoryReadView {
     sessions: HashMap<String, SessionCell>,
     responses: HashMap<(String, ResponseKey), ResponseCell>,
     records: HashMap<(String, String), RecordAddress>,
+    occurrences: HashMap<String, u64>,
+    backgrounds: HashMap<String, BackgroundAddress>,
     contributions: HashMap<(MessageId, u64), Contribution>,
     sides: HashMap<String, String>,
     links: HashSet<LinkKey>,
@@ -209,6 +260,8 @@ impl MemoryReadView {
     }
     pub fn apply(&mut self, header: Header, delta: Delta) {
         self.header = header;
+        self.occurrences.extend(delta.occurrences);
+        self.backgrounds.extend(delta.backgrounds);
         for cell in delta.sessions {
             self.sessions.insert(cell.session.native_id.clone(), cell);
         }
@@ -227,6 +280,12 @@ impl MemoryReadView {
 }
 impl ReadView for MemoryReadView {
     type Error = Infallible;
+    fn background(&self, task: &str) -> Result<Option<BackgroundAddress>, Self::Error> {
+        Ok(self.backgrounds.get(task).cloned())
+    }
+    fn occurrence(&self, hash: &str) -> Result<u64, Self::Error> {
+        Ok(self.occurrences.get(hash).copied().unwrap_or(0))
+    }
     fn header(&self) -> Result<Header, Self::Error> {
         Ok(self.header.clone())
     }
@@ -279,21 +338,24 @@ impl ResponseCell {
     }
     /// After the owner has reduced effective-record metadata in contribution
     /// order, append ONLY the selected raw subtrees that differ, in this order.
-    pub fn metadata_units(&self, baseline: &[Option<Vec<u8>>; 5]) -> Vec<EvidenceUnit> {
+    pub fn metadata_units(&self, baseline: &[Option<Vec<u8>>; 8]) -> Vec<EvidenceUnit> {
         [
             "response/usage",
             "response/stop_reason",
             "response/model",
             "response/completed_at",
+            "response/cost_usd",
+            "response/duration_ms",
             "response/stop_sequence",
+            "response/stop_details",
         ]
         .iter()
         .enumerate()
         .filter_map(|(i, tag)| {
-            let selected = if i == 4 {
-                &self.stop_sequence_raw
-            } else {
-                &self.selected[i]
+            let selected = match i {
+                6 => &self.stop_sequence_raw,
+                7 => &self.stop_details_raw,
+                _ => &self.selected[i],
             };
             if *selected == baseline[i] {
                 return None;
@@ -320,6 +382,26 @@ pub enum EvidenceUnit {
     },
 }
 impl Contribution {
+    /// Only an already-accounted immediate record extra can supply this value.
+    pub fn record_extra_raw(&self, key: &str) -> Result<&[u8], String> {
+        if !self.projection.facts.iter().any(|fact| {
+            matches!(&fact.field, super::projection::Field::Extra { local: None, path }
+                if path.as_slice() == [key])
+        }) {
+            return Err("Claude immediate extra baseline lost its source fact".into());
+        }
+        // Effective records are already canonical raw JSON. Borrow its exact
+        // subtree rather than making another temporary value-sized allocation.
+        super::raw::optional_field(&self.raw, &[key])?
+            .ok_or_else(|| "Claude immediate extra lost its raw value".to_owned())
+    }
+    pub fn completion_unit(&self, item: u64) -> Option<EvidenceUnit> {
+        self.completion.as_ref().map(|c| EvidenceUnit::Json {
+            tag: format!("background-completion/{item}"),
+            canonical: c.raw.clone(),
+            whole_record: false,
+        })
+    }
     pub fn record_unit(&self, item: u64) -> EvidenceUnit {
         EvidenceUnit::Json {
             tag: format!("record/{item}"),
@@ -329,14 +411,17 @@ impl Contribution {
     }
     /// One admitted effective record, not a historical response scan. The owner
     /// reduces these fields while reading `next_contribution` slots in order.
-    pub fn final_fields(&self) -> Result<[Option<Vec<u8>>; 5], String> {
-        let mut fields: [Option<Vec<u8>>; 5] = Default::default();
+    pub fn final_fields(&self) -> Result<[Option<Vec<u8>>; 8], String> {
+        let mut fields: [Option<Vec<u8>>; 8] = Default::default();
         for (i, path) in super::METADATA_PATHS.iter().enumerate() {
             fields[i] = super::raw::optional_field(&self.raw, path)?
                 .map(super::raw::canonical)
                 .transpose()?;
         }
-        fields[4] = super::raw::optional_field(&self.raw, &["message", "stop_sequence"])?
+        fields[6] = super::raw::optional_field(&self.raw, &["message", "stop_sequence"])?
+            .map(super::raw::canonical)
+            .transpose()?;
+        fields[7] = super::raw::optional_field(&self.raw, &["message", "stop_details"])?
             .map(super::raw::canonical)
             .transpose()?;
         Ok(fields)

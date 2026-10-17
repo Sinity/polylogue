@@ -1,4 +1,4 @@
-//! One configured main, with each acquisition delegated to the existing owner.
+//! Configured Claude locations delegate acquisition to the existing owner.
 use polylogue_engine::owner::{Error, Handle, Observation};
 use serde::Serialize;
 use std::{
@@ -11,6 +11,7 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+pub(crate) mod projects;
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Status {
     pub mode: &'static str,
@@ -21,6 +22,7 @@ pub(crate) struct Status {
     pub retained_length: Option<u64>,
     pub unchanged_passes: u64,
     pub quantum_bytes: u64,
+    pub projects: Option<projects::ProjectStatus>,
 }
 impl Status {
     pub fn initial(quantum_bytes: u64) -> Self {
@@ -33,6 +35,7 @@ impl Status {
             retained_length: None,
             unchanged_passes: 0,
             quantum_bytes,
+            projects: None,
         }
     }
 }

@@ -844,9 +844,14 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
             .as_array()
             .unwrap()
             .iter()
-            .any(|note| note.as_str().unwrap().contains("pending interpretation")),
+            .any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("pending possible Session relationships")),
         "{first}"
     );
+    assert_eq!(first["result"]["unknown"]["population_pending_inputs"], 1);
+    assert_eq!(first["result"]["settlement"]["state"], "pending");
     let (socket, _, end) = world.socket_read(&reference());
     assert_eq!(socket, first);
     assert_eq!(end["unknown"], first["result"]["unknown"]);
@@ -1118,7 +1123,12 @@ fn metadata_only_source_is_not_a_complete_empty_selection() {
     );
     assert_eq!(imported.status.code(), Some(0));
     let selected = world.cli(&[&reference(), "--json"]);
-    assert_eq!(selected.status.code(), Some(5));
+    assert_eq!(
+        selected.status.code(),
+        Some(5),
+        "{selected:?}; {}",
+        world.log()
+    );
     let selected: Value = serde_json::from_slice(&selected.stdout).unwrap();
     assert_eq!(selected["count"], 0);
     assert!(selected["notes"].as_array().unwrap().iter().any(|note| {
@@ -2384,3 +2394,15 @@ fn model_full_transcript_refuses_zero_block_message_before_claiming_completed_fi
 
 #[path = "session_read/observed_prefix.rs"]
 mod observed_prefix;
+
+#[path = "session_read/donor_core.rs"]
+mod donor_core;
+
+#[path = "session_read/block_metadata.rs"]
+mod block_metadata;
+
+#[path = "session_read/provider_usage.rs"]
+mod provider_usage;
+
+#[path = "session_read/record_extras.rs"]
+mod record_extras;

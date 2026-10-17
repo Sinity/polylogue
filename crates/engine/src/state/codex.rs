@@ -352,6 +352,34 @@ struct EffectsHeader {
     step: u64,
     counts: [u64; EFFECT_KINDS],
 }
+impl EffectsHeader {
+    fn decode(bytes: &[u8], step: u64) -> Result<Self> {
+        let header: Self =
+            serde_json::from_slice(bytes).map_err(|e| invalid("effects header", e))?;
+        if header.version != STATE_LAYOUT_VERSION || header.step != step || header.counts[5] > 1 {
+            return Err(invalid(
+                "effects header",
+                "layout, step, or reachback count differs",
+            ));
+        }
+        header
+            .counts
+            .iter()
+            .try_fold(0u64, |n, c| n.checked_add(*c))
+            .ok_or(StoreError::Range)?;
+        Ok(header)
+    }
+}
+/// The qualifier uses the same owned codec, without restating adapter keys.
+pub(crate) fn flat_session_header_key(step: u64) -> [u8; EFFECT_KEY_BYTES] {
+    effect_key(step, 0, 0)
+}
+pub(crate) fn effects_preserve_flat_session(bytes: &[u8], step: u64) -> Result<bool> {
+    let header = EffectsHeader::decode(bytes, step)?;
+    // Events include context replacement and rollback-like controls. Links,
+    // conflicting native items and failed reachback need their own reduction.
+    Ok([0, 1, 3, 5].iter().all(|i| header.counts[*i] == 0))
+}
 /// Only scalar position is durable. Opening a reader revalidates its fixed
 /// header against the pinned snapshot; no decoded aggregate receipt is carried.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -418,20 +446,7 @@ impl<'s> Attempt<'s> {
                     "missing committed header (layout replay required)",
                 )
             })?;
-            let header: EffectsHeader =
-                serde_json::from_slice(&bytes).map_err(|e| invalid("effects header", e))?;
-            if header.version != STATE_LAYOUT_VERSION || header.step != step || header.counts[5] > 1
-            {
-                return Err(invalid(
-                    "effects header",
-                    "layout, step, or reachback count differs",
-                ));
-            }
-            header
-                .counts
-                .iter()
-                .try_fold(0u64, |n, c| n.checked_add(*c))
-                .ok_or(StoreError::Range)?;
+            let header = EffectsHeader::decode(&bytes, step)?;
             Ok(EffectsReader {
                 attempt: self,
                 header,

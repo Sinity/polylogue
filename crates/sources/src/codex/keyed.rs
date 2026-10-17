@@ -605,6 +605,18 @@ impl<V: ReadView> KeyedRecords<V> {
     }
     fn push_message(&mut self, mut m: Message) {
         let i = self.s.messages;
+        let header_time = (self.s.legacy && i == 0 && m.at.is_none())
+            .then(|| {
+                self.s
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.started_at)
+            })
+            .flatten();
+        let applied_header_fallback = header_time.is_some();
+        if applied_header_fallback {
+            m.at = header_time;
+        }
         self.s.messages += 1;
         self.put(
             Key::EvidenceHead(i),
@@ -624,6 +636,21 @@ impl<V: ReadView> KeyedRecords<V> {
             },
         );
         self.witness_time(i, false);
+        if applied_header_fallback {
+            match self.get(Key::Context(2)) {
+                Some(Cell::Evidence(time)) => self.witness_from(
+                    i,
+                    "at",
+                    super::presence::message(
+                        polylogue_model::merge::MessageField::At,
+                        &time.canonical,
+                        header_time.and_then(|time| time.at()),
+                    ),
+                    time.origins,
+                ),
+                _ => self.missing("legacy header timestamp"),
+            }
+        }
         for (b, v) in blocks.into_iter().enumerate() {
             let next = match v.id.slot() {
                 BlockSlot::Item(n) => (*n as usize + 1, 0),
@@ -943,6 +970,47 @@ impl<V: ReadView> KeyedRecords<V> {
                 self.put(Key::Presence(i, key.into()), Cell::Witness(w));
             }
             Err(e) => self.failure = Some(e),
+        }
+    }
+    fn witness_usage(
+        &mut self,
+        i: usize,
+        name: &str,
+        field: polylogue_model::merge::UsageField,
+        raw: &[u8],
+        has_cached_input: bool,
+    ) {
+        use super::selection::{FactSelection, Transform};
+        use polylogue_model::merge::UsageField;
+        let origins = self
+            .current_origins
+            .at_path(&["payload", "info", "last_token_usage"]);
+        let selection = (|| {
+            if field == UsageField::Input && has_cached_input {
+                Some(FactSelection::new(
+                    Transform::UncachedInputV1,
+                    vec![
+                        origins.field("input_tokens").selected()?,
+                        origins.field("cached_input_tokens").selected()?,
+                    ],
+                ))
+            } else {
+                Some(FactSelection::new(
+                    Transform::JsonValueV1,
+                    vec![origins.field(name).selected()?],
+                ))
+            }
+        })();
+        match super::presence::usage(field, raw) {
+            Ok(mut witness) => {
+                witness.origins = origins.field(name);
+                witness.selection = selection;
+                self.put(
+                    Key::Presence(i, format!("usage:{name}")),
+                    Cell::Witness(witness),
+                );
+            }
+            Err(error) => self.failure = Some(error),
         }
     }
     fn witness_time(&mut self, i: usize, completed: bool) {
@@ -2109,6 +2177,9 @@ impl<V: ReadView> KeyedRecords<V> {
                         .result_present
                         .then(|| outcome.as_str().to_owned());
                     operation.exit_code = exit;
+                    if !operation.origins.iter().any(|origin| matches!(origin, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "status")) {
+                        operation.duration_ms = native_duration(p);
+                    }
                     if let Some(origin) = self.operation_origin() {
                         operation.origins.retain(|o|!matches!(o,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..}if tag=="result"));
                         operation.origins.push(origin);
@@ -2165,11 +2236,11 @@ impl<V: ReadView> KeyedRecords<V> {
                     (result.outcome.clone(), result.exit_code, result.duration_ms)
                 } else {
                     let (outcome, exit) = output_outcome(&tool, &output, text);
-                    (outcome, exit, None)
+                    (outcome, exit, native_duration(&effective))
                 }
             } else {
                 let (outcome, exit) = output_outcome(&tool, &output, text);
-                (outcome, exit, None)
+                (outcome, exit, native_duration(&effective))
             };
             self.edit_block(i, block, |value| {
                 *value = BlockContent::ToolResult(ToolResult {
@@ -2237,7 +2308,8 @@ impl<V: ReadView> KeyedRecords<V> {
             .as_ref()
             .and_then(unit_item)
             .as_ref()
-            .and_then(native_duration);
+            .and_then(native_duration)
+            .or_else(|| native_duration(p));
         let (outcome, exit_code) = match self.remove(Key::Outcome(call_id.clone())) {
             Some(Cell::Outcome(o, r, e)) => (outcome_of_words(&o, r.as_deref()), e),
             _ => output_outcome(&tool, &output, &text),
@@ -2246,20 +2318,18 @@ impl<V: ReadView> KeyedRecords<V> {
         // Running commands (spec/sources/codex.md, running commands): "Process running with
         // session ID N" is not a result; a `write_stdin` on that session continues the command,
         // and the one that reports the exit sets the command's outcome.
-        let running_id = text
-            .lines()
-            .find_map(|l| l.strip_prefix("Process running with session ID "))
-            .map(|r| r.trim().to_owned());
-        let (outcome, exit_code) = if running_id.is_some() && is_shell_tool(&tool) {
-            (
-                ToolOutcome::Unknown {
-                    reason: UnknownReason::NoResult,
-                },
-                None,
-            )
-        } else {
-            (outcome, exit_code)
-        };
+        let running_id = super::running_session(&text).map(str::to_owned);
+        let (outcome, exit_code) =
+            if running_id.is_some() && (is_shell_tool(&tool) || tool == "write_stdin") {
+                (
+                    ToolOutcome::Unknown {
+                        reason: UnknownReason::NoResult,
+                    },
+                    None,
+                )
+            } else {
+                (outcome, exit_code)
+            };
         if tool == "write_stdin" {
             let session = self.call(&call_id).and_then(|c| c.stdin_session);
             if let Some(target) = session
@@ -2363,7 +2433,12 @@ impl<V: ReadView> KeyedRecords<V> {
             .advance(&mut self.current_origins.cursor())
             .ok()??;
         let value: Value = serde_json::from_slice(&self.current_raw).ok()?;
-        let ty = value.get("payload")?.get("type")?.as_str()?;
+        let item = if self.s.legacy {
+            &value
+        } else {
+            value.get("payload")?
+        };
+        let ty = item.get("type")?.as_str()?;
         let tag = if ty.ends_with("_output") {
             "result"
         } else if ty == "item_completed" {
@@ -2976,7 +3051,7 @@ impl<V: ReadView> KeyedRecords<V> {
                                 &["payload", "info", "last_token_usage", name],
                             ) {
                                 Ok(raw) => {
-                                    self.witness(i, &key, super::presence::usage(field, &raw))
+                                    self.witness_usage(i, name, field, &raw, cached.is_some())
                                 }
                                 Err(e) => self.failure = Some(e),
                             }
@@ -3055,6 +3130,7 @@ impl<V: ReadView> KeyedRecords<V> {
         if self.s.session.is_none() && v.get("type").is_none() && v.get("id").is_some() {
             // The 2025 bare header: {id, timestamp, instructions, git}.
             self.s.legacy = true;
+            self.raw_context(rec.bytes, &["timestamp"], 2, "legacy:time");
             let id = v.get("id").and_then(Value::as_str).unwrap_or("").to_owned();
             return self.start_session(&id, at, v);
         }
@@ -3091,5 +3167,62 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             _ => RecordOutcome::Unrecognized("record type"),
         }
+    }
+}
+
+#[cfg(test)]
+mod legacy_time_tests {
+    use super::*;
+
+    #[test]
+    fn explicitly_timed_first_message_keeps_its_own_witness_in_legacy_context() {
+        let memory = MemoryReadView::default();
+        let origin = Origin::new("codex").unwrap();
+        let session_id = SessionId::new(&origin, "synthetic-time").unwrap();
+        let mut session = Session::new(
+            session_id.clone(),
+            origin,
+            "synthetic-time",
+            SessionKind::Main,
+        )
+        .unwrap();
+        session.started_at = Some(provider_time(Timestamp(0)));
+        let resume = Resume {
+            session: Some(session),
+            legacy: true,
+            ..Default::default()
+        };
+        let mut parser = KeyedRecords::new(&memory, resume);
+        let source_time = b"\"2026-09-02T10:00:01.000Z\"";
+        parser.current_time_raw = Some(source_time.to_vec());
+        parser.current_origins = Origins::Record(RecordRange::new(100, 200).unwrap());
+        let mut message = Message::new(
+            MessageId::new(session_id, "first").unwrap(),
+            IdKind::Provider,
+            Role::User,
+            WrittenBy::Human,
+        );
+        message.at = Some(provider_time(
+            parse_timestamp("2026-09-02T10:00:01.000Z").unwrap(),
+        ));
+        let expected = message.at;
+        parser.push_message(message);
+        let delta = parser.finish_delta().unwrap();
+        let Some(Some(Cell::Header { message, .. })) = delta.cells.get(&Key::Message(0)) else {
+            panic!("missing first Message");
+        };
+        assert_eq!(message.at, expected);
+        let Some(Some(Cell::Witness(witness))) = delta.cells.get(&Key::Presence(0, "at".into()))
+        else {
+            panic!("missing first time witness");
+        };
+        assert_eq!(witness.canonical, source_time);
+        assert_eq!(
+            witness.origins,
+            Origins::Located(super::super::selection::SelectedRaw {
+                record: RecordRange::new(100, 200).unwrap(),
+                path: vec![super::super::selection::PathPart::Key("timestamp".into())]
+            })
+        );
     }
 }

@@ -139,11 +139,19 @@ One piece of a message's content, in order.
 | Kind | Holds |
 |---|---|
 | `text` | prose |
-| `thinking` | model reasoning; may be empty with only a signature, or encrypted (kept as such); provider extras a thought carries with no field of its own (Gemini CLI's `subject` and `timestamp`) are kept in the block's `data` |
+| `thinking` | model reasoning; may be empty with only a signature, or encrypted (kept as such). `data` is the typed encrypted payload; provider extras such as Gemini CLI's `subject` and `timestamp` are kept in `attrs` |
 | `tool_call` | tool name, call ID, input (JSON), and for shell-like tools the command |
-| `tool_result` | the call ID it answers when known, recorded output text (or a reference to a side file), `outcome`, exit code, duration; an unlinked result stays a result without an invented call |
-| `image`, `file` | an attachment: reference to its bytes in the blob store, name, media type, and its **direction**: `input` (the person or harness gave it to the model), `output` (the model or a tool produced it; then `produced_by` names the tool call or generation block) or `unknown`. Output files are fetched first: provider download links for generated files expire quickly. |
+| `tool_result` | the call ID it answers when known, recorded output text (or a reference to a side file), `outcome`, exit code, duration and structured provider metadata in `data`; an unlinked result stays a result without an invented call |
+| `image`, `file` | an attachment: reference to its bytes in the blob store, name, media type, and its **direction**: `input` (the person or harness gave it to the model), `output` (the model or a tool produced it; `produced_by` names the tool call or generation block only when established) or `unknown`. Missing bytes remain explicit acquisition state. Output files are fetched first: provider download links for generated files expire quickly. |
 | `other` | a content type Polylogue does not interpret yet, kept with its type name |
+
+Named opaque provider extras use `data` on ToolCall and ToolResult, and
+`attrs` on other block kinds. These containers preserve supplied values,
+including null, without flattening provider subtrees, replacing typed fields
+or creating defaults for missing members. An extra named `data` on a thinking
+block is therefore `attrs.data`, distinct from its encrypted `data` payload.
+Field-origin names and bounded model metadata use the same containers;
+opaque values retain their privacy and presentation qualification.
 
 **Tool outcome** is one of `ok`, `error` or `unknown` with a stated
 reason, all facts of the inputs; `pending` is a reading of `unknown`

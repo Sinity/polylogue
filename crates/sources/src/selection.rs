@@ -38,6 +38,8 @@ pub enum Operation {
     TextJoinLf,
     ProviderTime,
     ProviderScalar,
+    /// Two supplied unsigned counts, in minuend/subtrahend order.
+    UnsignedSaturatingDifference,
 }
 #[derive(Debug)]
 pub enum ScalarError<S> {
@@ -73,7 +75,12 @@ pub trait Recipe {
     }
 }
 pub fn validate_count(inputs: &[SelectedRaw], operation: Operation) -> Result<(), &'static str> {
-    if inputs.is_empty() || (operation != Operation::TextJoinLf && inputs.len() != 1) {
+    let valid = match operation {
+        Operation::TextJoinLf => !inputs.is_empty(),
+        Operation::UnsignedSaturatingDifference => inputs.len() == 2,
+        _ => inputs.len() == 1,
+    };
+    if !valid {
         return Err("invalid input count");
     }
     Ok(())
@@ -189,6 +196,7 @@ pub fn write_value<E, W: Write, R: Recipe>(
     let result = (|| {
         let mut cached: Option<(RecordRange, polylogue_model::RetainedJson)> = None;
         let text = recipe.operation() == Operation::TextJoinLf;
+        let mut minuend = None;
         if text {
             sink.write_all(b"\"").map_err(ValueError::Io)?;
         }
@@ -286,6 +294,18 @@ pub fn write_value<E, W: Write, R: Recipe>(
                             ScalarError::Leaf(error) => ValueError::Leaf(error),
                             ScalarError::Io(error) => ValueError::Io(error),
                         })?;
+                }
+                Operation::UnsignedSaturatingDifference => {
+                    let count = value.as_u64().ok_or(ValueError::Type { input: ordinal })?;
+                    if ordinal == 0 {
+                        minuend = Some(count);
+                    } else {
+                        let first = minuend.ok_or(ValueError::Selection(
+                            recipe.invalid("missing unsigned minuend"),
+                        ))?;
+                        serde_json::to_writer(&mut sink, &first.saturating_sub(count))
+                            .map_err(ValueError::Json)?;
+                    }
                 }
             }
         }

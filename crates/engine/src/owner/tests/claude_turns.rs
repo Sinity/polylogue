@@ -17,7 +17,11 @@ fn start(actor: &mut Actor, path: &Path, id: &str) -> Receiver<Result<Configured
         path.file_stem().unwrap().to_str().unwrap().into(),
     ];
     let (reply, rx) = mpsc::sync_channel(1);
-    actor.message(Message::Claude(req, 65536, reply)).unwrap();
+    let location =
+        polylogue_store::configured_claude::Location::explicit_main(path.to_path_buf()).unwrap();
+    actor
+        .message(Message::Claude(req, location, 65536, reply))
+        .unwrap();
     rx
 }
 fn finish(actor: &mut Actor, events: &Receiver<Message>) -> usize {

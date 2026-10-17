@@ -680,3 +680,6 @@ fn interpreted_text_repair_receipt_survives_sqlite_restart_without_changing_reco
     );
     assert_eq!(repair.count, 1);
 }
+
+#[path = "claude_sql_state/record_extras.rs"]
+mod record_extras;
