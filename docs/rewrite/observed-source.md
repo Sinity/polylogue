@@ -197,6 +197,13 @@ single-main route. Reads continue using acknowledged state. Full-prefix
 verification remains source work on every capture attempt; no metadata-only
 unchanged-file shortcut or corpus throughput guarantee is claimed.
 
+Retained interpretation finishes its current input before choosing another.
+A recent acquisition or explicit retry can run between background catalog inputs;
+these choices alternate so ongoing acquisition cannot suppress the background
+scan. One recent-input hint coalesces intermediate changes without replacing the
+durable catalog. Restart recovers work through that catalog. This does not
+preempt a large current input or promise a fixed interpretation latency.
+
 Held directory descriptors and descriptor-relative, beneath-root, no-symlink
 opens fence traversal and capture. An archive cannot be used as the configured
 provider root. Root replacement starts a fresh walk; root absence or denied
