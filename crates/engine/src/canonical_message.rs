@@ -1514,15 +1514,19 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
             if !same_reference(current.as_ref(), previous.as_ref()) {
                 return Err(StoreError::MessagePredecessorChanged.into());
             }
+            let source = Source {
+                predecessor: &token,
+                revision: request.revision,
+                evidence_revision: head.revision(),
+                logical_key: request.logical_key,
+                route: RouteKind::Native,
+            };
+            if writer.retire_superseded_message_turn(&identity.message, &source, allowance)? {
+                return Ok(Applied::Progress);
+            }
             let preparation = writer.prepare_message(
                 identity.borrowed(request.message as u64),
-                Source {
-                    predecessor: &token,
-                    revision: request.revision,
-                    evidence_revision: head.revision(),
-                    logical_key: request.logical_key,
-                    route: RouteKind::Native,
-                },
+                source,
                 allowance,
             )?;
             Ok(Applied::Prepared(Handle {

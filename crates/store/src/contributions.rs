@@ -25,6 +25,7 @@ pub use reads::{
 };
 mod retirement;
 mod source;
+mod superseded;
 pub use source::{SourceProjection, SourceSelection};
 pub(crate) mod writer;
 pub use retirement::{Retirement, ValueCollection};
