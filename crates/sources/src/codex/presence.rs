@@ -2,7 +2,7 @@
 //! remain canonical raw fields, not normalized DTO values. A group has one entry
 //! per semantic slot; replacement removes only that source owner's old fields.
 use super::origins::Origins;
-use super::selection::{FactSelection, Transform};
+use super::selection::{FactSelection, PathPart, Transform};
 use super::{
     has_nonempty_text, has_recorded_output, is_shell_tool, native_duration, raw, text_parts,
 };
@@ -48,6 +48,10 @@ impl Witness {
                 ..
             } => Transform::JsonStringV1,
             Slot::Extra { .. } => Transform::JsonValueV1,
+            Slot::Usage(U::Input) if selection.transform == Transform::UncachedInputV1 => {
+                Transform::UncachedInputV1
+            }
+            Slot::Usage(_) => Transform::JsonValueV1,
             Slot::Block { field, .. } if matches!(selection.transform,Transform::ToolFieldV1{field:f} if f==*field) => {
                 selection.transform.clone()
             }
@@ -59,6 +63,16 @@ impl Witness {
         let Some(base) = self.origins.selected() else {
             return false;
         };
+        if selection.transform == Transform::UncachedInputV1 {
+            let mut cached = base.clone();
+            match cached.path.last_mut() {
+                Some(PathPart::Key(key)) if key == "input_tokens" => {
+                    *key = "cached_input_tokens".into();
+                }
+                _ => return false,
+            }
+            return selection.inputs == [base, cached];
+        }
         selection.inputs.iter().all(|input| {
             input.record == base.record
                 && if matches!(selection.transform, Transform::ToolFieldV1 { .. }) {
