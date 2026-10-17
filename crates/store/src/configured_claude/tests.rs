@@ -203,7 +203,7 @@ fn preserving_v3_upgrade_materializes_exact_old_context_and_fences_unaware_write
         .unwrap();
     writer
         .archive
-        .execute_batch("DROP TABLE observed_context; PRAGMA user_version=3")
+        .execute_batch("DROP INDEX input_claude_tool_result_main; DROP TABLE observed_context; PRAGMA user_version=3")
         .unwrap();
     let before = writer.status().unwrap().write_counter;
     let lineage =
@@ -297,7 +297,7 @@ fn pending_v3_preparation_refuses_upgrade_without_changing_authority_or_custody(
         );
         let conn = crate::open(&archive.join("archive.db"), false, true).unwrap();
         conn.execute_batch(
-            "DROP TABLE observed_context; PRAGMA user_version=3; PRAGMA wal_checkpoint(TRUNCATE)",
+            "DROP INDEX input_claude_tool_result_main; DROP TABLE observed_context; PRAGMA user_version=3; PRAGMA wal_checkpoint(TRUNCATE)",
         )
         .unwrap();
         let held = if existing_wal {

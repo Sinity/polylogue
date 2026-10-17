@@ -650,7 +650,7 @@ fn retained_wal_probe_child() {
     if std::env::var("POLYLOGUE_WAL_CHILD_MODE").as_deref() == Ok("legacy-normal") {
         writer
             .archive
-            .execute_batch("DROP TABLE observed_context")
+            .execute_batch("DROP INDEX input_claude_tool_result_main; DROP TABLE observed_context")
             .unwrap();
         writer
             .archive
