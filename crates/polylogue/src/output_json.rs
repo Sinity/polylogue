@@ -2,6 +2,7 @@
 //! It masks logical string values, refuses credential-bearing structural keys,
 //! and keeps settled UTF-8 output bounded independently of masking expansion.
 use credential_output::Masker;
+mod native_identity;
 use serde_json::Value;
 use std::io::{self, Write};
 use std::time::Instant;
@@ -58,25 +59,40 @@ impl<W: Write> Encoder<W> {
     /// Stable identities cannot be rewritten into credential markers without
     /// changing references. Refuse such a value before writing its bytes.
     pub(crate) fn identity(&mut self, value: &str) -> io::Result<()> {
+        self.exact_identity(value, unchanged_key)
+    }
+    pub(crate) fn reference(&mut self, value: &str) -> io::Result<()> {
+        self.exact_identity(value, check_reference)
+    }
+    fn exact_identity(
+        &mut self,
+        value: &str,
+        assess: fn(&str, Instant) -> io::Result<()>,
+    ) -> io::Result<()> {
         self.check()?;
         let result = (|| {
-            unchanged_key(value, self.deadline).map_err(|error| {
-                if error.kind() == io::ErrorKind::InvalidData {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "JSON identity requires credential masking",
-                    )
-                } else {
-                    error
-                }
-            })?;
+            assess(value, self.deadline)?;
             serde_json::to_writer(&mut self.out, value).map_err(Into::into)
         })();
         self.result(result)
     }
+    pub(crate) fn native_id(&mut self, value: &polylogue_model::NativeId) -> io::Result<()> {
+        self.check()?;
+        let result = (|| {
+            native_identity::check_native(value, self.deadline)?;
+            serde_json::to_writer(&mut self.out, value).map_err(Into::into)
+        })();
+        self.result(result)
+    }
+    pub(crate) fn origin(&mut self, value: &polylogue_model::RetainedJson) -> io::Result<()> {
+        self.check()?;
+        let result = native_identity::check_origin(value, self.deadline);
+        self.result(result)?;
+        self.retained(value, true)
+    }
     pub(crate) fn value(&mut self, value: &Value) -> io::Result<()> {
         self.check()?;
-        let result = write_value(&mut self.out, value, self.deadline, 0, false);
+        let result = write_value(&mut self.out, value, self.deadline, 0);
         self.result(result)
     }
     /// Retained provider values never pass through serde_json::Value. Privacy
@@ -99,13 +115,6 @@ impl<W: Write> Encoder<W> {
             let envelope = retained::envelope(value, self.deadline, false)?;
             serde_json::to_writer(&mut self.out, &envelope).map_err(Into::into)
         })();
-        self.result(result)
-    }
-    /// Interpretation descriptors must remain byte-semantic identities. If a
-    /// string would need masking, refuse instead of changing a raw selector.
-    pub(crate) fn preserved(&mut self, value: &Value) -> io::Result<()> {
-        self.check()?;
-        let result = write_value(&mut self.out, value, self.deadline, 0, true);
         self.result(result)
     }
     /// A Message is one logical body. PEM suppression crosses its blocks, never
@@ -224,6 +233,21 @@ fn pieces(
     }
     Ok(())
 }
+pub(crate) fn check_native_identity(
+    value: &polylogue_model::NativeId,
+    until: Instant,
+) -> io::Result<()> {
+    native_identity::check_native(value, until)
+}
+pub(crate) fn check_source_origin(
+    value: &polylogue_model::RetainedJson,
+    until: Instant,
+) -> io::Result<()> {
+    native_identity::check_origin(value, until)
+}
+pub(crate) fn check_reference(key: &str, until: Instant) -> io::Result<()> {
+    native_identity::check_public(key, until)
+}
 pub(crate) fn check_identity(key: &str, until: Instant) -> io::Result<()> {
     unchanged_key(key, until)
 }
@@ -268,7 +292,6 @@ fn write_value(
     value: &Value,
     until: Instant,
     depth: usize,
-    preserve: bool,
 ) -> io::Result<()> {
     deadline(until)?;
     if depth > 128 {
@@ -278,10 +301,6 @@ fn write_value(
         ));
     }
     match value {
-        Value::String(text) if preserve => {
-            unchanged_key(text, until)?;
-            serde_json::to_writer(out, text).map_err(Into::into)
-        }
         Value::String(text) => write_string(out, text, &mut Masker::new(), until, false),
         Value::Array(items) => {
             out.write_all(b"[")?;
@@ -289,7 +308,7 @@ fn write_value(
                 if i != 0 {
                     out.write_all(b",")?;
                 }
-                write_value(out, item, until, depth + 1, preserve)?;
+                write_value(out, item, until, depth + 1)?;
             }
             out.write_all(b"]")
         }
@@ -302,7 +321,7 @@ fn write_value(
                 }
                 serde_json::to_writer(&mut *out, key)?;
                 out.write_all(b":")?;
-                write_value(out, value, until, depth + 1, preserve)?;
+                write_value(out, value, until, depth + 1)?;
             }
             out.write_all(b"}")
         }
@@ -421,14 +440,28 @@ mod tests {
     fn interpretation_descriptors_are_preserved_or_refused_never_rewritten() {
         let value = json!({"path":["content",0,"text"],"input":"opaque:id","version":1});
         let mut encoder = Encoder::new(Vec::new(), until());
-        encoder.preserved(&value).unwrap();
+        encoder
+            .retained(
+                &polylogue_model::RetainedJson::parse(&serde_json::to_vec(&value).unwrap())
+                    .unwrap(),
+                true,
+            )
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&encoder.finish().unwrap()).unwrap(),
             value
         );
         let value = json!({"path":[format!("ghp_{}","A".repeat(36))]});
         let mut encoder = Encoder::new(Vec::new(), until());
-        assert!(encoder.preserved(&value).is_err());
+        assert!(
+            encoder
+                .retained(
+                    &polylogue_model::RetainedJson::parse(&serde_json::to_vec(&value).unwrap())
+                        .unwrap(),
+                    true
+                )
+                .is_err()
+        );
         assert!(!String::from_utf8_lossy(&encoder.out).contains("ghp_"));
         assert!(encoder.syntax(b"null").is_err());
     }
@@ -617,3 +650,7 @@ mod tests {
         assert_eq!(serde_json::from_slice::<String>(&quoted).unwrap(), text);
     }
 }
+
+#[cfg(test)]
+#[path = "output_json/native_identity_tests.rs"]
+mod native_identity_tests;

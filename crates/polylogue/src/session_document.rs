@@ -230,10 +230,14 @@ pub(crate) fn write_with_cancel(
     e.syntax(b",\"session\":{")?;
     let h = source_qualification.header(stored(session.header())?);
     e.key("id")?;
-    e.identity(h.id.as_str())?;
+    e.reference(h.id.as_str())?;
     member(&mut e, "origin", &json!(h.origin.as_str()))?;
     e.syntax(b",")?;
     e.key("native_id")?;
+    let native =
+        polylogue_model::NativeId::from_wire(&h.native_id, h.native_id_encoding.as_deref())
+            .map_err(|_| invalid("invalid native Session identity"))?;
+    crate::output_json::check_native_identity(&native, deadline)?;
     e.identity(&h.native_id)?;
     if let Some(encoding) = &h.native_id_encoding {
         member(&mut e, "native_id_encoding", &json!(encoding))?;
@@ -356,7 +360,7 @@ fn write_message<W: Write>(
     let header = stored(m.header())?;
     e.syntax(b"{")?;
     e.key("id")?;
-    e.identity(m.id().as_str())?;
+    e.reference(m.id().as_str())?;
     member(
         e,
         "version_hash",
@@ -441,7 +445,7 @@ fn write_message_fields<W: Write>(
                     .as_str()
                     .or_else(|| value.get("id").and_then(Value::as_str))
                     .ok_or_else(|| invalid("resolved reference lacks opaque identity"))?;
-                e.identity(id)?;
+                e.reference(id)?;
             } else {
                 e.value(&value)?;
             }
@@ -532,7 +536,7 @@ fn write_block<W: Write>(
     };
     e.syntax(b"{")?;
     e.key("id")?;
-    e.identity(id.as_str())?;
+    e.reference(id.as_str())?;
     member(e, "kind", &json!(&b.kind))?;
     if matches!(b.kind.as_str(), "text" | "thinking") {
         if stored(b.text_range(0, PIECE))?.is_some() {
@@ -646,13 +650,15 @@ fn write_block_fields<W: Write>(
                     e.syntax(b",")?;
                     e.key(block_name(kind))?;
                     if kind == BlockField::CallId {
-                        e.preserved(&value)?;
+                        let id: polylogue_model::NativeId = serde_json::from_value(value)
+                            .map_err(|_| invalid("invalid native call identity"))?;
+                        e.native_id(&id)?;
                     } else if kind == BlockField::ProducedBy {
                         let id = value
                             .as_str()
                             .or_else(|| value.get("id").and_then(Value::as_str))
                             .ok_or_else(|| invalid("block reference lacks identity"))?;
-                        e.identity(id)?;
+                        e.reference(id)?;
                     } else {
                         e.value(&value)?;
                     }
@@ -775,7 +781,7 @@ fn origin<W: Write>(
         e.identity(name)?;
         e.syntax(b",")?;
         e.key("origin")?;
-        e.retained(&value, true)?;
+        e.origin(&value)?;
         e.syntax(b"}")?;
     }
     Ok(())

@@ -852,3 +852,6 @@ fn model_metadata_wraps_whole_opaque_values_after_privacy() {
 
 #[path = "tests/reference_guard.rs"]
 mod reference_guard;
+
+#[path = "tests/native_id_privacy.rs"]
+mod native_id_privacy;

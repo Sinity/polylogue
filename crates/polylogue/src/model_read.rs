@@ -814,10 +814,15 @@ fn run(
         return Err(refusal("invalid_display_position"));
     }
     let h = q.header(stored(selection.session.header())?);
-    for id in [reference, h.id.as_str(), h.native_id.as_str()] {
-        crate::output_json::check_identity(id, until)
+    for id in [reference, h.id.as_str()] {
+        crate::output_json::check_reference(id, until)
             .map_err(|_| unavailable("identity_requires_masking"))?;
     }
+    let native =
+        polylogue_model::NativeId::from_wire(&h.native_id, h.native_id_encoding.as_deref())
+            .map_err(|_| unavailable("invalid_native_identity"))?;
+    crate::output_json::check_native_identity(&native, until)
+        .map_err(|_| unavailable("identity_requires_masking"))?;
     let mut encoded = Vec::new();
     let mut encoder = crate::output_json::Encoder::new(&mut encoded, until);
     encoder
@@ -962,6 +967,8 @@ fn run(
                             }
                             let descriptor = polylogue_model::RetainedJson::parse(&range.bytes)
                                 .map_err(|_| unavailable("invalid_origin_witness"))?;
+                            crate::output_json::check_source_origin(&descriptor, until)
+                                .map_err(|_| unavailable("origin_witness_requires_masking"))?;
                             let name = match &entry.address {
                                 polylogue_store::contributions::BlockFieldAddress::Field(kind) => {
                                     format!(
@@ -992,7 +999,7 @@ fn run(
                     cursor = Some(entry.cursor);
                 }
                 for id in [m.id().as_str(), block_id(m, &b.slot)?.as_str()] {
-                    crate::output_json::check_identity(id, until)
+                    crate::output_json::check_reference(id, until)
                         .map_err(|_| unavailable("identity_requires_masking"))?;
                 }
                 let mut identity = json!({"version_hash":stored(m.version_hash())?.to_string(),"session":m.id().session().as_str(),"message":format!("message:{}",m.id().as_str()),"block":format!("block:{}",block_id(m,&b.slot)?),"written_by":h.written_by,"role":h.role,"kind":b.kind,"encrypted":b.encrypted,"sources":sources,"field_origins":origins});

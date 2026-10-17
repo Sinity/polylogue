@@ -44,7 +44,7 @@ fn pending_codex_references(
         references.retain(|reference| {
             let keep = reference["session"]
                 .as_str()
-                .is_some_and(|id| output_json::check_identity(id, until).is_ok());
+                .is_some_and(|id| output_json::check_reference(id, until).is_ok());
             if !keep {
                 omitted += 1;
             }

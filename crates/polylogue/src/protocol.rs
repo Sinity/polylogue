@@ -95,18 +95,18 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                     .validate()
                     .map_err(|e| json!({"outcome":"error","error":e}))?;
                 let until = std::time::Instant::now() + std::time::Duration::from_millis(deadline);
-                for id in [request.author.as_str(), request.machine.as_str()]
-                    .into_iter()
-                    .chain(
-                        request
-                            .targets
-                            .iter()
-                            .flatten()
-                            .map(|t| t.reference.as_str()),
-                    )
+                for id in [request.author.as_str(), request.machine.as_str()] {
+                    crate::output_json::check_identity(id, until)
+                        .map_err(|e| failed(ErrorKind::NotYetAvailable, e.to_string()))?;
+                }
+                for reference in request
+                    .targets
+                    .iter()
+                    .flatten()
+                    .map(|t| t.reference.as_str())
                     .chain(request.relations.iter().map(|r| r.other.as_str()))
                 {
-                    crate::output_json::check_identity(id, until)
+                    crate::output_json::check_reference(reference, until)
                         .map_err(|e| failed(ErrorKind::NotYetAvailable, e.to_string()))?;
                 }
                 let committed = receive(owner.try_note(request, until))?;

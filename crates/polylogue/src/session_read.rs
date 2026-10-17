@@ -73,9 +73,17 @@ pub(crate) fn serve(
         let h = session.header().map_err(|e| failed(ErrorKind::Io, e))?;
         let deadline = Instant::now() + TIME;
         // Opaque identities cannot be masked into different references.
-        crate::output_json::check_identity(h.id.as_str(), deadline)
+        crate::output_json::check_reference(h.id.as_str(), deadline)
             .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
-        crate::output_json::check_identity(&h.native_id, deadline)
+        let native =
+            polylogue_model::NativeId::from_wire(&h.native_id, h.native_id_encoding.as_deref())
+                .map_err(|_| {
+                    failed(
+                        ErrorKind::NotYetAvailable,
+                        "invalid native Session identity",
+                    )
+                })?;
+        crate::output_json::check_native_identity(&native, deadline)
             .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
         frame(stream,json!({"type":"session","id":h.id.as_str(),"origin":h.origin.as_str(),"native_id":h.native_id,"native_id_encoding":h.native_id_encoding,"format":"polylogue-session","version":1})).map_err(|e|failed(ErrorKind::Io,e))?;
         let cancellation = stream.try_clone().map_err(|e| failed(ErrorKind::Io, e))?;

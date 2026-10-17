@@ -526,6 +526,53 @@ fn message_from_binary(bytes: &[u8]) -> Option<MessageId> {
         _ => None,
     }
 }
+/// Inspect only canonical reversible frames emitted by this codec. This does
+/// not resolve opaque stored IDs or establish any source/ownership relation.
+/// The fixed shapes contain the Origin, Session native value and Message local.
+pub fn framed_identity_components(reference: &str) -> Option<Vec<NativeId>> {
+    fn session_components(bytes: &[u8]) -> Option<Vec<NativeId>> {
+        session_from_binary(bytes)?;
+        let fields = frame_fields(bytes, 1, 2)?;
+        Some(vec![
+            NativeId::unicode(std::str::from_utf8(fields[0]).ok()?),
+            NativeId::from_wtf8(fields[1]).ok()?,
+        ])
+    }
+    fn message_natives(bytes: &[u8]) -> Option<Vec<NativeId>> {
+        message_from_binary(bytes)?;
+        let tag = *bytes.get(1)?;
+        let fields = frame_fields(bytes, tag, if tag == 3 { 2 } else { 3 })?;
+        let mut values = session_components(fields[0])?;
+        if tag == 3 {
+            values.push(NativeId::from_wtf8(fields[1]).ok()?);
+        }
+        Some(values)
+    }
+    let bytes = decoded_frame(reference)?;
+    if extended(&bytes) != reference {
+        return None;
+    }
+    match *bytes.get(1)? {
+        1 => {
+            if session_from_binary(&bytes)?.as_str() != reference {
+                return None;
+            }
+            session_components(&bytes)
+        }
+        3 | 4 => {
+            if message_from_binary(&bytes)?.as_str() != reference {
+                return None;
+            }
+            message_natives(&bytes)
+        }
+        5 => {
+            BlockId::address(reference)?;
+            message_natives(frame_fields(&bytes, 5, 2)?[0])
+        }
+        _ => None,
+    }
+}
+
 fn session_binary(session: &SessionId) -> Vec<u8> {
     if let Some(bytes) = decoded_frame(session.as_str()) {
         return bytes;

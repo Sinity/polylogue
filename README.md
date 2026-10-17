@@ -69,6 +69,9 @@ from interpreted text. Ambiguous identity coordinates use versioned framing;
 literal `~u:` strings cannot impersonate a surrogate. Interpreted-text repairs
 are counted in Session qualification diagnostics, separately from record errors.
 Opaque tool inputs retain numeric tokens, null/absence and non-scalar keys.
+Privacy checks original declared native identities and public-reference/origin
+components before reversible encoding. Credential-bearing identities refuse;
+ordinary provider lookalikes and literal marker strings remain ordinary data.
 
 Bounded model pages encode supported opaque fields and complete field-origin
 entries as `{"encoding":"canonical-json-v1","json":"…","masked":false}` after privacy
@@ -92,7 +95,8 @@ remain unqualified. Codex keeps its scalar-only source boundary.
 
 [`scripts/check-native-identity.py`](scripts/check-native-identity.py) runs the
 finite three-input/eight-Message corpus through CLI, official SDK reads, export,
-restart, owned provider removal and isolated index reconstruction. It retains
+restart, owned provider removal and isolated index reconstruction, followed by
+separate synthetic native-identity privacy refusals and exact-value controls. It retains
 raw responses, failures, source bindings and hashes in a new private directory.
 Use the checked binary's actual source commit, not a branch name:
 

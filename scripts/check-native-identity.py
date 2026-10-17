@@ -127,7 +127,7 @@ def main():
     def command(arguments, label, expected=(0, 5)):
         return run.command([args.binary, '--archive', archive, *arguments], label, expected, timeout=60)
 
-    def sdk(reference, budget, label):
+    def sdk(reference, budget, label, refused=False):
         output = args.output / ('sdk-' + label)
         arguments = {'ref': reference, 'budget_tokens': budget, 'view': 'transcript',
                      'tools': 'full', 'thinking': 'full', 'harness': 'full', 'branches': True}
@@ -137,12 +137,83 @@ def main():
         result = json.loads((output / 'result.json').read_text())
         assert result['success'] and result['sdk_context_closed'], result
         page = result['tool_result']
+        if refused:
+            assert page['outcome'] == 'error' and page['error']['kind'] == 'not_yet_available', page
+            assert 'shown' not in page, page
+            return page
         assert page['outcome'] != 'error', page
         assert not page.get('next'), 'tiny exact fixture must fit the selected complete page'
         assert page['primary_content_complete'] is True
         assert page['shown'], page
         assert (len(json.dumps(page, separators=(',', ':'), sort_keys=True, ensure_ascii=False).encode()) + 3) // 4 <= budget
         return page
+
+    def privacy_controls():
+        # These fresh synthetic controls are separate from the pinned eight-fact
+        # oracle. Assess native IDs before their reversible public/wire frames.
+        token = 'ghp_' + 'A' * 36
+        def frame(tag, fields):
+            raw = bytes((1, tag)) + len(fields).to_bytes(8, 'little')
+            for field in fields:
+                raw += len(field).to_bytes(8, 'little') + field
+            return raw
+        def session_ref(native):
+            fields = (b'claude-code', native.encode('utf-8', 'surrogatepass'))
+            if native.startswith('~') or ':' in native or any(0xd800 <= ord(c) <= 0xdfff for c in native):
+                return '~i1:' + frame(1, fields).hex()
+            return 'claude-code:' + native
+        def message_ref(session, native):
+            sid = session_ref(session)
+            if sid.startswith('~i1:') or native.startswith('~') or any(0xd800 <= ord(c) <= 0xdfff for c in native):
+                return '~i1:' + frame(3, (frame(1, (b'claude-code', session.encode('utf-8', 'surrogatepass'))),
+                                          native.encode('utf-8', 'surrogatepass'))).hex()
+            return sid + ':' + native
+        cases = [
+            ('call-scalar', token, 'answer', 'root', False),
+            ('call-encoded', token + '\ud800', 'answer', 'root', False),
+            ('call-clean', 'ordinary-\ud800', 'answer', 'root', True),
+            ('call-split', 'ghp_\ud800' + 'A' * 36, 'answer', 'root', True),
+            ('message-encoded', 'ordinary', token + '\ud800', 'root', False),
+            ('parent-encoded', 'ordinary', 'answer', token + '\ud800', False),
+            ('session-encoded', 'ordinary', 'answer', 'root', False),
+        ]
+        report['privacy_controls'] = []
+        for label, call, native_message, parent, allowed in cases:
+            session = '~' + token if label == 'session-encoded' else 'privacy-' + label
+            rows = [{'type': 'ai-title', 'aiTitle': 'Synthetic privacy control'},
+                    {'type': 'user', 'uuid': parent, 'sessionId': session, 'promptSource': 'typed',
+                     'timestamp': '2026-10-01T08:00:00Z', 'message': {'role': 'user', 'content': 'Synthetic prompt'}},
+                    {'type': 'assistant', 'uuid': native_message, 'parentUuid': parent, 'sessionId': session,
+                     'timestamp': '2026-10-01T08:01:00Z', 'requestId': 'synthetic-request',
+                     'message': {'id': 'synthetic-response', 'role': 'assistant', 'model': 'synthetic-model',
+                                 'content': [{'type': 'tool_use', 'id': call, 'name': 'Synthetic', 'input': {}}],
+                                 'stop_reason': 'end_turn'}}]
+            source = args.output / 'owned-provider' / ('privacy-' + label + '.jsonl')
+            source.write_text(''.join(json.dumps(row, ensure_ascii=True) + '\n' for row in rows))
+            owned_sources.append(source)
+            context = args.output / ('privacy-' + label + '.context.json')
+            context.write_text(json.dumps({'version': 1, 'context': ['claude-main', session]}))
+            imported = json.loads(command(['import', source, '--format', 'claude-code-jsonl', '--context', context,
+                                           '--wait', '--wait-timeout', '30'], 'privacy import ' + label, (0,)))
+            assert imported['source_rows']['state'] == 'settled', imported
+            reference = session_ref(session)
+            direct = command([reference, 'read', '--format', 'json'], 'privacy JSON ' + label, (0,) if allowed else (2,))
+            terminal = command([reference, 'read', '--format', 'terminal'], 'privacy terminal ' + label, (0,) if allowed else (2,))
+            page = sdk('message:' + message_ref(session, native_message), 16000, 'privacy-' + label, refused=not allowed)
+            if allowed:
+                document = json.loads(direct)
+                wire = {'value': '~u:' + call.encode('utf-8', 'surrogatepass').hex(), 'encoding': 'wtf8'}
+                assert document['messages'][1]['blocks'][0]['call_id'] == wire, document
+                assert any(fragment.get('block_fields', {}).get('call_id') == wire for fragment in page['shown']), page
+            else:
+                # No successful partial document, terminal credential or encoded
+                # recoverable token may escape a refused operation.
+                wire = '~u:' + call.encode('utf-8', 'surrogatepass').hex()
+                for presented in (direct, terminal, json.dumps(page)):
+                    assert token not in presented and wire not in presented, label
+            report['privacy_controls'].append({'name': label, 'expected': 'exact' if allowed else 'refused',
+                                               'input_sha256': sha(source), 'input': imported['retained']['id'],
+                                               'cli_json': True, 'cli_terminal': True, 'official_sdk': True})
 
     def inspect(phase):
         captures = {}
@@ -267,6 +338,7 @@ def main():
         # Startup must actually reconstruct from retained owned inputs, rather
         # than the oracle reimporting source bytes or filling SQL rows itself.
         inspect('index-reconstructed')
+        privacy_controls()
         report['success'] = True
     except BaseException as error:
         report['success'] = False
