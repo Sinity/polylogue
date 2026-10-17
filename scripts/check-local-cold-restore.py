@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded stopped-custody restore through one packaged CLI and SDK MCP adapter."""
+"""Bounded stopped-custody restore through CLI, direct MCP and an official SDK client."""
 import argparse
 import hashlib
 import importlib.util
@@ -30,6 +30,62 @@ CURRENT_NOTE = 'note:' + N + '@' + R
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class OfficialClient:
+    """Invoke the frozen public adapter; all protocol IO belongs to the SDK."""
+    def __init__(self, args, run):
+        self.args, self.run, self.receipts = args, run, []
+
+    def tool(self, name, arguments):
+        output = self.run.output / f'official-sdk-{len(self.receipts):03}'
+        argv = [str(self.args.sdk_python), str(self.args.frozen_sdk_client),
+                '--archive', self.run.command([])[2], '--binary', str(self.run.binary),
+                '--call', name, '--arguments', json.dumps(arguments), '--output', str(output)]
+        attempt = {'argv': argv, 'exit': None, 'process_reaped': False}
+        self.receipts.append(attempt)
+        result = subprocess.run(argv, env=self.run.env, capture_output=True, timeout=40)
+        attempt.update(exit=result.returncode, process_reaped=True)
+        output.with_suffix('.stdout').write_bytes(result.stdout)
+        output.with_suffix('.stderr').write_bytes(result.stderr)
+        assert result.returncode == 0, (attempt, result.stderr.decode(errors='replace'))
+        receipt = json.loads((output / 'result.json').read_text())
+        assert receipt['success'] and receipt['sdk_context_closed'], receipt
+        assert receipt['sdk']['name'] == 'mcp' and receipt['sdk']['version'], receipt
+        listing = next(c['response'] for c in receipt['calls'] if c['method'] == 'tools/list')
+        assert [t['name'] for t in listing['tools']] == ['status', 'search', 'read', 'note'], listing
+        mcp.validate_read_discovery(listing['tools'][2])
+        attempt.update(receipt=str(output/'result.json'), sdk=receipt['sdk'],
+                       negotiated_version=receipt['negotiated_version'])
+        return {'structuredContent': receipt['tool_result']}
+
+
+def freeze_sdk(args):
+    assert args.sdk_python.is_absolute() and args.sdk_client.is_absolute()
+    assert str(args.sdk_python).startswith('/nix/store/'), 'use an immutable pinned SDK environment'
+    originals = [args.sdk_client, args.sdk_client.parent.parent/'morrow_mcp.py',
+                 args.sdk_client.parent.parent/'check_answer.py']
+    args.frozen_sdk_client = args.output/'frozen-sdk-client'/'joint-consumer'/'mcp_client.py'
+    args.frozen_sdk_client.parent.mkdir(parents=True)
+    destinations = [args.frozen_sdk_client, args.frozen_sdk_client.parent.parent/'morrow_mcp.py',
+                    args.frozen_sdk_client.parent.parent/'check_answer.py']
+    for source, destination in zip(originals, destinations):
+        shutil.copyfile(source, destination)
+    return {'python':str(args.sdk_python), 'python_sha256':digest(args.sdk_python),
+            'adapter_files':[{'original':str(s), 'frozen':str(d), 'sha256':digest(d)}
+                             for s,d in zip(originals,destinations)]}
+
+
+def official_clients(args, run, expected):
+    client = OfficialClient(args, run)
+    assert run.client is None
+    run.client = client
+    try:
+        value = read_clients(run, expected, remote=True)
+        return {'clients': value, 'receipts': client.receipts}
+    finally:
+        run.client = None
+        (run.output/'official-sdk-calls.json').write_text(json.dumps(client.receipts,indent=2)+'\n')
 
 
 def manifest(root):
@@ -188,7 +244,8 @@ def authority(root):
     return value
 
 
-def case(binary, unaware_binary, output):
+def case(args):
+    binary, unaware_binary, output = args.binary, args.unaware_binary, args.output
     usage = shutil.disk_usage(output)
     assert usage.free >= 256*1024*1024, usage
     (output/'storage-before.json').write_text(json.dumps({'free_bytes':usage.free,'logical_provider_bound_bytes':12*1024*1024,'fixture_only':True},indent=2)+'\n')
@@ -279,8 +336,11 @@ def case(binary, unaware_binary, output):
         remote=read_clients(restored,{'C','D'},True,True)
         assert remote==after
         restored.client.close();restored.client=None
+        official=official_clients(args,restored,{'C','D'})
+        assert official['clients']==after, (official['clients'],after)
         continuation.graceful_stop(restored)
-        report.update(restored_clients=after,restored_mcp=remote)
+        report.update(restored_clients=after,restored_mcp=remote,restored_official_sdk=official,
+                      restored_mcp_route='direct JSON-RPC protocol client')
         inherited=output/'inherited';inherited.mkdir()
         custody(destination/'archive',inherited/'archive',inherited/'custody.json')
         clone=mcp.Run(binary,inherited);clone.env.update(run.env);readers.append(clone)
@@ -340,12 +400,56 @@ def case(binary, unaware_binary, output):
         (output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
 
 
+def retained_sdk_case(args):
+    """Extend an already qualified custody run without regenerating its evidence."""
+    proof=args.retained_proof.resolve()
+    binding=json.loads((proof/'binding.json').read_text())
+    previous=json.loads((proof/'report.json').read_text())
+    assert previous['passed'] and all(json.loads((proof/'cleanup.json').read_text()).values())
+    assert binding['binary_sha256']==digest(args.binary)
+    assert not (proof/'archive').exists() and not (proof/'codex-home').exists()
+    archive=proof/'restored'/'archive'
+    run=mcp.Run(args.binary,args.output)
+    run.command=lambda arguments: [str(args.binary),'--archive',str(archive),*map(str,arguments)]
+    report={'passed':False,'retained_proof':str(proof),
+            'prior_binding':binding,'prior_report_sha256':digest(proof/'report.json'),
+            'archive':str(archive),'archive_before':manifest(archive),
+            'authority_before':authority(archive)}
+    try:
+        run.start()
+        local=await_clients(run,{'C','D'})
+        assert local==previous['restored_clients'], (local,previous['restored_clients'])
+        official=official_clients(args,run,{'C','D'})
+        assert official['clients']==local, (official['clients'],local)
+        status=run.cli(['status'])
+        assert status['foundation']['latest_acknowledged_head']=='unknown',status
+        assert status['foundation']['acquisition_lineage']==report['authority_before']['acquisition_lineage'],status
+        report.update(official_sdk=official,cli=local,status=status,passed=True)
+        continuation.graceful_stop(run)
+    finally:
+        native.close_run(run,args.output)
+        report['archive_after']=manifest(archive)
+        report['authority_after']=authority(archive)
+        assert report['authority_after']==report['authority_before'],report
+        report['cleanup']={'daemon_reaped':run.daemon is None,
+                           'sdk_processes_reaped':all(c['process_reaped'] for c in report.get('official_sdk',{}).get('receipts',[])),
+                           'runtime_removed':not Path(run.socket_owner.name).exists()}
+        (args.output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
+
+
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--binary',required=True,type=Path);parser.add_argument('--unaware-binary',required=True,type=Path);parser.add_argument('--output',required=True,type=Path);args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__)
+    for key in ('binary','output','sdk-python','sdk-client'):
+        parser.add_argument('--'+key,required=True,type=Path)
+    parser.add_argument('--unaware-binary',type=Path)
+    parser.add_argument('--retained-proof',type=Path,help='add official SDK reads to this existing stopped-custody proof')
+    args=parser.parse_args()
+    if not args.retained_proof and not args.unaware_binary:parser.error('--unaware-binary is required for a fresh custody run')
     if args.output.exists():parser.error('output must not exist')
     args.output.mkdir(parents=True)
-    (args.output/'binding.json').write_text(json.dumps({'binary':str(args.binary.resolve()),'binary_sha256':digest(args.binary),'source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),'diff_sha256':hashlib.sha256(subprocess.check_output(['git','diff','HEAD'],cwd=ROOT)).hexdigest()},indent=2)+'\n')
-    case(args.binary,args.unaware_binary,args.output)
+    sdk=freeze_sdk(args)
+    (args.output/'binding.json').write_text(json.dumps({'binary':str(args.binary.resolve()),'binary_sha256':digest(args.binary),'source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),'diff_sha256':hashlib.sha256(subprocess.check_output(['git','diff','HEAD'],cwd=ROOT)).hexdigest(),'sdk':sdk},indent=2)+'\n')
+    retained_sdk_case(args) if args.retained_proof else case(args)
     print(json.dumps({'passed':True,'report':str(args.output/'report.json')}))
 
 if __name__=='__main__':main()
