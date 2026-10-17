@@ -72,10 +72,13 @@ Explicit `codex_home` configuration discovers rollout snapshots independently of
 
 Optional `codex_home.paginated_history` names an additional physical history
 source; it has no default. `paginated_interval_seconds` selects its quiet interval
-(default 300). This route streams a complete SQLite read view into a plain base
+(default 300). One parked worker advances reusable byte/checkpoint quanta through
+the existing owner, allowing ordinary acquisition and reads between grants.
+This route streams a complete SQLite read view into a plain base
 or one changed-page blob with flat archive extents. Its raw acquisition does not
-inherit the bounded row decoder's 16 MiB limit. Startup names the exact retained
-`paginated_input`; availability and interpretation remain separate. See the
+inherit the bounded row decoder's 16 MiB limit. Startup reports physical acquisition as pending; continuation reports its exact
+retained `paginated_input` after complete custody. Availability and interpretation
+remain separate. See the
 [physical-history contract](docs/rewrite/codex-configured-discovery.md#physical-history).
 Synthetic packaged CLI/MCP acceptance covers this configured operation path.
 Complete Session reconstruction, production capture and multi-GB resource

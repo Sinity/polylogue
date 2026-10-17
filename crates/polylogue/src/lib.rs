@@ -177,10 +177,23 @@ impl Running {
             runtime,
             false,
             Some(report.clone()),
-            continue_collecting,
+            continue_collecting || config.paginated_history.is_some(),
         )
         .map_err(polylogue_store::Error::Invariant)?;
-        if continue_collecting {
+        if continue_collecting || config.paginated_history.is_some() {
+            if let Some(status) = running
+                .continuation
+                .lock()
+                .expect("continuation status")
+                .as_mut()
+            {
+                status.paginated_pending = config.paginated_history.is_some();
+                status.paginated_state = if status.paginated_pending {
+                    "pending"
+                } else {
+                    "disabled"
+                };
+            }
             let handle = running.owner.as_ref().expect("running owner").handle();
             let config = config.clone();
             let request = id.to_owned();
@@ -189,7 +202,16 @@ impl Running {
             running.collector = Some(
                 thread::Builder::new()
                     .name("polylogue-codex-home".into())
-                    .spawn(move || codex_continuation::run(handle, config, request, stop, status))
+                    .spawn(move || {
+                        codex_continuation::run(
+                            handle,
+                            config,
+                            request,
+                            stop,
+                            status,
+                            continue_collecting,
+                        )
+                    })
                     .map_err(polylogue_store::Error::Io)?,
             );
         }

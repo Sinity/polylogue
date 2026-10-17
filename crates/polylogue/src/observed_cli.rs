@@ -222,8 +222,45 @@ fn run_codex(
         return Ok(0);
     }
     let deadline = Instant::now() + Duration::from_secs(120);
+    let mut admitted = acquisition.admitted.clone();
+    if config.paginated_history.is_some() {
+        loop {
+            if stop.load(Ordering::Acquire) {
+                running.stop();
+                return Err(error(
+                    ErrorKind::Refused {
+                        reason: "startup interrupted".into(),
+                    },
+                    "physical startup interrupted before complete retention",
+                ));
+            }
+            let status = polylogue::request_value_until(
+                running.socket(),
+                &json!({"command":"status"}),
+                deadline,
+            )
+            .map_err(io_error)?;
+            let physical = &status["continuation"];
+            if physical["paginated_pending"] == false && physical["paginated_state"] != "disabled" {
+                if let Some(input) = physical["paginated_input"].as_str() {
+                    if !admitted.iter().any(|old| old == input) {
+                        admitted.push(input.to_owned());
+                    }
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                running.stop();
+                return Err(error(
+                    ErrorKind::Timeout,
+                    "physical startup acquisition remains pending; no complete prefix was selected",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     let mut progress = Vec::new();
-    for input in &acquisition.admitted {
+    for input in &admitted {
         if acquisition.prompt_input.as_ref() == Some(input) {
             continue;
         }

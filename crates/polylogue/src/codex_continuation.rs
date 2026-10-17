@@ -14,6 +14,7 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+mod history_acquisition;
 const INTERVAL: Duration = Duration::from_secs(1);
 const REQUESTS: usize = 512;
 const BYTES: u64 = 32 * 1024 * 1024;
@@ -53,6 +54,11 @@ pub(crate) struct Status {
     pub conversation_coverage: Option<bool>,
     pub paginated_history: Option<Diagnostic>,
     pub paginated_snapshots: u64,
+    pub paginated_pending: bool,
+    pub paginated_state: &'static str,
+    /// Most recent retained physical input, not a current-provider frontier.
+    pub paginated_input: Option<String>,
+    pub paginated_length: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Pass {
@@ -100,6 +106,10 @@ impl Status {
             conversation_coverage: None,
             paginated_history: None,
             paginated_snapshots: 0,
+            paginated_pending: false,
+            paginated_state: "disabled",
+            paginated_input: None,
+            paginated_length: None,
         }
     }
 }
@@ -186,47 +196,6 @@ fn import(
         pause(stop, Duration::from_millis(10));
     }
 }
-fn paginated(
-    handle: &Handle,
-    config: &Config,
-    request: &str,
-    stop: &AtomicBool,
-) -> Result<bool, String> {
-    let path = polylogue_store::configured_codex::paginated_path(config)
-        .map_err(reason)?
-        .ok_or("paginated history is not configured")?;
-    let seen_at = now()?;
-    let candidate = Candidate::paginated(path.clone());
-    let id = candidate.observation_id(request, seen_at).map_err(reason)?;
-    let request = ImportRequest {
-        format: candidate.format(),
-        context: vec![],
-        path: path.clone(),
-        observation: Observation {
-            id,
-            machine: config.machine.clone(),
-            host: config.host.clone(),
-            path: path.to_str().ok_or("history path must be UTF-8")?.into(),
-            seen_at,
-        },
-        metadata_allowance: 131072,
-    };
-    let until = Instant::now() + Duration::from_secs(310);
-    loop {
-        if stop.load(Ordering::Acquire) {
-            return Err("history capture stopped".into());
-        }
-        let result = match handle.try_history_import(request.clone()) {
-            Ok(rx) => receive(rx, stop),
-            Err(e) => Err(e),
-        };
-        match result {
-            Ok(reply) => return Ok(reply.acquired),
-            Err(Error::Busy) if Instant::now() < until => pause(stop, Duration::from_millis(10)),
-            Err(e) => return Err(reason(e)),
-        }
-    }
-}
 #[derive(Debug, PartialEq, Eq)]
 enum HistoryDecision {
     Capture,
@@ -297,16 +266,37 @@ pub(crate) fn run(
     request: String,
     stop: Arc<AtomicBool>,
     shared: Arc<Mutex<Option<Status>>>,
+    continue_collecting: bool,
 ) {
     let mut cursor = RolloutCursor::default();
     let mut pending = VecDeque::new();
     let mut previous: Option<Pass> = None;
     let mut status = Status::initial();
-    let mut next_history = Instant::now() + Duration::from_secs(config.paginated_interval_seconds);
-    let mut history_poll = HistoryPoll::new(
-        Duration::from_secs(config.paginated_interval_seconds),
-        Instant::now(),
-    );
+    // Preserve configured pending evidence even if archive permission refuses
+    // before the collector can admit its first physical attempt.
+    status.paginated_pending = config.paginated_history.is_some();
+    status.paginated_state = if status.paginated_pending {
+        "pending"
+    } else {
+        "disabled"
+    };
+    let mut physical = history_acquisition::Acquisition::new(&config);
+    if !continue_collecting {
+        while !stop.load(Ordering::Acquire) && !physical.initial_finished() {
+            physical.step(&handle, &config, &request, &mut status);
+            *shared.lock().expect("continuation status") = Some(status.clone());
+            if !physical.initial_finished() {
+                pause(&stop, Duration::from_millis(10));
+            }
+        }
+        status.state = if stop.load(Ordering::Acquire) {
+            "stopped"
+        } else {
+            "startup_physical_attempt_complete"
+        };
+        *shared.lock().expect("continuation status") = Some(status);
+        return;
+    }
     while !stop.load(Ordering::Acquire) {
         pause(&stop, INTERVAL);
         if stop.load(Ordering::Acquire) {
@@ -323,42 +313,7 @@ pub(crate) fn run(
             *shared.lock().expect("continuation status") = Some(status.clone());
             continue;
         }
-        if config.paginated_history.is_some() && Instant::now() >= next_history {
-            let before = polylogue_store::configured_codex::history_stamp(&config);
-            let decision = history_poll.decision(before.as_ref().ok(), Instant::now());
-            if decision == HistoryDecision::Capture {
-                match paginated(
-                    &handle,
-                    &config,
-                    &format!("{request}:history:{}", status.completed_passes),
-                    &stop,
-                ) {
-                    Ok(acquired) => {
-                        if acquired {
-                            status.paginated_snapshots =
-                                status.paginated_snapshots.saturating_add(1);
-                        }
-                        let after = polylogue_store::configured_codex::history_stamp(&config);
-                        history_poll.verified(before.ok(), after.ok(), Instant::now());
-                        status.paginated_history = Some(diagnostic(if acquired {
-                            "retained_snapshot; interpretation coverage separate"
-                        } else {
-                            "unchanged_verified_snapshot"
-                        }));
-                    }
-                    Err(error) => status.paginated_history = Some(diagnostic(error)),
-                }
-            } else {
-                status.paginated_history = Some(diagnostic(
-                    if decision == HistoryDecision::UnchangedMetadata {
-                        "unchanged_metadata; full byte verification not due"
-                    } else {
-                        "changed_metadata; waiting for quiet interval or hourly full attempt"
-                    },
-                ));
-            }
-            next_history = Instant::now() + Duration::from_secs(config.paginated_interval_seconds);
-        }
+        physical.step(&handle, &config, &request, &mut status);
         let mut pass = if pending.is_empty() {
             let turn = match cursor.next_turn(&config, REQUESTS, &stop) {
                 Ok(turn) => turn,

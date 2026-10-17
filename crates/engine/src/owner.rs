@@ -29,6 +29,8 @@ use std::{
 // These are admission limits, not format limits or a hard RSS bound. A rejected
 // record/cell remains owed and its required capacity is kept in the diagnostic.
 // Configurable larger admissions and full canonical convergence remain open.
+mod history_capture;
+use history_capture::HistoryJob;
 const COMMANDS: usize = 16;
 const REQUEST_BYTES: usize = 65_536;
 const WINDOW_BYTES: u64 = 65_536;
@@ -161,6 +163,11 @@ enum Message {
     Progress(String, Reply<Progress>),
     Retry(String, Reply<()>),
     Captured(Result<PreparedCapture>),
+    HistoryYield(
+        polylogue_store::history_pages::turns::Progress,
+        SyncSender<std::result::Result<(), StoreError>>,
+    ),
+    HistoryCaptured(Result<polylogue_store::history_pages::PreparedHistory>),
     Computed(Result<Computation>),
     CanonicalComputed(Result<CanonicalTurn>),
     Wake,
@@ -465,6 +472,13 @@ struct Actor {
     writer: Writer,
     inner: Arc<Inner>,
     capture: Option<CaptureJob>,
+    history: Option<HistoryJob>,
+    waiting_capture: Option<(
+        ImportRequest,
+        Option<(polylogue_store::configured_codex::Candidate, BlobHash, u64)>,
+        ImportReply,
+    )>,
+    history_budget: polylogue_store::history_pages::turns::Budget,
     compute: Option<ComputeJob>,
     canonical: Option<CanonicalJob>,
     active: Option<Active>,
@@ -481,6 +495,9 @@ impl Actor {
             writer,
             inner,
             capture: None,
+            history: None,
+            waiting_capture: None,
+            history_budget: polylogue_store::history_pages::turns::Budget::default(),
             compute: None,
             canonical: None,
             active: None,
@@ -499,6 +516,12 @@ impl Actor {
         }
         self.inner.cancelled.store(true, Ordering::Release);
         self.active = None;
+        if let Some(history) = &mut self.history {
+            history.grant.take();
+        }
+        if let Some((_, _, reply)) = self.waiting_capture.take() {
+            reply.send(Err(Error::Stopped), false);
+        }
     }
     fn observe_stop(&mut self) {
         if self.inner.cancelled.load(Ordering::Acquire) && !self.stopping {
@@ -522,22 +545,31 @@ impl Actor {
         self.stopping
     }
     fn run(mut self, rx: Receiver<Message>) -> Result<()> {
+        let mut commands_since_grant = 0;
         loop {
             self.observe_stop();
             let immediate = !self.stopping
-                && self.compute.is_none()
-                && self.canonical.is_none()
-                && (self.active.is_some() || self.scanning);
+                && (self.history.as_ref().is_some_and(|h| h.grant.is_some())
+                    || (self.compute.is_none()
+                        && self.canonical.is_none()
+                        && (self.active.is_some() || self.scanning)));
+            let mut mailbox_empty = false;
             let message = match rx.try_recv() {
                 Ok(m) => Some(m),
                 Err(TryRecvError::Disconnected) => {
                     self.begin_stop();
                     None
                 }
-                Err(TryRecvError::Empty) if immediate => None,
+                Err(TryRecvError::Empty) if immediate => {
+                    mailbox_empty = true;
+                    None
+                }
                 Err(TryRecvError::Empty) => match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(m) => Some(m),
-                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Timeout) => {
+                        mailbox_empty = true;
+                        None
+                    }
                     Err(RecvTimeoutError::Disconnected) => {
                         self.begin_stop();
                         None
@@ -545,6 +577,7 @@ impl Actor {
                 },
             };
             if let Some(message) = message {
+                commands_since_grant += 1;
                 if let Err(e) = self.message(message) {
                     self.fatal = Some(e);
                     self.begin_stop();
@@ -556,7 +589,15 @@ impl Actor {
                     self.begin_stop();
                 }
             }
+            if !self.stopping && (mailbox_empty || commands_since_grant >= COMMANDS) {
+                if let Err(e) = self.advance_history() {
+                    self.fatal = Some(e);
+                    self.begin_stop();
+                }
+                commands_since_grant = 0;
+            }
             if self.stopping
+                && self.history.is_none()
                 && self.capture.is_none()
                 && self.compute.is_none()
                 && self.canonical.is_none()
@@ -569,6 +610,57 @@ impl Actor {
                 return self.fatal.map_or(Ok(()), Err);
             }
         }
+    }
+    fn finish_capture(&mut self, job: CaptureJob, result: Result<PreparedCapture>) -> Result<()> {
+        job.join.join().map_err(|_| Error::WorkerPanicked)?;
+        if self.stop_for_completion(&result) {
+            let _ = job.reply.send(Err(Error::Stopped), false);
+            return Ok(());
+        }
+        let mut acquired = true;
+        let result = result.and_then(|proof| {
+            let proof = match proof {
+                PreparedCapture::History(p) => {
+                    if let Some(input) = self
+                        .writer
+                        .known_history_snapshot(p.hash(), &job.observation.borrowed())?
+                    {
+                        acquired = false;
+                        return Ok(input);
+                    }
+                    return self
+                        .writer
+                        .retain_history_pages(p, &job.observation.borrowed(), job.allowance)
+                        .map_err(Error::Store);
+                }
+                PreparedCapture::Blob(p) => p,
+            };
+            if job.expected.is_some_and(|hash| hash != proof.hash()) {
+                return Err(Error::InvalidEvidence(
+                    "configured source changed after discovery; retry next pass".into(),
+                ));
+            }
+            let hash = self.writer.retain_captured_blob(proof)?;
+            Ok(self.writer.retain_immutable_input(
+                hash,
+                job.format,
+                &job.context.iter().map(String::as_str).collect::<Vec<_>>(),
+                &job.observation.borrowed(),
+                job.allowance,
+            )?)
+        });
+        if result.is_ok() {
+            self.scan_again = true;
+            if !self.scanning
+                && self.active.is_none()
+                && self.compute.is_none()
+                && self.canonical.is_none()
+            {
+                self.restart_scan();
+            }
+        }
+        let _ = job.reply.send(result, acquired);
+        Ok(())
     }
     fn active_id(&self) -> Option<&str> {
         if let Some(job) = &self.canonical {
@@ -691,6 +783,22 @@ impl Actor {
                         Ok(None) => {}
                     }
                 }
+                if request.format == InputFormat::CodexHistorySqlite {
+                    return self.start_history(request, reply);
+                }
+                if self.capture.is_none()
+                    && self
+                        .history
+                        .as_ref()
+                        .is_some_and(|h| h.grant.is_none() || h.regular_served)
+                {
+                    if self.waiting_capture.is_none() {
+                        self.waiting_capture = Some((request, configured, reply));
+                    } else {
+                        reply.send(Err(Error::Busy), false);
+                    }
+                    return Ok(());
+                }
                 if self.capture.is_some() {
                     let _ = reply.send(Err(Error::Busy), false);
                     return Ok(());
@@ -706,18 +814,9 @@ impl Actor {
                         return Ok(());
                     }
                 };
-                let history = request.format == InputFormat::CodexHistorySqlite;
-                let history_basis = if history {
-                    match self.writer.history_basis(&request.observation.borrowed()) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            reply.send(Err(e.into()), false);
-                            return Ok(());
-                        }
-                    }
-                } else {
-                    None
-                };
+                if let Some(history) = &mut self.history {
+                    history.regular_served = true;
+                }
                 let cancelled = Arc::clone(&self.inner.cancelled);
                 let sender = self.inner.sender.clone();
                 let path = request.path;
@@ -730,10 +829,6 @@ impl Actor {
                                 capture
                                     .capture_codex_candidate(&candidate, length, &cancelled)
                                     .map(PreparedCapture::Blob)
-                            } else if history {
-                                capture
-                                    .capture_history_pages(&path, history_basis, &cancelled)
-                                    .map(PreparedCapture::History)
                             } else {
                                 capture
                                     .capture_regular_file(&path, &cancelled)
@@ -791,54 +886,27 @@ impl Actor {
                 let Some(job) = self.capture.take() else {
                     return Err(Error::InvalidRequest("unexpected capture completion"));
                 };
-                job.join.join().map_err(|_| Error::WorkerPanicked)?;
-                if self.stop_for_completion(&result) {
-                    let _ = job.reply.send(Err(Error::Stopped), false);
-                    return Ok(());
+                self.finish_capture(job, result)?;
+            }
+            Message::HistoryYield(progress, grant) => {
+                let history = self
+                    .history
+                    .as_mut()
+                    .ok_or(Error::InvalidRequest("unexpected history yield"))?;
+                history.progress = Some(progress);
+                history.regular_served = false;
+                if self.stopping {
+                    drop(grant);
+                } else {
+                    history.grant = Some(grant);
                 }
-                let mut acquired = true;
-                let result = result.and_then(|proof| {
-                    let proof = match proof {
-                        PreparedCapture::History(p) => {
-                            if let Some(input) = self
-                                .writer
-                                .known_history_snapshot(p.hash(), &job.observation.borrowed())?
-                            {
-                                acquired = false;
-                                return Ok(input);
-                            }
-                            return self
-                                .writer
-                                .retain_history_pages(p, &job.observation.borrowed(), job.allowance)
-                                .map_err(Error::Store);
-                        }
-                        PreparedCapture::Blob(p) => p,
-                    };
-                    if job.expected.is_some_and(|hash| hash != proof.hash()) {
-                        return Err(Error::InvalidEvidence(
-                            "configured source changed after discovery; retry next pass".into(),
-                        ));
-                    }
-                    let hash = self.writer.retain_captured_blob(proof)?;
-                    Ok(self.writer.retain_immutable_input(
-                        hash,
-                        job.format,
-                        &job.context.iter().map(String::as_str).collect::<Vec<_>>(),
-                        &job.observation.borrowed(),
-                        job.allowance,
-                    )?)
-                });
-                if result.is_ok() {
-                    self.scan_again = true;
-                    if !self.scanning
-                        && self.active.is_none()
-                        && self.compute.is_none()
-                        && self.canonical.is_none()
-                    {
-                        self.restart_scan();
-                    }
-                }
-                let _ = job.reply.send(result, acquired);
+            }
+            Message::HistoryCaptured(result) => {
+                let history = self
+                    .history
+                    .take()
+                    .ok_or(Error::InvalidRequest("unexpected history completion"))?;
+                self.finish_capture(history.job, result.map(PreparedCapture::History))?;
             }
             Message::Computed(result) => {
                 let Some(job) = self.compute.take() else {
@@ -1881,6 +1949,7 @@ mod tests {
     }
     mod cancellation;
     mod configured;
+    mod history_turns;
     fn owner(root: &Path) -> Owner {
         Owner::start(
             Writer::open(root).unwrap(),

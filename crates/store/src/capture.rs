@@ -81,16 +81,28 @@ impl BlobCapture {
     /// Run on a worker. The underlying store streams through bounded frames;
     /// its seek table still grows with frame count (no whole-input Vec here).
     pub fn capture(&self, reader: impl Read, cancelled: &AtomicBool) -> Result<PreparedBlob> {
+        self.capture_with_check(reader, cancelled, |_| Ok(()))
+    }
+    /// History's parked worker supplies its cooperative work grant. The shared
+    /// library's no-byte polls are conservatively charged as 64 KiB each, not
+    /// reported as measured IO; decoded verification callbacks carry exact size.
+    pub(crate) fn capture_with_check(
+        &self,
+        reader: impl Read,
+        cancelled: &AtomicBool,
+        mut work: impl FnMut(u64) -> Result<()>,
+    ) -> Result<PreparedBlob> {
         if cancelled.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
         }
+        work(0)?;
         let blobs = hashed_blobs::Store::open(&self.root, vec![], 0o600)?;
         let mut counted = Counted { reader, length: 0 };
         let result = blobs.put_plain_checked::<Error>(&mut counted, 3, || {
             if cancelled.load(Ordering::Acquire) {
                 Err(Error::Cancelled)
             } else {
-                Ok(())
+                work(65536)
             }
         });
         if cancelled.load(Ordering::Acquire) {
@@ -104,11 +116,11 @@ impl BlobCapture {
         }
         // put may deduplicate against an existing filename. Certify those actual
         // retained bytes, not just the hash computed from the incoming stream.
-        blobs.verify_plain::<Error>(&hash, counted.length, |_| {
+        blobs.verify_plain::<Error>(&hash, counted.length, |bytes| {
             if cancelled.load(Ordering::Acquire) {
                 Err(Error::Cancelled)
             } else {
-                Ok(())
+                work(bytes.len() as u64)
             }
         })?;
         private_dir(&self.root.join("blobs").join(&hash.hex()[..2]))?;

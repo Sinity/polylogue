@@ -58,6 +58,20 @@ def await_facts(run,expected):
             assert run.daemon.poll() is None,'daemon exited'
             time.sleep(.05)
 
+def await_physical(run):
+    until=time.monotonic()+90
+    while True:
+        status=run.cli(['status'])
+        physical=status['continuation']
+        if not physical['paginated_pending'] and physical['paginated_state']=='retained':
+            assert isinstance(physical['paginated_input'],str) and physical['paginated_input'],status
+            assert physical['paginated_length']>0,status
+            return physical
+        assert physical['paginated_state']!='unavailable',status
+        assert time.monotonic()<until,status
+        assert run.daemon.poll() is None,'daemon exited'
+        time.sleep(.05)
+
 def run_case(binary,output):
     run=discovery.Run(binary,output);home=output/'codex-home';home.mkdir();sessions=home/'sessions';sessions.mkdir()
     rollout=sessions/'rollout-calls.jsonl'
@@ -80,8 +94,8 @@ def run_case(binary,output):
     cfg=discovery.config(output,home);cfg['codex_home'].update(paginated_history='thread_history_1.sqlite',paginated_interval_seconds=1);(output/'config.json').write_text(json.dumps(cfg))
     report={'checkpointed_main_sha256':main_before,'checkpointed_main_items':0}
     try:
-        start=run.start();assert start['acquisition']['paginated_history']['state']=='accessible',start
-        first=await_facts(run,{'C','D'});run.client=mcp.Client(run);remote=discover(run,True);oracle(remote,{'C','D'})
+        start=run.start();assert start['acquisition']['paginated_history']['state']=='pending',start
+        first=await_facts(run,{'C','D'});initial_physical=await_physical(run);run.client=mcp.Client(run);remote=discover(run,True);oracle(remote,{'C','D'})
         for call in ['C','D']:assert remote[call]==first[call]
         run.client.close();run.client=None
         controls=0
@@ -108,7 +122,7 @@ def run_case(binary,output):
             else:raise AssertionError('oracle accepted '+mutate)
         c.rollback();insert(c,'E','T-later',EXPECTED['E'],4);c.commit()
         later=await_facts(run,{'C','D','E'});assert run.daemon.pid is not None
-        report.update(initial=start,first=first,later=later,mutants_rejected=controls,stop=continuation.graceful_stop(run))
+        report.update(initial=start,initial_physical=initial_physical,first=first,later=later,mutants_rejected=controls,stop=continuation.graceful_stop(run))
         run.start();restarted=await_facts(run,{'C','D','E'})
         for call in EXPECTED:assert restarted[call]==later[call]
         continuation.graceful_stop(run);c.close();c=None
@@ -120,8 +134,9 @@ def run_case(binary,output):
         report.update(restarted=restarted,provider_removed=retained,provider_unavailable=missing['acquisition']['paginated_history'])
         continuation.graceful_stop(run)
         unknown=sqlite3.connect(path);unknown.execute('CREATE TABLE unsupported(x)');unknown.commit();unknown.close()
-        status=run.start();assert status['acquisition']['paginated_history']['state']=='accessible',status
-        source=status['acquisition']['paginated_input']
+        status=run.start();assert status['acquisition']['paginated_history']['state']=='pending',status
+        physical=await_physical(run)
+        source=physical['paginated_input']
         assert isinstance(source,str) and source, status
         until=time.monotonic()+30
         while True:
@@ -137,6 +152,12 @@ def run_case(binary,output):
             time.sleep(.05)
         report['unsupported_retained']=progress
         continuation.graceful_stop(run)
+        finite=run.cli(['daemon','--config',output/'config.json','--until-idle','--json'],allowed=(5,))
+        assert finite['status']['continuation']['paginated_pending'] is False,finite
+        assert finite['status']['continuation']['paginated_state']=='retained',finite
+        assert finite['status']['continuation']['paginated_input']==source,finite
+        assert any(p['input']==source and p['source_rows']['state']=='unavailable' for p in finite['progress']),finite
+        report['finite_startup']=finite
     finally:
         if c is not None:c.close()
         runtime=Path(run.socket_owner.name)

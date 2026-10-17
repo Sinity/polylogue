@@ -9,8 +9,10 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, Instant},
+    time::Duration,
 };
+pub mod turns;
+use turns::{Control, Turns};
 const MAX_PARTS: usize = 8192;
 type Part = (u64, u64, BlobHash, u64);
 fn uint(r: &rusqlite::Row<'_>, n: usize) -> rusqlite::Result<u64> {
@@ -19,11 +21,9 @@ fn uint(r: &rusqlite::Row<'_>, n: usize) -> rusqlite::Result<u64> {
 fn bad(s: &str) -> Error {
     Error::ObservedSourceRefused(s.into())
 }
-fn check(cancel: &AtomicBool, until: Instant) -> Result<()> {
+fn check(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Acquire) {
         Err(Error::Cancelled)
-    } else if Instant::now() >= until {
-        Err(bad("history capture exceeded 300-second snapshot lifetime"))
     } else {
         Ok(())
     }
@@ -33,7 +33,6 @@ struct Image {
     path: PathBuf,
     pages: u64,
     size: u64,
-    until: Instant,
 }
 impl Image {
     fn open(path: &Path) -> Result<Self> {
@@ -80,11 +79,10 @@ impl Image {
             path: path.into(),
             pages,
             size,
-            until: Instant::now() + Duration::from_secs(300),
         })
     }
     fn page(&self, n: u64, cancel: &AtomicBool) -> Result<Vec<u8>> {
-        check(cancel, self.until)?;
+        check(cancel)?;
         let bytes: Vec<u8> = db(&self.path, || {
             self.connection.query_row(
                 "SELECT data FROM sqlite_dbpage('main') WHERE pgno=?1",
@@ -216,7 +214,8 @@ impl PreparedHistory {
         self.length
     }
 }
-struct Changes<'a> {
+struct Changes<'a, 'b> {
+    control: Control<'b>,
     image: Image,
     basis: Option<Basis>,
     cancel: &'a AtomicBool,
@@ -232,11 +231,15 @@ struct Changes<'a> {
     part_limit: usize,
     failure: Option<Error>,
 }
-impl Changes<'_> {
+impl Changes<'_, '_> {
     fn next(&mut self) -> Result<bool> {
         while self.page < self.image.pages {
             let offset = self.page * self.image.size;
+            self.control
+                .borrow_mut()
+                .work("provider_pages", self.image.size)?;
             let bytes = self.image.page(self.page + 1, self.cancel)?;
+            self.control.borrow_mut().page_read(self.image.size)?;
             self.digest.update(&bytes);
             self.page += 1;
             let equal = if let Some(old) = &self.basis {
@@ -248,11 +251,12 @@ impl Changes<'_> {
                         || offset + self.image.size > self.old_start + self.old_window.len() as u64
                     {
                         self.old_start = offset;
-                        let length = (old.length - offset).min(4 * 1024 * 1024);
+                        let length = (old.length - offset).min(self.control.borrow().window());
                         self.old_window =
                             old.reader
                                 .read_blob_range_checked(old.hash, offset, length, || {
-                                    check(self.cancel, self.image.until)
+                                    check(self.cancel)?;
+                                    self.control.borrow_mut().work("base_ranges", 65536)
                                 })?;
                         self.old_read_bytes += length;
                     }
@@ -291,7 +295,7 @@ impl Changes<'_> {
         Ok(false)
     }
 }
-impl Read for Changes<'_> {
+impl Read for Changes<'_, '_> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         if out.is_empty() {
             return Ok(0);
@@ -321,10 +325,22 @@ impl BlobCapture {
     ) -> Result<PreparedHistory> {
         self.capture_history_with_limit(path, basis, cancel, MAX_PARTS)
     }
+    pub fn capture_history_pages_in_turns(
+        &self,
+        path: &Path,
+        basis: Option<Basis>,
+        cancel: &AtomicBool,
+        budget: turns::Budget,
+        mut yield_turn: impl FnMut(turns::Progress) -> Result<()>,
+    ) -> Result<PreparedHistory> {
+        let control = Turns::new(budget, &mut yield_turn)?;
+        self.capture_history_controlled(path, basis, cancel, MAX_PARTS, control)
+    }
     fn canonical_layout(
         &self,
         mut prepared: PreparedHistory,
         cancel: &AtomicBool,
+        control: &Control<'_>,
     ) -> Result<PreparedHistory> {
         let reader = self.read_handle()?;
         let id = polylogue_model::InputId::imported(
@@ -339,21 +355,21 @@ impl BlobCapture {
         if source.binding != prepared.hash || source.input.length != prepared.length {
             return Err(bad("existing immutable history identity differs"));
         }
-        let until = Instant::now() + Duration::from_secs(300);
         let mut digest = blake3::Hasher::new();
         let mut at = 0;
         while at < prepared.length {
-            let bytes = reader.read_source_range_checked(
-                &id,
-                1,
-                source.binding,
-                at,
-                (prepared.length - at).min(4 * 1024 * 1024),
-                || check(cancel, until),
-            )?;
+            let amount = (prepared.length - at).min(control.borrow().window());
+            let bytes =
+                reader.read_source_range_checked(&id, 1, source.binding, at, amount, || {
+                    check(cancel)?;
+                    control.borrow_mut().work("canonical_layout", 65536)
+                })?;
             if bytes.is_empty() {
                 return Err(bad("existing immutable history layout is incomplete"));
             }
+            control
+                .borrow_mut()
+                .work("canonical_hash", bytes.len() as u64)?;
             digest.update(&bytes);
             at += bytes.len() as u64;
         }
@@ -390,7 +406,20 @@ impl BlobCapture {
         cancel: &AtomicBool,
         part_limit: usize,
     ) -> Result<PreparedHistory> {
-        check(cancel, Instant::now() + Duration::from_secs(300))?;
+        let mut yield_turn = |_| Ok(());
+        let control = Turns::new(turns::Budget::default(), &mut yield_turn)?;
+        self.capture_history_controlled(path, basis, cancel, part_limit, control)
+    }
+    fn capture_history_controlled(
+        &self,
+        path: &Path,
+        basis: Option<Basis>,
+        cancel: &AtomicBool,
+        part_limit: usize,
+        control: Control<'_>,
+    ) -> Result<PreparedHistory> {
+        check(cancel)?;
+        control.borrow_mut().work("opening", 0)?;
         let image = Image::open(path)?;
         let length = image.size * image.pages;
         let mut base_verification_bytes = 0;
@@ -399,7 +428,10 @@ impl BlobCapture {
                 &hashed_blobs::Hash(*base.hash.bytes()),
                 base.length,
                 |bytes| {
-                    check(cancel, image.until)?;
+                    check(cancel)?;
+                    control
+                        .borrow_mut()
+                        .work("base_verification", bytes.len() as u64)?;
                     base_verification_bytes += bytes.len() as u64;
                     Ok(())
                 },
@@ -407,6 +439,7 @@ impl BlobCapture {
             let _ = stats;
         }
         let mut stream = Changes {
+            control: control.clone(),
             image,
             basis,
             cancel,
@@ -422,7 +455,9 @@ impl BlobCapture {
             part_limit,
             failure: None,
         };
-        let mut result = self.capture(&mut stream, cancel);
+        let mut result = self.capture_with_check(&mut stream, cancel, |n| {
+            control.borrow_mut().work("patch_custody", n)
+        });
         let mut rebased = false;
         let mut prefix_read = 0;
         let mut previous_read = 0;
@@ -430,6 +465,7 @@ impl BlobCapture {
             prefix_read = stream.page * stream.image.size;
             previous_read = stream.old_read_bytes;
             stream = Changes {
+                control: control.clone(),
                 image: stream.image,
                 basis: None,
                 cancel,
@@ -445,14 +481,16 @@ impl BlobCapture {
                 part_limit,
                 failure: None,
             };
-            result = self.capture(&mut stream, cancel);
+            result = self.capture_with_check(&mut stream, cancel, |n| {
+                control.borrow_mut().work("patch_custody", n)
+            });
             rebased = true;
         }
         if let Some(e) = stream.failure.take() {
             return Err(e);
         }
         let patch = result?;
-        check(cancel, stream.image.until)?;
+        check(cancel)?;
         if stream.page != stream.image.pages || stream.at != stream.buffer.len() {
             return Err(bad("incomplete history page capture"));
         }
@@ -469,8 +507,14 @@ impl BlobCapture {
             canonical_read_bytes: 0,
         };
         drop(stream.image);
-        self.canonical_layout(prepared, cancel)
+        self.canonical_layout(prepared, cancel, &control)
     }
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod turn_tests;
+
+#[cfg(test)]
+mod process_turn_tests;

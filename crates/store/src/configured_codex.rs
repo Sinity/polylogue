@@ -736,38 +736,28 @@ impl Writer {
                 state
             }
         };
-        let mut paginated_input = None;
+        // Physical capture must run after the actor/socket exists, so regular
+        // acquisition and reads can be served between its reusable quanta.
+        let paginated_input = None;
         let paginated_history = if let Some(path) = paginated_path(config)? {
-            let candidate = Candidate::paginated(path.clone());
-            let id = candidate.observation_id(request, seen_at)?;
-            let observation = ImportObservation {
-                id: &id,
-                machine: &config.machine,
-                host: &config.host,
-                path: path
-                    .to_str()
-                    .ok_or_else(|| refused("history path must be UTF-8"))?,
-                seen_at,
-            };
-            let result = (|| -> crate::Result<crate::RetainedInput> {
-                let basis = self.history_basis(&observation)?;
-                let prepared = self
-                    .blob_capture()?
-                    .capture_history_pages(&path, basis, cancel)?;
-                if let Some(input) = self.known_history_snapshot(prepared.hash(), &observation)? {
-                    return Ok(input);
+            Some(match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_file() => {
+                    let mut state = available(path, 0, "retained_snapshots");
+                    state.state = "pending";
+                    state.entries = None;
+                    state.reason = Some("physical acquisition awaits bounded owner turns".into());
+                    state
                 }
-                self.retain_history_pages(prepared, &observation, 131072)
-            })();
-            Some(match result {
-                Ok(input) => {
-                    paginated_input = Some(input.id.clone());
-                    retained.push(input.id);
-                    available(path, 1, "retained_snapshots")
+                Ok(_) => {
+                    let state = unavailable(
+                        path,
+                        "physical history requires a regular non-symlink database",
+                    );
+                    failures.push(state.clone());
+                    state
                 }
-                Err(Error::Cancelled) => return Err(Error::Cancelled),
-                Err(e) => {
-                    let state = unavailable(path, e);
+                Err(error) => {
+                    let state = unavailable(path, error);
                     failures.push(state.clone());
                     state
                 }
