@@ -239,7 +239,16 @@ def main():
                 name = Path(command['arguments'][1]).name
                 assert name in references and old['retained']['length'] > 0
                 retained_id = old['retained']['id']
-                cli(['retry',retained_id], 'upgrade retry ' + name, (0,))
+                retried = cli(['retry',retained_id], 'upgrade retry ' + name, (0,7))
+                if retried['outcome'] == 'error':
+                    # Startup may already be replaying this exact retained input.
+                    # A busy retry is acceptable only with independent live proof;
+                    # its eventual basis, failure and payload checks remain below.
+                    assert retried['error']['kind'] == 'timeout' and retried['error']['retryable'] is True, retried
+                    active = cli(['progress',retained_id], 'upgrade active replay ' + name)
+                    assert active['input'] == retained_id and active['active'] is True and active['failure'] is None, active
+                    assert active['source_rows']['basis']['parser_version'] == 9 and active['source_rows']['basis']['chain'] == old['retained']['chain'] and active['length'] == old['retained']['length'], active
+                    upgrade.setdefault('busy_retries', []).append({'name':name,'retry':retried,'active_progress':active})
                 deadline = time.monotonic() + 90
                 while True:
                     progress = cli(['progress',retained_id], 'upgrade progress ' + name)
