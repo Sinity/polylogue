@@ -65,7 +65,12 @@ def assert_sdk_origin(shown, field, origin):
 
 
 def document(run, reference):
-    return run.command([reference, 'read', '--format', 'json'], allowed=(0, 3, 4, 5))
+    value = run.command([reference, 'read', '--format', 'json'], allowed=(0, 2, 3, 4, 5))
+    attempt = run.calls[-1]
+    if attempt['exit'] == 2:
+        diagnostic = (run.output / attempt['stderr']).read_text()
+        assert diagnostic.strip() == 'session contains a pending Message', diagnostic
+    return value
 
 
 def await_text(run, reference, text):
@@ -113,7 +118,7 @@ def verify(args, run):
     with main.open('ab') as stream:
         stream.write(correction_bytes[:len(correction_bytes)//2])
     state = wait(run, lambda value: value['claude_continuation']['retained_length'] == main.stat().st_size)
-    before = document(run, reference)
+    before = await_text(run, reference, initial['message']['content'])
     assert all(item['id'] != reference + ':correction' for item in before['messages']), before
     earlier = run.command(['message:' + reference + ':earlier', 'read', '--budget', '20000'], allowed=(0, 5))
     assert earlier['shown'][0]['text'] == initial['message']['content'], earlier
