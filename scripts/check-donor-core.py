@@ -243,7 +243,7 @@ def main():
                 deadline = time.monotonic() + 90
                 while True:
                     progress = cli(['progress',retained_id], 'upgrade progress ' + name)
-                    if progress['source_rows']['basis']['parser_version'] == 9 and progress['source_rows']['state'] != 'pending': break
+                    if progress['source_rows']['basis']['parser_version'] == 10 and progress['source_rows']['state'] != 'pending': break
                     assert time.monotonic() < deadline, progress
                     time.sleep(0.2)
                 assert progress['failure'] is None and progress['input'] == retained_id and progress['length'] == old['retained']['length'] and progress['source_rows']['basis']['chain'] == old['retained']['chain'], progress

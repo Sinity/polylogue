@@ -10,6 +10,8 @@ Supplied Codex `last_token_usage` counts carry exact original numeric selectors.
 
 Exact known conversation membership comes from provider-owned state and current selected source certificates in the same pinned catalog. Same-file Claude side Sessions are supported. A fully interpreted flat Codex rollout without Event, Link, conflicting-item or failed-reachback effects establishes its complete active order. Rollback or ambiguous records cannot acquire that permission. For uncertain active paths, model readers explicitly request `branches: true`. Events, links, ambiguous metadata and unknown record forms keep coverage degraded; these readers do not claim those products are complete.
 
+A changed parser/source basis can supersede an unfinished private Message preparation. The canonical owner validates the current source token and retained revision before invalidating that obsolete preparation, then uses the existing bounded retirement turns before retrying publication. Identical preparations remain resumable; stale callers cannot retire current work. Retained input bytes, ready bodies and published identities remain preserved. This recovery does not rewrite old source descriptors or treat a partial preparation as published content.
+
 ## Exact predecessor differences
 
 | Source predicate | Affected entity/field | Native value or behavior |
