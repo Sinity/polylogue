@@ -6,6 +6,8 @@ Claude supports idless provisional Messages, exact provider cost and duration, a
 
 Codex preserves the legacy header timestamp on the first Message with an exact original-field witness; later legacy Message times remain unknown. It supports the selected legacy bare response records and current function/custom/code output headers through the existing canonical preparation and declared operation identities. A complete anchored provider header supplies outcome, exit code and elapsed time. Captured prose and a multiline command preamble do not become result status. Running stdin remains unknown.
 
+Supplied Codex `last_token_usage` counts carry exact original numeric selectors. Uncached input uses the named `UncachedInputV1` recipe over the supplied input and cached-input leaves, subtracting with saturation at zero. Without a valid supplied cached count, the input count keeps its direct selector; absent, null or invalid counts do not become supplied zero. Parser version 10 reparses disposable older source state; existing immutable field recipes retain their meanings.
+
 Exact known conversation membership comes from provider-owned state and current selected source certificates in the same pinned catalog. Same-file Claude side Sessions are supported. A fully interpreted flat Codex rollout without Event, Link, conflicting-item or failed-reachback effects establishes its complete active order. Rollback or ambiguous records cannot acquire that permission. For uncertain active paths, model readers explicitly request `branches: true`. Events, links, ambiguous metadata and unknown record forms keep coverage degraded; these readers do not claim those products are complete.
 
 ## Exact predecessor differences

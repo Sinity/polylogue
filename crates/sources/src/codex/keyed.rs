@@ -972,6 +972,47 @@ impl<V: ReadView> KeyedRecords<V> {
             Err(e) => self.failure = Some(e),
         }
     }
+    fn witness_usage(
+        &mut self,
+        i: usize,
+        name: &str,
+        field: polylogue_model::merge::UsageField,
+        raw: &[u8],
+        has_cached_input: bool,
+    ) {
+        use super::selection::{FactSelection, Transform};
+        use polylogue_model::merge::UsageField;
+        let origins = self
+            .current_origins
+            .at_path(&["payload", "info", "last_token_usage"]);
+        let selection = (|| {
+            if field == UsageField::Input && has_cached_input {
+                Some(FactSelection::new(
+                    Transform::UncachedInputV1,
+                    vec![
+                        origins.field("input_tokens").selected()?,
+                        origins.field("cached_input_tokens").selected()?,
+                    ],
+                ))
+            } else {
+                Some(FactSelection::new(
+                    Transform::JsonValueV1,
+                    vec![origins.field(name).selected()?],
+                ))
+            }
+        })();
+        match super::presence::usage(field, raw) {
+            Ok(mut witness) => {
+                witness.origins = origins.field(name);
+                witness.selection = selection;
+                self.put(
+                    Key::Presence(i, format!("usage:{name}")),
+                    Cell::Witness(witness),
+                );
+            }
+            Err(error) => self.failure = Some(error),
+        }
+    }
     fn witness_time(&mut self, i: usize, completed: bool) {
         if let Some(bytes) = self.current_time_raw.clone() {
             if let Ok(text) = serde_json::from_slice::<String>(&bytes) {
@@ -3010,7 +3051,7 @@ impl<V: ReadView> KeyedRecords<V> {
                                 &["payload", "info", "last_token_usage", name],
                             ) {
                                 Ok(raw) => {
-                                    self.witness(i, &key, super::presence::usage(field, &raw))
+                                    self.witness_usage(i, name, field, &raw, cached.is_some())
                                 }
                                 Err(e) => self.failure = Some(e),
                             }

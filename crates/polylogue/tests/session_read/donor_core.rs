@@ -31,6 +31,51 @@ fn codex_import(world: &World, name: &str, bytes: &[u8]) -> Value {
 }
 
 #[test]
+fn numeric_codex_usage_publishes_exact_source_backed_reads_and_survives_restart() {
+    for (counts, expected) in [
+        (
+            json!({"input_tokens":100,"cached_input_tokens":40,"output_tokens":7,"cache_write_input_tokens":2,"reasoning_output_tokens":3}),
+            json!({"input":60,"cache_read":40,"output":7,"cache_write":2,"reasoning":3}),
+        ),
+        (
+            json!({"input_tokens":0,"output_tokens":0}),
+            json!({"input":0,"output":0}),
+        ),
+    ] {
+        let mut world = World::new();
+        let bytes=[
+            json!({"type":"session_meta","payload":{"id":"usage-proof"}}),
+            json!({"type":"response_item","payload":{"type":"message","id":"answer","role":"assistant","content":[{"type":"output_text","text":"Neutral usage answer"}]}}),
+            json!({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":counts}}}),
+        ].iter().map(|v|v.to_string()+"\n").collect::<String>();
+        let receipt = codex_import(&world, "usage.jsonl", bytes.as_bytes());
+        assert_eq!(receipt["source_rows"]["state"], "settled", "{receipt}");
+        let out = world.cli(&["codex:usage-proof", "read", "--format", "json"]);
+        assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
+        let before: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(before["messages"][0]["usage"], expected);
+        let page = model_call(&world, &transcript_call("codex:usage-proof"), Some(65000));
+        assert_ne!(page["outcome"], "error", "{page}");
+        assert_eq!(page["primary_content_complete"], true);
+        assert!(
+            page["shown"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["text"] == "Neutral usage answer")
+        );
+        fs::remove_file(world.work.path().join("usage.jsonl")).unwrap();
+        world.restart();
+        let after = world.cli(&["codex:usage-proof", "read", "--format", "json"]);
+        assert!(matches!(after.status.code(), Some(0 | 5)), "{after:?}");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&after.stdout).unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
 fn flat_codex_conversations_read_without_branches_but_rollback_and_ambiguous_controls_refuse() {
     for (name, reference, bytes) in [
         (
