@@ -207,6 +207,7 @@ def configured(run, config):
 
 
 def verify(args, run):
+    qualification_transitions = []
     root = run.output / 'projects'
     root.mkdir()
     main_id = 'discovery-main'
@@ -269,7 +270,7 @@ def verify(args, run):
         before = state(run, lambda v: project_status(v)['scan'] is not None and project_status(v)['scan']['observed_transcripts'] >= 100)
         assert not project_status(before)['scan']['cycle_complete'], before
         during = continuation.document(run, reference)
-        assert message_facts(during) == message_facts(document), during
+        qualification_transitions.extend(compare_message_facts(during, document, 'bulk-read-service'))
         bulk = state(run, lambda v: project_status(v)['initial_cycle_finished'] and project_status(v)['scan'] is not None and project_status(v)['scan']['cycle_complete'] and project_status(v)['scan']['observed_transcripts'] == args.population_size + 4 and project_status(v)['acquired_source_attempts'] >= args.population_size + 4, timeout=420)
         bulk_elapsed = time.monotonic() - began
         for i in (0, 127, 1024, 4999):
@@ -330,12 +331,12 @@ def verify(args, run):
     large_text = 'Ginkgo large transcript final answer.'
     large = root / '-large/large.jsonl'
     large.parent.mkdir()
-    progress = observed.line({'type': 'progress', 'data': {'text': 'neutral progress padding ' * 12}})
+    progress = observed.line({'type': 'progress', 'data': {'type': 'bash_progress', 'text': 'neutral progress padding ' * 12}})
     large.write_bytes(progress * 30000 + observed.line(record('large', 'u', large_text)))
     assert large.stat().st_size > 8 * 1024 * 1024
     pending = state(run, lambda v: v['claude_continuation']['state'] == 'acquiring' and project_status(v)['active_path'] == str(large), timeout=240)
     during_large = continuation.document(run, reference)
-    assert message_facts(during_large) == message_facts(changed)
+    qualification_transitions.extend(compare_message_facts(during_large, changed, 'large-read-service'))
     large_ref, _ = discover(run, '"Ginkgo large transcript"', large_text)
     # A whole quiet acquisition cycle adds no source revision. The subsequent
     # exact reads also check that the acknowledged main versions remain stable.
@@ -355,7 +356,7 @@ def verify(args, run):
     try:
         root.chmod(0)
         denied = state(run, lambda v: project_status(v)['availability'] == 'denied')
-        assert message_facts(continuation.document(run, reference)) == message_facts(changed)
+        qualification_transitions.extend(compare_message_facts(continuation.document(run, reference), changed, 'provider-availability'))
     finally:
         root.chmod(original_mode)
     state(run, lambda v: project_status(v)['availability'] not in ('denied', 'unavailable', 'missing'))
@@ -363,7 +364,7 @@ def verify(args, run):
     root.rename(absent)
     try:
         missing = state(run, lambda v: project_status(v)['availability'] == 'missing')
-        assert message_facts(continuation.document(run, reference)) == message_facts(changed)
+        qualification_transitions.extend(compare_message_facts(continuation.document(run, reference), changed, 'provider-availability'))
     finally:
         absent.rename(root)
     state(run, lambda v: project_status(v)['availability'] not in ('denied', 'unavailable', 'missing'))
@@ -376,11 +377,11 @@ def verify(args, run):
     run.start()
     try:
         retained = await_text(run, reference, correction_text)
-        assert message_facts(retained) == message_facts(changed), retained
+        qualification_transitions.extend(compare_message_facts(retained, changed, 'provider-free-restart'))
         sdk_text(args, run, '"Fir later complete"', correction_text, reference, 'sdk-provider-free')
     finally:
         run.stop()
-    return {'oracle_controls': oracle_controls, 'denied': project_status(denied), 'missing': project_status(missing), 'large_input_bytes': large.stat().st_size if large.exists() else (saved / '-large/large.jsonl').stat().st_size, 'large_read_service': project_status(pending), 'references': references, 'late_reference': late_ref, 'bulk_source_files': args.population_size, 'bulk_acceptance_run': args.population_size == 5000, 'bulk_acquisition_elapsed_seconds': bulk_elapsed, 'initial_document_source': source, 'bulk_status': project_status(bulk) if bulk else None, 'ordinary_read_during_backlog': project_status(before) if before else None, 'pid': pid}
+    return {'qualification_transitions': qualification_transitions, 'oracle_controls': oracle_controls, 'denied': project_status(denied), 'missing': project_status(missing), 'large_input_bytes': large.stat().st_size if large.exists() else (saved / '-large/large.jsonl').stat().st_size, 'large_read_service': project_status(pending), 'references': references, 'late_reference': late_ref, 'bulk_source_files': args.population_size, 'bulk_acceptance_run': args.population_size == 5000, 'bulk_acquisition_elapsed_seconds': bulk_elapsed, 'initial_document_source': source, 'bulk_status': project_status(bulk) if bulk else None, 'ordinary_read_during_backlog': project_status(before) if before else None, 'pid': pid}
 
 
 
@@ -392,6 +393,20 @@ def message_facts(document):
     for message in messages:
         message.pop('on_active_path', None)
     return messages
+
+
+
+def compare_message_facts(actual, expected, stage):
+    assert message_facts(actual) == message_facts(expected), (stage, actual, expected)
+    transitions = []
+    for before, after in zip(expected['messages'], actual['messages']):
+        old = {'present': 'on_active_path' in before, 'value': before.get('on_active_path')}
+        new = {'present': 'on_active_path' in after, 'value': after.get('on_active_path')}
+        if isinstance(old['value'], bool) and isinstance(new['value'], bool):
+            assert old['value'] == new['value'], (stage, before['id'], old, new)
+        if old != new:
+            transitions.append({'stage': stage, 'message': before['id'], 'before': old, 'after': new})
+    return transitions
 
 
 def dimensions(root):
@@ -407,7 +422,7 @@ def migration(args):
     main = output / 'old-main.jsonl'
     text = 'Hazel preserving version-three citation.'
     raw = observed.line(record('old-main', 'u', text))
-    progress = observed.line({'type': 'progress', 'data': {'text': 'neutral progress padding ' * 12}})
+    progress = observed.line({'type': 'progress', 'data': {'type': 'bash_progress', 'text': 'neutral progress padding ' * 12}})
     main.write_bytes(raw + progress * 12000)
     config = output / 'source.json'
     config.write_text(json.dumps({'claude_main': {'path': str(main), 'machine': 'synthetic-v3', 'host': 'synthetic-host', 'acquisition_quantum_bytes': 65536}}))
@@ -449,7 +464,7 @@ def migration(args):
         main.unlink()
         run.start()
         after = await_text(run, reference, text)
-        assert message_facts(after) == message_facts(before), (before, after)
+        qualification_transitions = compare_message_facts(after, before, 'preserving-upgrade')
         sdk_text(args, run, '"Hazel preserving"', text, reference, 'sdk-v3-preserved')
         assert run.command(['input', 'cat', acquired['input']], raw=True) == raw + progress * 12000
         run.stop()
@@ -457,7 +472,7 @@ def migration(args):
         (output / 'unaware.stdout').write_bytes(unaware.stdout)
         (output / 'unaware.stderr').write_bytes(unaware.stderr)
         assert unaware.returncode != 0 and b'newer than supported' in unaware.stderr, unaware.stderr
-        return {'reference': reference, 'input': acquired['input'], 'pending_refusal_exit': refusal.returncode, 'pinned_v3_binary': str(args.v3_binary), 'pinned_v3_sha256': hashlib.sha256(args.v3_binary.read_bytes()).hexdigest(), 'pinned_v3_source': args.v3_source, 'v3_finish_exit': complete.returncode}
+        return {'qualification_transitions': qualification_transitions, 'reference': reference, 'input': acquired['input'], 'pending_refusal_exit': refusal.returncode, 'pinned_v3_binary': str(args.v3_binary), 'pinned_v3_sha256': hashlib.sha256(args.v3_binary.read_bytes()).hexdigest(), 'pinned_v3_source': args.v3_source, 'v3_finish_exit': complete.returncode}
     finally:
         if process is not None:
             if process.poll() is None:
