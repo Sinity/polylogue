@@ -58,8 +58,9 @@ or one changed-page blob with flat archive extents. Its raw acquisition does not
 inherit the bounded row decoder's 16 MiB limit. Startup names the exact retained
 `paginated_input`; availability and interpretation remain separate. See the
 [physical-history contract](docs/rewrite/codex-configured-discovery.md#physical-history).
-Current candidate runtime qualification remains pending; no complete Session or
-production capture claim follows from this source path.
+Synthetic packaged CLI/MCP acceptance covers this configured operation path.
+Complete Session reconstruction, production capture and multi-GB resource
+qualification remain open.
 
 ## Observed Claude source subset
 

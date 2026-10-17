@@ -83,6 +83,9 @@ the candidate packaged CLI/MCP acceptance driver. It independently checks scoped
 rollout/history correspondence, committed WAL-only rows, an uncommitted distractor,
 terminal failure/exit-code facts, later same-daemon publication, restart, provider
 removal and unsupported-schema retention. Its answer oracle rejects damaged result,
-row, verdict, uncommitted-presence and invented-tool controls. The current candidate
-has not run this driver or its final compile/test gates; these remain required,
-alongside the owner cancellation, reversion and actual-library work controls.
+row, verdict, session/turn scope, conflicting origin, uncommitted-presence and
+invented-tool controls. The packaged test suite and this synthetic CLI/MCP driver
+pass, including owner cancellation, reversion and actual-library work controls.
+The driver records daemon/MCP reaping and runtime removal before reporting success.
+These finite controls do not qualify private corpora, multi-GB resource costs,
+rollback-writer availability, cumulative patch-storage amortization or full Sessions.
