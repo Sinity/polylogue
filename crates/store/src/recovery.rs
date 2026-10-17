@@ -276,17 +276,17 @@ pub(crate) fn raw_versions(root: &Path) -> Result<Option<u32>> {
     Ok(archive)
 }
 
-/// One concrete v1 -> v2 migration. Preserve the quiescent sibling set before
+/// Preserving v1/v2 -> v3 format migration. Preserve the quiescent sibling set before
 /// even a read-only SQLite open can rebuild shared memory. Each attempt has its
 /// own completed backup; a failed previous attempt never substitutes older bytes.
 pub(crate) fn migrate(root: &Path, cancelled: &AtomicBool) -> Result<()> {
-    if raw_versions(root)? != Some(1) {
+    let Some(old @ (1 | 2)) = raw_versions(root)? else {
         return Ok(());
-    }
+    };
     let backups = root.join("migrations");
     crate::private_dir(&backups)?;
     let backup = tempfile::Builder::new()
-        .prefix("v1-to-v2-")
+        .prefix(&format!("v{old}-to-v3-"))
         .tempdir_in(&backups)?;
     let mut entries = vec![];
     for name in ["archive.db", "index.db", "embeddings.db"] {
@@ -349,7 +349,7 @@ fn set_format(
         tx.commit()
     })
 }
-fn integrity(conn: &Connection, path: &Path, cancelled: &AtomicBool) -> Result<()> {
+pub(crate) fn integrity(conn: &Connection, path: &Path, cancelled: &AtomicBool) -> Result<()> {
     wal::check_cancel(cancelled)?;
     let _progress = native::cancellation(conn, cancelled);
     let result = db(path, || {
@@ -372,12 +372,16 @@ fn integrity(conn: &Connection, path: &Path, cancelled: &AtomicBool) -> Result<(
     wal::check_cancel(cancelled)?;
     result
 }
-fn blobs(reader: &ReadHandle, cancelled: &AtomicBool) -> Result<(u64, u64)> {
-    let path = reader.root.join("archive.db");
+pub(crate) fn blobs(
+    root: &Path,
+    archive: &Connection,
+    cancelled: &AtomicBool,
+) -> Result<(u64, u64)> {
+    let path = root.join("archive.db");
     let mut count = 0;
     let mut bytes = 0;
     let mut imports = db(&path, || {
-        reader.archive.prepare("SELECT i.id,i.format,r.length,r.blake3,i.original_hash,i.context_json FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.original_hash IS NOT NULL")
+        archive.prepare("SELECT i.id,i.format,r.length,r.blake3,i.original_hash,i.context_json FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.original_hash IS NOT NULL")
     })?;
     let mut imported = db(&path, || imports.query([]))?;
     while let Some(row) = db(&path, || imported.next())? {
@@ -395,9 +399,7 @@ fn blobs(reader: &ReadHandle, cancelled: &AtomicBool) -> Result<(u64, u64)> {
         crate::retained::decode_import_identity(id, format, length, hash, original, context)?;
     }
     let mut stmt = db(&path, || {
-        reader
-            .archive
-            .prepare("SELECT hash,size,place,encoding,state FROM blob ORDER BY hash")
+        archive.prepare("SELECT hash,size,place,encoding,state FROM blob ORDER BY hash")
     })?;
     let mut rows = db(&path, || stmt.query([]))?;
     while let Some(row) = db(&path, || rows.next())? {
@@ -417,7 +419,7 @@ fn blobs(reader: &ReadHandle, cancelled: &AtomicBool) -> Result<(u64, u64)> {
         }
         let hash = BlobHash::from_bytes(hash.try_into().map_err(|_| Error::Schema(path.clone()))?);
         let size = u64::try_from(size).map_err(|_| Error::Schema(path.clone()))?;
-        hashed_blobs::Reader::new(&reader.root, vec![]).verify_plain::<Error>(
+        hashed_blobs::Reader::new(&root, vec![]).verify_plain::<Error>(
             &hashed_blobs::Hash(*hash.bytes()),
             size,
             |_| wal::check_cancel(cancelled),
@@ -427,9 +429,7 @@ fn blobs(reader: &ReadHandle, cancelled: &AtomicBool) -> Result<(u64, u64)> {
     }
     // Retained revisions, not only physical blobs, own cited chain byte ranges.
     let mut stmt = db(&path, || {
-        reader
-            .archive
-            .prepare("SELECT input,chain,length,blake3 FROM revision ORDER BY input,number")
+        archive.prepare("SELECT input,chain,length,blake3 FROM revision ORDER BY input,number")
     })?;
     let mut rows = db(&path, || stmt.query([]))?;
     while let Some(row) = db(&path, || rows.next())? {
@@ -439,7 +439,7 @@ fn blobs(reader: &ReadHandle, cancelled: &AtomicBool) -> Result<(u64, u64)> {
             })?;
         let length = u64::try_from(length).map_err(|_| Error::Schema(path.clone()))?;
         let mut extents = db(&path, || {
-            reader.archive.prepare("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size FROM extent e JOIN blob b ON b.hash=e.blob AND b.state='present' WHERE input=?1 AND chain=?2 AND offset<?3 ORDER BY offset")
+            archive.prepare("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size FROM extent e JOIN blob b ON b.hash=e.blob AND b.state='present' WHERE input=?1 AND chain=?2 AND offset<?3 ORDER BY offset")
         })?;
         let mut parts = db(&path, || {
             extents.query(rusqlite::params![
@@ -474,7 +474,7 @@ fn blobs(reader: &ReadHandle, cancelled: &AtomicBool) -> Result<(u64, u64)> {
                 return Err(Error::Range);
             }
             let mut position = 0u64;
-            hashed_blobs::Reader::new(&reader.root, vec![]).verify_plain::<Error>(
+            hashed_blobs::Reader::new(&root, vec![]).verify_plain::<Error>(
                 &hashed_blobs::Hash(*blob.bytes()),
                 blob_size,
                 |data| {
@@ -594,7 +594,7 @@ fn recover_inner(
         ));
     }
     let version = raw_versions(&source)?.ok_or_else(|| refused("missing archive format"))?;
-    if !matches!(version, 1 | 2) {
+    if !matches!(version, 1 | 2 | 3) {
         return Err(refused("unsupported archive format"));
     }
     let stage = tempfile::Builder::new()
@@ -659,7 +659,7 @@ fn recover_inner(
         wal::validate(&stage_path, cancelled)?;
         crate::preflight(&stage_path)?;
         let reader = ReadHandle::owned(stage_path.clone(), Arc::clone(&destination_lock))?;
-        let (checked_blobs, checked_blob_bytes) = blobs(&reader, cancelled)?;
+        let (checked_blobs, checked_blob_bytes) = blobs(&stage_path, &reader.archive, cancelled)?;
         let status = reader.status()?;
         if status.recovery.as_ref() != Some(&recovery) {
             return Err(refused("reopened qualification mismatch"));
