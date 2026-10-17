@@ -79,9 +79,14 @@ assessment. `masked:true` identifies transformed content. Normalized Session JSO
 and export retain original-value JSON shapes; privacy-transformed export does
 not prove unchanged-value round trips. Structural witnesses are preserved or
 explicitly refused. Portable normalized reimport remains unavailable. Direct
-assembled `attrs` and block `data` objects preserve values but do not yet
-guarantee canonical key order; canonical ordering of whole retained leaf
-objects and model-page envelopes does not qualify that export clause.
+assembled `attrs` and block `data` objects use canonical decoded key order.
+Direct documents first index selected keys and field handles in a private,
+file-backed SQLite TEMP B-tree, then stream each admitted retained leaf. Direct
+documents have no additional aggregate key-set cap; existing per-leaf and
+model-page admissions still apply. Sorting checks deadlines and cancellation;
+storage exhaustion refuses rather than returning a complete partial object.
+Process startup must provide private on-disk temporary storage (the existing
+`TMPDIR` contract); source publication does not qualify a deployment's placement.
 
 Use fresh isolated archives for this candidate. Native index20 and revised
 parser/selection recipes distinguish the changed interpretation. Existing

@@ -65,10 +65,15 @@ fn streamed_document_and_sorted_page_envelope_preserve_the_same_fields() {
         let mut e = encoder();
         e.syntax(b"{\"_\":null").unwrap();
         let mut fields = OpaqueFields::new("attrs", model_page);
+        if !model_page {
+            fields.push(&mut e, "a", b"null").unwrap();
+        }
         fields
             .push(&mut e, "z", br#"{"n":1e+02,"s":"\ud800"}"#)
             .unwrap();
-        fields.push(&mut e, "a", b"null").unwrap();
+        if model_page {
+            fields.push(&mut e, "a", b"null").unwrap();
+        }
         fields.finish(&mut e).unwrap();
         e.syntax(b"}").unwrap();
         let encoded = e.finish().unwrap();
@@ -83,6 +88,66 @@ fn streamed_document_and_sorted_page_envelope_preserve_the_same_fields() {
         assert_eq!(
             result,
             RetainedJson::parse(br#"{"a":null,"z":{"n":1e+02,"s":"\ud800"}}"#).unwrap()
+        );
+    }
+}
+
+#[test]
+fn canonical_opaque_direct_keys_stream_beyond_four_mib_without_aggregate_admission() {
+    // This is a volume/admission control, not a debug-build latency promise.
+    // Production deadlines and the shared masker remain unchanged.
+    let mut fields = OpaqueFields::new("attrs", false);
+    let mut e = Encoder::new(std::io::sink(), Instant::now() + Duration::from_secs(120));
+    let mut bytes = 0;
+    for i in 0..80 {
+        let key = format!("{i:03}{}", "x ".repeat(30000));
+        bytes += key.len();
+        fields.push(&mut e, &key, b"null").unwrap();
+    }
+    fields.finish(&mut e).unwrap();
+    e.finish().unwrap();
+    assert!(bytes > METADATA);
+}
+#[test]
+fn canonical_opaque_direct_duplicate_or_reversed_keys_refuse() {
+    for second in ["z", "a"] {
+        let mut fields = OpaqueFields::new("attrs", false);
+        let mut e = encoder();
+        fields.push(&mut e, "z", b"null").unwrap();
+        assert!(fields.push(&mut e, second, b"null").is_err());
+    }
+}
+
+#[test]
+fn canonical_opaque_privacy_preserves_keys_or_refuses_and_masks_logical_leaf_strings() {
+    let token = format!("ghp_{}", "A".repeat(36));
+    let mut refused = Vec::new();
+    let mut fields = OpaqueFields::new("attrs", false);
+    let mut e = Encoder::new(&mut refused, Instant::now() + Duration::from_secs(30));
+    assert!(fields.push(&mut e, &token, b"null").is_err());
+    assert!(e.finish().is_err());
+    assert!(!String::from_utf8_lossy(&refused).contains(&token));
+    for page in [false, true] {
+        let raw = format!(r#"{{"safe":"\ud800","secret":"{token}","null":null}}"#);
+        let mut fields = OpaqueFields::new("attrs", page);
+        let mut e = encoder();
+        e.syntax(b"{\"_\":null").unwrap();
+        fields.push(&mut e, "a", raw.as_bytes()).unwrap();
+        fields.finish(&mut e).unwrap();
+        e.syntax(b"}").unwrap();
+        let output = e.finish().unwrap();
+        assert!(!String::from_utf8_lossy(&output).contains(&token));
+        let mut parsed = RetainedJson::parse(&output).unwrap()["attrs"].clone();
+        if page {
+            assert_eq!(parsed["masked"].as_bool(), Some(true));
+            parsed = RetainedJson::parse(parsed["json"].text().unwrap().as_bytes()).unwrap();
+        }
+        let value = &parsed["a"];
+        assert_eq!(value["safe"].native().unwrap().utf16(), vec![0xd800]);
+        assert!(matches!(value["null"], RetainedJson::Null));
+        assert_eq!(
+            value["secret"].text(),
+            Some("[credential: GitHub token, masked]")
         );
     }
 }

@@ -322,6 +322,7 @@ pub(crate) fn write_with_cancel(
                     source_qualification
                         .active_messages
                         .contains(message.id().as_str()),
+                    cancelled,
                 )?;
                 messages = messages
                     .checked_add(1)
@@ -356,6 +357,7 @@ fn write_message<W: Write>(
     e: &mut Encoder<W>,
     deadline: Instant,
     active: bool,
+    cancelled: &mut dyn FnMut() -> bool,
 ) -> io::Result<()> {
     let header = stored(m.header())?;
     e.syntax(b"{")?;
@@ -374,7 +376,7 @@ fn write_message<W: Write>(
     if let Some(progress) = header.in_progress {
         member(e, "in_progress", &json!(progress))?;
     }
-    write_message_fields(m, e, deadline, false)?;
+    write_message_fields(m, e, deadline, false, cancelled)?;
     e.syntax(b",\"blocks\":[")?;
     let mut index = 0u64;
     while let Some(block) = stored(m.block_at(index))? {
@@ -382,7 +384,7 @@ fn write_message<W: Write>(
         if index != 0 {
             e.syntax(b",")?;
         }
-        write_block(m, &block, e, deadline)?;
+        write_block(m, &block, e, deadline, cancelled)?;
         index = index
             .checked_add(1)
             .ok_or_else(|| invalid("block count overflow"))?;
@@ -427,6 +429,7 @@ fn write_message_fields<W: Write>(
     e: &mut Encoder<W>,
     deadline: Instant,
     model_page: bool,
+    cancelled: &mut dyn FnMut() -> bool,
 ) -> io::Result<()> {
     let mut cursor = None;
     while let Some(entry) = stored(m.next_field(cursor.as_ref(), LEAF))? {
@@ -453,6 +456,11 @@ fn write_message_fields<W: Write>(
         cursor = Some(entry.cursor);
     }
     for extras in [false, true] {
+        if extras && !model_page {
+            let mut fields = ordered(m.ordered_extras(LEAF, deadline, cancelled))?;
+            write_ordered_extras(&mut fields, "attrs", e, deadline, cancelled)?;
+            continue;
+        }
         let mut opaque = OpaqueFields::new("attrs", model_page);
         let mut cursor = None;
         let mut first = true;
@@ -526,6 +534,7 @@ fn write_block<W: Write>(
     b: &BlockView<'_>,
     e: &mut Encoder<W>,
     deadline: Instant,
+    cancelled: &mut dyn FnMut() -> bool,
 ) -> io::Result<()> {
     let id = match &b.slot {
         BlockSlot::Item(i) => BlockId::new(m.id().clone(), *i),
@@ -566,7 +575,7 @@ fn write_block<W: Write>(
             member(e, "encrypted", &json!(encrypted))?;
         }
     }
-    write_block_fields(b, e, deadline, true, false)?;
+    write_block_fields(b, e, deadline, true, false, cancelled)?;
     e.syntax(b"}")
 }
 fn write_block_fields<W: Write>(
@@ -575,6 +584,7 @@ fn write_block_fields<W: Write>(
     deadline: Instant,
     include_output: bool,
     model_page: bool,
+    cancelled: &mut dyn FnMut() -> bool,
 ) -> io::Result<()> {
     if b.kind == "tool_result" {
         let result =
@@ -667,6 +677,16 @@ fn write_block_fields<W: Write>(
         }
         cursor = Some(entry.cursor);
     }
+    if !model_page {
+        let mut fields = ordered(b.ordered_extras(LEAF, deadline, cancelled))?;
+        if !matches!(b.kind.as_str(), "tool_result" | "tool_call") {
+            if ordered(fields.next(deadline, cancelled))?.is_some() {
+                return Err(invalid("block extra export mapping unavailable"));
+            }
+            return Ok(());
+        }
+        return write_ordered_extras(&mut fields, "data", e, deadline, cancelled);
+    }
     let mut cursor = None;
     let mut opaque = OpaqueFields::new("data", model_page);
     while let Some(entry) = stored(b.next_field(cursor.as_ref(), LEAF))? {
@@ -715,11 +735,14 @@ fn metadata(
     Ok(value)
 }
 pub(crate) fn message_metadata(m: &MessageView, deadline: Instant) -> io::Result<Value> {
-    metadata(|e| write_message_fields(m, e, deadline, true), deadline)
+    metadata(
+        |e| write_message_fields(m, e, deadline, true, &mut || false),
+        deadline,
+    )
 }
 pub(crate) fn block_metadata(b: &BlockView<'_>, deadline: Instant) -> io::Result<Value> {
     metadata(
-        |e| write_block_fields(b, e, deadline, false, true),
+        |e| write_block_fields(b, e, deadline, false, true, &mut || false),
         deadline,
     )
 }
@@ -786,5 +809,30 @@ fn origin<W: Write>(
     }
     Ok(())
 }
+fn ordered<T>(result: Result<T, polylogue_store::Error>) -> io::Result<T> {
+    result.map_err(|error| {
+        if matches!(error, polylogue_store::Error::Cancelled) {
+            io::Error::new(io::ErrorKind::TimedOut, error)
+        } else {
+            io::Error::other(error)
+        }
+    })
+}
+fn write_ordered_extras<W: Write>(
+    fields: &mut polylogue_store::contributions::OrderedExtras<'_>,
+    name: &'static str,
+    e: &mut Encoder<W>,
+    deadline: Instant,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> io::Result<()> {
+    let mut opaque = OpaqueFields::new(name, false);
+    while let Some(entry) = ordered(fields.next(deadline, cancelled))? {
+        let bytes = field_bytes(&resolved(entry.value)?, false)?
+            .ok_or_else(|| invalid("missing selected opaque value"))?;
+        opaque.push(e, &entry.key, &bytes)?;
+    }
+    opaque.finish(e)
+}
+
 #[cfg(test)]
 mod tests;
