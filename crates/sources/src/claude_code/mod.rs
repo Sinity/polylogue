@@ -768,15 +768,9 @@ impl<R: ReadView> KeyedRecords<R> {
                             selection: None,
                         };
                         fact.selection = selection::for_fact(&fact, &v, &record_origins);
-                        projected.retained.push(fact);
-                        let attrs = response
-                            .message
-                            .attrs
-                            .get_or_insert_with(|| Value::Object(Default::default()));
-                        attrs
-                            .as_object_mut()
-                            .ok_or("Claude attrs must be an object")?
-                            .insert("parentUuid".into(), v.get("parentUuid").unwrap().opaque());
+                        // The generic extra projector owns the raw value and
+                        // field origin; it does not make this a Message parent.
+                        projected.facts.push(fact);
                     } else {
                         projected
                             .obligations

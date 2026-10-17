@@ -36,7 +36,7 @@ def main():
     assert not subprocess.check_output(['git','-C',str(args.source),'status','--porcelain'], text=True), 'candidate must be clean'
     package_source = args.package_source or args.candidate
     nonruntime = subprocess.check_output(['git','-C',str(args.source),'diff','--name-only',package_source,args.candidate], text=True).splitlines()
-    assert set(nonruntime) <= {'scripts/check-donor-core.py','docs/rewrite/donor-core-restoration.md','README.md'}, nonruntime
+    assert set(nonruntime) <= {'scripts/check-donor-core.py','scripts/check-morrow.py','docs/rewrite/donor-core-restoration.md','README.md'}, nonruntime
     args.output.mkdir(mode=0o700)
     sys.path.insert(0, str(args.source / 'scripts'))
     spec = importlib.util.spec_from_file_location('donor_morrow_run', args.source / 'scripts/check-morrow.py')
@@ -50,7 +50,7 @@ def main():
     manifest = json.loads((corpus / 'manifest.json').read_text())
     assert manifest['commit'] == DONOR
     report = {'candidate': args.candidate, 'package_source': package_source, 'nonruntime_changes': nonruntime, 'binary': str(args.binary), 'binary_sha256': sha(args.binary),
-              'runner_sha256': sha(Path(__file__)), 'donor': manifest, 'expected_facts': 'source-derived predecessor test literals plus exact current-spec differences',
+              'runner_sha256': sha(Path(__file__)), 'runner_support_sha256': sha(args.source/'scripts/check-morrow.py'), 'donor': manifest, 'expected_facts': 'source-derived predecessor test literals plus exact current-spec differences',
               'sdk_python': str(args.sdk_python), 'sdk_python_sha256': sha(args.sdk_python), 'sdk_client_sha256': sha(sdk),
               'sdk_collector_sha256': sha(sdk.parent.parent / 'morrow_mcp.py'), 'sdk_checker_sha256': sha(sdk.parent.parent / 'check_answer.py'),
               'commands': run.commands, 'processes': run.processes, 'large': [], 'upgrades': [], 'success': False}
@@ -119,7 +119,7 @@ def main():
             pages[label.removeprefix('initial-')] = page['shown']
         return document, page
     try:
-        run.start(archive)
+        run.start(archive, ready_exits=(0,5))
         for source_path, binding in manifest['files'].items():
             name = Path(source_path).name; original = corpus / name
             assert sha(original) == binding['sha256']
@@ -168,7 +168,7 @@ def main():
         assert any(b.get('call_id') == 'tool-bg' and b.get('outcome') == 'error' and b.get('exit_code') == 7 for b in blocks)
         assert any(b.get('call_id') == 'tool-fg' and b.get('outcome') == 'error' for b in blocks)
         assert any(m.get('duration_ms') == 1500 and m.get('usage',{}).get('provider_cost_usd') == 0.125 for m in main['messages'])
-        side_query = cli(['Normalization complete.', '--json'], 'discover sidechain')
+        side_query = cli(['"Normalization complete."', '--json'], 'discover sidechain')
         subagents = [row['id'] for row in side_query['rows'] if row['id'] != 'claude-code:claude-normalization-main']; assert len(subagents) == 1, side_query
         side, _ = inspect(subagents[0], 'initial-sidechain')
         assert len(side['messages']) == 1 and side['messages'][0]['blocks'][0]['text'] == 'Normalization complete.'
@@ -212,7 +212,7 @@ def main():
                 report['large'].append({'session':session,'state_records':states,'input_bytes':size,'elapsed_seconds':elapsed,'progress':progress})
         run.stop()
         for path in provider_paths: path.unlink()
-        run.start(archive)
+        run.start(archive, ready_exits=(0,5))
         for name, reference in references.items():
             doc, _ = inspect(reference, 'restart-'+name)
             assert doc['messages'] == initial[name]['messages'] and doc['session'] == initial[name]['session'] and doc.get('links') == initial[name].get('links')
@@ -231,7 +231,7 @@ def main():
             preparation = run.command([args.binary,'--archive',archive,'daemon','--prepare-copy','restore','--request-id',request,'--retired-writers'], 'prepare upgrade custody', (5,), timeout=60)
             upgrade['preparation'] = [json.loads(line) for line in preparation.splitlines() if line]
             assert upgrade['preparation'][-1]['latest_acknowledged_head'] == 'unknown'
-            run.start(archive)
+            run.start(archive, ready_exits=(0,5))
             for command in json.loads((baseline/'commands.json').read_text()):
                 if command['arguments'][0] != 'import': continue
                 old = json.loads((baseline/command['stdout']).read_text())

@@ -307,6 +307,42 @@ fn real_morrow_claude_bodies_use_native_ids_flat_order_and_verified_origins() {
     }
     assert!(world.head.finalization_pending);
 }
+#[test]
+fn same_file_sidechain_keeps_raw_main_parent_as_an_extra_without_a_message_parent() {
+    let bytes =
+        include_bytes!("../../../sources/tests/fixtures/donor/claude-normalization-main.jsonl");
+    let (mut world, pending) = make_world(bytes, bytes);
+    let main = format!("claude-code:{SID}");
+    let pending = pending
+        .iter()
+        .find(|p| p.message.session().as_str() != main)
+        .unwrap();
+    let request = request(&world, pending);
+    let handle = begin(&mut world, &request);
+    let source = world.complete(&handle);
+    let view = selected(&mut world, &source);
+    assert!(
+        view.field(&Slot::Message(MessageField::Parent), 65536)
+            .unwrap()
+            .is_none()
+    );
+    let (parent, _, origin) = value(
+        &view,
+        &Slot::Extra {
+            block: None,
+            key: "parentUuid".into(),
+        },
+    );
+    assert_eq!(parent, "main-fg-result");
+    assert_eq!(
+        origin["selection"]["inputs"][0]["path"],
+        json!([{"Key":"parentUuid"}])
+    );
+    assert_eq!(
+        origin["selection"]["inputs"][0]["record"],
+        json!({"start":3682,"end":4088})
+    );
+}
 fn input(text: &str) -> Vec<u8> {
     json!({"type":"assistant","uuid":"opaque:message","requestId":"request","sessionId":SID,"timestamp":"2026-10-01T10:00:00Z","message":{"id":"response","content":[{"type":"thinking","thinking":"reason","signature":"retained-signature"},{"type":"text","text":text}],"stop_reason":"end_turn"}}).to_string().into_bytes().into_iter().chain([b'\n']).collect()
 }
