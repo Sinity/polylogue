@@ -2403,3 +2403,6 @@ mod block_metadata;
 
 #[path = "session_read/provider_usage.rs"]
 mod provider_usage;
+
+#[path = "session_read/record_extras.rs"]
+mod record_extras;

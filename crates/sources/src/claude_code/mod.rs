@@ -14,7 +14,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 14;
+pub const PARSER_VERSION: u32 = 15;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -661,6 +661,7 @@ impl<R: ReadView> KeyedRecords<R> {
                     stop_sequence_raw: None,
                     stop_details: None,
                     stop_details_raw: None,
+                    record_extras: Default::default(),
                 }
             }
         };
@@ -852,6 +853,29 @@ impl<R: ReadView> KeyedRecords<R> {
             .as_ref()
             .is_none_or(|previous| previous.raw != contribution.raw)
         {
+            // Selection follows actual supplied response revisions, not stable
+            // contribution order. Overlay omissions retain the earlier donor;
+            // old_same above makes identical effective records a no-op.
+            for fact in &contribution.projection.facts {
+                let projection::Field::Extra { local: None, path } = &fact.field else {
+                    continue;
+                };
+                let [key] = path.as_slice() else {
+                    continue;
+                };
+                if fact.supplied_revision != revision || incoming.get(key).is_none() {
+                    continue;
+                }
+                let raw = contribution.record_extra_raw(key)?.to_vec();
+                response.record_extras.insert(
+                    key.clone(),
+                    keyed::SelectedRecordExtra {
+                        item,
+                        fact: fact.clone(),
+                        raw,
+                    },
+                );
+            }
             // Only these named opaque response extras have a normalized attrs
             // key. They carry supplied values, including null, without inferring
             // finish state. Missing overlay fields keep the original supplier.

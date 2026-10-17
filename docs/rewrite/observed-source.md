@@ -325,3 +325,24 @@ contains their bytes. A literal top-level `provider_usage` key cannot collide
 with the selected attrs key. JSON/export and bounded model metadata preserve
 the same logical object and source provenance under their existing privacy and
 admission rules. This focused mapping does not certify a complete provider source.
+
+
+Claude parser version 15 selects each already-supported immediate record extra
+once per grouped response. The last actually supplied accepted update owns its
+exact value and original field donor, including a correction to an earlier
+contribution. An omitted overlay keeps that supplier; an identical effective
+record is a no-op. Equal values do not erase supplier identity. Selection uses
+provider interpretation order, never timestamps or contribution ordinal.
+
+The ordered selection map uses existing response-state admission. Canonical
+materialization verifies and inserts each selected attrs key once. Version
+proofs retain only admitted-key contribution locators for their baseline and
+append differing selected raw correction units, ordered by exact key, tagged
+`response/record_extra/` followed by lowercase hex of that key’s exact UTF-8
+bytes. Existing fixed metadata units
+precede these units; required bodies follow them. Histories needing no correction
+retain their evidence sequence. Scratch, reads and state encoding use existing
+allowances; this adds no bounded allocator, total-history-cost or worker-duration
+claim. Parser replay advances, while immutable selector and framing recipes keep
+their meanings. Structured-key collisions, unknown nested fields and unaccounted
+effects retain their explicit refusals.

@@ -6,6 +6,13 @@ use polylogue_store::contributions::{FieldRead, MessageView};
 const SID: &str = "7f3a2c10-0001-4000-8000-000000000001";
 const MORROW: &[u8] = include_bytes!("../../../sources/tests/fixtures/morrow-main.jsonl");
 fn make_world(retained: &[u8], parsed: &[u8]) -> (World, Vec<PendingMessage>) {
+    make_world_with(retained, parsed, |_| {})
+}
+fn make_world_with(
+    retained: &[u8],
+    parsed: &[u8],
+    mutate: impl FnOnce(&mut cc::StepOutput),
+) -> (World, Vec<PendingMessage>) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
     let mut writer = Writer::open(&root).unwrap();
@@ -44,6 +51,7 @@ fn make_world(retained: &[u8], parsed: &[u8]) -> (World, Vec<PendingMessage>) {
         0,
     );
     let mut output = framed.output.unwrap();
+    mutate(&mut output);
     assert!(view.take_error().is_none());
     let pending = output.delta.pending_messages.clone();
     let changes = ca::encode_step(
@@ -684,3 +692,6 @@ mod block_extras;
 
 #[path = "claude_provider_usage.rs"]
 mod provider_usage;
+
+#[path = "claude_record_extras.rs"]
+mod record_extras;

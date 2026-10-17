@@ -4,7 +4,7 @@ use polylogue_model::{
     BlobHash, BlockContent, LinkHow, LinkKind, Message, MessageId, Role, Session,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -72,6 +72,26 @@ pub struct ResponseCell {
     /// Opaque supplied response metadata, with no finish/status interpretation.
     pub stop_details: Option<super::projection::Fact>,
     pub stop_details_raw: Option<Vec<u8>>,
+    /// One last actually supplied immediate record extra per exact attrs key.
+    /// Encoded with this response under the existing parser-state admission.
+    pub record_extras: BTreeMap<String, SelectedRecordExtra>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedRecordExtra {
+    pub item: u64,
+    pub fact: super::projection::Fact,
+    pub raw: Vec<u8>,
+}
+impl SelectedRecordExtra {
+    /// ASCII hex of exact UTF-8 key bytes keeps the existing framing tag policy.
+    pub fn correction_tag(key: &str) -> String {
+        use std::fmt::Write;
+        let mut tag = String::from("response/record_extra/");
+        for byte in key.bytes() {
+            write!(&mut tag, "{byte:02x}").expect("writing to String");
+        }
+        tag
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordAddress {
@@ -362,6 +382,19 @@ pub enum EvidenceUnit {
     },
 }
 impl Contribution {
+    /// Only an already-accounted immediate record extra can supply this value.
+    pub fn record_extra_raw(&self, key: &str) -> Result<&[u8], String> {
+        if !self.projection.facts.iter().any(|fact| {
+            matches!(&fact.field, super::projection::Field::Extra { local: None, path }
+                if path.as_slice() == [key])
+        }) {
+            return Err("Claude immediate extra baseline lost its source fact".into());
+        }
+        // Effective records are already canonical raw JSON. Borrow its exact
+        // subtree rather than making another temporary value-sized allocation.
+        super::raw::optional_field(&self.raw, &[key])?
+            .ok_or_else(|| "Claude immediate extra lost its raw value".to_owned())
+    }
     pub fn completion_unit(&self, item: u64) -> Option<EvidenceUnit> {
         self.completion.as_ref().map(|c| EvidenceUnit::Json {
             tag: format!("background-completion/{item}"),
