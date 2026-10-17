@@ -160,7 +160,8 @@ pub(super) fn qualify(
                 "Codex retained Message/Session mismatch".into(),
             ));
         }
-        let selected = catalog.dependency_selected_projection(
+        let selected = selected_current_projection(
+            catalog,
             dependency,
             &owner::canonical_key(ordinal).map_err(owner_error)?,
             allowance,

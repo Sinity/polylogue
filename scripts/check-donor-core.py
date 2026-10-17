@@ -9,6 +9,8 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import secrets
+import uuid
 import subprocess
 import sys
 import time
@@ -184,6 +186,10 @@ def main():
             assert {str(path.relative_to(archive)):sha(path) for path in archive.rglob('*') if path.is_file()} == before
             upgrade = {'baseline':str(baseline),'custody_before_open':before,'baseline_commands_sha256':sha(baseline/'commands.json'),'inputs':[]}
             report['upgrades'].append(upgrade)
+            request = str(uuid.UUID(int=((time.time_ns() // 1_000_000) << 80) | (7 << 76) | (secrets.randbits(12) << 64) | (2 << 62) | secrets.randbits(62)))
+            preparation = run.command([args.binary,'--archive',archive,'daemon','--prepare-copy','restore','--request-id',request,'--retired-writers'], 'prepare upgrade custody', (5,), timeout=60)
+            upgrade['preparation'] = [json.loads(line) for line in preparation.splitlines() if line]
+            assert upgrade['preparation'][-1]['latest_acknowledged_head'] == 'unknown'
             run.start(archive)
             for command in json.loads((baseline/'commands.json').read_text()):
                 if command['arguments'][0] != 'import': continue

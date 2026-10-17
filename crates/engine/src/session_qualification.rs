@@ -750,6 +750,20 @@ fn cell<T: serde::de::DeserializeOwned>(
         })
         .transpose()
 }
+// A different pending row may lack a current selected projection. That makes
+// whole-catalog coverage unavailable, while an exact independently certified
+// member can still be read. Its own member proof above keeps errors intact.
+fn selected_current_projection(
+    catalog: &SessionCatalog,
+    dependency: &SessionInputDependency,
+    logical: &[u8; 32],
+    allowance: usize,
+) -> Result<Option<polylogue_store::contributions::SourceProjection>, Error> {
+    match catalog.dependency_selected_projection(dependency, logical, allowance) {
+        Err(Error::MessagePredecessorChanged) => Ok(None),
+        result => result,
+    }
+}
 /// Prove the supported shape from retained interpretation, never from the rows
 /// a search happened to find. Events, lineage/copy and ambiguous metadata keep
 /// their existing degraded qualification until their connected products ship.
@@ -916,7 +930,7 @@ fn qualify_shape(
         }
         let input = dependency.registered().ok_or(Error::Range)?;
         let logical = owner::claude_key(&message);
-        let selected = catalog.dependency_selected_projection(dependency, &logical, allowance)?;
+        let selected = selected_current_projection(catalog, dependency, &logical, allowance)?;
         let proved = match selected {
             Some(source) => crate::canonical_message::current_claude_projection(
                 &source,
