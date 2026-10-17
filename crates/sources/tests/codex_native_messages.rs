@@ -455,13 +455,29 @@ fn reapplying_a_valid_native_echo_keeps_the_native_claim_origins() {
             + &response("user", "U", "prompt")
             + &completed("UserMessage", "echo", "prompt")),
     );
-    let donor = serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap();
-    let (v, s) = run(v, s, &response("user", "U", "prompt"));
+    let (v, s) = run(v, s, &completed("UserMessage", "echo", "corrected"));
+    assert!(s.normalization_incomplete());
+    assert_eq!(author(&v), "unknown");
+    assert!(!v.cells.contains_key(&Key::Evidence(0, 1, 3)));
+    let proof = serde_json::to_value(
+        v.cells
+            .get(&Key::CompletedMessage("T".into(), "echo".into()))
+            .unwrap(),
+    )
+    .unwrap();
+    // The later response resolves the stored native claim, so its own current
+    // source range must not become the donor of the retained echo raw unit.
+    let (v, s) = run(v, s, &response("user", "U", "corrected"));
     assert!(!s.normalization_incomplete());
     assert_eq!(author(&v), "human");
+    let donor = serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap();
     assert_eq!(
-        serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap(),
-        donor
+        donor["Evidence"]["origins"],
+        proof["CompletedMessage"]["origins"]
+    );
+    assert_eq!(
+        donor["Evidence"]["canonical"],
+        proof["CompletedMessage"]["raw"]
     );
 }
 #[test]
