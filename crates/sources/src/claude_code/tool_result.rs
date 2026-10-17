@@ -1,7 +1,7 @@
 //! One source-owned result reduction used by body mapping and presence recipes.
 //! Inline content is the presented output; named channels remain separate data.
+use polylogue_model::RetainedJson as Value;
 use polylogue_model::{ErrorReason, ToolOutcome, ToolOutput, ToolResult, UnknownReason};
-use serde_json::Value;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StatusKind {
     IsError,
@@ -85,7 +85,7 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
         .and_then(|v| status(StatusKind::IsError, v))
         .unwrap_or(ToolOutcome::Ok);
     let mut reason_source = None;
-    let mut status_unreadable = item.get("is_error").is_some_and(|v| !v.is_boolean());
+    let mut status_unreadable = item.get("is_error").is_some_and(|v| v.as_bool().is_none());
     let mut unresolved = Vec::new();
     if status_unreadable {
         unresolved.push(at("is_error"));
@@ -173,7 +173,7 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
     if exit.is_none() {
         exit = output.as_deref().and_then(super::exit_code_in);
     }
-    let mut data = serde_json::Map::new();
+    let mut data = std::collections::BTreeMap::new();
     let mut data_paths = Vec::new();
     if let Some(meta) = meta.and_then(Value::as_object) {
         for (key, value) in meta {
@@ -189,10 +189,11 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
                     | "totalToolUseCount"
                     | "totalDurationMs"
                     | "returnCodeInterpretation"
-            ) || (key == "interrupted" && value.as_bool() == Some(false))
+            ) || (key == &polylogue_model::NativeId::unicode("interrupted")
+                && value.as_bool() == Some(false))
             {
-                data.insert(key.clone(), value.clone());
-                data_paths.push((key.clone(), p(&["toolUseResult", key])));
+                data.insert(key.clone(), value.opaque());
+                data_paths.push((key.as_str().to_owned(), p(&["toolUseResult", key.as_str()])));
             } else if !matches!(
                 key.as_str(),
                 "persistedOutputPath"
@@ -205,8 +206,8 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
             ) {
                 // Retain unknown named metadata without pretending its semantic
                 // reduction is complete. No opaque wrapper completeness bonus.
-                data.insert(key.clone(), value.clone());
-                unresolved.push(p(&["toolUseResult", key]));
+                data.insert(key.clone(), value.opaque());
+                unresolved.push(p(&["toolUseResult", key.as_str()]));
             }
         }
     }
@@ -221,10 +222,7 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
     }
     Decision {
         result: ToolResult {
-            call_id: item
-                .get("tool_use_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            call_id: item.get("tool_use_id").and_then(Value::native).cloned(),
             outcome,
             exit_code: exit,
             duration_ms: None,

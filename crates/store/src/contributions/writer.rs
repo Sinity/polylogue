@@ -13,6 +13,7 @@ pub struct Identity<'a> {
     pub session: &'a SessionId,
     pub origin: &'a Origin,
     pub native_session: &'a str,
+    pub native_session_encoding: Option<&'a str>,
     pub session_kind: SessionKind,
     pub message: &'a MessageId,
     pub sequence: u64,
@@ -165,6 +166,7 @@ impl Writer {
             identity.session.as_str(),
             identity.origin.as_str(),
             identity.native_session,
+            identity.native_session_encoding.unwrap_or_default(),
             identity.message.as_str(),
             source.predecessor.index_generation.as_str(),
         ] {
@@ -176,6 +178,11 @@ impl Writer {
                 required: bytes as u64,
             });
         }
+        polylogue_model::NativeId::from_wire(
+            identity.native_session,
+            identity.native_session_encoding,
+        )
+        .map_err(|e| bad(&e.to_string()))?;
         let sequence = integer(identity.sequence)?;
         let revision = integer(source.revision)?;
         let evidence = integer(source.evidence_revision)?;
@@ -220,18 +227,24 @@ impl Writer {
             SessionKind::Chat => "chat",
         };
         db(&path, || {
-            tx.execute("INSERT INTO session(id,origin,native_id,kind,changed) VALUES(?1,?2,?3,?4,0) ON CONFLICT(id) DO NOTHING",params![identity.session.as_str(),identity.origin.as_str(),identity.native_session,kind])
+            tx.execute("INSERT INTO session(id,origin,native_id,native_id_encoding,kind,changed) VALUES(?1,?2,?3,?4,?5,0) ON CONFLICT(id) DO NOTHING",params![identity.session.as_str(),identity.origin.as_str(),identity.native_session,identity.native_session_encoding,kind])
         })?;
-        let (session, origin, native, stored_kind): (i64, String, String, String) =
-            db(&path, || {
-                tx.query_row(
-                    "SELECT pk,origin,native_id,kind FROM session WHERE id=?1",
-                    [identity.session.as_str()],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
-            })?;
+        let (session, origin, native, encoding, stored_kind): (
+            i64,
+            String,
+            String,
+            Option<String>,
+            String,
+        ) = db(&path, || {
+            tx.query_row(
+                "SELECT pk,origin,native_id,native_id_encoding,kind FROM session WHERE id=?1",
+                [identity.session.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+        })?;
         if origin != identity.origin.as_str()
             || native != identity.native_session
+            || encoding.as_deref() != identity.native_session_encoding
             || stored_kind != kind
         {
             return Err(bad("stored Session identity disagrees with preparation"));

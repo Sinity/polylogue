@@ -5,8 +5,46 @@ use polylogue_model::{
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
-mod index_transition;
-pub(crate) use index_transition::{begin_index_rebuild, finish_index_rebuild};
+// A replay under a changed identity recipe can invalidate durable authored
+// references even when the old index schema itself is known. Refuse before
+// migration, replacement or fresh initialization; retained markers also block
+// admitting a partially replaced or missing index as an unrelated fresh one.
+pub(crate) fn check_index_compatibility(root: &Path) -> Result<()> {
+    if owned_metadata(&root.join("index-rebuild.json"))?.is_some() {
+        return Err(refused(
+            "interrupted predecessor index replacement requires a reference-preserving transition; no replacement was attempted",
+        ));
+    }
+    let index = root.join("index.db");
+    if let Some(metadata) = owned_metadata(&index)? {
+        if !metadata.is_file() {
+            return Err(Error::Schema(index));
+        }
+        if metadata.len() > 0 {
+            // A read-only SQLite WAL connection can still change shared-memory
+            // read marks. Refuse the predecessor from the immutable main header
+            // before opening SQLite, even if a WAL could claim a newer version.
+            let mut header = [0; 100];
+            regular(&index)?.read_exact(&mut header)?;
+            if &header[..16] != b"SQLite format 3\0" {
+                return Err(Error::Schema(index));
+            }
+            let found = u32::from_be_bytes(header[60..64].try_into().unwrap());
+            if found != crate::INDEX_VERSION {
+                return Err(Error::IndexRebuildRequired {
+                    file: index,
+                    found,
+                    expected: crate::INDEX_VERSION,
+                });
+            }
+        }
+    }
+    crate::validate_version(root, "index.db", crate::INDEX_VERSION, false, false)
+}
+
+#[cfg(test)]
+#[path = "recovery/index_compatibility_tests.rs"]
+mod index_compatibility_tests;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},

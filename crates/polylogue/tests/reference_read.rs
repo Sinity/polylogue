@@ -250,10 +250,21 @@ fn input(session: &str, native: &str, text: &str) -> Vec<u8> {
     [line(json!({"type":"session_meta","payload":{"id":session,"source":"cli","cwd":"/synthetic"}})),line(json!({"type":"response_item","timestamp":"2026-10-01T00:00:00Z","payload":{"type":"message","id":native,"role":"assistant","content":[{"type":"output_text","text":text}]}}))].concat().into_bytes()
 }
 fn reference(session: &str, native: &str) -> String {
-    format!("message:codex:{session}:{native}")
+    let origin = polylogue_model::Origin::new("codex").unwrap();
+    let session = polylogue_model::SessionId::new(&origin, session).unwrap();
+    format!(
+        "message:{}",
+        polylogue_model::MessageId::new(session, native)
+            .unwrap()
+            .as_str()
+    )
 }
 fn expected(session: &str, native: &str, text: &str) -> String {
-    format!("codex:{session}:{native}\nassistant · model\n\n{text}\n")
+    let id = reference(session, native);
+    format!(
+        "{}\nassistant · model\n\n{text}\n",
+        id.strip_prefix("message:").unwrap()
+    )
 }
 fn negatives(world: &World, reference: &str) {
     // Session JSON is now registered, but this exact opaque identity is absent.

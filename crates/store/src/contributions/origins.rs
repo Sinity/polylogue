@@ -178,6 +178,7 @@ mod tests {
                         session: &session,
                         origin: &origin,
                         native_session: "session",
+                        native_session_encoding: None,
                         session_kind: SessionKind::Main,
                         message: &message,
                         sequence: 0,

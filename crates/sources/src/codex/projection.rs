@@ -7,9 +7,9 @@
 //! or Effects obligations. Those remain separately retained; neither this
 //! cursor nor byte EOF certifies normalization, source rank, or version hashes.
 use super::keyed::{Cell, Key, MemoryReadView, ReadView};
+use polylogue_model::RetainedJson as Value;
 use polylogue_model::*;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
@@ -257,7 +257,7 @@ impl Cursor {
                     BlockContent::ToolCall(c)
                         if self.mode == Mode::Annotated && c.call_id.is_some() =>
                     {
-                        self.call = c.call_id.clone();
+                        self.call = c.call_id.as_ref().map(|id| id.as_str().to_owned());
                         self.wrapper = c.tool.as_deref() == Some("exec");
                         Phase::Continuation
                     }
@@ -393,7 +393,7 @@ pub fn collect(
     let mut cursor = Cursor::new(message, mode);
     let mut result: Option<Message> = None;
     let mut continued = Vec::new();
-    let mut children = serde_json::Map::new();
+    let mut children = std::collections::BTreeMap::new();
     loop {
         match cursor.advance(view)? {
             Step::Absent => return Ok(None),
@@ -431,15 +431,17 @@ pub fn collect(
                     Unit::ResultEnd { .. }
                     | Unit::MessageWitness(_)
                     | Unit::BlockPresence { .. } => {}
-                    Unit::Continuation { call_id } => continued.push(Value::String(call_id)),
+                    Unit::Continuation { call_id } => continued.push(Value::from(call_id)),
                     Unit::WrapperStart { call_id, .. } => {
-                        children.insert(call_id, Value::Array(Vec::new()));
+                        children.insert(call_id.into(), Value::Array(Vec::new()));
                     }
                     Unit::WrapperChild { call_id, child, .. } => {
-                        let Some(Value::Array(ids)) = children.get_mut(&call_id) else {
+                        let Some(Value::Array(ids)) =
+                            children.get_mut(&polylogue_model::NativeId::unicode(&call_id))
+                        else {
                             return Err("projection child before wrapper".into());
                         };
-                        ids.push(Value::String(child));
+                        ids.push(Value::from(child));
                     }
                     Unit::Header(_) => return Err("duplicate projection header".into()),
                 }
@@ -450,7 +452,7 @@ pub fn collect(
         return Err("projection completed without header".into());
     };
     if !continued.is_empty() || !children.is_empty() {
-        let attrs = m.attrs.get_or_insert_with(|| serde_json::json!({}));
+        let attrs = m.attrs.get_or_insert_with(|| serde_json::json!({}).into());
         if let Some(o) = attrs.as_object_mut() {
             if !continued.is_empty() {
                 o.insert("continuation_calls".into(), Value::Array(continued));

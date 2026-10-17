@@ -154,6 +154,7 @@ pub fn start(
                 session: session.session.id,
                 origin: session.session.origin,
                 native: session.session.native_id,
+                native_encoding: session.session.native_id_encoding,
                 kind: session.session.kind,
                 message: r.message.id,
                 role: r.message.role,
@@ -682,8 +683,8 @@ pub(super) fn compute(
                     .payload
                     .as_ref()
                     .ok_or(Error::Unsupported("Claude required body unavailable"))?;
-                let raw: serde_json::Value =
-                    serde_json::from_slice(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
+                let raw = polylogue_model::RetainedJson::parse(&c.raw)
+                    .map_err(|e| Error::Source(e.to_string()))?;
                 let path = source::required_body_path(&raw, block_local as usize)
                     .ok_or(Error::Unsupported("Claude required body path unavailable"))?;
                 let body = retained
@@ -725,17 +726,21 @@ pub(super) fn compute(
                                     "copied Claude call lacks proved original operation scope",
                                 ));
                             }
-                            let raw_id = call.call_id.as_deref().filter(|s| !s.is_empty()).ok_or(
-                                Error::Unsupported("Claude call has no supplied invocation ID"),
-                            )?;
+                            let raw_id = call
+                                .call_id
+                                .as_ref()
+                                .filter(|s| !s.as_str().is_empty())
+                                .ok_or(Error::Unsupported(
+                                "Claude call has no supplied invocation ID",
+                            ))?;
                             if !c.projection.facts.iter().any(|f|matches!(f.field,Field::Block{local,field:BlockField::CallId} if local==block_local)&&f.selection.is_some()){return Err(Error::Unsupported("Claude call ID donor unavailable"))}
-                            let operation =
-                                DeclaredOperationId::new(&state.handle.identity.session, raw_id)
-                                    .map_err(|_| {
-                                        Error::Unsupported(
-                                            "Claude declared operation scope unavailable",
-                                        )
-                                    })?;
+                            let operation = DeclaredOperationId::from_native(
+                                &state.handle.identity.session,
+                                raw_id,
+                            )
+                            .map_err(|_| {
+                                Error::Unsupported("Claude declared operation scope unavailable")
+                            })?;
                             (
                                 None,
                                 OwnedBlockKind::ToolCall {

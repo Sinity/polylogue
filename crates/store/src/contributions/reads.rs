@@ -706,6 +706,7 @@ pub struct SessionHeader {
     pub id: SessionId,
     pub origin: Origin,
     pub native_id: String,
+    pub native_id_encoding: Option<String>,
     pub kind: SessionKind,
     pub title: Option<String>,
     pub cwd: Option<String>,
@@ -720,7 +721,7 @@ pub struct SessionHeader {
     pub agent_name: Option<String>,
     pub collection_id: Option<String>,
     pub collection_name: Option<String>,
-    pub attrs: Option<serde_json::Value>,
+    pub attrs: Option<polylogue_model::RetainedJson>,
     pub started_at: Option<i64>,
     pub last_activity_at: Option<i64>,
     pub stub: bool,
@@ -858,9 +859,10 @@ pub enum SessionStep {
 fn metadata_admission(resource: &'static str, required: u64) -> Error {
     Error::ParserAdmission { resource, required }
 }
-const SESSION_TEXT: [&str; 17] = [
+const SESSION_TEXT: [&str; 18] = [
     "origin",
     "native_id",
+    "native_id_encoding",
     "kind",
     "title",
     "cwd",
@@ -955,7 +957,7 @@ impl SessionCatalog {
         let row: Option<(
             i64,
             u64,
-            [Option<String>; 17],
+            [Option<String>; 18],
             Option<i64>,
             Option<i64>,
             bool,
@@ -986,10 +988,11 @@ impl SessionCatalog {
                                 r.get(16)?,
                                 r.get(17)?,
                                 r.get(18)?,
+                                r.get(19)?,
                             ],
-                            r.get(19)?,
                             r.get(20)?,
                             r.get(21)?,
+                            r.get(22)?,
                         ))
                     },
                 )
@@ -1001,6 +1004,7 @@ impl SessionCatalog {
         let [
             origin,
             native_id,
+            native_id_encoding,
             kind,
             title,
             cwd,
@@ -1031,6 +1035,8 @@ impl SessionCatalog {
                 "selected Session native identity empty".into(),
             ));
         }
+        polylogue_model::NativeId::from_wire(&native_id, native_id_encoding.as_deref())
+            .map_err(|e| Error::Invariant(e.to_string()))?;
         let kind = match kind.as_deref() {
             Some("main") => SessionKind::Main,
             Some("subagent") => SessionKind::Subagent,
@@ -1047,6 +1053,7 @@ impl SessionCatalog {
             id: id.clone(),
             origin,
             native_id,
+            native_id_encoding,
             kind,
             title,
             cwd,
@@ -1749,6 +1756,7 @@ mod tests {
                         session: &self.session,
                         origin: &self.origin,
                         native_session: "session:opaque",
+                        native_session_encoding: None,
                         session_kind: SessionKind::Main,
                         message: &id,
                         sequence: seq,

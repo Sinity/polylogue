@@ -70,8 +70,18 @@ fn reasoning_reemission_replaces_one_slot_and_reanchor_keeps_reasoning_identity(
     );
     let (view, resume) = run(view, resume, &anchor);
     let message = view.message(0).unwrap().unwrap();
-    assert_eq!(message.id.session().as_str(), "codex:session:opaque");
-    assert_eq!(message.id.as_str(), "codex:session:opaque:a:1");
+    assert_eq!(
+        message.id.session(),
+        &polylogue_model::SessionId::new(
+            &polylogue_model::Origin::new("codex").unwrap(),
+            "session:opaque"
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        message.id,
+        polylogue_model::MessageId::new(message.id.session().clone(), "a:1").unwrap()
+    );
     assert!(matches!(
         message.blocks[0].id.slot(),
         BlockSlot::Reasoning(0)
@@ -184,7 +194,10 @@ fn assistant_snapshot_replaces_its_block_and_retains_missing_raw_fields() {
     let message = whole.message(0).unwrap().unwrap();
     assert_eq!(message.blocks.len(), 1);
     assert!(matches!(&message.blocks[0].content,BlockContent::Text{text} if text=="last"));
-    assert_eq!(message.attrs.unwrap()["phase"], "final_answer");
+    assert_eq!(
+        message.attrs.unwrap()["phase"].as_str(),
+        Some("final_answer")
+    );
     let head = head(&whole, 0);
     assert_eq!(head.items, 1);
     assert!(!head.incomplete);
@@ -239,7 +252,7 @@ fn call_and_owned_child_snapshots_replace_without_reopening_or_double_counting()
     let message = view.message(0).unwrap().unwrap();
     assert_eq!(message.blocks.len(), 3);
     assert!(
-        matches!(&message.blocks[0].content,BlockContent::ToolCall(call) if call.input.as_ref().unwrap()["cmd"]=="last")
+        matches!(&message.blocks[0].content,BlockContent::ToolCall(call) if call.input.as_ref().unwrap()["cmd"].as_str()==Some("last"))
     );
     assert!(
         matches!(&message.blocks[2].content,BlockContent::ToolResult(result) if matches!(result.outcome,ToolOutcome::Error{..})&&result.exit_code==Some(1)&&result.output==Some(polylogue_model::ToolOutput::Text(String::new())))
@@ -394,6 +407,7 @@ fn a_promised_running_result_with_wrong_content_fails_the_attempt() {
             .output
             .unwrap_err()
             .error
+            .to_string()
             .contains("promised tool result")
     );
     assert_eq!(framed.counts.used, 0);

@@ -2,8 +2,8 @@
 //! values replace as units, so a nested leaf extends its original donor path.
 //! None is unavailable provenance, never a fabricated effective-overlay span.
 use crate::selection::{PathPart, RecordRange, SelectedRaw};
+use polylogue_model::RetainedJson as Value;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordOrigins {
@@ -26,21 +26,29 @@ impl RecordOrigins {
         let Some(object) = effective.as_object() else {
             return result;
         };
-        for (name, value) in object {
+        for (native_name, value) in object {
+            let Some(name) = native_name.unicode_str() else {
+                continue;
+            };
             if name == "message" && value.is_object() {
-                for field in value.as_object().into_iter().flat_map(|m| m.keys()) {
-                    let key = vec![name.clone(), field.clone()];
+                for native_field in value.as_object().into_iter().flat_map(|m| m.keys()) {
+                    let Some(field) = native_field.unicode_str() else {
+                        continue;
+                    };
+                    let key = vec![name.to_owned(), field.to_owned()];
                     let supplied = incoming
                         .get("message")
                         .and_then(|m| m.as_object())
-                        .is_some_and(|m| m.contains_key(field));
+                        .is_some_and(|m| m.contains_key(native_field));
                     if let Some(origin) = donor(old, &key, supplied, range) {
                         result.fields.insert(key, origin);
                     }
                 }
             } else {
-                let key = vec![name.clone()];
-                let supplied = incoming.as_object().is_some_and(|m| m.contains_key(name));
+                let key = vec![name.to_owned()];
+                let supplied = incoming
+                    .as_object()
+                    .is_some_and(|m| m.contains_key(native_name));
                 if let Some(origin) = donor(old, &key, supplied, range) {
                     result.fields.insert(key, origin);
                 }
@@ -102,7 +110,7 @@ pub(super) fn typed_path(root: &Value, path: &[String]) -> Option<Vec<PathPart>>
             current = array.get(usize::try_from(index).ok()?)?;
             result.push(PathPart::Index(index));
         } else {
-            current = current.as_object()?.get(part)?;
+            current = current.get(part)?;
             result.push(PathPart::Key(part.clone()));
         }
     }

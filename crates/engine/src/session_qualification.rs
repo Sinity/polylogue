@@ -16,6 +16,8 @@ use std::{
 #[derive(Clone, Debug, Default)]
 pub struct Qualification {
     pub record_errors: u64,
+    /// Counted interpreted-text repairs, separate from exclusive record outcomes.
+    pub text_repairs: u64,
     pub interpreted_nonempty_inputs: u64,
     pub pending_inputs: u64,
     pub unresolved_inputs: u64,
@@ -79,6 +81,10 @@ impl Qualification {
                 "undecodable complete records in relevant retained inputs",
             ),
             (
+                self.text_repairs,
+                "unpaired UTF-16 code units repaired in interpreted source text",
+            ),
+            (
                 self.pending_inputs,
                 "relevant retained inputs have pending interpretation or row effects",
             ),
@@ -111,8 +117,9 @@ impl Qualification {
         }
         json!({"outcome":if self.complete() {"ok"} else {"degraded"},
             "notes":self.notes(), "unknown":unknown,
+            "diagnostics":{"text_repairs":self.text_repairs},
             "settlement":{"scope":if self.exact{"exact_session"}else{"session_selection"},"operation":if self.document{"normalized_read"}else{"selection"},"state":if self.complete(){"settled"}else if self.pending_inputs>0{"pending"}else if self.unavailable_inputs>0||self.record_errors>0{"unavailable"}else{"unsupported"},
-                "target_basis":{"archive_counter":catalog.source_archive_counter(),"recipe":"native-session-v1","configuration":if self.basis.iter().any(|b|b.original_hash.is_none()){"retained-native-context-v1"}else{"fixed-immutable-native-context-v1"},"inputs":self.basis},
+                "target_basis":{"archive_counter":catalog.source_archive_counter(),"recipe":"native-session-v2","configuration":if self.basis.iter().any(|b|b.original_hash.is_none()){"retained-native-context-v1"}else{"fixed-immutable-native-context-v1"},"inputs":self.basis},
                 "serving_view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()}}})
     }
 }
@@ -856,6 +863,8 @@ fn count_record_failures(
     let head = dependency.head().ok_or(Error::Range)?;
     let mut previous: Option<RecordFailureId> = None;
     let mut count = 0u64;
+    let mut previous_repair = None;
+    let mut repairs = 0u64;
     for step in 1..=head.token.step {
         deadline(until)?;
         if cancelled() {
@@ -869,6 +878,24 @@ fn count_record_failures(
             })?;
         let effects: claude::Effects = serde_json::from_slice(&bytes)
             .map_err(|e| Error::Invariant(format!("Session dependency dispositions: {e}")))?;
+        for repair in effects.text_repairs {
+            deadline(until)?;
+            if cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let position = (repair.record, repair.byte_offset);
+            if repair.count == 0
+                || repair.record > repair.byte_offset
+                || repair.byte_offset >= head.parsed_upto
+                || previous_repair.is_some_and(|previous| previous >= position)
+            {
+                return Err(Error::Invariant(
+                    "invalid Session interpreted-text repair receipt".into(),
+                ));
+            }
+            previous_repair = Some(position);
+            add(&mut repairs, repair.count)?;
+        }
         for record_start in effects.undecodable {
             deadline(until)?;
             if cancelled() {
@@ -894,5 +921,6 @@ fn count_record_failures(
             "Session dependency failure identities disagree with accounting".into(),
         ));
     }
-    add(&mut result.record_errors, count)
+    add(&mut result.record_errors, count)?;
+    add(&mut result.text_repairs, repairs)
 }

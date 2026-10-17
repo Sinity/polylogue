@@ -11,7 +11,7 @@ revisions, parsing or M1 support.
 
 All three schemas are exact SQL-fence extractions from the owning snapshot;
 a drift test compares their text. Archive version 2 retains the immutable import
-identity tuple; embeddings version remains zero and index version is 19. No
+identity tuple; embeddings version remains zero and index version is 20. No
 pre-release durable migration is supplied. Existing schemas and versions are checked before database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 it. Retained state without its coordination lock requires controlled recovery;
@@ -69,8 +69,10 @@ message-local selection to final publication. Whole-cell encoding, decoding and
 SQLite page work remain explicitly unqualified for arbitrarily large cells.
 
 
-The forward index SQL is extracted from the pinned owning specification revision
-`INDEX_SPEC_COMMIT` and checked against `INDEX_SQL_BLAKE3`, copied Markdown, and
+The forward index SQL derives from the pinned owning specification revision
+`INDEX_SPEC_COMMIT` for the native index20 identity encoding contract, with the
+predecessor basis for unadopted schema clauses recorded in
+`schema/provenance.json`. It is checked against `INDEX_SQL_BLAKE3`, copied Markdown, and
 actual SQLite application. Its Message head/body/directory schema replaces the
 old mutable Message columns. The inbox index8 executable comparison remains
 separate and cannot qualify this forward representation. These schema checks do
@@ -176,7 +178,7 @@ primitives do not certify source completeness or select a canonical body.
 
 `begin_compatible_source_selection` publishes a singleton certified source with an indexed membership proof; it requires no independent-import equality witness. With competing candidates it starts a conservative complete-body equality proof. Worker turns visit one immutable field/block/candidate at a time using integrity-ready value summaries. The certificate also binds source evidence, supplied rank, parser/context and explicitly recorded source order. Unknown, unequal, conflict or unsupported operation shapes stay contested; this does not implement nested version ranking or missing-field fill. Each input keeps its own source projection, immutable origin descriptors and exact spans. Equal carriers use the validated content-derived imported InputId as a provenance tie, so both import orders retain the same preferred field origin and all input citations. The typed writer fences the eligible-membership revision (including withdraw/re-add), removal epoch, source predecessor and index generation before selection. A fixed per-body digest owns no payload lease and disappears with that body's bounded retirement.
 
-Startup supports only the known disposable index18 to index19 transition. Under the existing writer lock it readback-verifies and syncs the exact old index/main/WAL/SHM set under `migrations/`, publishes a synced replacement marker, and uses ordinary fresh-index initialization plus retained-input recovery. A validated marker resumes interrupted removal or discards a partial fresh index before any actor work. The marker is removed only after the new schema commits. Catch-up remains unavailable or degraded until its real obligations settle. Archive/blob/recovery authority is preserved; unknown/newer versions, unsafe siblings and busy ownership refuse. This offline transition does not qualify side-by-side serving/swap.
+Startup refuses predecessor index18 and index19 before migration or replacement. A known old schema does not establish reference-preserving replay after identity recipes change. Existing main/WAL/SHM files, retained archive and blobs remain in place. An `index-rebuild.json` marker also refuses, including when the index is missing or partially replaced; this candidate never resumes the retired index18 replacement route. Fresh index20 creation and ordinary reopening are supported. No predecessor transition or online generation swap is qualified.
 
 `message_reference` resolves an opaque Message ID through its stored Session
 relation and distinguishes absent from not-yet-selected bodies. `block_at`
@@ -232,3 +234,5 @@ replacement, short reads and gaps without synthesizing normalized empty output.
 See [the native scope](../../docs/rewrite/observed-source.md).
 
 Attributed notes/corrections and withdrawal use the existing archive note tables and shared `client_request` hash/identity transaction. Replay precedes current-head lookup and returns the original immutable effect. Current-head refusal and retained control-parent validation precede any mutation; revision/withdrawal relations form a DAG. Graph reads admit 128 connected revisions and 256 KiB metadata, and refuse unavailable controls. Authored rows remain archive authority across index reconstruction. This selected path changes no pinned SQL text or schema version and does not qualify general note import/union or portable export.
+
+Index20 stores an optional `native_id_encoding` beside each Session native ID. `wtf8` marks exact non-scalar UTF-16 identity; an unmarked literal spelling is never decoded. Preparation and selected reads validate this pair. Index18 and index19 have no reference-preserving transition in this candidate and are refused rather than replayed as index20.

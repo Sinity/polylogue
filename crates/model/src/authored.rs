@@ -70,38 +70,20 @@ pub fn uuid_v7(id: &str) -> bool {
 pub fn target_reference(value: &str) -> bool {
     value.len() <= 16384 && !value.contains('\0') && target_address(value).is_ok()
 }
-pub fn target_address(value: &str) -> Result<(&str, Option<BlockSlot>), Failure> {
+pub fn target_address(
+    value: &str,
+) -> Result<(std::borrow::Cow<'_, str>, Option<BlockSlot>), Failure> {
     if let Some(id) = value.strip_prefix("message:").filter(|s| !s.is_empty()) {
-        return Ok((id, None));
+        return Ok((std::borrow::Cow::Borrowed(id), None));
     }
-    if let Some(id) = value.strip_prefix("block:") {
-        let (id, tail) = id
-            .rsplit_once(':')
-            .filter(|(id, _)| !id.is_empty())
-            .ok_or_else(|| invalid("invalid exact block reference"))?;
-        let (reasoning, n) = tail.strip_prefix('r').map_or((false, tail), |n| (true, n));
-        let n: u32 = n
-            .parse()
-            .map_err(|_| invalid("unsupported exact block slot"))?;
-        let canonical = if reasoning {
-            format!("r{n}")
-        } else {
-            n.to_string()
-        };
-        if tail != canonical {
-            return Err(invalid("block slot must use its canonical ordinal"));
-        }
-        return Ok((
-            id,
-            Some(if reasoning {
-                BlockSlot::Reasoning(n)
-            } else {
-                BlockSlot::Item(n)
-            }),
-        ));
+    if let Some(reference) = value.strip_prefix("block:") {
+        let (message, slot) = crate::BlockId::address(reference)
+            .ok_or_else(|| invalid("invalid or unsupported exact block reference"))?;
+        return Ok((message, Some(slot)));
     }
     Err(invalid("expected exact message: or block: target"))
 }
+
 pub fn note_reference(value: &str) -> Result<(&str, Option<&str>), Failure> {
     let value = value
         .strip_prefix("note:")

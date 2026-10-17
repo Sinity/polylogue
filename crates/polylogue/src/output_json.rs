@@ -79,6 +79,28 @@ impl<W: Write> Encoder<W> {
         let result = write_value(&mut self.out, value, self.deadline, 0, false);
         self.result(result)
     }
+    /// Retained provider values never pass through serde_json::Value. Privacy
+    /// examines logical strings before the canonical writer emits JSON.
+    pub(crate) fn retained(
+        &mut self,
+        value: &polylogue_model::RetainedJson,
+        preserve: bool,
+    ) -> io::Result<()> {
+        self.check()?;
+        let result = (|| {
+            let (value, _) = retained::present(value, self.deadline, preserve)?;
+            self.out.write_all(&value.canonical())
+        })();
+        self.result(result)
+    }
+    pub(crate) fn opaque(&mut self, value: &polylogue_model::RetainedJson) -> io::Result<()> {
+        self.check()?;
+        let result = (|| {
+            let envelope = retained::envelope(value, self.deadline, false)?;
+            serde_json::to_writer(&mut self.out, &envelope).map_err(Into::into)
+        })();
+        self.result(result)
+    }
     /// Interpretation descriptors must remain byte-semantic identities. If a
     /// string would need masking, refuse instead of changing a raw selector.
     pub(crate) fn preserved(&mut self, value: &Value) -> io::Result<()> {
@@ -352,6 +374,8 @@ impl<W: Write> Write for Escaped<'_, W> {
         self.emit(false)
     }
 }
+
+pub(crate) mod retained;
 
 #[cfg(test)]
 mod tests {

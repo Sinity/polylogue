@@ -25,3 +25,10 @@ pub mod recovery;
 pub use recovery::{
     DurableTier, HeadCoverage, RecoveredWal, RecoveryQualification, RecoveryReason,
 };
+
+pub mod native_id;
+pub mod retained;
+pub use native_id::{NativeId, NativeIdError};
+pub use retained::{
+    JSON_DEPTH_LIMIT, RawNumber, RawString, RetainedError, RetainedJson, TextRepair, TextRepairs,
+};

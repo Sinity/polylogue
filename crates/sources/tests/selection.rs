@@ -1,11 +1,11 @@
 //! The common decoder has no provider attribution policy or descriptor wire.
+use polylogue_model::RetainedJson as Value;
 use polylogue_sources::{
     codex,
     selection::{
         self, Operation, PathPart, Recipe, RecordRange, ScalarError, SelectedRaw, ValueError,
     },
 };
-use serde_json::Value;
 use std::io::{self, Write};
 #[derive(Debug)]
 struct Refusal(&'static str);
@@ -130,18 +130,21 @@ fn provider_scalar_keeps_sink_error_object_and_never_falls_back_to_json() {
     assert!(matches!(error,ValueError::Io(error) if error.raw_os_error()==Some(28)));
 }
 #[test]
-fn codex_historical_wire_and_public_aliases_are_unchanged() {
+fn codex_promoted_recipe_keeps_typed_paths_and_refuses_historical_interpretation() {
     use codex::selection::{Binding, FactSelection, Transform};
     let range: codex::origins::RecordRange = RecordRange::new(3, 15).unwrap();
     let selected = FactSelection {
         codec_version: 1,
-        adapter_version: 1,
+        adapter_version: 2,
         transform: Transform::JsonStringV1,
         inputs: vec![SelectedRaw {
             record: range,
             path: vec![PathPart::Key("payload".into()), PathPart::Index(0)],
         }],
     };
+    let mut historical = selected.clone();
+    historical.adapter_version = 1;
+    assert!(historical.validate().is_err());
     let mut bytes = Vec::new();
     selected
         .write_bound(
@@ -152,7 +155,7 @@ fn codex_historical_wire_and_public_aliases_are_unchanged() {
             &mut bytes,
         )
         .unwrap();
-    assert_eq!(bytes,br#"{"format":"codex-field-origin","binding":{"input":"retained-input","chain":1},"selection":{"codec_version":1,"adapter_version":1,"transform":"JsonStringV1","inputs":[{"record":{"start":3,"end":15},"path":[{"Key":"payload"},{"Index":0}]}]}}"#);
+    assert_eq!(bytes,br#"{"format":"codex-field-origin","binding":{"input":"retained-input","chain":1},"selection":{"codec_version":1,"adapter_version":2,"transform":"JsonStringV1","inputs":[{"record":{"start":3,"end":15},"path":[{"Key":"payload"},{"Index":0}]}]}}"#);
     let mut cursor = selected.cursor();
     assert_eq!(selected.advance(&mut cursor).unwrap(), Some(range));
     assert_eq!(serde_json::to_vec(&cursor).unwrap(), br#"{"next":1}"#);
@@ -168,8 +171,8 @@ fn shared_envelope_writer_preserves_provider_owned_format_and_typed_io_failure()
     selection::write_json(&envelope, &mut bytes).unwrap();
     assert_eq!(bytes, serde_json::to_vec(&envelope).unwrap());
     assert_eq!(
-        serde_json::from_slice::<Value>(&bytes).unwrap()["format"],
-        "synthetic-field-origin"
+        serde_json::from_slice::<Value>(&bytes).unwrap()["format"].as_str(),
+        Some("synthetic-field-origin")
     );
     struct Fail;
     impl Write for Fail {

@@ -3,8 +3,8 @@ use crate::identity::{BlobHash, BlockId, BlockSlot, IdError, MessageId, Origin, 
 use crate::measures::{ErrorReason, ToolOutcome, UnknownReason};
 use crate::time::ProviderTime;
 use crate::types::Usd;
+use crate::{NativeId, RetainedJson};
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -35,8 +35,8 @@ fn nonempty<'de, D: Deserializer<'de>>(de: D) -> Result<String, D::Error> {
     }
     Ok(value)
 }
-fn present_json<'de, D: Deserializer<'de>>(de: D) -> Result<Option<Value>, D::Error> {
-    Value::deserialize(de).map(Some)
+fn present_json<'de, D: Deserializer<'de>>(de: D) -> Result<Option<RetainedJson>, D::Error> {
+    RetainedJson::deserialize(de).map(Some)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -54,6 +54,8 @@ pub struct Session {
     pub origin: Origin,
     #[serde(deserialize_with = "nonempty")]
     pub native_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_id_encoding: Option<String>,
     pub kind: SessionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -123,6 +125,7 @@ impl Session {
             id,
             origin,
             native_id,
+            native_id_encoding: None,
             kind,
             title: None,
             title_at: None,
@@ -269,7 +272,7 @@ pub struct Message {
     /// Provider fields kept as given that have no field of their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "present_json")]
-    pub attrs: Option<Value>,
+    pub attrs: Option<RetainedJson>,
     #[serde(default)]
     pub blocks: Vec<Block>,
 }
@@ -347,14 +350,14 @@ impl Message {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Block {
     pub id: BlockId,
     #[serde(flatten)]
     pub content: BlockContent,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BlockContent {
     Text {
@@ -368,7 +371,7 @@ pub enum BlockContent {
     Other {
         #[serde(rename = "type")]
         type_name: String,
-        data: Value,
+        data: RetainedJson,
     },
 }
 
@@ -390,11 +393,11 @@ pub struct ToolCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
+    pub call_id: Option<NativeId>,
     /// Arguments exactly as given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "present_json")]
-    pub input: Option<Value>,
+    pub input: Option<RetainedJson>,
     /// For shell-like tools, the command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -410,14 +413,14 @@ pub enum ToolOutput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "ToolResultWire", try_from = "ToolResultWire")]
 pub struct ToolResult {
-    pub call_id: Option<String>,
+    pub call_id: Option<NativeId>,
     pub outcome: ToolOutcome,
     pub exit_code: Option<i64>,
     pub duration_ms: Option<u64>,
     pub output: Option<ToolOutput>,
     /// Named structured result channels and provider metadata. These do not
     /// replace or concatenate the separately presented output.
-    pub data: Option<Value>,
+    pub data: Option<RetainedJson>,
 }
 
 /// The export shape of a tool result: `outcome` plus `outcome_reason`, and
@@ -425,7 +428,7 @@ pub struct ToolResult {
 #[derive(Serialize, Deserialize)]
 struct ToolResultWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    call_id: Option<String>,
+    call_id: Option<NativeId>,
     outcome: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     outcome_reason: Option<String>,
@@ -439,7 +442,7 @@ struct ToolResultWire {
     blob: Option<BlobHash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "present_json")]
-    data: Option<Value>,
+    data: Option<RetainedJson>,
 }
 
 impl From<ToolResult> for ToolResultWire {
@@ -522,7 +525,7 @@ pub struct Attachment {
     pub produced_by: Option<BlockId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "present_json")]
-    pub attrs: Option<Value>,
+    pub attrs: Option<RetainedJson>,
     /// Bytes in the blob store; absent when they were never obtained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob: Option<BlobHash>,
@@ -587,7 +590,7 @@ pub struct Link {
     /// Provider facts about the relationship as given (agent type, role, depth, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "present_json")]
-    pub attrs: Option<Value>,
+    pub attrs: Option<RetainedJson>,
 }
 
 /// Something in the timeline that is not a message.
@@ -603,7 +606,7 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_saw: Option<bool>,
     /// The provider's payload as given.
-    pub data: Value,
+    pub data: RetainedJson,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -746,5 +749,63 @@ impl Parsed {
             link.validate()?;
         }
         Ok(())
+    }
+}
+
+// Deserialize from the original JSON text. Serde's internally tagged/flatten
+// buffering passes through a generic value, which cannot retain escaped lone
+// UTF-16 units or exact provider number tokens in opaque fields.
+impl<'de> Deserialize<'de> for Block {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(de)?;
+        #[derive(Deserialize)]
+        struct Header {
+            id: BlockId,
+        }
+        let header: Header = serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+        let content = serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            id: header.id,
+            content,
+        })
+    }
+}
+impl<'de> Deserialize<'de> for BlockContent {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let raw = Box::<serde_json::value::RawValue>::deserialize(de)?;
+        #[derive(Deserialize)]
+        struct Kind {
+            kind: String,
+        }
+        let header: Kind = serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+        let text = raw.get();
+        let result: Result<Self, serde_json::Error> = match header.kind.as_str() {
+            "text" => {
+                #[derive(Deserialize)]
+                struct Text {
+                    text: String,
+                }
+                serde_json::from_str::<Text>(text).map(|v| Self::Text { text: v.text })
+            }
+            "thinking" => serde_json::from_str(text).map(Self::Thinking),
+            "tool_call" => serde_json::from_str(text).map(Self::ToolCall),
+            "tool_result" => serde_json::from_str(text).map(Self::ToolResult),
+            "image" => serde_json::from_str(text).map(Self::Image),
+            "file" => serde_json::from_str(text).map(Self::File),
+            "other" => {
+                #[derive(Deserialize)]
+                struct Other {
+                    #[serde(rename = "type")]
+                    type_name: String,
+                    data: RetainedJson,
+                }
+                serde_json::from_str::<Other>(text).map(|v| Self::Other {
+                    type_name: v.type_name,
+                    data: v.data,
+                })
+            }
+            _ => return Err(serde::de::Error::custom("unknown block kind")),
+        };
+        result.map_err(serde::de::Error::custom)
     }
 }

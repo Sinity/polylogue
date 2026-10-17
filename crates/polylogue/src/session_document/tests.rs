@@ -824,3 +824,28 @@ fn same_session_inputs_share_one_membership_admission() {
         "two-input membership must exceed one request admission: {second:?}"
     );
 }
+
+#[test]
+fn model_metadata_wraps_whole_opaque_values_after_privacy() {
+    let original = polylogue_model::RetainedJson::parse(br#"{"n":1e+02,"s":"\ud800"}"#).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let result = metadata(
+        |e| {
+            e.syntax(b",")?;
+            e.key("attrs")?;
+            opaque_value(e, &original, deadline, true)
+        },
+        deadline,
+    )
+    .unwrap();
+    assert_eq!(result["attrs"]["masked"], false);
+    assert_eq!(result["attrs"]["encoding"], "canonical-json-v1");
+    assert_eq!(
+        polylogue_model::RetainedJson::parse(result["attrs"]["json"].as_str().unwrap().as_bytes())
+            .unwrap(),
+        original
+    );
+    let mut encoder = Encoder::new(Vec::new(), deadline);
+    opaque_value(&mut encoder, &original, deadline, false).unwrap();
+    assert_eq!(encoder.finish().unwrap(), original.canonical());
+}

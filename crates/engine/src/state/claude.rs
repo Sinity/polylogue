@@ -275,6 +275,8 @@ pub struct Effects {
     pub ignored: std::collections::BTreeMap<String, u64>,
     pub unrecognized: Vec<(String, u64)>,
     pub undecodable: Vec<u64>,
+    #[serde(default)]
+    pub text_repairs: Vec<polylogue_model::TextRepair>,
 }
 #[derive(Serialize)]
 struct EffectsRef<'a> {
@@ -284,6 +286,7 @@ struct EffectsRef<'a> {
     ignored: &'a std::collections::BTreeMap<&'static str, u64>,
     unrecognized: &'a [(&'static str, u64)],
     undecodable: &'a [u64],
+    text_repairs: Vec<polylogue_model::TextRepair>,
 }
 
 fn admission(resource: &'static str, required: usize) -> StoreError {
@@ -444,6 +447,7 @@ pub fn encode_step(
             ignored: &counts.ignored,
             unrecognized: &counts.unrecognized,
             undecodable: &counts.undecodable,
+            text_repairs: counts.text_repairs.entries(),
         }),
     )?;
     Ok(encoder.changes)

@@ -2,10 +2,10 @@
 //! before fill/enrichment; projection never scores an enriched Message. The owner
 //! retains (contribution, local block) identity and assigns final BlockIds later.
 use super::keyed::{Contribution, EvidenceUnit, ResponseCell};
+use polylogue_model::RetainedJson as Value;
 use polylogue_model::merge::{BlockField, FinishState, MessageField, UsageField};
 use polylogue_model::{BlockContent, Message};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Field {
@@ -139,7 +139,7 @@ impl ResponseCell {
             .map(|raw| serde_json::from_slice::<Value>(raw).map_err(|e| e.to_string()))
             .transpose()?;
         let finish = match reason {
-            Some(Value::String(reason)) if !reason.is_empty() => FinishState::Finished,
+            Some(Value::String(reason)) if !reason.text().is_empty() => FinishState::Finished,
             _ => FinishState::Unknown,
         };
         Ok(HeaderUnit {
@@ -359,8 +359,9 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
     match index {
         0 => {
             if let Some(object) = raw.as_object() {
-                for (name, value) in object {
-                    let field = match name.as_str() {
+                for (native_name, value) in object {
+                    let name = native_name.as_str();
+                    let field = match name {
                         "input_tokens" => Some(UsageField::Input),
                         "output_tokens" => Some(UsageField::Output),
                         "cache_read_input_tokens" => Some(UsageField::CacheRead),
@@ -379,10 +380,11 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
                                 revision,
                             )
                         }
-                    } else if matches!(name.as_str(), "cache_creation" | "output_tokens_details") {
+                    } else if matches!(name, "cache_creation" | "output_tokens_details") {
                         if let Some(members) = value.as_object() {
-                            for (key, value) in members {
-                                let field = match (name.as_str(), key.as_str()) {
+                            for (native_key, value) in members {
+                                let key = native_key.as_str();
+                                let field = match (name, key) {
                                     ("cache_creation", "ephemeral_5m_input_tokens") => {
                                         Some(UsageField::CacheWrite5m)
                                     }
@@ -458,8 +460,8 @@ pub(super) fn record(
         )
     }
     if v.get("parentUuid")
-        .and_then(Value::as_str)
-        .is_some_and(|s| !s.is_empty())
+        .and_then(Value::native)
+        .is_some_and(|s| !s.as_str().is_empty())
     {
         add(
             &mut result.facts,
@@ -484,8 +486,9 @@ pub(super) fn record(
         )
     }
     if let Some(object) = v.as_object() {
-        for (key, value) in object {
-            match key.as_str() {
+        for (native_key, value) in object {
+            let key = native_key.as_str();
+            match key {
                 "type"
                 | "uuid"
                 | "parentUuid"
@@ -514,12 +517,14 @@ pub(super) fn record(
                     .push(CountingObligation::UnmappedField { path: path(&[key]) }),
                 "origin" => {
                     if let Some(origin) = value.as_object() {
-                        for (name, value) in origin {
+                        for (native_name, value) in origin {
+                            let name = native_name.as_str();
                             if name == "kind" {
                                 continue;
                             }
                             if name == "name" {
-                                if origin.get("kind").and_then(Value::as_str) != Some("peer")
+                                if value_of_origin(origin, "kind").and_then(Value::as_str)
+                                    != Some("peer")
                                     && value.is_string()
                                 {
                                     result.obligations.push(CountingObligation::UnmappedField {
@@ -537,15 +542,18 @@ pub(super) fn record(
         }
     }
     if let Some(message) = v.get("message").and_then(Value::as_object) {
-        for key in message.keys() {
+        for native_key in message.keys() {
+            let key = native_key.as_str();
             if !matches!(
-                key.as_str(),
+                key,
                 "id" | "role" | "type" | "model" | "content" | "usage" | "stop_reason" | "ttftMs"
             ) {
                 if key == "stop_sequence" {
                     add(
                         &mut result.facts,
-                        Field::SelectedExtra { key: key.clone() },
+                        Field::SelectedExtra {
+                            key: key.to_owned(),
+                        },
                         path(&["message", key]),
                         revision,
                     )
@@ -571,7 +579,13 @@ pub(super) fn record(
             vec!["message".into(), "content".into(), index.to_string()]
         };
         let raw = content
-            .and_then(|c| if c.is_string() { Some(c) } else { c.get(index) })
+            .and_then(|c| {
+                if c.is_string() {
+                    Some(c)
+                } else {
+                    c.as_array().and_then(|a| a.get(index))
+                }
+            })
             .unwrap_or(&Value::Null);
         if empty {
             if !raw.is_string() && !raw.get("text").is_some_and(Value::is_string) {
@@ -703,10 +717,11 @@ pub(super) fn record(
             .as_object()
             .filter(|_| !matches!(block, BlockContent::Other { .. }))
         {
-            for key in object.keys() {
-                if !known.contains(&key.as_str()) {
+            for native_key in object.keys() {
+                let key = native_key.as_str();
+                if !known.contains(&key) {
                     let mut p = base.clone();
-                    p.push(key.clone());
+                    p.push(key.to_owned());
                     extra(&mut result.facts, Some(local), p, revision)
                 }
             }
@@ -766,4 +781,11 @@ impl SelectedUnit {
         .cloned()
         .ok_or_else(|| "Claude selected fact lost its raw value".into())
     }
+}
+
+fn value_of_origin<'a>(
+    object: &'a std::collections::BTreeMap<polylogue_model::NativeId, Value>,
+    key: &str,
+) -> Option<&'a Value> {
+    object.get(&polylogue_model::NativeId::unicode(key))
 }

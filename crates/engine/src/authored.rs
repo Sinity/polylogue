@@ -107,10 +107,10 @@ pub fn current_basis(
     cancel: &mut dyn FnMut() -> bool,
 ) -> Result<TextBasis, Error> {
     let (id, slot) = authored::target_address(reference).map_err(Error::Authored)?;
-    match reader.message_reference(id, 65536)? {
+    match reader.message_reference(id.as_ref(), 65536)? {
         MessageLookup::Ready(m) => {
             let basis = selected_basis(&m, slot.as_ref(), reference, until, cancel)?;
-            let current = match reader.message_reference(id, 65536)? {
+            let current = match reader.message_reference(id.as_ref(), 65536)? {
                 MessageLookup::Ready(m) => m,
                 _ => return Err(Error::MessagePredecessorChanged),
             };

@@ -27,6 +27,9 @@ fn matches(plan: &SessionQuery, h: &SessionHeader) -> bool {
 }
 fn row(h: &SessionHeader, known: u64) -> Value {
     let mut row = json!({"id":h.id.as_str(),"origin":h.origin.as_str(),"native_id":h.native_id,"kind":h.kind,"known_messages":known});
+    if let Some(encoding) = &h.native_id_encoding {
+        row["native_id_encoding"] = json!(encoding);
+    }
     for (key, value) in [
         ("title", &h.title),
         ("cwd", &h.cwd),

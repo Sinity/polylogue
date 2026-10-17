@@ -15,7 +15,7 @@ use polylogue_store::{
     parser_state::{Budget, Snapshot, Token},
 };
 use serde::{Deserialize, Serialize};
-pub const RECIPE: u32 = 1;
+pub const RECIPE: u32 = 2;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {

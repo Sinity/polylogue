@@ -84,7 +84,10 @@ fn mutate_then_fail_cannot_resume_or_finalize_and_restart_replays_uncommitted_at
     assert!(driver.advance(input, budget()).is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(driver.failure().unwrap().offset, 50);
-    assert_eq!(driver.failure().unwrap().error, "state read failed");
+    assert_eq!(
+        driver.failure().unwrap().error.to_string(),
+        "state read failed"
+    );
     assert_eq!(driver.parsed_upto(), 50);
     assert_eq!(driver.counts().framed, 1);
     assert_eq!(
@@ -126,7 +129,7 @@ fn byte_eof_does_not_mask_finalization_failure() {
     let error = failed.output.unwrap_err();
     assert_eq!(error.phase, FailurePhase::Finalization);
     assert_eq!(error.offset, 27);
-    assert_eq!(error.error, "state finalization failed");
+    assert_eq!(error.error.to_string(), "state finalization failed");
     assert_eq!(finishes.load(Ordering::SeqCst), 1);
     assert_eq!(failed.counts.used, 1);
 }
@@ -145,7 +148,7 @@ fn array_and_row_routes_stop_on_the_same_provider_error() {
     let rows = (1..=3).map(|n| Row {
         table: "synthetic",
         rowid: n,
-        value: json!({"key":n}),
+        value: json!({"key":n}).into(),
     });
     let failed = drive_rows(reader, rows);
     assert_eq!(failed.output.unwrap_err().offset, 2);

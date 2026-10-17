@@ -8,19 +8,19 @@ use std::io::{self, Write};
 pub const CODEC_VERSION: u32 = 1;
 /// Source interpretation recipe. Unrelated parser-cell layout changes must not
 /// make immutable historical field descriptors unreadable.
-pub const ADAPTER_RECIPE_VERSION: u32 = 1;
+pub const ADAPTER_RECIPE_VERSION: u32 = 2;
 
 pub use crate::selection::{Cursor, PathPart, SelectedRaw};
 use crate::selection::{JsonWriteError, Operation, Recipe, ScalarError};
+use polylogue_model::RetainedJson as Value;
 use polylogue_model::{
     BlockContent, BlockSlot, ToolCall, ToolResult,
     merge::{BlockField, Slot},
 };
-use serde_json::Value;
 pub type ValueError<E> = crate::selection::ValueError<E, Error>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Transform {
-    /// Decode as the adapter's serde_json::Value; retain an opaque typed value,
+    /// Decode as the adapter's polylogue_model::RetainedJson; retain an opaque typed value,
     /// not raw numeric spelling or raw content-version canonical bytes.
     JsonValueV1,
     /// Decode the one selected JSON string.
@@ -173,7 +173,7 @@ impl Recipe for FactSelection {
                         .or_else(|| value.get("input"))
                         .map(|v| match v {
                             Value::String(s) => {
-                                serde_json::from_str(s).unwrap_or_else(|_| v.clone())
+                                super::scalar_json(s.text()).unwrap_or_else(|| v.clone())
                             }
                             _ => v.clone(),
                         });
@@ -187,7 +187,7 @@ impl Recipe for FactSelection {
                             .cloned()
                     })
                     .map(|v| match v {
-                        Value::String(s) => s,
+                        Value::String(s) => s.text().to_owned(),
                         Value::Array(v) => v
                             .iter()
                             .filter_map(Value::as_str)
@@ -200,7 +200,7 @@ impl Recipe for FactSelection {
                     call_id: value
                         .get("call_id")
                         .and_then(Value::as_str)
-                        .map(str::to_owned),
+                        .map(polylogue_model::NativeId::unicode),
                     input,
                     command,
                 })
@@ -233,7 +233,7 @@ impl Recipe for FactSelection {
                     call_id: value
                         .get("call_id")
                         .and_then(Value::as_str)
-                        .map(str::to_owned),
+                        .map(polylogue_model::NativeId::unicode),
                     outcome,
                     exit_code: exit,
                     duration_ms: super::native_duration(value),

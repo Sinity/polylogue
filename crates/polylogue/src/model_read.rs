@@ -270,7 +270,7 @@ fn select(reader: &ReadHandle, reference: &str) -> Result<Selection, Value> {
     let (exact, slot) = if reference.starts_with("block:") {
         let (id, slot) = polylogue_model::authored::target_address(reference)
             .map_err(|_| refusal("invalid_block_reference"))?;
-        let m = message(reader, id)?;
+        let m = message(reader, id.as_ref())?;
         let slot = slot.expect("block address");
         let b = stored(m.block(slot.clone()))?.ok_or_else(|| refusal("block_unavailable"))?;
         if format!("block:{}", block_id(&m, &b.slot)?) != reference {
@@ -852,6 +852,10 @@ fn run(
     page["zone"] = json!("UTC");
     page["warning"] = json!(WARNING);
     page["session"] = json!({"id":h.id.as_str(),"origin":h.origin.as_str(),"display_title":title,"title_source":if title.is_some(){"provider"}else{"unknown"}});
+    if let Some(attrs) = &h.attrs {
+        page["session"]["attrs"] = crate::output_json::retained::envelope(attrs, until, false)
+            .map_err(|_| unavailable("session_attrs_privacy_unavailable"))?;
+    }
     page["up_to_date"] = json!(q.up_to_date);
     page["recovery"] = json!(recovery);
     page["omitted"] = omitted.value(view);
@@ -956,17 +960,31 @@ fn run(
                             if metadata_bytes > 4 * MAX_BUDGET as usize {
                                 return Err(unavailable("origin_witness_metadata_admission"));
                             }
-                            let value: Value = serde_json::from_slice(&range.bytes)
+                            let descriptor = polylogue_model::RetainedJson::parse(&range.bytes)
                                 .map_err(|_| unavailable("invalid_origin_witness"))?;
-                            let mut bytes = Vec::new();
-                            let mut encoder = crate::output_json::Encoder::new(&mut bytes, until);
-                            encoder
-                                .preserved(&value)
-                                .map_err(|_| unavailable("origin_witness_requires_masking"))?;
-                            encoder
-                                .finish()
-                                .map_err(|_| unavailable("origin_witness_requires_masking"))?;
-                            origins.push(value);
+                            let name = match &entry.address {
+                                polylogue_store::contributions::BlockFieldAddress::Field(kind) => {
+                                    format!(
+                                        "blocks[{i}].{}",
+                                        crate::session_document::block_name(*kind)
+                                    )
+                                }
+                                polylogue_store::contributions::BlockFieldAddress::Extra(key) => {
+                                    format!("blocks[{i}].data.{key}")
+                                }
+                            };
+                            let value = polylogue_model::RetainedJson::Object(
+                                [
+                                    ("field".into(), polylogue_model::RetainedJson::from(name)),
+                                    ("origin".into(), descriptor),
+                                ]
+                                .into_iter()
+                                .collect(),
+                            );
+                            origins.push(
+                                crate::output_json::retained::envelope(&value, until, true)
+                                    .map_err(|_| unavailable("origin_witness_requires_masking"))?,
+                            );
                         }
                     } else {
                         return Err(unavailable("unresolved_origin_witness"));

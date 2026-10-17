@@ -633,7 +633,7 @@ impl<V: ReadView> KeyedRecords<V> {
             self.put(Key::BlockOrder(i), Cell::Position(next.0, next.1));
             if let BlockContent::ToolCall(c) = &v.content {
                 if let Some(id) = &c.call_id {
-                    self.put(Key::CallBlock(id.clone(), i, b), Cell::Present);
+                    self.put(Key::CallBlock(id.as_str().to_owned(), i, b), Cell::Present);
                 }
             }
             self.put(Key::Block(i, b), Cell::Block(v));
@@ -652,7 +652,7 @@ impl<V: ReadView> KeyedRecords<V> {
         let b = polylogue_model::Block { id, content };
         if let BlockContent::ToolCall(c) = &b.content {
             if let Some(id) = &c.call_id {
-                self.put(Key::CallBlock(id.clone(), i, n), Cell::Present);
+                self.put(Key::CallBlock(id.as_str().to_owned(), i, n), Cell::Present);
             }
         }
         self.put(Key::Block(i, n), Cell::Block(b));
@@ -879,6 +879,7 @@ impl<V: ReadView> RecordParser for KeyedRecords<V> {
         if let Some(e) = &self.failure {
             return Err(e.clone());
         }
+        super::require_scalar_json(&rec.value)?;
         // Capture exact provider bytes before decoded Value can normalize numbers.
         if !rec.table.is_empty() {
             return Err("Codex SQLite row origins are not implemented".into());
@@ -1113,17 +1114,20 @@ impl<V: ReadView> KeyedRecords<V> {
             if let Some(BlockContent::ToolCall(old)) = previous {
                 if let Some(id) = old.call_id {
                     let new = match &content {
-                        BlockContent::ToolCall(new) => new.call_id.as_deref(),
+                        BlockContent::ToolCall(new) => new.call_id.as_ref().map(NativeId::as_str),
                         _ => None,
                     };
                     if new != Some(id.as_str()) {
-                        self.remove(Key::CallBlock(id.clone(), i, block));
-                        if self.call(&id).is_some_and(|call| call.at == (i, block)) {
-                            self.wrapper_remove(&id);
-                            self.remove(Key::Call(id.clone()));
-                            self.remove(Key::CallWitness(id.clone()));
+                        self.remove(Key::CallBlock(id.as_str().to_owned(), i, block));
+                        if self
+                            .call(id.as_str())
+                            .is_some_and(|call| call.at == (i, block))
+                        {
+                            self.wrapper_remove(id.as_str());
+                            self.remove(Key::Call(id.as_str().to_owned()));
+                            self.remove(Key::CallWitness(id.as_str().to_owned()));
                             if let Some(Cell::Position(message, _)) =
-                                self.remove(Key::PendingStdin(id.clone()))
+                                self.remove(Key::PendingStdin(id.as_str().to_owned()))
                             {
                                 self.pin(format!("stdin:{id}"), Some(message), None);
                             }
@@ -1133,7 +1137,10 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             if let BlockContent::ToolCall(new) = &content {
                 if let Some(id) = &new.call_id {
-                    self.put(Key::CallBlock(id.clone(), i, block), Cell::Present);
+                    self.put(
+                        Key::CallBlock(id.as_str().to_owned(), i, block),
+                        Cell::Present,
+                    );
                 }
             }
             self.edit_block(i, block, |value| *value = content);
@@ -1559,9 +1566,11 @@ impl<V: ReadView> KeyedRecords<V> {
             .and_then(|s| s.get("subagent"))
             .and_then(|s| s.get("thread_spawn"));
         self.s.mode = match meta.get("source") {
-            Some(Value::String(src)) if src == "cli" || src == "vscode" => SessionMode::Interactive,
-            Some(Value::String(src)) if src == "exec" => SessionMode::Exec,
-            Some(Value::Object(o)) if o.contains_key("subagent") => SessionMode::Subagent,
+            Some(Value::String(src)) if src.text() == "cli" || src.text() == "vscode" => {
+                SessionMode::Interactive
+            }
+            Some(Value::String(src)) if src.text() == "exec" => SessionMode::Exec,
+            Some(Value::Object(o)) if o.contains_key(&"subagent".into()) => SessionMode::Subagent,
             _ => SessionMode::Unknown,
         };
         let mut s = match Session::new(
@@ -1761,7 +1770,9 @@ impl<V: ReadView> KeyedRecords<V> {
             let p = self.effective(p);
             self.edit(i, |m| {
                 if let Some(phase) = p.get("phase") {
-                    m.attrs = Some(serde_json::json!({ "phase": phase }));
+                    m.attrs = Some(Value::Object(
+                        [("phase".into(), phase.clone())].into_iter().collect(),
+                    ));
                 }
             });
             let content = self.message_content(&p);
@@ -1975,7 +1986,7 @@ impl<V: ReadView> KeyedRecords<V> {
         let call_id = p.get("call_id").and_then(Value::as_str).map(str::to_owned);
         let input = match p.get("arguments").or_else(|| p.get("input")) {
             Some(Value::String(s)) => {
-                Some(serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone())))
+                Some(super::scalar_json(s.text()).unwrap_or_else(|| Value::String(s.clone())))
             }
             Some(v) => Some(v.clone()),
             None => None,
@@ -1990,7 +2001,7 @@ impl<V: ReadView> KeyedRecords<V> {
                         .filter_map(Value::as_str)
                         .collect::<Vec<_>>()
                         .join(" "),
-                    Value::String(s) => s.clone(),
+                    Value::String(s) => s.text().to_owned(),
                     other => other.to_string(),
                 })
         } else {
@@ -2009,7 +2020,7 @@ impl<V: ReadView> KeyedRecords<V> {
             i,
             BlockContent::ToolCall(ToolCall {
                 tool: recorded_name,
-                call_id: call_id.clone(),
+                call_id: call_id.as_ref().map(|id| NativeId::unicode(id)),
                 input,
                 command,
             }),
@@ -2127,10 +2138,11 @@ impl<V: ReadView> KeyedRecords<V> {
                 _ => None,
             };
             let old_call = old.as_ref().and_then(|result| result.call_id.clone());
-            if old_call.as_deref() != Some(call_id.as_str()) {
+            if old_call.as_ref().map(NativeId::as_str) != Some(call_id.as_str()) {
                 if let Some(old_call) = old_call {
-                    if self.position(Key::Result(old_call.clone())) == Some((i, block)) {
-                        self.remove(Key::Result(old_call));
+                    if self.position(Key::Result(old_call.as_str().to_owned())) == Some((i, block))
+                    {
+                        self.remove(Key::Result(old_call.as_str().to_owned()));
                     }
                 }
                 self.remove_evidence(i, 1, 0);
@@ -2162,7 +2174,7 @@ impl<V: ReadView> KeyedRecords<V> {
             self.edit_block(i, block, |value| {
                 *value = BlockContent::ToolResult(ToolResult {
                     data: None,
-                    call_id: Some(call_id.clone()),
+                    call_id: Some(NativeId::unicode(&call_id)),
                     outcome: outcome.clone(),
                     exit_code,
                     duration_ms: duration,
@@ -2291,7 +2303,7 @@ impl<V: ReadView> KeyedRecords<V> {
             BlockSlot::Item(0),
             BlockContent::ToolResult(ToolResult {
                 data: None,
-                call_id: Some(call_id.clone()),
+                call_id: Some(NativeId::unicode(&call_id)),
                 outcome,
                 exit_code,
                 duration_ms: duration,
@@ -2741,7 +2753,8 @@ impl<V: ReadView> KeyedRecords<V> {
                                                     "native_status_conflict",
                                                     at,
                                                     false,
-                                                    &serde_json::json!({"fields":fields.conflicts}),
+                                                    &serde_json::json!({"fields":fields.conflicts})
+                                                        .into(),
                                                 );
                                             }
                                         }
@@ -2857,7 +2870,7 @@ impl<V: ReadView> KeyedRecords<V> {
                     mi,
                     BlockContent::ToolCall(ToolCall {
                         tool: Some(tool.into()),
-                        call_id: Some(child_id.clone()),
+                        call_id: Some(NativeId::unicode(&child_id)),
                         input: Some(item.clone()),
                         command,
                     }),
@@ -2879,7 +2892,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 }
                 let result = BlockContent::ToolResult(ToolResult {
                     data: None,
-                    call_id: Some(child_id.clone()),
+                    call_id: Some(NativeId::unicode(&child_id)),
                     outcome,
                     exit_code: exit,
                     duration_ms: duration,

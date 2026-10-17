@@ -3,8 +3,8 @@
 //! Response reconstruction, ordinary-index reflow, digest work and publication
 //! remain explicit obligations over addressable contribution cells.
 use crate::frame::{IgnoredKind, Record, RecordOutcome, RecordParser};
+use polylogue_model::RetainedJson as Value;
 use polylogue_model::*;
-use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 pub mod keyed;
 pub mod origins;
@@ -13,7 +13,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 7;
+pub const PARSER_VERSION: u32 = 8;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -44,6 +44,14 @@ fn origin() -> Origin {
 }
 fn sid(native: &str) -> Option<SessionId> {
     SessionId::new(&origin(), native).ok()
+}
+/// Parser-cell keys use strict NativeId JSON, never the transport spelling alone.
+/// String and encoded-object keys remain disjoint, including literal `~u:` IDs.
+fn native_key(native: &NativeId) -> Result<String, String> {
+    serde_json::to_string(native).map_err(|e| e.to_string())
+}
+fn key_native(key: &str) -> Result<NativeId, String> {
+    serde_json::from_str(key).map_err(|e| e.to_string())
 }
 fn provider_time(at: Timestamp) -> ProviderTime {
     ProviderTime::Intrinsic {
@@ -111,6 +119,18 @@ pub struct KeyedRecords<R: ReadView> {
 }
 impl<R: ReadView> KeyedRecords<R> {
     pub fn new(ctx: FileCtx, view: R) -> Result<Self, String> {
+        if let FileCtx::Subagent {
+            meta: Some(meta), ..
+        } = &ctx
+        {
+            if meta
+                .get("parentAgentId")
+                .and_then(Value::native)
+                .is_some_and(|n| n.encoding().is_some())
+            {
+                return Err("non-scalar subagent parent Session routing is unsupported".into());
+            }
+        }
         let header = view.header().map_err(|e| e.to_string())?;
         Ok(Self {
             ctx,
@@ -250,9 +270,10 @@ impl<R: ReadView> KeyedRecords<R> {
                 }
                 let parent = v
                     .get("parentUuid")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
+                    .and_then(Value::native)
+                    .map(native_key)
+                    .transpose()?
+                    .unwrap_or_default();
                 if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
                     // A sidechain subtree in a main file: its own session, named by its root.
                     let known = match self.sides.get(&parent) {
@@ -264,7 +285,11 @@ impl<R: ReadView> KeyedRecords<R> {
                     } else {
                         let side = match v.get("agentId").and_then(Value::as_str) {
                             Some(agent) => format!("{stem}/{agent}"),
-                            None => format!("{stem}~side-{uuid}"),
+                            None => {
+                                let original = key_native(uuid)?;
+                                let scalar = original.unicode_str().ok_or("non-scalar sidechain root needs scoped native Session identity")?;
+                                format!("{stem}~side-{scalar}")
+                            }
                         };
                         self.add_link(
                             LinkKind::Subagent,
@@ -291,7 +316,7 @@ impl<R: ReadView> KeyedRecords<R> {
                     let Some(src) = ff.get("sessionId").and_then(Value::as_str) else {
                         return Ok(None);
                     };
-                    let Some(msg) = ff.get("messageUuid").and_then(Value::as_str) else {
+                    let Some(msg) = ff.get("messageUuid").and_then(Value::native) else {
                         return Ok(None);
                     };
                     self.add_link(
@@ -302,7 +327,7 @@ impl<R: ReadView> KeyedRecords<R> {
                         "forkedFrom",
                         None,
                     )?;
-                    return Ok(Some((i, Some((src.into(), msg.into())))));
+                    return Ok(Some((i, Some((src.into(), native_key(msg)?)))));
                 }
                 if !sid_field.is_empty() && sid_field != stem {
                     self.add_link(
@@ -419,13 +444,16 @@ impl<R: ReadView> KeyedRecords<R> {
             end: rec.end,
         };
         let incoming = &rec.value;
-        let Some(uuid) = incoming
+        validate_structural_keys(incoming)?;
+        let Some(uuid_native) = incoming
             .get("uuid")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
+            .and_then(Value::native)
+            .filter(|s| !s.as_str().is_empty())
         else {
             return Ok(RecordOutcome::Unrecognized("message record without uuid"));
         };
+        let uuid_key = native_key(uuid_native)?;
+        let uuid = uuid_key.as_str();
         let Some((si, copy)) = self.route(incoming, uuid)? else {
             return Ok(RecordOutcome::Unrecognized("unroutable record"));
         };
@@ -442,7 +470,7 @@ impl<R: ReadView> KeyedRecords<R> {
             return Err("committed Claude contribution UUID disagrees with its address".into());
         }
         let raw = raw::overlay(old.as_ref().map(|c| c.raw.as_slice()), rec.bytes)?;
-        let v: Value = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+        let v = raw::decode_effective(&raw, incoming)?;
         if v.get("type").and_then(Value::as_str) != Some(ty) {
             return Ok(RecordOutcome::Unrecognized("UUID record type conflict"));
         }
@@ -452,13 +480,24 @@ impl<R: ReadView> KeyedRecords<R> {
             ));
         };
         let key = if ty == "assistant" {
-            let request = v.get("requestId").and_then(Value::as_str).unwrap_or("");
-            match (msg.get("id").and_then(Value::as_str), request) {
-                (None, "") => ResponseKey::new(uuid, ""),
-                (id, req) => ResponseKey::new(id.unwrap_or(""), req),
+            let empty = NativeId::unicode("");
+            let request = v.get("requestId").and_then(Value::native).unwrap_or(&empty);
+            let response = msg.get("id").and_then(Value::native);
+            ResponseKey {
+                role: Role::Assistant,
+                response: native_key(response.unwrap_or(if request.as_str().is_empty() {
+                    uuid_native
+                } else {
+                    &empty
+                }))?,
+                request: native_key(request)?,
             }
         } else {
-            ResponseKey::user(uuid)
+            ResponseKey {
+                role: Role::User,
+                response: uuid.to_owned(),
+                request: native_key(&NativeId::unicode(""))?,
+            }
         };
         if address
             .as_ref()
@@ -487,7 +526,7 @@ impl<R: ReadView> KeyedRecords<R> {
                         "missing committed Claude response referenced by UUID address".into(),
                     );
                 }
-                let id = MessageId::new(self.sessions[si].session.id.clone(), uuid)
+                let id = MessageId::from_native(self.sessions[si].session.id.clone(), uuid_native)
                     .map_err(|e| e.to_string())?;
                 let context = selection::AuthorContext {
                     role: if ty == "assistant" {
@@ -532,7 +571,11 @@ impl<R: ReadView> KeyedRecords<R> {
                 message.from_name = from_name;
                 message.at = parse_time(v.get("timestamp"));
                 if let Some((source, msg)) = &copy {
-                    message.inherited_from = sid(source).and_then(|s| MessageId::new(s, msg).ok());
+                    message.inherited_from = sid(source).and_then(|s| {
+                        key_native(msg)
+                            .ok()
+                            .and_then(|n| MessageId::from_native(s, &n).ok())
+                    });
                     message.copy_origin = Some(CopyOrigin::Known);
                 }
                 ResponseCell {
@@ -599,14 +642,16 @@ impl<R: ReadView> KeyedRecords<R> {
             response.message.parent = None;
             if let Some(parent_uuid) = v
                 .get("parentUuid")
-                .and_then(Value::as_str)
-                .filter(|p| !p.is_empty())
+                .and_then(Value::native)
+                .filter(|p| !p.as_str().is_empty())
             {
-                let resolved = self.address(&native, parent_uuid)?.filter(|parent| {
-                    parent.item == 0
-                        && parent.message != response.message.id
-                        && parent.message.session() == response.message.id.session()
-                });
+                let resolved = self
+                    .address(&native, &native_key(parent_uuid)?)?
+                    .filter(|parent| {
+                        parent.item == 0
+                            && parent.message != response.message.id
+                            && parent.message.session() == response.message.id.session()
+                    });
                 let parent_fact = projected.facts.iter_mut().find(|fact| {
                     matches!(
                         fact.field,
@@ -711,7 +756,7 @@ impl<R: ReadView> KeyedRecords<R> {
                 let attrs = response
                     .message
                     .attrs
-                    .get_or_insert_with(|| serde_json::json!({}))
+                    .get_or_insert_with(|| Value::Object(Default::default()))
                     .as_object_mut()
                     .ok_or("Claude normalized extras carrier is not an object")?;
                 attrs.insert("stop_sequence".into(), value);
@@ -720,10 +765,19 @@ impl<R: ReadView> KeyedRecords<R> {
                 if let Some(value) = raw::optional_field(rec.bytes, path)? {
                     response.selected[index] = Some(raw::canonical(value)?);
                     response.selected_from[index] = Some(item);
-                    let semantic: Value =
-                        serde_json::from_slice(value).map_err(|e| e.to_string())?;
+                    let semantic = path
+                        .iter()
+                        .try_fold(&v, |node, key| node.get(key))
+                        .ok_or("Claude supplied metadata lost its retained value")?;
+                    // Typed metadata is a text projection too; keep diagnostics
+                    // on the original record rather than a canonical reparse.
+                    if index == 0 {
+                        let _ = semantic.get("service_tier").and_then(Value::text);
+                    } else {
+                        let _ = semantic.text();
+                    }
                     response.selected_facts[index] =
-                        projection::selected(index, &semantic, revision);
+                        projection::selected(index, semantic, revision);
                     let selected = crate::selection::SelectedRaw {
                         record: source_range,
                         path: path
@@ -835,7 +889,7 @@ impl<R: ReadView> KeyedRecords<R> {
                 at,
                 after_message,
                 model_saw: None,
-                data: rec.value.clone(),
+                data: rec.value.opaque(),
             },
         ));
         Ok(RecordOutcome::Used)
@@ -916,7 +970,7 @@ fn usage_of(u: &Value) -> Usage {
 
 fn text_of(v: &Value) -> Option<String> {
     match v {
-        Value::String(s) => Some(s.clone()),
+        Value::String(s) => Some(s.text().to_owned()),
         Value::Array(a) => {
             let parts: Vec<&str> = a
                 .iter()
@@ -934,7 +988,9 @@ fn text_of(v: &Value) -> Option<String> {
 
 fn blocks_of(record: &Value, content: &Value) -> Vec<BlockContent> {
     match content {
-        Value::String(s) => vec![BlockContent::Text { text: s.clone() }],
+        Value::String(s) => vec![BlockContent::Text {
+            text: s.text().to_owned(),
+        }],
         Value::Array(items) => items
             .iter()
             .enumerate()
@@ -960,10 +1016,10 @@ fn blocks_of(record: &Value, content: &Value) -> Vec<BlockContent> {
                         data: it.get("data").and_then(Value::as_str).map(str::to_owned),
                     }),
                     "tool_use" => {
-                        let input = it.get("input").cloned();
+                        let input = it.get("input").map(Value::opaque);
                         BlockContent::ToolCall(ToolCall {
                             tool: it.get("name").and_then(Value::as_str).map(str::to_owned),
-                            call_id: it.get("id").and_then(Value::as_str).map(str::to_owned),
+                            call_id: it.get("id").and_then(Value::native).cloned(),
                             command: input
                                 .as_ref()
                                 .and_then(|v| v.get("command"))
@@ -990,7 +1046,7 @@ fn blocks_of(record: &Value, content: &Value) -> Vec<BlockContent> {
                     }),
                     other => BlockContent::Other {
                         type_name: other.to_owned(),
-                        data: it.clone(),
+                        data: it.opaque(),
                     },
                 },
             )
@@ -1019,6 +1075,25 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
         &mut self,
         rec: &Record<'_>,
     ) -> std::result::Result<RecordOutcome<Self::Ignored>, Self::Error> {
+        for field in ["sessionId", "agentId", "continuedInSessionId"] {
+            if rec
+                .value
+                .get(field)
+                .and_then(Value::native)
+                .is_some_and(|n| n.encoding().is_some())
+            {
+                return Err("non-scalar source-derived Session routing is unsupported".into());
+            }
+        }
+        if rec
+            .value
+            .get("forkedFrom")
+            .and_then(|f| f.get("sessionId"))
+            .and_then(Value::native)
+            .is_some_and(|n| n.encoding().is_some())
+        {
+            return Err("non-scalar fork Session routing is unsupported".into());
+        }
         Ok({
             let ty = rec.value.get("type").and_then(Value::as_str).unwrap_or("");
             match ty {
@@ -1341,4 +1416,42 @@ pub fn body_references(record: &Value) -> Vec<(String, polylogue_model::BlobHash
             ))
         })
         .collect()
+}
+
+fn validate_structural_keys(incoming: &Value) -> Result<(), String> {
+    for object in [
+        incoming.as_object(),
+        incoming.get("message").and_then(Value::as_object),
+        incoming.get("toolUseResult").and_then(Value::as_object),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if object.keys().any(|key| key.encoding().is_some()) {
+            return Err("non-scalar Claude structural field names need an encoded selector".into());
+        }
+    }
+    let message = incoming.get("message");
+    let usage = message.and_then(|m| m.get("usage"));
+    let mut structural = vec![
+        incoming.get("origin"),
+        usage,
+        usage.and_then(|u| u.get("cache_creation")),
+        usage.and_then(|u| u.get("output_tokens_details")),
+    ];
+    if let Some(content) = message
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+    {
+        structural.extend(content.iter().map(Some));
+    }
+    if structural
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .any(|o| o.keys().any(|k| k.encoding().is_some()))
+    {
+        return Err("non-scalar Claude structural field names need an encoded selector".into());
+    }
+    Ok(())
 }

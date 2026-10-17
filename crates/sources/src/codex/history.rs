@@ -1,11 +1,11 @@
 //! Pure mapping for the pinned native CommandExecution conversion. SQL and
 //! snapshot acquisition belong to store; unsupported item schemas stay visible.
+use polylogue_model::RetainedJson as Value;
 use polylogue_model::{
     SessionId,
     tool_item::{Command, HistoryRow, Operation, ToolOrigin},
 };
-use serde_json::Value;
-pub const PARSER_VERSION: u32 = 1;
+pub const PARSER_VERSION: u32 = 2;
 pub const SCHEMA: &str = "codex-rust-v0.162.1/thread-history-migrations-1-through-8";
 
 pub fn command(
@@ -16,6 +16,7 @@ pub fn command(
     origin: ToolOrigin,
     ui: bool,
 ) -> Result<Operation, String> {
+    super::require_scalar_json(item)?;
     let get = |core: &str, display: &str| item.get(if ui { display } else { core });
     let id = item
         .get("id")
@@ -143,6 +144,7 @@ fn row_evidence(row: &HistoryRow) -> Result<[u8; 32], String> {
 pub fn map(row: &HistoryRow) -> Result<Option<Operation>, String> {
     let item: Value =
         serde_json::from_str(&row.item_json).map_err(|e| format!("history item_json: {e}"))?;
+    super::require_scalar_json(&item)?;
     if item.get("type").and_then(Value::as_str) != Some("commandExecution") {
         return Ok(None);
     }
@@ -239,9 +241,9 @@ mod tests {
             end: 1,
             raw_hash: [1; 32],
         };
-        let core=command(&serde_json::json!({"id":"C","source":"agent","command":[],"status":"failed","aggregated_output":"","exit_code":1}),session.clone(),"S",Some("T".into()),origin.clone(),false).unwrap();
+        let core=command(&serde_json::json!({"id":"C","source":"agent","command":[],"status":"failed","aggregated_output":"","exit_code":1}).into(),session.clone(),"S",Some("T".into()),origin.clone(),false).unwrap();
         let ui = command(
-            &serde_json::json!({"id":"C","source":"agent","command":"","status":"failed","exitCode":1}),
+            &serde_json::json!({"id":"C","source":"agent","command":"","status":"failed","exitCode":1}).into(),
             session,
             "S",
             Some("T".into()),

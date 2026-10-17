@@ -62,6 +62,29 @@ source-row qualification, separator and unfinished-tail behavior, retained
 input presentation is credential-masked; source offsets and hashes remain raw
 coordinates. Directory discovery, watchers, rewrites and full M1 remain open.
 
+## Retained Claude identity and values
+
+The explicit Claude-main path keeps decoded native UTF-16 identifiers separate
+from interpreted text. Ambiguous identity coordinates use versioned framing;
+literal `~u:` strings cannot impersonate a surrogate. Interpreted-text repairs
+are counted in Session qualification diagnostics, separately from record errors.
+Opaque tool inputs retain numeric tokens, null/absence and non-scalar keys.
+
+Bounded model pages encode supported opaque fields and complete field-origin
+entries as `{"encoding":"canonical-json-v1","json":"…","masked":false}` after privacy
+assessment. `masked:true` identifies transformed content. Normalized Session JSON
+and export retain original-value JSON shapes; privacy-transformed export does
+not prove unchanged-value round trips. Structural witnesses are preserved or
+explicitly refused. Portable normalized reimport remains unavailable.
+
+Use fresh isolated archives for this candidate. Native index20 and revised
+parser/selection recipes distinguish the changed interpretation. Existing
+index18 and index19 are refused with their files preserved. Installed migration
+remains unsupported. Invalid raw
+UTF-8 and non-scalar immediate metadata selectors remain unsupported. Encoded
+reasoning/attachment block addresses are refused. Other provider identity cases
+remain unqualified. Codex keeps its scalar-only source boundary.
+
 ## Delivery boundary
 
 [Replacement disposition](docs/REPLACEMENT.md) records predecessor removal and preserved legal/history material. [Contract snapshot](docs/rewrite/README.md) links current semantic owners; canonical DDL provenance lives beside `crates/store/schema`.
