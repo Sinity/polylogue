@@ -103,12 +103,13 @@ fn typed_canonical_cancellation_is_not_a_parser_defect() {
     ] {
         let (_temp, mut actor, input, head) = fixture();
         let before = actor.writer.status().unwrap().write_counter;
+        let reader = actor.take_canonical_reader().unwrap();
         actor.canonical = Some(CanonicalJob {
             input,
             head: head.clone(),
             position: CanonicalPosition::first(InputFormat::CodexRollout),
             handle: None,
-            join: thread::spawn(|| {}),
+            join: thread::spawn(move || Some(reader)),
         });
         actor
             .message(Message::CanonicalComputed(Err(Error::Canonical(error))))
@@ -118,6 +119,39 @@ fn typed_canonical_cancellation_is_not_a_parser_defect() {
         assert!(actor.writer.parser_failure(&head.token).unwrap().is_none());
         assert_eq!(actor.writer.status().unwrap().write_counter, before);
     }
+}
+
+#[test]
+fn reused_canonical_reader_observes_later_value_writes_and_sealing() {
+    use polylogue_store::values::{Codec, State};
+    let (_temp, mut actor, _input, _head) = fixture();
+    let value = actor.writer.begin_value(Codec::Utf8, 3).unwrap();
+    let reader = actor.take_canonical_reader().unwrap();
+    assert_eq!(reader.values.value_head(&value.id).unwrap().appended, 0);
+    actor.canonical_reader = Some(reader);
+
+    actor
+        .writer
+        .append_value_chunk(&value.id, 0, b"new", 3)
+        .unwrap();
+    let reader = actor.take_canonical_reader().unwrap();
+    assert_eq!(reader.values.value_head(&value.id).unwrap().appended, 3);
+    let mut proof = reader.values.validate_value(&value.id).unwrap();
+    while !proof.progress().complete {
+        proof.advance(&reader.values, 3).unwrap();
+    }
+    actor.canonical_reader = Some(reader);
+    actor.writer.seal_value(&proof).unwrap();
+
+    let reader = actor.take_canonical_reader().unwrap();
+    assert_eq!(
+        reader.values.value_head(&value.id).unwrap().state,
+        State::Ready
+    );
+    assert_eq!(
+        reader.values.value_range(&value.id, 0, 3).unwrap().bytes,
+        b"new"
+    );
 }
 
 #[test]

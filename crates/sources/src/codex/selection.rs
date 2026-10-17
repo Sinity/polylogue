@@ -29,6 +29,9 @@ pub enum Transform {
     TextJoinLfV1,
     /// Current adapter: RFC3339 via jiff, milliseconds, Intrinsic/Instant.
     ProviderTimeV1,
+    /// Supplied input_tokens minus supplied cached_input_tokens, saturating at
+    /// zero. Inputs are exact original numeric leaves, in that order.
+    UncachedInputV1,
     ToolFieldV1 {
         field: BlockField,
     },
@@ -151,6 +154,7 @@ impl Recipe for FactSelection {
             Transform::JsonStringV1 => Operation::JsonString,
             Transform::TextJoinLfV1 => Operation::TextJoinLf,
             Transform::ProviderTimeV1 => Operation::ProviderTime,
+            Transform::UncachedInputV1 => Operation::UnsignedSaturatingDifference,
             Transform::ToolFieldV1 { .. } => Operation::ProviderScalar,
         }
     }

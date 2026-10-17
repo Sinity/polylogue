@@ -6,6 +6,13 @@ use polylogue_store::contributions::{FieldRead, MessageView};
 const SID: &str = "7f3a2c10-0001-4000-8000-000000000001";
 const MORROW: &[u8] = include_bytes!("../../../sources/tests/fixtures/morrow-main.jsonl");
 fn make_world(retained: &[u8], parsed: &[u8]) -> (World, Vec<PendingMessage>) {
+    make_world_with(retained, parsed, |_| {})
+}
+fn make_world_with(
+    retained: &[u8],
+    parsed: &[u8],
+    mutate: impl FnOnce(&mut cc::StepOutput),
+) -> (World, Vec<PendingMessage>) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
     let mut writer = Writer::open(&root).unwrap();
@@ -44,6 +51,7 @@ fn make_world(retained: &[u8], parsed: &[u8]) -> (World, Vec<PendingMessage>) {
         0,
     );
     let mut output = framed.output.unwrap();
+    mutate(&mut output);
     assert!(view.take_error().is_none());
     let pending = output.delta.pending_messages.clone();
     let changes = ca::encode_step(
@@ -138,6 +146,77 @@ fn value(view: &MessageView, slot: &Slot) -> (Value, bool, Value) {
     let origin =
         serde_json::from_slice(&field.origin_range(0, 65536).unwrap().unwrap().bytes).unwrap();
     (data, field.supplied, origin)
+}
+#[test]
+fn background_completion_uses_its_exact_retained_record_in_the_candidate_source_set() {
+    let bytes =
+        include_bytes!("../../../sources/tests/fixtures/donor/claude-normalization-main.jsonl");
+    let (mut world, pending) = make_world(bytes, bytes);
+    let pending = pending
+        .iter()
+        .find(|p| p.message.as_str().ends_with(":main-bg-start"))
+        .unwrap();
+    let request = request(&world, pending);
+    let handle = begin(&mut world, &request);
+    // Independent exact coordinates in the frozen synthetic fixture, excluding LF.
+    let ranges = [(942, 1287), (3018, 3446)];
+    for _ in 0..4000 {
+        let action = world
+            .compute_with(&handle, work_budget())
+            .unwrap_or_else(|error| {
+                let snapshot = world.writer.parser_snapshot(&world.head.token).unwrap();
+                let membership: Vec<_> = ranges
+                    .iter()
+                    .map(|&(start, end)| {
+                        let present = snapshot
+                            .has_message_source(
+                                handle.build(),
+                                polylogue_store::contributions::SourceRange { start, end },
+                            )
+                            .unwrap();
+                        (start, end, present)
+                    })
+                    .collect();
+                panic!(
+                    "completion origin: {error}; exact candidate source membership {membership:?}"
+                );
+            });
+        if let m::Applied::Source(source) = m::apply(&mut world.writer, action).unwrap() {
+            let view = selected(&mut world, &source);
+            let mut cursor = None;
+            let mut selected_ranges = Vec::new();
+            loop {
+                use polylogue_store::contributions::SourceStep;
+                match view.next_source(cursor.as_ref(), 65536).unwrap() {
+                    SourceStep::Span {
+                        cursor: next,
+                        source,
+                    } => {
+                        selected_ranges.push((source.start, source.end));
+                        cursor = Some(next);
+                    }
+                    SourceStep::Continue { cursor: next } => cursor = Some(next),
+                    SourceStep::End => break,
+                }
+            }
+            assert_eq!(selected_ranges, ranges);
+            let (exit, supplied, origin) = value(
+                &view,
+                &Slot::Block {
+                    block: BlockSlot::Item(0),
+                    field: BlockField::ExitCode,
+                },
+            );
+            assert_eq!(exit, 7);
+            assert!(supplied);
+            assert_eq!(
+                origin["selection"]["inputs"][0]["record"],
+                json!({"start":3018,"end":3446})
+            );
+            return;
+        }
+    }
+    panic!("background completion did not materialize");
 }
 #[test]
 fn real_morrow_claude_bodies_use_native_ids_flat_order_and_verified_origins() {
@@ -235,6 +314,94 @@ fn real_morrow_claude_bodies_use_native_ids_flat_order_and_verified_origins() {
         ));
     }
     assert!(world.head.finalization_pending);
+}
+#[test]
+fn same_file_sidechain_keeps_raw_main_parent_as_an_extra_without_a_message_parent() {
+    let bytes =
+        include_bytes!("../../../sources/tests/fixtures/donor/claude-normalization-main.jsonl");
+    let (mut world, pending) = make_world(bytes, bytes);
+    let main = format!("claude-code:{SID}");
+    let pending = pending
+        .iter()
+        .find(|p| p.message.session().as_str() != main)
+        .unwrap();
+    let request = request(&world, pending);
+    let handle = begin(&mut world, &request);
+    let source = world.complete(&handle);
+    let view = selected(&mut world, &source);
+    assert!(
+        view.field(&Slot::Message(MessageField::Parent), 65536)
+            .unwrap()
+            .is_none()
+    );
+    let (parent, _, origin) = value(
+        &view,
+        &Slot::Extra {
+            block: None,
+            key: "parentUuid".into(),
+        },
+    );
+    assert_eq!(parent, "main-fg-result");
+    assert_eq!(
+        origin["selection"]["inputs"][0]["path"],
+        json!([{"Key":"parentUuid"}])
+    );
+    assert_eq!(
+        origin["selection"]["inputs"][0]["record"],
+        json!({"start":3682,"end":4088})
+    );
+}
+#[test]
+fn a_native_parent_uuid_from_a_later_response_fragment_resolves_its_owning_message() {
+    for native_parent in ["answer-second", "missing-parent"] {
+        let records = [
+            json!({"type":"user","uuid":"root","sessionId":SID,"message":{"role":"user","content":"Root prompt."}}),
+            json!({"type":"assistant","uuid":"answer-first","parentUuid":"root","sessionId":SID,"requestId":"provider-request","message":{"id":"provider-response","role":"assistant","content":[{"type":"text","text":"First fragment."}]}}),
+            json!({"type":"assistant","uuid":"answer-second","parentUuid":"answer-first","sessionId":SID,"requestId":"provider-request","message":{"id":"provider-response","role":"assistant","content":[{"type":"text","text":"Second fragment."}]}}),
+            json!({"type":"user","uuid":"after","parentUuid":native_parent,"sessionId":SID,"message":{"role":"user","content":"Follow-up prompt."}}),
+        ];
+        let bytes = records
+            .iter()
+            .map(|record| record.to_string() + "\n")
+            .collect::<String>()
+            .into_bytes();
+        let (mut world, pending) = make_world(&bytes, &bytes);
+        let owner = pending
+            .iter()
+            .find(|p| p.items == 2)
+            .unwrap()
+            .message
+            .clone();
+        let child = pending
+            .iter()
+            .find(|p| p.message.as_str().ends_with(":after"))
+            .unwrap();
+        let request = request(&world, child);
+        let handle = begin(&mut world, &request);
+        if native_parent == "missing-parent" {
+            assert!(matches!(
+                world.compute_with(&handle, work_budget()),
+                Err(m::Error::Unsupported(
+                    "Claude source mapping/counting obligation remains pending"
+                ))
+            ));
+            continue;
+        }
+        let source = world.complete(&handle);
+        let view = selected(&mut world, &source);
+        let (parent, supplied, origin) = value(&view, &Slot::Message(MessageField::Parent));
+        assert!(supplied);
+        assert_eq!(parent["id"], owner.as_str());
+        assert_eq!(parent["session"], owner.session().as_str());
+        assert_eq!(
+            origin["selection"]["transform"]["ParentReferenceV1"]["native_uuid"],
+            "answer-second"
+        );
+        assert_eq!(
+            origin["selection"]["inputs"][0]["path"],
+            json!([{"Key":"parentUuid"}])
+        );
+    }
 }
 fn input(text: &str) -> Vec<u8> {
     json!({"type":"assistant","uuid":"opaque:message","requestId":"request","sessionId":SID,"timestamp":"2026-10-01T10:00:00Z","message":{"id":"response","content":[{"type":"thinking","thinking":"reason","signature":"retained-signature"},{"type":"text","text":text}],"stop_reason":"end_turn"}}).to_string().into_bytes().into_iter().chain([b'\n']).collect()
@@ -516,3 +683,15 @@ fn claude_opaque_extra_must_match_original_selected_source() {
             .is_none()
     );
 }
+
+#[path = "claude_stop_details.rs"]
+mod stop_details;
+
+#[path = "claude_block_extras.rs"]
+mod block_extras;
+
+#[path = "claude_provider_usage.rs"]
+mod provider_usage;
+
+#[path = "claude_record_extras.rs"]
+mod record_extras;

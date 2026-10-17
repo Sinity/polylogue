@@ -31,6 +31,7 @@ mod source_readers;
 pub mod tool_items;
 pub use capture::{BlobCapture, PreparedBlob};
 pub mod claude_bodies;
+pub mod configured_claude;
 pub mod configured_codex;
 pub mod contributions;
 mod native;
@@ -44,7 +45,7 @@ pub mod recovery;
 pub mod values;
 mod wal;
 
-pub const ARCHIVE_VERSION: u32 = 3;
+pub const ARCHIVE_VERSION: u32 = 4;
 pub const ARCHIVE_SPEC_COMMIT: &str = "8c4e2210692282420d7a5ca91dc005b409a668f1";
 pub const EMBEDDINGS_VERSION: u32 = 0;
 pub const INDEX_VERSION: u32 = 20;
@@ -53,6 +54,10 @@ pub const INDEX_SQL_BLAKE3: &str =
     "8d44aa6bed43153b9870660655885d2743ac01ca7a17d9ea0a4d64729cf86adf";
 pub const INDEX_SPEC_COMMIT: &str = "5551b6e3796f968011323e436f0c72f5339832b4";
 const ARCHIVE_SQL: &str = include_str!("../schema/archive.sql");
+const OBSERVED_CONTEXT_SQL: &str = include_str!("../schema/observed-context.sql");
+fn archive_sql() -> String {
+    format!("{ARCHIVE_SQL}\n{OBSERVED_CONTEXT_SQL}")
+}
 const INDEX_SQL: &str = include_str!("../schema/index.sql");
 const EMBEDDINGS_SQL: &str = include_str!("../schema/embeddings.sql");
 type Result<T> = std::result::Result<T, Error>;
@@ -353,14 +358,19 @@ fn validate_version(
             expected,
         });
     }
-    if durable && found != expected && !(legacy && name == "archive.db" && matches!(found, 1 | 2)) {
+    if durable
+        && found != expected
+        && !(legacy && name == "archive.db" && matches!(found, 1 | 2 | 3))
+    {
         return Err(Error::Schema(file));
     }
+    let forward_archive = archive_sql();
     validate_schema(
         &conn,
         &file,
         match name {
-            "archive.db" => ARCHIVE_SQL,
+            "archive.db" if found < 4 => ARCHIVE_SQL,
+            "archive.db" => &forward_archive,
             "embeddings.db" => EMBEDDINGS_SQL,
             _ => INDEX_SQL,
         },
@@ -638,7 +648,7 @@ impl Writer {
         lock.set_len(0)?;
         writeln!(lock, "pid={}", std::process::id())?;
         lock.sync_all()?;
-        let archive = initialize_db(&root, "archive.db", ARCHIVE_SQL, ARCHIVE_VERSION, true)?;
+        let archive = initialize_db(&root, "archive.db", &archive_sql(), ARCHIVE_VERSION, true)?;
         let index = initialize_db(&root, "index.db", INDEX_SQL, INDEX_VERSION, false)?;
         let embeddings = initialize_db(
             &root,
@@ -685,7 +695,7 @@ impl ReadHandle {
         let lock = startup_lock(&root, false, false)?;
         wal::validate(&root, cancelled)?;
         recovery::check_index_compatibility(&root)?;
-        if matches!(recovery::raw_versions(&root)?, Some(1 | 2)) {
+        if matches!(recovery::raw_versions(&root)?, Some(1 | 2 | 3)) {
             return Err(wal::required(
                 &root.join("archive.db"),
                 "format migration requires the daemon owner",

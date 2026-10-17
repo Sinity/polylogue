@@ -136,7 +136,7 @@ class Run:
         text = self.command([self.binary, "--archive", archive, *args], "client " + " ".join(args), expected)
         return json.loads(text)
 
-    def start(self, archive):
+    def start(self, archive, *, ready_exits=(0,)):
         require(self.daemon is None, "a daemon is already owned")
         if self.control == "launch-failure":
             archive.write_text("intentional archive-directory collision\n")
@@ -160,8 +160,8 @@ class Run:
                     self.control_result.update(state="launch_refused" if expected else "unrelated_launch_failure",
                                                candidate_exit=code, diagnostic=err_name)
                 raise ValueError(f"candidate daemon exited at launch; see {err_name}")
-            text = self.command([self.binary, "--archive", archive, "status"], "readiness status", (0, 6))
-            if self.commands[-1]["exit"] == 0:
+            text = self.command([self.binary, "--archive", archive, "status"], "readiness status", (*ready_exits, 6))
+            if self.commands[-1]["exit"] in ready_exits:
                 if self.control == "launch-failure":
                     self.control_result.update(state="unexpectedly_ready")
                 require(self.control != "launch-failure", "launch-failure control unexpectedly became ready")

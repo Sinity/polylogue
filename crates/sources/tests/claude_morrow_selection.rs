@@ -150,7 +150,7 @@ fn morrow_has_exact_native_message_identity_source_order_and_replayable_typed_le
                 _ => {}
             }
         }
-        for index in 0..4 {
+        for index in 0..6 {
             for fact in response.selected_unit(index).unwrap().facts {
                 evaluate(
                     fact.selection
@@ -677,23 +677,50 @@ fn parent_reference_uses_session_scoped_record_address_and_original_donor() {
     );
 }
 #[test]
-fn unresolved_forward_and_grouped_parents_do_not_guess_global_message_ids() {
+fn native_parent_fragments_resolve_their_owner_but_unseen_parents_remain_pending() {
     for grouped in [false, true] {
         let first = line("first", "response", json!([{"type":"text","text":"one"}]));
         let second = line("grouped", "response", json!([{"type":"text","text":"two"}]));
         let parent_uuid = if grouped { "grouped" } else { "not-seen" };
         let child = json!({"type":"user","uuid":"child","sessionId":SID,"parentUuid":parent_uuid,"message":{"content":"child"}}).to_string()+"\n";
         let mut memory = MemoryReadView::default();
-        run(&mut memory, (first + &second + &child).as_bytes(), 0);
+        let raw = first + &second + &child;
+        run(&mut memory, raw.as_bytes(), 0);
         let response = memory
             .response(SID, &ResponseKey::user("child"))
             .unwrap()
             .unwrap();
-        assert!(response.message.parent.is_none());
         let c = memory
             .contribution(&response.message.id, 0)
             .unwrap()
             .unwrap();
+        if grouped {
+            let owner = memory
+                .response(SID, &ResponseKey::new("response", "request"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.message.parent, Some(owner.message.id.clone()));
+            assert!(c.projection.obligations.is_empty());
+            let recipe = c
+                .projection
+                .facts
+                .iter()
+                .find(|fact| matches!(fact.field, Field::FirstMessage(MessageField::Parent)))
+                .unwrap()
+                .selection
+                .as_ref()
+                .unwrap();
+            assert!(
+                matches!(&recipe.transform, Transform::ParentReferenceV1 {native_uuid,resolved}
+                if native_uuid.as_str()=="grouped" && resolved==&owner.message.id)
+            );
+            assert_eq!(
+                evaluate(recipe, raw.as_bytes())["id"],
+                owner.message.id.as_str()
+            );
+            continue;
+        }
+        assert!(response.message.parent.is_none());
         assert!(
             c.projection
                 .obligations
@@ -793,7 +820,7 @@ fn correction_units(
     memory: &MemoryReadView,
     response: &claude_code::keyed::ResponseCell,
 ) -> Vec<claude_code::keyed::EvidenceUnit> {
-    let mut baseline: [Option<Vec<u8>>; 5] = Default::default();
+    let mut baseline: [Option<Vec<u8>>; 8] = Default::default();
     for item in 0..response.items {
         let c = memory
             .contribution(&response.message.id, item)
@@ -1010,7 +1037,7 @@ fn morrow_preflight_enumerates_every_extra_and_checks_normalized_source_carriers
                 inspect(fact)
             }
         }
-        for index in 0..4 {
+        for index in 0..6 {
             for fact in &r.selected_unit(index).unwrap().facts {
                 inspect(fact)
             }

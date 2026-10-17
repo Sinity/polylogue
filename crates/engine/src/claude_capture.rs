@@ -2,10 +2,10 @@
 //! companions; the store prepares opaque proofs and the owner installs them.
 use polylogue_model::BlobHash;
 use polylogue_store::{BlobCapture, Error, RetainedSource, observed::PreparedClaude};
-use std::{collections::BTreeMap, path::Path, sync::atomic::AtomicBool};
+use std::{collections::BTreeMap, sync::atomic::AtomicBool};
 pub(crate) fn prepare(
     capture: BlobCapture,
-    path: &Path,
+    location: polylogue_store::configured_claude::Location,
     old: Option<RetainedSource>,
     cancelled: &AtomicBool,
     budget: polylogue_store::history_pages::turns::Budget,
@@ -17,8 +17,8 @@ pub(crate) fn prepare(
         Vec::new(),
         BTreeMap::<String, Option<(BlobHash, u64)>>::new(),
     ));
-    capture.prepare_claude_in_turns(
-        path,
+    capture.prepare_claude_location_in_turns(
+        location,
         old,
         cancelled,
         budget,

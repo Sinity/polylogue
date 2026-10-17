@@ -12,9 +12,9 @@ use crate::{
 use polylogue_model::BlobHash;
 use polylogue_sources::{claude_code, codex, frame::StepBudget};
 use polylogue_store::{
-    Error as StoreError, ImportObservation, InputFormat, PreparedBlob, RetainedInput,
+    Error as StoreError, ImportObservation, InputFormat, PreparedBlob, ReadHandle, RetainedInput,
     RetainedSource, Writer,
-    parser_state::{Basis, Budget, Head},
+    parser_state::{Basis, Budget, Head, ParserReader},
 };
 use std::{
     path::PathBuf,
@@ -160,7 +160,12 @@ enum Message {
         Option<(polylogue_store::configured_codex::Candidate, BlobHash, u64)>,
         ImportReply,
     ),
-    Claude(ImportRequest, u64, Reply<ConfiguredImport>),
+    Claude(
+        ImportRequest,
+        polylogue_store::configured_claude::Location,
+        u64,
+        Reply<ConfiguredImport>,
+    ),
     CheckAcquisition(Reply<()>),
     Progress(String, Reply<Progress>),
     Retry(String, Reply<()>),
@@ -244,6 +249,15 @@ impl Handle {
         observation: Observation,
         quantum_bytes: u64,
     ) -> Result<Receiver<Result<ConfiguredImport>>> {
+        let location = polylogue_store::configured_claude::Location::explicit_main(path)?;
+        self.try_claude_location(location, observation, quantum_bytes)
+    }
+    pub fn try_claude_location(
+        &self,
+        location: polylogue_store::configured_claude::Location,
+        observation: Observation,
+        quantum_bytes: u64,
+    ) -> Result<Receiver<Result<ConfiguredImport>>> {
         if !(65536..=8 * 1024 * 1024).contains(&quantum_bytes) {
             return Err(Error::InvalidRequest(
                 "Claude quantum must be between 65536 and 8388608 bytes",
@@ -251,20 +265,14 @@ impl Handle {
         }
         let request = ImportRequest {
             format: InputFormat::ClaudeCodeJsonl,
-            context: vec![
-                "claude-main".into(),
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .ok_or(Error::InvalidRequest("UTF8 main stem required"))?
-                    .into(),
-            ],
-            path,
+            context: location.context().to_vec(),
+            path: location.path().to_path_buf(),
             observation,
             metadata_allowance: 65536,
         };
         self.validate_import(&request, false)?;
         let (reply, rx) = mpsc::sync_channel(1);
-        self.send(Message::Claude(request, quantum_bytes, reply))?;
+        self.send(Message::Claude(request, location, quantum_bytes, reply))?;
         Ok(rx)
     }
     pub fn try_history_import(
@@ -472,7 +480,11 @@ struct CanonicalJob {
     head: Head,
     position: CanonicalPosition,
     handle: Option<canonical_message::Handle>,
-    join: JoinHandle<()>,
+    join: JoinHandle<Option<CanonicalReaders>>,
+}
+struct CanonicalReaders {
+    values: ReadHandle,
+    parser: ParserReader,
 }
 enum Active {
     Selecting(
@@ -494,7 +506,6 @@ enum Active {
     ),
 }
 struct Actor {
-    writer: Writer,
     inner: Arc<Inner>,
     capture: Option<CaptureJob>,
     turn_capture: Option<TurnCaptureJob>,
@@ -506,13 +517,24 @@ struct Actor {
     history_budget: polylogue_store::history_pages::turns::Budget,
     compute: Option<ComputeJob>,
     canonical: Option<CanonicalJob>,
+    // One worker owns this reader at a time. Returning the idle connections
+    // avoids reparsing the SQLite schema on every field turn. Individual store
+    // operations still establish fresh views; no transaction spans actor turns.
+    canonical_reader: Option<CanonicalReaders>,
     active: Option<Active>,
+    // A bounded hint for fresh acquisition/retry. The durable catalog remains
+    // authoritative when intermediate hints coalesce or the process restarts.
+    changed_input: Option<String>,
+    background_due: bool,
     after: String,
     scanning: bool,
     scan_again: bool,
     recovery_error: Option<String>,
     stopping: bool,
     fatal: Option<Error>,
+    // Fields drop in declaration order. Close the exercised idle read
+    // connections before SQLite's last writer performs WAL cleanup.
+    writer: Writer,
 }
 impl Actor {
     fn new(writer: Writer, inner: Arc<Inner>) -> Self {
@@ -525,7 +547,10 @@ impl Actor {
             history_budget: polylogue_store::history_pages::turns::Budget::default(),
             compute: None,
             canonical: None,
+            canonical_reader: None,
             active: None,
+            changed_input: None,
+            background_due: false,
             after: String::new(),
             scanning: true,
             scan_again: false,
@@ -712,6 +737,9 @@ impl Actor {
             )?)
         });
         if (result.is_ok() && acquired) || (result.is_err() && claude_installation_started) {
+            if let Ok(input) = &result {
+                self.changed_input = Some(input.id.clone());
+            }
             self.scan_again = true;
             if !self.scanning
                 && self.active.is_none()
@@ -918,11 +946,16 @@ impl Actor {
                     }
                 }
             }
-            Message::Claude(request, quantum_bytes, reply) => {
+            Message::Claude(request, location, quantum_bytes, reply) => {
                 if self.stopping {
                     let _ = reply.send(Err(Error::Stopped));
                 } else {
-                    self.start_claude(request, quantum_bytes, ImportReply::Configured(reply))?;
+                    self.start_claude(
+                        request,
+                        location,
+                        quantum_bytes,
+                        ImportReply::Configured(reply),
+                    )?;
                 }
             }
             Message::CheckAcquisition(reply) => {
@@ -1019,7 +1052,7 @@ impl Actor {
                     .canonical
                     .take()
                     .ok_or(Error::InvalidRequest("unexpected canonical completion"))?;
-                job.join.join().map_err(|_| Error::WorkerPanicked)?;
+                self.canonical_reader = job.join.join().map_err(|_| Error::WorkerPanicked)?;
                 if self.stop_for_completion(&result) {
                     return Ok(());
                 }
@@ -1275,9 +1308,14 @@ impl Actor {
             self.writer
                 .record_parser_failure(&head.token, None, DETAIL_BYTES)?;
         }
+        self.changed_input = Some(id.to_owned());
         self.scan_again = true;
         self.recovery_error = None;
-        if self.active.is_none() && self.compute.is_none() && self.canonical.is_none() {
+        if !self.scanning
+            && self.active.is_none()
+            && self.compute.is_none()
+            && self.canonical.is_none()
+        {
             self.restart_scan();
         }
         Ok(())
@@ -1298,6 +1336,15 @@ impl Actor {
             .record_parser_failure(&head.token, Some(&details), DETAIL_BYTES)?;
         Ok(())
     }
+    fn take_canonical_reader(&mut self) -> Result<CanonicalReaders> {
+        match self.canonical_reader.take() {
+            Some(reader) => Ok(reader),
+            None => Ok(CanonicalReaders {
+                values: self.writer.read_handle()?,
+                parser: self.writer.parser_reader()?,
+            }),
+        }
+    }
     fn tick(&mut self) -> Result<()> {
         if self.compute.is_some() || self.canonical.is_some() {
             return Ok(());
@@ -1308,9 +1355,27 @@ impl Actor {
                 if !self.scanning {
                     return Ok(());
                 }
-                match self.writer.next_retained_source(&self.after) {
-                    Ok(Some(input)) => {
+                // Alternate a recent-change hint with the existing keyset scan.
+                // Finish the current input first so its in-memory continuation
+                // is preserved; fresh work need not wait for the whole catalog.
+                let changed = if self.background_due {
+                    None
+                } else {
+                    self.changed_input.take()
+                };
+                let next = if let Some(id) = changed {
+                    self.background_due = true;
+                    self.writer.retained_source(&id)
+                } else {
+                    self.background_due = false;
+                    let next = self.writer.next_retained_source(&self.after);
+                    if let Ok(Some(input)) = &next {
                         self.after = input.input.id.clone();
+                    }
+                    next
+                };
+                match next {
+                    Ok(Some(input)) => {
                         // Prompt references remain pending outside conversation interpretation.
                         if input.format == InputFormat::CodexPromptHistory {
                             return Ok(());
@@ -1493,19 +1558,20 @@ impl Actor {
                 }
             }
             Active::Selecting(input, head, position, selection) => {
-                let reader = self.writer.read_handle()?;
+                let reader = self.take_canonical_reader()?;
                 let cancelled = Arc::clone(&self.inner.cancelled);
                 let sender = self.inner.sender.clone();
                 let join = thread::Builder::new()
                     .name("polylogue-compatible-source".into())
                     .spawn(move || {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            selection.advance(&reader, 65536, &cancelled)
+                            selection.advance(&reader.values, 65536, &cancelled)
                         }))
                         .map_err(|_| Error::WorkerPanicked)
                         .and_then(|r| r.map_err(Error::Store))
                         .map(CanonicalTurn::Selected);
                         let _ = sender.send(Message::CanonicalComputed(result));
+                        Some(reader)
                     });
                 match join {
                     Ok(join) => {
@@ -1521,8 +1587,11 @@ impl Actor {
                 }
             }
             Active::Canonical(input, head, position, handle) => {
-                let snapshot = self.writer.parser_snapshot(&head.token)?;
-                let reader = self.writer.read_handle()?;
+                let CanonicalReaders {
+                    values: reader,
+                    parser,
+                } = self.take_canonical_reader()?;
+                let snapshot = parser.snapshot(&head.token)?;
                 let state = handle
                     .as_ref()
                     .map(|h| canonical_message::inspect(&mut self.writer, h, 65536))
@@ -1690,7 +1759,20 @@ impl Actor {
                         ))
                         .map_err(|_| Error::WorkerPanicked)
                         .and_then(|r| r);
+                        // Release the snapshot before the actor can apply its
+                        // result. Reuse preserves connections, never a read view.
+                        let (result, readers) = match snapshot.into_reader() {
+                            Ok(parser) => (
+                                result,
+                                Some(CanonicalReaders {
+                                    values: reader,
+                                    parser,
+                                }),
+                            ),
+                            Err(error) => (Err(error.into()), None),
+                        };
                         let _ = sender.send(Message::CanonicalComputed(result));
+                        readers
                     });
                 match join {
                     Ok(join) => {
@@ -1964,7 +2046,10 @@ fn source_budgets() -> Budgets {
     Budgets {
         framing: StepBudget {
             bytes: WINDOW_BYTES as usize,
-            records: 32,
+            // Tiny ignored records should share the authenticated 64 KiB read
+            // rather than force a worker and durable install every 32 lines.
+            // Byte, retained-record, state and installation bounds still apply.
+            records: 1024,
             record_bytes: 1024 * 1024,
         },
         reads: Budget {
@@ -2017,9 +2102,11 @@ mod tests {
         }
     }
     mod cancellation;
+    mod changed_inputs;
     mod claude_turns;
     mod configured;
     mod history_turns;
+    mod reader_shutdown;
     fn owner(root: &Path) -> Owner {
         Owner::start(
             Writer::open(root).unwrap(),

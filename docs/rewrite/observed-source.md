@@ -168,3 +168,181 @@ and retained read before the larger append is selected, and cancel/retry a
 parked capture. This qualifies one configured source shape. General watcher
 semantics, rewrites, directory discovery, installed routing, corpus resource
 bounds and full M1 remain open.
+
+## Explicit Claude projects directory
+
+A daemon can select one provider directory instead of one main:
+
+```json
+{"claude_projects":{"root":"/absolute/synthetic/projects","machine":"collector-id","host":"collector-label","acquisition_quantum_bytes":65536}}
+```
+
+Choose exactly one of `claude_projects`, `claude_main` and `codex_home`. No home
+source is selected implicitly. Projects collection currently runs continuously;
+`--until-idle` refuses before archive creation for this configuration.
+
+The anchored predecessor layout admits `-project/SESSION.jsonl` or `.ndjson`,
+`-project/OWNER/subagents/agent-AGENT.jsonl`, and the corresponding
+`subagents/workflows/RUN/agent-AGENT.jsonl` path. Main stems supply main context;
+separate-agent records supply membership, while the containing owner supplies
+lineage. The durable observed-context relation preserves that declaration across
+provider removal and parser rebuild. A main declaration cannot silently replace
+an established agent declaration.
+
+Traversal uses at most 128 entries per turn and a fixed-depth directory stack.
+Runnable scan/capture backlog continues without waiting for another filesystem
+event; completed cycles pause before rescanning. Each transcript uses the same
+parked acquisition slot, charged-byte grants and required-body resolver as the
+single-main route. Reads continue using acknowledged state. Full-prefix
+verification remains source work on every capture attempt; no metadata-only
+unchanged-file shortcut or corpus throughput guarantee is claimed.
+
+Retained interpretation finishes its current input before choosing another.
+A recent acquisition or explicit retry can run between background catalog inputs;
+these choices alternate so ongoing acquisition cannot suppress the background
+scan. One recent-input hint coalesces intermediate changes without replacing the
+durable catalog. Restart recovers work through that catalog. This does not
+preempt a large current input or promise a fixed interpretation latency.
+
+Held directory descriptors and descriptor-relative, beneath-root, no-symlink
+opens fence traversal and capture. An archive cannot be used as the configured
+provider root. Root replacement starts a fresh walk; root absence or denied
+access is unavailable, distinct from an accessible empty scope. Neither an
+interrupted scan nor a partial JSONL tail certifies complete conversation
+coverage.
+
+Status reports scan-cycle progress, deferred/excluded entries, attempted source
+acquisitions and a bounded sample of retained input IDs. The sample never drives
+acquisition. Selected-source byte totals sum acknowledged lengths, not unique
+bytes or actual IO. Memory documents, session indexes, workflow journals and
+agent metadata are not interpreted by this route. Only explicitly referenced
+required bodies are acquired; unclaimed or hook files are not conversations.
+
+The projects status names the currently acquiring path separately from the last
+acknowledged input. This marker does not publish its prepared prefix. Missing
+initial subagent ownership stays unresolved: the containing folder never
+substitutes for `sessionId`. A later actual owner does not retroactively assign
+those earlier records, and a conflicting later owner does not change an
+established Session. Parser version 10 records this interpretation change.
+
+Requested Session membership is qualified independently of population-wide
+possible relationships. An unrelated main's incomplete suffix leaves global
+relationship coverage pending without declaring the requested, independently
+proved Message membership pending. Unknown relevant dependency shapes and
+current selected-source guards continue to constrain reads.
+
+Qualification streams the pinned source catalog. `target_basis.inputs` is a
+bounded display sample plus required exact-source witnesses; `inputs_total`,
+`inputs_enumerated` and `inputs_digest` identify whether it enumerates every
+represented basis and commit to all of them. The digest is ordinary BLAKE3 over
+`polylogue.session.input-bases.v1\0` followed, in catalog order, by each basis's
+JSON byte length as big-endian u64 and its serialized bytes. It is an operation
+witness, not independent storage authority or complete-population evidence.
+The observed-member exception counts every proved membership-capable source,
+never the displayed sample length. Incoming relationship witnesses remain in
+the full context count and digest without becoming a source of the requested
+Session’s Message membership. Unresolved relevant inputs still constrain reads. Relevant witness and
+Message-membership metadata retain their separate admission bounds.
+
+`configured_claude_projects_demo` accepts an explicit packaged binary/candidate,
+SDK interpreter/client, digest tool, output directory, and pinned format-3 binary
+and source. Its synthetic journey includes multiple projects, separate agents,
+shared-parent required bodies, late files/appends, thousands of small sources,
+read service, provider-free restart and the preserving old-preparation route.
+The driver checks default SDK budgets after the larger population exists.
+`--population-size 0` runs only focused continuation/restart/migration controls
+and reports population acceptance as unrun; the default remains 5,000. Its
+receipts report actual dimensions and elapsed work; they are not a production
+throughput, RSS, whole-corpus or activation qualification.
+
+Companion lookup uses an archive-owned partial expression index on the exact
+main context value. Unrelated inputs do not contribute to that lookup's row
+scan; NULL or nonmatching context values retain the query's existing semantics.
+This does not change capture, snapshot selection or publication authority.
+The earlier private format-4 candidate at `14cc1c702` predates this schema
+index. Its retained acceptance fixtures belong to that exact binary and source;
+current exact-schema validation may refuse them. Formats 1 through 3 retain
+the preserving upgrade route described above. No installed format-4 archive
+compatibility is claimed for those unpublished candidates.
+
+Claude parser version 11 admits supplied boolean `toolUseResult.isImage` and
+`toolUseResult.noOutputExpected` as named execution metadata. Each present value
+has its exact retained source path and ordinary JSON leaf selection. Absence
+adds no default; neither flag infers image content, outcome, or missing output.
+Wrong types and unknown metadata still leave mapping obligations pending.
+
+The parser-version basis changes normal retained-source interpretation, so a
+retained contribution parsed by an older version is re-evaluated before it can
+be current. This also re-applies the existing later-fragment parent resolution
+repair. Selection codec 1 and adapter recipe 2 keep their existing meanings;
+no archive reset, provider edit, or new recovery operation is required by this
+mapping change. This does not establish complete source restoration.
+
+Claude parser version 12 additionally selects supplied `message.stop_details`
+as the named opaque response metadata key `stop_details`. Supplied null is a
+value; absence creates no default. The last actual supplier wins in the existing
+response update order. A same-UUID overlay that omits the field preserves its
+previous donor and cannot become a later supplier. Selected values retain their
+exact raw selectors; response correction evidence distinguishes a later update
+to an earlier contribution from contribution-order reduction. This metadata
+never infers finish state or stop reason. Unknown nested extras and collisions
+with a literal top-level selected key still refuse canonical certification.
+The normal parser-version basis re-evaluates retained interpretation; existing
+selection codec and recipe meanings are unchanged. No private replay or complete
+source restoration is established by this mapping's synthetic checks.
+
+Claude parser version 13 admits immediate provider block members as opaque,
+source-backed block extras. Each leaf keeps its exact raw path and original
+value. A block member that aliases a selected structured ToolResult channel
+still refuses, as do ambiguous nested paths and existing unmapped effects.
+No status or image meaning is inferred from an extra.
+
+Normalized JSON and export use `data` for the extra bag on ToolCall and
+ToolResult blocks. Other block kinds use `attrs`. These bags hold named opaque
+provider members; a Thinking block's typed ciphertext `data` remains separate
+from `attrs`, including an extra whose own key is `data`. Bounded model metadata
+uses the same container names, with canonical-JSON envelopes after privacy
+assessment, and field origins use the same qualified paths. Existing leaf,
+metadata, deadline and cancellation admissions apply. Unknown active-path
+membership still refuses default bounded reads; when current known rows are
+readable with no pending inputs, the refusal points to explicit `--branches`
+(MCP `branches:true`) for known retained catalog members.
+
+Claude parser version 14 retains supplied `inference_geo`, `iterations`,
+`server_tool_use` and `speed` usage metadata through `attrs.provider_usage`.
+This explicitly named extra is the exact selected raw `message.usage` object,
+separate from normalized Usage counters. Any supplied value of these four
+members is preserved, including null, empty values and type changes; no billing,
+status, geography or aggregate-count meaning is inferred. Missing members add
+no default. A later usage supplier without these members removes the owned bag;
+an overlay omitting usage retains its previous supplier. The existing usage
+selection, original donor and raw correction evidence own this interpretation.
+No new raw slot or immutable recipe is introduced.
+
+Unknown usage members, unknown nested counter-detail members and invalid typed
+counters still refuse canonical certification, even when the opaque bag also
+contains their bytes. A literal top-level `provider_usage` key cannot collide
+with the selected attrs key. JSON/export and bounded model metadata preserve
+the same logical object and source provenance under their existing privacy and
+admission rules. This focused mapping does not certify a complete provider source.
+
+
+Claude parser version 15 selects each already-supported immediate record extra
+once per grouped response. The last actually supplied accepted update owns its
+exact value and original field donor, including a correction to an earlier
+contribution. An omitted overlay keeps that supplier; an identical effective
+record is a no-op. Equal values do not erase supplier identity. Selection uses
+provider interpretation order, never timestamps or contribution ordinal.
+
+The ordered selection map uses existing response-state admission. Canonical
+materialization verifies and inserts each selected attrs key once. Version
+proofs retain only admitted-key contribution locators for their baseline and
+append differing selected raw correction units, ordered by exact key, tagged
+`response/record_extra/` followed by lowercase hex of that key’s exact UTF-8
+bytes. Existing fixed metadata units
+precede these units; required bodies follow them. Histories needing no correction
+retain their evidence sequence. Scratch, reads and state encoding use existing
+allowances; this adds no bounded allocator, total-history-cost or worker-duration
+claim. Parser replay advances, while immutable selector and framing recipes keep
+their meanings. Structured-key collisions, unknown nested fields and unaccounted
+effects retain their explicit refusals.

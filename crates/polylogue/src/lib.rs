@@ -208,6 +208,35 @@ impl Running {
         );
         Ok((running, retained))
     }
+    pub fn start_claude_projects(
+        archive: &Path,
+        runtime: &Path,
+        config: &polylogue_store::configured_claude::Config,
+        id: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, polylogue_store::Error> {
+        config.validate()?;
+        let writer = Writer::open_cancellable(archive, cancelled)?;
+        let mut running = Self::start_writer(writer, archive, runtime, false, None, false)
+            .map_err(polylogue_store::Error::Invariant)?;
+        let mut initial = claude_continuation::Status::initial(config.acquisition_quantum_bytes);
+        initial.mode = "bounded_configured_claude_projects_v1";
+        initial.state = "discovering";
+        initial.projects = Some(claude_continuation::projects::ProjectStatus::initial());
+        *running.claude_continuation.lock().expect("Claude status") = Some(initial);
+        let handle = running.owner.as_ref().expect("running owner").handle();
+        let config = config.clone();
+        let id = id.to_owned();
+        let stop = Arc::clone(&running.stop);
+        let shared = Arc::clone(&running.claude_continuation);
+        running.collector = Some(
+            thread::Builder::new()
+                .name("polylogue-claude-projects".into())
+                .spawn(move || claude_continuation::projects::run(handle, config, id, stop, shared))
+                .map_err(polylogue_store::Error::Io)?,
+        );
+        Ok(running)
+    }
     pub fn start_codex(
         archive: &Path,
         runtime: &Path,
@@ -501,7 +530,7 @@ fn serve(
                             "Finite Codex source evidence leaves general Session coverage unknown.",
                         );
                     }
-                    json!({"outcome":if status.recovery.is_some() || status.unavailable_blob_files > 0 || acquisition.is_some() || (pending["examined_snapshots"].as_u64().is_some_and(|n|n>0) || pending["scan_complete"]==false) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"continuation":continuation,"claude_continuation":claude_continuation,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-claude-continuation-v1","configured-codex-home-v1","configured-codex-continuation-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
+                    json!({"outcome":if status.recovery.is_some() || status.unavailable_blob_files > 0 || acquisition.is_some() || (pending["examined_snapshots"].as_u64().is_some_and(|n|n>0) || pending["scan_complete"]==false) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"continuation":continuation,"claude_continuation":claude_continuation,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-claude-continuation-v1","configured-claude-projects-v1","configured-codex-home-v1","configured-codex-continuation-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})

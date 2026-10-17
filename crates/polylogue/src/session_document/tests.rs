@@ -46,10 +46,13 @@ impl World {
         self.import_as(bytes, id, SID)
     }
     fn import_as(&self, bytes: &[u8], id: &str, native: &str) -> RetainedInput {
+        self.import_context(bytes, id, vec!["claude-main".into(), native.into()])
+    }
+    fn import_context(&self, bytes: &[u8], id: &str, context: Vec<String>) -> RetainedInput {
         fs::write(&self.path, bytes).unwrap();
         let request = ImportRequest {
             format: InputFormat::ClaudeCodeJsonl,
-            context: vec!["claude-main".into(), native.into()],
+            context,
             path: self.path.clone(),
             observation: Observation {
                 id: id.into(),
@@ -880,3 +883,6 @@ mod reference_guard;
 mod native_id_privacy;
 
 mod canonical_opaque;
+
+#[path = "tests/configured_claude.rs"]
+mod configured_claude;

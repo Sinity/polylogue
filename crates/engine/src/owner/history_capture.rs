@@ -18,17 +18,19 @@ impl Actor {
     pub(super) fn start_claude(
         &mut self,
         request: ImportRequest,
+        location: polylogue_store::configured_claude::Location,
         quantum_bytes: u64,
         reply: ImportReply,
     ) -> Result<()> {
-        self.start_turn_capture(request, reply, Some(quantum_bytes))
+        self.start_turn_capture(request, reply, Some((quantum_bytes, location)))
     }
     fn start_turn_capture(
         &mut self,
         request: ImportRequest,
         reply: ImportReply,
-        claude_quantum: Option<u64>,
+        claude: Option<(u64, polylogue_store::configured_claude::Location)>,
     ) -> Result<()> {
+        let claude_quantum = claude.as_ref().map(|(bytes, _)| *bytes);
         if self.turn_capture.is_some() || self.capture.is_some() {
             reply.send(Err(Error::Busy), false);
             return Ok(());
@@ -88,9 +90,9 @@ impl Actor {
                             }
                         }
                     };
-                    if claude_quantum.is_some() {
+                    if let Some((_, location)) = claude {
                         crate::claude_capture::prepare(
-                            capture, &path, old, &cancelled, budget, yield_turn,
+                            capture, location, old, &cancelled, budget, yield_turn,
                         )
                         .map(PreparedCapture::Claude)
                     } else {

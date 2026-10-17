@@ -276,17 +276,17 @@ pub(crate) fn raw_versions(root: &Path) -> Result<Option<u32>> {
     Ok(archive)
 }
 
-/// Preserving v1/v2 -> v3 format migration. Preserve the quiescent sibling set before
+/// Preserving v1/v2/v3 -> v4 format migration. Preserve the quiescent sibling set before
 /// even a read-only SQLite open can rebuild shared memory. Each attempt has its
 /// own completed backup; a failed previous attempt never substitutes older bytes.
 pub(crate) fn migrate(root: &Path, cancelled: &AtomicBool) -> Result<()> {
-    let Some(old @ (1 | 2)) = raw_versions(root)? else {
+    let Some(old @ (1 | 2 | 3)) = raw_versions(root)? else {
         return Ok(());
     };
     let backups = root.join("migrations");
     crate::private_dir(&backups)?;
     let backup = tempfile::Builder::new()
-        .prefix(&format!("v{old}-to-v3-"))
+        .prefix(&format!("v{old}-to-v4-"))
         .tempdir_in(&backups)?;
     let mut entries = vec![];
     for name in ["archive.db", "index.db", "embeddings.db"] {
@@ -319,6 +319,9 @@ pub(crate) fn migrate(root: &Path, cancelled: &AtomicBool) -> Result<()> {
     File::open(&backups)?.sync_all()?;
     File::open(root)?.sync_all()?;
     crate::preflight_inner(root, true)?;
+    // Preserve the complete sibling set before a read-only guard can touch
+    // shared-memory marks. A pending restore never gains migration writes.
+    crate::copy_preparation::migration_guard(root)?;
     wal::check_cancel(cancelled)?;
     let path = root.join("archive.db");
     let mut conn = open(&path, false, true)?;
@@ -337,6 +340,12 @@ fn set_format(
     db(path, || {
         conn.pragma_update(None, "synchronous", "FULL")?;
         let tx = conn.transaction()?;
+        let found: u32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if found < 4 {
+            tx.execute_batch(crate::OBSERVED_CONTEXT_SQL)?;
+            crate::observed::context::migrate(&tx, path)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        }
         if let Some(recovery) = recovery {
             let text = serde_json::to_string(recovery).expect("typed recovery JSON");
             tx.execute("INSERT INTO meta(key,value) VALUES('recovery_qualification',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[text])?;
@@ -594,7 +603,7 @@ fn recover_inner(
         ));
     }
     let version = raw_versions(&source)?.ok_or_else(|| refused("missing archive format"))?;
-    if !matches!(version, 1 | 2 | 3) {
+    if !matches!(version, 1 | 2 | 3 | 4) {
         return Err(refused("unsupported archive format"));
     }
     let stage = tempfile::Builder::new()

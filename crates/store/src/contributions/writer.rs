@@ -148,6 +148,41 @@ fn check_at(conn: &Connection, path: &Path, build: &Build, mutating: bool) -> Re
     }
     Ok(())
 }
+pub(super) fn admitted_source(
+    writer: &Writer,
+    source: &Source<'_>,
+) -> Result<(parser_state::Head, u64)> {
+    let revision = integer(source.revision)?;
+    integer(source.evidence_revision)?;
+    if revision <= 0 {
+        return Err(Error::Range);
+    }
+    let path = writer.root.join("index.db");
+    let head = source_head(&writer._index, &path, source.predecessor)?;
+    let input: String = db(&path, || {
+        writer._index.query_row(
+            "SELECT id FROM input_ref WHERE pk=?1",
+            [source.predecessor.input_pk],
+            |r| r.get(0),
+        )
+    })?;
+    let archive = writer.root.join("archive.db");
+    let length: Option<u64> = db(&archive, || {
+        writer
+            .archive
+            .query_row(
+                "SELECT length FROM revision WHERE input=?1 AND number=?2 AND chain=?3",
+                params![input, revision, source.predecessor.chain],
+                |r| parser_state::unsigned(r, 0),
+            )
+            .optional()
+    })?;
+    let length = length.ok_or(Error::MessagePredecessorChanged)?;
+    if head.acquired_upto > length {
+        return Err(Error::MessagePredecessorChanged);
+    }
+    Ok((head, length))
+}
 impl Writer {
     /// Reserve one pending body/candidate. Repeating the identical pinned
     /// request resumes it; a different request must retire the old preparation.
@@ -190,28 +225,7 @@ impl Writer {
             return Err(Error::Range);
         }
         let path = self.root.join("index.db");
-        let head = source_head(&self._index, &path, source.predecessor)?;
-        let input: String = db(&path, || {
-            self._index.query_row(
-                "SELECT id FROM input_ref WHERE pk=?1",
-                [source.predecessor.input_pk],
-                |r| r.get(0),
-            )
-        })?;
-        let archive = self.root.join("archive.db");
-        let length: Option<u64> = db(&archive, || {
-            self.archive
-                .query_row(
-                    "SELECT length FROM revision WHERE input=?1 AND number=?2 AND chain=?3",
-                    params![input, revision, source.predecessor.chain],
-                    |r| parser_state::unsigned(r, 0),
-                )
-                .optional()
-        })?;
-        let length = length.ok_or(Error::MessagePredecessorChanged)?;
-        if head.acquired_upto > length {
-            return Err(Error::MessagePredecessorChanged);
-        }
+        let (head, length) = admitted_source(self, &source)?;
         let length_i = integer(length)?;
         let digest = basis(
             source.predecessor,

@@ -393,9 +393,9 @@ fn selected_read_and_receipt_survive_peer_work_kill_restart_and_provider_removal
     negatives(&world, &reference);
 }
 #[test]
-fn unsupported_unready_message_reference_is_an_explicit_failure() {
+fn missing_call_id_message_reference_is_an_explicit_failure() {
     let world = World::new();
-    let bytes=[line(json!({"type":"session_meta","payload":{"id":"unsupported-session","source":"cli","cwd":"/synthetic"}})),line(json!({"type":"response_item","payload":{"type":"function_call","id":"unsupported-native","name":"synthetic-tool","call_id":"synthetic-call","arguments":"{}"}}))].concat();
+    let bytes=[line(json!({"type":"session_meta","payload":{"id":"unsupported-session","source":"cli","cwd":"/synthetic"}})),line(json!({"type":"response_item","payload":{"type":"function_call","id":"unsupported-native","name":"synthetic-tool","arguments":"{}"}}))].concat();
     let path = world.input("unsupported.jsonl", bytes.as_bytes());
     let receipt = world.import(&path, "01900000-0000-7000-8000-000000000104");
     let id = receipt["retained"]["id"].as_str().unwrap();
