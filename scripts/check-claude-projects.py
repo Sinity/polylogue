@@ -74,7 +74,9 @@ def await_text(run, reference, text, timeout=240):
 def discover(run, query, text, timeout=240):
     deadline = time.monotonic() + timeout
     while True:
-        answer = run.command([query, '--json'], allowed=(0, 5))
+        answer = run.command([query, '--json'], allowed=(0, 4, 5))
+        if run.calls[-1]['exit'] == 4:
+            assert answer['error']['kind'] == 'conflict' and answer['error']['message'] == 'message preparation predecessor changed', answer
         for row in answer.get('rows', []):
             document = continuation.document(run, row['id'])
             if document and any(block.get('text') == text for m in document.get('messages', []) for block in m['blocks']):
