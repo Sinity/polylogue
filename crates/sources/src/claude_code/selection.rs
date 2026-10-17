@@ -421,10 +421,6 @@ pub(super) fn classify_author(
         }
         _ => {}
     }
-    if context.first_subagent_instruction {
-        // The instruction the parent model wrote in its Agent or Task call.
-        return (WrittenBy::Model, None, None);
-    }
     match v.get("promptSource").and_then(Value::as_str) {
         Some("typed" | "suggestion_accepted" | "queued") => {
             return (WrittenBy::Human, Some(super::prompt_kind_of(content)), None);
@@ -467,6 +463,10 @@ pub(super) fn classify_author(
     ];
     if HARNESS.iter().any(|h| t.starts_with(h)) {
         return (WrittenBy::Harness, None, None);
+    }
+    if context.first_subagent_instruction {
+        // The instruction the parent model wrote in its Agent or Task call.
+        return (WrittenBy::Model, None, None);
     }
     let has_source = v.get("promptSource").is_some();
     // Versions before the field existed: a remaining prompt is the person's.
