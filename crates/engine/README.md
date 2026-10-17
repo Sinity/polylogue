@@ -128,3 +128,9 @@ coalesce only adjacent immediate-field donors with the same exact record range;
 interleaved correction donors remain separate groups. These scheduling changes
 preserve interpretation versions and immutable evidence recipes. They do not
 establish a total worker-time or history-cost bound.
+
+Canonical state inspection reads only the exact existing Build. Initial
+preparation reserves rows; repeated worker dispatch and typed-operation admission
+reuse the store's common fixed metadata loader without reservation INSERTs or
+write transactions. Both paths retain source/identity, privacy, phase and producer
+checks, and every mutation still validates its predecessor and cursor CAS.

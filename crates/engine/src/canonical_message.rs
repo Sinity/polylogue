@@ -570,10 +570,11 @@ pub fn start(
 }
 /// Fixed metadata only; no cursor JSON decode or payload hashing on the actor.
 pub fn inspect(writer: &mut Writer, handle: &Handle, allowance: usize) -> Result<State> {
-    // Validate the exact existing Build before the idempotent preparation read;
-    // a stale post-publication handle must never allocate a successor build.
+    // Both reads validate this exact existing Build. Inspection cannot reserve
+    // rows or allocate a successor; only the initial Prepare action does that.
     let projection = writer.message_projection(&handle.build, allowance)?;
-    let preparation = writer.prepare_message(
+    let preparation = writer.inspect_message_preparation(
+        &handle.build,
         handle.identity.borrowed(handle.request.message as u64),
         Source {
             predecessor: handle.build.predecessor(),

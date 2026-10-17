@@ -265,3 +265,8 @@ two ownership counts. Predecessor or cursor failure rolls back allocations,
 leases and field-tree edits together. This is an atomic small-field operation,
 not a batch of arbitrary mutations; source-selector authority remains in the
 engine and large/in-flight producers keep their streaming protocol.
+
+`inspect_message_preparation` admits the caller's identity/source and loads only
+an existing private Build, including a completed rank projection. It uses the
+same preparation metadata loader as initial reservation and performs only reads;
+inspection cannot allocate a successor or advance SQLite allocation sequences.
