@@ -270,3 +270,8 @@ engine and large/in-flight producers keep their streaming protocol.
 an existing private Build, including a completed rank projection. It uses the
 same preparation metadata loader as initial reservation and performs only reads;
 inspection cannot allocate a successor or advance SQLite allocation sequences.
+
+Immutable directory reads reuse compiled node/edge SELECT statements in the
+connection's existing bounded SQLite statement cache. Each visit still reads
+all rows and checks ownership, readiness, edge shape and count summaries; node
+results and visibility are not cached, and charged read work is unchanged.
