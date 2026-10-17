@@ -19,3 +19,5 @@ pub mod codex_discovery;
 pub mod session_query;
 
 pub mod claude_bodies;
+
+mod claude_capture;

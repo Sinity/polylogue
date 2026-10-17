@@ -1,4 +1,4 @@
-//! Explicit finite startup acquisition. No watcher is registered.
+//! Explicit configured-source acquisition and bounded continuation.
 use crate::{error, import_cli, io_error};
 use polylogue_model::types::{ErrorKind, Failure};
 use serde::Deserialize;
@@ -25,6 +25,11 @@ struct Source {
     path: PathBuf,
     machine: String,
     host: String,
+    #[serde(default = "default_quantum")]
+    acquisition_quantum_bytes: u64,
+}
+fn default_quantum() -> u64 {
+    8 * 1024 * 1024
 }
 pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Result<i32, Failure> {
     let mut config = None;
@@ -108,7 +113,39 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
         );
     }
     let claude = config.claude_main.expect("validated source selection");
-    let (mut running, source) = polylogue::Running::start_observed(
+    if !(65536..=8 * 1024 * 1024).contains(&claude.acquisition_quantum_bytes) {
+        return Err(error(
+            ErrorKind::InvalidQuery,
+            "acquisition_quantum_bytes must be between 65536 and 8388608",
+        ));
+    }
+    let start = |archive: &Path,
+                 runtime: &Path,
+                 source: &Path,
+                 machine: &str,
+                 host: &str,
+                 id: &str,
+                 seen_at: i64,
+                 stop: &AtomicBool| {
+        if until_idle {
+            polylogue::Running::start_observed(
+                archive, runtime, source, machine, host, id, seen_at, stop,
+            )
+        } else {
+            polylogue::Running::start_observed_continuing(
+                archive,
+                runtime,
+                source,
+                machine,
+                host,
+                id,
+                seen_at,
+                stop,
+                claude.acquisition_quantum_bytes,
+            )
+        }
+    };
+    let (mut running, source) = start(
         archive,
         &runtime,
         &claude.path,
@@ -128,7 +165,7 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
         other => io_error(other),
     })?;
     eprintln!(
-        "listening: {} (one observed Claude location; no watcher)",
+        "listening: {} (one configured Claude main; bounded polling unless --until-idle)",
         running.socket().display()
     );
     if json_output && !until_idle {
@@ -222,8 +259,45 @@ fn run_codex(
         return Ok(0);
     }
     let deadline = Instant::now() + Duration::from_secs(120);
+    let mut admitted = acquisition.admitted.clone();
+    if config.paginated_history.is_some() {
+        loop {
+            if stop.load(Ordering::Acquire) {
+                running.stop();
+                return Err(error(
+                    ErrorKind::Refused {
+                        reason: "startup interrupted".into(),
+                    },
+                    "physical startup interrupted before complete retention",
+                ));
+            }
+            let status = polylogue::request_value_until(
+                running.socket(),
+                &json!({"command":"status"}),
+                deadline,
+            )
+            .map_err(io_error)?;
+            let physical = &status["continuation"];
+            if physical["paginated_pending"] == false && physical["paginated_state"] != "disabled" {
+                if let Some(input) = physical["paginated_input"].as_str() {
+                    if !admitted.iter().any(|old| old == input) {
+                        admitted.push(input.to_owned());
+                    }
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                running.stop();
+                return Err(error(
+                    ErrorKind::Timeout,
+                    "physical startup acquisition remains pending; no complete prefix was selected",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     let mut progress = Vec::new();
-    for input in &acquisition.admitted {
+    for input in &admitted {
         if acquisition.prompt_input.as_ref() == Some(input) {
             continue;
         }

@@ -36,6 +36,8 @@ pub struct Qualification {
     own_counting_unknown: bool,
     membership_bytes: usize,
     known_rows_readable: bool,
+    certified_observed_member: bool,
+    prefix_effects_supported: bool,
 }
 impl Qualification {
     pub fn header(
@@ -62,6 +64,16 @@ impl Qualification {
             && self.known_rows_readable
             && self.pending_inputs == 0
             && self.unresolved_inputs == 0
+    }
+    /// One observed source can independently certify an exact complete member
+    /// while another row or suffix remains pending. Session context is unchanged.
+    pub fn member_rows_readable(&self) -> bool {
+        self.exact
+            && self.unresolved_inputs == 0
+            && ((self.known_rows_readable && self.pending_inputs == 0)
+                || (self.certified_observed_member
+                    && self.basis.len() == 1
+                    && self.prefix_effects_supported))
     }
     pub fn active_path_known(&self) -> bool {
         !self.own_topology_unknown
@@ -169,24 +181,25 @@ pub fn qualify_with_cancel(
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Qualification, Error> {
-    qualify_session(session, until, allowance, cancelled, false)
+    qualify_session(session, until, allowance, cancelled, None)
 }
 /// Exact member reads preserve unavailable Session context while independently
 /// checking the selected Message's retained body witnesses at handoff.
 pub fn qualify_member_with_cancel(
     session: &SessionView,
+    message: &polylogue_store::contributions::MessageView,
     until: Instant,
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Qualification, Error> {
-    qualify_session(session, until, allowance, cancelled, true)
+    qualify_session(session, until, allowance, cancelled, Some(message))
 }
 fn qualify_session(
     session: &SessionView,
     until: Instant,
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
-    member: bool,
+    member: Option<&polylogue_store::contributions::MessageView>,
 ) -> Result<Qualification, Error> {
     let header = session.header()?;
     let plan = polylogue_model::query::SessionQuery {
@@ -213,7 +226,7 @@ pub fn qualify_catalog(
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Qualification, Error> {
-    qualify_operation(session, plan, until, allowance, cancelled, false, false)
+    qualify_operation(session, plan, until, allowance, cancelled, false, None)
 }
 fn qualify_operation(
     session: &SessionCatalog,
@@ -222,12 +235,13 @@ fn qualify_operation(
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
     document: bool,
-    member: bool,
+    member: Option<&polylogue_store::contributions::MessageView>,
 ) -> Result<Qualification, Error> {
     let mut result = Qualification {
         up_to_date: true,
         document,
         known_rows_readable: true,
+        prefix_effects_supported: true,
         ..Default::default()
     };
     let exact = plan.id.as_deref().filter(|_| {
@@ -408,7 +422,7 @@ fn qualify_operation(
         if let Err(error) = session.verify_dependency_bodies(&dependency) {
             let unavailable_body = matches!(&error, Error::Blob(_) | Error::UnknownBlob)
                 || matches!(&error, Error::Invariant(detail) if detail == "required Claude retained body metadata unavailable");
-            if !member || !unavailable_body {
+            if member.is_none() || !unavailable_body {
                 return Err(error);
             }
             add(&mut result.unavailable_inputs, 1)?;
@@ -432,6 +446,10 @@ fn qualify_operation(
         result.own_topology_unknown |= head.counts.unrecognized > 0 || head.counts.undecodable > 0;
         if head.counts.used > 0 {
             add(&mut result.interpreted_nonempty_inputs, 1)?;
+        }
+        if let Some(message) = member {
+            result.certified_observed_member |=
+                certified_observed_member(session, &dependency, &input, message, allowance)?;
         }
         let mut unavailable = dependency.failure().is_some();
         if unavailable {
@@ -475,7 +493,9 @@ fn qualify_operation(
                     "done Session dependency lost its settlement receipt".into(),
                 ));
             }
-            None => add(&mut result.pending_inputs, 1)?,
+            None => {
+                add(&mut result.pending_inputs, 1)?;
+            }
         }
         if unavailable {
             add(&mut result.unavailable_inputs, 1)?;
@@ -629,6 +649,54 @@ fn qualify_operation(
     }
     Ok(result)
 }
+fn certified_observed_member(
+    catalog: &SessionCatalog,
+    dependency: &SessionInputDependency,
+    input: &polylogue_store::RetainedSource,
+    message: &polylogue_store::contributions::MessageView,
+    allowance: usize,
+) -> Result<bool, Error> {
+    let Some(head) = dependency.head() else {
+        return Ok(false);
+    };
+    if !input.observed()
+        || input.format != InputFormat::ClaudeCodeJsonl
+        || !(head.parsed_upto == input.input.length
+            || (head.status == "waiting_tail"
+                && head.finalization_pending
+                && head.parsed_upto < input.input.length))
+        || head.counts.unrecognized > 0
+        || head.counts.undecodable > 0
+    {
+        return Ok(false);
+    }
+    let Some(pending) = cell::<polylogue_sources::claude_code::keyed::PendingMessage>(
+        catalog,
+        dependency,
+        claude::PENDING,
+        &(message.id().session().as_str(), message.id().as_str()),
+        allowance,
+    )?
+    else {
+        return Ok(false);
+    };
+    let logical = owner::claude_key(pending.message.as_str());
+    let Some(source) = catalog.dependency_selected_projection(dependency, &logical, allowance)?
+    else {
+        return Ok(false);
+    };
+    if source.version_hash() != message.version_hash()? {
+        return Ok(false);
+    }
+    crate::canonical_message::current_claude_projection(
+        &source,
+        &head.token,
+        &pending,
+        input.binding,
+        &input.context,
+    )
+    .map_err(|error| Error::Invariant(error.to_string()))
+}
 fn cell<T: serde::de::DeserializeOwned>(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
@@ -715,6 +783,7 @@ fn qualify_shape(
             cell(catalog, dependency, claude::EFFECTS, &step, allowance)?
                 .ok_or_else(|| Error::Invariant("missing Session effect receipt".into()))?;
         if !effects.links.is_empty() || !effects.events.is_empty() {
+            result.prefix_effects_supported = false;
             result.unsupported.insert(
                 "Linked/subagent and event products remain unsupported for complete Session reads"
                     .into(),

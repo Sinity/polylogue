@@ -28,6 +28,33 @@ pub(super) struct Head {
     context: Vec<String>,
     parser_version: u32,
 }
+/// A waiting tail can retain a complete prefix Message. Reuse its exact
+/// current source certificate, not equality of text, counts or logical IDs.
+pub(crate) fn current_projection(
+    projection: &SourceProjection,
+    token: &Token,
+    pending: &PendingMessage,
+    source_binding: BlobHash,
+    context: &[String],
+) -> Result<bool> {
+    if projection.predecessor() != token
+        || projection.message() != &pending.message
+        || pending.incomplete
+    {
+        return Ok(false);
+    }
+    let guard: EvidenceGuard = serde_json::from_slice(projection.evidence_guard())
+        .map_err(|e| Error::Source(e.to_string()))?;
+    Ok(guard
+        == EvidenceGuard {
+            head: EvidenceBasis::Claude(Head {
+                pending: pending.clone(),
+                context: context.to_vec(),
+                parser_version: source::PARSER_VERSION,
+            }),
+            source_binding,
+        })
+}
 pub(super) struct Proof {
     token: Token,
     head: Head,

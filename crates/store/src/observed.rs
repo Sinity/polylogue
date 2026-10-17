@@ -1,5 +1,5 @@
 //! Retained input identity and contiguous source reads. Provider paths are used
-//! only during explicit startup acquisition, never by interpretation/readback.
+//! only during explicit configured acquisition, never by interpretation/readback.
 use crate::{
     BlobHash, Error, ImmutableImport, InputFormat, ReadHandle, RetainedInput, Writer, counter, db,
 };
@@ -196,110 +196,82 @@ impl Writer {
         seen_at: i64,
         cancelled: &AtomicBool,
     ) -> crate::Result<RetainedSource> {
-        self.check_import_acquisition()?;
-        if !path.is_absolute() || machine.is_empty() || host.is_empty() || id.is_empty() {
-            return Err(refusal("absolute path and acquisition identities required"));
-        }
         let path_text = path
             .to_str()
             .ok_or_else(|| refusal("non-UTF8 path is unsupported"))?;
-        if path_text.len() + machine.len() + host.len() + id.len() > 65536 {
-            return Err(refusal("source metadata exceeds admission"));
+        if !path.is_absolute()
+            || machine.is_empty()
+            || host.is_empty()
+            || id.is_empty()
+            || path_text.len() + machine.len() + host.len() + id.len() > 65536
+        {
+            return Err(refusal(
+                "absolute path and admitted acquisition identities required",
+            ));
         }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-            .open(path)?;
-        let meta = file.metadata()?;
-        if !meta.is_file() {
-            return Err(refusal("regular file required"));
-        }
+        let old = self.claude_predecessor(path, machine)?;
+        let capture = self.blob_capture()?;
+        let prepared = capture.prepare_claude_main(path, old, cancelled, |_| Ok(()), |_| Ok(()))?;
+        self.retain_claude_main(prepared, machine, host, id, seen_at)
+    }
+    pub fn claude_predecessor(
+        &mut self,
+        path: &Path,
+        machine: &str,
+    ) -> crate::Result<Option<RetainedSource>> {
+        self.check_import_acquisition()?;
+        let path_text = path.to_str().ok_or(Error::Range)?;
         let archive_file = self.root.join("archive.db");
         let old_id: Option<String> = db(&archive_file, || {
             self.archive.query_row("SELECT input FROM observation WHERE machine=?1 AND path=?2 AND class IN ('first','appended') ORDER BY rowid DESC LIMIT 1",params![machine,path_text],|r|r.get(0)).optional()
         })?;
-        let old = old_id
+        old_id
             .as_ref()
             .map(|id| self.retained_source(id))
-            .transpose()?
-            .flatten();
-        let previous = old.as_ref().map(|s| s.input.length).unwrap_or(0);
-        if let Some(source) = &old {
-            let SourceIdentity::Observed { device, inode, .. } = source.identity else {
-                return Err(refusal("location belongs to an immutable import"));
-            };
-            if device != meta.dev() || inode != meta.ino() {
-                return Err(refusal(
-                    "replacement requires unsupported revision handling",
-                ));
-            }
-            if meta.len() < previous {
-                return Err(refusal("source shrank; rewrite handling is unsupported"));
-            }
-            let reader = self.read_handle()?;
-            let mut offset = 0;
-            while offset < previous {
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(Error::Cancelled);
-                }
-                let length = (previous - offset).min(65536);
-                let expected = reader.read_source_range(
-                    &source.input.id,
-                    source.input.chain,
-                    source.binding,
-                    offset,
-                    length,
-                )?;
-                let mut actual = vec![0; length as usize];
-                file.read_exact(&mut actual)?;
-                if actual != expected {
-                    return Err(refusal("retained predecessor prefix changed"));
-                }
-                offset += length;
-            }
-        }
-        file.seek(SeekFrom::Start(previous))?;
-        let added = meta.len().checked_sub(previous).ok_or(Error::Range)?;
-        let proof = if added > 0 || old.is_none() {
-            let capture = self.blob_capture()?;
-            Some(capture.capture(
-                Exact {
-                    reader: &mut file,
-                    remaining: added,
-                },
-                cancelled,
-            )?)
-        } else {
-            None
-        };
-        let after = file.metadata()?;
-        if (
-            after.dev(),
-            after.ino(),
-            after.len(),
-            after.mtime(),
-            after.mtime_nsec(),
-            after.ctime(),
-            after.ctime_nsec(),
-        ) != (
-            meta.dev(),
-            meta.ino(),
-            meta.len(),
-            meta.mtime(),
-            meta.mtime_nsec(),
-            meta.ctime(),
-            meta.ctime_nsec(),
-        ) {
+            .transpose()
+            .map(Option::flatten)
+    }
+    pub fn retain_claude_main(
+        &mut self,
+        prepared: PreparedClaudeMain,
+        machine: &str,
+        host: &str,
+        id: &str,
+        seen_at: i64,
+    ) -> crate::Result<RetainedSource> {
+        self.check_import_acquisition()?;
+        let PreparedClaudeMain {
+            path,
+            old,
+            meta,
+            proof,
+        } = prepared;
+        let path_text = path.to_str().ok_or(Error::Range)?;
+        if machine.is_empty()
+            || host.is_empty()
+            || id.is_empty()
+            || path_text.len() + machine.len() + host.len() + id.len() > 65536
+        {
             return Err(refusal(
-                "descriptor changed during acquisition; retry unchanged action",
+                "source metadata exceeds admission or identities are empty",
             ));
         }
-        if cancelled.load(Ordering::Acquire) {
-            return Err(Error::Cancelled);
+        let current = self.claude_predecessor(&path, machine)?;
+        if current
+            .as_ref()
+            .map(|s| (&s.input.id, s.revision, s.input.length))
+            != old
+                .as_ref()
+                .map(|s| (&s.input.id, s.revision, s.input.length))
+        {
+            return Err(refusal("retained predecessor changed during acquisition"));
         }
+        let previous = old.as_ref().map(|s| s.input.length).unwrap_or(0);
+        let added = meta.len().checked_sub(previous).ok_or(Error::Range)?;
         if old.is_some() && added == 0 {
-            return Ok(old.unwrap());
+            return Ok(current.unwrap());
         }
+        let archive_file = self.root.join("archive.db");
         let hash =
             self.retain_captured_blob(proof.ok_or_else(|| refusal("missing capture proof"))?)?;
         let input_id = old.as_ref().map(|s| s.input.id.as_str()).unwrap_or(id);
@@ -350,6 +322,173 @@ impl Writer {
             .ok_or_else(|| refusal("committed acquisition missing"))
     }
 }
+
+pub struct PreparedClaude {
+    pub main: PreparedClaudeMain,
+    pub bodies: Vec<(std::path::PathBuf, crate::claude_bodies::PreparedClaudeBody)>,
+}
+pub struct PreparedClaudeMain {
+    path: std::path::PathBuf,
+    old: Option<RetainedSource>,
+    meta: std::fs::Metadata,
+    proof: Option<crate::PreparedBlob>,
+}
+impl crate::BlobCapture {
+    /// One charged-work counter spans prefix checks, record scanning and every
+    /// referenced companion. The engine supplies record interpretation only.
+    pub fn prepare_claude_in_turns(
+        &self,
+        path: &Path,
+        old: Option<RetainedSource>,
+        cancelled: &AtomicBool,
+        budget: crate::history_pages::turns::Budget,
+        mut yield_turn: impl FnMut(crate::history_pages::turns::Progress) -> crate::Result<()>,
+        inspect: impl FnMut(&[u8]) -> crate::Result<()>,
+        finish_references: impl FnOnce() -> crate::Result<Vec<(String, Option<(BlobHash, u64)>)>>,
+    ) -> crate::Result<PreparedClaude> {
+        let control = crate::history_pages::turns::Turns::new(budget, &mut yield_turn)?;
+        let main = self.prepare_claude_main(
+            path,
+            old,
+            cancelled,
+            |n| control.borrow_mut().work("claude_main", n),
+            inspect,
+        )?;
+        let references = finish_references()?;
+        if references.len() > crate::claude_bodies::MAX_COMPANIONS {
+            return Err(refusal("Claude companion reference count exceeds 32"));
+        }
+        let mut bodies = Vec::new();
+        for (name, inline) in references {
+            let body = std::path::PathBuf::from(name);
+            if let Some(prepared) =
+                self.prepare_claude_body(path, &body, cancelled, inline, |n| {
+                    control.borrow_mut().work("claude_body", n)
+                })?
+            {
+                bodies.push((body, prepared));
+            }
+        }
+        Ok(PreparedClaude { main, bodies })
+    }
+    pub(crate) fn prepare_claude_main(
+        &self,
+        path: &Path,
+        old: Option<RetainedSource>,
+        cancelled: &AtomicBool,
+        mut work: impl FnMut(u64) -> crate::Result<()>,
+        mut inspect: impl FnMut(&[u8]) -> crate::Result<()>,
+    ) -> crate::Result<PreparedClaudeMain> {
+        if !path.is_absolute() {
+            return Err(refusal("absolute path required"));
+        }
+        let mut file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)?;
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(refusal("regular file required"));
+        }
+        let previous = old.as_ref().map(|s| s.input.length).unwrap_or(0);
+        if let Some(source) = &old {
+            let SourceIdentity::Observed { device, inode, .. } = source.identity else {
+                return Err(refusal("location belongs to an immutable import"));
+            };
+            if device != meta.dev() || inode != meta.ino() {
+                return Err(refusal(
+                    "replacement requires unsupported revision handling",
+                ));
+            }
+            if meta.len() < previous {
+                return Err(refusal("source shrank; rewrite handling is unsupported"));
+            }
+            let reader = self.read_handle()?;
+            let mut offset = 0;
+            while offset < previous {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(Error::Cancelled);
+                }
+                let length = (previous - offset).min(65536);
+                let expected = reader.read_source_range_checked(
+                    &source.input.id,
+                    source.input.chain,
+                    source.binding,
+                    offset,
+                    length,
+                    || work(65536),
+                )?;
+                let mut actual = vec![0; length as usize];
+                file.read_exact(&mut actual)?;
+                if actual != expected {
+                    return Err(refusal("retained predecessor prefix changed"));
+                }
+                work(length)?;
+                offset += length;
+            }
+        }
+        file.seek(SeekFrom::Start(previous))?;
+        let added = meta.len().checked_sub(previous).ok_or(Error::Range)?;
+        let proof = if added > 0 || old.is_none() {
+            let capture = self;
+            Some(capture.capture_with_check(
+                Exact {
+                    reader: &mut file,
+                    remaining: added,
+                },
+                cancelled,
+                &mut work,
+            )?)
+        } else {
+            None
+        };
+        file.seek(SeekFrom::Start(0))?;
+        let mut left = meta.len();
+        let mut buffer = vec![0; 65536];
+        while left > 0 {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(Error::Cancelled);
+            }
+            let n = left.min(65536) as usize;
+            file.read_exact(&mut buffer[..n])?;
+            inspect(&buffer[..n])?;
+            work(n as u64)?;
+            left -= n as u64;
+        }
+        let after = file.metadata()?;
+        if (
+            after.dev(),
+            after.ino(),
+            after.len(),
+            after.mtime(),
+            after.mtime_nsec(),
+            after.ctime(),
+            after.ctime_nsec(),
+        ) != (
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ctime(),
+            meta.ctime_nsec(),
+        ) {
+            return Err(refusal(
+                "descriptor changed during acquisition; retry unchanged action",
+            ));
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Err(Error::Cancelled);
+        }
+        Ok(PreparedClaudeMain {
+            path: path.to_path_buf(),
+            old,
+            meta,
+            proof,
+        })
+    }
+}
+
 struct Exact<R> {
     reader: R,
     remaining: u64,
@@ -806,3 +945,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "observed/claude_turn_tests.rs"]
+mod claude_turn_tests;

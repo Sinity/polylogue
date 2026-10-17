@@ -29,6 +29,8 @@ use std::{
 // These are admission limits, not format limits or a hard RSS bound. A rejected
 // record/cell remains owed and its required capacity is kept in the diagnostic.
 // Configurable larger admissions and full canonical convergence remain open.
+mod history_capture;
+use history_capture::TurnCaptureJob;
 const COMMANDS: usize = 16;
 const REQUEST_BYTES: usize = 65_536;
 const WINDOW_BYTES: u64 = 65_536;
@@ -145,6 +147,7 @@ impl ImportReply {
 enum PreparedCapture {
     Blob(PreparedBlob),
     History(polylogue_store::history_pages::PreparedHistory),
+    Claude(polylogue_store::observed::PreparedClaude),
 }
 enum Message {
     Note(
@@ -157,10 +160,16 @@ enum Message {
         Option<(polylogue_store::configured_codex::Candidate, BlobHash, u64)>,
         ImportReply,
     ),
+    Claude(ImportRequest, u64, Reply<ConfiguredImport>),
     CheckAcquisition(Reply<()>),
     Progress(String, Reply<Progress>),
     Retry(String, Reply<()>),
     Captured(Result<PreparedCapture>),
+    CaptureYield(
+        polylogue_store::history_pages::turns::Progress,
+        SyncSender<std::result::Result<(), StoreError>>,
+    ),
+    TurnCaptured(Result<PreparedCapture>),
     Computed(Result<Computation>),
     CanonicalComputed(Result<CanonicalTurn>),
     Wake,
@@ -227,6 +236,35 @@ impl Handle {
             Some((candidate, expected, expected_length)),
             ImportReply::Configured(reply),
         ))?;
+        Ok(rx)
+    }
+    pub fn try_claude_acquisition(
+        &self,
+        path: PathBuf,
+        observation: Observation,
+        quantum_bytes: u64,
+    ) -> Result<Receiver<Result<ConfiguredImport>>> {
+        if !(65536..=8 * 1024 * 1024).contains(&quantum_bytes) {
+            return Err(Error::InvalidRequest(
+                "Claude quantum must be between 65536 and 8388608 bytes",
+            ));
+        }
+        let request = ImportRequest {
+            format: InputFormat::ClaudeCodeJsonl,
+            context: vec![
+                "claude-main".into(),
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .ok_or(Error::InvalidRequest("UTF8 main stem required"))?
+                    .into(),
+            ],
+            path,
+            observation,
+            metadata_allowance: 65536,
+        };
+        self.validate_import(&request, false)?;
+        let (reply, rx) = mpsc::sync_channel(1);
+        self.send(Message::Claude(request, quantum_bytes, reply))?;
         Ok(rx)
     }
     pub fn try_history_import(
@@ -410,13 +448,7 @@ impl CanonicalPosition {
     pub(crate) fn logical_key(&self) -> Result<Option<[u8; 32]>> {
         match self {
             Self::Codex(n) => canonical_key(*n).map(Some),
-            Self::ClaudeMessage(_, p) => {
-                let mut h = blake3::Hasher::new();
-                h.update(b"polylogue.claude.logical-message.v1\0");
-                h.update(&(p.message.as_str().len() as u64).to_be_bytes());
-                h.update(p.message.as_str().as_bytes());
-                Ok(Some(*h.finalize().as_bytes()))
-            }
+            Self::ClaudeMessage(_, p) => Ok(Some(claude_key(p.message.as_str()))),
             Self::ToolsAfter(_)
             | Self::ToolsBeforeFailure(_, _)
             | Self::Audit(_)
@@ -465,6 +497,13 @@ struct Actor {
     writer: Writer,
     inner: Arc<Inner>,
     capture: Option<CaptureJob>,
+    turn_capture: Option<TurnCaptureJob>,
+    waiting_capture: Option<(
+        ImportRequest,
+        Option<(polylogue_store::configured_codex::Candidate, BlobHash, u64)>,
+        ImportReply,
+    )>,
+    history_budget: polylogue_store::history_pages::turns::Budget,
     compute: Option<ComputeJob>,
     canonical: Option<CanonicalJob>,
     active: Option<Active>,
@@ -481,6 +520,9 @@ impl Actor {
             writer,
             inner,
             capture: None,
+            turn_capture: None,
+            waiting_capture: None,
+            history_budget: polylogue_store::history_pages::turns::Budget::default(),
             compute: None,
             canonical: None,
             active: None,
@@ -499,6 +541,12 @@ impl Actor {
         }
         self.inner.cancelled.store(true, Ordering::Release);
         self.active = None;
+        if let Some(history) = &mut self.turn_capture {
+            history.grant.take();
+        }
+        if let Some((_, _, reply)) = self.waiting_capture.take() {
+            reply.send(Err(Error::Stopped), false);
+        }
     }
     fn observe_stop(&mut self) {
         if self.inner.cancelled.load(Ordering::Acquire) && !self.stopping {
@@ -522,22 +570,34 @@ impl Actor {
         self.stopping
     }
     fn run(mut self, rx: Receiver<Message>) -> Result<()> {
+        let mut commands_since_grant = 0;
         loop {
             self.observe_stop();
             let immediate = !self.stopping
-                && self.compute.is_none()
-                && self.canonical.is_none()
-                && (self.active.is_some() || self.scanning);
+                && (self
+                    .turn_capture
+                    .as_ref()
+                    .is_some_and(|h| h.grant.is_some())
+                    || (self.compute.is_none()
+                        && self.canonical.is_none()
+                        && (self.active.is_some() || self.scanning)));
+            let mut mailbox_empty = false;
             let message = match rx.try_recv() {
                 Ok(m) => Some(m),
                 Err(TryRecvError::Disconnected) => {
                     self.begin_stop();
                     None
                 }
-                Err(TryRecvError::Empty) if immediate => None,
+                Err(TryRecvError::Empty) if immediate => {
+                    mailbox_empty = true;
+                    None
+                }
                 Err(TryRecvError::Empty) => match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(m) => Some(m),
-                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Timeout) => {
+                        mailbox_empty = true;
+                        None
+                    }
                     Err(RecvTimeoutError::Disconnected) => {
                         self.begin_stop();
                         None
@@ -545,6 +605,7 @@ impl Actor {
                 },
             };
             if let Some(message) = message {
+                commands_since_grant += 1;
                 if let Err(e) = self.message(message) {
                     self.fatal = Some(e);
                     self.begin_stop();
@@ -556,7 +617,15 @@ impl Actor {
                     self.begin_stop();
                 }
             }
+            if !self.stopping && (mailbox_empty || commands_since_grant >= COMMANDS) {
+                if let Err(e) = self.advance_capture_turn() {
+                    self.fatal = Some(e);
+                    self.begin_stop();
+                }
+                commands_since_grant = 0;
+            }
             if self.stopping
+                && self.turn_capture.is_none()
                 && self.capture.is_none()
                 && self.compute.is_none()
                 && self.canonical.is_none()
@@ -569,6 +638,91 @@ impl Actor {
                 return self.fatal.map_or(Ok(()), Err);
             }
         }
+    }
+    fn finish_capture(&mut self, job: CaptureJob, result: Result<PreparedCapture>) -> Result<()> {
+        job.join.join().map_err(|_| Error::WorkerPanicked)?;
+        if self.stop_for_completion(&result) {
+            let _ = job.reply.send(Err(Error::Stopped), false);
+            return Ok(());
+        }
+        let mut acquired = true;
+        let mut claude_installation_started = false;
+        let result = result.and_then(|proof| {
+            let proof = match proof {
+                PreparedCapture::History(p) => {
+                    if let Some(input) = self
+                        .writer
+                        .known_history_snapshot(p.hash(), &job.observation.borrowed())?
+                    {
+                        acquired = false;
+                        return Ok(input);
+                    }
+                    return self
+                        .writer
+                        .retain_history_pages(p, &job.observation.borrowed(), job.allowance)
+                        .map_err(Error::Store);
+                }
+                PreparedCapture::Claude(prepared) => {
+                    let before = self.writer.claude_predecessor(
+                        std::path::Path::new(&job.observation.path),
+                        &job.observation.machine,
+                    )?;
+                    let source = self.writer.retain_claude_main(
+                        prepared.main,
+                        &job.observation.machine,
+                        &job.observation.host,
+                        &job.observation.id,
+                        job.observation.seen_at,
+                    )?;
+                    // A later companion refusal cannot hide already retained main work.
+                    claude_installation_started = true;
+                    for (index, (path, body)) in prepared.bodies.into_iter().enumerate() {
+                        let mut observation = job.observation.clone();
+                        observation.id = format!("{}:claude-body:{index}", observation.id);
+                        observation.path = format!("copy:{}", path.display());
+                        self.writer.retain_claude_body(
+                            &source.input.id,
+                            body,
+                            &observation.borrowed(),
+                        )?;
+                    }
+                    let after = self
+                        .writer
+                        .retained_source(&source.input.id)?
+                        .ok_or(Error::UnknownInput)?;
+                    acquired = before.as_ref().is_none_or(|old| {
+                        old.revision != after.revision || old.companions != after.companions
+                    });
+                    return Ok(after.input);
+                }
+                PreparedCapture::Blob(p) => p,
+            };
+            if job.expected.is_some_and(|hash| hash != proof.hash()) {
+                return Err(Error::InvalidEvidence(
+                    "configured source changed after discovery; retry next pass".into(),
+                ));
+            }
+            let hash = self.writer.retain_captured_blob(proof)?;
+            Ok(self.writer.retain_immutable_input(
+                hash,
+                job.format,
+                &job.context.iter().map(String::as_str).collect::<Vec<_>>(),
+                &job.observation.borrowed(),
+                job.allowance,
+            )?)
+        });
+        if (result.is_ok() && acquired) || (result.is_err() && claude_installation_started) {
+            self.scan_again = true;
+            if !self.scanning
+                && self.active.is_none()
+                && self.compute.is_none()
+                && self.canonical.is_none()
+            {
+                self.restart_scan();
+            }
+        }
+        let _ = job.reply.send(result, acquired);
+        Ok(())
     }
     fn active_id(&self) -> Option<&str> {
         if let Some(job) = &self.canonical {
@@ -691,6 +845,22 @@ impl Actor {
                         Ok(None) => {}
                     }
                 }
+                if request.format == InputFormat::CodexHistorySqlite {
+                    return self.start_history(request, reply);
+                }
+                if self.capture.is_none()
+                    && self
+                        .turn_capture
+                        .as_ref()
+                        .is_some_and(|h| h.grant.is_none() || h.regular_served)
+                {
+                    if self.waiting_capture.is_none() {
+                        self.waiting_capture = Some((request, configured, reply));
+                    } else {
+                        reply.send(Err(Error::Busy), false);
+                    }
+                    return Ok(());
+                }
                 if self.capture.is_some() {
                     let _ = reply.send(Err(Error::Busy), false);
                     return Ok(());
@@ -706,18 +876,9 @@ impl Actor {
                         return Ok(());
                     }
                 };
-                let history = request.format == InputFormat::CodexHistorySqlite;
-                let history_basis = if history {
-                    match self.writer.history_basis(&request.observation.borrowed()) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            reply.send(Err(e.into()), false);
-                            return Ok(());
-                        }
-                    }
-                } else {
-                    None
-                };
+                if let Some(history) = &mut self.turn_capture {
+                    history.regular_served = true;
+                }
                 let cancelled = Arc::clone(&self.inner.cancelled);
                 let sender = self.inner.sender.clone();
                 let path = request.path;
@@ -730,10 +891,6 @@ impl Actor {
                                 capture
                                     .capture_codex_candidate(&candidate, length, &cancelled)
                                     .map(PreparedCapture::Blob)
-                            } else if history {
-                                capture
-                                    .capture_history_pages(&path, history_basis, &cancelled)
-                                    .map(PreparedCapture::History)
                             } else {
                                 capture
                                     .capture_regular_file(&path, &cancelled)
@@ -759,6 +916,13 @@ impl Actor {
                     Err(e) => {
                         let _ = reply.send(Err(StoreError::Io(e).into()), false);
                     }
+                }
+            }
+            Message::Claude(request, quantum_bytes, reply) => {
+                if self.stopping {
+                    let _ = reply.send(Err(Error::Stopped));
+                } else {
+                    self.start_claude(request, quantum_bytes, ImportReply::Configured(reply))?;
                 }
             }
             Message::CheckAcquisition(reply) => {
@@ -791,54 +955,27 @@ impl Actor {
                 let Some(job) = self.capture.take() else {
                     return Err(Error::InvalidRequest("unexpected capture completion"));
                 };
-                job.join.join().map_err(|_| Error::WorkerPanicked)?;
-                if self.stop_for_completion(&result) {
-                    let _ = job.reply.send(Err(Error::Stopped), false);
-                    return Ok(());
+                self.finish_capture(job, result)?;
+            }
+            Message::CaptureYield(progress, grant) => {
+                let history = self
+                    .turn_capture
+                    .as_mut()
+                    .ok_or(Error::InvalidRequest("unexpected acquisition yield"))?;
+                history.progress = Some(progress);
+                history.regular_served = false;
+                if self.stopping {
+                    drop(grant);
+                } else {
+                    history.grant = Some(grant);
                 }
-                let mut acquired = true;
-                let result = result.and_then(|proof| {
-                    let proof = match proof {
-                        PreparedCapture::History(p) => {
-                            if let Some(input) = self
-                                .writer
-                                .known_history_snapshot(p.hash(), &job.observation.borrowed())?
-                            {
-                                acquired = false;
-                                return Ok(input);
-                            }
-                            return self
-                                .writer
-                                .retain_history_pages(p, &job.observation.borrowed(), job.allowance)
-                                .map_err(Error::Store);
-                        }
-                        PreparedCapture::Blob(p) => p,
-                    };
-                    if job.expected.is_some_and(|hash| hash != proof.hash()) {
-                        return Err(Error::InvalidEvidence(
-                            "configured source changed after discovery; retry next pass".into(),
-                        ));
-                    }
-                    let hash = self.writer.retain_captured_blob(proof)?;
-                    Ok(self.writer.retain_immutable_input(
-                        hash,
-                        job.format,
-                        &job.context.iter().map(String::as_str).collect::<Vec<_>>(),
-                        &job.observation.borrowed(),
-                        job.allowance,
-                    )?)
-                });
-                if result.is_ok() {
-                    self.scan_again = true;
-                    if !self.scanning
-                        && self.active.is_none()
-                        && self.compute.is_none()
-                        && self.canonical.is_none()
-                    {
-                        self.restart_scan();
-                    }
-                }
-                let _ = job.reply.send(result, acquired);
+            }
+            Message::TurnCaptured(result) => {
+                let history = self
+                    .turn_capture
+                    .take()
+                    .ok_or(Error::InvalidRequest("unexpected acquisition completion"))?;
+                self.finish_capture(history.job, result)?;
             }
             Message::Computed(result) => {
                 let Some(job) = self.compute.take() else {
@@ -1880,7 +2017,9 @@ mod tests {
         }
     }
     mod cancellation;
+    mod claude_turns;
     mod configured;
+    mod history_turns;
     fn owner(root: &Path) -> Owner {
         Owner::start(
             Writer::open(root).unwrap(),
@@ -2352,6 +2491,14 @@ mod tests {
             Ok(Ok(_)) | Ok(Err(Error::Stopped))
         ));
     }
+}
+
+pub(crate) fn claude_key(message: &str) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"polylogue.claude.logical-message.v1\0");
+    hash.update(&(message.len() as u64).to_be_bytes());
+    hash.update(message.as_bytes());
+    *hash.finalize().as_bytes()
 }
 
 pub(crate) fn canonical_key(ordinal: usize) -> Result<[u8; 32]> {

@@ -35,22 +35,36 @@ The catalog remains a separate read-only finite snapshot of at most 512 rows, wi
 An optional `codex_home.paginated_history` path explicitly selects a physical
 thread-history database, subject to the same home/path rules. There is no default
 path. `paginated_interval_seconds` is an integer from 1 through 86400, default
-300. Startup reports `paginated_history` availability and exact `paginated_input`
-independently of the bounded `retained` sample. Complete raw retention and supported
+300. Startup reports physical `paginated_history` as pending until owner admission, or
+unavailable when the path preflight fails. It opens no physical SQLite view before
+the actor/socket exist. Dynamic continuation exposes `paginated_pending`,
+`paginated_state` and the most recent exact retained `paginated_input`/length,
+independently of startup detail samples. That input names acquired bytes, never a
+current-provider frontier. Complete raw retention and supported
 row interpretation are different outcomes. A valid unknown schema keeps its raw
 input and reports an unavailable `no_parser_yet` interpretation; it cannot certify
 an empty conversation. Existing interpretation admission remains 16 MiB/4096 rows.
 
-The existing polling worker and single capture slot acquire this source. One
-read-only SQLite transaction pins a read view before reading page count and every
+The existing collector admits physical capture without waiting for its final
+reply, so regular configured turns continue. The actor grants one parked history
+worker reusable quanta, alternating queued regular capture with physical work and
+serving a bounded command round between grants. Ordinary reads remain available.
+One read-only SQLite transaction pins a read view before reading page count and every
 page through `sqlite_dbpage`, including committed WAL content and exact page one.
 An uncommitted provider write is excluded. No second descriptor reads the live
 main file, and no temporary complete database copy is written. Read transactions
 can delay WAL checkpoints; in rollback-journal mode they also hold a shared lock
 that delays the provider writer. The demonstrated concurrent-writer acceptance
 is WAL-specific; rollback-mode availability remains unqualified. Cancellation
-and a 300-second cooperative snapshot lifetime refuse incomplete preparation;
-this is not a guaranteed shutdown latency. No capped prefix becomes an input.
+and a 300-second cooperative active-turn guard refuse incomplete preparation.
+A turn admits 8 MiB of conservative work charges or 512 checkpoints. Source and
+verification work yield through explicit actor grants; parked time is excluded,
+and there is no one-second physical-turn pause or lifetime raw-byte/turn quota.
+These are cooperative checkpoints, not guaranteed shutdown latency or hard RSS/IO
+bounds: blocking IO, frame compression and existing seek-table finalization are
+not preempted. Seek metadata still scales with frame count. Library callbacks
+without byte counts conservatively charge 64 KiB each; those charges are not
+measured source/decoded bytes. No capped prefix becomes an input.
 
 A first image is one complete plain CAS object. Later capture verifies one retained
 complete base and compares against it with a 4 MiB retained-byte window. Every page
@@ -60,7 +74,13 @@ than 8192 extents triggers a streamed full rebase from the same pinned provider
 view. This caps publication metadata rather than raw database size. All bytes,
 whole digest, complete ranges and CAS custody precede one selection transaction.
 Interrupted preparation may leave unselected physical objects, never a selected
-partial source. Cumulative patch-storage amortization is not implemented here.
+partial source. The live SQLite/encoder/checked-base state stays in the one
+worker across grants; each turn does not reopen a source generation or reverify
+the whole base. Process loss discards that live state. Existing `blobs/tmp/*.part`
+files identify non-authoritative preparation and are never resumed as a page
+cursor; a new attempt starts one fresh complete view. Such orphan candidates may
+remain for file-layer recovery. Cumulative patch-storage amortization is not
+implemented here.
 
 Provider-page reads, base-verifier decoded bytes, predecessor range bytes,
 canonical-layout rereads and newly retained changed bytes are separate costs;
@@ -77,15 +97,27 @@ configured quiet interval or the hourly check. Failed attempts do not certify a
 new stamp or postpone a due full check. Status distinguishes metadata skip,
 waiting for quiet and actual byte verification; none certifies conversation
 coverage. Polling does not repair the provider database or its thread catalog.
+`--until-idle` waits for its one physical startup attempt and then interprets the
+exact acquired input, or retains explicit acquisition unavailability. Its finite
+120-second caller timeout reports pending work honestly; it does not certify an
+idle/empty history or impose an acquisition-format size limit.
 
 `scripts/check-configured-history.py`, declared as `configured_history_demo`, is
-the candidate packaged CLI/MCP acceptance driver. It independently checks scoped
+the candidate packaged CLI/MCP acceptance driver. It requires explicit
+`--sdk-python` and `--sdk-client` paths for the pinned official joint SDK adapter,
+freezes its source dependencies into the private result directory, and records
+actual SDK version/context-close receipts separately from direct JSON-RPC controls.
+Both routes discover operation references before exact fact/origin checks.
+It independently checks scoped
 rollout/history correspondence, committed WAL-only rows, an uncommitted distractor,
 terminal failure/exit-code facts, later same-daemon publication, restart, provider
 removal and unsupported-schema retention. Its answer oracle rejects damaged result,
 row, verdict, session/turn scope, conflicting origin, uncommitted-presence and
-invented-tool controls. The packaged test suite and this synthetic CLI/MCP driver
-pass, including owner cancellation, reversion and actual-library work controls.
+invented-tool controls. The reusable-turn controls additionally test correlated
+WAL commits across small quanta, actual regular capture/read service before
+physical selection, earlier complete reads during pending work, cancellation and
+killed-process fresh-view retry. Qualification requires the exact candidate
+package and public journey; an earlier package does not establish changed semantics.
 The driver records daemon/MCP reaping and runtime removal before reporting success.
 These finite controls do not qualify private corpora, multi-GB resource costs,
 rollback-writer availability, cumulative patch-storage amortization or full Sessions.

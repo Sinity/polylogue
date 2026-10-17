@@ -72,10 +72,13 @@ Explicit `codex_home` configuration discovers rollout snapshots independently of
 
 Optional `codex_home.paginated_history` names an additional physical history
 source; it has no default. `paginated_interval_seconds` selects its quiet interval
-(default 300). This route streams a complete SQLite read view into a plain base
+(default 300). One parked worker advances reusable byte/checkpoint quanta through
+the existing owner, allowing ordinary acquisition and reads between grants.
+This route streams a complete SQLite read view into a plain base
 or one changed-page blob with flat archive extents. Its raw acquisition does not
-inherit the bounded row decoder's 16 MiB limit. Startup names the exact retained
-`paginated_input`; availability and interpretation remain separate. See the
+inherit the bounded row decoder's 16 MiB limit. Startup reports physical acquisition as pending; continuation reports its exact
+retained `paginated_input` after complete custody. Availability and interpretation
+remain separate. See the
 [physical-history contract](docs/rewrite/codex-configured-discovery.md#physical-history).
 Synthetic packaged CLI/MCP acceptance covers this configured operation path.
 Complete Session reconstruction, production capture and multi-GB resource
@@ -83,14 +86,14 @@ qualification remain open.
 
 ## Observed Claude source subset
 
-One explicit regular Claude main location can now be retained at startup with
+One explicit regular Claude main location can be retained and kept current with
 `daemon --config FILE [--until-idle] [--json]`. Verified growth preserves its
 input/chain and parses retained pieces through the existing source owner. The
 [observed-source guide](docs/rewrite/observed-source.md) documents configuration,
 source-row qualification, separator and unfinished-tail behavior, retained
 `input cat ID` presentation, and the independent client demonstration. Default
 input presentation is credential-masked; source offsets and hashes remain raw
-coordinates. Directory discovery, watchers, rewrites and full M1 remain open.
+coordinates. Normal configured mode polls that main and its explicitly required tool-result bodies through the existing bounded acquisition owner. `--until-idle` remains finite startup admission. Directory discovery, general watcher semantics, rewrites and full M1 remain open.
 
 ## Retained Claude identity and values
 
