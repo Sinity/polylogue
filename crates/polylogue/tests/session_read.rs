@@ -844,9 +844,13 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
             .as_array()
             .unwrap()
             .iter()
-            .any(|note| note.as_str().unwrap().contains("pending interpretation")),
+            .any(|note| note
+                .as_str()
+                .unwrap()
+                .contains("pending possible Session relationships")),
         "{first}"
     );
+    assert_eq!(first["result"]["unknown"]["population_pending_inputs"], 1);
     let (socket, _, end) = world.socket_read(&reference());
     assert_eq!(socket, first);
     assert_eq!(end["unknown"], first["result"]["unknown"]);
