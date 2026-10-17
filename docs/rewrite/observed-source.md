@@ -247,3 +247,13 @@ The driver checks default SDK budgets after the larger population exists.
 and reports population acceptance as unrun; the default remains 5,000. Its
 receipts report actual dimensions and elapsed work; they are not a production
 throughput, RSS, whole-corpus or activation qualification.
+
+Companion lookup uses an archive-owned partial expression index on the exact
+main context value. Unrelated inputs do not contribute to that lookup's row
+scan; NULL or nonmatching context values retain the query's existing semantics.
+This does not change capture, snapshot selection or publication authority.
+The earlier private format-4 candidate at `14cc1c702` predates this schema
+index. Its retained acceptance fixtures belong to that exact binary and source;
+current exact-schema validation may refuse them. Formats 1 through 3 retain
+the preserving upgrade route described above. No installed format-4 archive
+compatibility is claimed for those unpublished candidates.

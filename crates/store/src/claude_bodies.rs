@@ -536,3 +536,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "claude_bodies/manifest_tests.rs"]
+mod manifest_tests;

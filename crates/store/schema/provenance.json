@@ -33,6 +33,6 @@
   "observed_context_overlay": {
     "archive_version": 4,
     "file": "observed-context.sql",
-    "changes": "Normalized declared context for observed Claude sources; immutable input CHECK and import identity unchanged. Preserving upgrade materializes exact legacy first-observation main context. Missing new-format context refuses; pending v3 preparation must finish with the pinned v3 owner before upgrade."
+    "changes": "Normalized declared context for observed Claude sources; immutable input CHECK and import identity unchanged. Preserving upgrade materializes exact legacy first-observation main context. Missing new-format context refuses; pending v3 preparation must finish with the pinned v3 owner before upgrade. Exact companion-main expression index avoids scanning unrelated input population; manifest matching and ordering unchanged."
   }
 }
