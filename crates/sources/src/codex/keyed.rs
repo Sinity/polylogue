@@ -7,6 +7,9 @@
 use super::origins::{Origins, RecordRange};
 use super::*;
 use std::ops::Bound::{Excluded, Unbounded};
+#[path = "keyed_native_messages.rs"]
+mod native_messages;
+pub use native_messages::CompletedMessageProof;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Key {
@@ -46,9 +49,17 @@ pub enum Key {
     OperationBlock(usize, usize),
     /// Exact native constructor record, scoped by the full operation ID.
     UnifiedOperation(String),
+    CompletedMessage(String, String),
+    PromptEcho(usize),
+    ResponseScope(String),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Cell {
+    CompletedMessage(CompletedMessageProof),
+    PromptEcho {
+        turn: String,
+        id: String,
+    },
     UnifiedOperation {
         raw_hash: [u8; 32],
         source: String,
@@ -280,6 +291,10 @@ pub struct Resume {
     prev_total: Option<Value>,
     model: Option<String>,
     pending_prompt: Option<usize>,
+    #[serde(default)]
+    pending_prompt_turn: Option<String>,
+    #[serde(default)]
+    pending_completed_messages: usize,
     mode: SessionMode,
     next_wrapper: usize,
     normalization_incomplete: bool,
@@ -343,7 +358,7 @@ impl Default for Limits {
 }
 impl Resume {
     pub fn normalization_incomplete(&self) -> bool {
-        self.normalization_incomplete
+        self.normalization_incomplete || self.pending_completed_messages > 0
     }
     pub fn session(&self) -> Option<&Session> {
         self.session.as_ref()
@@ -361,6 +376,15 @@ impl Cell {
         self.fits(key)
     }
     fn fits(&self, k: &Key) -> bool {
+        if let (Key::CompletedMessage(turn, id), Self::CompletedMessage(proof)) = (k, self) {
+            return proof.valid_for(turn, id);
+        }
+        if let (Key::PromptEcho(_), Self::PromptEcho { turn, id }) = (k, self) {
+            return !turn.is_empty() && !id.is_empty();
+        }
+        if let (Key::ResponseScope(_), Self::Text(turn)) = (k, self) {
+            return !turn.is_empty();
+        }
         if let (Key::UnifiedOperation(_), Self::UnifiedOperation { source, .. }) = (k, self) {
             return unified_source(source);
         }
@@ -1844,10 +1868,11 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn response_item(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
+        self.invalidate_completed_response(p);
         let preview = self.preview_item(p);
         let p = &preview;
         let ty = p.get("type").and_then(Value::as_str).unwrap_or("");
-        match ty {
+        let outcome = match ty {
             "message" => self.message_item(p, at),
             t if is_model_item(t) => self.model_item(p, t, at),
             "function_call_output" | "custom_tool_call_output" | "tool_search_output" => {
@@ -1858,7 +1883,9 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             "ghost_snapshot" | "agent_message" => self.event(ty, at, false, p),
             _ => RecordOutcome::Unrecognized("response_item type"),
-        }
+        };
+        self.resolve_completed_response(p);
+        outcome
     }
 
     fn message_item(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
@@ -1908,7 +1935,7 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             if role == "user" {
                 self.edit(i, |message| message.role = Role::User);
-                self.classify_prompt(i, &text);
+                self.classify_prompt(i, &text, &effective);
                 if is_harness_wrapper(&text) {
                     self.remove_evidence(i, 1, 1);
                 } else {
@@ -1952,7 +1979,7 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         self.context_for(index, role == "user" && !is_harness_wrapper(&text), false);
         if role == "user" {
-            self.classify_prompt(index, &text);
+            self.classify_prompt(index, &text, p);
         }
         RecordOutcome::Used
     }
@@ -1982,7 +2009,7 @@ impl<V: ReadView> KeyedRecords<V> {
             }
         }
     }
-    fn classify_prompt(&mut self, index: usize, text: &str) {
+    fn classify_prompt(&mut self, index: usize, text: &str, item: &Value) {
         self.edit(index, |message| {
             message.written_by = WrittenBy::Harness;
             message.prompt_kind = None;
@@ -2006,6 +2033,7 @@ impl<V: ReadView> KeyedRecords<V> {
             }
         }
         self.s.pending_prompt = Some(index);
+        self.s.pending_prompt_turn = native_messages::response_turn(item, self.s.turn.as_deref());
         self.put(Key::Prompt, Cell::Text(text.into()));
     }
     fn request_message_for_assistant(&mut self, p: &Value, at: Option<Timestamp>) -> Option<usize> {
@@ -2864,6 +2892,9 @@ impl<V: ReadView> KeyedRecords<V> {
                     return RecordOutcome::Unrecognized("native command constructor changed");
                 }
             }
+        }
+        if let Some(outcome) = self.completed_message(p, at) {
+            return outcome;
         }
         let item = self.preview_item(&original);
         let ty = item.get("type").and_then(Value::as_str).unwrap_or("");

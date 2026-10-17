@@ -291,10 +291,14 @@ fn provider_key_codec_roundtrips_and_preserves_derived_key_order() {
             Key::Block(n, usize::MAX),
             Key::Wrapper(n),
             Key::Model(n),
+            Key::PromptEcho(n),
         ]);
         for s in ["", "\0", "a", "a\0", "aa", "é", "中", "🦀"] {
             keys.extend([
                 Key::Call(s.into()),
+                Key::ResponseScope(s.into()),
+                Key::CompletedMessage(s.into(), "id".into()),
+                Key::CompletedMessage("turn".into(), s.into()),
                 Key::CallBlock(s.into(), n, 0),
                 Key::CallBlock(s.into(), n, usize::MAX),
                 Key::Reasoning(s.into()),

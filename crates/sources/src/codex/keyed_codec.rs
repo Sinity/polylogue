@@ -6,6 +6,9 @@ use super::keyed::Key;
 impl Key {
     pub fn family(&self) -> &'static str {
         match self {
+            Self::CompletedMessage(_, _) => "completed_message",
+            Self::PromptEcho(_) => "prompt_echo",
+            Self::ResponseScope(_) => "response_scope",
             Self::Operation(_) => "operation",
             Self::UnifiedOperation(_) => "unified_operation",
             Self::OperationBlock(_, _) => "operation_block",
@@ -51,7 +54,7 @@ impl Key {
     /// NUL escapes. Any subsequent scan is bounded by the supplied allowance.
     /// The error is the required size or a cheap lower bound on that size.
     pub fn ordered_len_limited(&self, allowance: usize) -> Result<usize, usize> {
-        if let Self::NativeItem(scope, id) = self {
+        if let Self::NativeItem(scope, id) | Self::CompletedMessage(scope, id) = self {
             let lower = 5usize.saturating_add(scope.len()).saturating_add(id.len());
             if lower > allowance {
                 return Err(lower);
@@ -70,7 +73,8 @@ impl Key {
             | Self::Model(_)
             | Self::BlockOrder(_)
             | Self::EvidenceHead(_)
-            | Self::Context(_) => (9, None),
+            | Self::Context(_)
+            | Self::PromptEcho(_) => (9, None),
             Self::Evidence(_, _, _) | Self::OutputChunk(_, _, _) => (25, None),
             Self::PendingResult(_, _) => (17, None),
             Self::EvidenceItem(_, s) | Self::Presence(_, s) => (11, Some(s)),
@@ -90,11 +94,12 @@ impl Key {
             | Self::Result(s)
             | Self::ContinuationTarget(s)
             | Self::Operation(s)
-            | Self::UnifiedOperation(s) => (3, Some(s)),
+            | Self::UnifiedOperation(s)
+            | Self::ResponseScope(s) => (3, Some(s)),
             Self::CallBlock(s, _, _) => (19, Some(s)),
             Self::WrapperCall(s, _) | Self::Child(s, _) | Self::Mutable(_, s) => (11, Some(s)),
             Self::Prompt => (1, None),
-            Self::NativeItem(_, _) => unreachable!("handled above"),
+            Self::NativeItem(_, _) | Self::CompletedMessage(_, _) => unreachable!("handled above"),
         };
         let lower = fixed.saturating_add(text.map_or(0, str::len));
         if lower > allowance {
@@ -126,6 +131,19 @@ impl Key {
             out.write_all(&[0, 0])
         }
         match self {
+            Self::ResponseScope(id) => {
+                out.write_all(&[36])?;
+                text(out, id)?;
+            }
+            Self::CompletedMessage(turn, id) => {
+                out.write_all(&[34])?;
+                text(out, turn)?;
+                text(out, id)?;
+            }
+            Self::PromptEcho(message) => {
+                out.write_all(&[35])?;
+                number(out, *message)?;
+            }
             Self::UnifiedOperation(s) => {
                 out.write_all(&[33])?;
                 text(out, s)?;
@@ -358,6 +376,9 @@ impl Key {
             31 => Self::Operation(r.text()?),
             32 => Self::OperationBlock(r.number()?, r.number()?),
             33 => Self::UnifiedOperation(r.text()?),
+            34 => Self::CompletedMessage(r.text()?, r.text()?),
+            35 => Self::PromptEcho(r.number()?),
+            36 => Self::ResponseScope(r.text()?),
             _ => return Err("unknown Codex cell key tag".into()),
         };
         if !r.0.is_empty() {

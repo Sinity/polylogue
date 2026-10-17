@@ -21,8 +21,8 @@ DONOR = 'b4b61c7eab8daf740bfdccb146e530906839726d'
 def expected_parser_version(name):
     return {
         'claude-normalization-main.jsonl': 16,
-        'legacy-response-records.jsonl': 11,
-        'tool-result-headers.jsonl': 11,
+        'legacy-response-records.jsonl': 12,
+        'tool-result-headers.jsonl': 12,
     }[name]
 
 def sha(path):

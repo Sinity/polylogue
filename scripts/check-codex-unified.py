@@ -95,7 +95,7 @@ def main():
         while True:
             progress = cli(['progress', input_id], 'current progress')
             assert progress['failure'] is None, progress
-            if progress['source_rows']['basis']['parser_version'] == 11 and progress['source_rows']['state'] != 'pending':
+            if progress['source_rows']['basis']['parser_version'] == 12 and progress['source_rows']['state'] != 'pending':
                 break
             assert time.monotonic() < deadline, progress
             time.sleep(0.1)

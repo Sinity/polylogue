@@ -365,7 +365,7 @@ establish this predicate for a later call. Every replacement constructor removes
 the old proof before validation, and later association checks the currently
 retained operation's status origin. This preserves both arrival orders without
 turning the proof into a lasting permission. Existing admission limits apply.
-Codex parser 11 recomputes the former normalization flag from retained inputs.
+Codex parser 12 recomputes these normalization and correspondence results from retained inputs.
 No read qualification or active-path guard changes.
 
 Claude parser version 16 preserves a finite set of additional opaque result
@@ -425,3 +425,16 @@ the retained upgrade fixture's baseline remains 8. Existing immutable selector,
 framing and model recipes keep their meanings. Older parser cells must replay
 through the existing version-upgrade/recovery path; source EOF alone still does
 not establish readable canonical content.
+
+Supported native Codex `AgentMessage` and `Reasoning` completion snapshots can
+precede their response items. A provider-owned pending claim keeps the exact
+constructor and full thread/turn/item scope until a matching response proves
+correspondence; missing or conflicting counterparts leave normalization
+incomplete. Agent text and phase must agree, and an empty native reasoning body
+never replaces independently recorded encrypted content. A redundant rendering
+adds no second Message or evidence unit. Typed `UserMessage` echoes use the
+first unpaired equal prompt in the same recorded turn and preserve its original
+Message identity. A duplicate echo cannot pair with another prompt, and later
+response corrections invalidate its proof. These pending obligations resolve
+separately from unrelated normalization failures, which remain unchanged.
+Unknown constructor members and unsupported raw reasoning content still refuse.
