@@ -75,7 +75,10 @@ entries as `{"encoding":"canonical-json-v1","json":"…","masked":false}` after 
 assessment. `masked:true` identifies transformed content. Normalized Session JSON
 and export retain original-value JSON shapes; privacy-transformed export does
 not prove unchanged-value round trips. Structural witnesses are preserved or
-explicitly refused. Portable normalized reimport remains unavailable.
+explicitly refused. Portable normalized reimport remains unavailable. Direct
+assembled `attrs` and block `data` objects preserve values but do not yet
+guarantee canonical key order; canonical ordering of whole retained leaf
+objects and model-page envelopes does not qualify that export clause.
 
 Use fresh isolated archives for this candidate. Native index20 and revised
 parser/selection recipes distinguish the changed interpretation. Existing

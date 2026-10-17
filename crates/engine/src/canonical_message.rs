@@ -1417,6 +1417,7 @@ enum ValueSource<'a> {
         binding: Binding<'a>,
     },
     Text(&'a str),
+    Opaque(RetainedJson),
     Leaf {
         subject: Subject<'a>,
         slot: &'a Slot,
@@ -1659,6 +1660,9 @@ impl ValueSource<'_> {
             Self::Text(text) => sink
                 .write_all(text.as_bytes())
                 .map_err(|e| Error::Store(StoreError::Io(e))),
+            Self::Opaque(value) => {
+                serde_json::to_writer(sink, value).map_err(|e| Error::Source(e.to_string()))
+            }
             Self::Leaf { subject, slot } => {
                 let subject = match subject {
                     Subject::Message(m) => Subject::Message(m),

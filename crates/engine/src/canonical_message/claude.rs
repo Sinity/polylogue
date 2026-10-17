@@ -316,11 +316,32 @@ fn leaf<'a>(
                 ))?,
             }
         }
-        Field::Extra { local: None, .. } => {
-            return Err(Error::UnsupportedField {
-                path: fact.source_path.clone(),
-                reason: "Claude message extra normalization remains pending",
-            });
+        Field::Extra { local: None, path } => {
+            // An immediate record extra has an unambiguous attrs key. Nested
+            // paths cannot be flattened without colliding with literal keys or
+            // selected normalized extras, so retain their explicit refusal.
+            let [key] = path.as_slice() else {
+                return Err(Error::UnsupportedField {
+                    path: path.clone(),
+                    reason: "Claude nested message extra normalization remains pending",
+                });
+            };
+            if r.message
+                .attrs
+                .as_ref()
+                .is_some_and(|attrs| attrs.get(key).is_some())
+            {
+                return Err(Error::UnsupportedField {
+                    path: path.clone(),
+                    reason: "Claude immediate extra conflicts with a selected attrs key",
+                });
+            }
+            let c = c.ok_or(Error::Invariant("Claude extra lost its contribution"))?;
+            let raw = RetainedJson::parse(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
+            let value = raw
+                .get(key)
+                .ok_or(Error::Invariant("Claude extra lost its value"))?;
+            return Ok(ValueSource::Opaque(value.clone().into_opaque()));
         }
         Field::Extra { .. } => {
             return Err(Error::UnsupportedField {
