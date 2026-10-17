@@ -219,36 +219,19 @@ impl<'a> OrderedExtras<'a> {
     ) -> Result<Option<ExtraFieldEntry<'a>>> {
         check(until, cancelled)?;
         self.message.visible()?;
-        let row: Option<(Vec<u8>, Vec<u8>)> = {
+        let row = {
             let read = locked(&self.message.read)?;
-            if let Some(after) = &self.after {
-                db(&self.message.path, || {
-                    read.connection.query_row(&format!("SELECT sort_key,semantic_key FROM {} WHERE sort_key>?1 ORDER BY sort_key LIMIT 1", self.table), [after], |r|Ok((r.get(0)?,r.get(1)?))).optional()
-                })?
-            } else {
-                db(&self.message.path, || {
-                    read.connection
-                        .query_row(
-                            &format!(
-                                "SELECT sort_key,semantic_key FROM {} ORDER BY sort_key LIMIT 1",
-                                self.table
-                            ),
-                            [],
-                            |r| Ok((r.get(0)?, r.get(1)?)),
-                        )
-                        .optional()
-                })?
-            }
+            db(&self.message.path, || {
+                read_next_cells(
+                    &read.connection,
+                    &self.table,
+                    self.after.as_deref(),
+                    self.allowance,
+                )
+            })?
         };
-        let Some((key, semantic)) = row else {
-            return Ok(None);
-        };
-        if key.len() > self.allowance || semantic.len() > self.allowance {
-            return Err(metadata_admission(
-                "ordered extra key",
-                key.len().max(semantic.len()) as u64,
-            ));
-        }
+        let Some(cells) = row else { return Ok(None) };
+        let (key, semantic) = cells.admit(self.allowance)?;
         let key_text = std::str::from_utf8(&key)
             .map_err(|_| Error::Invariant("ordered extra key is not scalar UTF-8".into()))?
             .to_owned();
@@ -282,6 +265,65 @@ impl Drop for OrderedExtras<'_> {
         let _ = self.close();
     }
 }
+struct ExtraCells {
+    key_length: u64,
+    semantic_length: u64,
+    key: Option<Vec<u8>>,
+    semantic: Option<Vec<u8>>,
+}
+impl ExtraCells {
+    fn admit(self, allowance: usize) -> Result<(Vec<u8>, Vec<u8>)> {
+        let required = self.key_length.max(self.semantic_length);
+        if required > allowance as u64 {
+            return Err(metadata_admission("ordered extra key", required));
+        }
+        match (self.key, self.semantic) {
+            (Some(key), Some(semantic)) => Ok((key, semantic)),
+            _ => Err(Error::Invariant(
+                "ordered extra bounded cells unavailable".into(),
+            )),
+        }
+    }
+}
+fn read_next_cells(
+    connection: &Connection,
+    table: &str,
+    after: Option<&[u8]>,
+    allowance: usize,
+) -> rusqlite::Result<Option<ExtraCells>> {
+    // Even private TEMP state can be corrupt. Read lengths before materializing
+    // either blob, exactly as the ordinary selected-field bounded reader does.
+    let projection = "length(sort_key),length(semantic_key),CASE WHEN length(sort_key)<=?1 THEN sort_key END,CASE WHEN length(semantic_key)<=?1 THEN semantic_key END";
+    let row = |r: &rusqlite::Row<'_>| {
+        Ok(ExtraCells {
+            key_length: crate::parser_state::unsigned(r, 0)?,
+            semantic_length: crate::parser_state::unsigned(r, 1)?,
+            key: r.get(2)?,
+            semantic: r.get(3)?,
+        })
+    };
+    let maximum = i64::try_from(allowance).unwrap_or(i64::MAX);
+    if let Some(after) = after {
+        connection
+            .query_row(
+                &format!(
+                    "SELECT {projection} FROM {table} WHERE sort_key>?2 ORDER BY sort_key LIMIT 1"
+                ),
+                params![maximum, after],
+                row,
+            )
+            .optional()
+    } else {
+        connection
+            .query_row(
+                &format!("SELECT {projection} FROM {table} ORDER BY sort_key LIMIT 1"),
+                [maximum],
+                row,
+            )
+            .optional()
+    }
+}
+
 fn extra_key(scope: FieldScope, semantic: &[u8]) -> Result<Option<String>> {
     let invalid = |_| Error::Invariant("invalid selected extra semantic key".into());
     match scope {
