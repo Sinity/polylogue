@@ -2384,3 +2384,6 @@ fn model_full_transcript_refuses_zero_block_message_before_claiming_completed_fi
 
 #[path = "session_read/observed_prefix.rs"]
 mod observed_prefix;
+
+#[path = "session_read/donor_core.rs"]
+mod donor_core;

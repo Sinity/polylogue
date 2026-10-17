@@ -27,12 +27,16 @@ def main():
     parser = argparse.ArgumentParser()
     for name in ('binary', 'source', 'output', 'sdk-python', 'sdk-client'): parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--candidate', required=True)
+    parser.add_argument('--package-source', help='Checked source commit; only runner/documentation differences may follow it')
     parser.add_argument('--baseline-run', type=Path, action='append', default=[], help='Stopped synthetic baseline run; copy full archive custody before opening')
     parser.add_argument('--families-only', action='store_true', help='Exploration only; does not qualify large regressions')
     args = parser.parse_args()
     actual_source = subprocess.check_output(['git','-C',str(args.source),'rev-parse','HEAD'], text=True).strip()
     assert actual_source == args.candidate, (actual_source, args.candidate)
     assert not subprocess.check_output(['git','-C',str(args.source),'status','--porcelain'], text=True), 'candidate must be clean'
+    package_source = args.package_source or args.candidate
+    nonruntime = subprocess.check_output(['git','-C',str(args.source),'diff','--name-only',package_source,args.candidate], text=True).splitlines()
+    assert set(nonruntime) <= {'scripts/check-donor-core.py','docs/rewrite/donor-core-restoration.md','README.md'}, nonruntime
     args.output.mkdir(mode=0o700)
     sys.path.insert(0, str(args.source / 'scripts'))
     spec = importlib.util.spec_from_file_location('donor_morrow_run', args.source / 'scripts/check-morrow.py')
@@ -45,7 +49,7 @@ def main():
     corpus = args.source / 'crates/sources/tests/fixtures/donor'
     manifest = json.loads((corpus / 'manifest.json').read_text())
     assert manifest['commit'] == DONOR
-    report = {'candidate': args.candidate, 'binary': str(args.binary), 'binary_sha256': sha(args.binary),
+    report = {'candidate': args.candidate, 'package_source': package_source, 'nonruntime_changes': nonruntime, 'binary': str(args.binary), 'binary_sha256': sha(args.binary),
               'runner_sha256': sha(Path(__file__)), 'donor': manifest, 'expected_facts': 'source-derived predecessor test literals plus exact current-spec differences',
               'sdk_python': str(args.sdk_python), 'sdk_python_sha256': sha(args.sdk_python), 'sdk_client_sha256': sha(sdk),
               'sdk_collector_sha256': sha(sdk.parent.parent / 'morrow_mcp.py'), 'sdk_checker_sha256': sha(sdk.parent.parent / 'check_answer.py'),
@@ -80,16 +84,32 @@ def main():
         cli([reference, 'export', '--format', 'json', '--to', export], label + ' export')
         files = [p for p in export.rglob('*.json') if p.name != 'manifest.json']; assert len(files) == 1
         exported = json.loads(files[0].read_text())
-        assert exported['messages'] == document['messages']
+        assert exported['messages'] == document['messages'] and exported['session'] == document['session']
+        assert exported.get('links') == document.get('links') and exported.get('events') == document.get('events')
         page = sdk_call('read', {'ref': reference, 'budget_tokens': 65000, 'view': 'transcript', 'tools': 'full', 'thinking': 'full', 'harness': 'full', 'branches': True}, label + '-read')
         assert page['outcome'] != 'error' and page['primary_content_complete'] and not page.get('next'), page
         assert page['shown'] and all(item['sources'] for item in page['shown'])
+        if document['session']['origin'] == 'codex':
+            default = sdk_call('read', {'ref': reference, 'budget_tokens': 65000, 'view': 'transcript', 'tools': 'full', 'thinking': 'full', 'harness': 'full'}, label + '-default-read')
+            if reference == 'codex:bounded-stream':
+                assert default['outcome'] == 'error' and 'shown' not in default, default
+            else:
+                assert default['outcome'] != 'error' and default['primary_content_complete'] and not default.get('next'), default
+                assert default['shown'] == page['shown'], default
         expected_blocks = [(message, block) for message in document['messages'] for block in message['blocks']]
         assert len(page['shown']) == len(expected_blocks), page
         for item, (message, block) in zip(page['shown'], expected_blocks):
             assert item['message'] == 'message:' + message['id'] and item['block'] == 'block:' + block['id']
             assert item['kind'] == block['kind'] and item['role'] == message['role'] and item['written_by'] == message['written_by']
-            assert item['message_metadata'].get('at') == message.get('at')
+            def logical(value):
+                if isinstance(value,dict) and value.get('encoding') == 'canonical-json-v1':
+                    assert value['masked'] is False, value
+                    return json.loads(value['json'])
+                return value
+            for field in ('at','model','duration_ms','usage','stop_reason','prompt_kind','attrs'):
+                assert logical(item['message_metadata'].get(field)) == message.get(field), (field,item,message)
+            for field in ('input','data'):
+                assert logical(item['block_fields'].get(field)) == block.get(field), (field,item,block)
             for field in ('call_id','outcome','exit_code','duration_ms','tool'):
                 assert item['block_fields'].get(field) == block.get(field), (field, item, block)
         if label.startswith('restart-'):
@@ -109,17 +129,27 @@ def main():
             reference = ('claude-code:claude-normalization-main' if claude else 'codex:legacy-response-session' if name.startswith('legacy') else 'codex:tool-result-headers')
             references[name] = reference
         initial = {name: inspect(ref, 'initial-' + name)[0] for name, ref in references.items()}
+        legacy_messages = initial['legacy-response-records.jsonl']['messages']
+        assert [m['role'] for m in legacy_messages] == ['user','assistant','tool','assistant','tool','assistant']
+        assert legacy_messages[0]['written_by'] == 'human' and legacy_messages[0]['at'] == '2025-08-01T10:00:00.000Z'
+        assert all('at' not in m for m in legacy_messages[1:])
+        legacy_session = initial['legacy-response-records.jsonl']['session']
+        assert legacy_session['started_at'] == '2025-08-01T10:00:00.000Z' and legacy_session['branch'] == 'main' and legacy_session['repo'] == 'https://example.invalid/sample.git'
         legacy_blocks = [b for m in initial['legacy-response-records.jsonl']['messages'] for b in m['blocks']]
         for call, outcome, exit in [('call_sample_ok','ok',0), ('call_sample_fail','error',1)]:
             assert any(b.get('kind') == 'tool_call' and b.get('call_id') == call and b['input']['command'][0] in ('ls','cat') for b in legacy_blocks)
             assert any(b.get('kind') == 'tool_result' and b.get('call_id') == call and b['outcome'] == outcome and b['exit_code'] == exit and b['duration_ms'] == 100 for b in legacy_blocks)
         assert any(b.get('text') == 'Listing the directory first.' for b in legacy_blocks)
+        assert any(b.get('call_id') == 'call_sample_ok' and b.get('text') == 'alpha.txt\nbeta.txt\n' for b in legacy_blocks)
+        assert any(b.get('call_id') == 'call_sample_fail' and b.get('text') == 'cat: sample/missing.txt: No such file or directory\n' for b in legacy_blocks)
+        assert any(b.get('text') == 'The directory holds alpha.txt and beta.txt.' for b in legacy_blocks)
         headers = [b for m in initial['tool-result-headers.jsonl']['messages'] for b in m['blocks'] if b['kind'] == 'tool_result']
         expected = {'call_command_ok':('ok',0),'call_command_fail':('error',2),'call_command_multiline':('unknown',None),'call_stdin_running':('unknown',None),'call_patch_fail':('error',1),'call_shell_ok':('ok',0),'call_script_ok':('ok',None),'call_script_fail':('error',None),'call_prose_decoy':('unknown',None),'call_script_decoy':('unknown',None)}
         assert {b['call_id']:(b['outcome'], b.get('exit_code')) for b in headers} == expected
         main = initial['claude-normalization-main.jsonl']; assert len(main['messages']) == 10
         named = ['main-u1','main-a1','main-bg-start','main-command','other-u1','main-context',None,'main-a2','main-fg-result','other-a1']
-        assert [message['id'] if native is None else message['id'].removeprefix('claude-code:claude-normalization-main:') for message,native in zip(main['messages'],named) if native is not None] == [native for native in named if native is not None]
+        for message, native in zip(main['messages'],named):
+            if native is not None: assert message['id'] == 'claude-code:claude-normalization-main:' + native
         assert main['messages'][6]['id'].startswith('~i1:')
         assert [m['role'] for m in main['messages']] == ['user','assistant','user','user','user','user','user','assistant','user','assistant']
         assert main['messages'][2]['written_by'] == 'harness' and main['messages'][3]['written_by'] == 'human' and main['messages'][3]['prompt_kind'] == 'command'
@@ -136,6 +166,11 @@ def main():
         subagents = [row['id'] for row in side_query['rows'] if row['id'] != 'claude-code:claude-normalization-main']; assert len(subagents) == 1, side_query
         side, _ = inspect(subagents[0], 'initial-sidechain')
         assert len(side['messages']) == 1 and side['messages'][0]['blocks'][0]['text'] == 'Normalization complete.'
+        last = side['messages'][0]
+        assert last['id'].startswith('~i1:') and last['role'] == 'assistant' and last['written_by'] == 'model'
+        assert last['at'] == '2026-07-01T10:00:10.000Z' and last['duration_ms'] == 250 and last['model'] == 'claude-opus-4-6'
+        assert last['usage'] == {'input':25,'output':8,'cache_read':75,'cache_write':5,'provider_cost_usd':0.025}
+        assert last['attrs']['parentUuid'] == 'main-fg-result' and 'parent' not in last
         references['sidechain'] = subagents[0]; initial['sidechain'] = side
         for query, ref in [('directory','codex:legacy-response-session'), ('sample','codex:tool-result-headers'), ('Conflicting','claude-code:claude-normalization-main')]:
             result = cli([query, '--json'], 'search ' + query)
@@ -161,8 +196,8 @@ def main():
                 receipt, elapsed = admit(path, 'codex-rollout', timeout=1200, degraded=future)
                 progress = cli(['progress',receipt['retained']['id']], session + ' progress')
                 counts = progress['parser']['records']; assert counts['framed'] == states+2+int(future)
-                assert counts['used'] == 2 and sum(counts['ignored'].values()) == states
-                assert len(counts['unrecognized']) == int(future) and not counts['undecodable']
+                assert counts['used'] == 2 and counts['ignored'] == states
+                assert counts['unrecognized'] == int(future) and counts['undecodable'] == 0
                 assert progress['parser']['parsed_upto'] == size
                 assert progress['parser']['finalization_pending'] == future
                 reference = 'codex:'+session; doc, _ = inspect(reference, 'initial-'+session)
@@ -174,7 +209,7 @@ def main():
         run.start(archive)
         for name, reference in references.items():
             doc, _ = inspect(reference, 'restart-'+name)
-            assert doc['messages'] == initial[name]['messages'] and doc.get('links') == initial[name].get('links')
+            assert doc['messages'] == initial[name]['messages'] and doc['session'] == initial[name]['session'] and doc.get('links') == initial[name].get('links')
         run.stop()
         for index, baseline in enumerate(args.baseline_run):
             original_archive = baseline / 'archive'
@@ -205,7 +240,7 @@ def main():
                     if progress['source_rows']['basis']['parser_version'] == 9 and progress['source_rows']['state'] != 'pending': break
                     assert time.monotonic() < deadline, progress
                     time.sleep(0.2)
-                assert progress['failure'] is None and progress['retained'] == old['retained'], progress
+                assert progress['failure'] is None and progress['input'] == retained_id and progress['length'] == old['retained']['length'] and progress['source_rows']['basis']['chain'] == old['retained']['chain'], progress
                 assert progress['source_rows'].get('usable_result',True), progress
                 doc, page = inspect(references[name], 'upgrade-' + str(index) + '-' + name)
                 # Observation paths differ between fresh and baseline archives.

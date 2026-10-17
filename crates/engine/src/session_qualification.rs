@@ -648,13 +648,11 @@ fn qualify_operation(
                     until: None,
                 };
                 metadata.started_at = (!result.own_counting_unknown)
-                    .then_some(started)
-                    .flatten()
-                    .map(time);
+                    .then(|| started.map(time).or(metadata.started_at))
+                    .flatten();
                 metadata.last_activity_at = (!result.own_counting_unknown)
-                    .then_some(last)
-                    .flatten()
-                    .map(time);
+                    .then(|| last.map(time).or(metadata.last_activity_at))
+                    .flatten();
                 metadata.models =
                     (!result.own_counting_unknown && !models.is_empty()).then_some(models);
                 if metadata

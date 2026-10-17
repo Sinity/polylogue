@@ -710,7 +710,9 @@ fn run(
     } else if branches {
         q.pending_inputs == 0 && q.known_rows_readable()
     } else {
-        q.pending_inputs == 0 && q.unavailable_inputs == 0
+        q.pending_inputs == 0
+            && q.known_rows_readable()
+            && (q.unavailable_inputs == 0 || q.active_path_known())
     };
     if !readable {
         return Err(unavailable("current_selected_basis_unavailable"));

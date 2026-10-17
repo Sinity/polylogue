@@ -204,6 +204,20 @@ fn retained_legacy_codex_preserves_reasoning_calls_outputs_and_metadata_verdicts
     let count = delta.resume.message_count();
     let mut memory = memory;
     memory.apply(&delta);
+    assert_eq!(
+        memory
+            .message(0)
+            .unwrap()
+            .unwrap()
+            .at
+            .unwrap()
+            .at()
+            .unwrap()
+            .0,
+        1754042400000
+    );
+    assert!((1..count).all(|i| memory.message(i).unwrap().unwrap().at.is_none()));
+
     let blocks: Vec<_> = (0..count)
         .flat_map(|i| memory.message(i).unwrap().unwrap().blocks)
         .collect();

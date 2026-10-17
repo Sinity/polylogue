@@ -26,6 +26,33 @@ fn provider_cell(
     }
     Ok(cell)
 }
+fn flat_effects(
+    catalog: &SessionCatalog,
+    dependency: &SessionInputDependency,
+    until: Instant,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<bool, Error> {
+    let head = dependency.head().ok_or(Error::Range)?;
+    for step in 1..=u64::try_from(head.token.step).map_err(|_| Error::Range)? {
+        deadline(until)?;
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let key = crate::state::codex::flat_session_header_key(step);
+        let bytes = catalog
+            .dependency_cell(
+                dependency,
+                crate::state::codex::EFFECTS_NAMESPACE,
+                &key,
+                256,
+            )?
+            .ok_or_else(|| Error::Invariant("missing Codex effects header".into()))?;
+        if !crate::state::codex::effects_preserve_flat_session(&bytes, step)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
 pub(super) fn qualify(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
@@ -137,9 +164,15 @@ pub(super) fn qualify(
         None => result.metadata = Some(source_session.clone()),
         _ => {}
     }
-    // Rollout order is finite and explicit. Active-path inference is a separate
-    // product; transcript readers requesting all branches can use these rows.
-    result.own_topology_unknown = true;
+    // A complete flat log without topology-changing evidence is entirely on
+    // the path. Unknown controls, lineage and conflicting items cannot acquire
+    // active membership merely because the surviving Messages look linear.
+    let mut flat = head.counts.unrecognized == 0
+        && head.counts.undecodable == 0
+        && !resume.normalization_incomplete()
+        && dependency.failure().is_none()
+        && flat_effects(catalog, dependency, until, cancelled)?;
+    let mut active = Vec::new();
     for ordinal in 0..resume.message_count() {
         deadline(until)?;
         if cancelled() {
@@ -176,6 +209,7 @@ pub(super) fn qualify(
             )?,
             None => false,
         };
+        flat &= proved;
         if !proved {
             result.known_rows_readable = false;
             result
@@ -183,6 +217,7 @@ pub(super) fn qualify(
                 .insert("Known Codex Message lacks its current selected source projection".into());
         }
         let id = message.id.as_str();
+        active.push(id.to_owned());
         if !result.expected.contains_key(id) {
             admit_membership(result, id, false, allowance)?;
         }
@@ -197,6 +232,16 @@ pub(super) fn qualify(
                 .unsupported
                 .insert("Independent Codex inputs disagree about Message order".into());
         }
+    }
+    if flat {
+        for id in active {
+            if !result.active_messages.contains(&id) {
+                admit_membership(result, &id, true, allowance)?;
+                result.active_messages.insert(id);
+            }
+        }
+    } else {
+        result.own_topology_unknown = true;
     }
     Ok(())
 }
