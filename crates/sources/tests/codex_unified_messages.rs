@@ -5,6 +5,8 @@ use polylogue_sources::{
 };
 use serde_json::{Value, json};
 
+const OUTPUT: &str = "Chunk ID: 123abc\nWall time: 0.001 seconds\nProcess exited with code 0\nFinal output:\nneutral\n";
+
 fn line(kind: &str, payload: Value) -> String {
     json!({"type":kind,"payload":payload}).to_string() + "\n"
 }
@@ -108,13 +110,12 @@ fn unified_attribution_keeps_independent_messages_and_no_native_result_in_both_o
             assert_eq!(resume.message_count(), 2);
             let op = operation(&view, "T", "C");
             assert_eq!(op.agent_class, "unknown");
-            assert!(!op.counted() && !op.result_present);
-            assert!(
-                op.output.is_none()
-                    && op.outcome.is_none()
-                    && op.exit_code.is_none()
-                    && op.duration_ms.is_none()
-            );
+            assert!(!op.counted() && op.result_present);
+            assert_eq!(op.output.as_deref(), Some(OUTPUT));
+            assert_eq!(op.outcome.as_deref(), Some("ok"));
+            assert_eq!(op.exit_code, Some(0));
+            assert_eq!(op.duration_ms, Some(1));
+            assert!(op.origins.iter().any(|o| matches!(o, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag=="result")));
             assert!(op.message.is_some());
             assert_eq!(op.tool.as_deref(), Some("exec_command"));
             assert!(
@@ -255,7 +256,10 @@ fn a_new_constructor_invalidates_the_exact_previous_record_proof_in_both_orders(
             );
             let op = operation(&view, "T", "C");
             if op.agent_class == "unknown" {
-                assert!(!op.result_present && !op.counted());
+                assert!(!op.counted());
+                if op.result_present {
+                    assert_eq!(op.output.as_deref(), Some(OUTPUT));
+                }
             }
         }
     }
@@ -277,7 +281,8 @@ fn a_proof_for_a_different_status_record_cannot_associate_a_later_call() {
     let op = operation(&view, "T", "C");
     assert!(op.message.is_none());
     assert_eq!(op.agent_class, "unknown");
-    assert!(!op.result_present && !op.counted());
+    assert!(!op.counted());
+    assert_eq!(op.output.as_deref(), Some(OUTPUT));
 }
 
 #[test]
@@ -337,4 +342,35 @@ fn unified_native_items_do_not_borrow_an_exec_wrapper_parent() {
     assert!(op.message.is_none() && op.wrapper.is_none());
     assert_eq!(op.wrapper_overlaps.len(), 2);
     assert!(!op.result_present && !op.counted());
+}
+
+#[test]
+fn conflicting_constructor_invalidates_the_proof_without_changing_messages() {
+    let (view, resume) = run(
+        MemoryReadView::default(),
+        Resume::default(),
+        &(start() + &call(true) + &completion("unified_exec_startup")),
+    );
+    let before = messages(&view, &resume);
+    let conflict = line(
+        "event_msg",
+        json!({"type":"item_completed","thread_id":"neutral","turn_id":"T","item":{"type":"FileChange","id":"C","status":"completed","changes":[]}}),
+    );
+    let (view, resume) = run(view, resume, &conflict);
+    assert!(resume.normalization_incomplete());
+    assert_eq!(messages(&view, &resume), before);
+    assert!(
+        !view
+            .cells
+            .keys()
+            .any(|k| matches!(k, Key::UnifiedOperation(_)))
+    );
+}
+
+#[test]
+fn an_unscoped_call_cannot_borrow_a_later_native_turn_for_read_permission() {
+    let prefix = line("session_meta", json!({"id":"neutral","source":"cli"})) + &call(true);
+    let (view, resume) = run(MemoryReadView::default(), Resume::default(), &prefix);
+    let (_, resume) = run(view, resume, &completion("unified_exec_startup"));
+    assert!(resume.normalization_incomplete());
 }

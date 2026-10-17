@@ -352,8 +352,10 @@ Supported Codex unified-command lifecycle records do not make an independently
 retained direct call/output Message unreadable merely because operation agent
 attribution remains unknown. The source adapter requires the admitted native
 constructor, full session/turn/invocation scope, valid supplied duration and
-proved direct Message association. It keeps native result presence and agent
-counts unknown and does not project that lifecycle status into the Message.
+proved direct Message association. It leaves agent attribution unknown and
+does not project that lifecycle status into the Message. Any separately recorded
+response output keeps its own result, status and origins in either arrival order;
+an absent independent output gains no result from the native item.
 Known branches can remain readable; unknown active membership still refuses.
 
 A small source-owned keyed proof binds the supported unified constructor to its

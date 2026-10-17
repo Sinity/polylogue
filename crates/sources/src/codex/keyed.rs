@@ -2189,6 +2189,7 @@ impl<V: ReadView> KeyedRecords<V> {
         if let Some(call) = p.get("call_id").and_then(Value::as_str) {
             if let Some(key) = self.operation_key(call) {
                 if let Some(Cell::Operation(mut operation)) = self.get(key.clone()) {
+                    let independent_unified = self.unified_operation_proved(&operation);
                     let output = recorded_output(p.get("output"));
                     let text = match &output {
                         Some(ToolOutput::Text(s)) => s.clone(),
@@ -2217,7 +2218,7 @@ impl<V: ReadView> KeyedRecords<V> {
                         .result_present
                         .then(|| outcome.as_str().to_owned());
                     operation.exit_code = exit;
-                    if !operation.origins.iter().any(|origin| matches!(origin, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "status")) {
+                    if independent_unified || !operation.origins.iter().any(|origin| matches!(origin, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "status")) {
                         operation.duration_ms = native_duration(p);
                     }
                     if let Some(origin) = self.operation_origin() {
@@ -2557,7 +2558,11 @@ impl<V: ReadView> KeyedRecords<V> {
             || operation.kind != "CommandExecution"
             || operation.correspondence != "established"
             || operation.agent_class != "unknown"
-            || operation.result_present
+            || (operation.result_present
+                && !operation.origins.iter().any(|origin| {
+                    matches!(origin,
+                polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "result")
+                }))
         {
             return false;
         }
@@ -2655,17 +2660,6 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn command_operation(&mut self, payload: &Value, item: &Value, _at: Option<Timestamp>) -> bool {
-        // Any newer constructor for this claimed scope invalidates the old
-        // source proof, even if validation below refuses the replacement.
-        if let (Some(session), Some(turn), Some(id)) = (
-            self.s.session.as_ref(),
-            payload.get("turn_id").and_then(Value::as_str),
-            item.get("id").and_then(Value::as_str),
-        ) {
-            if let Ok(id) = polylogue_model::tool_item::native_id(&session.id, turn, id) {
-                self.remove(Key::UnifiedOperation(id));
-            }
-        }
         // Only the pinned core shape establishes native correspondence. Older
         // adapter records retain their existing Message interpretation below.
         if !item.get("command").is_some_and(Value::is_array) {
@@ -2742,6 +2736,18 @@ impl<V: ReadView> KeyedRecords<V> {
                 }
                 if !operation.native {
                     operation.provisional_anchor = previous.provisional_anchor;
+                }
+                if operation.native && previous.native && operation.turn == previous.turn
+                    && item.get("source").and_then(Value::as_str).is_some_and(unified_source)
+                    && previous.origins.iter().any(|origin| matches!(origin,
+                        polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "result")) {
+                    // Preserve only the separately recorded response output;
+                    // unknown native attribution supplies no result of its own.
+                    operation.result_present = previous.result_present;
+                    operation.output = previous.output.clone();
+                    operation.outcome = previous.outcome.clone();
+                    operation.exit_code = previous.exit_code;
+                    operation.duration_ms = previous.duration_ms;
                 }
                 operation.tool = previous.tool;
                 operation.message = previous.message;
@@ -2839,6 +2845,24 @@ impl<V: ReadView> KeyedRecords<V> {
 
     fn item_completed(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
         let original = p.get("item").cloned().unwrap_or(Value::Null);
+        // Every replacement constructor for a claimed native scope removes
+        // the old proof before validation, including conflicting item kinds.
+        if let (Some(session), Some(turn), Some(id)) = (
+            self.s.session.as_ref(),
+            p.get("turn_id").and_then(Value::as_str),
+            original.get("id").and_then(Value::as_str),
+        ) {
+            if let Ok(id) = polylogue_model::tool_item::native_id(&session.id, turn, id) {
+                let key = Key::UnifiedOperation(id);
+                let conflicting = self.get(key.clone()).is_some()
+                    && original.get("type").and_then(Value::as_str) != Some("CommandExecution");
+                self.remove(key);
+                if conflicting {
+                    self.s.normalization_incomplete = true;
+                    return RecordOutcome::Unrecognized("native command constructor changed");
+                }
+            }
+        }
         let item = self.preview_item(&original);
         let ty = item.get("type").and_then(Value::as_str).unwrap_or("");
         let native_admitted = ty == "CommandExecution" && self.command_operation(p, &item, at);
@@ -2855,7 +2879,13 @@ impl<V: ReadView> KeyedRecords<V> {
             if direct
                 && self
                     .completed_operation(p, &item)
-                    .is_some_and(|operation| self.unified_operation_proved(&operation))
+                    .is_some_and(|operation| {
+                        self.unified_operation_proved(&operation)
+                            && self.call(&operation.invocation).is_some_and(|call| {
+                                matches!(self.get(Key::OperationBlock(call.at.0, call.at.1)),
+                                    Some(Cell::Text(id)) if operation.id().ok().as_ref() == Some(&id))
+                            })
+                    })
             {
                 // Supported unified lifecycle evidence has uncertain operation
                 // attribution, not missing independently retained Message text.
