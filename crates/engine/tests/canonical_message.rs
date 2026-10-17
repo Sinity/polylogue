@@ -899,6 +899,8 @@ fn source_set_is_exact_noncontiguous_and_includes_timestamp_only_witness() {
 
 #[path = "canonical_message/claude_tests.rs"]
 mod claude_tests;
+#[path = "canonical_message/codex_extras.rs"]
+mod codex_extras;
 
 // Append inside engine/tests/canonical_message.rs after the publication freeze.
 // Diagnostic: demonstrates the currently explicit refusal, not desired support.

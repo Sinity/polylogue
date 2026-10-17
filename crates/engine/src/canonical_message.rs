@@ -1409,6 +1409,31 @@ pub fn compute(
                     .checked_add(1)
                     .ok_or(Error::Invariant("block field cursor overflow"))?,
             };
+            // Extras are opaque mapper-owned values, not semantic Block leaves.
+            // The field turn still verifies this value against its exact raw selector.
+            let extras = match &w.slot {
+                Slot::Extra { key, .. } => Some(RetainedJson::Object(
+                    [(
+                        key.as_str().into(),
+                        RetainedJson::parse(&w.canonical)
+                            .map_err(|e| Error::Source(e.to_string()))?
+                            .into_opaque(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                )),
+                _ => None,
+            };
+            let subject = match &extras {
+                Some(values) => Subject::Extras {
+                    block: Some(value.id.slot()),
+                    values,
+                },
+                None => Subject::Block {
+                    slot: value.id.slot(),
+                    content: &value.content,
+                },
+            };
             field_turn(
                 snapshot,
                 reader,
@@ -1416,10 +1441,7 @@ pub fn compute(
                 &mut cursor,
                 FieldDescriptor::codex(w)?,
                 ValueSource::Leaf {
-                    subject: Subject::Block {
-                        slot: value.id.slot(),
-                        content: &value.content,
-                    },
+                    subject,
                     slot: &w.slot,
                 },
                 true,

@@ -142,8 +142,12 @@ def main():
             assert any(b.get('kind') == 'tool_call' and b.get('call_id') == call and b['input']['command'][0] in ('ls','cat') for b in legacy_blocks)
             assert any(b.get('kind') == 'tool_result' and b.get('call_id') == call and b['outcome'] == outcome and b['exit_code'] == exit and b['duration_ms'] == 100 for b in legacy_blocks)
         assert any(b.get('text') == 'Listing the directory first.' for b in legacy_blocks)
-        assert any(b.get('call_id') == 'call_sample_ok' and b.get('text') == 'alpha.txt\nbeta.txt\n' for b in legacy_blocks)
-        assert any(b.get('call_id') == 'call_sample_fail' and b.get('text') == 'cat: sample/missing.txt: No such file or directory\n' for b in legacy_blocks)
+        legacy_records = [json.loads(line) for line in (corpus / 'legacy-response-records.jsonl').read_text().splitlines()]
+        recorded_outputs = {record['call_id']:record['output'] for record in legacy_records if record.get('type') == 'function_call_output'}
+        for call, output, code in [('call_sample_ok','alpha.txt\nbeta.txt\n',0),('call_sample_fail','cat: sample/missing.txt: No such file or directory\n',1)]:
+            result = next(b for b in legacy_blocks if b['kind'] == 'tool_result' and b.get('call_id') == call)
+            assert result['text'] == recorded_outputs[call]
+            assert json.loads(result['text']) == {'output':output,'metadata':{'exit_code':code,'duration_seconds':0.1}}
         assert any(b.get('text') == 'The directory holds alpha.txt and beta.txt.' for b in legacy_blocks)
         headers = [b for m in initial['tool-result-headers.jsonl']['messages'] for b in m['blocks'] if b['kind'] == 'tool_result']
         expected = {'call_command_ok':('ok',0),'call_command_fail':('error',2),'call_command_multiline':('unknown',None),'call_stdin_running':('unknown',None),'call_patch_fail':('error',1),'call_shell_ok':('ok',0),'call_script_ok':('ok',None),'call_script_fail':('error',None),'call_prose_decoy':('unknown',None),'call_script_decoy':('unknown',None)}
