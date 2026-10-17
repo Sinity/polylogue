@@ -463,6 +463,8 @@ def migration(args):
         run.binary = str(args.binary)
         main.unlink()
         run.start()
+        replay = await_progress(run, acquired['input'], lambda p: p.get('source_rows', {}).get('state') == 'settled' and p['source_rows']['basis']['parser_version'] == 10 and not p.get('active') and not p['parser']['finalization_pending'])
+        assert replay['failure'] is None and replay['recovery_error'] is None, replay
         after = await_text(run, reference, text)
         qualification_transitions = compare_message_facts(after, before, 'preserving-upgrade')
         sdk_text(args, run, '"Hazel preserving"', text, reference, 'sdk-v3-preserved')
@@ -472,7 +474,7 @@ def migration(args):
         (output / 'unaware.stdout').write_bytes(unaware.stdout)
         (output / 'unaware.stderr').write_bytes(unaware.stderr)
         assert unaware.returncode != 0 and b'newer than supported' in unaware.stderr, unaware.stderr
-        return {'qualification_transitions': qualification_transitions, 'reference': reference, 'input': acquired['input'], 'pending_refusal_exit': refusal.returncode, 'pinned_v3_binary': str(args.v3_binary), 'pinned_v3_sha256': hashlib.sha256(args.v3_binary.read_bytes()).hexdigest(), 'pinned_v3_source': args.v3_source, 'v3_finish_exit': complete.returncode}
+        return {'qualification_transitions': qualification_transitions, 'reference': reference, 'input': acquired['input'], 'pending_refusal_exit': refusal.returncode, 'pinned_v3_binary': str(args.v3_binary), 'pinned_v3_sha256': hashlib.sha256(args.v3_binary.read_bytes()).hexdigest(), 'pinned_v3_source': args.v3_source, 'v3_finish_exit': complete.returncode, 'upgraded_source_replay': replay}
     finally:
         if process is not None:
             if process.poll() is None:
