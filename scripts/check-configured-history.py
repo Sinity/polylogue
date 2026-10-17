@@ -14,6 +14,7 @@ spec=importlib.util.spec_from_file_location('continuation',ROOT/'scripts/check-c
 continuation=importlib.util.module_from_spec(spec);spec.loader.exec_module(continuation)
 discovery,native,mcp=continuation.discovery,continuation.native,continuation.mcp
 EXPECTED={'C':'history committed result','D':'WAL-only terminal','E':'later same-daemon result'}
+TURNS={'C':'T','D':'T-other','E':'T-later'}
 
 def insert(c,call,turn,output,ordinal):
     _,item=native.native_item(call=call,turn=turn,output=output)
@@ -38,8 +39,10 @@ def oracle(found,expected):
         assert item['output']==EXPECTED[call],item
         assert item['invocation']==call and item['result_present'] is True,item
         assert item['outcome']=='error' and item['exit_code']==1,item
-        origins=[s['origin'] for s in body['sources']]
-        assert any(s['representation']=='history' and s['item']==call for s in origins),origins
+        assert item['native_session']==native.S and item['turn']==TURNS[call],item
+        origins=[s['origin'] for s in body['sources'] if s['origin']['representation']=='history']
+        assert origins,body['sources']
+        assert all(s['thread']==native.S and s['turn']==TURNS[call] and s['item']==call for s in origins),origins
     if 'D' in expected:
         assert found['D'][1]['operation']['tool'] is None,found['D']
         assert not found['D'][1].get('associations'),found['D']
@@ -82,11 +85,20 @@ def run_case(binary,output):
         for call in ['C','D']:assert remote[call]==first[call]
         run.client.close();run.client=None
         controls=0
-        for mutate in ['wrong-result','wrong-row','wrong-verdict','uncommitted','text-only-link']:
+        for mutate in ['wrong-result','wrong-row','wrong-verdict','wrong-session','wrong-turn','wrong-origin-thread','wrong-origin-turn','extra-conflicting-origin','uncommitted','text-only-link']:
             broken=copy.deepcopy(first)
             if mutate=='wrong-result':broken['D'][1]['operation']['output']='wrong snapshot'
             elif mutate=='wrong-row':
                 for source in broken['D'][1]['sources']:source['origin']['item']='C'
+            elif mutate=='wrong-session':broken['C'][1]['operation']['native_session']='other-session'
+            elif mutate=='wrong-turn':broken['C'][1]['operation']['turn']='other-turn'
+            elif mutate in ['wrong-origin-thread','wrong-origin-turn']:
+                field='thread' if mutate=='wrong-origin-thread' else 'turn'
+                for source in broken['C'][1]['sources']:
+                    if source['origin']['representation']=='history':source['origin'][field]='other-scope'
+            elif mutate=='extra-conflicting-origin':
+                source=copy.deepcopy(next(s for s in broken['C'][1]['sources'] if s['origin']['representation']=='history'))
+                source['origin']['thread']='other-session';broken['C'][1]['sources'].append(source)
             elif mutate=='wrong-verdict':
                 broken['C'][1]['operation'].update(outcome='success',exit_code=0)
             elif mutate=='uncommitted':broken['U']=broken['D']
