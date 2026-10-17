@@ -716,8 +716,9 @@ impl<R: ReadView> KeyedRecords<R> {
                 let resolved = self
                     .address(&native, &native_key(parent_uuid)?)?
                     .filter(|parent| {
-                        parent.item == 0
-                            && parent.message != response.message.id
+                        // Every native contribution UUID names its owning
+                        // Message, including a later response fragment.
+                        parent.message != response.message.id
                             && parent.message.session() == response.message.id.session()
                     });
                 let parent_fact = projected.facts.iter_mut().find(|fact| {

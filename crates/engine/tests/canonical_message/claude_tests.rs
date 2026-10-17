@@ -343,6 +343,58 @@ fn same_file_sidechain_keeps_raw_main_parent_as_an_extra_without_a_message_paren
         json!({"start":3682,"end":4088})
     );
 }
+#[test]
+fn a_native_parent_uuid_from_a_later_response_fragment_resolves_its_owning_message() {
+    for native_parent in ["answer-second", "missing-parent"] {
+        let records = [
+            json!({"type":"user","uuid":"root","sessionId":SID,"message":{"role":"user","content":"Root prompt."}}),
+            json!({"type":"assistant","uuid":"answer-first","parentUuid":"root","sessionId":SID,"requestId":"provider-request","message":{"id":"provider-response","role":"assistant","content":[{"type":"text","text":"First fragment."}]}}),
+            json!({"type":"assistant","uuid":"answer-second","parentUuid":"answer-first","sessionId":SID,"requestId":"provider-request","message":{"id":"provider-response","role":"assistant","content":[{"type":"text","text":"Second fragment."}]}}),
+            json!({"type":"user","uuid":"after","parentUuid":native_parent,"sessionId":SID,"message":{"role":"user","content":"Follow-up prompt."}}),
+        ];
+        let bytes = records
+            .iter()
+            .map(|record| record.to_string() + "\n")
+            .collect::<String>()
+            .into_bytes();
+        let (mut world, pending) = make_world(&bytes, &bytes);
+        let owner = pending
+            .iter()
+            .find(|p| p.items == 2)
+            .unwrap()
+            .message
+            .clone();
+        let child = pending
+            .iter()
+            .find(|p| p.message.as_str().ends_with(":after"))
+            .unwrap();
+        let request = request(&world, child);
+        let handle = begin(&mut world, &request);
+        if native_parent == "missing-parent" {
+            assert!(matches!(
+                world.compute_with(&handle, work_budget()),
+                Err(m::Error::Unsupported(
+                    "Claude source mapping/counting obligation remains pending"
+                ))
+            ));
+            continue;
+        }
+        let source = world.complete(&handle);
+        let view = selected(&mut world, &source);
+        let (parent, supplied, origin) = value(&view, &Slot::Message(MessageField::Parent));
+        assert!(supplied);
+        assert_eq!(parent["id"], owner.as_str());
+        assert_eq!(parent["session"], owner.session().as_str());
+        assert_eq!(
+            origin["selection"]["transform"]["ParentReferenceV1"]["native_uuid"],
+            "answer-second"
+        );
+        assert_eq!(
+            origin["selection"]["inputs"][0]["path"],
+            json!([{"Key":"parentUuid"}])
+        );
+    }
+}
 fn input(text: &str) -> Vec<u8> {
     json!({"type":"assistant","uuid":"opaque:message","requestId":"request","sessionId":SID,"timestamp":"2026-10-01T10:00:00Z","message":{"id":"response","content":[{"type":"thinking","thinking":"reason","signature":"retained-signature"},{"type":"text","text":text}],"stop_reason":"end_turn"}}).to_string().into_bytes().into_iter().chain([b'\n']).collect()
 }

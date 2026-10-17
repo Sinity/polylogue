@@ -168,7 +168,7 @@ def main():
         assert any(b.get('call_id') == 'tool-bg' and b.get('outcome') == 'error' and b.get('exit_code') == 7 for b in blocks)
         assert any(b.get('call_id') == 'tool-fg' and b.get('outcome') == 'error' for b in blocks)
         assert any(m.get('duration_ms') == 1500 and m.get('usage',{}).get('provider_cost_usd') == 0.125 for m in main['messages'])
-        side_query = cli(['"Normalization complete."', '--json'], 'discover sidechain')
+        side_query = cli(['kind:subagent "Normalization complete."', '--json'], 'discover sidechain')
         subagents = [row['id'] for row in side_query['rows'] if row['id'] != 'claude-code:claude-normalization-main']; assert len(subagents) == 1, side_query
         side, _ = inspect(subagents[0], 'initial-sidechain')
         assert len(side['messages']) == 1 and side['messages'][0]['blocks'][0]['text'] == 'Normalization complete.'
