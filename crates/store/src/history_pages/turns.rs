@@ -1,5 +1,5 @@
 //! Cooperative acquisition quanta. A yield parks the existing worker, retaining
-//! its one SQLite view, encoder and checked-object readers. It is not publication.
+//! its SQLite view or regular descriptor, encoder and checked-object readers. It is not publication.
 use crate::{Error, Result};
 use std::{
     cell::RefCell,
@@ -29,8 +29,8 @@ pub struct Progress {
     /// Work observed so far, including rereads; never a selected frontier.
     pub provider_bytes_read: u64,
 }
-pub(super) type Control<'a> = Rc<RefCell<Turns<'a>>>;
-pub(super) struct Turns<'a> {
+pub(crate) type Control<'a> = Rc<RefCell<Turns<'a>>>;
+pub(crate) struct Turns<'a> {
     budget: Budget,
     visit: &'a mut dyn FnMut(Progress) -> Result<()>,
     bytes: u64,
@@ -46,7 +46,7 @@ impl<'a> Turns<'a> {
     ) -> Result<Control<'a>> {
         if budget.bytes < 65536 || budget.checkpoints == 0 {
             return Err(Error::ObservedSourceRefused(
-                "history quantum needs at least 64 KiB and one checkpoint".into(),
+                "acquisition quantum needs at least 64 KiB and one checkpoint".into(),
             ));
         }
         Ok(Rc::new(RefCell::new(Self {
@@ -72,12 +72,12 @@ impl<'a> Turns<'a> {
     pub fn work(&mut self, phase: &'static str, bytes: u64) -> Result<()> {
         if bytes > self.budget.bytes {
             return Err(Error::Invariant(
-                "history work unit exceeds its quantum".into(),
+                "acquisition work unit exceeds its quantum".into(),
             ));
         }
         if self.started.elapsed() >= Duration::from_secs(300) {
             return Err(Error::ObservedSourceRefused(
-                "history active turn exceeded 300 seconds".into(),
+                "acquisition active turn exceeded 300 seconds".into(),
             ));
         }
         if self.checkpoints == self.budget.checkpoints

@@ -86,14 +86,14 @@ qualification remain open.
 
 ## Observed Claude source subset
 
-One explicit regular Claude main location can now be retained at startup with
+One explicit regular Claude main location can be retained and kept current with
 `daemon --config FILE [--until-idle] [--json]`. Verified growth preserves its
 input/chain and parses retained pieces through the existing source owner. The
 [observed-source guide](docs/rewrite/observed-source.md) documents configuration,
 source-row qualification, separator and unfinished-tail behavior, retained
 `input cat ID` presentation, and the independent client demonstration. Default
 input presentation is credential-masked; source offsets and hashes remain raw
-coordinates. Directory discovery, watchers, rewrites and full M1 remain open.
+coordinates. Normal configured mode polls that main and its explicitly required tool-result bodies through the existing bounded acquisition owner. `--until-idle` remains finite startup admission. Directory discovery, general watcher semantics, rewrites and full M1 remain open.
 
 ## Retained Claude identity and values
 

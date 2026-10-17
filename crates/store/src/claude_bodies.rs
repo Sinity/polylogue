@@ -201,39 +201,68 @@ impl Writer {
         inline: Option<(BlobHash, u64)>,
     ) -> Result<()> {
         self.check_import_acquisition()?;
-        let Some(mut file) = open_body(main_path, path)? else {
+        let Some(prepared) =
+            self.blob_capture()?
+                .prepare_claude_body(main_path, path, cancelled, inline, |_| Ok(()))?
+        else {
             return Ok(());
         };
-        let before = file.metadata()?;
-        if !before.is_file() || before.len() > MAX_BODY {
-            return Err(Error::ObservedSourceRefused(
-                "Claude body requires a regular file of at most 1048576 bytes".into(),
-            ));
-        }
-        let proof = self
-            .blob_capture()?
-            .capture((&mut file).take(before.len()), cancelled)?;
-        use std::io::Read;
-        let after = file.metadata()?;
-        let identity = |m: &std::fs::Metadata| {
-            (
-                m.dev(),
-                m.ino(),
-                m.len(),
-                m.mtime(),
-                m.mtime_nsec(),
-                m.ctime(),
-                m.ctime_nsec(),
-            )
-        };
-        if identity(&before) != identity(&after) || proof.length() != before.len() {
-            return Err(Error::ObservedSourceRefused(
-                "Claude body changed during capture".into(),
-            ));
-        }
+        self.retain_claude_body(main, prepared, observation)
+    }
+    pub fn retain_claude_body(
+        &mut self,
+        main: &str,
+        prepared: PreparedClaudeBody,
+        observation: &ImportObservation<'_>,
+    ) -> Result<()> {
+        self.check_import_acquisition()?;
+        let PreparedClaudeBody {
+            path,
+            proof,
+            inline,
+        } = prepared;
         let duplicate = inline == Some((proof.hash(), proof.length()));
+        let length = proof.length();
         let hash = self.retain_captured_blob(proof)?;
         let path = path.to_str().ok_or(Error::Range)?;
+        let context = [
+            main,
+            path,
+            if duplicate {
+                "inline-duplicate"
+            } else {
+                "required"
+            },
+        ];
+        if let Some(previous) = self.replay_immutable_import(
+            InputFormat::ClaudeCodeToolResult,
+            &context,
+            observation,
+            65536,
+        )? {
+            if previous.id
+                != polylogue_model::InputId::imported(
+                    &hash,
+                    InputFormat::ClaudeCodeToolResult.name(),
+                    &context,
+                )
+                .as_str()
+            {
+                return Err(Error::ClientRequestConflict {
+                    id: observation.id.into(),
+                });
+            }
+            return Ok(());
+        }
+        let previous = manifest(&self.archive, &self.root.join("archive.db"), main)?;
+        if previous.iter().any(|body| {
+            body.path == path
+                && body.blob == hash
+                && body.length == length
+                && body.inline_duplicate == duplicate
+        }) {
+            return Ok(());
+        }
         self.retain_immutable_input(
             hash,
             InputFormat::ClaudeCodeToolResult,
@@ -252,6 +281,72 @@ impl Writer {
         Ok(())
     }
 }
+
+pub struct PreparedClaudeBody {
+    path: std::path::PathBuf,
+    proof: crate::PreparedBlob,
+    inline: Option<(BlobHash, u64)>,
+}
+impl crate::BlobCapture {
+    pub fn prepare_claude_body_in_turns(
+        &self,
+        main: &Path,
+        path: &Path,
+        cancelled: &AtomicBool,
+        inline: Option<(BlobHash, u64)>,
+        budget: crate::history_pages::turns::Budget,
+        mut yield_turn: impl FnMut(crate::history_pages::turns::Progress) -> Result<()>,
+    ) -> Result<Option<PreparedClaudeBody>> {
+        let control = crate::history_pages::turns::Turns::new(budget, &mut yield_turn)?;
+        self.prepare_claude_body(main, path, cancelled, inline, |n| {
+            control.borrow_mut().work("claude_body", n)
+        })
+    }
+    pub fn prepare_claude_body(
+        &self,
+        main_path: &Path,
+        path: &Path,
+        cancelled: &AtomicBool,
+        inline: Option<(BlobHash, u64)>,
+        mut work: impl FnMut(u64) -> Result<()>,
+    ) -> Result<Option<PreparedClaudeBody>> {
+        let Some(mut file) = open_body(main_path, path)? else {
+            return Ok(None);
+        };
+        let before = file.metadata()?;
+        if !before.is_file() || before.len() > MAX_BODY {
+            return Err(Error::ObservedSourceRefused(
+                "Claude body requires a regular file of at most 1048576 bytes".into(),
+            ));
+        }
+        let proof =
+            self.capture_with_check((&mut file).take(before.len()), cancelled, &mut work)?;
+        use std::io::Read;
+        let after = file.metadata()?;
+        let identity = |m: &std::fs::Metadata| {
+            (
+                m.dev(),
+                m.ino(),
+                m.len(),
+                m.mtime(),
+                m.mtime_nsec(),
+                m.ctime(),
+                m.ctime_nsec(),
+            )
+        };
+        if identity(&before) != identity(&after) || proof.length() != before.len() {
+            return Err(Error::ObservedSourceRefused(
+                "Claude body changed during capture".into(),
+            ));
+        }
+        Ok(Some(PreparedClaudeBody {
+            path: path.to_path_buf(),
+            proof,
+            inline,
+        }))
+    }
+}
+
 impl ReadHandle {
     pub fn claude_body(&self, body: &Companion) -> Result<Vec<u8>> {
         if body.length > MAX_BODY {

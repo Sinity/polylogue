@@ -3,6 +3,7 @@ use polylogue_engine::owner::{Handle, Owner};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, Writer};
 pub mod authored;
+mod claude_continuation;
 mod codex_continuation;
 pub mod input_cat;
 pub mod model_read;
@@ -95,6 +96,7 @@ pub struct Running {
     owner: Option<Owner>,
     collector: Option<JoinHandle<()>>,
     continuation: Arc<Mutex<Option<codex_continuation::Status>>>,
+    claude_continuation: Arc<Mutex<Option<claude_continuation::Status>>>,
     stop: Arc<AtomicBool>,
     clients: Arc<Mutex<HashMap<u64, UnixStream>>>,
     accept: Option<JoinHandle<()>>,
@@ -158,6 +160,53 @@ impl Running {
                 .map_err(polylogue_store::Error::Invariant)?,
             retained,
         ))
+    }
+    pub fn start_observed_continuing(
+        archive: &Path,
+        runtime: &Path,
+        source: &Path,
+        machine: &str,
+        host: &str,
+        id: &str,
+        seen_at: i64,
+        cancelled: &AtomicBool,
+        quantum_bytes: u64,
+    ) -> Result<(Self, polylogue_store::RetainedSource), polylogue_store::Error> {
+        if !(65536..=8 * 1024 * 1024).contains(&quantum_bytes) {
+            return Err(polylogue_store::Error::ObservedSourceRefused(
+                "acquisition quantum must be between 65536 and 8388608 bytes".into(),
+            ));
+        }
+        let (mut running, retained) = Self::start_observed(
+            archive, runtime, source, machine, host, id, seen_at, cancelled,
+        )?;
+        *running.claude_continuation.lock().expect("Claude status") =
+            Some(claude_continuation::Status::initial(quantum_bytes));
+        let handle = running.owner.as_ref().expect("running owner").handle();
+        let source = source.to_path_buf();
+        let machine = machine.to_owned();
+        let host = host.to_owned();
+        let id = id.to_owned();
+        let stop = Arc::clone(&running.stop);
+        let status = Arc::clone(&running.claude_continuation);
+        running.collector = Some(
+            thread::Builder::new()
+                .name("polylogue-claude-main".into())
+                .spawn(move || {
+                    claude_continuation::run(
+                        handle,
+                        source,
+                        machine,
+                        host,
+                        id,
+                        quantum_bytes,
+                        stop,
+                        status,
+                    )
+                })
+                .map_err(polylogue_store::Error::Io)?,
+        );
+        Ok((running, retained))
     }
     pub fn start_codex(
         archive: &Path,
@@ -230,6 +279,8 @@ impl Running {
             continue_collecting.then(codex_continuation::Status::initial),
         ));
         let thread_continuation = Arc::clone(&continuation);
+        let claude_continuation = Arc::new(Mutex::new(None));
+        let thread_claude_continuation = Arc::clone(&claude_continuation);
         let reader = Arc::new(Mutex::new(writer.read_handle().map_err(|e| e.to_string())?));
         let archive = fs::canonicalize(archive).map_err(|e| e.to_string())?;
         let socket = socket_path(&archive, runtime);
@@ -303,11 +354,14 @@ impl Running {
                         let reader = Arc::clone(&reader);
                         let acquisition = Arc::clone(&acquisition);
                         let continuation = Arc::clone(&thread_continuation);
+                        let claude_continuation = Arc::clone(&thread_claude_continuation);
                         let completed = Arc::clone(&thread_clients);
                         workers.retain(|worker| !worker.is_finished());
                         workers.push(thread::spawn(move || {
                             let continuation =
                                 continuation.lock().expect("continuation status").clone();
+                            let claude_continuation =
+                                claude_continuation.lock().expect("Claude status").clone();
                             if let Err(error) = serve(
                                 stream,
                                 &archive,
@@ -315,6 +369,7 @@ impl Running {
                                 &handle,
                                 acquisition.as_ref().as_ref(),
                                 continuation.as_ref(),
+                                claude_continuation.as_ref(),
                             ) {
                                 eprintln!("client: {error}");
                             }
@@ -338,6 +393,7 @@ impl Running {
             owner: Some(owner),
             collector: None,
             continuation,
+            claude_continuation,
             stop,
             clients,
             accept: Some(accept),
@@ -398,6 +454,7 @@ fn serve(
     owner: &Handle,
     acquisition: Option<&polylogue_store::configured_codex::Acquisition>,
     continuation: Option<&codex_continuation::Status>,
+    claude_continuation: Option<&claude_continuation::Status>,
 ) -> Result<(), String> {
     let mut line = String::new();
     use std::io::Read;
@@ -444,7 +501,7 @@ fn serve(
                             "Finite Codex source evidence leaves general Session coverage unknown.",
                         );
                     }
-                    json!({"outcome":if status.recovery.is_some() || status.unavailable_blob_files > 0 || acquisition.is_some() || (pending["examined_snapshots"].as_u64().is_some_and(|n|n>0) || pending["scan_complete"]==false) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"continuation":continuation,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-codex-home-v1","configured-codex-continuation-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
+                    json!({"outcome":if status.recovery.is_some() || status.unavailable_blob_files > 0 || acquisition.is_some() || (pending["examined_snapshots"].as_u64().is_some_and(|n|n>0) || pending["scan_complete"]==false) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"continuation":continuation,"claude_continuation":claude_continuation,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-claude-continuation-v1","configured-codex-home-v1","configured-codex-continuation-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})

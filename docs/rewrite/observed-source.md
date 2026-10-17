@@ -1,12 +1,19 @@
 # One observed Claude location
 
 This native subset retains and interprets one explicitly configured regular
-Claude main JSONL file at daemon startup. It does not discover directories or
-watch a running provider. Each subsequent startup compares the entire retained
-predecessor prefix before accepting new bytes. The initial opened descriptor's
-size bounds the read; changed descriptor metadata, a short read, changed prefix,
-shrink or replacement refuses that acquisition. This is a checked descriptor
-read, not an atomic filesystem snapshot or capture of unexamined revisions.
+Claude main JSONL file. Normal configured daemon mode checks the main and its
+explicit required tool-result bodies once per second. `--until-idle` admits one
+startup snapshot and waits for its existing parser work; it does not wait for
+future polling timers. Directory discovery remains unsupported.
+
+Each acquisition compares the entire retained predecessor prefix before
+accepting new bytes. A worker retains the checked descriptor, parser-reference
+scan and CAS proofs while the existing owner grants reusable acquisition
+quanta. The owner installs typed proofs; provider IO and full-prefix verification
+run outside its writer. The initial descriptor size bounds the read. Changed
+metadata, a short read, changed prefix, shrink or replacement refuses that
+attempt and preserves previously acknowledged bytes. This checked read is not
+an atomic filesystem snapshot or capture of unexamined revisions.
 
 Create a source configuration outside the repository:
 
@@ -22,7 +29,7 @@ interpretation returns degraded exit 5 with its reason. General watcher
 convergence and whole-archive idle acceptance remain open. Interrupting the
 pending idle wait returns an interruption refusal (exit 3), never success; actual deadline expiry remains `Timeout` (exit 7).
 
-Without `--until-idle`, the daemon stays available for ordinary clients. Adding
+Without `--until-idle`, the daemon stays available for ordinary clients and continues the configured acquisition. Adding
 `--json` prints and flushes a `scope: retention_only` admission before waiting;
 that admission does not certify normalized rows. Plain `daemon` also recovers
 already retained observed inputs without reopening their provider paths.
@@ -76,9 +83,7 @@ Configured main acquisition also reads tool-result paths explicitly named by
 complete retained records. The supported location is
 `<main directory>/<main stem>/tool-results/*.txt`. The source adapter owns
 `persistedOutputPath` and the existing saved-output text spellings. Acquisition
-does not enumerate the directory. Each startup scans the full retained main in
-64 KiB windows and checks cancellation at every window; this does not establish
-append-local scan cost. It admits at most 32 referenced paths, a
+does not enumerate the directory. Each attempt scans the full checked main in 64 KiB windows under cooperative grants; this does not establish append-local scan cost. Required bodies are checked even when the main metadata and bytes are unchanged. It admits at most 32 referenced paths, a
 1 MiB reference record and 1 MiB per regular body. The configured main parent resolves normally. Held directory handles then open
 the appended session directory, `tool-results` directory and body leaf with
 `NOFOLLOW`; symlinks in any of those components and nonregular descriptors refuse. UTF-8 is required for normalized text.
@@ -128,3 +133,35 @@ that selected Message's field origins. A different Message's lost required body
 does not prevent an independently backed Text member from being read: its
 Session context remains degraded and unavailable. A full Session read and the
 owning tool-result read still refuse the missing witness.
+
+## Configured continuation controls
+
+The optional `claude_main.acquisition_quantum_bytes` sets a reusable charged-work
+quantum from 65536 through 8388608 bytes (default 8388608). It limits a granted
+turn, including retained verification, rather than the source's lifetime size.
+The same parked acquisition slot and ordinary-import arbitration serve physical
+history and Claude. Ordinary read workers continue using acknowledged retained
+state before a larger capture is admitted. A yielded proof is never a selected
+input or settled candidate. Cancellation discards uninstalled acquisition
+proofs; a later process verifies the retained predecessor afresh.
+
+Status exposes `claude_continuation`: active acquisition, attempts, acknowledged
+length, unchanged passes and bounded diagnostics. Missing and denied main paths
+remain distinct from an accessible empty main. Missing required provider bodies
+preserve any retained snapshot; a never-acquired body leaves its Message pending.
+Unchanged polls add neither input revisions nor body observations and do not
+restart unchanged parser work. A changed required manifest restarts the existing
+interpretation even when the main revision is unchanged. Pending incomplete
+records remain owed until a later append completes them.
+
+`configured_claude_continuation_demo` accepts the same explicit binary, candidate,
+SDK client and digest-tool arguments as `claude_body_demo`. It starts one
+synthetic configured daemon and discovers a later operator correction through
+ordinary CLI and official SDK MCP search/read, then checks an incomplete suffix,
+late body arrival, body-only revision, exact versions/origins, stable polls,
+missing/denied main paths and provider-free interrupted-tail restart. Controlled
+engine tests park a small acquisition quantum, complete a real ordinary capture
+and retained read before the larger append is selected, and cancel/retry a
+parked capture. This qualifies one configured source shape. General watcher
+semantics, rewrites, directory discovery, installed routing, corpus resource
+bounds and full M1 remain open.

@@ -193,3 +193,13 @@ result = "exit"
 timeout_seconds = 600
 scratch = "nvme"
 cache = "none"
+
+[operations.configured_claude_continuation_demo]
+description = "Exercise one configured Claude main and required bodies through CLI and official SDK MCP without restart"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-claude-continuation.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"

@@ -43,7 +43,7 @@ fn parked_physical_quanta_serve_actual_regular_capture_and_reads_before_selectio
         ))
         .unwrap();
     let first = events.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert!(matches!(&first, Message::HistoryYield(..)));
+    assert!(matches!(&first, Message::CaptureYield(..)));
     // This is an actual configured regular input, not a bookkeeping counter.
     let home = temp.path().join("home");
     std::fs::create_dir_all(home.join("sessions")).unwrap();
@@ -82,9 +82,9 @@ fn parked_physical_quanta_serve_actual_regular_capture_and_reads_before_selectio
         .unwrap();
     assert!(actor.waiting_capture.is_some());
     actor.message(first).unwrap();
-    actor.advance_history().unwrap();
+    actor.advance_capture_turn().unwrap();
     assert!(actor.capture.is_some());
-    assert!(actor.history.as_ref().unwrap().grant.is_some());
+    assert!(actor.turn_capture.as_ref().unwrap().grant.is_some());
     actor
         .message(events.recv_timeout(Duration::from_secs(10)).unwrap())
         .unwrap();
@@ -112,11 +112,11 @@ fn parked_physical_quanta_serve_actual_regular_capture_and_reads_before_selectio
         .put_file_blob(b"later provider generation")
         .unwrap();
     let mut turns = 1;
-    actor.advance_history().unwrap();
+    actor.advance_capture_turn().unwrap();
     loop {
         let event = events.recv_timeout(Duration::from_secs(10)).unwrap();
-        let done = matches!(&event, Message::HistoryCaptured(..));
-        if let Message::HistoryYield(p, ..) = &event {
+        let done = matches!(&event, Message::TurnCaptured(..));
+        if let Message::CaptureYield(p, ..) = &event {
             assert!(p.charged_bytes <= 65536 && p.checkpoints <= 2);
             turns += 1;
         }
@@ -124,7 +124,7 @@ fn parked_physical_quanta_serve_actual_regular_capture_and_reads_before_selectio
         if done {
             break;
         }
-        actor.advance_history().unwrap();
+        actor.advance_capture_turn().unwrap();
     }
     assert!(turns > 2);
     let result = history
@@ -155,7 +155,7 @@ fn owner_stop_during_a_parked_turn_selects_no_prefix_and_fresh_owner_can_retry()
         ))
         .unwrap();
     let event = events.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert!(matches!(&event, Message::HistoryYield(..)));
+    assert!(matches!(&event, Message::CaptureYield(..)));
     actor.message(event).unwrap();
     actor.begin_stop();
     actor

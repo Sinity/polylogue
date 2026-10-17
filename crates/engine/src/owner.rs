@@ -30,7 +30,7 @@ use std::{
 // record/cell remains owed and its required capacity is kept in the diagnostic.
 // Configurable larger admissions and full canonical convergence remain open.
 mod history_capture;
-use history_capture::HistoryJob;
+use history_capture::TurnCaptureJob;
 const COMMANDS: usize = 16;
 const REQUEST_BYTES: usize = 65_536;
 const WINDOW_BYTES: u64 = 65_536;
@@ -147,6 +147,7 @@ impl ImportReply {
 enum PreparedCapture {
     Blob(PreparedBlob),
     History(polylogue_store::history_pages::PreparedHistory),
+    Claude(crate::claude_capture::Prepared),
 }
 enum Message {
     Note(
@@ -159,15 +160,16 @@ enum Message {
         Option<(polylogue_store::configured_codex::Candidate, BlobHash, u64)>,
         ImportReply,
     ),
+    Claude(ImportRequest, u64, Reply<ConfiguredImport>),
     CheckAcquisition(Reply<()>),
     Progress(String, Reply<Progress>),
     Retry(String, Reply<()>),
     Captured(Result<PreparedCapture>),
-    HistoryYield(
+    CaptureYield(
         polylogue_store::history_pages::turns::Progress,
         SyncSender<std::result::Result<(), StoreError>>,
     ),
-    HistoryCaptured(Result<polylogue_store::history_pages::PreparedHistory>),
+    TurnCaptured(Result<PreparedCapture>),
     Computed(Result<Computation>),
     CanonicalComputed(Result<CanonicalTurn>),
     Wake,
@@ -234,6 +236,35 @@ impl Handle {
             Some((candidate, expected, expected_length)),
             ImportReply::Configured(reply),
         ))?;
+        Ok(rx)
+    }
+    pub fn try_claude_acquisition(
+        &self,
+        path: PathBuf,
+        observation: Observation,
+        quantum_bytes: u64,
+    ) -> Result<Receiver<Result<ConfiguredImport>>> {
+        if !(65536..=8 * 1024 * 1024).contains(&quantum_bytes) {
+            return Err(Error::InvalidRequest(
+                "Claude quantum must be between 65536 and 8388608 bytes",
+            ));
+        }
+        let request = ImportRequest {
+            format: InputFormat::ClaudeCodeJsonl,
+            context: vec![
+                "claude-main".into(),
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .ok_or(Error::InvalidRequest("UTF8 main stem required"))?
+                    .into(),
+            ],
+            path,
+            observation,
+            metadata_allowance: 65536,
+        };
+        self.validate_import(&request, false)?;
+        let (reply, rx) = mpsc::sync_channel(1);
+        self.send(Message::Claude(request, quantum_bytes, reply))?;
         Ok(rx)
     }
     pub fn try_history_import(
@@ -472,7 +503,7 @@ struct Actor {
     writer: Writer,
     inner: Arc<Inner>,
     capture: Option<CaptureJob>,
-    history: Option<HistoryJob>,
+    turn_capture: Option<TurnCaptureJob>,
     waiting_capture: Option<(
         ImportRequest,
         Option<(polylogue_store::configured_codex::Candidate, BlobHash, u64)>,
@@ -495,7 +526,7 @@ impl Actor {
             writer,
             inner,
             capture: None,
-            history: None,
+            turn_capture: None,
             waiting_capture: None,
             history_budget: polylogue_store::history_pages::turns::Budget::default(),
             compute: None,
@@ -516,7 +547,7 @@ impl Actor {
         }
         self.inner.cancelled.store(true, Ordering::Release);
         self.active = None;
-        if let Some(history) = &mut self.history {
+        if let Some(history) = &mut self.turn_capture {
             history.grant.take();
         }
         if let Some((_, _, reply)) = self.waiting_capture.take() {
@@ -549,7 +580,10 @@ impl Actor {
         loop {
             self.observe_stop();
             let immediate = !self.stopping
-                && (self.history.as_ref().is_some_and(|h| h.grant.is_some())
+                && (self
+                    .turn_capture
+                    .as_ref()
+                    .is_some_and(|h| h.grant.is_some())
                     || (self.compute.is_none()
                         && self.canonical.is_none()
                         && (self.active.is_some() || self.scanning)));
@@ -590,14 +624,14 @@ impl Actor {
                 }
             }
             if !self.stopping && (mailbox_empty || commands_since_grant >= COMMANDS) {
-                if let Err(e) = self.advance_history() {
+                if let Err(e) = self.advance_capture_turn() {
                     self.fatal = Some(e);
                     self.begin_stop();
                 }
                 commands_since_grant = 0;
             }
             if self.stopping
-                && self.history.is_none()
+                && self.turn_capture.is_none()
                 && self.capture.is_none()
                 && self.compute.is_none()
                 && self.canonical.is_none()
@@ -618,6 +652,7 @@ impl Actor {
             return Ok(());
         }
         let mut acquired = true;
+        let mut claude_installation_started = false;
         let result = result.and_then(|proof| {
             let proof = match proof {
                 PreparedCapture::History(p) => {
@@ -632,6 +667,39 @@ impl Actor {
                         .writer
                         .retain_history_pages(p, &job.observation.borrowed(), job.allowance)
                         .map_err(Error::Store);
+                }
+                PreparedCapture::Claude(prepared) => {
+                    let before = self.writer.claude_predecessor(
+                        std::path::Path::new(&job.observation.path),
+                        &job.observation.machine,
+                    )?;
+                    let source = self.writer.retain_claude_main(
+                        prepared.main,
+                        &job.observation.machine,
+                        &job.observation.host,
+                        &job.observation.id,
+                        job.observation.seen_at,
+                    )?;
+                    // A later companion refusal cannot hide already retained main work.
+                    claude_installation_started = true;
+                    for (index, (path, body)) in prepared.bodies.into_iter().enumerate() {
+                        let mut observation = job.observation.clone();
+                        observation.id = format!("{}:claude-body:{index}", observation.id);
+                        observation.path = format!("copy:{}", path.display());
+                        self.writer.retain_claude_body(
+                            &source.input.id,
+                            body,
+                            &observation.borrowed(),
+                        )?;
+                    }
+                    let after = self
+                        .writer
+                        .retained_source(&source.input.id)?
+                        .ok_or(Error::UnknownInput)?;
+                    acquired = before.as_ref().is_none_or(|old| {
+                        old.revision != after.revision || old.companions != after.companions
+                    });
+                    return Ok(after.input);
                 }
                 PreparedCapture::Blob(p) => p,
             };
@@ -649,7 +717,7 @@ impl Actor {
                 job.allowance,
             )?)
         });
-        if result.is_ok() {
+        if (result.is_ok() && acquired) || (result.is_err() && claude_installation_started) {
             self.scan_again = true;
             if !self.scanning
                 && self.active.is_none()
@@ -788,7 +856,7 @@ impl Actor {
                 }
                 if self.capture.is_none()
                     && self
-                        .history
+                        .turn_capture
                         .as_ref()
                         .is_some_and(|h| h.grant.is_none() || h.regular_served)
                 {
@@ -814,7 +882,7 @@ impl Actor {
                         return Ok(());
                     }
                 };
-                if let Some(history) = &mut self.history {
+                if let Some(history) = &mut self.turn_capture {
                     history.regular_served = true;
                 }
                 let cancelled = Arc::clone(&self.inner.cancelled);
@@ -856,6 +924,13 @@ impl Actor {
                     }
                 }
             }
+            Message::Claude(request, quantum_bytes, reply) => {
+                if self.stopping {
+                    let _ = reply.send(Err(Error::Stopped));
+                } else {
+                    self.start_claude(request, quantum_bytes, ImportReply::Configured(reply))?;
+                }
+            }
             Message::CheckAcquisition(reply) => {
                 let result = if self.stopping {
                     Err(Error::Stopped)
@@ -888,11 +963,11 @@ impl Actor {
                 };
                 self.finish_capture(job, result)?;
             }
-            Message::HistoryYield(progress, grant) => {
+            Message::CaptureYield(progress, grant) => {
                 let history = self
-                    .history
+                    .turn_capture
                     .as_mut()
-                    .ok_or(Error::InvalidRequest("unexpected history yield"))?;
+                    .ok_or(Error::InvalidRequest("unexpected acquisition yield"))?;
                 history.progress = Some(progress);
                 history.regular_served = false;
                 if self.stopping {
@@ -901,12 +976,12 @@ impl Actor {
                     history.grant = Some(grant);
                 }
             }
-            Message::HistoryCaptured(result) => {
+            Message::TurnCaptured(result) => {
                 let history = self
-                    .history
+                    .turn_capture
                     .take()
-                    .ok_or(Error::InvalidRequest("unexpected history completion"))?;
-                self.finish_capture(history.job, result.map(PreparedCapture::History))?;
+                    .ok_or(Error::InvalidRequest("unexpected acquisition completion"))?;
+                self.finish_capture(history.job, result)?;
             }
             Message::Computed(result) => {
                 let Some(job) = self.compute.take() else {
@@ -1948,6 +2023,7 @@ mod tests {
         }
     }
     mod cancellation;
+    mod claude_turns;
     mod configured;
     mod history_turns;
     fn owner(root: &Path) -> Owner {
