@@ -118,11 +118,11 @@ def verify(args, run):
     with main.open('ab') as stream:
         stream.write(correction_bytes[:len(correction_bytes)//2])
     state = wait(run, lambda value: value['claude_continuation']['retained_length'] == main.stat().st_size)
+    progress = await_progress(run, source, lambda value: value.get('parser', {}).get('status') == 'waiting_tail' and value['active'] is False)
     before = await_text(run, reference, initial['message']['content'])
     assert all(item['id'] != reference + ':correction' for item in before['messages']), before
     earlier = run.command(['message:' + reference + ':earlier', 'read', '--budget', '20000'], allowed=(0, 5))
     assert earlier['shown'][0]['text'] == initial['message']['content'], earlier
-    progress = await_progress(run, source, lambda value: value.get('parser', {}).get('status') == 'waiting_tail')
     assert progress['parser']['status'] == 'waiting_tail' and progress['source_rows']['state'] != 'settled', progress
     with main.open('ab') as stream:
         stream.write(correction_bytes[len(correction_bytes)//2:])
@@ -169,6 +169,7 @@ def verify(args, run):
     with main.open('ab') as stream:
         stream.write(observed.line(call) + observed.line(result))
     wait(run, lambda value: value['claude_continuation']['retained_length'] == main.stat().st_size)
+    await_progress(run, source, lambda value: value.get('parser') is not None and value['parser']['acquired_upto'] == main.stat().st_size and value['active'] is False)
     assert run.command(['message:' + reference + ':earlier', 'read', '--budget', '20000'], allowed=(0, 5))['shown'][0]['text'] == initial['message']['content']
     body.write_bytes(bodies.PAYLOAD)
     full = await_text(run, reference, bodies.MASKED)
@@ -210,6 +211,7 @@ def verify(args, run):
     main.unlink(); body.unlink(); duplicate.unlink()
     run.start()
     try:
+        progress = await_progress(run, source, lambda value: value.get('parser', {}).get('status') == 'waiting_tail' and value['active'] is False)
         retained = document(run, reference)
         assert next(item for item in retained['messages'] if item['id'] == reference + ':result')['version_hash'] == revised_message['version_hash'], retained
         assert run.command(['input', 'cat', source], raw=True).endswith(tail)
