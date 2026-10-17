@@ -678,3 +678,6 @@ fn claude_opaque_extra_must_match_original_selected_source() {
 
 #[path = "claude_stop_details.rs"]
 mod stop_details;
+
+#[path = "claude_block_extras.rs"]
+mod block_extras;

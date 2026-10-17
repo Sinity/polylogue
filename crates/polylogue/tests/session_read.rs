@@ -2397,3 +2397,6 @@ mod observed_prefix;
 
 #[path = "session_read/donor_core.rs"]
 mod donor_core;
+
+#[path = "session_read/block_metadata.rs"]
+mod block_metadata;

@@ -373,11 +373,41 @@ fn leaf<'a>(
                 .ok_or(Error::Invariant("Claude extra lost its value"))?;
             return Ok(ValueSource::Opaque(value.clone().into_opaque()));
         }
-        Field::Extra { .. } => {
-            return Err(Error::UnsupportedField {
-                path: fact.source_path.clone(),
-                reason: "Claude block extra normalization remains pending",
-            });
+        Field::Extra {
+            local: Some(local),
+            path,
+        } => {
+            // One immediate provider block member; nested paths cannot be
+            // flattened into this block's extra-key namespace.
+            let [message, content, index, key] = path.as_slice() else {
+                return Err(Error::UnsupportedField {
+                    path: path.clone(),
+                    reason: "Claude nested block extra remains unsupported",
+                });
+            };
+            if message != "message"
+                || content != "content"
+                || index.parse::<u32>().ok() != Some(*local)
+            {
+                return Err(Error::UnsupportedField {
+                    path: path.clone(),
+                    reason: "Claude block extra address is ambiguous",
+                });
+            }
+            let c = c.ok_or(Error::Invariant("Claude block extra lost its contribution"))?;
+            if c.projection.facts.iter().any(|fact| matches!(&fact.field,
+                Field::ResultData {local: found, key: selected} if found == local && selected == key)) {
+                return Err(Error::UnsupportedField { path: path.clone(), reason: "Claude block extra conflicts with selected structured data" });
+            }
+            let raw = RetainedJson::parse(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
+            let value = raw
+                .get("message")
+                .and_then(|v| v.get("content"))
+                .and_then(RetainedJson::as_array)
+                .and_then(|v| v.get(*local as usize))
+                .and_then(|v| v.get(key))
+                .ok_or(Error::Invariant("Claude block extra lost its raw value"))?;
+            return Ok(ValueSource::Opaque(value.clone().into_opaque()));
         }
         Field::Block { .. } => {
             let Slot::Block { block, .. } = slot else {

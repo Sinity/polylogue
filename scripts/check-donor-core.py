@@ -20,7 +20,7 @@ DONOR = 'b4b61c7eab8daf740bfdccb146e530906839726d'
 
 def expected_parser_version(name):
     return {
-        'claude-normalization-main.jsonl': 12,
+        'claude-normalization-main.jsonl': 13,
         'legacy-response-records.jsonl': 10,
         'tool-result-headers.jsonl': 10,
     }[name]

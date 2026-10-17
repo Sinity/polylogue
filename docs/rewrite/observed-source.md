@@ -283,3 +283,20 @@ with a literal top-level selected key still refuse canonical certification.
 The normal parser-version basis re-evaluates retained interpretation; existing
 selection codec and recipe meanings are unchanged. No private replay or complete
 source restoration is established by this mapping's synthetic checks.
+
+Claude parser version 13 admits immediate provider block members as opaque,
+source-backed block extras. Each leaf keeps its exact raw path and original
+value. A block member that aliases a selected structured ToolResult channel
+still refuses, as do ambiguous nested paths and existing unmapped effects.
+No status or image meaning is inferred from an extra.
+
+Normalized JSON and export use `data` for the extra bag on ToolCall and
+ToolResult blocks. Other block kinds use `attrs`. These bags hold named opaque
+provider members; a Thinking block's typed ciphertext `data` remains separate
+from `attrs`, including an extra whose own key is `data`. Bounded model metadata
+uses the same container names, with canonical-JSON envelopes after privacy
+assessment, and field origins use the same qualified paths. Existing leaf,
+metadata, deadline and cancellation admissions apply. Unknown active-path
+membership still refuses default bounded reads; when current known rows are
+readable with no pending inputs, the refusal points to explicit `--branches`
+(MCP `branches:true`) for known retained catalog members.

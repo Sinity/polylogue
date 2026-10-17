@@ -715,10 +715,25 @@ fn run(
             && (q.unavailable_inputs == 0 || q.active_path_known())
     };
     if !readable {
-        return Err(unavailable("current_selected_basis_unavailable"));
+        let mut failure = unavailable("current_selected_basis_unavailable");
+        if selection.exact.is_none()
+            && !branches
+            && q.pending_inputs == 0
+            && q.known_rows_readable()
+            && !q.active_path_known()
+        {
+            failure["error"]["hint"] = json!(
+                "Active-path membership is unknown. Use --branches (MCP branches:true) to read only known retained catalog members."
+            );
+        }
+        return Err(failure);
     }
     if !branches && selection.exact.is_none() && !q.active_path_known() {
-        return Err(unavailable("active_path_membership_unavailable"));
+        let mut failure = unavailable("active_path_membership_unavailable");
+        failure["error"]["hint"] = json!(
+            "Active-path membership is unknown. Use --branches (MCP branches:true) to read only known retained catalog members."
+        );
+        return Err(failure);
     }
     let mut qualification = q.result(&selection.session.catalog());
     if branches && !q.active_path_known() {
@@ -990,7 +1005,10 @@ fn run(
                                     )
                                 }
                                 polylogue_store::contributions::BlockFieldAddress::Extra(key) => {
-                                    format!("blocks[{i}].data.{key}")
+                                    format!(
+                                        "blocks[{i}].{}.{key}",
+                                        crate::session_document::block_extra_container(&b.kind)
+                                    )
                                 }
                             };
                             let value = polylogue_model::RetainedJson::Object(

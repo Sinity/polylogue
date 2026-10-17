@@ -463,7 +463,7 @@ def migration(args):
         run.binary = str(args.binary)
         main.unlink()
         run.start()
-        replay = await_progress(run, acquired['input'], lambda p: p.get('source_rows', {}).get('state') == 'settled' and p['source_rows']['basis']['parser_version'] == 12 and not p.get('active') and not p['parser']['finalization_pending'])
+        replay = await_progress(run, acquired['input'], lambda p: p.get('source_rows', {}).get('state') == 'settled' and p['source_rows']['basis']['parser_version'] == 13 and not p.get('active') and not p['parser']['finalization_pending'])
         assert replay['failure'] is None and replay['recovery_error'] is None, replay
         after = await_text(run, reference, text)
         qualification_transitions = compare_message_facts(after, before, 'preserving-upgrade')
