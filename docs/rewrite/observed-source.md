@@ -270,3 +270,16 @@ be current. This also re-applies the existing later-fragment parent resolution
 repair. Selection codec 1 and adapter recipe 2 keep their existing meanings;
 no archive reset, provider edit, or new recovery operation is required by this
 mapping change. This does not establish complete source restoration.
+
+Claude parser version 12 additionally selects supplied `message.stop_details`
+as the named opaque response metadata key `stop_details`. Supplied null is a
+value; absence creates no default. The last actual supplier wins in the existing
+response update order. A same-UUID overlay that omits the field preserves its
+previous donor and cannot become a later supplier. Selected values retain their
+exact raw selectors; response correction evidence distinguishes a later update
+to an earlier contribution from contribution-order reduction. This metadata
+never infers finish state or stop reason. Unknown nested extras and collisions
+with a literal top-level selected key still refuse canonical certification.
+The normal parser-version basis re-evaluates retained interpretation; existing
+selection codec and recipe meanings are unchanged. No private replay or complete
+source restoration is established by this mapping's synthetic checks.

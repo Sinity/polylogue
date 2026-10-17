@@ -69,6 +69,9 @@ pub struct ResponseCell {
     pub stop_sequence: Option<super::projection::Fact>,
     /// Canonical RAW selected subtree, independently of normalized attrs.
     pub stop_sequence_raw: Option<Vec<u8>>,
+    /// Opaque supplied response metadata, with no finish/status interpretation.
+    pub stop_details: Option<super::projection::Fact>,
+    pub stop_details_raw: Option<Vec<u8>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordAddress {
@@ -315,7 +318,7 @@ impl ResponseCell {
     }
     /// After the owner has reduced effective-record metadata in contribution
     /// order, append ONLY the selected raw subtrees that differ, in this order.
-    pub fn metadata_units(&self, baseline: &[Option<Vec<u8>>; 7]) -> Vec<EvidenceUnit> {
+    pub fn metadata_units(&self, baseline: &[Option<Vec<u8>>; 8]) -> Vec<EvidenceUnit> {
         [
             "response/usage",
             "response/stop_reason",
@@ -324,14 +327,15 @@ impl ResponseCell {
             "response/cost_usd",
             "response/duration_ms",
             "response/stop_sequence",
+            "response/stop_details",
         ]
         .iter()
         .enumerate()
         .filter_map(|(i, tag)| {
-            let selected = if i == 6 {
-                &self.stop_sequence_raw
-            } else {
-                &self.selected[i]
+            let selected = match i {
+                6 => &self.stop_sequence_raw,
+                7 => &self.stop_details_raw,
+                _ => &self.selected[i],
             };
             if *selected == baseline[i] {
                 return None;
@@ -374,14 +378,17 @@ impl Contribution {
     }
     /// One admitted effective record, not a historical response scan. The owner
     /// reduces these fields while reading `next_contribution` slots in order.
-    pub fn final_fields(&self) -> Result<[Option<Vec<u8>>; 7], String> {
-        let mut fields: [Option<Vec<u8>>; 7] = Default::default();
+    pub fn final_fields(&self) -> Result<[Option<Vec<u8>>; 8], String> {
+        let mut fields: [Option<Vec<u8>>; 8] = Default::default();
         for (i, path) in super::METADATA_PATHS.iter().enumerate() {
             fields[i] = super::raw::optional_field(&self.raw, path)?
                 .map(super::raw::canonical)
                 .transpose()?;
         }
         fields[6] = super::raw::optional_field(&self.raw, &["message", "stop_sequence"])?
+            .map(super::raw::canonical)
+            .transpose()?;
+        fields[7] = super::raw::optional_field(&self.raw, &["message", "stop_details"])?
             .map(super::raw::canonical)
             .transpose()?;
         Ok(fields)

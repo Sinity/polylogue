@@ -675,3 +675,6 @@ fn claude_opaque_extra_must_match_original_selected_source() {
             .is_none()
     );
 }
+
+#[path = "claude_stop_details.rs"]
+mod stop_details;

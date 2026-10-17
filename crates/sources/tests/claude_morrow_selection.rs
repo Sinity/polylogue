@@ -820,7 +820,7 @@ fn correction_units(
     memory: &MemoryReadView,
     response: &claude_code::keyed::ResponseCell,
 ) -> Vec<claude_code::keyed::EvidenceUnit> {
-    let mut baseline: [Option<Vec<u8>>; 7] = Default::default();
+    let mut baseline: [Option<Vec<u8>>; 8] = Default::default();
     for item in 0..response.items {
         let c = memory
             .contribution(&response.message.id, item)

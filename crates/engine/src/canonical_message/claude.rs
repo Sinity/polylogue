@@ -520,16 +520,17 @@ pub(super) fn compute(
             }
         }
         Cursor::SelectedCitations { index } => {
-            if index >= 7 {
+            if index >= 8 {
                 return progress(state, &mut cursor, Cursor::AuthorCitation, b);
             }
             let next = Cursor::SelectedCitations { index: index + 1 };
-            if index == 6 {
-                return match r
-                    .stop_sequence
-                    .as_ref()
-                    .and_then(|fact| fact.selection.as_ref())
-                {
+            if index >= 6 {
+                let extra = if index == 6 {
+                    &r.stop_sequence
+                } else {
+                    &r.stop_details
+                };
+                return match extra.as_ref().and_then(|fact| fact.selection.as_ref()) {
                     Some(selection) => cite(
                         state,
                         &mut cursor,
@@ -537,7 +538,7 @@ pub(super) fn compute(
                         selection
                             .inputs
                             .first()
-                            .ok_or(Error::Unsupported("Claude stop_sequence donor missing"))?
+                            .ok_or(Error::Unsupported("Claude selected extra donor missing"))?
                             .record,
                         b,
                     ),
@@ -653,13 +654,21 @@ pub(super) fn compute(
             )
         }
         Cursor::Selected { index, fact } => {
-            if index >= 7 {
+            if index >= 8 {
                 return progress(state, &mut cursor, Cursor::Finish, b);
             }
-            if index == 6 {
-                let next = Stage::Claude(Cursor::Finish);
-                let Some(value) = &r.stop_sequence else {
-                    return progress(state, &mut cursor, Cursor::Finish, b);
+            if index >= 6 {
+                let next = Cursor::Selected {
+                    index: index + 1,
+                    fact: 0,
+                };
+                let extra = if index == 6 {
+                    &r.stop_sequence
+                } else {
+                    &r.stop_details
+                };
+                let Some(value) = extra else {
+                    return progress(state, &mut cursor, next, b);
                 };
                 let slot = slot(&value.field)?;
                 return field_turn(
@@ -670,7 +679,7 @@ pub(super) fn compute(
                     field(value, &slot, true)?,
                     leaf(value, &slot, &r, None, None)?,
                     false,
-                    next,
+                    Stage::Claude(next),
                     &input,
                     b,
                     flag,
@@ -1063,7 +1072,7 @@ fn proof(
 ) -> Result<Proof> {
     let view = View::new(snapshot, b.read)?;
     let response = response(&view, head)?;
-    let mut baseline: [Option<Vec<u8>>; 7] = Default::default();
+    let mut baseline: [Option<Vec<u8>>; 8] = Default::default();
     let mut bodies = 0u64;
     let mut completions = 0u64;
     for item in 0..response.items {

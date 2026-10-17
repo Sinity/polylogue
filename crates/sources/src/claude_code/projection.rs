@@ -585,7 +585,7 @@ pub(super) fn record(
                 key,
                 "id" | "role" | "type" | "model" | "content" | "usage" | "stop_reason" | "ttftMs"
             ) {
-                if key == "stop_sequence" {
+                if matches!(key, "stop_sequence" | "stop_details") {
                     add(
                         &mut result.facts,
                         Field::SelectedExtra {

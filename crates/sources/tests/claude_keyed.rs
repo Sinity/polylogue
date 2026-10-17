@@ -199,7 +199,7 @@ fn selected_metadata_evidence_corrects_base_slot_order_without_coordinate_salt()
         999,
     );
     let cell = response(&memory, "s", &key);
-    let mut baseline: [Option<Vec<u8>>; 7] = Default::default();
+    let mut baseline: [Option<Vec<u8>>; 8] = Default::default();
     let mut cursor = ContributionCursor::default();
     let mut n = 0;
     while let Some((message, item)) = cell.next_contribution(&mut cursor) {

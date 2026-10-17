@@ -14,7 +14,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 11;
+pub const PARSER_VERSION: u32 = 12;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -659,6 +659,8 @@ impl<R: ReadView> KeyedRecords<R> {
                     selected_origins: Default::default(),
                     stop_sequence: None,
                     stop_sequence_raw: None,
+                    stop_details: None,
+                    stop_details_raw: None,
                 }
             }
         };
@@ -850,29 +852,47 @@ impl<R: ReadView> KeyedRecords<R> {
             .as_ref()
             .is_none_or(|previous| previous.raw != contribution.raw)
         {
-            if incoming
-                .get("message")
-                .and_then(|message| message.get("stop_sequence"))
-                .is_some()
-            {
-                let fact=contribution.projection.facts.iter().find(|fact|matches!(&fact.field,projection::Field::SelectedExtra{key} if key=="stop_sequence")).cloned().ok_or("Claude stop_sequence supplier lost its source fact")?;
+            // Only these named opaque response extras have a normalized attrs
+            // key. They carry supplied values, including null, without inferring
+            // finish state. Missing overlay fields keep the original supplier.
+            for key in ["stop_sequence", "stop_details"] {
+                if incoming
+                    .get("message")
+                    .and_then(|message| message.get(key))
+                    .is_none()
+                {
+                    continue;
+                }
+                let fact = contribution.projection.facts.iter().find(|fact|
+                    matches!(&fact.field, projection::Field::SelectedExtra { key: found } if found == key)
+                ).cloned().ok_or("Claude selected extra supplier lost its source fact")?;
                 let value = v
                     .get("message")
-                    .and_then(|message| message.get("stop_sequence"))
+                    .and_then(|message| message.get(key))
                     .cloned()
-                    .ok_or("Claude stop_sequence normalized value unavailable")?;
-                response.stop_sequence_raw = Some(raw::canonical(
-                    raw::optional_field(rec.bytes, &["message", "stop_sequence"])?
-                        .ok_or("Claude stop_sequence raw supplier unavailable")?,
+                    .ok_or("Claude selected extra normalized value unavailable")?;
+                let raw = Some(raw::canonical(
+                    raw::optional_field(rec.bytes, &["message", key])?
+                        .ok_or("Claude selected extra raw supplier unavailable")?,
                 )?);
-                response.stop_sequence = Some(fact);
+                match key {
+                    "stop_sequence" => {
+                        response.stop_sequence_raw = raw;
+                        response.stop_sequence = Some(fact);
+                    }
+                    "stop_details" => {
+                        response.stop_details_raw = raw;
+                        response.stop_details = Some(fact);
+                    }
+                    _ => unreachable!("fixed selected extra keys"),
+                }
                 let attrs = response
                     .message
                     .attrs
                     .get_or_insert_with(|| Value::Object(Default::default()))
                     .as_object_mut()
                     .ok_or("Claude normalized extras carrier is not an object")?;
-                attrs.insert("stop_sequence".into(), value);
+                attrs.insert(key.into(), value);
             }
             for (index, path) in METADATA_PATHS.iter().enumerate() {
                 if let Some(value) = raw::optional_field(rec.bytes, path)? {
