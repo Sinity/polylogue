@@ -523,6 +523,10 @@ struct Actor {
     // operations still establish fresh views; no transaction spans actor turns.
     canonical_reader: Option<CanonicalReaders>,
     active: Option<Active>,
+    // A bounded hint for fresh acquisition/retry. The durable catalog remains
+    // authoritative when intermediate hints coalesce or the process restarts.
+    changed_input: Option<String>,
+    background_due: bool,
     after: String,
     scanning: bool,
     scan_again: bool,
@@ -543,6 +547,8 @@ impl Actor {
             canonical: None,
             canonical_reader: None,
             active: None,
+            changed_input: None,
+            background_due: false,
             after: String::new(),
             scanning: true,
             scan_again: false,
@@ -729,6 +735,9 @@ impl Actor {
             )?)
         });
         if (result.is_ok() && acquired) || (result.is_err() && claude_installation_started) {
+            if let Ok(input) = &result {
+                self.changed_input = Some(input.id.clone());
+            }
             self.scan_again = true;
             if !self.scanning
                 && self.active.is_none()
@@ -1297,9 +1306,14 @@ impl Actor {
             self.writer
                 .record_parser_failure(&head.token, None, DETAIL_BYTES)?;
         }
+        self.changed_input = Some(id.to_owned());
         self.scan_again = true;
         self.recovery_error = None;
-        if self.active.is_none() && self.compute.is_none() && self.canonical.is_none() {
+        if !self.scanning
+            && self.active.is_none()
+            && self.compute.is_none()
+            && self.canonical.is_none()
+        {
             self.restart_scan();
         }
         Ok(())
@@ -1339,9 +1353,27 @@ impl Actor {
                 if !self.scanning {
                     return Ok(());
                 }
-                match self.writer.next_retained_source(&self.after) {
-                    Ok(Some(input)) => {
+                // Alternate a recent-change hint with the existing keyset scan.
+                // Finish the current input first so its in-memory continuation
+                // is preserved; fresh work need not wait for the whole catalog.
+                let changed = if self.background_due {
+                    None
+                } else {
+                    self.changed_input.take()
+                };
+                let next = if let Some(id) = changed {
+                    self.background_due = true;
+                    self.writer.retained_source(&id)
+                } else {
+                    self.background_due = false;
+                    let next = self.writer.next_retained_source(&self.after);
+                    if let Ok(Some(input)) = &next {
                         self.after = input.input.id.clone();
+                    }
+                    next
+                };
+                match next {
+                    Ok(Some(input)) => {
                         // Prompt references remain pending outside conversation interpretation.
                         if input.format == InputFormat::CodexPromptHistory {
                             return Ok(());
@@ -2068,6 +2100,7 @@ mod tests {
         }
     }
     mod cancellation;
+    mod changed_inputs;
     mod claude_turns;
     mod configured;
     mod history_turns;
