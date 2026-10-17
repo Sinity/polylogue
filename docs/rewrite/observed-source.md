@@ -307,3 +307,21 @@ metadata, deadline and cancellation admissions apply. Unknown active-path
 membership still refuses default bounded reads; when current known rows are
 readable with no pending inputs, the refusal points to explicit `--branches`
 (MCP `branches:true`) for known retained catalog members.
+
+Claude parser version 14 retains supplied `inference_geo`, `iterations`,
+`server_tool_use` and `speed` usage metadata through `attrs.provider_usage`.
+This explicitly named extra is the exact selected raw `message.usage` object,
+separate from normalized Usage counters. Any supplied value of these four
+members is preserved, including null, empty values and type changes; no billing,
+status, geography or aggregate-count meaning is inferred. Missing members add
+no default. A later usage supplier without these members removes the owned bag;
+an overlay omitting usage retains its previous supplier. The existing usage
+selection, original donor and raw correction evidence own this interpretation.
+No new raw slot or immutable recipe is introduced.
+
+Unknown usage members, unknown nested counter-detail members and invalid typed
+counters still refuse canonical certification, even when the opaque bag also
+contains their bytes. A literal top-level `provider_usage` key cannot collide
+with the selected attrs key. JSON/export and bounded model metadata preserve
+the same logical object and source provenance under their existing privacy and
+admission rules. This focused mapping does not certify a complete provider source.

@@ -14,7 +14,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 13;
+pub const PARSER_VERSION: u32 = 14;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -1435,6 +1435,30 @@ fn apply_selected(response: &mut ResponseCell) -> Result<(), String> {
         })
         .collect::<Result<_, _>>()?;
     response.message.usage = values[0].as_ref().filter(|v| v.is_object()).map(usage_of);
+    // The selected raw usage object is independent provider evidence. Its
+    // presence follows the existing usage supplier, not an enriched counter.
+    if response.selected_facts[0].iter().any(|fact| {
+        matches!(&fact.field,
+        projection::Field::SelectedExtra { key } if key == "provider_usage")
+    }) {
+        let raw = values[0]
+            .as_ref()
+            .ok_or("Claude provider usage lost its selected raw object")?;
+        let attrs = response
+            .message
+            .attrs
+            .get_or_insert_with(|| Value::Object(Default::default()))
+            .as_object_mut()
+            .ok_or("Claude normalized extras carrier is not an object")?;
+        attrs.insert("provider_usage".into(), raw.clone().into_opaque());
+    } else if let Some(attrs) = response
+        .message
+        .attrs
+        .as_mut()
+        .and_then(Value::as_object_mut)
+    {
+        attrs.remove(&NativeId::unicode("provider_usage"));
+    }
     if let Some(cost) = values[4].as_ref().and_then(usd_nanos) {
         response
             .message

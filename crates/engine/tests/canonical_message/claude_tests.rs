@@ -681,3 +681,6 @@ mod stop_details;
 
 #[path = "claude_block_extras.rs"]
 mod block_extras;
+
+#[path = "claude_provider_usage.rs"]
+mod provider_usage;

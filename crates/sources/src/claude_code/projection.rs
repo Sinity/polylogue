@@ -405,7 +405,20 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
                                 path(&["message", "usage", name]),
                                 revision,
                             )
+                        } else if field != UsageField::ServiceTier || !value.is_null() {
+                            extra(
+                                &mut facts,
+                                None,
+                                path(&["message", "usage", name]),
+                                revision,
+                            )
                         }
+                    } else if matches!(
+                        name,
+                        "inference_geo" | "iterations" | "server_tool_use" | "speed"
+                    ) {
+                        // These named members are opaque provider evidence in
+                        // the selected whole usage object, never new counters.
                     } else if matches!(name, "cache_creation" | "output_tokens_details") {
                         if let Some(members) = value.as_object() {
                             for (native_key, value) in members {
@@ -426,11 +439,20 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
                                 if let Some(field) = field {
                                     if value.as_u64().is_some() {
                                         add(&mut facts, Field::Usage(field), p, revision)
+                                    } else {
+                                        extra(&mut facts, None, p, revision)
                                     }
                                 } else {
                                     extra(&mut facts, None, p, revision)
                                 }
                             }
+                        } else {
+                            extra(
+                                &mut facts,
+                                None,
+                                path(&["message", "usage", name]),
+                                revision,
+                            )
                         }
                     } else {
                         extra(
@@ -440,6 +462,19 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
                             revision,
                         )
                     }
+                }
+                if ["inference_geo", "iterations", "server_tool_use", "speed"]
+                    .iter()
+                    .any(|key| raw.get(key).is_some())
+                {
+                    add(
+                        &mut facts,
+                        Field::SelectedExtra {
+                            key: "provider_usage".into(),
+                        },
+                        path(&["message", "usage"]),
+                        revision,
+                    );
                 }
             }
         }
