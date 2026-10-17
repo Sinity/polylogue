@@ -506,7 +506,6 @@ enum Active {
     ),
 }
 struct Actor {
-    writer: Writer,
     inner: Arc<Inner>,
     capture: Option<CaptureJob>,
     turn_capture: Option<TurnCaptureJob>,
@@ -533,6 +532,9 @@ struct Actor {
     recovery_error: Option<String>,
     stopping: bool,
     fatal: Option<Error>,
+    // Fields drop in declaration order. Close the exercised idle read
+    // connections before SQLite's last writer performs WAL cleanup.
+    writer: Writer,
 }
 impl Actor {
     fn new(writer: Writer, inner: Arc<Inner>) -> Self {
@@ -2104,6 +2106,7 @@ mod tests {
     mod claude_turns;
     mod configured;
     mod history_turns;
+    mod reader_shutdown;
     fn owner(root: &Path) -> Owner {
         Owner::start(
             Writer::open(root).unwrap(),
