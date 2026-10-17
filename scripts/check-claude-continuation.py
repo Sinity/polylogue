@@ -19,8 +19,8 @@ observed = bodies.observed
 def wait(run, predicate, timeout=40):
     deadline = time.monotonic() + timeout
     while True:
-        value = run.command(['status'])
-        if predicate(value):
+        value = run.command(['status'], allowed=(0, 4, 6, 7))
+        if value is not None and predicate(value):
             return value
         assert run.process.poll() is None, 'configured daemon exited'
         assert time.monotonic() < deadline, value
@@ -51,6 +51,17 @@ def sdk(args, run, method, arguments, name):
     receipt = json.loads((output / 'result.json').read_text())
     assert receipt['success'] and receipt['sdk_context_closed'] and receipt['sdk']['name'] == 'mcp', receipt
     return receipt['tool_result']
+
+
+def assert_sdk_origin(shown, field, origin):
+    decoded = []
+    for envelope in shown['field_origins']:
+        assert envelope['encoding'] == 'canonical-json-v1' and envelope['masked'] is False, envelope
+        entry = json.loads(envelope['json'])
+        assert set(entry) == {'field', 'origin'}, entry
+        if entry['field'] == field:
+            decoded.append(entry)
+    assert decoded == [{'field': field, 'origin': origin}], decoded
 
 
 def document(run, reference):
@@ -143,7 +154,10 @@ def verify(args, run):
                 assert value == correction_text
     remote_correction = next(item for item in remote['shown'] if item.get('text') == correction_text)
     assert remote_correction['version_hash'] == message['version_hash']
-    assert all(entry['origin'] in remote_correction['field_origins'] for entry in message['field_origins'])
+    assert remote_correction['message'] == 'message:' + message['id']
+    assert remote_correction['sources'] == message['sources']
+    text_origin = next(entry['origin'] for entry in message['field_origins'] if entry['field'] == 'blocks[0].text')
+    assert_sdk_origin(remote_correction, 'blocks[0].text', text_origin)
     # Later required output is absent first, then arrives and changes without a main edit.
     body.unlink()
     call['parentUuid'] = 'correction'
@@ -162,7 +176,8 @@ def verify(args, run):
     assert first_message['version_hash'] != revised_message['version_hash']
     assert {item['id']: item['version_hash'] for item in full['messages'] if item['id'] != reference + ':result'} == {item['id']: item['version_hash'] for item in revised['messages'] if item['id'] != reference + ':result'}
     remote = bodies.sdk_read(args, run, 'block:' + remote_ref + ':result:0', 'sdk-body-only')
-    assert remote['shown'][0]['text'] == changed_text and revised_origin in remote['shown'][0]['field_origins'], remote
+    assert remote['shown'][0]['text'] == changed_text, remote
+    assert_sdk_origin(remote['shown'][0], 'blocks[0].text', revised_origin)
     stable = wait(run, lambda value: value['claude_continuation']['unchanged_passes'] >= 2)
     attempts = stable['claude_continuation']['attempts']
     counter = stable['foundation']['write_counter']
@@ -197,6 +212,7 @@ def verify(args, run):
         assert progress['source_rows']['state'] != 'settled' and progress['parser']['status'] == 'waiting_tail', progress
         remote = bodies.sdk_read(args, run, 'block:' + reference + ':result:0', 'sdk-provider-free')
         assert remote['shown'][0]['text'] == changed_text, remote
+        assert_sdk_origin(remote['shown'][0], 'blocks[0].text', revised_origin)
     finally:
         run.stop()
     return {'pid': pid, 'input': source, 'discovered_reference': reference, 'correction_version': message['version_hash'], 'first_body_origin': first_origin, 'revised_body_origin': revised_origin, 'unchanged_write_counter': counter, 'denied': denied['claude_continuation'], 'missing': missing['claude_continuation'], 'restart_pending': progress}
