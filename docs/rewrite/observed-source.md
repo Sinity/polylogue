@@ -242,6 +242,8 @@ SDK interpreter/client, digest tool, output directory, and pinned format-3 binar
 and source. Its synthetic journey includes multiple projects, separate agents,
 shared-parent required bodies, late files/appends, thousands of small sources,
 read service, provider-free restart and the preserving old-preparation route.
-The driver checks default SDK budgets after the larger population exists. Its
+The driver checks default SDK budgets after the larger population exists.
+`--population-size 0` runs only focused continuation/restart/migration controls
+and reports population acceptance as unrun; the default remains 5,000. Its
 receipts report actual dimensions and elapsed work; they are not a production
 throughput, RSS, whole-corpus or activation qualification.

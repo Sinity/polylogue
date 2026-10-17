@@ -258,19 +258,22 @@ def verify(args, run):
     assert len(set(references.values())) == 4, references
     assert not run.command(['"EXCLUDED nested"', '--json'], allowed=(0, 1, 5)).get('rows')
     sdk_text(args, run, '"Aster anchor"', initial_text, reference, 'sdk-main')
-    # Runnable directory backlog crosses many scan turns without a new event.
-    for i in range(5000):
-        name = 'bulk-' + str(i).zfill(5)
-        write(root, f'-bulk-{i % 7}/{name}.jsonl', [record(name, 'u', f'Neutral bulk witness {i:05}.')])
-    began = time.monotonic()
-    before = state(run, lambda v: project_status(v)['scan'] is not None and project_status(v)['scan']['observed_transcripts'] >= 100)
-    assert not project_status(before)['scan']['cycle_complete'], before
-    during = continuation.document(run, reference)
-    assert during['messages'] == document['messages'], during
-    bulk = state(run, lambda v: project_status(v)['initial_cycle_finished'] and project_status(v)['scan'] is not None and project_status(v)['scan']['cycle_complete'] and project_status(v)['scan']['observed_transcripts'] == 5004 and project_status(v)['acquired_source_attempts'] >= 5004, timeout=420)
-    bulk_elapsed = time.monotonic() - began
-    for i in (0, 127, 1024, 4999):
-        discover(run, f'"Neutral bulk witness {i:05}"', f'Neutral bulk witness {i:05}.')
+    bulk_elapsed = None
+    bulk = before = None
+    if args.population_size:
+        # Runnable directory backlog crosses many scan turns without a new event.
+        for i in range(args.population_size):
+            name = 'bulk-' + str(i).zfill(5)
+            write(root, f'-bulk-{i % 7}/{name}.jsonl', [record(name, 'u', f'Neutral bulk witness {i:05}.')])
+        began = time.monotonic()
+        before = state(run, lambda v: project_status(v)['scan'] is not None and project_status(v)['scan']['observed_transcripts'] >= 100)
+        assert not project_status(before)['scan']['cycle_complete'], before
+        during = continuation.document(run, reference)
+        assert during['messages'] == document['messages'], during
+        bulk = state(run, lambda v: project_status(v)['initial_cycle_finished'] and project_status(v)['scan'] is not None and project_status(v)['scan']['cycle_complete'] and project_status(v)['scan']['observed_transcripts'] == args.population_size + 4 and project_status(v)['acquired_source_attempts'] >= args.population_size + 4, timeout=420)
+        bulk_elapsed = time.monotonic() - began
+        for i in (0, 127, 1024, 4999):
+            discover(run, f'"Neutral bulk witness {i:05}"', f'Neutral bulk witness {i:05}.')
     # The default budget is exercised after the full population exists, using
     # fresh SDK discovery and its returned reference rather than a supplied ID.
     default_search = continuation.sdk(args, run, 'search', {'query': '"Aster anchor"'}, 'sdk-default-population-search')
@@ -334,7 +337,8 @@ def verify(args, run):
     during_large = continuation.document(run, reference)
     assert during_large['messages'] == changed['messages']
     large_ref, _ = discover(run, '"Ginkgo large transcript"', large_text)
-    # A whole quiet cycle adds neither a source revision nor canonical writes.
+    # A whole quiet acquisition cycle adds no source revision. The subsequent
+    # exact reads also check that the acknowledged main versions remain stable.
     def quiet_cycle(value):
         p = project_status(value)
         return p['scan'] is not None and p['scan']['cycle_complete'] and p['queued_candidates'] == 0 and p['active_path'] is None
@@ -376,7 +380,7 @@ def verify(args, run):
         sdk_text(args, run, '"Fir later complete"', correction_text, reference, 'sdk-provider-free')
     finally:
         run.stop()
-    return {'oracle_controls': oracle_controls, 'denied': project_status(denied), 'missing': project_status(missing), 'large_input_bytes': large.stat().st_size if large.exists() else (saved / '-large/large.jsonl').stat().st_size, 'large_read_service': project_status(pending), 'references': references, 'late_reference': late_ref, 'bulk_source_files': 5000, 'bulk_acquisition_elapsed_seconds': bulk_elapsed, 'initial_document_source': source, 'bulk_status': project_status(bulk), 'ordinary_read_during_backlog': project_status(before), 'pid': pid}
+    return {'oracle_controls': oracle_controls, 'denied': project_status(denied), 'missing': project_status(missing), 'large_input_bytes': large.stat().st_size if large.exists() else (saved / '-large/large.jsonl').stat().st_size, 'large_read_service': project_status(pending), 'references': references, 'late_reference': late_ref, 'bulk_source_files': args.population_size, 'bulk_acceptance_run': args.population_size == 5000, 'bulk_acquisition_elapsed_seconds': bulk_elapsed, 'initial_document_source': source, 'bulk_status': project_status(bulk) if bulk else None, 'ordinary_read_during_backlog': project_status(before) if before else None, 'pid': pid}
 
 
 def dimensions(root):
@@ -482,6 +486,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('binary', 'output', 'sdk-python', 'sdk-client', 'b3sum', 'v3-binary'):
         parser.add_argument('--' + name, required=True, type=Path)
+    parser.add_argument('--population-size', type=int, choices=(0, 5000), default=5000, help='0 runs focused seams only; full population acceptance requires default 5000')
     parser.add_argument('--binary-candidate', required=True)
     parser.add_argument('--v3-source', required=True)
     args = parser.parse_args()
