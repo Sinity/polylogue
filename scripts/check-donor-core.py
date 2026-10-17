@@ -17,6 +17,14 @@ import time
 
 DONOR = 'b4b61c7eab8daf740bfdccb146e530906839726d'
 
+
+def expected_parser_version(name):
+    return {
+        'claude-normalization-main.jsonl': 11,
+        'legacy-response-records.jsonl': 10,
+        'tool-result-headers.jsonl': 10,
+    }[name]
+
 def sha(path):
     digest = hashlib.sha256()
     with path.open('rb') as handle:
@@ -238,6 +246,7 @@ def main():
                 assert old['outcome'] == 'error' and old['source_rows']['basis']['parser_version'] == 8
                 name = Path(command['arguments'][1]).name
                 assert name in references and old['retained']['length'] > 0
+                expected_version = expected_parser_version(name)
                 retained_id = old['retained']['id']
                 retried = cli(['retry',retained_id], 'upgrade retry ' + name, (0,7))
                 if retried['outcome'] == 'error':
@@ -247,12 +256,12 @@ def main():
                     assert retried['error']['kind'] == 'timeout' and retried['error']['retryable'] is True, retried
                     active = cli(['progress',retained_id], 'upgrade active replay ' + name)
                     assert active['input'] == retained_id and active['active'] is True and active['failure'] is None, active
-                    assert active['source_rows']['basis']['parser_version'] == 11 and active['source_rows']['basis']['chain'] == old['retained']['chain'] and active['length'] == old['retained']['length'], active
+                    assert active['source_rows']['basis']['parser_version'] == expected_version and active['source_rows']['basis']['chain'] == old['retained']['chain'] and active['length'] == old['retained']['length'], active
                     upgrade.setdefault('busy_retries', []).append({'name':name,'retry':retried,'active_progress':active})
                 deadline = time.monotonic() + 90
                 while True:
                     progress = cli(['progress',retained_id], 'upgrade progress ' + name)
-                    if progress['source_rows']['basis']['parser_version'] == 11 and progress['source_rows']['state'] != 'pending': break
+                    if progress['source_rows']['basis']['parser_version'] == expected_version and progress['source_rows']['state'] != 'pending': break
                     assert time.monotonic() < deadline, progress
                     time.sleep(0.2)
                 assert progress['failure'] is None and progress['input'] == retained_id and progress['length'] == old['retained']['length'] and progress['source_rows']['basis']['chain'] == old['retained']['chain'], progress
