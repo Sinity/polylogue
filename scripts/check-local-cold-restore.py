@@ -23,6 +23,9 @@ N = '019a1100-0000-7000-8000-000000000021'
 R = '019a1100-0000-7000-8000-000000000022'
 TEXT = 'A retained unrelated source remains readable.'
 CORRECTION = 'The independent correction supersedes the initial interpretation.'
+TARGET = 'block:claude-code:' + mcp.bounded.SID + ':u:0'
+INITIAL_NOTE = 'note:' + N + '@' + N
+CURRENT_NOTE = 'note:' + N + '@' + R
 
 
 def digest(path):
@@ -83,6 +86,19 @@ def prepare(run, request=A, interrupt=False, mode='restore', extra=()):
     return {'attempt':attempt,'replies':replies}
 
 
+def assert_correction(family, entry):
+    revision = entry['revision']
+    assert revision['id'] == R and revision['root'] == N, revision
+    assert revision['kind'] == 'correction' and revision['value'] == CORRECTION, revision
+    assert revision['author'] == 'script' and revision['machine'] == '00112233445566778899aabbccddeeff', revision
+    assert revision['targets'] == [{'ref': TARGET}], revision
+    assert revision['relations'] == [{'type': 'revises', 'ref': INITIAL_NOTE}], revision
+    assert entry['current'] is True and entry['withdrawn'] is False, entry
+    assert family['current'] == [CURRENT_NOTE] and family['history'] == [INITIAL_NOTE, CURRENT_NOTE], family
+    assert family['conflict'] is False and family['history_complete'] is True, family
+    assert family['withdrawal_trail'] == [] and family['withdrawal_trail_complete'] is True, family
+
+
 def read_clients(run, expected, with_note=True, remote=False):
     query = lambda q: run.client.tool('search',{'query':q,'budget_tokens':20000})['structuredContent'] if remote else run.cli([q,'--json'])
     read = lambda ref,view=None: run.client.tool('read',dict(ref=ref,budget_tokens=20000,**({'view':view} if view else {})))['structuredContent'] if remote else run.cli([ref,'read','--budget','20000',*(['--view',view] if view else [])])
@@ -111,6 +127,9 @@ def read_clients(run, expected, with_note=True, remote=False):
                     pinned = read('note:'+revision['root']+'@'+revision['id'])
                     assert pinned.get('family',{}).get('shown'), pinned
                     assert pinned['family']['shown'][0]['revision']==revision, pinned
+                    if revision['id'] == R:
+                        assert_correction(family,entry)
+                        assert_correction(pinned['family'],pinned['family']['shown'][0])
     assert any(block.get('text') == TEXT for block in unrelated), unrelated
     if with_note:
         assert any(n['id']==R and n['value']==CORRECTION and n['author']=='script' and n['machine']=='00112233445566778899aabbccddeeff' for n in notes), notes
@@ -201,6 +220,7 @@ def case(binary, unaware_binary, output):
         empty=output/'empty.jsonl';empty.write_bytes(b'');native.imported(run,empty,'codex-rollout')
         first=await_clients(run,{'C'},False)
         target=first['unrelated'][0]['block']
+        assert target == TARGET, target
         initial=run.cli([target,'note','Initial interpretation.','--kind','correction','--request-id',N])
         assert initial['commit_state']=='committed',initial
         continuation.graceful_stop(run)
@@ -248,6 +268,7 @@ def case(binary, unaware_binary, output):
         assert unaware.returncode!=0 and b'newer than supported 2' in unaware.stderr,unaware.stderr
         report['unaware_writer']={'binary':str(unaware_binary.resolve()),'sha256':digest(unaware_binary),'exit':unaware.returncode,'stderr':unaware.stderr.decode()}
         restored.start();after=await_clients(restored,{'C','D'})
+        assert after['notes'] == before['notes'], (after['notes'],before['notes'])
         for k,v in before['operations'].items():
             assert after['operations'][k]['ref']==v['ref']
             assert after['operations'][k]['body']['sources']==v['body']['sources']
