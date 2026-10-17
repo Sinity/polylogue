@@ -28,11 +28,14 @@ struct PinnedRead {
     archive: Option<Connection>,
     archive_visibility: Option<Connection>,
     recovery: Option<polylogue_model::RecoveryQualification>,
+    extra_orders: u64,
     _lock: Arc<File>,
 }
 type SharedRead = Arc<Mutex<PinnedRead>>;
 mod dependencies;
+mod ordered_extras;
 pub use dependencies::{SessionDependencyCursor, SessionInputDependency};
+pub use ordered_extras::{ExtraFieldEntry, OrderedExtras};
 fn locked(read: &SharedRead) -> Result<MutexGuard<'_, PinnedRead>> {
     read.lock()
         .map_err(|_| Error::Invariant("selected read snapshot mutex poisoned".into()))
@@ -115,6 +118,7 @@ impl ReadHandle {
         let recovery = crate::recovery::qualification(&archive, &archive_path)?;
         let path = self.root.join("index.db");
         let connection = crate::open(&path, true, false)?;
+        ordered_extras::configure(&connection, &path)?;
         db(&path, || connection.execute_batch("BEGIN DEFERRED"))?;
         // This read establishes the pinned snapshot before any body traversal.
         let generation = db(&path, || {
@@ -140,6 +144,7 @@ impl ReadHandle {
                 archive: Some(archive),
                 archive_visibility: None,
                 recovery,
+                extra_orders: 0,
                 _lock: Arc::clone(&self._lock),
             })),
             path,
@@ -912,6 +917,7 @@ impl ReadHandle {
         let recovery = crate::recovery::qualification(&archive, &archive_path)?;
         let path = self.root.join("index.db");
         let connection = crate::open(&path, true, false)?;
+        ordered_extras::configure(&connection, &path)?;
         db(&path, || connection.execute_batch("BEGIN DEFERRED"))?;
         let (generation_length, generation): (u64, Option<String>) = db(&path, || {
             connection.query_row("SELECT length(CAST(value AS BLOB)),CASE WHEN length(CAST(value AS BLOB))<=?1 THEN value END FROM meta WHERE key='generation'",[i64::try_from(allowance).unwrap_or(i64::MAX)],|row|Ok((crate::parser_state::unsigned(row,0)?,row.get(1)?)))
@@ -929,6 +935,7 @@ impl ReadHandle {
                 archive: Some(archive),
                 archive_visibility: Some(crate::open(&archive_path, true, true)?),
                 recovery,
+                extra_orders: 0,
                 _lock: Arc::clone(&self._lock),
             })),
             path,
@@ -1655,6 +1662,7 @@ impl<'a> BlockView<'a> {
 
 #[cfg(test)]
 mod tests {
+    mod ordered_roots;
     use super::super::SelectCompatibleSourceForTest as _;
     use super::*;
     use crate::{

@@ -855,3 +855,5 @@ mod reference_guard;
 
 #[path = "tests/native_id_privacy.rs"]
 mod native_id_privacy;
+
+mod canonical_opaque;

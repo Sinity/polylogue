@@ -1,4 +1,4 @@
-//! Direct documents stream installed leaves; model pages admit the complete
+//! Direct documents stream canonically ordered installed leaves; model pages admit the complete
 //! opaque object before retaining it for canonical key ordering and framing.
 use super::{Encoder, METADATA, RetainedJson, invalid};
 use polylogue_model::NativeId;
@@ -10,6 +10,7 @@ use std::{
 pub(super) struct OpaqueFields {
     name: &'static str,
     started: bool,
+    last: Option<String>,
     page: Option<(BTreeMap<NativeId, RetainedJson>, usize)>,
 }
 impl OpaqueFields {
@@ -17,6 +18,7 @@ impl OpaqueFields {
         Self {
             name,
             started: false,
+            last: None,
             page: model_page.then(|| (BTreeMap::new(), 2)),
         }
     }
@@ -35,6 +37,10 @@ impl OpaqueFields {
             fields.insert(key.into(), value);
             *bytes = next;
         } else {
+            if self.last.as_deref().is_some_and(|last| last >= key) {
+                return Err(invalid("opaque field keys are not in canonical order"));
+            }
+            self.last = Some(key.to_owned());
             let value = RetainedJson::parse(raw).map_err(io::Error::other)?;
             if !self.started {
                 e.syntax(b",")?;
