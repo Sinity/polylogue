@@ -91,6 +91,20 @@ fn intent_hash() -> Result<BlobHash> {
         &serde_json::json!({"command":"prepare-copy","mode":"restore","backing":"local","retired_writers":true}),
     )
 }
+/// Upgrading representation must not supersede a previously admitted action.
+/// Missing lineage remains preserved/readable after upgrade; only the ordinary
+/// writer guard denies new mutations without that historical authority.
+pub(crate) fn migration_guard(root: &Path) -> Result<()> {
+    let path = root.join("archive.db");
+    let conn = open(&path, true, true)?;
+    if let Some(active) = pending(&conn, &path)? {
+        return Err(refused(format!(
+            "pending action {}; finish the same preparation with its matching pre-upgrade binary before migration",
+            active.request_id
+        )));
+    }
+    Ok(())
+}
 pub(crate) fn writer_guard(root: &Path) -> Result<()> {
     let path = root.join("archive.db");
     if !path.exists() || path.metadata()?.len() == 0 {

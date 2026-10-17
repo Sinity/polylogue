@@ -160,7 +160,12 @@ enum Message {
         Option<(polylogue_store::configured_codex::Candidate, BlobHash, u64)>,
         ImportReply,
     ),
-    Claude(ImportRequest, u64, Reply<ConfiguredImport>),
+    Claude(
+        ImportRequest,
+        polylogue_store::configured_claude::Location,
+        u64,
+        Reply<ConfiguredImport>,
+    ),
     CheckAcquisition(Reply<()>),
     Progress(String, Reply<Progress>),
     Retry(String, Reply<()>),
@@ -244,6 +249,15 @@ impl Handle {
         observation: Observation,
         quantum_bytes: u64,
     ) -> Result<Receiver<Result<ConfiguredImport>>> {
+        let location = polylogue_store::configured_claude::Location::explicit_main(path)?;
+        self.try_claude_location(location, observation, quantum_bytes)
+    }
+    pub fn try_claude_location(
+        &self,
+        location: polylogue_store::configured_claude::Location,
+        observation: Observation,
+        quantum_bytes: u64,
+    ) -> Result<Receiver<Result<ConfiguredImport>>> {
         if !(65536..=8 * 1024 * 1024).contains(&quantum_bytes) {
             return Err(Error::InvalidRequest(
                 "Claude quantum must be between 65536 and 8388608 bytes",
@@ -251,20 +265,14 @@ impl Handle {
         }
         let request = ImportRequest {
             format: InputFormat::ClaudeCodeJsonl,
-            context: vec![
-                "claude-main".into(),
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .ok_or(Error::InvalidRequest("UTF8 main stem required"))?
-                    .into(),
-            ],
-            path,
+            context: location.context().to_vec(),
+            path: location.path().to_path_buf(),
             observation,
             metadata_allowance: 65536,
         };
         self.validate_import(&request, false)?;
         let (reply, rx) = mpsc::sync_channel(1);
-        self.send(Message::Claude(request, quantum_bytes, reply))?;
+        self.send(Message::Claude(request, location, quantum_bytes, reply))?;
         Ok(rx)
     }
     pub fn try_history_import(
@@ -918,11 +926,16 @@ impl Actor {
                     }
                 }
             }
-            Message::Claude(request, quantum_bytes, reply) => {
+            Message::Claude(request, location, quantum_bytes, reply) => {
                 if self.stopping {
                     let _ = reply.send(Err(Error::Stopped));
                 } else {
-                    self.start_claude(request, quantum_bytes, ImportReply::Configured(reply))?;
+                    self.start_claude(
+                        request,
+                        location,
+                        quantum_bytes,
+                        ImportReply::Configured(reply),
+                    )?;
                 }
             }
             Message::CheckAcquisition(reply) => {

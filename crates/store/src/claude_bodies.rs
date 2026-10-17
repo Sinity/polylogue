@@ -15,7 +15,7 @@ pub const MAX_COMPANIONS: usize = 32;
 /// The configured base may resolve normally. Each provider-owned appended
 /// component is opened relative to its held parent descriptor with NOFOLLOW;
 /// renaming or replacing its pathname cannot redirect the next open.
-fn open_body(main: &Path, path: &Path) -> Result<Option<File>> {
+pub(crate) fn open_body(main: &Path, path: &Path) -> Result<Option<File>> {
     use rustix::fs::{Mode, OFlags, openat};
     let parent = main.parent().ok_or(Error::Range)?;
     let stem = main.file_stem().ok_or(Error::Range)?;
@@ -294,9 +294,20 @@ impl crate::BlobCapture {
         path: &Path,
         cancelled: &AtomicBool,
         inline: Option<(BlobHash, u64)>,
+        work: impl FnMut(u64) -> Result<()>,
+    ) -> Result<Option<PreparedClaudeBody>> {
+        let location = crate::configured_claude::Location::explicit_main(main_path.to_path_buf())?;
+        self.prepare_claude_body_location(&location, path, cancelled, inline, work)
+    }
+    pub(crate) fn prepare_claude_body_location(
+        &self,
+        location: &crate::configured_claude::Location,
+        path: &Path,
+        cancelled: &AtomicBool,
+        inline: Option<(BlobHash, u64)>,
         mut work: impl FnMut(u64) -> Result<()>,
     ) -> Result<Option<PreparedClaudeBody>> {
-        let Some(mut file) = open_body(main_path, path)? else {
+        let Some(mut file) = location.open_body(path)? else {
             return Ok(None);
         };
         let before = file.metadata()?;

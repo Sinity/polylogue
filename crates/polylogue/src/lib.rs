@@ -208,6 +208,35 @@ impl Running {
         );
         Ok((running, retained))
     }
+    pub fn start_claude_projects(
+        archive: &Path,
+        runtime: &Path,
+        config: &polylogue_store::configured_claude::Config,
+        id: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, polylogue_store::Error> {
+        config.validate()?;
+        let writer = Writer::open_cancellable(archive, cancelled)?;
+        let mut running = Self::start_writer(writer, archive, runtime, false, None, false)
+            .map_err(polylogue_store::Error::Invariant)?;
+        let mut initial = claude_continuation::Status::initial(config.acquisition_quantum_bytes);
+        initial.mode = "bounded_configured_claude_projects_v1";
+        initial.state = "discovering";
+        initial.projects = Some(claude_continuation::projects::ProjectStatus::initial());
+        *running.claude_continuation.lock().expect("Claude status") = Some(initial);
+        let handle = running.owner.as_ref().expect("running owner").handle();
+        let config = config.clone();
+        let id = id.to_owned();
+        let stop = Arc::clone(&running.stop);
+        let shared = Arc::clone(&running.claude_continuation);
+        running.collector = Some(
+            thread::Builder::new()
+                .name("polylogue-claude-projects".into())
+                .spawn(move || claude_continuation::projects::run(handle, config, id, stop, shared))
+                .map_err(polylogue_store::Error::Io)?,
+        );
+        Ok(running)
+    }
     pub fn start_codex(
         archive: &Path,
         runtime: &Path,

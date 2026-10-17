@@ -168,3 +168,45 @@ and retained read before the larger append is selected, and cancel/retry a
 parked capture. This qualifies one configured source shape. General watcher
 semantics, rewrites, directory discovery, installed routing, corpus resource
 bounds and full M1 remain open.
+
+## Explicit Claude projects directory
+
+A daemon can select one provider directory instead of one main:
+
+```json
+{"claude_projects":{"root":"/absolute/synthetic/projects","machine":"collector-id","host":"collector-label","acquisition_quantum_bytes":65536}}
+```
+
+Choose exactly one of `claude_projects`, `claude_main` and `codex_home`. No home
+source is selected implicitly. Projects collection currently runs continuously;
+`--until-idle` refuses before archive creation for this configuration.
+
+The anchored predecessor layout admits `-project/SESSION.jsonl` or `.ndjson`,
+`-project/OWNER/subagents/agent-AGENT.jsonl`, and the corresponding
+`subagents/workflows/RUN/agent-AGENT.jsonl` path. Main stems supply main context;
+separate-agent records supply membership, while the containing owner supplies
+lineage. The durable observed-context relation preserves that declaration across
+provider removal and parser rebuild. A main declaration cannot silently replace
+an established agent declaration.
+
+Traversal uses at most 128 entries per turn and a fixed-depth directory stack.
+Runnable scan/capture backlog continues without waiting for another filesystem
+event; completed cycles pause before rescanning. Each transcript uses the same
+parked acquisition slot, charged-byte grants and required-body resolver as the
+single-main route. Reads continue using acknowledged state. Full-prefix
+verification remains source work on every capture attempt; no metadata-only
+unchanged-file shortcut or corpus throughput guarantee is claimed.
+
+Held directory descriptors and descriptor-relative, beneath-root, no-symlink
+opens fence traversal and capture. An archive cannot be used as the configured
+provider root. Root replacement starts a fresh walk; root absence or denied
+access is unavailable, distinct from an accessible empty scope. Neither an
+interrupted scan nor a partial JSONL tail certifies complete conversation
+coverage.
+
+Status reports scan-cycle progress, deferred/excluded entries, attempted source
+acquisitions and a bounded sample of retained input IDs. The sample never drives
+acquisition. Selected-source byte totals sum acknowledged lengths, not unique
+bytes or actual IO. Memory documents, session indexes, workflow journals and
+agent metadata are not interpreted by this route. Only explicitly referenced
+required bodies are acquired; unclaimed or hook files are not conversations.

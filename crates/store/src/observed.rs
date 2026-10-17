@@ -4,10 +4,10 @@ use crate::{
     BlobHash, Error, ImmutableImport, InputFormat, ReadHandle, RetainedInput, Writer, counter, db,
 };
 use rusqlite::{OptionalExtension, params};
+pub(crate) mod context;
 use std::{
-    fs::OpenOptions,
     io::{self, Read, Seek, SeekFrom},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    os::unix::fs::MetadataExt,
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -74,8 +74,8 @@ fn refusal(message: &str) -> Error {
     Error::ObservedSourceRefused(message.into())
 }
 
-/// Decode one retained identity from archive facts only. Observed context is
-/// the first location's stem, independently of its current provider contents.
+/// Decode one retained identity from archive facts only. Observed role/context
+/// is durable authority, independently of the provider's current layout.
 pub(crate) fn decode(
     connection: &rusqlite::Connection,
     file: &Path,
@@ -131,14 +131,7 @@ pub(crate) fn decode(
     let (machine, path, device, inode): (String, String, i64, i64) = db(file, || {
         connection.query_row("SELECT CASE WHEN length(CAST(machine AS BLOB))<=65536 THEN machine END,CASE WHEN length(CAST(path AS BLOB))<=65536 THEN path END,device,inode FROM observation WHERE input=?1 AND class='first' ORDER BY rowid LIMIT 1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
     })?;
-    let stem = Path::new(&path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| refusal("first source stem is invalid"))?;
-    let context = vec!["claude-main".to_string(), stem.to_string()];
-    InputFormat::ClaudeCodeJsonl
-        .validate_context(&context.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let context = context::read(connection, file, id)?;
     Ok(Some(RetainedSource {
         input: RetainedInput {
             input_pk: 0,
@@ -241,11 +234,13 @@ impl Writer {
     ) -> crate::Result<RetainedSource> {
         self.check_import_acquisition()?;
         let PreparedClaudeMain {
-            path,
+            location,
             old,
             meta,
             proof,
         } = prepared;
+        location.check()?;
+        let path = location.path();
         let path_text = path.to_str().ok_or(Error::Range)?;
         if machine.is_empty()
             || host.is_empty()
@@ -256,7 +251,15 @@ impl Writer {
                 "source metadata exceeds admission or identities are empty",
             ));
         }
-        let current = self.claude_predecessor(&path, machine)?;
+        let current = self.claude_predecessor(path, machine)?;
+        if current
+            .as_ref()
+            .is_some_and(|s| s.context != location.context())
+        {
+            return Err(refusal(
+                "observed interpretation context conflicts with retained binding",
+            ));
+        }
         if current
             .as_ref()
             .map(|s| (&s.input.id, s.revision, s.input.length))
@@ -294,6 +297,9 @@ impl Writer {
                 [input_id],
             )
         })?;
+        if old.is_none() {
+            context::insert(&tx, &archive_file, input_id, location.context())?;
+        }
         db(&archive_file, || {
             tx.execute("INSERT INTO revision(input,number,produced,chain,length,local_seq,blake3) VALUES(?1,?2,?3,1,?4,?5,?6)",params![input_id,revision,if old.is_some(){"appended"}else{"first"},length,next_i,old.is_none().then_some(hash.bytes().as_slice())])
         })?;
@@ -328,7 +334,7 @@ pub struct PreparedClaude {
     pub bodies: Vec<(std::path::PathBuf, crate::claude_bodies::PreparedClaudeBody)>,
 }
 pub struct PreparedClaudeMain {
-    path: std::path::PathBuf,
+    location: crate::configured_claude::Location,
     old: Option<RetainedSource>,
     meta: std::fs::Metadata,
     proof: Option<crate::PreparedBlob>,
@@ -342,13 +348,34 @@ impl crate::BlobCapture {
         old: Option<RetainedSource>,
         cancelled: &AtomicBool,
         budget: crate::history_pages::turns::Budget,
+        yield_turn: impl FnMut(crate::history_pages::turns::Progress) -> crate::Result<()>,
+        inspect: impl FnMut(&[u8]) -> crate::Result<()>,
+        finish_references: impl FnOnce() -> crate::Result<Vec<(String, Option<(BlobHash, u64)>)>>,
+    ) -> crate::Result<PreparedClaude> {
+        let location = crate::configured_claude::Location::explicit_main(path.to_path_buf())?;
+        self.prepare_claude_location_in_turns(
+            location,
+            old,
+            cancelled,
+            budget,
+            yield_turn,
+            inspect,
+            finish_references,
+        )
+    }
+    pub fn prepare_claude_location_in_turns(
+        &self,
+        location: crate::configured_claude::Location,
+        old: Option<RetainedSource>,
+        cancelled: &AtomicBool,
+        budget: crate::history_pages::turns::Budget,
         mut yield_turn: impl FnMut(crate::history_pages::turns::Progress) -> crate::Result<()>,
         inspect: impl FnMut(&[u8]) -> crate::Result<()>,
         finish_references: impl FnOnce() -> crate::Result<Vec<(String, Option<(BlobHash, u64)>)>>,
     ) -> crate::Result<PreparedClaude> {
         let control = crate::history_pages::turns::Turns::new(budget, &mut yield_turn)?;
-        let main = self.prepare_claude_main(
-            path,
+        let main = self.prepare_claude_location(
+            location,
             old,
             cancelled,
             |n| control.borrow_mut().work("claude_main", n),
@@ -362,7 +389,7 @@ impl crate::BlobCapture {
         for (name, inline) in references {
             let body = std::path::PathBuf::from(name);
             if let Some(prepared) =
-                self.prepare_claude_body(path, &body, cancelled, inline, |n| {
+                self.prepare_claude_body_location(&main.location, &body, cancelled, inline, |n| {
                     control.borrow_mut().work("claude_body", n)
                 })?
             {
@@ -376,16 +403,33 @@ impl crate::BlobCapture {
         path: &Path,
         old: Option<RetainedSource>,
         cancelled: &AtomicBool,
+        work: impl FnMut(u64) -> crate::Result<()>,
+        inspect: impl FnMut(&[u8]) -> crate::Result<()>,
+    ) -> crate::Result<PreparedClaudeMain> {
+        let location = crate::configured_claude::Location::explicit_main(path.to_path_buf())?;
+        self.prepare_claude_location(location, old, cancelled, work, inspect)
+    }
+    fn prepare_claude_location(
+        &self,
+        location: crate::configured_claude::Location,
+        old: Option<RetainedSource>,
+        cancelled: &AtomicBool,
         mut work: impl FnMut(u64) -> crate::Result<()>,
         mut inspect: impl FnMut(&[u8]) -> crate::Result<()>,
     ) -> crate::Result<PreparedClaudeMain> {
+        let path = location.path();
         if !path.is_absolute() {
             return Err(refusal("absolute path required"));
         }
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-            .open(path)?;
+        if old
+            .as_ref()
+            .is_some_and(|s| s.context != location.context())
+        {
+            return Err(refusal(
+                "observed interpretation context conflicts with retained binding",
+            ));
+        }
+        let mut file = location.open()?;
         let meta = file.metadata()?;
         if !meta.is_file() {
             return Err(refusal("regular file required"));
@@ -480,8 +524,9 @@ impl crate::BlobCapture {
         if cancelled.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
         }
+        location.check()?;
         Ok(PreparedClaudeMain {
-            path: path.to_path_buf(),
+            location,
             old,
             meta,
             proof,
@@ -647,7 +692,7 @@ impl ReadHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::{fs::OpenOptions, io::Write};
     fn acquire(w: &mut Writer, p: &Path, id: &str) -> RetainedSource {
         w.acquire_claude_main(
             p,

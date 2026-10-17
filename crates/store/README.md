@@ -10,7 +10,7 @@ rewriting it. Callers receive typed handles, never raw SQLite connections.
 revisions, parsing or M1 support.
 
 All three schemas are exact SQL-fence extractions from the owning snapshot;
-a drift test compares their text. Archive version 3 retains the immutable import
+a drift test compares their text. Archive version 4 retains the immutable import
 identity tuple; embeddings version remains zero and index version is 20. The preserving format migration retains existing database siblings and never assigns historical lineage. Existing schemas and versions are checked before database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 it. Retained state without its coordination lock requires controlled recovery;
@@ -238,3 +238,19 @@ Index20 stores an optional `native_id_encoding` beside each Session native ID. `
 
 
 Local-only restore preparation uses `copy_preparation::Preparation` under the same noncreating exclusive lock. Only fresh archive initialization creates acquisition lineage. A missing historical lineage refuses preparation and ordinary mutation, while cold reads remain possible. Format 3 introduces no SQL-table changes: a typed versioned `meta.copy_preparation` value pins the source lineage, complete write-counter cut, local backing, custody intent and cursor; `client_request` records final completion atomically with removal of pending work. Preparation validates all stored plain blobs and every retained revision before completion, including mixed base/patch extents. It creates no index or fork children. The process owner may expose durable admission progress before cancellable completion. Historical completion is an idempotency result, never fresh activation.
+
+
+Configured Claude discovery adds `schema/observed-context.sql` as an explicit native
+archive overlay; the pinned base SQL and immutable-import identity CHECK stay
+unchanged. The normalized relation atomically records each observed binding's
+validated source role. Later conflicting declarations refuse rather than changing
+prior citations. Missing or invalid context in format 4 is unavailable.
+
+Preserving upgrades from formats 1–3 first retain the exact database sibling set.
+Supported observed Claude rows acquire the exact former first-observation main
+context once, preserving input IDs, bindings, bytes and lineage. A pending format-3
+copy preparation refuses upgrade without changing its authority. Finish the same
+request using its retained, matching format-3 binary, then open with format 4. The
+qualified format-3 source is `5ddb6975dafae5b79030dabb6c2d6a19cb29ab47`; retain its
+matching binary alongside pending recovery material. There is no new-binary
+resume path for an old pending action or reset of its cut.
