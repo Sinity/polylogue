@@ -2381,3 +2381,6 @@ fn model_full_transcript_refuses_zero_block_message_before_claiming_completed_fi
         assert!(page.get("next").is_none());
     }
 }
+
+#[path = "session_read/observed_prefix.rs"]
+mod observed_prefix;

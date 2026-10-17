@@ -448,13 +448,7 @@ impl CanonicalPosition {
     pub(crate) fn logical_key(&self) -> Result<Option<[u8; 32]>> {
         match self {
             Self::Codex(n) => canonical_key(*n).map(Some),
-            Self::ClaudeMessage(_, p) => {
-                let mut h = blake3::Hasher::new();
-                h.update(b"polylogue.claude.logical-message.v1\0");
-                h.update(&(p.message.as_str().len() as u64).to_be_bytes());
-                h.update(p.message.as_str().as_bytes());
-                Ok(Some(*h.finalize().as_bytes()))
-            }
+            Self::ClaudeMessage(_, p) => Ok(Some(claude_key(p.message.as_str()))),
             Self::ToolsAfter(_)
             | Self::ToolsBeforeFailure(_, _)
             | Self::Audit(_)
@@ -2497,6 +2491,14 @@ mod tests {
             Ok(Ok(_)) | Ok(Err(Error::Stopped))
         ));
     }
+}
+
+pub(crate) fn claude_key(message: &str) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"polylogue.claude.logical-message.v1\0");
+    hash.update(&(message.len() as u64).to_be_bytes());
+    hash.update(message.as_bytes());
+    *hash.finalize().as_bytes()
 }
 
 pub(crate) fn canonical_key(ordinal: usize) -> Result<[u8; 32]> {

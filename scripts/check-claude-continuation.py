@@ -132,7 +132,7 @@ def verify(args, run):
     remote = sdk(args, run, 'search', {'query': '"cedar green"', 'budget_tokens': 20000}, 'sdk-correction-search')
     assert [row['id'] for row in remote['rows']] == [reference], remote
     remote_ref = remote['rows'][0]['id']
-    remote = sdk(args, run, 'read', {'ref': remote_ref, 'budget_tokens': 20000, 'view': 'transcript', 'harness': 'full'}, 'sdk-correction-read')
+    remote = sdk(args, run, 'read', {'ref': remote_ref, 'budget_tokens': 20000, 'view': 'transcript', 'tools': 'full', 'thinking': 'full', 'harness': 'full'}, 'sdk-correction-read')
     assert any(item.get('text') == correction_text for item in remote['shown']), remote
     message = next(item for item in corrected['messages'] if item['id'] == reference + ':correction')
     assert message['version_hash'] == bodies.expected_version(args, correction), message

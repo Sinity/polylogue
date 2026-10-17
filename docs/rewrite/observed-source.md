@@ -41,7 +41,10 @@ separator-only append advances byte progress without inventing a Session or
 record. An unfinished nonblank record waits at its complete-record checkpoint;
 restart rereads the retained tail and a later piece may finish that same record.
 Complete prefix Messages can finish their existing canonical publication while
-the tail waits; the source as a whole remains pending.
+the tail waits; the source as a whole remains pending. Bounded exact Message
+and Block reads require that prefix's selected body and current source evidence
+in the same pinned view. They preserve pending Session context. A whole-Session
+transcript still refuses pending work, as do rows without that current proof.
 Changed acquisition invalidates the old row-settlement receipt. Observed
 receipts use `scope: observed_source_rows`, identify the admitted revision and
 length, and omit the immutable-only `original_hash` field. Their interpretation

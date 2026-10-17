@@ -689,19 +689,30 @@ fn run(
             .map_err(|_| unavailable("reader_lock_poisoned"))?,
         reference,
     )?;
-    let qualify = if selection.exact.is_some() {
-        polylogue_engine::session_qualification::qualify_member_with_cancel
+    let q = stored(if let Some(message) = &selection.exact {
+        polylogue_engine::session_qualification::qualify_member_with_cancel(
+            &selection.session,
+            message,
+            until,
+            16 * 1024 * 1024,
+            cancel,
+        )
     } else {
-        polylogue_engine::session_qualification::qualify_with_cancel
+        polylogue_engine::session_qualification::qualify_with_cancel(
+            &selection.session,
+            until,
+            16 * 1024 * 1024,
+            cancel,
+        )
+    })?;
+    let readable = if selection.exact.is_some() {
+        q.member_rows_readable()
+    } else if branches {
+        q.pending_inputs == 0 && q.known_rows_readable()
+    } else {
+        q.pending_inputs == 0 && q.unavailable_inputs == 0
     };
-    let q = stored(qualify(&selection.session, until, 16 * 1024 * 1024, cancel))?;
-    if q.pending_inputs > 0
-        || if branches || selection.exact.is_some() {
-            !q.known_rows_readable()
-        } else {
-            q.unavailable_inputs > 0
-        }
-    {
+    if !readable {
         return Err(unavailable("current_selected_basis_unavailable"));
     }
     if !branches && selection.exact.is_none() && !q.active_path_known() {

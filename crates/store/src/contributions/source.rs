@@ -255,18 +255,27 @@ impl crate::parser_state::Snapshot {
         logical: &[u8; 32],
         allowance: usize,
     ) -> Result<Option<SourceProjection>> {
-        let source = read_current(&self.db, &self.path, &self.head.token, logical, allowance)?;
-        let Some(source) = source else {
-            return Ok(None);
-        };
-        let selected: bool = db(&self.path, || {
-            self.db.query_row("SELECT EXISTS(SELECT 1 FROM message m JOIN message_body selected ON selected.pk=m.selected_body_pk JOIN message_candidate c ON c.pk=selected.preferred_candidate_pk JOIN message_body carrier ON carrier.pk=c.body_pk WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0 AND selected.ready=1 AND carrier.ready=1 AND c.eligible=1 AND selected.removal_epoch=m.removal_epoch AND carrier.removal_epoch=m.removal_epoch AND selected.block_root_pk IS carrier.block_root_pk AND selected.field_root_pk IS carrier.field_root_pk AND selected.basis_digest=carrier.basis_digest AND selected.version_hash=carrier.version_hash AND (carrier.pk=?3 OR EXISTS(SELECT 1 FROM message_body_compatibility own JOIN message_body_compatibility chosen ON chosen.digest=own.digest WHERE own.body_pk=?3 AND chosen.body_pk=carrier.pk)))",params![source.body.message,source.body.session,source.body.pk],|r|r.get(0))
-        })?;
-        if !selected {
-            return Err(Error::MessagePredecessorChanged);
-        }
-        Ok(Some(source))
+        read_selected(&self.db, &self.path, &self.head.token, logical, allowance)
     }
+}
+pub(super) fn read_selected(
+    connection: &rusqlite::Connection,
+    path: &std::path::Path,
+    token: &Token,
+    logical: &[u8; 32],
+    allowance: usize,
+) -> Result<Option<SourceProjection>> {
+    let source = read_current(connection, path, token, logical, allowance)?;
+    let Some(source) = source else {
+        return Ok(None);
+    };
+    let selected: bool = db(path, || {
+        connection.query_row("SELECT EXISTS(SELECT 1 FROM message m JOIN message_body selected ON selected.pk=m.selected_body_pk JOIN message_candidate c ON c.pk=selected.preferred_candidate_pk JOIN message_body carrier ON carrier.pk=c.body_pk WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0 AND selected.ready=1 AND carrier.ready=1 AND c.eligible=1 AND selected.removal_epoch=m.removal_epoch AND carrier.removal_epoch=m.removal_epoch AND selected.block_root_pk IS carrier.block_root_pk AND selected.field_root_pk IS carrier.field_root_pk AND selected.basis_digest=carrier.basis_digest AND selected.version_hash=carrier.version_hash AND (carrier.pk=?3 OR EXISTS(SELECT 1 FROM message_body_compatibility own JOIN message_body_compatibility chosen ON chosen.digest=own.digest WHERE own.body_pk=?3 AND chosen.body_pk=carrier.pk)))",params![source.body.message,source.body.session,source.body.pk],|r|r.get(0))
+    })?;
+    if !selected {
+        return Err(Error::MessagePredecessorChanged);
+    }
+    Ok(Some(source))
 }
 impl Writer {
     /// Read one fixed current reference and its certificate. The parser must be

@@ -1820,3 +1820,5 @@ fn owned_value_turn(
         }
     }
 }
+
+pub(crate) use claude::current_projection as current_claude_projection;

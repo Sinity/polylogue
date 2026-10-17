@@ -24,7 +24,7 @@ const LINK: &str = "claude.link.v1";
 const RECORD: &str = "claude.record.v1";
 pub(crate) const CONTRIBUTION: &str = "claude.contribution.v1";
 const BODY: &str = "claude.body.v1";
-const PENDING: &str = "claude.pending.v1";
+pub(crate) const PENDING: &str = "claude.pending.v1";
 pub(crate) const EFFECTS: &str = "claude.effects.v1";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

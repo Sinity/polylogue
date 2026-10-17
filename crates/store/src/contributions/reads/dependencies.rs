@@ -183,6 +183,30 @@ impl SessionCatalog {
         row.map(|(n, path)| path.ok_or_else(|| metadata_admission("Session input path", n)))
             .transpose()
     }
+    /// Reuse the source audit's current-token and selected-body proof within
+    /// this catalog's already pinned index and retained admission view.
+    pub fn dependency_selected_projection(
+        &self,
+        dependency: &SessionInputDependency,
+        logical: &[u8; 32],
+        allowance: usize,
+    ) -> Result<Option<crate::contributions::SourceProjection>> {
+        self.visible()?;
+        if !Arc::ptr_eq(&self.read, &dependency.read) {
+            return Err(Error::MessagePredecessorChanged);
+        }
+        let Some(head) = dependency.head() else {
+            return Ok(None);
+        };
+        let read = locked(&self.read)?;
+        super::super::source::read_selected(
+            &read.connection,
+            &self.path,
+            &head.token,
+            logical,
+            allowance,
+        )
+    }
     /// A point read from the SAME pinned index as Session rows and admission
     /// traversal. The dependency is unforgeable and bound to that read Arc.
     pub fn dependency_cell(
