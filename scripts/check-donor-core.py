@@ -68,7 +68,8 @@ def main():
         assert any(call['method'] == 'tools/call' and call['status'] == 'returned' for call in result['calls'])
         return result['tool_result']
     def admit(path, format, context=None, timeout=60, degraded=False):
-        argv = ['import', path, '--format', format, '--wait', '--wait-timeout', str(timeout - 5)]
+        argv = ['import', path, '--format', format, '--machine', '00112233445566778899aabbccddeeff',
+                '--host', 'synthetic-collector', '--wait', '--wait-timeout', str(timeout - 5)]
         if context:
             cp = path.with_suffix('.context.json'); cp.write_text(json.dumps({'version': 1, 'context': ['claude-main', context]})); argv += ['--context', cp]
         started = time.monotonic(); value = cli(argv, 'import ' + path.name, (0,5), timeout=timeout)

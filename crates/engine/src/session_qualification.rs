@@ -541,7 +541,13 @@ fn qualify_operation(
                 session,
                 &dependency,
                 target,
-                target_native.as_deref(),
+                target_native.as_deref().or_else(|| match &context {
+                    // A declared main file can own metadata before any Message
+                    // publishes its Session header. The dispatch above already
+                    // proves this is the requested main or an owned side Session.
+                    polylogue_sources::claude_code::FileCtx::Main { stem } => Some(stem.as_str()),
+                    _ => None,
+                }),
                 until,
                 allowance,
                 &mut result,

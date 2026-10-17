@@ -1118,7 +1118,12 @@ fn metadata_only_source_is_not_a_complete_empty_selection() {
     );
     assert_eq!(imported.status.code(), Some(0));
     let selected = world.cli(&[&reference(), "--json"]);
-    assert_eq!(selected.status.code(), Some(5));
+    assert_eq!(
+        selected.status.code(),
+        Some(5),
+        "{selected:?}; {}",
+        world.log()
+    );
     let selected: Value = serde_json::from_slice(&selected.stdout).unwrap();
     assert_eq!(selected["count"], 0);
     assert!(selected["notes"].as_array().unwrap().iter().any(|note| {
