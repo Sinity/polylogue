@@ -103,7 +103,12 @@ exact acquired input, or retains explicit acquisition unavailability. Its finite
 idle/empty history or impose an acquisition-format size limit.
 
 `scripts/check-configured-history.py`, declared as `configured_history_demo`, is
-the candidate packaged CLI/MCP acceptance driver. It independently checks scoped
+the candidate packaged CLI/MCP acceptance driver. It requires explicit
+`--sdk-python` and `--sdk-client` paths for the pinned official joint SDK adapter,
+freezes its source dependencies into the private result directory, and records
+actual SDK version/context-close receipts separately from direct JSON-RPC controls.
+Both routes discover operation references before exact fact/origin checks.
+It independently checks scoped
 rollout/history correspondence, committed WAL-only rows, an uncommitted distractor,
 terminal failure/exit-code facts, later same-daemon publication, restart, provider
 removal and unsupported-schema retention. Its answer oracle rejects damaged result,

@@ -625,14 +625,34 @@ fn eof_without_finished_row_effects_does_not_certify_exact_read() {
     // here. Byte EOF cannot discharge its source mapping obligation.
     raw.extend((json!({"type":"user","uuid":"required-result","sessionId":SID,"parentUuid":"known-row","timestamp":"2026-10-01T08:01:00Z","toolUseResult":{"persistedOutputPath":"/absent/tool-results/result.txt"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"missing-companion","content":"<persisted-output>\n/absent/tool-results/result.txt\n</persisted-output>"}]}}).to_string()+"\n").as_bytes());
     let input = world.import(&raw, "required-companion-eof");
-    world.wait_selected(&input, &["known-row"]);
+    // The known row may already be selected when the owner reaches the
+    // intentionally unavailable companion. That expected failure must not race
+    // this test's independent selection witness.
+    let selected = MessageId::new(world.session(), "known-row").unwrap();
+    let deadline = Instant::now() + WAIT;
+    while world.reader.selected_message(&selected).unwrap().is_none() {
+        let progress = world.progress(&input);
+        assert!(progress.recovery_error.is_none(), "{progress:?}");
+        assert!(
+            Instant::now() < deadline,
+            "known row not selected: {progress:?}"
+        );
+        thread::sleep(POLL);
+    }
     let deadline = Instant::now() + WAIT;
     loop {
         let p = world.progress(&input);
+        assert!(p.recovery_error.is_none(), "{p:?}");
         if p.parser
             .as_ref()
             .is_some_and(|h| h.parsed_upto == input.length)
         {
+            if let Some(failure) = &p.failure {
+                assert_eq!(
+                    failure,
+                    "canonical compute: Claude pending locator no longer matches complete source evidence"
+                );
+            }
             assert!(p.parser.unwrap().finalization_pending);
             break;
         }

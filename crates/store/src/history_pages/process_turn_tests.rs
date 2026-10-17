@@ -28,7 +28,9 @@ fn parked_capture_child() {
             },
             |progress| {
                 if progress.provider_bytes_read >= 69632 {
-                    std::fs::write(&ready, progress.provider_bytes_read.to_string()).unwrap();
+                    let marker = ready.with_extension("preparing");
+                    std::fs::write(&marker, progress.provider_bytes_read.to_string()).unwrap();
+                    std::fs::rename(&marker, &ready).unwrap();
                     // This owned fixture intentionally parks until the parent kills it.
                     loop {
                         std::thread::park();

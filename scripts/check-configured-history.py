@@ -7,6 +7,8 @@ import importlib.util
 import json
 from pathlib import Path
 import sqlite3
+import shutil
+import subprocess
 import time
 
 ROOT=Path(__file__).resolve().parent.parent
@@ -23,6 +25,9 @@ def insert(c,call,turn,output,ordinal):
 def discover(run,remote=False):
     query=lambda q:run.client.tool('search',{'query':q,'budget_tokens':20000})['structuredContent'] if remote else run.cli([q,'--json'])
     read=lambda ref:run.client.tool('read',{'ref':ref,'budget_tokens':20000})['structuredContent'] if remote else run.cli([ref,'read','--budget','20000'])
+    return discover_using(query,read)
+
+def discover_using(query,read):
     found={}
     for session in query('origin:codex')['rows']:
         for row in query('tool_items where session:'+session['id'])['rows']:
@@ -72,7 +77,40 @@ def await_physical(run):
         assert run.daemon.poll() is None,'daemon exited'
         time.sleep(.05)
 
-def run_case(binary,output):
+def sdk_tool(args,run,calls,name,arguments):
+    output=run.output/('sdk-%03d'%len(calls))
+    argv=[str(args.sdk_python),str(args.sdk_client),'--binary',str(run.binary),'--archive',str(run.output/'archive'),'--call',name,'--arguments',json.dumps(arguments),'--output',str(output)]
+    attempt={'argv':argv,'status':'attempted','sdk_context_closed':False}
+    calls.append(attempt)
+    result=subprocess.run(argv,env=run.env,capture_output=True,timeout=40)
+    (output.with_suffix('.stdout')).write_bytes(result.stdout)
+    (output.with_suffix('.stderr')).write_bytes(result.stderr)
+    attempt.update(status='completed',exit=result.returncode)
+    assert result.returncode==0,result.stderr.decode(errors='replace')
+    receipt=json.loads((output/'result.json').read_text())
+    assert receipt['success'] and receipt['sdk_context_closed'] and receipt['sdk']['name']=='mcp',receipt
+    attempt.update(sdk_context_closed=True,sdk=receipt['sdk'])
+    return receipt['tool_result']
+
+def discover_sdk(args,run,calls):
+    return discover_using(
+        lambda q:sdk_tool(args,run,calls,'search',{'query':q,'budget_tokens':20000}),
+        lambda ref:sdk_tool(args,run,calls,'read',{'ref':ref,'budget_tokens':20000}))
+
+def freeze_sdk(args):
+    original=args.sdk_client
+    target=args.output/'frozen-sdk-client'/'joint-consumer'/'mcp_client.py'
+    target.parent.mkdir(parents=True)
+    sources=[(original,target),(original.parent.parent/'morrow_mcp.py',target.parent.parent/'morrow_mcp.py'),(original.parent.parent/'check_answer.py',target.parent.parent/'check_answer.py')]
+    hashes={}
+    for source,destination in sources:
+        shutil.copyfile(source,destination)
+        hashes[str(source)]=hashlib.sha256(destination.read_bytes()).hexdigest()
+    args.sdk_client=target
+    return {'python':str(args.sdk_python),'python_sha256':hashlib.sha256(args.sdk_python.read_bytes()).hexdigest(),'sources_sha256':hashes}
+
+def run_case(args,sdk):
+    binary,output=args.binary,args.output
     run=discovery.Run(binary,output);home=output/'codex-home';home.mkdir();sessions=home/'sessions';sessions.mkdir()
     rollout=sessions/'rollout-calls.jsonl'
     # Own response-call identity exists, but no terminal result in this route.
@@ -92,12 +130,16 @@ def run_case(binary,output):
     assert Path(str(path)+'-wal').stat().st_size>0
     c.execute('BEGIN IMMEDIATE');insert(c,'U','T-uncommitted','uncommitted distractor',3)
     cfg=discovery.config(output,home);cfg['codex_home'].update(paginated_history='thread_history_1.sqlite',paginated_interval_seconds=1);(output/'config.json').write_text(json.dumps(cfg))
-    report={'checkpointed_main_sha256':main_before,'checkpointed_main_items':0}
+    sdk_calls=[]
+    report={'passed':False,'binary':str(binary),'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'driver_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'sdk':sdk,'sdk_calls':sdk_calls,'checkpointed_main_sha256':main_before,'checkpointed_main_items':0}
     try:
         start=run.start();assert start['acquisition']['paginated_history']['state']=='pending',start
         first=await_facts(run,{'C','D'});initial_physical=await_physical(run);run.client=mcp.Client(run);remote=discover(run,True);oracle(remote,{'C','D'})
         for call in ['C','D']:assert remote[call]==first[call]
         run.client.close();run.client=None
+        official_first=discover_sdk(args,run,sdk_calls);oracle(official_first,{'C','D'})
+        for call in ('C','D'):assert official_first[call]==first[call]
+        report['official_first']=official_first
         controls=0
         for mutate in ['wrong-result','wrong-row','wrong-verdict','wrong-session','wrong-turn','wrong-origin-thread','wrong-origin-turn','extra-conflicting-origin','uncommitted','text-only-link']:
             broken=copy.deepcopy(first)
@@ -122,6 +164,9 @@ def run_case(binary,output):
             else:raise AssertionError('oracle accepted '+mutate)
         c.rollback();insert(c,'E','T-later',EXPECTED['E'],4);c.commit()
         later=await_facts(run,{'C','D','E'});assert run.daemon.pid is not None
+        official_later=discover_sdk(args,run,sdk_calls);oracle(official_later,{'C','D','E'})
+        for call in EXPECTED:assert official_later[call]==later[call]
+        report['official_later']=official_later
         report.update(initial=start,initial_physical=initial_physical,first=first,later=later,mutants_rejected=controls,stop=continuation.graceful_stop(run))
         run.start();restarted=await_facts(run,{'C','D','E'})
         for call in EXPECTED:assert restarted[call]==later[call]
@@ -158,20 +203,26 @@ def run_case(binary,output):
         assert finite['status']['continuation']['paginated_input']==source,finite
         assert any(p['input']==source and p['source_rows']['state']=='unavailable' for p in finite['progress']),finite
         report['finite_startup']=finite
+    except BaseException as error:
+        report['failure']=repr(error)
+        raise
     finally:
         if c is not None:c.close()
         runtime=Path(run.socket_owner.name)
         native.close_run(run,output)
-        cleanup={'daemon_reaped':run.daemon is None,'mcp_reaped':all(client.process.poll() is not None for client in run.clients),'runtime_removed':not runtime.exists()}
+        cleanup={'daemon_reaped':run.daemon is None,'mcp_reaped':all(client.process.poll() is not None for client in run.clients),'runtime_removed':not runtime.exists(),'official_sdk_closed':bool(sdk_calls) and all(c.get('sdk_context_closed') for c in sdk_calls)}
         (output/'cleanup.json').write_text(json.dumps(cleanup,indent=2)+'\n')
+        report['cleanup']=cleanup
+        (output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
         assert all(cleanup.values()),cleanup
     report['passed']=True
     (output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--binary',required=True,type=Path);parser.add_argument('--output',required=True,type=Path);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--binary',required=True,type=Path);parser.add_argument('--output',required=True,type=Path);parser.add_argument('--sdk-python',required=True,type=Path);parser.add_argument('--sdk-client',required=True,type=Path);args=parser.parse_args()
     if args.output.exists():parser.error('output must not exist')
     args.output.mkdir(parents=True)
-    run_case(args.binary,args.output)
+    sdk=freeze_sdk(args)
+    run_case(args,sdk)
     print(json.dumps({'passed':True,'report':str(args.output/'report.json')}))
 if __name__=='__main__':main()
