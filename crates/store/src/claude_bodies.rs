@@ -288,21 +288,7 @@ pub struct PreparedClaudeBody {
     inline: Option<(BlobHash, u64)>,
 }
 impl crate::BlobCapture {
-    pub fn prepare_claude_body_in_turns(
-        &self,
-        main: &Path,
-        path: &Path,
-        cancelled: &AtomicBool,
-        inline: Option<(BlobHash, u64)>,
-        budget: crate::history_pages::turns::Budget,
-        mut yield_turn: impl FnMut(crate::history_pages::turns::Progress) -> Result<()>,
-    ) -> Result<Option<PreparedClaudeBody>> {
-        let control = crate::history_pages::turns::Turns::new(budget, &mut yield_turn)?;
-        self.prepare_claude_body(main, path, cancelled, inline, |n| {
-            control.borrow_mut().work("claude_body", n)
-        })
-    }
-    pub fn prepare_claude_body(
+    pub(crate) fn prepare_claude_body(
         &self,
         main_path: &Path,
         path: &Path,

@@ -147,7 +147,7 @@ impl ImportReply {
 enum PreparedCapture {
     Blob(PreparedBlob),
     History(polylogue_store::history_pages::PreparedHistory),
-    Claude(crate::claude_capture::Prepared),
+    Claude(polylogue_store::observed::PreparedClaude),
 }
 enum Message {
     Note(

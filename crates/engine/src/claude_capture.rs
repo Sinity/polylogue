@@ -1,19 +1,8 @@
 //! Worker-side configured acquisition. Parsing discovers only explicitly named
 //! companions; the store prepares opaque proofs and the owner installs them.
 use polylogue_model::BlobHash;
-use polylogue_store::{
-    BlobCapture, Error, RetainedSource, claude_bodies::PreparedClaudeBody,
-    observed::PreparedClaudeMain,
-};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
-};
-pub(crate) struct Prepared {
-    pub main: PreparedClaudeMain,
-    pub bodies: Vec<(PathBuf, PreparedClaudeBody)>,
-}
+use polylogue_store::{BlobCapture, Error, RetainedSource, observed::PreparedClaude};
+use std::{collections::BTreeMap, path::Path, sync::atomic::AtomicBool};
 pub(crate) fn prepare(
     capture: BlobCapture,
     path: &Path,
@@ -23,16 +12,20 @@ pub(crate) fn prepare(
     mut yield_turn: impl FnMut(
         polylogue_store::history_pages::turns::Progress,
     ) -> std::result::Result<(), Error>,
-) -> std::result::Result<Prepared, Error> {
-    let mut pending = Vec::new();
-    let mut paths: BTreeMap<String, Option<(BlobHash, u64)>> = BTreeMap::new();
-    let main = capture.prepare_claude_main_in_turns(
+) -> std::result::Result<PreparedClaude, Error> {
+    let state = std::cell::RefCell::new((
+        Vec::new(),
+        BTreeMap::<String, Option<(BlobHash, u64)>>::new(),
+    ));
+    capture.prepare_claude_in_turns(
         path,
         old,
         cancelled,
         budget,
         &mut yield_turn,
         |bytes| {
+            let mut state = state.borrow_mut();
+            let (pending, paths) = &mut *state;
             for byte in bytes {
                 if *byte == b'\n' {
                     if let Ok(record) = polylogue_model::RetainedJson::parse(&pending) {
@@ -66,20 +59,10 @@ pub(crate) fn prepare(
             }
             Ok(())
         },
-    )?;
-    let mut bodies = Vec::new();
-    for (name, inline) in paths {
-        let body = PathBuf::from(name);
-        if let Some(prepared) = capture.prepare_claude_body_in_turns(
-            path,
-            &body,
-            cancelled,
-            inline,
-            budget,
-            &mut yield_turn,
-        )? {
-            bodies.push((body, prepared));
-        }
-    }
-    Ok(Prepared { main, bodies })
+        || {
+            Ok(std::mem::take(&mut state.borrow_mut().1)
+                .into_iter()
+                .collect())
+        },
+    )
 }

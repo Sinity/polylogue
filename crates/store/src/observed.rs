@@ -323,6 +323,10 @@ impl Writer {
     }
 }
 
+pub struct PreparedClaude {
+    pub main: PreparedClaudeMain,
+    pub bodies: Vec<(std::path::PathBuf, crate::claude_bodies::PreparedClaudeBody)>,
+}
 pub struct PreparedClaudeMain {
     path: std::path::PathBuf,
     old: Option<RetainedSource>,
@@ -330,7 +334,9 @@ pub struct PreparedClaudeMain {
     proof: Option<crate::PreparedBlob>,
 }
 impl crate::BlobCapture {
-    pub fn prepare_claude_main_in_turns(
+    /// One charged-work counter spans prefix checks, record scanning and every
+    /// referenced companion. The engine supplies record interpretation only.
+    pub fn prepare_claude_in_turns(
         &self,
         path: &Path,
         old: Option<RetainedSource>,
@@ -338,17 +344,34 @@ impl crate::BlobCapture {
         budget: crate::history_pages::turns::Budget,
         mut yield_turn: impl FnMut(crate::history_pages::turns::Progress) -> crate::Result<()>,
         inspect: impl FnMut(&[u8]) -> crate::Result<()>,
-    ) -> crate::Result<PreparedClaudeMain> {
+        finish_references: impl FnOnce() -> crate::Result<Vec<(String, Option<(BlobHash, u64)>)>>,
+    ) -> crate::Result<PreparedClaude> {
         let control = crate::history_pages::turns::Turns::new(budget, &mut yield_turn)?;
-        self.prepare_claude_main(
+        let main = self.prepare_claude_main(
             path,
             old,
             cancelled,
             |n| control.borrow_mut().work("claude_main", n),
             inspect,
-        )
+        )?;
+        let references = finish_references()?;
+        if references.len() > crate::claude_bodies::MAX_COMPANIONS {
+            return Err(refusal("Claude companion reference count exceeds 32"));
+        }
+        let mut bodies = Vec::new();
+        for (name, inline) in references {
+            let body = std::path::PathBuf::from(name);
+            if let Some(prepared) =
+                self.prepare_claude_body(path, &body, cancelled, inline, |n| {
+                    control.borrow_mut().work("claude_body", n)
+                })?
+            {
+                bodies.push((body, prepared));
+            }
+        }
+        Ok(PreparedClaude { main, bodies })
     }
-    pub fn prepare_claude_main(
+    pub(crate) fn prepare_claude_main(
         &self,
         path: &Path,
         old: Option<RetainedSource>,
@@ -922,3 +945,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "observed/claude_turn_tests.rs"]
+mod claude_turn_tests;
