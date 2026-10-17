@@ -92,11 +92,13 @@ def main():
     sdk_python = args.sdk_python.resolve()
     original_sdk_client = args.sdk_client.resolve()
     original_collector = original_sdk_client.parent.parent / 'morrow_mcp.py'
-    assert sdk_python.is_file() and original_sdk_client.is_file() and original_collector.is_file()
+    original_checker = original_sdk_client.parent.parent / 'check_answer.py'
+    assert all(path.is_file() for path in (sdk_python, original_sdk_client, original_collector, original_checker))
     sdk_client = args.output / 'frozen-sdk-client' / 'joint-consumer' / 'mcp_client.py'
     sdk_client.parent.mkdir(parents=True)
     shutil.copyfile(original_sdk_client, sdk_client)
     shutil.copyfile(original_collector, sdk_client.parent.parent / 'morrow_mcp.py')
+    shutil.copyfile(original_checker, sdk_client.parent.parent / 'check_answer.py')
     facts = json.loads(fixtures['facts.json'])
     extra_by_message = {}
     for fact in facts['messages']:
@@ -114,6 +116,7 @@ def main():
               'sdk_client': str(sdk_client), 'sdk_client_original': str(original_sdk_client),
               'sdk_client_sha256': sha(sdk_client),
               'sdk_fact_collector_sha256': sha(sdk_client.parent.parent / 'morrow_mcp.py'),
+              'sdk_checker_sha256': sha(sdk_client.parent.parent / 'check_answer.py'),
               'commands': run.commands, 'processes': run.processes, 'phases': [], 'bindings': {},
               'limits': ['No installed archive or migration.', 'No normalized reimport implementation.',
                          'No arbitrary provider/invalid UTF8 qualification.', 'No latency/RSS/model efficiency claim.']}
@@ -221,6 +224,7 @@ def main():
         report['phases'].append(record)
 
     try:
+        run.command([sdk_python, sdk_client, '--help'], 'official SDK import preflight', (0,), timeout=60)
         run.start(archive)
         for name, context in facts['contexts'].items():
             source = args.output / 'owned-provider' / name
