@@ -1,9 +1,9 @@
 //! One normalized donor leaf, selected by a mapper-proved slot. This module
 //! neither discovers suppliedness nor scans a Message's blocks or ranks it.
+use crate::RetainedJson;
 use crate::merge::{BlockField, MessageField, Slot, UsageField};
 use crate::{BlockContent, BlockSlot, ErrorReason, Message, ProviderTime, ToolOutcome};
 use serde::{Serialize, Serializer, ser::SerializeMap};
-use serde_json::Value;
 use std::{
     fmt,
     io::{self, Write},
@@ -20,7 +20,7 @@ pub enum Subject<'a> {
     /// Immediate provider extras only; values stay opaque, including null.
     Extras {
         block: Option<&'a BlockSlot>,
-        values: &'a Value,
+        values: &'a RetainedJson,
     },
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -293,13 +293,13 @@ pub fn write(
     }
 }
 fn extra(
-    values: Option<&Value>,
+    values: Option<&RetainedJson>,
     key: &str,
     sink: &mut impl Write,
 ) -> Result<PresenceStatus, Error> {
     match values {
         None => Ok(PresenceStatus::Missing),
-        Some(Value::Object(map)) => optional(map.get(key), sink),
+        Some(RetainedJson::Object(map)) => optional(map.get(&crate::NativeId::unicode(key)), sink),
         Some(_) => Ok(PresenceStatus::Unsupported),
     }
 }
@@ -472,7 +472,7 @@ mod tests {
         let c = BlockContent::ToolCall(ToolCall {
             tool: Some(String::new()),
             call_id: None,
-            input: Some(Value::Null),
+            input: Some(RetainedJson::Null),
             command: None,
         });
         assert_eq!(bytes(block(&c, BlockField::Input, 4).unwrap()), b"null");
@@ -520,7 +520,7 @@ mod tests {
     }
     #[test]
     fn extras_are_one_immediate_opaque_value_including_empty_keys() {
-        let values = json!({"":null,"nested":{"z":false,"a":[]}});
+        let values = RetainedJson::from(json!({"":null,"nested":{"z":false,"a":[]}}));
         assert_eq!(
             bytes(
                 encode(
@@ -662,7 +662,7 @@ mod tests {
         let mut m = message();
         m.model = Some("a\"b".into());
         // This unrequested field would exceed the allowance by many orders.
-        m.attrs = Some(json!({"unrequested":"x".repeat(65536)}));
+        m.attrs = Some(json!({"unrequested":"x".repeat(65536)}).into());
         let slot = Slot::Message(MessageField::Model);
         let expected = serde_json::to_vec("a\"b").unwrap();
         assert!(
@@ -728,7 +728,7 @@ mod tests {
             service_tier: Some("standard".into()),
             provider_cost_nusd: Some(Usd(9007199254740993)),
         });
-        m.attrs = Some(json!({"null":null,"nested":{"z":false,"a":[]}}));
+        m.attrs = Some(json!({"null":null,"nested":{"z":false,"a":[]}}).into());
         for field in [
             MessageField::PromptKind,
             MessageField::Model,
@@ -787,7 +787,7 @@ mod tests {
             BlockContent::ToolCall(ToolCall {
                 tool: Some(String::new()),
                 call_id: Some("opaque:call".into()),
-                input: Some(Value::Null),
+                input: Some(RetainedJson::Null),
                 command: Some("command".into()),
             }),
             BlockContent::ToolResult(ToolResult {
@@ -814,7 +814,7 @@ mod tests {
             BlockContent::File(Attachment::default()),
             BlockContent::Other {
                 type_name: "synthetic".into(),
-                data: json!({"z":false,"a":[],"null":null}),
+                data: json!({"z":false,"a":[],"null":null}).into(),
             },
         ];
         let block = BlockSlot::Reasoning(7);
@@ -854,7 +854,7 @@ mod tests {
                 );
             }
         }
-        let extras = json!({"":null,"opaque":{"z":1,"a":[]}});
+        let extras = RetainedJson::from(json!({"":null,"opaque":{"z":1,"a":[]}}));
         for key in ["", "opaque", "absent"] {
             equivalent(
                 Subject::Extras {

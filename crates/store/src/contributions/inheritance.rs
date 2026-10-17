@@ -130,6 +130,7 @@ mod tests {
                 session,
                 origin: &Origin::new("synthetic").unwrap(),
                 native_session: "session",
+                native_session_encoding: None,
                 session_kind: SessionKind::Main,
                 message,
                 sequence: 0,

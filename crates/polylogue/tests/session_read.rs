@@ -1850,6 +1850,31 @@ fn model_late_native_metadata_growth_retries_same_cursor_without_rewinding() {
     assert!((serde_json::to_vec(&retry).unwrap().len() as u64).div_ceil(4) <= sufficient);
 }
 
+// Called only at fields whose contract declares an opaque model-page value.
+fn opaque_page_value(value: &Value, masked: bool) -> Value {
+    let object = value.as_object().expect("opaque presentation envelope");
+    assert_eq!(object.len(), 3);
+    assert_eq!(object["encoding"], "canonical-json-v1");
+    assert_eq!(object["masked"], masked);
+    let raw = object["json"].as_str().expect("canonical JSON text");
+    let retained = polylogue_model::RetainedJson::parse(raw.as_bytes()).unwrap();
+    assert_eq!(retained.canonical(), raw.as_bytes());
+    serde_json::from_str(raw).unwrap()
+}
+
+fn assert_page_field_origins(shown: &Value, message: &Value) {
+    for envelope in shown["field_origins"].as_array().unwrap() {
+        let entry = opaque_page_value(envelope, false);
+        let original = message["field_origins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|origin| origin["field"] == entry["field"])
+            .expect("complete original field association");
+        assert_eq!(&entry, original);
+    }
+}
+
 fn transcript_call(reference: &str) -> Value {
     json!({"ref":reference,"view":"transcript","tools":"full","thinking":"full","harness":"full"})
 }
@@ -1912,9 +1937,18 @@ fn model_full_transcript_keeps_all_morrow_facts_and_effective_selection() {
             for name in ["role", "written_by"] {
                 assert_eq!(actual[name], message[name]);
             }
-            for name in ["at", "model", "stop_reason", "usage", "attrs"] {
+            for name in ["at", "model", "stop_reason", "usage"] {
                 assert_eq!(actual["message_metadata"][name], message[name]);
             }
+            if let Some(attrs) = message.get("attrs") {
+                assert_eq!(
+                    opaque_page_value(&actual["message_metadata"]["attrs"], false),
+                    *attrs
+                );
+            } else {
+                assert!(actual["message_metadata"].get("attrs").is_none());
+            }
+            assert_page_field_origins(actual, message);
             for name in [
                 "signature",
                 "call_id",
@@ -1926,7 +1960,15 @@ fn model_full_transcript_keeps_all_morrow_facts_and_effective_selection() {
                 "duration_ms",
                 "data",
             ] {
-                assert_eq!(actual["block_fields"][name], block[name], "{name}");
+                if matches!(name, "input" | "data") && block.get(name).is_some() {
+                    assert_eq!(
+                        opaque_page_value(&actual["block_fields"][name], false),
+                        block[name],
+                        "{name}"
+                    );
+                } else {
+                    assert_eq!(actual["block_fields"][name], block[name], "{name}");
+                }
             }
             assert_eq!(actual.get("text"), block.get("text"));
         }
@@ -1983,7 +2025,7 @@ fn model_full_transcript_preserves_tool_body_masking_independent_values_and_admi
     assert_eq!(shown[3]["text"], " visible α");
     assert_eq!(shown[6]["text"], format!("{} open🙂", "A".repeat(36)));
     assert!(
-        !shown[5]["block_fields"]["input"]["content"]
+        !opaque_page_value(&shown[5]["block_fields"]["input"], true)["content"]
             .as_str()
             .unwrap()
             .contains("BEGIN PRIVATE")
@@ -2165,8 +2207,16 @@ fn model_branches_preserves_malformed_morrow_facts_without_claiming_active_membe
                 format!("block:{}", block["id"].as_str().unwrap())
             );
             assert_eq!(actual.get("text"), block.get("text"));
+            assert_page_field_origins(actual, message);
             for key in ["tool", "input", "call_id", "outcome", "data", "signature"] {
-                assert_eq!(actual["block_fields"][key], block[key]);
+                if matches!(key, "input" | "data") && block.get(key).is_some() {
+                    assert_eq!(
+                        opaque_page_value(&actual["block_fields"][key], false),
+                        block[key]
+                    );
+                } else {
+                    assert_eq!(actual["block_fields"][key], block[key]);
+                }
             }
         }
     }

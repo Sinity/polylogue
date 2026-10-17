@@ -299,7 +299,7 @@ fn bound_descriptor_streams_to_fixed_chunks_preserving_original_io_errors_and_cu
     assert!(malformed.advance(&mut bad_cursor).is_err());
     assert!(malformed.advance(&mut bad_cursor).is_err());
     assert_eq!(selected.adapter_version, ADAPTER_RECIPE_VERSION);
-    assert_eq!(selected.adapter_version, 1);
+    assert_eq!(selected.adapter_version, 2);
     let mut unsupported = selected.clone();
     unsupported.adapter_version = ADAPTER_RECIPE_VERSION + 1;
     assert!(unsupported.validate().is_err());

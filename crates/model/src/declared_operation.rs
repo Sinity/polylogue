@@ -1,7 +1,7 @@
 //! A declared legacy call identity. This is not a modern native turn-scoped key
 //! or a correspondence proof. The source mapper must establish the original
 //! Session scope and supplied invocation ID before invoking this constructor.
-use crate::{IdError, SessionId};
+use crate::{IdError, NativeId, SessionId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DeclaredOperationId {
@@ -10,14 +10,21 @@ pub struct DeclaredOperationId {
 }
 impl DeclaredOperationId {
     pub fn new(source_session: &SessionId, supplied_id: &str) -> Result<Self, IdError> {
-        if supplied_id.is_empty() {
+        Self::from_native(source_session, &NativeId::unicode(supplied_id))
+    }
+    pub fn from_native(
+        source_session: &SessionId,
+        supplied_id: &NativeId,
+    ) -> Result<Self, IdError> {
+        if supplied_id.as_str().is_empty() {
             return Err(IdError::Empty);
         }
         let mut hash = blake3::Hasher::new();
         hash.update(b"polylogue-declared-operation-v1\0");
-        for component in [source_session.as_str(), supplied_id] {
+        let bytes = crate::identity::native_bytes(supplied_id);
+        for component in [source_session.as_str().as_bytes(), bytes.as_slice()] {
             hash.update(&(component.len() as u64).to_le_bytes());
-            hash.update(component.as_bytes());
+            hash.update(component);
         }
         Ok(Self {
             reference: format!("declared-v1:{}", hash.finalize().to_hex()),

@@ -176,6 +176,7 @@ struct IdentityOwned {
     session: SessionId,
     origin: Origin,
     native: String,
+    native_encoding: Option<String>,
     kind: SessionKind,
     message: MessageId,
     role: Role,
@@ -187,6 +188,7 @@ impl IdentityOwned {
             session: &self.session,
             origin: &self.origin,
             native_session: &self.native,
+            native_session_encoding: self.native_encoding.as_deref(),
             session_kind: self.kind,
             message: &self.message,
             sequence,
@@ -521,6 +523,7 @@ pub fn start(
                 session: session.id.clone(),
                 origin: session.origin.clone(),
                 native: session.native_id.clone(),
+                native_encoding: session.native_id_encoding.clone(),
                 kind: session.kind,
                 message: message.id,
                 role: message.role,
@@ -1414,6 +1417,7 @@ enum ValueSource<'a> {
         binding: Binding<'a>,
     },
     Text(&'a str),
+    Opaque(RetainedJson),
     Leaf {
         subject: Subject<'a>,
         slot: &'a Slot,
@@ -1656,6 +1660,9 @@ impl ValueSource<'_> {
             Self::Text(text) => sink
                 .write_all(text.as_bytes())
                 .map_err(|e| Error::Store(StoreError::Io(e))),
+            Self::Opaque(value) => {
+                serde_json::to_writer(sink, value).map_err(|e| Error::Source(e.to_string()))
+            }
             Self::Leaf { subject, slot } => {
                 let subject = match subject {
                     Subject::Message(m) => Subject::Message(m),

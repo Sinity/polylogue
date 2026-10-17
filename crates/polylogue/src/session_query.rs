@@ -84,16 +84,26 @@ pub(crate) fn serve(
             result["up_to_date"] = json!(false);
         }
         for row in result["rows"].as_array().unwrap() {
-            for key in ["id", "native_id"] {
-                if let Some(identity) = row[key].as_str() {
-                    crate::output_json::check_identity(identity, deadline)
-                        .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
-                }
+            if let Some(id) = row["id"].as_str() {
+                crate::output_json::check_reference(id, deadline)
+                    .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
+            }
+            if let Some(value) = row["native_id"].as_str() {
+                let native =
+                    polylogue_model::NativeId::from_wire(value, row["native_id_encoding"].as_str())
+                        .map_err(|_| {
+                            failed(
+                                ErrorKind::NotYetAvailable,
+                                "invalid native Session identity",
+                            )
+                        })?;
+                crate::output_json::check_native_identity(&native, deadline)
+                    .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
             }
             if let Some(hits) = row["hits"].as_array() {
                 for hit in hits {
                     for key in ["message", "session"] {
-                        crate::output_json::check_identity(hit[key].as_str().unwrap(), deadline)
+                        crate::output_json::check_reference(hit[key].as_str().unwrap(), deadline)
                             .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
                     }
                 }

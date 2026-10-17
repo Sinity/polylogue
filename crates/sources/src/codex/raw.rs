@@ -99,7 +99,7 @@ pub(super) fn overlay(
     ))
 }
 pub(super) struct ValueFields {
-    pub value: serde_json::Value,
+    pub value: polylogue_model::RetainedJson,
     pub conflicts: Vec<String>,
     pub provided: Vec<String>,
     pub retained: Vec<String>,

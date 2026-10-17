@@ -232,12 +232,12 @@ fn response_tuple_is_typed_and_copies_keep_separate_opaque_relations() {
     assert_eq!(out.delta.responses.len(), 2);
     let copied = response(&memory, "dest:colon", &ResponseKey::new("x\u{1f}y", "z"));
     assert_eq!(
-        copied.message.id.session().as_str(),
-        "claude-code:dest:colon"
+        copied.message.id.session(),
+        &SessionId::new(&Origin::new("claude-code").unwrap(), "dest:colon").unwrap()
     );
     assert_eq!(
-        copied.message.inherited_from.unwrap().session().as_str(),
-        "claude-code:source:colon"
+        copied.message.inherited_from.unwrap().session(),
+        &SessionId::new(&Origin::new("claude-code").unwrap(), "source:colon").unwrap()
     );
 }
 
@@ -520,7 +520,7 @@ fn failed_point_read_fuses_driver_and_never_produces_checkpoint_output() {
             Err(out) => {
                 let err = out.output.err().unwrap();
                 assert_eq!(err.phase, FailurePhase::Record);
-                assert_eq!(err.error, failure);
+                assert_eq!(err.error.to_string(), failure);
                 assert_eq!(out.parsed_upto, 0);
             }
         }
@@ -611,7 +611,7 @@ fn required_body_read_failure_is_not_an_unavailable_payload() {
         line(value).as_bytes(),
         0,
     );
-    assert_eq!(framed.output.err().unwrap().error, "body");
+    assert_eq!(framed.output.err().unwrap().error.to_string(), "body");
     assert_eq!(framed.parsed_upto, 0);
 }
 

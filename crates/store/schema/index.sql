@@ -16,9 +16,13 @@ CREATE TABLE input_ref (
 
 CREATE TABLE session (
   pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- '<origin>:<native id>'
+  id                TEXT NOT NULL UNIQUE,   -- typed public Session reference (model.md, Identity)
   origin            TEXT NOT NULL,
   native_id         TEXT NOT NULL,
+  native_id_encoding TEXT CHECK (native_id_encoding IS NULL OR native_id_encoding = 'wtf8'),
+                                            -- NULL: literal Unicode; wtf8: canonical native-fact encoding
+                                            -- for actual lone surrogates (model.md). The typed writer validates
+                                            -- the complete fact; a leading ~u: alone never selects decoding.
   kind              TEXT NOT NULL,          -- main | subagent | chat (continuations are links, not a kind)
   stub              INTEGER NOT NULL DEFAULT 0,  -- 1: created by a hook or process line naming a session that has no
                                             --   transcript yet, so its live state exists; cleared when its messages arrive

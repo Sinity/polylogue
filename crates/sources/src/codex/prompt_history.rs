@@ -1,7 +1,7 @@
 //! Prompt-history records prove references and prompt bytes only. They never
 //! establish a conversation boundary, assistant response, or complete history.
+use polylogue_model::RetainedJson as Value;
 use serde::Serialize;
-use serde_json::Value;
 #[derive(Debug, Serialize)]
 pub struct Reference {
     pub native_session: String,
@@ -40,9 +40,10 @@ pub fn project(bytes: &[u8]) -> Result<Projection, &'static str> {
         let value = serde_json::from_slice::<Value>(line);
         match value {
             Ok(v)
-                if v["session_id"]
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty() && s.len() <= 4096)
+                if super::require_scalar_json(&v).is_ok()
+                    && v["session_id"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty() && s.len() <= 4096)
                     && v["text"].is_string() =>
             {
                 result.references.push(Reference {

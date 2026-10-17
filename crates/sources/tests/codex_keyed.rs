@@ -193,7 +193,7 @@ fn lookup_failure_fuses_driver_and_never_acknowledges_attempted_step() {
     let framed = driver.finish();
     assert_eq!(framed.parsed_upto, 123);
     let failure = framed.output.unwrap_err();
-    assert!(failure.error.contains("injected Codex"));
+    assert!(failure.error.to_string().contains("injected Codex"));
     assert_eq!(framed.counts.used, 0);
 }
 #[test]
@@ -207,7 +207,7 @@ fn cell_corruption_and_overlay_admission_are_errors_not_missing_provider_records
     let e = drive_jsonl(KeyedRecords::new(view, resume), bytes.as_bytes(), 0)
         .output
         .unwrap_err();
-    assert!(e.error.contains("invalid Codex cell"));
+    assert!(e.error.to_string().contains("invalid Codex cell"));
     let p = KeyedRecords::with_limits(
         MemoryReadView::default(),
         Resume::default(),
@@ -222,7 +222,7 @@ fn cell_corruption_and_overlay_admission_are_errors_not_missing_provider_records
             json!({"type":"message","role":"user","content":[{"text":"owed"}]}),
         );
     let e = drive_jsonl(p, bytes.as_bytes(), 0).output.unwrap_err();
-    assert!(e.error.contains("admission exceeded"));
+    assert!(e.error.to_string().contains("admission exceeded"));
 }
 #[test]
 fn a_long_open_message_does_not_materialize_blocks_to_replace_one_reasoning_item() {
@@ -444,7 +444,7 @@ fn missing_referenced_cells_fail_instead_of_becoming_provider_unknown_records() 
         view.cells.remove(&missing);
         let framed = drive_jsonl(KeyedRecords::new(view, resume), after.as_bytes(), 0);
         let error = framed.output.unwrap_err();
-        assert!(error.error.contains(expected), "{error:?}");
+        assert!(error.error.to_string().contains(expected), "{error:?}");
         assert_eq!(framed.counts.used, 0);
         assert!(framed.counts.unrecognized.is_empty());
     }

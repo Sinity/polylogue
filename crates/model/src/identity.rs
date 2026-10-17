@@ -1,6 +1,5 @@
+use crate::{NativeId, RetainedJson};
 use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
-use std::collections::BTreeMap;
 use std::fmt;
 
 #[derive(Debug, thiserror::Error)]
@@ -61,10 +60,21 @@ pub enum IdError {
 pub struct SessionId(String);
 impl SessionId {
     pub fn new(origin: &Origin, native_id: &str) -> Result<Self, IdError> {
-        if native_id.is_empty() {
+        Self::from_native(origin, &NativeId::unicode(native_id))
+    }
+    pub fn from_native(origin: &Origin, native: &NativeId) -> Result<Self, IdError> {
+        if native.as_str().is_empty() {
             return Err(IdError::Empty);
         }
-        Ok(Self(format!("{origin}:{native_id}")))
+        let id = if ordinary_session(native) {
+            format!("{origin}:{}", native.as_str())
+        } else {
+            extended(&frame(
+                1,
+                &[origin.as_str().as_bytes(), &native_bytes(native)],
+            ))
+        };
+        Ok(Self(id))
     }
     pub fn from_stored(value: impl Into<String>) -> Result<Self, IdError> {
         let value = value.into();
@@ -103,13 +113,21 @@ struct MessageIdWire {
 }
 impl MessageId {
     pub fn new(session: SessionId, native_id: &str) -> Result<Self, IdError> {
-        if native_id.is_empty() {
+        Self::from_native(session, &NativeId::unicode(native_id))
+    }
+    pub fn from_native(session: SessionId, native: &NativeId) -> Result<Self, IdError> {
+        if native.as_str().is_empty() {
             return Err(IdError::Empty);
         }
-        Ok(Self {
-            id: format!("{}:{native_id}", session.as_str()),
-            session,
-        })
+        let id = if !session.as_str().starts_with("~i1:") && ordinary_local(native) {
+            format!("{}:{}", session.as_str(), native.as_str())
+        } else {
+            extended(&frame(
+                3,
+                &[&session_binary(&session), &native_bytes(native)],
+            ))
+        };
+        Ok(Self { id, session })
     }
     pub fn from_stored(id: impl Into<String>, session: SessionId) -> Result<Self, IdError> {
         let id = id.into();
@@ -164,9 +182,53 @@ struct BlockIdWire {
     slot: BlockSlot,
 }
 impl BlockId {
+    /// Resolve only this codec's supported exact block references. Extended
+    /// reasoning and attachment forms are outside the admitted address scope.
+    pub fn address(reference: &str) -> Option<(std::borrow::Cow<'_, str>, BlockSlot)> {
+        if reference.starts_with("~i1:") {
+            let bytes = decoded_frame(reference)?;
+            let fields = frame_fields(&bytes, 5, 2)?;
+            let message = message_from_binary(fields[0])?;
+            let index = u32::try_from(u64::from_le_bytes(fields[1].try_into().ok()?)).ok()?;
+            let block = Self::new(message.clone(), index);
+            if block.as_str() != reference {
+                return None;
+            }
+            return Some((
+                std::borrow::Cow::Owned(message.as_str().to_owned()),
+                BlockSlot::Item(index),
+            ));
+        }
+        let (message, tail) = reference.rsplit_once(':').filter(|(m, _)| !m.is_empty())?;
+        let (reasoning, number) = tail.strip_prefix('r').map_or((false, tail), |n| (true, n));
+        let index: u32 = number.parse().ok()?;
+        let canonical = if reasoning {
+            format!("r{index}")
+        } else {
+            index.to_string()
+        };
+        if tail != canonical {
+            return None;
+        }
+        Some((
+            std::borrow::Cow::Borrowed(message),
+            if reasoning {
+                BlockSlot::Reasoning(index)
+            } else {
+                BlockSlot::Item(index)
+            },
+        ))
+    }
     pub fn new(message: MessageId, index: u32) -> Self {
         Self {
-            id: format!("{}:{index}", message.as_str()),
+            id: if message.as_str().starts_with("~i1:") {
+                extended(&frame(
+                    5,
+                    &[&message_binary(&message), &u64::from(index).to_le_bytes()],
+                ))
+            } else {
+                format!("{}:{index}", message.as_str())
+            },
             message,
             slot: BlockSlot::Item(index),
         }
@@ -315,52 +377,19 @@ impl fmt::Display for InputId {
 /// Canonicalize a raw provider record, omitting only adapter-declared top-level volatile fields.
 /// RawValue preserves exponent spelling, which arbitrary_precision alone normalizes.
 pub fn canonical_record(raw: &[u8], volatile: &[&str]) -> Result<Vec<u8>, serde_json::Error> {
-    fn encode(raw: &RawValue, omit: &[&str], out: &mut String) -> Result<(), serde_json::Error> {
-        let text = raw.get();
-        match text.as_bytes()[0] {
-            b'{' => {
-                let fields: BTreeMap<String, &RawValue> = serde_json::from_str(text)?;
-                out.push('{');
-                let mut separator = "";
-                for (key, value) in fields {
-                    if omit.contains(&key.as_str()) {
-                        continue;
-                    }
-                    out.push_str(separator);
-                    out.push_str(&serde_json::to_string(&key)?);
-                    out.push(':');
-                    encode(value, &[], out)?;
-                    separator = ",";
-                }
-                out.push('}');
-            }
-            b'[' => {
-                let items: Vec<&RawValue> = serde_json::from_str(text)?;
-                out.push('[');
-                for (index, item) in items.into_iter().enumerate() {
-                    if index != 0 {
-                        out.push(',');
-                    }
-                    encode(item, &[], out)?;
-                }
-                out.push(']');
-            }
-            b'"' => out.push_str(&serde_json::to_string(&serde_json::from_str::<String>(
-                text,
-            )?)?),
-            _ => out.push_str(text),
+    let mut value =
+        RetainedJson::parse(raw).map_err(<serde_json::Error as serde::de::Error>::custom)?;
+    if let Some(fields) = value.as_object_mut() {
+        for field in volatile {
+            fields.remove(&NativeId::unicode(field));
         }
-        Ok(())
     }
-    let raw: &RawValue = serde_json::from_slice(raw)?;
-    let mut output = String::new();
-    encode(raw, volatile, &mut output)?;
-    Ok(output.into_bytes())
+    Ok(value.canonical())
 }
 
 /// The caller counts preceding records with this same hash in this input revision.
 pub fn fallback_hash(raw: &[u8], volatile: &[&str]) -> Result<String, serde_json::Error> {
-    Ok(BlobHash::of(&canonical_record(raw, volatile)?).to_string()[..12].to_owned())
+    Ok(BlobHash::of(&canonical_record(raw, volatile)?).to_string())
 }
 pub fn provisional_message_id(
     session: SessionId,
@@ -370,9 +399,201 @@ pub fn provisional_message_id(
 ) -> Result<MessageId, serde_json::Error> {
     let hash = fallback_hash(raw, volatile)?;
     Ok(MessageId {
-        id: format!("{}:~{hash}-{earlier_identical}", session.as_str()),
+        id: extended(&frame(
+            4,
+            &[
+                &session_binary(&session),
+                hash.as_bytes(),
+                &earlier_identical.to_le_bytes(),
+            ],
+        )),
         session,
     })
+}
+
+// The identity codec alone owns framing. Provider strings are never split to
+// discover relations; stored Message/Block relations remain explicit.
+fn ordinary_session(native: &NativeId) -> bool {
+    ordinary_local(native) && !native.as_str().contains(':')
+}
+fn ordinary_local(native: &NativeId) -> bool {
+    native.encoding().is_none() && !native.as_str().starts_with('~')
+}
+pub(crate) fn native_bytes(native: &NativeId) -> Vec<u8> {
+    let mut out = Vec::new();
+    for item in char::decode_utf16(native.utf16()) {
+        match item {
+            Ok(c) => {
+                let mut b = [0; 4];
+                out.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
+            }
+            Err(e) => {
+                let n = u32::from(e.unpaired_surrogate());
+                out.extend_from_slice(&[
+                    (0xe0 | (n >> 12)) as u8,
+                    (0x80 | ((n >> 6) & 63)) as u8,
+                    (0x80 | (n & 63)) as u8,
+                ]);
+            }
+        }
+    }
+    out
+}
+fn frame(tag: u8, fields: &[&[u8]]) -> Vec<u8> {
+    let mut out = vec![1, tag];
+    out.extend_from_slice(&(fields.len() as u64).to_le_bytes());
+    for field in fields {
+        out.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        out.extend_from_slice(field);
+    }
+    out
+}
+fn extended(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut out = String::from("~i1:");
+    for byte in bytes {
+        write!(&mut out, "{byte:02x}").expect("String formatting");
+    }
+    out
+}
+fn decoded_frame(value: &str) -> Option<Vec<u8>> {
+    let hex = value.strip_prefix("~i1:")?;
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    hex.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let text = std::str::from_utf8(pair).ok()?;
+            u8::from_str_radix(text, 16).ok()
+        })
+        .collect()
+}
+// A fixed-shape decoder never allocates according to an untrusted field count.
+fn frame_fields(bytes: &[u8], tag: u8, count: usize) -> Option<Vec<&[u8]>> {
+    if bytes.get(..2)? != [1, tag] {
+        return None;
+    }
+    let supplied = u64::from_le_bytes(bytes.get(2..10)?.try_into().ok()?);
+    if supplied != count as u64 {
+        return None;
+    }
+    let mut at = 10usize;
+    let mut fields = Vec::with_capacity(count);
+    for _ in 0..count {
+        let end = at.checked_add(8)?;
+        let length =
+            usize::try_from(u64::from_le_bytes(bytes.get(at..end)?.try_into().ok()?)).ok()?;
+        at = end;
+        let end = at.checked_add(length)?;
+        fields.push(bytes.get(at..end)?);
+        at = end;
+    }
+    (at == bytes.len()).then_some(fields)
+}
+fn session_from_binary(bytes: &[u8]) -> Option<SessionId> {
+    let fields = frame_fields(bytes, 1, 2)?;
+    let origin = Origin::new(std::str::from_utf8(fields[0]).ok()?).ok()?;
+    let native = NativeId::from_wtf8(fields[1]).ok()?;
+    let session = SessionId::from_native(&origin, &native).ok()?;
+    (session_binary(&session) == bytes).then_some(session)
+}
+fn message_from_binary(bytes: &[u8]) -> Option<MessageId> {
+    match *bytes.get(1)? {
+        3 => {
+            let fields = frame_fields(bytes, 3, 2)?;
+            let session = session_from_binary(fields[0])?;
+            let native = NativeId::from_wtf8(fields[1]).ok()?;
+            let message = MessageId::from_native(session, &native).ok()?;
+            (message_binary(&message) == bytes).then_some(message)
+        }
+        4 => {
+            let fields = frame_fields(bytes, 4, 3)?;
+            let session = session_from_binary(fields[0])?;
+            if fields[1].len() != 64
+                || !fields[1]
+                    .iter()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+                || fields[2].len() != 8
+            {
+                return None;
+            }
+            Some(MessageId {
+                id: extended(bytes),
+                session,
+            })
+        }
+        _ => None,
+    }
+}
+/// Inspect only canonical reversible frames emitted by this codec. This does
+/// not resolve opaque stored IDs or establish any source/ownership relation.
+/// The fixed shapes contain the Origin, Session native value and Message local.
+pub fn framed_identity_components(reference: &str) -> Option<Vec<NativeId>> {
+    fn session_components(bytes: &[u8]) -> Option<Vec<NativeId>> {
+        session_from_binary(bytes)?;
+        let fields = frame_fields(bytes, 1, 2)?;
+        Some(vec![
+            NativeId::unicode(std::str::from_utf8(fields[0]).ok()?),
+            NativeId::from_wtf8(fields[1]).ok()?,
+        ])
+    }
+    fn message_natives(bytes: &[u8]) -> Option<Vec<NativeId>> {
+        message_from_binary(bytes)?;
+        let tag = *bytes.get(1)?;
+        let fields = frame_fields(bytes, tag, if tag == 3 { 2 } else { 3 })?;
+        let mut values = session_components(fields[0])?;
+        if tag == 3 {
+            values.push(NativeId::from_wtf8(fields[1]).ok()?);
+        }
+        Some(values)
+    }
+    let bytes = decoded_frame(reference)?;
+    if extended(&bytes) != reference {
+        return None;
+    }
+    match *bytes.get(1)? {
+        1 => {
+            if session_from_binary(&bytes)?.as_str() != reference {
+                return None;
+            }
+            session_components(&bytes)
+        }
+        3 | 4 => {
+            if message_from_binary(&bytes)?.as_str() != reference {
+                return None;
+            }
+            message_natives(&bytes)
+        }
+        5 => {
+            BlockId::address(reference)?;
+            message_natives(frame_fields(&bytes, 5, 2)?[0])
+        }
+        _ => None,
+    }
+}
+
+fn session_binary(session: &SessionId) -> Vec<u8> {
+    if let Some(bytes) = decoded_frame(session.as_str()) {
+        return bytes;
+    }
+    // Only ordinary canonical references are generated by the constructors.
+    let (origin, native) = session
+        .as_str()
+        .split_once(':')
+        .unwrap_or(("", session.as_str()));
+    frame(1, &[origin.as_bytes(), native.as_bytes()])
+}
+fn message_binary(message: &MessageId) -> Vec<u8> {
+    if let Some(bytes) = decoded_frame(message.as_str()) {
+        return bytes;
+    }
+    let local = message
+        .as_str()
+        .strip_prefix(message.session().as_str())
+        .and_then(|s| s.strip_prefix(':'))
+        .unwrap_or(message.as_str());
+    frame(3, &[&session_binary(message.session()), local.as_bytes()])
 }
 
 #[cfg(test)]
@@ -409,7 +630,8 @@ mod tests {
     fn native_colons_never_change_message_session_relation() {
         let session = SessionId::new(&Origin::new("future").unwrap(), "one:two/agent").unwrap();
         let message = MessageId::new(session.clone(), "three:four").unwrap();
-        assert_eq!(message.as_str(), "future:one:two/agent:three:four");
+        assert!(message.as_str().starts_with("~i1:"));
+        assert_ne!(message.as_str(), "future:one:two/agent:three:four");
         assert_eq!(message.session(), &session);
         let decoded: MessageId =
             serde_json::from_slice(&serde_json::to_vec(&message).unwrap()).unwrap();
@@ -437,7 +659,7 @@ mod tests {
         let decoded: MessageId =
             serde_json::from_slice(&serde_json::to_vec(&opaque).unwrap()).unwrap();
         assert_eq!(decoded, opaque);
-        assert_eq!(opaque.session().as_str(), "future:: ");
+        assert!(opaque.session().as_str().starts_with("~i1:"));
     }
     #[test]
     fn hash_is_exact_bytes_and_checked_on_wire() {
@@ -495,7 +717,8 @@ mod tests {
         let first = provisional_message_id(session.clone(), raw, &[], 0).unwrap();
         let second = provisional_message_id(session, raw, &[], 1).unwrap();
         assert_ne!(first, second);
-        assert!(second.as_str().ends_with("-1"));
+        assert!(second.as_str().starts_with("~i1:"));
+        assert_eq!(fallback_hash(raw, &[]).unwrap().len(), 64);
     }
 }
 

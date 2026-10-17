@@ -6,10 +6,10 @@ use super::selection::{FactSelection, Transform};
 use super::{
     has_nonempty_text, has_recorded_output, is_shell_tool, native_duration, raw, text_parts,
 };
+use polylogue_model::RetainedJson as Value;
 use polylogue_model::merge::{BlockField as B, MessageField as M, Slot, UsageField as U};
 use polylogue_model::{BlockSlot, Timestamp};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Owner {
@@ -461,7 +461,7 @@ fn output_status(output: &[u8]) -> Result<Vec<(B, Vec<u8>)>, String> {
             if let Ok(raw) = raw::field(raw, &["is_error"])
                 .or_else(|_| raw::field(raw, &["metadata", "is_error"]))
             {
-                if value(raw).is_some_and(|v| v.is_boolean()) {
+                if value(raw).is_some_and(|v| v.as_bool().is_some()) {
                     is_error = Some(raw.to_vec());
                 }
             }

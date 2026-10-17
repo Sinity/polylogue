@@ -120,7 +120,6 @@ pub fn read(reader: &ReadHandle, request: &Value, until: Instant) -> Value {
 fn identities(item: &polylogue_store::tool_items::Item, until: Instant) -> std::io::Result<()> {
     for identity in [
         &item.reference,
-        item.operation.session.as_str(),
         &item.operation.invocation,
         &item.operation.native_session,
     ] {
@@ -135,18 +134,23 @@ fn identities(item: &polylogue_store::tool_items::Item, until: Instant) -> std::
         .chain(item.operation.direct_anchors.iter())
         .chain(item.operation.wrapper.iter())
         .chain(item.operation.wrapper_overlaps.iter())
-        .chain(item.operation.message.iter())
     {
         if let Err(e) = crate::output_json::check_identity(identity, until) {
             return Err(e);
         }
     }
+    crate::output_json::check_reference(item.operation.session.as_str(), until)?;
+    if let Some(anchor) = &item.operation.provisional_anchor {
+        // A provisional anchor is a canonical source Block ID or an
+        // irreversible source-record digest, never a native invocation key.
+        crate::output_json::check_reference(anchor, until)?;
+    }
+    if let Some(message) = &item.operation.message {
+        crate::output_json::check_reference(message, until)?;
+    }
     for association in &item.associations {
-        for identity in [
-            &association.message,
-            &association.input,
-            &association.constructor,
-        ] {
+        crate::output_json::check_reference(&association.message, until)?;
+        for identity in [&association.input, &association.constructor] {
             crate::output_json::check_identity(identity, until)?;
         }
     }

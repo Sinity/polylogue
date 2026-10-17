@@ -7,19 +7,20 @@ use super::{
     projection::{Fact, Field},
 };
 use crate::selection::{self, Operation, Recipe, RecordRange, ScalarError, SelectedRaw};
+use polylogue_model::RetainedJson as Value;
 use polylogue_model::{
     MessageId, PromptKind, Role, ToolOutput, WrittenBy,
     merge::{BlockField, MessageField},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::io::Write;
 pub const CODEC_VERSION: u32 = 1;
-pub const ADAPTER_RECIPE_VERSION: u32 = 1;
+pub const ADAPTER_RECIPE_VERSION: u32 = 2;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Transform {
     JsonValueV1,
     JsonStringV1,
+    NativeIdV2,
     ProviderTimeV1,
     ToolStatusV1 {
         kind: StatusKind,
@@ -27,7 +28,7 @@ pub enum Transform {
     },
     ToolOutputV1,
     ParentReferenceV1 {
-        native_uuid: String,
+        native_uuid: polylogue_model::NativeId,
         resolved: MessageId,
     },
 }
@@ -136,6 +137,7 @@ impl Recipe for LeafSelection {
         match &self.transform {
             Transform::JsonValueV1 => Operation::JsonValue,
             Transform::JsonStringV1 => Operation::JsonString,
+            Transform::NativeIdV2 => Operation::NativeId,
             Transform::ProviderTimeV1 => Operation::ProviderTime,
             Transform::ToolStatusV1 { .. }
             | Transform::ToolOutputV1
@@ -174,7 +176,7 @@ impl Recipe for LeafSelection {
                 native_uuid,
                 resolved,
             } => {
-                if value.as_str() != Some(native_uuid.as_str()) {
+                if value.native() != Some(native_uuid) {
                     return Err(ScalarError::Invalid(Error(
                         "parent UUID differs from its proved relation",
                     )));
@@ -266,10 +268,13 @@ fn transform(fact: &Fact) -> Option<Transform> {
                 BlockField::Text
                 | BlockField::ThinkingText
                 | BlockField::ThinkingData
-                | BlockField::Tool
-                | BlockField::CallId,
+                | BlockField::Tool,
             ..
         } => Transform::JsonStringV1,
+        Field::Block {
+            field: BlockField::CallId,
+            ..
+        } => Transform::NativeIdV2,
         Field::Block {
             field: BlockField::Input | BlockField::Encrypted | BlockField::ExitCode,
             ..
@@ -522,14 +527,14 @@ impl AuthorSelection {
 /// The interpretation owner proved this session-scoped record relation. The
 /// recipe verifies its original UUID donor; no opaque ID is parsed or guessed.
 pub(super) fn parent(
-    native_uuid: &str,
+    native_uuid: &polylogue_model::NativeId,
     resolved: MessageId,
     origins: &RecordOrigins,
 ) -> Option<LeafSelection> {
     let input = origins.select(&[selection::PathPart::Key("parentUuid".into())])?;
     Some(LeafSelection::new(
         Transform::ParentReferenceV1 {
-            native_uuid: native_uuid.into(),
+            native_uuid: native_uuid.clone(),
             resolved,
         },
         input,

@@ -1,7 +1,7 @@
 //! Provider-neutral original-record selection, bounded record decoding and leaf
 //! streaming. Provider modules own attribution, descriptor versions and recipes.
+use polylogue_model::RetainedJson as Value;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::io::{self, Write};
 /// Exact half-open original-record coordinates; the provider-owned envelope
 /// pins input/chain. These coordinates are never inferred payload extents.
@@ -34,6 +34,7 @@ pub struct SelectedRaw {
 pub enum Operation {
     JsonValue,
     JsonString,
+    NativeId,
     TextJoinLf,
     ProviderTime,
     ProviderScalar,
@@ -186,7 +187,7 @@ pub fn write_value<E, W: Write, R: Recipe>(
         failure: None,
     };
     let result = (|| {
-        let mut cached: Option<(RecordRange, serde_json::Value)> = None;
+        let mut cached: Option<(RecordRange, polylogue_model::RetainedJson)> = None;
         let text = recipe.operation() == Operation::TextJoinLf;
         if text {
             sink.write_all(b"\"").map_err(ValueError::Io)?;
@@ -231,7 +232,7 @@ pub fn write_value<E, W: Write, R: Recipe>(
                 .1;
             for (component, part) in input.path.iter().enumerate() {
                 value = match part {
-                    PathPart::Key(key) => value.as_object().and_then(|object| object.get(key)),
+                    PathPart::Key(key) => value.get(key),
                     PathPart::Index(index) => usize::try_from(*index)
                         .ok()
                         .and_then(|index| value.as_array().and_then(|array| array.get(index))),
@@ -244,6 +245,10 @@ pub fn write_value<E, W: Write, R: Recipe>(
             match recipe.operation() {
                 Operation::JsonValue => {
                     serde_json::to_writer(&mut sink, value).map_err(ValueError::Json)?
+                }
+                Operation::NativeId => {
+                    let native = value.native().ok_or(ValueError::Type { input: ordinal })?;
+                    serde_json::to_writer(&mut sink, native).map_err(ValueError::Json)?;
                 }
                 Operation::JsonString => {
                     let text = value.as_str().ok_or(ValueError::Type { input: ordinal })?;

@@ -17,15 +17,19 @@ impl ResponseKey {
     pub fn user(uuid: &str) -> Self {
         Self {
             role: Role::User,
-            response: uuid.into(),
-            request: String::new(),
+            response: super::native_key(&polylogue_model::NativeId::unicode(uuid))
+                .expect("native key serialization"),
+            request: super::native_key(&polylogue_model::NativeId::unicode(""))
+                .expect("native key serialization"),
         }
     }
     pub fn new(response: &str, request: &str) -> Self {
         Self {
             role: Role::Assistant,
-            response: response.into(),
-            request: request.into(),
+            response: super::native_key(&polylogue_model::NativeId::unicode(response))
+                .expect("native key serialization"),
+            request: super::native_key(&polylogue_model::NativeId::unicode(request))
+                .expect("native key serialization"),
         }
     }
 }

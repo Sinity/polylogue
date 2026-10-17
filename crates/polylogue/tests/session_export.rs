@@ -227,7 +227,13 @@ fn opaque_native_identity_is_not_split_or_interpreted_as_a_path() {
         "01900000-0000-7000-8000-000000009502",
     );
     let destination = world.work.path().join("opaque");
-    let reference = format!("claude-code:{native}");
+    let reference = polylogue_model::SessionId::new(
+        &polylogue_model::Origin::new("claude-code").unwrap(),
+        native,
+    )
+    .unwrap()
+    .as_str()
+    .to_owned();
     let out = world.export(&reference, &destination);
     assert!(out.status.success(), "{out:?}");
     let document = read(&destination.join("claude-code/opaque%3A..%CE%BB%25.json"));

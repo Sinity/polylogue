@@ -44,11 +44,11 @@ mod wal;
 pub const ARCHIVE_VERSION: u32 = 2;
 pub const ARCHIVE_SPEC_COMMIT: &str = "8c4e2210692282420d7a5ca91dc005b409a668f1";
 pub const EMBEDDINGS_VERSION: u32 = 0;
-pub const INDEX_VERSION: u32 = 19;
-/// Exact owning forward-schema revision, independently qualified from inbox index8.
+pub const INDEX_VERSION: u32 = 20;
+/// Exact native forward schema, with upstream basis and local overlay in provenance.json.
 pub const INDEX_SQL_BLAKE3: &str =
-    "194b3aa184952a2e67e911d6260b53df50669ebe922a5d2d7404332e46e42b0a";
-pub const INDEX_SPEC_COMMIT: &str = "aca97f216bc3c56a81f4b2523b81744ce42c6454";
+    "8d44aa6bed43153b9870660655885d2743ac01ca7a17d9ea0a4d64729cf86adf";
+pub const INDEX_SPEC_COMMIT: &str = "5551b6e3796f968011323e436f0c72f5339832b4";
 const ARCHIVE_SQL: &str = include_str!("../schema/archive.sql");
 const INDEX_SQL: &str = include_str!("../schema/index.sql");
 const EMBEDDINGS_SQL: &str = include_str!("../schema/embeddings.sql");
@@ -138,7 +138,9 @@ pub enum Error {
         found: u32,
         supported: u32,
     },
-    #[error("index at {file} requires rebuild: found version {found}, expected {expected}")]
+    #[error(
+        "unsupported index at {file}: found version {found}, expected {expected}; preserving existing references requires a qualified transition; files were not replaced"
+    )]
     IndexRebuildRequired {
         file: PathBuf,
         found: u32,
@@ -605,7 +607,7 @@ impl Writer {
         }
         let mut lock = startup_lock(&root, empty, true)?;
         wal::validate(&root, cancelled)?;
-        let index_rebuild = recovery::begin_index_rebuild(&root, cancelled)?;
+        recovery::check_index_compatibility(&root)?;
         recovery::migrate(&root, cancelled)?;
         preflight(&root)?;
         wal::check_cancel(cancelled)?;
@@ -622,9 +624,6 @@ impl Writer {
             EMBEDDINGS_VERSION,
             true,
         )?;
-        if let Some(proof) = index_rebuild {
-            recovery::finish_index_rebuild(&root, proof, cancelled)?;
-        }
         hashed_blobs::Store::open(&root, vec![], 0o600)?;
         private_dir(&root.join("blobs"))?;
         private_dir(&root.join("blobs/tmp"))?;
@@ -662,6 +661,7 @@ impl ReadHandle {
         let root = fs::canonicalize(path)?;
         let lock = startup_lock(&root, false, false)?;
         wal::validate(&root, cancelled)?;
+        recovery::check_index_compatibility(&root)?;
         if recovery::raw_versions(&root)? == Some(1) {
             return Err(wal::required(
                 &root.join("archive.db"),

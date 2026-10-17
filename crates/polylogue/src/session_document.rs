@@ -2,7 +2,7 @@
 //! catalog is not source-complete; the caller must preserve returned coverage.
 use crate::output_json::Encoder;
 use polylogue_model::{
-    BlockId, BlockSlot, ToolOutcome, ToolOutput,
+    BlockId, BlockSlot, RetainedJson, ToolOutcome, ToolOutput,
     merge::{BlockField, MessageField, Slot, UsageField},
 };
 use polylogue_store::contributions::{
@@ -16,12 +16,16 @@ use std::{
 };
 const LEAF: usize = 65536;
 const PIECE: usize = 4096;
+const METADATA: usize = 4 * 1_048_576;
+mod opaque_fields;
+use opaque_fields::OpaqueFields;
 #[derive(Debug)]
 pub(crate) struct Coverage {
     pub up_to_date: bool,
     pub messages: u64,
     pub catalog: SessionCoverage,
     pub qualification: Value,
+    pub incomplete_reasons: Vec<String>,
     pub recovery: Option<polylogue_model::RecoveryQualification>,
 }
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -40,7 +44,7 @@ fn check(deadline: Instant) -> io::Result<()> {
         Ok(())
     }
 }
-fn field_value(field: &FieldView<'_>, origin: bool) -> io::Result<Option<Value>> {
+fn field_bytes(field: &FieldView<'_>, origin: bool) -> io::Result<Option<Vec<u8>>> {
     let range = if origin {
         stored(field.origin_range(0, LEAF))?
     } else {
@@ -50,10 +54,22 @@ fn field_value(field: &FieldView<'_>, origin: bool) -> io::Result<Option<Value>>
     if !range.eof {
         return Err(invalid("normalized JSON leaf exceeds response admission"));
     }
-    serde_json::from_slice(&range.bytes)
-        .map(Some)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    Ok(Some(range.bytes))
 }
+fn retained_field(field: &FieldView<'_>, origin: bool) -> io::Result<Option<RetainedJson>> {
+    field_bytes(field, origin)?
+        .map(|bytes| {
+            RetainedJson::parse(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        })
+        .transpose()
+}
+
+fn field_value(field: &FieldView<'_>, origin: bool) -> io::Result<Option<Value>> {
+    retained_field(field, origin)?
+        .map(|value| serde_json::from_slice(&value.canonical()).map_err(io::Error::other))
+        .transpose()
+}
+
 fn resolved(field: FieldRead<'_>) -> io::Result<FieldView<'_>> {
     match field {
         FieldRead::Value(value) => Ok(value),
@@ -115,7 +131,7 @@ fn usage_name(field: UsageField) -> &'static str {
         UsageField::ProviderCostNusd => "provider_cost_usd",
     }
 }
-fn block_name(field: BlockField) -> &'static str {
+pub(crate) fn block_name(field: BlockField) -> &'static str {
     match field {
         BlockField::Text | BlockField::ThinkingText => "text",
         BlockField::Encrypted => "encrypted",
@@ -172,8 +188,10 @@ pub(crate) fn write_with_cancel(
         }
     })?;
     let mut qualification = source_qualification.result(&session.catalog());
+    let mut incomplete_reasons = source_qualification.incomplete_reasons();
     let recovery = stored(session.recovery())?;
     if recovery.is_some() {
+        incomplete_reasons.push(polylogue_model::RecoveryQualification::NOTE.into());
         qualification["outcome"] = json!("degraded");
         qualification["notes"]
             .as_array_mut()
@@ -212,11 +230,18 @@ pub(crate) fn write_with_cancel(
     e.syntax(b",\"session\":{")?;
     let h = source_qualification.header(stored(session.header())?);
     e.key("id")?;
-    e.identity(h.id.as_str())?;
+    e.reference(h.id.as_str())?;
     member(&mut e, "origin", &json!(h.origin.as_str()))?;
     e.syntax(b",")?;
     e.key("native_id")?;
+    let native =
+        polylogue_model::NativeId::from_wire(&h.native_id, h.native_id_encoding.as_deref())
+            .map_err(|_| invalid("invalid native Session identity"))?;
+    crate::output_json::check_native_identity(&native, deadline)?;
     e.identity(&h.native_id)?;
+    if let Some(encoding) = &h.native_id_encoding {
+        member(&mut e, "native_id_encoding", &json!(encoding))?;
+    }
     member(&mut e, "kind", &serde_json::to_value(h.kind)?)?;
     for (key, value) in [
         ("title", &h.title),
@@ -266,6 +291,11 @@ pub(crate) fn write_with_cancel(
             member(&mut e, "name", &json!(name))?;
         }
         e.syntax(b"}")?;
+    }
+    if let Some(attrs) = &h.attrs {
+        e.syntax(b",")?;
+        e.key("attrs")?;
+        e.retained(attrs, false)?;
     }
     e.syntax(b"},\"messages\":[")?;
     let mut after = None;
@@ -317,6 +347,7 @@ pub(crate) fn write_with_cancel(
         messages,
         catalog,
         qualification,
+        incomplete_reasons,
         recovery,
     })
 }
@@ -329,7 +360,7 @@ fn write_message<W: Write>(
     let header = stored(m.header())?;
     e.syntax(b"{")?;
     e.key("id")?;
-    e.identity(m.id().as_str())?;
+    e.reference(m.id().as_str())?;
     member(
         e,
         "version_hash",
@@ -343,7 +374,7 @@ fn write_message<W: Write>(
     if let Some(progress) = header.in_progress {
         member(e, "in_progress", &json!(progress))?;
     }
-    write_message_fields(m, e, deadline)?;
+    write_message_fields(m, e, deadline, false)?;
     e.syntax(b",\"blocks\":[")?;
     let mut index = 0u64;
     while let Some(block) = stored(m.block_at(index))? {
@@ -395,6 +426,7 @@ fn write_message_fields<W: Write>(
     m: &MessageView,
     e: &mut Encoder<W>,
     deadline: Instant,
+    model_page: bool,
 ) -> io::Result<()> {
     let mut cursor = None;
     while let Some(entry) = stored(m.next_field(cursor.as_ref(), LEAF))? {
@@ -413,7 +445,7 @@ fn write_message_fields<W: Write>(
                     .as_str()
                     .or_else(|| value.get("id").and_then(Value::as_str))
                     .ok_or_else(|| invalid("resolved reference lacks opaque identity"))?;
-                e.identity(id)?;
+                e.reference(id)?;
             } else {
                 e.value(&value)?;
             }
@@ -421,6 +453,7 @@ fn write_message_fields<W: Write>(
         cursor = Some(entry.cursor);
     }
     for extras in [false, true] {
+        let mut opaque = OpaqueFields::new("attrs", model_page);
         let mut cursor = None;
         let mut first = true;
         while let Some(entry) = stored(m.next_field(cursor.as_ref(), LEAF))? {
@@ -432,6 +465,13 @@ fn write_message_fields<W: Write>(
             };
             if let Some(key) = key {
                 let field = resolved(entry.value)?;
+                if extras {
+                    let bytes = field_bytes(&field, false)?
+                        .ok_or_else(|| invalid("missing selected opaque value"))?;
+                    opaque.push(e, key, &bytes)?;
+                    cursor = Some(entry.cursor);
+                    continue;
+                }
                 let mut value = field_value(&field, false)?
                     .ok_or_else(|| invalid("missing selected field value"))?;
                 if matches!(entry.slot, Slot::Usage(UsageField::ProviderCostNusd)) {
@@ -463,8 +503,22 @@ fn write_message_fields<W: Write>(
         if !first {
             e.syntax(b"}")?;
         }
+        opaque.finish(e)?;
     }
     Ok(())
+}
+
+fn opaque_value<W: Write>(
+    e: &mut Encoder<W>,
+    value: &RetainedJson,
+    _deadline: Instant,
+    model_page: bool,
+) -> io::Result<()> {
+    if model_page {
+        e.opaque(value)
+    } else {
+        e.retained(value, false)
+    }
 }
 
 fn write_block<W: Write>(
@@ -482,7 +536,7 @@ fn write_block<W: Write>(
     };
     e.syntax(b"{")?;
     e.key("id")?;
-    e.identity(id.as_str())?;
+    e.reference(id.as_str())?;
     member(e, "kind", &json!(&b.kind))?;
     if matches!(b.kind.as_str(), "text" | "thinking") {
         if stored(b.text_range(0, PIECE))?.is_some() {
@@ -512,7 +566,7 @@ fn write_block<W: Write>(
             member(e, "encrypted", &json!(encrypted))?;
         }
     }
-    write_block_fields(b, e, deadline, true)?;
+    write_block_fields(b, e, deadline, true, false)?;
     e.syntax(b"}")
 }
 fn write_block_fields<W: Write>(
@@ -520,6 +574,7 @@ fn write_block_fields<W: Write>(
     e: &mut Encoder<W>,
     deadline: Instant,
     include_output: bool,
+    model_page: bool,
 ) -> io::Result<()> {
     if b.kind == "tool_result" {
         let result =
@@ -578,16 +633,32 @@ fn write_block_fields<W: Write>(
                         }
                     }
                 } else {
+                    if matches!(
+                        kind,
+                        BlockField::Input | BlockField::ThinkingData | BlockField::OtherData
+                    ) {
+                        let value = retained_field(&field, false)?
+                            .ok_or_else(|| invalid("missing opaque block field"))?;
+                        e.syntax(b",")?;
+                        e.key(block_name(kind))?;
+                        opaque_value(e, &value, deadline, model_page)?;
+                        cursor = Some(entry.cursor);
+                        continue;
+                    }
                     let value = field_value(&field, false)?
                         .ok_or_else(|| invalid("missing block field"))?;
                     e.syntax(b",")?;
                     e.key(block_name(kind))?;
-                    if matches!(kind, BlockField::CallId | BlockField::ProducedBy) {
+                    if kind == BlockField::CallId {
+                        let id: polylogue_model::NativeId = serde_json::from_value(value)
+                            .map_err(|_| invalid("invalid native call identity"))?;
+                        e.native_id(&id)?;
+                    } else if kind == BlockField::ProducedBy {
                         let id = value
                             .as_str()
                             .or_else(|| value.get("id").and_then(Value::as_str))
                             .ok_or_else(|| invalid("block reference lacks identity"))?;
-                        e.identity(id)?;
+                        e.reference(id)?;
                     } else {
                         e.value(&value)?;
                     }
@@ -597,29 +668,20 @@ fn write_block_fields<W: Write>(
         cursor = Some(entry.cursor);
     }
     let mut cursor = None;
-    let mut first = true;
+    let mut opaque = OpaqueFields::new("data", model_page);
     while let Some(entry) = stored(b.next_field(cursor.as_ref(), LEAF))? {
         check(deadline)?;
         if let BlockFieldAddress::Extra(key) = entry.address {
             if b.kind != "tool_result" && b.kind != "tool_call" {
                 return Err(invalid("block extra export mapping unavailable"));
             }
-            let value = field_value(&resolved(entry.value)?, false)?
+            let bytes = field_bytes(&resolved(entry.value)?, false)?
                 .ok_or_else(|| invalid("missing block extra"))?;
-            if first {
-                e.syntax(b",\"data\":{")?;
-                first = false;
-            } else {
-                e.syntax(b",")?;
-            }
-            e.key(&key)?;
-            e.value(&value)?;
+            opaque.push(e, &key, &bytes)?;
         }
         cursor = Some(entry.cursor);
     }
-    if !first {
-        e.syntax(b"}")?;
-    }
+    opaque.finish(e)?;
     Ok(())
 }
 /// Finite selected metadata, encoded with exactly the document's logical-value
@@ -627,7 +689,7 @@ fn write_block_fields<W: Write>(
 struct Metadata(Vec<u8>);
 impl Write for Metadata {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > (4 * 1_048_576usize).saturating_sub(self.0.len()) {
+        if bytes.len() > METADATA.saturating_sub(self.0.len()) {
             return Err(invalid("selected metadata exceeds admission"));
         }
         self.0.extend_from_slice(bytes);
@@ -653,10 +715,13 @@ fn metadata(
     Ok(value)
 }
 pub(crate) fn message_metadata(m: &MessageView, deadline: Instant) -> io::Result<Value> {
-    metadata(|e| write_message_fields(m, e, deadline), deadline)
+    metadata(|e| write_message_fields(m, e, deadline, true), deadline)
 }
 pub(crate) fn block_metadata(b: &BlockView<'_>, deadline: Instant) -> io::Result<Value> {
-    metadata(|e| write_block_fields(b, e, deadline, false), deadline)
+    metadata(
+        |e| write_block_fields(b, e, deadline, false, true),
+        deadline,
+    )
 }
 
 fn write_origins<W: Write>(
@@ -704,7 +769,7 @@ fn origin<W: Write>(
     name: &str,
     first: &mut bool,
 ) -> io::Result<()> {
-    if let Some(value) = field_value(field, true)? {
+    if let Some(value) = retained_field(field, true)? {
         if *first {
             e.syntax(b",\"field_origins\":[")?;
             *first = false;
@@ -716,7 +781,7 @@ fn origin<W: Write>(
         e.identity(name)?;
         e.syntax(b",")?;
         e.key("origin")?;
-        e.preserved(&value)?;
+        e.origin(&value)?;
         e.syntax(b"}")?;
     }
     Ok(())

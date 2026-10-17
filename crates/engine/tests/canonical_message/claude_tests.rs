@@ -405,3 +405,114 @@ fn nonadjacent_claude_response_keeps_contribution_order_and_stale_turn_refuses()
     }
     assert!(view.block_at(3).unwrap().is_none());
 }
+
+#[test]
+fn claude_immediate_opaque_extra_retains_utf16_numbers_null_and_own_origin() {
+    let raw = br#"{"type":"user","uuid":"u","sessionId":"synthetic","message":{"role":"user","content":"text"},"uninterpreted":{"\ud800":[9007199254740993,1e+02,-0,null,"\udfff"]}}
+"#;
+    let (mut world, pending) = make_world(raw, raw);
+    let req = request(&world, &pending[0]);
+    let handle = begin(&mut world, &req);
+    let source = world.complete(&handle);
+    let view = selected(&mut world, &source);
+    let slot = Slot::Extra {
+        block: None,
+        key: "uninterpreted".into(),
+    };
+    let FieldRead::Value(field) = view.field(&slot, 65536).unwrap().unwrap() else {
+        panic!("opaque extra conflict")
+    };
+    let bytes = field.range(0, 65536).unwrap().bytes;
+    assert_eq!(
+        bytes,
+        br#"{"\ud800":[9007199254740993,1e+02,-0,null,"\udfff"]}"#
+    );
+    assert!(field.supplied);
+    let origin: Value =
+        serde_json::from_slice(&field.origin_range(0, 65536).unwrap().unwrap().bytes).unwrap();
+    assert_eq!(origin["format"], "claude-code-field-origin");
+    assert_eq!(
+        origin["selection"]["inputs"][0]["path"],
+        json!([{"Key":"uninterpreted"}])
+    );
+    assert_eq!(
+        origin["binding"]["input"],
+        polylogue_model::InputId::imported(
+            &world.source_binding,
+            "claude-code-jsonl",
+            &["claude-main", SID]
+        )
+        .as_str()
+    );
+}
+
+#[test]
+fn claude_nested_extra_and_selected_key_collision_refuse_without_source_certificate() {
+    let cases = [
+        r#"{"type":"user","uuid":"u","message":{"role":"user","content":"text","x":1},"message.x":2}"#,
+        r#"{"type":"assistant","uuid":"u","requestId":"r","stop_sequence":1,"message":{"id":"a","role":"assistant","content":[{"type":"text","text":"text"}],"stop_sequence":null}}"#,
+    ];
+    for raw in cases {
+        let bytes = format!("{raw}\n");
+        let (mut world, pending) = make_world(bytes.as_bytes(), bytes.as_bytes());
+        let req = request(&world, &pending[0]);
+        let handle = begin(&mut world, &req);
+        let mut refused = false;
+        for _ in 0..4000 {
+            match world.compute_with(&handle, work_budget()) {
+                Ok(action) => assert!(!matches!(
+                    m::apply(&mut world.writer, action).unwrap(),
+                    m::Applied::Source(_)
+                )),
+                Err(m::Error::UnsupportedField { .. }) => {
+                    refused = true;
+                    break;
+                }
+                Err(e) => panic!("unexpected refusal: {e}"),
+            }
+        }
+        assert!(refused, "ambiguous attrs key must not certify: {raw}");
+        assert!(
+            world
+                .writer
+                .current_source_projection(&world.head.token, &req.logical_key, 65536)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn claude_opaque_extra_must_match_original_selected_source() {
+    let original = br#"{"type":"user","uuid":"u","message":{"role":"user","content":"text"},"uninterpreted":{"v":9007199254740993}}
+"#;
+    let parsed = br#"{"type":"user","uuid":"u","message":{"role":"user","content":"text"},"uninterpreted":{"v":9007199254740992}}
+"#;
+    let (mut world, pending) = make_world(original, parsed);
+    let req = request(&world, &pending[0]);
+    let handle = begin(&mut world, &req);
+    let mut refused = false;
+    for _ in 0..4000 {
+        match world.compute_with(&handle, work_budget()) {
+            Ok(action) => assert!(!matches!(
+                m::apply(&mut world.writer, action).unwrap(),
+                m::Applied::Source(_)
+            )),
+            Err(_) => {
+                refused = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        refused,
+        "opaque extra must independently verify against retained input"
+    );
+    assert!(
+        world
+            .writer
+            .current_source_projection(&world.head.token, &req.logical_key, 65536)
+            .unwrap()
+            .is_none()
+    );
+}

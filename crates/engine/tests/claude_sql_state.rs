@@ -657,3 +657,26 @@ fn pinned_body_namespace_distinguishes_unavailable_from_invalid_cells() {
     assert!(view.body("c.txt").is_err());
     assert!(matches!(view.take_error(), Some(StoreError::Invariant(_))));
 }
+
+#[test]
+fn interpreted_text_repair_receipt_survives_sqlite_restart_without_changing_record_accounting() {
+    let bytes = br#"{"type":"user","uuid":"user","sessionId":"s","promptSource":"typed","message":{"content":"before\ud800after"}}
+"#;
+    let mut world = World::new(bytes);
+    world.parse(bytes);
+    assert_eq!(world.head.counts.framed, 1);
+    assert_eq!(world.head.counts.used, 1);
+    assert_eq!(world.head.counts.undecodable, 0);
+    world.restart();
+    let snapshot = world.writer().parser_snapshot(&world.head.token).unwrap();
+    let view = adapter::View::new(&snapshot, broad()).unwrap();
+    let effects = view.effects(world.head.token.step).unwrap().unwrap();
+    assert_eq!(effects.text_repairs.len(), 1);
+    let repair = &effects.text_repairs[0];
+    assert_eq!(repair.record, 0);
+    assert_eq!(
+        repair.byte_offset,
+        bytes.windows(6).position(|w| w == br"\ud800").unwrap() as u64
+    );
+    assert_eq!(repair.count, 1);
+}

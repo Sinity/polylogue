@@ -63,6 +63,7 @@ impl Fixture {
                 session: &self.session,
                 origin: &self.origin,
                 native_session: "session:with:colons",
+                native_session_encoding: None,
                 session_kind: SessionKind::Main,
                 message: &self.message,
                 sequence: 0,
@@ -1000,6 +1001,7 @@ fn changed_same_basis_metadata_and_failed_reservation_leave_no_uncommitted_handl
             session: &f.session,
             origin: &f.origin,
             native_session: "session:with:colons",
+            native_session_encoding: None,
             session_kind: SessionKind::Main,
             message: &f.message,
             sequence: 0,
@@ -3246,6 +3248,7 @@ fn reparse_withdrawal_never_crosses_logical_candidate_or_archive_revision() {
                 session: &f.session,
                 origin: &f.origin,
                 native_session: "session:with:colons",
+                native_session_encoding: None,
                 session_kind: SessionKind::Main,
                 message: &f.message,
                 sequence: 0,
@@ -3375,6 +3378,7 @@ fn compatible_body_sequence(
                 session: &f.session,
                 origin: &f.origin,
                 native_session: "session:with:colons",
+                native_session_encoding: None,
                 session_kind: SessionKind::Main,
                 message: &f.message,
                 sequence,
@@ -3845,3 +3849,6 @@ fn compatibility_reparse_withdraws_old_membership_and_retired_body_drops_its_cer
             .is_err()
     );
 }
+
+#[path = "retained_identity.rs"]
+mod retained_identity;

@@ -1,9 +1,9 @@
 //! Codex rollout interpretation. SQLite metadata and paginated-history adapters
 //! are not registered here. Unknown native kinds remain explicitly unrecognized.
 use crate::frame::{IgnoredKind, Record, RecordOutcome, RecordParser};
+use polylogue_model::RetainedJson as Value;
 use polylogue_model::*;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 pub mod history;
 pub mod keyed;
@@ -14,7 +14,7 @@ pub mod projection;
 pub mod prompt_history;
 mod raw;
 pub mod selection;
-pub const PARSER_VERSION: u32 = 7;
+pub const PARSER_VERSION: u32 = 8;
 
 /// Record kinds that carry nothing to keep in the index (their bytes stay stored).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +180,7 @@ fn has_recorded_output(value: Option<&Value>) -> bool {
         Some(Value::Array(items)) => items
             .iter()
             .all(|item| item.is_string() || item.get("text").is_some_and(Value::is_string)),
-        Some(Value::Object(object)) => object.get("output").is_some_and(Value::is_string),
+        Some(Value::Object(object)) => object.get(&"output".into()).is_some_and(Value::is_string),
         _ => false,
     }
 }
@@ -189,10 +189,10 @@ fn recorded_output(value: Option<&Value>) -> Option<ToolOutput> {
         return None;
     }
     match value? {
-        Value::String(text) => Some(ToolOutput::Text(text.clone())),
+        Value::String(text) => Some(ToolOutput::Text(text.text().to_owned())),
         Value::Array(_) => Some(ToolOutput::Text(texts(value).join("\n"))),
         Value::Object(object) => object
-            .get("output")
+            .get(&"output".into())
             .and_then(Value::as_str)
             .map(|text| ToolOutput::Text(text.into())),
         _ => None,
@@ -204,7 +204,7 @@ fn output_outcome(tool: &str, output: &Value, text: &str) -> (ToolOutcome, Optio
     let mut candidates: Vec<Value> = Vec::new();
     match output {
         Value::String(s) => {
-            if let Ok(v) = serde_json::from_str::<Value>(s) {
+            if let Some(v) = scalar_json(s.text()) {
                 candidates.push(v);
             }
         }
@@ -212,7 +212,7 @@ fn output_outcome(tool: &str, output: &Value, text: &str) -> (ToolOutcome, Optio
         Value::Array(items) => {
             for i in items {
                 if let Some(t) = i.get("text").and_then(Value::as_str)
-                    && let Ok(v) = serde_json::from_str::<Value>(t)
+                    && let Some(v) = scalar_json(t)
                 {
                     candidates.push(v);
                 }
@@ -343,3 +343,34 @@ fn parse_timestamp(text: &str) -> Option<Timestamp> {
     let at = text.parse::<jiff::Timestamp>().ok()?;
     Some(Timestamp(at.as_millisecond()))
 }
+
+/// Codex's current mapping remains scalar-only. Reject before keyed state or
+/// identity construction; lexical opaque numbers still use the retained tree.
+fn require_scalar_json(value: &Value) -> Result<(), String> {
+    match value {
+        Value::String(value) if value.native().encoding().is_some() => {
+            Err("Codex non-scalar JSON strings are not yet supported".into())
+        }
+        Value::Array(values) => values.iter().try_for_each(require_scalar_json),
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if key.encoding().is_some() {
+                    return Err("Codex non-scalar JSON keys are not yet supported".into());
+                }
+                require_scalar_json(value)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn scalar_json(text: &str) -> Option<Value> {
+    let value = Value::parse(text.as_bytes()).ok()?;
+    require_scalar_json(&value).ok()?;
+    Some(value)
+}
+
+#[cfg(test)]
+#[path = "scalar_compatibility_tests.rs"]
+mod scalar_compatibility_tests;

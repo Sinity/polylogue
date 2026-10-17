@@ -827,3 +827,33 @@ fn body_continuation_allows_budget_refitting_but_refuses_a_new_authored_context(
     assert_eq!(stale["outcome"], "error");
     assert_eq!(stale["error"]["reason"], "stale_read");
 }
+
+#[test]
+fn native_identity_authored_targets_refuse_encoded_secrets_but_authors_remain_opaque() {
+    let world = World::new();
+    let secret = polylogue_model::NativeId::from_utf16(
+        &format!("ghp_{}", "A".repeat(36))
+            .encode_utf16()
+            .chain([0xd800])
+            .collect::<Vec<_>>(),
+    );
+    let session = polylogue_model::SessionId::new(
+        &polylogue_model::Origin::new("claude-code").unwrap(),
+        "privacy",
+    )
+    .unwrap();
+    let reference = format!(
+        "message:{}",
+        polylogue_model::MessageId::from_native(session, &secret)
+            .unwrap()
+            .as_str()
+    );
+    let mut write = growth_request(1, &reference);
+    let refused = world.write(&write);
+    assert_eq!(refused["outcome"], "error", "{refused}");
+    assert_eq!(refused["error"]["kind"], "not_yet_available");
+    write.targets.as_mut().unwrap()[0].reference = "message:claude-code:privacy:ordinary".into();
+    write.author = reference.strip_prefix("message:").unwrap().into();
+    let accepted = world.write(&write);
+    assert_eq!(accepted["commit_state"], "committed", "{accepted}");
+}

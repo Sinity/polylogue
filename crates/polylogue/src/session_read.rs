@@ -21,6 +21,19 @@ const TIME: Duration = Duration::from_secs(30);
 fn failed(kind: ErrorKind, message: impl ToString) -> Value {
     json!({"type":"end","outcome":"error","error":Failure::new(kind,message.to_string())})
 }
+fn completion(qualification: &Value, incomplete_reasons: &[String]) -> Value {
+    let complete = qualification["outcome"] == "ok";
+    // Advisory diagnostics (such as a counted text repair) can accompany a
+    // complete read. They are not missing content and must not invalidate its
+    // strictly checked completion frame.
+    let mut end = json!({"type":"end","outcome":qualification["outcome"],
+        "canonical_complete":complete,"missing":incomplete_reasons,"notes":qualification["notes"],
+        "unknown":qualification["unknown"]});
+    if let Some(diagnostics) = qualification.get("diagnostics") {
+        end["diagnostics"] = diagnostics.clone();
+    }
+    end
+}
 pub(crate) fn serve(
     stream: &mut UnixStream,
     request: &Value,
@@ -60,11 +73,19 @@ pub(crate) fn serve(
         let h = session.header().map_err(|e| failed(ErrorKind::Io, e))?;
         let deadline = Instant::now() + TIME;
         // Opaque identities cannot be masked into different references.
-        crate::output_json::check_identity(h.id.as_str(), deadline)
+        crate::output_json::check_reference(h.id.as_str(), deadline)
             .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
-        crate::output_json::check_identity(&h.native_id, deadline)
+        let native =
+            polylogue_model::NativeId::from_wire(&h.native_id, h.native_id_encoding.as_deref())
+                .map_err(|_| {
+                    failed(
+                        ErrorKind::NotYetAvailable,
+                        "invalid native Session identity",
+                    )
+                })?;
+        crate::output_json::check_native_identity(&native, deadline)
             .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
-        frame(stream,json!({"type":"session","id":h.id.as_str(),"origin":h.origin.as_str(),"native_id":h.native_id,"format":"polylogue-session","version":1})).map_err(|e|failed(ErrorKind::Io,e))?;
+        frame(stream,json!({"type":"session","id":h.id.as_str(),"origin":h.origin.as_str(),"native_id":h.native_id,"native_id_encoding":h.native_id_encoding,"format":"polylogue-session","version":1})).map_err(|e|failed(ErrorKind::Io,e))?;
         let cancellation = stream.try_clone().map_err(|e| failed(ErrorKind::Io, e))?;
         let coverage = text_frames(stream, |out| {
             session_document::write_with_cancel(&session, out, deadline, &mut || {
@@ -83,9 +104,14 @@ pub(crate) fn serve(
                 e,
             )
         })?;
-        let complete = coverage.qualification["outcome"] == "ok";
-        let mut end = json!({"type":"end","outcome":coverage.qualification["outcome"],"canonical_complete":complete,"messages":coverage.messages,"missing":coverage.qualification["notes"],"notes":coverage.qualification["notes"],"unknown":coverage.qualification["unknown"],
-            "view":format!("{}:{}",session.position().generation,session.position().counter),"up_to_date":coverage.up_to_date});
+        let mut end = completion(&coverage.qualification, &coverage.incomplete_reasons);
+        end["messages"] = json!(coverage.messages);
+        end["view"] = json!(format!(
+            "{}:{}",
+            session.position().generation,
+            session.position().counter
+        ));
+        end["up_to_date"] = json!(coverage.up_to_date);
         if let Some(recovery) = coverage.recovery {
             end["recovery"] = json!(recovery);
         }
@@ -161,56 +187,93 @@ pub fn request_terminal(socket: &Path, reference: &str, out: &mut impl Write) ->
     if end["outcome"] == "error" {
         return Ok(end);
     }
-    let document: Value = serde_json::from_slice(&bytes.0)?;
+    let document = polylogue_model::RetainedJson::parse(&bytes.0).map_err(io::Error::other)?;
     render_terminal(&document, out)?;
     Ok(end)
 }
-fn render_terminal(document: &Value, out: &mut impl Write) -> io::Result<()> {
+fn render_terminal(
+    document: &polylogue_model::RetainedJson,
+    out: &mut impl Write,
+) -> io::Result<()> {
     use crate::reference_read::terminal_text;
-    for value in [
-        &document["session"]["id"],
-        &document["session"]["display_title"],
-    ] {
-        if let Some(text) = value.as_str() {
-            terminal_text(out, text, false)?;
-            out.write_all(b"\n")?;
+    use polylogue_model::RetainedJson;
+    fn text<'a>(value: &'a RetainedJson, key: &str) -> io::Result<Option<&'a str>> {
+        // Typed display fields are scalar strings. Refuse a non-scalar value
+        // rather than activating the retained decoder's text-repair projection.
+        let Some(raw) = value.get(key).and_then(RetainedJson::native) else {
+            return Ok(None);
+        };
+        if raw.encoding().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "terminal typed string contains non-scalar units",
+            ));
+        }
+        Ok(Some(raw.as_str()))
+    }
+    if let Some(session) = document.get("session") {
+        for key in ["id", "display_title"] {
+            if let Some(text) = text(session, key)? {
+                terminal_text(out, text, false)?;
+                out.write_all(b"\n")?;
+            }
         }
     }
-    for message in document["messages"].as_array().into_iter().flatten() {
+    for message in document
+        .get("messages")
+        .and_then(RetainedJson::as_array)
+        .into_iter()
+        .flatten()
+    {
         out.write_all(b"\n")?;
         for key in ["id", "role", "at"] {
-            if let Some(text) = message[key].as_str() {
+            if let Some(text) = text(message, key)? {
                 terminal_text(out, text, false)?;
                 out.write_all(b"  ")?;
             }
         }
         out.write_all(b"\n")?;
-        for block in message["blocks"].as_array().into_iter().flatten() {
-            if block["kind"] == "tool_result" {
+        for block in message
+            .get("blocks")
+            .and_then(RetainedJson::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let kind = text(block, "kind")?;
+            if kind == Some("tool_result") {
                 out.write_all(b"[tool_result ")?;
-                terminal_text(out, block["outcome"].as_str().unwrap_or("unknown"), false)?;
-                if let Some(call) = block["call_id"].as_str() {
+                terminal_text(out, text(block, "outcome")?.unwrap_or("unknown"), false)?;
+                if let Some(call) = block.get("call_id") {
                     out.write_all(b" ")?;
-                    terminal_text(out, call, false)?;
+                    if let Some(call) = text(block, "call_id")? {
+                        terminal_text(out, call, false)?;
+                    } else {
+                        let canonical =
+                            String::from_utf8(call.canonical()).map_err(io::Error::other)?;
+                        terminal_text(out, &canonical, false)?;
+                    }
                 }
                 out.write_all(b"]\n")?;
-            } else if block["kind"] == "thinking" {
+            } else if kind == Some("thinking") {
                 out.write_all(b"[thinking]\n")?;
             }
-            if let Some(text) = block["text"].as_str() {
-                terminal_text(out, text, true)?;
+            if let Some(body) = text(block, "text")? {
+                terminal_text(out, body, true)?;
                 out.write_all(b"\n")?;
             }
-            if block["kind"] == "tool_call" {
-                terminal_text(out, block["tool"].as_str().unwrap_or("tool"), false)?;
+            if kind == Some("tool_call") {
+                terminal_text(out, text(block, "tool")?.unwrap_or("tool"), false)?;
                 out.write_all(b" ")?;
                 if let Some(input) = block.get("input") {
-                    terminal_text(out, &serde_json::to_string(input)?, true)?;
+                    let canonical =
+                        String::from_utf8(input.canonical()).map_err(io::Error::other)?;
+                    terminal_text(out, &canonical, true)?;
                 }
                 out.write_all(b"\n")?;
             }
             if let Some(data) = block.get("data") {
-                terminal_text(out, &serde_json::to_string(data)?, true)?;
+                let canonical = String::from_utf8(data.canonical()).map_err(io::Error::other)?;
+                terminal_text(out, &canonical, true)?;
                 out.write_all(b"\n")?;
             }
         }
@@ -342,6 +405,9 @@ mod tests {
         let expected = "opaque:session:with:colons";
         let mut complete = end();
         complete["canonical_complete"] = json!(true);
+        let mut false_complete = end();
+        false_complete["outcome"] = json!("ok");
+        false_complete["canonical_complete"] = json!(true);
         let mut missing = end();
         missing["missing"] = json!([]);
         for frames in [
@@ -349,6 +415,7 @@ mod tests {
             vec![end()],
             vec![header(), header(), end()],
             vec![header(), complete],
+            vec![header(), false_complete],
             vec![header(), missing],
             vec![json!({"type":"text","data":"private"}), end()],
         ] {
@@ -375,3 +442,7 @@ mod cancellation_tests {
         assert!(peer_gone(&server));
     }
 }
+
+#[cfg(test)]
+#[path = "session_read/retained_tests.rs"]
+mod retained_tests;

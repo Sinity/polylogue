@@ -988,6 +988,7 @@ mod tests {
                         session: &self.session,
                         origin: &self.origin,
                         native_session: "tool-session",
+                        native_session_encoding: None,
                         session_kind: SessionKind::Main,
                         message: &self.message,
                         sequence: 0,

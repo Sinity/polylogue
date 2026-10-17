@@ -10,10 +10,12 @@
     },
     {
       "source": "polylogue-spec/spec/storage/index-db.md",
-      "sha256": "1c7e9c160531040fc7f7afe861cf24ed042a0ad53afd6764125a068c11ae7426",
-      "copied_sha256": "1c7e9c160531040fc7f7afe861cf24ed042a0ad53afd6764125a068c11ae7426",
-      "spec_commit": "aca97f216bc3c56a81f4b2523b81744ce42c6454",
-      "sql_sha256": "b9dc6ff1215f1ad27bb97461dcccb8db7413b1757b9c13c515c6c2ce3564bc6b"
+      "sha256": "c99fedb54aaef332f810f7736ae64271841eb90f2bd5f40d38131a19117485b3",
+      "copied_sha256": "6a91077b3a8bcf55541682d58297d92f7b9fee2e56b5c8bb421d220961e4bc4f",
+      "spec_commit": "5551b6e3796f968011323e436f0c72f5339832b4",
+      "sql_sha256": "2a9b088e16f626f98794f54dd6726e7b3b97ff64a31b761231c3a33b55d12897",
+      "base_spec_commit": "aca97f216bc3c56a81f4b2523b81744ce42c6454",
+      "base_source_sha256": "1c7e9c160531040fc7f7afe861cf24ed042a0ad53afd6764125a068c11ae7426"
     },
     {
       "source": "polylogue-spec/spec/storage/embeddings.md",
@@ -21,5 +23,5 @@
       "copied_sha256": "015c0adb3782df00357a7f4005ce78e04a64a947750c8badc550886128813566"
     }
   ],
-  "snapshot_normalization": "One final newline. The archive recovery clauses follow8c4e221; note_target seen_hash retains its separately pinned predecessor comment, so this delivery does not adopt the unrelated authored-note contract or alter existing sqlite_schema text."
+  "snapshot_normalization": "One final newline. The archive recovery clauses follow8c4e221; note_target seen_hash retains its separately pinned predecessor comment, so this delivery does not adopt the unrelated authored-note contract or alter existing sqlite_schema text. Native index20 adopts the session.native_id_encoding fact contract from 5551b6e3 while retaining the predecessor delivery schema and other unadopted text from aca97f21. The base revision and source SHA are explicit; copied and SQL hashes bind this bounded native snapshot, not a byte-identical copy of the complete newer upstream document."
 }

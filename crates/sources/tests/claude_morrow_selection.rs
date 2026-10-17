@@ -234,7 +234,10 @@ fn uuid_overlay_retains_original_nested_donors_and_first_response_ordinal() {
         assert!(evaluate(&recipe, text.as_bytes()).is_u64());
     }
     let (_, key, second) = &output.delta.responses[1];
-    assert_eq!(key.response, "response-a");
+    assert_eq!(
+        key.response,
+        serde_json::to_string(&polylogue_model::NativeId::unicode("response-a")).unwrap()
+    );
     assert_eq!(
         second.message.id,
         MessageId::new(second.message.id.session().clone(), "a-second").unwrap()
@@ -379,8 +382,11 @@ fn inline_output_and_named_channels_remain_distinct_with_known_empty_stderr() {
         result.output,
         Some(polylogue_model::ToolOutput::Text("inline wins".into()))
     );
-    assert_eq!(result.data.as_ref().unwrap()["stdout"], "different stdout");
-    assert_eq!(result.data.as_ref().unwrap()["stderr"], "");
+    assert_eq!(
+        result.data.as_ref().unwrap()["stdout"].as_str(),
+        Some("different stdout")
+    );
+    assert_eq!(result.data.as_ref().unwrap()["stderr"].as_str(), Some(""));
     assert_eq!(result.exit_code, Some(0));
     assert!(c.projection.obligations.is_empty());
     assert_eq!(
@@ -520,7 +526,7 @@ fn channels_never_fabricate_missing_inline_output_or_a_wrapper_count() {
         panic!("result")
     };
     assert_eq!(result.output, None);
-    assert_eq!(result.data.as_ref().unwrap()["stderr"], "");
+    assert_eq!(result.data.as_ref().unwrap()["stderr"].as_str(), Some(""));
     assert!(!c.projection.facts.iter().any(|f| matches!(
         f.field,
         Field::Block {
@@ -563,7 +569,10 @@ fn false_interrupted_is_its_own_supplied_status_not_a_default_outcome_witness() 
             panic!("result")
         };
         assert_eq!(result.outcome, polylogue_model::ToolOutcome::Ok);
-        assert_eq!(result.data.as_ref().unwrap()["interrupted"], false);
+        assert_eq!(
+            result.data.as_ref().unwrap()["interrupted"].as_bool(),
+            Some(false)
+        );
         assert!(c.projection.obligations.is_empty());
         assert_eq!(
             c.projection
@@ -810,7 +819,10 @@ fn stop_sequence_is_one_normalized_selected_extra_with_original_donor_and_raw_co
         .response(SID, &ResponseKey::new("response", "request"))
         .unwrap()
         .unwrap();
-    assert_eq!(r.message.attrs.as_ref().unwrap()["stop_sequence"], "B");
+    assert_eq!(
+        r.message.attrs.as_ref().unwrap()["stop_sequence"].as_str(),
+        Some("B")
+    );
     assert!(correction_units(&duplicate, &r).is_empty());
     let omitted_a=json!({"type":"assistant","uuid":"a","requestId":"request","sessionId":SID,"message":{"id":"response","content":[{"type":"text","text":"omitted-stop-update"}]}}).to_string()+"\n";
     let mut omitted_update = MemoryReadView::default();
@@ -824,8 +836,8 @@ fn stop_sequence_is_one_normalized_selected_extra_with_original_donor_and_raw_co
         .unwrap()
         .unwrap();
     assert_eq!(
-        omitted_response.message.attrs.as_ref().unwrap()["stop_sequence"],
-        "B"
+        omitted_response.message.attrs.as_ref().unwrap()["stop_sequence"].as_str(),
+        Some("B")
     );
     assert_eq!(
         omitted_response
@@ -848,7 +860,10 @@ fn stop_sequence_is_one_normalized_selected_extra_with_original_donor_and_raw_co
         .response(SID, &ResponseKey::new("response", "request"))
         .unwrap()
         .unwrap();
-    assert_eq!(r.message.attrs.as_ref().unwrap()["stop_sequence"], "A");
+    assert_eq!(
+        r.message.attrs.as_ref().unwrap()["stop_sequence"].as_str(),
+        Some("A")
+    );
     let selected = r.stop_sequence.as_ref().unwrap();
     let recipe = selected.selection.as_ref().unwrap();
     assert_eq!(recipe.inputs[0].record.start, (a.len() + b.len()) as u64);
@@ -862,7 +877,10 @@ fn stop_sequence_is_one_normalized_selected_extra_with_original_donor_and_raw_co
         .response(SID, &ResponseKey::new("response", "request"))
         .unwrap()
         .unwrap();
-    assert_eq!(base.message.attrs.as_ref().unwrap()["stop_sequence"], "B");
+    assert_eq!(
+        base.message.attrs.as_ref().unwrap()["stop_sequence"].as_str(),
+        Some("B")
+    );
     assert!(correction_units(&base_order, &base).is_empty());
     for item in 0..2 {
         assert_eq!(
@@ -908,7 +926,7 @@ fn stop_sequence_null_is_supplied_and_omission_preserves_its_original_donor() {
         .unwrap();
     assert_eq!(
         r.message.attrs.as_ref().unwrap().get("stop_sequence"),
-        Some(&Value::Null)
+        Some(&polylogue_model::RetainedJson::Null)
     );
     let fact = r.stop_sequence.as_ref().unwrap();
     assert_eq!(fact.selection.as_ref().unwrap().inputs[0].record.start, 0);
@@ -1076,7 +1094,7 @@ fn selected_usage_tier_is_typed_string_with_null_unknown_and_replacement_omissio
         assert!(r.message.usage.as_ref().unwrap().service_tier.is_none());
         assert_eq!(
             r.message.attrs.as_ref().unwrap().get("stop_sequence"),
-            Some(&Value::Null)
+            Some(&polylogue_model::RetainedJson::Null)
         );
         assert!(
             !r.selected_unit(0)

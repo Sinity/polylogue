@@ -207,12 +207,12 @@ fn tool_result_requires_status_and_preserves_empty_output_and_unknown_reasons() 
 #[test]
 fn absent_and_explicit_json_null_and_false_stay_distinct() {
     let absent: ToolCall = serde_json::from_value(json!({})).unwrap();
-    let null: ToolCall = serde_json::from_value(json!({"input":null,"tool":""})).unwrap();
+    let null: ToolCall = serde_json::from_str(r#"{"input":null,"tool":""}"#).unwrap();
     assert_eq!(absent.input, None);
-    assert_eq!(null.input, Some(Value::Null));
+    assert_eq!(null.input, Some(Value::Null.into()));
     assert_eq!(roundtrip(&null), null);
     let mut msg = message(&session("json"), "m");
-    msg.attrs = Some(Value::Null);
+    msg.attrs = Some(Value::Null.into());
     msg.push(BlockSlot::Item(0), BlockContent::ToolCall(null.clone()))
         .unwrap();
     assert_eq!(roundtrip(&msg), msg);
@@ -306,7 +306,7 @@ fn structured_tool_channels_preserve_known_empty_and_null_without_replacing_outp
             exit_code: Some(0),
             duration_ms: None,
             output: Some(ToolOutput::Text("inline presented output".into())),
-            data,
+            data: data.map(Into::into),
         };
         assert_eq!(roundtrip(&result), result);
     }

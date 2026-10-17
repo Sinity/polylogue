@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
-use serde_json::Value;
+use polylogue_model::{RetainedError, RetainedJson as Value, TextRepairs};
 
 /// One framed, decoded record.
 #[derive(Debug)]
@@ -46,6 +46,8 @@ pub trait RecordParser {
 /// Every record framed, and what became of it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Counts {
+    /// Additional interpreted-text diagnostics, separate from exclusive outcomes.
+    pub text_repairs: TextRepairs,
     pub framed: u64,
     pub used: u64,
     pub ignored: BTreeMap<&'static str, u64>,
@@ -66,15 +68,29 @@ impl Counts {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailurePhase {
+    Decoding,
     Record,
     Finalization,
 }
 
 #[derive(Debug)]
+pub enum ParseError<E> {
+    Provider(E),
+    Decoding(RetainedError),
+}
+impl<E: std::fmt::Display> std::fmt::Display for ParseError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Provider(e) => e.fmt(f),
+            Self::Decoding(e) => std::fmt::Display::fmt(e, f),
+        }
+    }
+}
+#[derive(Debug)]
 pub struct ParseFailure<E> {
     pub offset: u64,
     pub phase: FailurePhase,
-    pub error: E,
+    pub error: ParseError<E>,
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for ParseFailure<E> {
@@ -364,7 +380,11 @@ impl<P: RecordParser> JsonlDriver<P> {
                         Err(error) => {
                             self.failure = Some(ParseFailure {
                                 offset: start,
-                                phase: FailurePhase::Record,
+                                phase: if matches!(error, ParseError::Decoding(_)) {
+                                    FailurePhase::Decoding
+                                } else {
+                                    FailurePhase::Record
+                                },
                                 error,
                             });
                             return Err(FailedAttempt);
@@ -433,7 +453,7 @@ impl<P: RecordParser> JsonlDriver<P> {
             None => self.parser.finish().map_err(|error| ParseFailure {
                 offset: self.parsed_upto,
                 phase: FailurePhase::Finalization,
-                error,
+                error: ParseError::Provider(error),
             }),
         };
         (
@@ -456,14 +476,18 @@ fn account_json<P: RecordParser>(
     counts: &mut Counts,
     line: &[u8],
     start: u64,
-) -> Result<u64, P::Error> {
+) -> Result<u64, ParseError<P::Error>> {
     if line.iter().all(u8::is_ascii_whitespace) {
         return Ok(0);
     }
-    let Ok(value) = serde_json::from_slice::<Value>(line) else {
-        counts.framed += 1;
-        counts.undecodable.push(start);
-        return Ok(1);
+    let value = match Value::parse_with_repairs(line, start, &counts.text_repairs) {
+        Ok(value) => value,
+        Err(error @ RetainedError::Capacity { .. }) => return Err(ParseError::Decoding(error)),
+        Err(_) => {
+            counts.framed += 1;
+            counts.undecodable.push(start);
+            return Ok(1);
+        }
     };
     let rec = Record {
         bytes: line,
@@ -472,7 +496,7 @@ fn account_json<P: RecordParser>(
         end: start + line.len() as u64,
         table: "",
     };
-    let outcome = parser.record(&rec)?;
+    let outcome = parser.record(&rec).map_err(ParseError::Provider)?;
     counts.framed += 1;
     account_outcome(counts, outcome, start);
     Ok(1)
@@ -557,7 +581,7 @@ fn undecodable_document<P: RecordParser>(parser: P, bytes: &[u8]) -> Framed<P::O
     let output = parser.finish().map_err(|error| ParseFailure {
         offset: parsed_upto,
         phase: FailurePhase::Finalization,
-        error,
+        error: ParseError::Provider(error),
     });
     Framed {
         output,
@@ -579,9 +603,24 @@ fn drive_raw_records<P: RecordParser>(
         let text = raw.get();
         let start = (text.as_ptr() as usize).saturating_sub(base) as u64;
         counts.framed += 1;
-        let Ok(value) = serde_json::from_str::<Value>(text) else {
-            counts.undecodable.push(start);
-            continue;
+        let value = match Value::parse_with_repairs(text.as_bytes(), start, &counts.text_repairs) {
+            Ok(value) => value,
+            Err(error @ RetainedError::Capacity { .. }) => {
+                counts.framed -= 1;
+                return Framed {
+                    output: Err(ParseFailure {
+                        offset: start,
+                        phase: FailurePhase::Decoding,
+                        error: ParseError::Decoding(error),
+                    }),
+                    counts,
+                    parsed_upto: start,
+                };
+            }
+            Err(_) => {
+                counts.undecodable.push(start);
+                continue;
+            }
         };
         let rec = Record {
             bytes: text.as_bytes(),
@@ -598,7 +637,7 @@ fn drive_raw_records<P: RecordParser>(
                     output: Err(ParseFailure {
                         offset: start,
                         phase: FailurePhase::Record,
-                        error,
+                        error: ParseError::Provider(error),
                     }),
                     counts,
                     parsed_upto: start,
@@ -610,7 +649,7 @@ fn drive_raw_records<P: RecordParser>(
     let output = parser.finish().map_err(|error| ParseFailure {
         offset: parsed_upto,
         phase: FailurePhase::Finalization,
-        error,
+        error: ParseError::Provider(error),
     });
     Framed {
         output,
@@ -655,7 +694,7 @@ pub fn drive_rows<P: RecordParser>(
                     output: Err(ParseFailure {
                         offset: at,
                         phase: FailurePhase::Record,
-                        error,
+                        error: ParseError::Provider(error),
                     }),
                     counts,
                     parsed_upto: last,
@@ -667,7 +706,7 @@ pub fn drive_rows<P: RecordParser>(
     let output = parser.finish().map_err(|error| ParseFailure {
         offset: last,
         phase: FailurePhase::Finalization,
-        error,
+        error: ParseError::Provider(error),
     });
     Framed {
         output,

@@ -77,14 +77,7 @@ pub(crate) fn write_reply(
         vec![]
     };
     let identity = json!({"request_id":revision.id,"note":revision.id,"ref":revision.reference(),"root":revision.root,"commit_state":"committed","recovery":recovery});
-    let identities = [&revision.author, &revision.machine]
-        .into_iter()
-        .map(String::as_str)
-        .chain(revision.targets.iter().map(|t| t.reference.as_str()))
-        .chain(revision.relations.iter().map(|r| r.other.as_str()));
-    let presentable = identities
-        .into_iter()
-        .all(|id| crate::output_json::check_identity(id, until).is_ok());
+    let presentable = revision_identities(&revision, until).is_ok();
     let mut reply = identity.clone();
     reply["outcome"] = json!(if recovery.is_some() { "degraded" } else { "ok" });
     reply["revision"] = json!(revision);
@@ -218,14 +211,12 @@ pub(crate) fn family_value(
 ) -> Result<Value, Value> {
     for state in family.shown.iter().chain(&family.withdrawal_trail) {
         let revision = &state.revision;
-        for identity in [&revision.author, &revision.machine]
-            .into_iter()
-            .map(String::as_str)
-            .chain(revision.targets.iter().map(|t| t.reference.as_str()))
-            .chain(revision.relations.iter().map(|r| r.other.as_str()))
-        {
-            crate::output_json::check_identity(identity,until).map_err(|_|fail(ErrorKind::NotYetAvailable,"authored identity requires credential masking; exact outcome cannot be presented"))?;
-        }
+        revision_identities(revision, until).map_err(|_| {
+            fail(
+                ErrorKind::NotYetAvailable,
+                "authored identity requires credential masking; exact outcome cannot be presented",
+            )
+        })?;
     }
     let root = format!("note:{}", family.root);
     let cutoff = family.status_at_archive_counter;
@@ -488,19 +479,12 @@ pub(crate) fn read(
                 ));
             }
             let revision = snapshot.exact(reference, cutoff).map_err(store_error)?;
-            for identity in [&revision.author, &revision.machine]
-                .into_iter()
-                .map(String::as_str)
-                .chain(revision.targets.iter().map(|t| t.reference.as_str()))
-                .chain(revision.relations.iter().map(|r| r.other.as_str()))
-            {
-                crate::output_json::check_identity(identity, until).map_err(|_| {
-                    fail(
-                        ErrorKind::NotYetAvailable,
-                        "authored exact identity cannot be presented",
-                    )
-                })?;
-            }
+            revision_identities(&revision, until).map_err(|_| {
+                fail(
+                    ErrorKind::NotYetAvailable,
+                    "authored exact identity cannot be presented",
+                )
+            })?;
             notes.push(
                 "immutable retained value only; current and withdrawn status are unevaluated",
             );
@@ -555,4 +539,22 @@ pub(crate) fn read(
         Ok(v) | Err(v) => v,
     };
     fit(value, budget, request["presentation"] == "mcp", until)
+}
+
+fn revision_identities(
+    revision: &polylogue_model::authored::Revision,
+    until: Instant,
+) -> std::io::Result<()> {
+    for identity in [&revision.author, &revision.machine] {
+        crate::output_json::check_identity(identity, until)?;
+    }
+    for reference in revision
+        .targets
+        .iter()
+        .map(|t| t.reference.as_str())
+        .chain(revision.relations.iter().map(|r| r.other.as_str()))
+    {
+        crate::output_json::check_reference(reference, until)?;
+    }
+    Ok(())
 }

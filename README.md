@@ -62,6 +62,64 @@ source-row qualification, separator and unfinished-tail behavior, retained
 input presentation is credential-masked; source offsets and hashes remain raw
 coordinates. Directory discovery, watchers, rewrites and full M1 remain open.
 
+## Retained Claude identity and values
+
+The explicit Claude-main path keeps decoded native UTF-16 identifiers separate
+from interpreted text. Ambiguous identity coordinates use versioned framing;
+literal `~u:` strings cannot impersonate a surrogate. Interpreted-text repairs
+are counted in Session qualification diagnostics, separately from record errors.
+Opaque tool inputs retain numeric tokens, null/absence and non-scalar keys.
+Privacy checks original declared native identities and public-reference/origin
+components before reversible encoding. Credential-bearing identities refuse;
+ordinary provider lookalikes and literal marker strings remain ordinary data.
+
+Bounded model pages encode supported opaque fields and complete field-origin
+entries as `{"encoding":"canonical-json-v1","json":"…","masked":false}` after privacy
+assessment. `masked:true` identifies transformed content. Normalized Session JSON
+and export retain original-value JSON shapes; privacy-transformed export does
+not prove unchanged-value round trips. Structural witnesses are preserved or
+explicitly refused. Portable normalized reimport remains unavailable. Direct
+assembled `attrs` and block `data` objects preserve values but do not yet
+guarantee canonical key order; canonical ordering of whole retained leaf
+objects and model-page envelopes does not qualify that export clause.
+
+Use fresh isolated archives for this candidate. Native index20 and revised
+parser/selection recipes distinguish the changed interpretation. Existing
+index18 and index19 are refused with their files preserved. Installed migration
+remains unsupported. Invalid raw
+UTF-8 and non-scalar immediate metadata selectors remain unsupported. Encoded
+reasoning/attachment block addresses are refused. Other provider identity cases
+remain unqualified. Codex keeps its scalar-only source boundary.
+
+### Reproducing the native identity regression
+
+[`scripts/check-native-identity.py`](scripts/check-native-identity.py) runs the
+finite three-input/eight-Message corpus through CLI, official SDK reads, export,
+restart, owned provider removal and isolated index reconstruction, followed by
+separate synthetic native-identity privacy refusals and exact-value controls. It retains
+raw responses, failures, source bindings and hashes in a new private directory.
+Use the checked binary's actual source commit, not a branch name:
+
+```sh
+python3 scripts/check-native-identity.py \
+  --artifact-kind checked-package \
+  --binary /absolute/checked/polylogue --source /absolute/native-checkout \
+  --candidate CURRENT_COMMIT --package-source CHECKED_PACKAGE_COMMIT \
+  --spec-repo /absolute/spec --spec-revision SPEC_COMMIT \
+  --corpus-path polylogue-sinex-joint/realization/demos/native-identity \
+  --oracle-path polylogue-sinex-joint/realization/demos/native-identity/public_oracle.py \
+  --sdk-python /absolute/pinned/python \
+  --sdk-client /absolute/spec/polylogue-sinex-joint/realization/demos/joint-consumer/mcp_client.py \
+  --output /absolute/new/private/results
+```
+
+The runner extracts the corpus and independent oracle from the pinned spec and
+freezes the supplied SDK client and its collector. Package and current source
+must match except for this runner and README. This finite regression does not
+qualify installed migration, unsupported reimport or every export clause above.
+An early package built without checks must use `--artifact-kind smoke-package`;
+its successful client run does not replace the normal checked-package gate.
+
 ## Delivery boundary
 
 [Replacement disposition](docs/REPLACEMENT.md) records predecessor removal and preserved legal/history material. [Contract snapshot](docs/rewrite/README.md) links current semantic owners; canonical DDL provenance lives beside `crates/store/schema`.
