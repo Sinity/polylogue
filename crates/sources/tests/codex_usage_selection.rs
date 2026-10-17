@@ -181,7 +181,7 @@ fn persisted_usage_witness_refuses_wrong_slot_record_operand_order_or_field() {
     let Cell::Witness(witness) = &view.cells[&key] else {
         panic!("input witness")
     };
-    assert!(Cell::Witness(witness.clone()).validate_at(&key).is_ok());
+    assert!(Cell::Witness(witness.clone()).valid_for(&key));
     for damage in 0..5 {
         let mut changed = witness.clone();
         let selection = changed.selection.as_mut().unwrap();
@@ -197,7 +197,7 @@ fn persisted_usage_witness_refuses_wrong_slot_record_operand_order_or_field() {
             _ => selection.inputs[0].path.clear(),
         }
         assert!(
-            Cell::Witness(changed).validate_at(&key).is_err(),
+            Cell::Witness(changed).valid_for(&key) == false,
             "damage {damage}"
         );
     }
