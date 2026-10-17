@@ -269,7 +269,7 @@ def verify(args, run):
         before = state(run, lambda v: project_status(v)['scan'] is not None and project_status(v)['scan']['observed_transcripts'] >= 100)
         assert not project_status(before)['scan']['cycle_complete'], before
         during = continuation.document(run, reference)
-        assert during['messages'] == document['messages'], during
+        assert message_facts(during) == message_facts(document), during
         bulk = state(run, lambda v: project_status(v)['initial_cycle_finished'] and project_status(v)['scan'] is not None and project_status(v)['scan']['cycle_complete'] and project_status(v)['scan']['observed_transcripts'] == args.population_size + 4 and project_status(v)['acquired_source_attempts'] >= args.population_size + 4, timeout=420)
         bulk_elapsed = time.monotonic() - began
         for i in (0, 127, 1024, 4999):
@@ -335,7 +335,7 @@ def verify(args, run):
     assert large.stat().st_size > 8 * 1024 * 1024
     pending = state(run, lambda v: v['claude_continuation']['state'] == 'acquiring' and project_status(v)['active_path'] == str(large), timeout=240)
     during_large = continuation.document(run, reference)
-    assert during_large['messages'] == changed['messages']
+    assert message_facts(during_large) == message_facts(changed)
     large_ref, _ = discover(run, '"Ginkgo large transcript"', large_text)
     # A whole quiet acquisition cycle adds no source revision. The subsequent
     # exact reads also check that the acknowledged main versions remain stable.
@@ -355,7 +355,7 @@ def verify(args, run):
     try:
         root.chmod(0)
         denied = state(run, lambda v: project_status(v)['availability'] == 'denied')
-        assert continuation.document(run, reference)['messages'] == changed['messages']
+        assert message_facts(continuation.document(run, reference)) == message_facts(changed)
     finally:
         root.chmod(original_mode)
     state(run, lambda v: project_status(v)['availability'] not in ('denied', 'unavailable', 'missing'))
@@ -363,7 +363,7 @@ def verify(args, run):
     root.rename(absent)
     try:
         missing = state(run, lambda v: project_status(v)['availability'] == 'missing')
-        assert continuation.document(run, reference)['messages'] == changed['messages']
+        assert message_facts(continuation.document(run, reference)) == message_facts(changed)
     finally:
         absent.rename(root)
     state(run, lambda v: project_status(v)['availability'] not in ('denied', 'unavailable', 'missing'))
@@ -376,11 +376,22 @@ def verify(args, run):
     run.start()
     try:
         retained = await_text(run, reference, correction_text)
-        assert retained['messages'] == changed['messages'], retained
+        assert message_facts(retained) == message_facts(changed), retained
         sdk_text(args, run, '"Fir later complete"', correction_text, reference, 'sdk-provider-free')
     finally:
         run.stop()
     return {'oracle_controls': oracle_controls, 'denied': project_status(denied), 'missing': project_status(missing), 'large_input_bytes': large.stat().st_size if large.exists() else (saved / '-large/large.jsonl').stat().st_size, 'large_read_service': project_status(pending), 'references': references, 'late_reference': late_ref, 'bulk_source_files': args.population_size, 'bulk_acceptance_run': args.population_size == 5000, 'bulk_acquisition_elapsed_seconds': bulk_elapsed, 'initial_document_source': source, 'bulk_status': project_status(bulk) if bulk else None, 'ordinary_read_during_backlog': project_status(before) if before else None, 'pid': pid}
+
+
+
+def message_facts(document):
+    # Active-path knowledge can improve while the owner finishes qualification.
+    # Retain every content/version/citation/origin/parent/author field in this
+    # comparison; the full documents keep their contemporaneous qualification.
+    messages = copy.deepcopy(document['messages'])
+    for message in messages:
+        message.pop('on_active_path', None)
+    return messages
 
 
 def dimensions(root):
@@ -438,7 +449,7 @@ def migration(args):
         main.unlink()
         run.start()
         after = await_text(run, reference, text)
-        assert after['messages'] == before['messages'], (before, after)
+        assert message_facts(after) == message_facts(before), (before, after)
         sdk_text(args, run, '"Hazel preserving"', text, reference, 'sdk-v3-preserved')
         assert run.command(['input', 'cat', acquired['input']], raw=True) == raw + progress * 12000
         run.stop()
