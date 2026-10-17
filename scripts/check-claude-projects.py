@@ -74,7 +74,9 @@ def await_text(run, reference, text, timeout=240):
 def discover(run, query, text, timeout=240):
     deadline = time.monotonic() + timeout
     while True:
-        answer = run.command([query, '--json'], allowed=(0, 4, 5))
+        answer = run.command([query, '--json'], allowed=(0, 1, 4, 5))
+        if run.calls[-1]['exit'] == 1:
+            assert answer['outcome'] == 'empty' and answer['count'] == 0 and answer['rows'] == [], answer
         if run.calls[-1]['exit'] == 4:
             assert answer['error']['kind'] == 'conflict' and answer['error']['message'] == 'message preparation predecessor changed', answer
         for row in answer.get('rows', []):
@@ -254,7 +256,7 @@ def verify(args, run):
             assert remote_agent['shown'][0]['version_hash'] == agent_message['version_hash']
             continuation.assert_sdk_origin(remote_agent['shown'][0], 'blocks[0].text', agent_origin)
     assert len(set(references.values())) == 4, references
-    assert not run.command(['"EXCLUDED nested"', '--json'], allowed=(0, 5)).get('rows')
+    assert not run.command(['"EXCLUDED nested"', '--json'], allowed=(0, 1, 5)).get('rows')
     sdk_text(args, run, '"Aster anchor"', initial_text, reference, 'sdk-main')
     # Runnable directory backlog crosses many scan turns without a new event.
     for i in range(5000):
@@ -468,7 +470,7 @@ def empty_control(args):
         assert project_status(value)['scan']['observed_transcripts'] == 0
         assert project_status(value)['acquired_source_attempts'] == 0
         assert project_status(value)['scan']['conversation_coverage'] is None
-        assert run.command(['origin:claude-code', '--json'], allowed=(0, 5))['rows'] == []
+        assert run.command(['origin:claude-code', '--json'], allowed=(0, 1, 5))['rows'] == []
         return project_status(value)
     finally:
         errors = run.close()
