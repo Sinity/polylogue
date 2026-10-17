@@ -140,6 +140,77 @@ fn value(view: &MessageView, slot: &Slot) -> (Value, bool, Value) {
     (data, field.supplied, origin)
 }
 #[test]
+fn background_completion_uses_its_exact_retained_record_in_the_candidate_source_set() {
+    let bytes =
+        include_bytes!("../../../sources/tests/fixtures/donor/claude-normalization-main.jsonl");
+    let (mut world, pending) = make_world(bytes, bytes);
+    let pending = pending
+        .iter()
+        .find(|p| p.message.as_str().ends_with(":main-bg-start"))
+        .unwrap();
+    let request = request(&world, pending);
+    let handle = begin(&mut world, &request);
+    // Independent exact coordinates in the frozen synthetic fixture, excluding LF.
+    let ranges = [(942, 1287), (3018, 3446)];
+    for _ in 0..4000 {
+        let action = world
+            .compute_with(&handle, work_budget())
+            .unwrap_or_else(|error| {
+                let snapshot = world.writer.parser_snapshot(&world.head.token).unwrap();
+                let membership: Vec<_> = ranges
+                    .iter()
+                    .map(|&(start, end)| {
+                        let present = snapshot
+                            .has_message_source(
+                                handle.build(),
+                                polylogue_store::contributions::SourceRange { start, end },
+                            )
+                            .unwrap();
+                        (start, end, present)
+                    })
+                    .collect();
+                panic!(
+                    "completion origin: {error}; exact candidate source membership {membership:?}"
+                );
+            });
+        if let m::Applied::Source(source) = m::apply(&mut world.writer, action).unwrap() {
+            let view = selected(&mut world, &source);
+            let mut cursor = None;
+            let mut selected_ranges = Vec::new();
+            loop {
+                use polylogue_store::contributions::SourceStep;
+                match view.next_source(cursor.as_ref(), 65536).unwrap() {
+                    SourceStep::Span {
+                        cursor: next,
+                        source,
+                    } => {
+                        selected_ranges.push((source.start, source.end));
+                        cursor = Some(next);
+                    }
+                    SourceStep::Continue { cursor: next } => cursor = Some(next),
+                    SourceStep::End => break,
+                }
+            }
+            assert_eq!(selected_ranges, ranges);
+            let (exit, supplied, origin) = value(
+                &view,
+                &Slot::Block {
+                    block: BlockSlot::Item(0),
+                    field: BlockField::ExitCode,
+                },
+            );
+            assert_eq!(exit, 7);
+            assert!(supplied);
+            assert_eq!(
+                origin["selection"]["inputs"][0]["record"],
+                json!({"start":3018,"end":3446})
+            );
+            return;
+        }
+    }
+    panic!("background completion did not materialize");
+}
+#[test]
 fn real_morrow_claude_bodies_use_native_ids_flat_order_and_verified_origins() {
     let (mut world, pending) = make_world(MORROW, MORROW);
     assert_eq!(pending.len(), 12);

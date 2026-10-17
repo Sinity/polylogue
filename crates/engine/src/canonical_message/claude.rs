@@ -203,6 +203,9 @@ pub(super) enum Cursor {
         after: Option<Vec<String>>,
         envelope: bool,
     },
+    CompletionCitation {
+        item: u64,
+    },
     SelectedCitations {
         index: u8,
     },
@@ -498,18 +501,23 @@ pub(super) fn compute(
                     b,
                 );
             }
-            progress(
-                state,
-                &mut cursor,
-                Cursor::Citations {
-                    item: item
-                        .checked_add(1)
-                        .ok_or(Error::Invariant("Claude contribution cursor overflow"))?,
-                    after: None,
-                    envelope: false,
-                },
-                b,
-            )
+            progress(state, &mut cursor, Cursor::CompletionCitation { item }, b)
+        }
+        Cursor::CompletionCitation { item } => {
+            let c = contribution(snapshot, head, item, b.read)?;
+            let next = Cursor::Citations {
+                item: item
+                    .checked_add(1)
+                    .ok_or(Error::Invariant("Claude contribution cursor overflow"))?,
+                after: None,
+                envelope: false,
+            };
+            // The named completion supplies fields of the earlier launch
+            // Message. Cite only that retained record before evaluating them.
+            match c.completion {
+                Some(completion) => cite(state, &mut cursor, next, completion.range, b),
+                None => progress(state, &mut cursor, next, b),
+            }
         }
         Cursor::SelectedCitations { index } => {
             if index >= 7 {
