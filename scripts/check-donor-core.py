@@ -247,7 +247,7 @@ def main():
                     assert retried['error']['kind'] == 'timeout' and retried['error']['retryable'] is True, retried
                     active = cli(['progress',retained_id], 'upgrade active replay ' + name)
                     assert active['input'] == retained_id and active['active'] is True and active['failure'] is None, active
-                    assert active['source_rows']['basis']['parser_version'] == 9 and active['source_rows']['basis']['chain'] == old['retained']['chain'] and active['length'] == old['retained']['length'], active
+                    assert active['source_rows']['basis']['parser_version'] == 10 and active['source_rows']['basis']['chain'] == old['retained']['chain'] and active['length'] == old['retained']['length'], active
                     upgrade.setdefault('busy_retries', []).append({'name':name,'retry':retried,'active_progress':active})
                 deadline = time.monotonic() + 90
                 while True:
