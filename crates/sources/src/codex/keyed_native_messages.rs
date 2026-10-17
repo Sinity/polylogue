@@ -5,6 +5,7 @@ use super::*;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CompletedMessageProof {
     raw: Vec<u8>,
+    origins: Origins,
     unresolved: bool,
     prompt: Option<usize>,
 }
@@ -137,10 +138,11 @@ impl CompletedMessageProof {
 /// An explicitly supplied turn wins only when it agrees with recorded context.
 /// Missing/malformed explicit metadata never borrows a different current turn.
 pub(super) fn response_turn(item: &Value, context: Option<&str>) -> Option<String> {
-    match item
-        .get("internal_chat_message_metadata_passthrough")
-        .and_then(|v| v.get("turn_id"))
-    {
+    let metadata = match item.get("internal_chat_message_metadata_passthrough") {
+        None => return context.filter(|s| !s.is_empty()).map(str::to_owned),
+        Some(value) => value.as_object()?,
+    };
+    match metadata.get("turn_id") {
         Some(v) => {
             let turn = v.as_str().filter(|s| !s.is_empty())?;
             if context.is_some_and(|c| c != turn) {
@@ -206,8 +208,11 @@ impl<V: ReadView> KeyedRecords<V> {
         };
         let old = previous.as_ref().is_some_and(|p| p.unresolved);
         if proof.is_none() {
-            if let Some(message) = previous.as_ref().and_then(|p| p.prompt) {
-                self.remove(Key::PromptEcho(message));
+            if let Some(previous) = &previous {
+                self.retract_prompt_echo(previous);
+                if let Some(message) = previous.prompt {
+                    self.remove(Key::PromptEcho(message));
+                }
             }
         }
         let new = proof.as_ref().is_some_and(|p| p.unresolved);
@@ -285,18 +290,86 @@ impl<V: ReadView> KeyedRecords<V> {
             }
         }
     }
+    fn independent_prompt_echo(&mut self, message: usize) -> bool {
+        let Some(Cell::Evidence(unit)) = self.get(Key::Evidence(message, 1, 3)) else {
+            return false;
+        };
+        let Ok(raw) = serde_json::from_slice::<Value>(&unit.canonical) else {
+            return false;
+        };
+        let Some(payload) = raw.get("payload") else {
+            return false;
+        };
+        if payload.get("type").and_then(Value::as_str) != Some("user_message") {
+            return false;
+        }
+        let Some(response) = self.response_at(message, None) else {
+            return false;
+        };
+        response.get("role").and_then(Value::as_str) == Some("user")
+            && payload.get("message").and_then(Value::as_str)
+                == Some(texts(response.get("content")).join("\n").as_str())
+    }
     fn apply_prompt_echo(&mut self, message: usize, proof: &CompletedMessageProof) {
         let changed = self
             .header(message)
             .is_some_and(|(m, _)| m.written_by != WrittenBy::Human);
         self.mark_human(message);
-        if changed {
-            self.fixed_evidence(message, 3, "context:echo", proof.raw.clone(), true);
+        if changed && !self.independent_prompt_echo(message) {
+            self.evidence_unit(
+                message,
+                1,
+                3,
+                EvidenceUnit {
+                    tag: "context:echo".into(),
+                    canonical: proof.raw.clone(),
+                    whole_record: true,
+                    origins: proof.origins.clone(),
+                },
+            );
         }
         if self.s.pending_prompt == Some(message) {
             self.s.pending_prompt = None;
             self.s.pending_prompt_turn = None;
             self.remove(Key::Prompt);
+        }
+    }
+    fn retract_prompt_echo(&mut self, proof: &CompletedMessageProof) {
+        let Some(message) = proof.prompt else {
+            return;
+        };
+        let Some(response) = self.response_at(message, None) else {
+            return;
+        };
+        let independent = self.independent_prompt_echo(message);
+        if response.get("role").and_then(Value::as_str) == Some("user") {
+            let text = texts(response.get("content")).join("\n");
+            let author = if independent {
+                WrittenBy::Human
+            } else if is_harness_wrapper(&text) {
+                WrittenBy::Harness
+            } else {
+                match self.s.mode {
+                    SessionMode::Interactive => WrittenBy::Human,
+                    SessionMode::Subagent => WrittenBy::Model,
+                    SessionMode::Exec => WrittenBy::Harness,
+                    SessionMode::Unknown => WrittenBy::Unknown,
+                }
+            };
+            self.edit(message, |m| {
+                m.written_by = author;
+                m.prompt_kind = (author == WrittenBy::Human).then_some(PromptKind::Prose);
+            });
+        }
+        if !independent {
+            self.remove_evidence(message, 1, 3);
+        }
+    }
+    fn retract_linked_prompt(&mut self, message: usize) {
+        if let Some(Cell::PromptEcho { turn, id }) = self.get(Key::PromptEcho(message)) {
+            if let Some(Cell::CompletedMessage(proof)) = self.get(Key::CompletedMessage(turn, id)) {
+                self.retract_prompt_echo(&proof);
+            }
         }
     }
     pub(super) fn resolve_completed_response(&mut self, item: &Value) {
@@ -318,13 +391,18 @@ impl<V: ReadView> KeyedRecords<V> {
         };
         let Some(turn) = response_turn(&response, self.s.turn.as_deref()) else {
             self.remove(Key::ResponseScope(id.into()));
+            self.retract_linked_prompt(message);
             return;
         };
         self.put(Key::ResponseScope(id.into()), Cell::Text(turn.clone()));
         let key = Key::CompletedMessage(turn.clone(), id.into());
         if let Some(Cell::CompletedMessage(mut proof)) = self.get(key.clone()) {
             if let Some(c) = proof.claim() {
-                proof.unresolved = c.turn != turn || !corresponds(&c.body, &response);
+                // A typed user echo before its response is not the declared
+                // after-response first-unpaired echo, even when IDs happen to match.
+                proof.unresolved = matches!(c.body, Body::User { .. })
+                    || c.turn != turn
+                    || !corresponds(&c.body, &response);
                 self.store_completed(key, Some(proof));
             }
         }
@@ -339,6 +417,8 @@ impl<V: ReadView> KeyedRecords<V> {
                     proof.unresolved = echo_turn != turn || !corresponds(&c.body, &response);
                     if !proof.unresolved {
                         self.apply_prompt_echo(message, &proof);
+                    } else {
+                        self.retract_prompt_echo(&proof);
                     }
                     self.store_completed(key, Some(proof));
                 }
@@ -398,12 +478,14 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         let mut proof = CompletedMessageProof {
             raw: self.current_raw.clone(),
+            origins: self.current_origins.clone(),
             unresolved: true,
             prompt: old.as_ref().and_then(|p| p.prompt),
         };
         match &c.body {
             Body::User { text } => {
-                if proof.prompt.is_none()
+                if old.is_none()
+                    && proof.prompt.is_none()
                     && self.s.pending_prompt_turn.as_deref() == Some(c.turn.as_str())
                     && matches!(self.get(Key::Prompt),Some(Cell::Text(pending)) if pending==*text)
                 {
@@ -431,6 +513,9 @@ impl<V: ReadView> KeyedRecords<V> {
                     proof.unresolved = turn != c.turn || !corresponds(&c.body, &response);
                 }
             }
+        }
+        if proof.unresolved {
+            self.retract_prompt_echo(&proof);
         }
         self.store_completed(key, Some(proof));
         Some(RecordOutcome::Used)

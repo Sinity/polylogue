@@ -438,3 +438,10 @@ Message identity. A duplicate echo cannot pair with another prompt, and later
 response corrections invalidate its proof. These pending obligations resolve
 separately from unrelated normalization failures, which remain unchanged.
 Unknown constructor members and unsupported raw reasoning content still refuse.
+A typed user echo recorded before its response remains pending even when their
+IDs match or the native item is emitted again later; this order does not satisfy
+the after-response echo rule. Agent and reasoning snapshots support both orders.
+Invalidated typed echoes retract only their own Human attribution and raw echo
+evidence. Independent source-mode or ordinary user-message-echo proof keeps its
+value and exact donor; reapplication uses the typed claim's original source span.
+Malformed explicit turn metadata never falls back to the current turn.

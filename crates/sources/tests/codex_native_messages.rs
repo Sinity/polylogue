@@ -371,3 +371,140 @@ fn pending_claims_respect_existing_cell_and_encoding_admission() {
             .all(|k| !matches!(k, Key::CompletedMessage(..)))
     );
 }
+
+fn unknown_start() -> String {
+    line("session_meta", json!({"id":"neutral","source":"future"})) + &turn("T")
+}
+fn author(v: &MemoryReadView) -> String {
+    serde_json::to_value(v.message(0).unwrap().unwrap()).unwrap()["written_by"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+#[test]
+fn native_echo_correction_retracts_only_echo_owned_human_value_and_evidence() {
+    for known_source in [false, true] {
+        let prefix = if known_source {
+            start()
+        } else {
+            unknown_start()
+        };
+        let (v, s) = run(
+            MemoryReadView::default(),
+            Resume::default(),
+            &(prefix + &response("user", "U", "prompt")),
+        );
+        assert_eq!(author(&v), if known_source { "human" } else { "unknown" });
+        let (v, s) = run(v, s, &completed("UserMessage", "echo", "prompt"));
+        assert_eq!(author(&v), "human");
+        if !known_source {
+            assert!(v.cells.contains_key(&Key::Evidence(0, 1, 3)));
+        }
+        let (v, s) = run(v, s, &completed("UserMessage", "echo", "changed"));
+        assert!(s.normalization_incomplete());
+        assert_eq!(author(&v), if known_source { "human" } else { "unknown" });
+        assert!(!v.cells.contains_key(&Key::Evidence(0, 1, 3)));
+        let (v, s) = run(v, s, &completed("UserMessage", "echo", "prompt"));
+        assert!(!s.normalization_incomplete());
+        assert_eq!(author(&v), "human");
+        let malformed = edited(&completed("UserMessage", "echo", "prompt"), |v| {
+            v["payload"]["item"]["future"] = json!(1)
+        });
+        let (v, s) = run(v, s, &malformed);
+        assert!(s.normalization_incomplete());
+        assert_eq!(author(&v), if known_source { "human" } else { "unknown" });
+        assert!(!v.cells.contains_key(&Key::Evidence(0, 1, 3)));
+    }
+}
+#[test]
+fn a_separate_user_message_echo_keeps_its_human_value_and_exact_donor() {
+    let (v, s) = run(
+        MemoryReadView::default(),
+        Resume::default(),
+        &(unknown_start()
+            + &response("user", "U", "prompt")
+            + &completed("UserMessage", "echo", "prompt")),
+    );
+    let (v, s) = run(v, s, &response("user", "U", "changed"));
+    assert_eq!(author(&v), "unknown");
+    assert!(s.normalization_incomplete());
+    let (v, s) = run(
+        v,
+        s,
+        &line(
+            "event_msg",
+            json!({"type":"user_message","message":"changed"}),
+        ),
+    );
+    assert_eq!(author(&v), "human");
+    let donor = serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap();
+    let (v, s) = run(v, s, &completed("UserMessage", "echo", "still different"));
+    assert!(s.normalization_incomplete());
+    assert_eq!(author(&v), "human");
+    assert_eq!(
+        serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap(),
+        donor
+    );
+}
+#[test]
+fn reapplying_a_valid_native_echo_keeps_the_native_claim_origins() {
+    let (v, s) = run(
+        MemoryReadView::default(),
+        Resume::default(),
+        &(unknown_start()
+            + &response("user", "U", "prompt")
+            + &completed("UserMessage", "echo", "prompt")),
+    );
+    let donor = serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap();
+    let (v, s) = run(v, s, &response("user", "U", "prompt"));
+    assert!(!s.normalization_incomplete());
+    assert_eq!(author(&v), "human");
+    assert_eq!(
+        serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap(),
+        donor
+    );
+}
+#[test]
+fn native_first_user_echo_remains_pending_for_both_id_cases_even_after_duplicate() {
+    for id in ["U", "different"] {
+        let (v, s) = run(
+            MemoryReadView::default(),
+            Resume::default(),
+            &(unknown_start()
+                + &completed("UserMessage", id, "prompt")
+                + &response("user", "U", "prompt")),
+        );
+        assert!(s.normalization_incomplete());
+        assert_eq!(author(&v), "unknown");
+        assert!(!v.cells.contains_key(&Key::Evidence(0, 1, 3)));
+        let (v, s) = run(v, s, &completed("UserMessage", id, "prompt"));
+        assert!(s.normalization_incomplete());
+        assert_eq!(author(&v), "unknown");
+        assert!(!v.cells.contains_key(&Key::Evidence(0, 1, 3)));
+    }
+}
+#[test]
+fn malformed_explicit_turn_metadata_cannot_fall_back_to_current_scope() {
+    for metadata in [
+        Value::Null,
+        json!("malformed"),
+        json!(true),
+        json!([]),
+        json!({"turn_id":null}),
+        json!({"turn_id":7}),
+        json!({"turn_id":false}),
+    ] {
+        let bad = edited(&response("assistant", "I", "text"), |v| {
+            v["payload"]["internal_chat_message_metadata_passthrough"] = metadata;
+        });
+        for first in [false, true] {
+            let input = if first {
+                start() + &completed("AgentMessage", "I", "text") + &bad
+            } else {
+                start() + &bad + &completed("AgentMessage", "I", "text")
+            };
+            let (_, s) = run(MemoryReadView::default(), Resume::default(), &input);
+            assert!(s.normalization_incomplete());
+        }
+    }
+}
