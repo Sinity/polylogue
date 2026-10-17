@@ -24,6 +24,23 @@ pub struct Config {
     pub history: PathBuf,
     #[serde(default = "catalog")]
     pub catalog: PathBuf,
+    #[serde(default)]
+    pub paginated_history: Option<PathBuf>,
+    #[serde(default = "history_interval")]
+    pub paginated_interval_seconds: u64,
+}
+fn history_interval() -> u64 {
+    300
+}
+pub fn paginated_path(config: &Config) -> crate::Result<Option<PathBuf>> {
+    if config.paginated_interval_seconds == 0 || config.paginated_interval_seconds > 86400 {
+        return Err(refused("paginated_interval_seconds requires 1..86400"));
+    }
+    config
+        .paginated_history
+        .as_deref()
+        .map(|p| resolve(&fs::canonicalize(&config.home)?, p))
+        .transpose()
 }
 fn rollouts() -> PathBuf {
     "sessions".into()
@@ -66,6 +83,11 @@ pub struct Acquisition {
     pub prompt_input: Option<String>,
     pub refused: Vec<Availability>,
     pub conversation_coverage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paginated_history: Option<Availability>,
+    /// Exact acquired physical input, independent of the bounded retained sample.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paginated_input: Option<String>,
 }
 fn refused(s: impl ToString) -> Error {
     Error::ObservedSourceRefused(s.to_string())
@@ -232,6 +254,12 @@ impl Candidate {
     }
     pub fn format(&self) -> InputFormat {
         self.format
+    }
+    pub fn paginated(path: PathBuf) -> Self {
+        Self {
+            path,
+            format: InputFormat::CodexHistorySqlite,
+        }
     }
     pub fn prompt(path: PathBuf) -> Self {
         Self {
@@ -653,6 +681,7 @@ impl Writer {
         cancel: &AtomicBool,
     ) -> crate::Result<Acquisition> {
         self.check_import_acquisition()?;
+        paginated_path(config)?;
         let plan = discover(config, cancel)?;
         let deferred_rollout_paths = plan.deferred_rollout_paths;
         let catalog_state = plan.catalog;
@@ -701,7 +730,50 @@ impl Writer {
                 state
             }
             Err(Error::Cancelled) => return Err(Error::Cancelled),
-            Err(e) => unavailable(history_path, e),
+            Err(e) => {
+                let state = unavailable(history_path, e);
+                failures.push(state.clone());
+                state
+            }
+        };
+        let mut paginated_input = None;
+        let paginated_history = if let Some(path) = paginated_path(config)? {
+            let candidate = Candidate::paginated(path.clone());
+            let id = candidate.observation_id(request, seen_at)?;
+            let observation = ImportObservation {
+                id: &id,
+                machine: &config.machine,
+                host: &config.host,
+                path: path
+                    .to_str()
+                    .ok_or_else(|| refused("history path must be UTF-8"))?,
+                seen_at,
+            };
+            let result = (|| -> crate::Result<crate::RetainedInput> {
+                let basis = self.history_basis(&observation)?;
+                let prepared = self
+                    .blob_capture()?
+                    .capture_history_pages(&path, basis, cancel)?;
+                if let Some(input) = self.known_history_snapshot(prepared.hash(), &observation)? {
+                    return Ok(input);
+                }
+                self.retain_history_pages(prepared, &observation, 131072)
+            })();
+            Some(match result {
+                Ok(input) => {
+                    paginated_input = Some(input.id.clone());
+                    retained.push(input.id);
+                    available(path, 1, "retained_snapshots")
+                }
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(e) => {
+                    let state = unavailable(path, e);
+                    failures.push(state.clone());
+                    state
+                }
+            })
+        } else {
+            None
         };
         let retained_count = retained.len();
         let refused_count = failures.len();
@@ -709,6 +781,8 @@ impl Writer {
         retained.truncate(32);
         failures.truncate(4);
         let mut report = Acquisition {
+            paginated_history,
+            paginated_input,
             recipe: "configured-codex-home-v1",
             scope: "finite_startup_snapshots",
             catalog: catalog_state,
@@ -820,3 +894,41 @@ impl ReadHandle {
 
 #[cfg(test)]
 mod tests;
+
+/// Process-local observation key only. It never proves database contents or
+/// supplies an acquisition checkpoint; restart and due full checks read pages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryStamp(Vec<Option<(u64, u64, u64, i64, i64, i64, i64)>>);
+pub fn history_stamp(config: &Config) -> crate::Result<HistoryStamp> {
+    use std::os::unix::fs::MetadataExt;
+    let path =
+        paginated_path(config)?.ok_or_else(|| refused("paginated history is not configured"))?;
+    let mut wal = path.as_os_str().to_os_string();
+    wal.push("-wal");
+    let wal = PathBuf::from(wal);
+    let mut values = Vec::with_capacity(2);
+    for path in [path, wal] {
+        match fs::symlink_metadata(path) {
+            Ok(m) if m.is_file() => values.push(Some((
+                m.dev(),
+                m.ino(),
+                m.len(),
+                m.mtime(),
+                m.mtime_nsec(),
+                m.ctime(),
+                m.ctime_nsec(),
+            ))),
+            Ok(_) => {
+                return Err(refused(
+                    "history observation requires regular non-symlink files",
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => values.push(None),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if values[0].is_none() {
+        return Err(refused("configured paginated history is unavailable"));
+    }
+    Ok(HistoryStamp(values))
+}

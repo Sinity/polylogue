@@ -1,0 +1,3 @@
+[env]
+# The capture reader must use the bundled connection's committed page view.
+LIBSQLITE3_FLAGS = "-DSQLITE_ENABLE_DBPAGE_VTAB"

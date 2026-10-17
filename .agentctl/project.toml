@@ -173,3 +173,13 @@ result = "exit"
 timeout_seconds = 600
 scratch = "nvme"
 cache = "none"
+
+[operations.configured_history_demo]
+description = "Exercise configured physical Codex snapshots through CLI and official MCP with WAL and retained recovery controls"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-configured-history.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"

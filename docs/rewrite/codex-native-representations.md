@@ -30,9 +30,11 @@ produce a successful decoded result. Only store opens SQLite. Sources receive
 typed rows and map the UI `commandExecution` payload without SQL or source IO.
 
 Capture opens the supplied regular database read-only, establishes a read
-transaction before SQLite backup, and retains the resulting physical snapshot.
-It therefore includes committed WAL pages consistently; the retained bytes are
-the backup image, not a purported copy of the original main file. Citations name
+transaction, and streams every page through bundled SQLite `sqlite_dbpage`.
+It includes committed WAL pages consistently and retains exact page-one payload
+as well as data pages; the bytes are this SQLite read view, not a copy of the
+checkpointed main file or a normalized backup image. It replaces the former
+backup-copy path rather than keeping two capture modes. Citations name
 that immutable input, its full physical range, the schema, table, exact native
 row key and canonical item-JSON hash. Immutable version evidence additionally
 binds the constructor, adapter/schema pin and every typed row fact, including

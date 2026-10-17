@@ -9,6 +9,8 @@ fn configured_hash_change_refuses_before_retained_source_effects() {
     let path = home.join("sessions/rollout-owned.jsonl");
     std::fs::write(&path, b"{}\n").unwrap();
     let config = polylogue_store::configured_codex::Config {
+        paginated_history: None,
+        paginated_interval_seconds: 300,
         home,
         machine: "synthetic-machine".into(),
         host: "synthetic-host".into(),
@@ -51,6 +53,8 @@ fn configured_known_content_does_not_bypass_request_conflict() {
     std::fs::write(&path, b"{}\n").unwrap();
     std::fs::write(home.join("history.jsonl"), b"").unwrap();
     let config = polylogue_store::configured_codex::Config {
+        paginated_history: None,
+        paginated_interval_seconds: 300,
         home: home.clone(),
         machine: "synthetic-machine".into(),
         host: "synthetic-host".into(),

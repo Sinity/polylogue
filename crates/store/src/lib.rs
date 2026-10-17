@@ -26,6 +26,8 @@ pub mod authored;
 mod capture;
 mod client_request;
 pub mod codex_history;
+pub mod history_pages;
+mod source_readers;
 pub mod tool_items;
 pub use capture::{BlobCapture, PreparedBlob};
 pub mod claude_bodies;
@@ -90,6 +92,8 @@ pub enum Error {
     ExcisionCheckRequired,
     #[error("parser predecessor changed; discard the attempted step")]
     ParserPredecessorChanged,
+    #[error("snapshot extent fragmentation requires a fresh base")]
+    SnapshotFragmented,
     #[error("provider state has unfinished prepared work; resume it before admitting a new parse")]
     ParserWorkPending,
     #[error("{resource} requires a larger admission ({required})")]
@@ -182,8 +186,10 @@ pub struct Writer {
 /// Read-only SQLite handles and typed queries; never a raw connection or SQL surface.
 pub struct ReadHandle {
     root: PathBuf,
-    // One opened expected-object representation per read capability; fork starts empty.
+    // One general expected-object reader plus two object-affine retained-source
+    // slots per capability; fork starts with all three empty.
     blob_reader: hashed_blobs::Reader,
+    source_readers: source_readers::SourceReaders,
     archive: Connection,
     index: Connection,
     embeddings: Connection,
@@ -676,6 +682,7 @@ impl ReadHandle {
     fn owned(root: PathBuf, lock: Arc<File>) -> Result<Self> {
         Ok(Self {
             blob_reader: hashed_blobs::Reader::new(&root, vec![]),
+            source_readers: source_readers::SourceReaders::new(&root),
             archive: open(&root.join("archive.db"), true, true)?,
             index: open(&root.join("index.db"), true, false)?,
             embeddings: open(&root.join("embeddings.db"), true, true)?,
@@ -706,31 +713,61 @@ impl ReadHandle {
         hash: BlobHash,
         offset: u64,
         length: u64,
+        check: impl FnMut() -> Result<()>,
+    ) -> Result<Vec<u8>> {
+        self.read_blob_range_using(&self.blob_reader, false, hash, offset, length, check)
+    }
+    pub(crate) fn read_blob_range_using(
+        &self,
+        reader: &hashed_blobs::Reader,
+        verify_first: bool,
+        hash: BlobHash,
+        offset: u64,
+        length: u64,
         mut check: impl FnMut() -> Result<()>,
     ) -> Result<Vec<u8>> {
-        check()?;
-        let path = self.root.join("archive.db");
-        let size: Option<i64> = db(&path, || {
-            self.archive
-                .query_row(
-                    "SELECT size FROM blob WHERE hash=?1 AND state='present'",
-                    [hash.bytes().as_slice()],
-                    |r| r.get(0),
-                )
-                .optional()
-        })?;
-        let size = u64::try_from(size.ok_or(Error::UnknownBlob)?)
-            .map_err(|_| Error::Schema(path.clone()))?;
-        if offset.checked_add(length).is_none_or(|end| end > size) {
-            return Err(Error::Range);
+        let result = (|| {
+            check()?;
+            let path = self.root.join("archive.db");
+            let size: Option<i64> = db(&path, || {
+                self.archive
+                    .query_row(
+                        "SELECT size FROM blob WHERE hash=?1 AND state='present'",
+                        [hash.bytes().as_slice()],
+                        |r| r.get(0),
+                    )
+                    .optional()
+            })?;
+            let size = u64::try_from(size.ok_or(Error::UnknownBlob)?)
+                .map_err(|_| Error::Schema(path.clone()))?;
+            if offset.checked_add(length).is_none_or(|end| end > size) {
+                return Err(Error::Range);
+            }
+            if verify_first {
+                let mut verified = 0;
+                reader.verify_plain::<Error>(
+                    &hashed_blobs::Hash(*hash.bytes()),
+                    size,
+                    |bytes| {
+                        check()?;
+                        verified += bytes.len() as u64;
+                        Ok(())
+                    },
+                )?;
+                self.source_readers.verified(verified);
+            }
+            reader.read_range_checked::<Error>(
+                &hashed_blobs::Hash(*hash.bytes()),
+                Some(size),
+                offset,
+                length,
+                check,
+            )
+        })();
+        if result.is_err() {
+            self.source_readers.forget(hash);
         }
-        self.blob_reader.read_range_checked::<Error>(
-            &hashed_blobs::Hash(*hash.bytes()),
-            Some(size),
-            offset,
-            length,
-            check,
-        )
+        result
     }
 }
 use rusqlite::OptionalExtension;

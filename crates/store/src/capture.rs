@@ -55,6 +55,9 @@ impl<R: Read> Read for Counted<R> {
     }
 }
 impl BlobCapture {
+    pub(crate) fn read_handle(&self) -> Result<crate::ReadHandle> {
+        crate::ReadHandle::owned(self.root.clone(), Arc::clone(&self.authority))
+    }
     /// Explicit regular-file import only. Nonblocking/no-follow open prevents
     /// FIFO opens and final-component symlinks from trapping the worker before
     /// descriptor type validation. This is not a general collector policy.

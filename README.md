@@ -51,6 +51,17 @@ coverage limits.
 
 Explicit `codex_home` configuration discovers rollout snapshots independently of thread catalog membership, then advances the same home in bounded turns with a one-second pause through the existing owner queues. Each turn admits at most 512 candidate evaluations and 32 MiB of charged source bytes, then releases capacity for the next turn. A bounded directory cursor progresses beyond earlier prefixes; unchanged content adds no observations. `--until-idle` handles the startup snapshot only. Retained prompt-history references stay separate from conversations, with pending coverage and source provenance in status and query replies. The [configured discovery guide](docs/rewrite/codex-configured-discovery.md) describes relative paths, admission, missing versus empty evidence, and retained reads after source removal. General source reconciliation remains unfinished.
 
+Optional `codex_home.paginated_history` names an additional physical history
+source; it has no default. `paginated_interval_seconds` selects its quiet interval
+(default 300). This route streams a complete SQLite read view into a plain base
+or one changed-page blob with flat archive extents. Its raw acquisition does not
+inherit the bounded row decoder's 16 MiB limit. Startup names the exact retained
+`paginated_input`; availability and interpretation remain separate. See the
+[physical-history contract](docs/rewrite/codex-configured-discovery.md#physical-history).
+Synthetic packaged CLI/MCP acceptance covers this configured operation path.
+Complete Session reconstruction, production capture and multi-GB resource
+qualification remain open.
+
 ## Observed Claude source subset
 
 One explicit regular Claude main location can now be retained at startup with

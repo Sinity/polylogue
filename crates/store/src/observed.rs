@@ -438,8 +438,11 @@ impl ReadHandle {
                 hash.try_into()
                     .map_err(|_| refusal("invalid extent digest"))?,
             );
+            let (reader, verify_first) = self.source_readers.select(id, chain, binding, hash)?;
             result.extend_from_slice(
-                &self.read_blob_range_checked(
+                &self.read_blob_range_using(
+                    reader,
+                    verify_first,
                     hash,
                     u64::try_from(blob_start)
                         .map_err(|_| Error::Range)?
@@ -476,11 +479,16 @@ impl ReadHandle {
                     .map_err(|_| refusal("invalid backing digest"))?,
             );
             let length = u64::try_from(length).map_err(|_| Error::Range)?;
-            self.blob_reader.verify_plain::<Error>(
-                &hashed_blobs::Hash(*hash.bytes()),
-                length,
-                |_| check(),
+            let (reader, verify_first) = self.source_readers.select(
+                &source.input.id,
+                source.input.chain,
+                source.binding,
+                hash,
             )?;
+            // Zero-length range rechecks the held descriptor even after its
+            // earlier full verification. The metadata/removal fence is shared.
+            self.read_blob_range_using(reader, verify_first, hash, 0, 0, &mut check)?;
+            let _ = length;
         }
         Ok(())
     }

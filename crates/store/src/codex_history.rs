@@ -74,47 +74,9 @@ impl BlobCapture {
         path: &Path,
         cancelled: &AtomicBool,
     ) -> Result<PreparedBlob> {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if !metadata.is_file() {
-            return Err(Error::Invariant(
-                "history snapshot requires a regular non-symlink file".into(),
-            ));
-        }
-        let source = db(path, || {
-            Connection::open_with_flags(
-                path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )
-        })?;
-        db(path, || source.execute_batch("PRAGMA query_only=ON; BEGIN"))?;
-        let _: i64 = db(path, || {
-            source.query_row("PRAGMA schema_version", [], |r| r.get(0))
-        })?;
-        let temp = tempfile::NamedTempFile::new()?;
-        let mut dest = db(temp.path(), || Connection::open(temp.path()))?;
-        {
-            let backup = db(path, || rusqlite::backup::Backup::new(&source, &mut dest))?;
-            loop {
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(Error::Cancelled);
-                }
-                match db(path, || backup.step(128))? {
-                    rusqlite::backup::StepResult::Done => break,
-                    rusqlite::backup::StepResult::More => {}
-                    _ => {
-                        return Err(Error::Invariant(
-                            "history snapshot backup busy; retry explicit import".into(),
-                        ));
-                    }
-                }
-            }
-        }
-        dest.close().map_err(|(_, e)| Error::Sqlite {
-            file: temp.path().into(),
-            source: e,
-        })?;
-        db(path, || source.execute_batch("ROLLBACK"))?;
-        self.capture_regular_file(temp.path(), cancelled)
+        Ok(self
+            .capture_history_pages(path, None, cancelled)?
+            .into_plain())
     }
 }
 impl ReadHandle {
