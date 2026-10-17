@@ -82,7 +82,7 @@ def main():
         document = cli([reference, 'read', '--format', 'json'], label + ' JSON')
         assert document['messages'], document
         export = args.output / (label + '-export')
-        cli([reference, 'export', '--format', 'json', '--to', export], label + ' export')
+        run.command([args.binary, '--archive', archive, reference, 'export', '--format', 'json', '--to', export], label + ' export', (0,5), timeout=60)
         files = [p for p in export.rglob('*.json') if p.name != 'manifest.json']; assert len(files) == 1
         exported = json.loads(files[0].read_text())
         assert exported['messages'] == document['messages'] and exported['session'] == document['session']
