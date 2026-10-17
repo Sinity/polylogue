@@ -27,3 +27,10 @@ Exact known conversation membership comes from provider-owned state and current 
 An optional `--baseline-run` reuses a stopped synthetic native baseline that retained these inputs but failed canonical publication. The driver copies complete archive custody, including WAL and lock files, records file digests before opening the copy, declares restore preparation with retired writers, retries the retained inputs through the new parser basis, and compares public content and identities. The original baseline remains unchanged.
 
 Codex history-SQLite and prompt-history dependencies remain unresolved for complete conversation qualification. Isolated rollout acceptance does not qualify complete reads of mixed configured homes.
+
+The native source turn admits up to 1,024 records within its existing 64 KiB
+input window. This avoids a worker and durable install for every 32 tiny ignored
+state records. The 1 MiB retained-record limit, state read/encoding allowances,
+installation budgets and cancellation checks remain in force. A socket control
+checks ordinary peers during state work and exact accounting after interruption
+and restart; the full-size public regressions determine the measured cost.

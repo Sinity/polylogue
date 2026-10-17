@@ -1977,7 +1977,10 @@ fn source_budgets() -> Budgets {
     Budgets {
         framing: StepBudget {
             bytes: WINDOW_BYTES as usize,
-            records: 32,
+            // Tiny ignored records should share the authenticated 64 KiB read
+            // rather than force a worker and durable install every 32 lines.
+            // Byte, retained-record, state and installation bounds still apply.
+            records: 1024,
             record_bytes: 1024 * 1024,
         },
         reads: Budget {
