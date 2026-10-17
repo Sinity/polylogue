@@ -24,6 +24,7 @@ const LINK: &str = "claude.link.v1";
 const BACKGROUND: &str = "claude.background.v1";
 const OCCURRENCE: &str = "claude.occurrence.v1";
 const RECORD: &str = "claude.record.v1";
+const PARENT_NODE: &str = "claude.parent_node.v1";
 pub(crate) const CONTRIBUTION: &str = "claude.contribution.v1";
 const BODY: &str = "claude.body.v1";
 pub(crate) const PENDING: &str = "claude.pending.v1";
@@ -229,6 +230,13 @@ impl ReadView for View<'_> {
     ) -> std::result::Result<Option<ResponseCell>, String> {
         self.callback(|| self.get(RESPONSE, &(session, key.role, &key.response, &key.request)))
     }
+    fn parent_node(
+        &self,
+        session: &str,
+        uuid: &str,
+    ) -> std::result::Result<Option<polylogue_sources::claude_code::parent::Node>, String> {
+        self.callback(|| self.get(PARENT_NODE, &(session, uuid)))
+    }
     fn record(
         &self,
         session: &str,
@@ -394,6 +402,7 @@ pub fn encode_step(
         .saturating_add(delta.sessions.len())
         .saturating_add(delta.responses.len())
         .saturating_add(delta.addresses.len())
+        .saturating_add(delta.parent_nodes.len())
         .saturating_add(delta.occurrences.len())
         .saturating_add(delta.backgrounds.len())
         .saturating_add(delta.contributions.len())
@@ -425,6 +434,9 @@ pub fn encode_step(
     }
     for (hash, count) in &delta.occurrences {
         encoder.put(OCCURRENCE, hash, Some(count))?;
+    }
+    for (session, uuid, node) in &delta.parent_nodes {
+        encoder.put(PARENT_NODE, &(session, uuid), Some(node))?;
     }
     for (session, uuid, cell) in &delta.addresses {
         encoder.put(RECORD, &(session, uuid), Some(cell))?;

@@ -382,7 +382,7 @@ fn a_native_parent_uuid_from_a_later_response_fragment_resolves_its_owning_messa
             assert!(matches!(
                 world.compute_with(&handle, work_budget()),
                 Err(m::Error::Unsupported(
-                    "Claude source mapping/counting obligation remains pending"
+                    "Claude retained parent record unavailable"
                 ))
             ));
             continue;
@@ -695,3 +695,8 @@ mod provider_usage;
 
 #[path = "claude_record_extras.rs"]
 mod record_extras;
+
+#[path = "claude_parents.rs"]
+mod parents;
+#[path = "claude_result_metadata.rs"]
+mod result_metadata;

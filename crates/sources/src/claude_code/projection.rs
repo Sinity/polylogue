@@ -533,6 +533,13 @@ pub(super) fn record(
         )
     }
     if v.get("parentUuid")
+        .is_some_and(|v| !v.is_null() && v.native().is_none())
+    {
+        result.obligations.push(CountingObligation::UnmappedField {
+            path: path(&["parentUuid"]),
+        });
+    }
+    if v.get("parentUuid")
         .and_then(Value::native)
         .is_some_and(|s| !s.as_str().is_empty())
     {
@@ -712,8 +719,10 @@ pub(super) fn record(
                 leaf(
                     "content",
                     BlockField::Output,
-                    raw.get("content")
-                        .is_some_and(|value| value.is_string() || value.is_array()),
+                    raw.get("content").is_some_and(|value| {
+                        (value.is_string() || value.is_array())
+                            && !super::tool_result::reference_content(value)
+                    }),
                 );
                 let decision = super::tool_result::decide(v, index, raw);
                 for (field, path) in [
@@ -761,6 +770,9 @@ pub(super) fn record(
                     .is_some_and(|a| {
                         a.iter()
                             .any(|i| i.get("type").and_then(Value::as_str) != Some("text"))
+                            && !raw
+                                .get("content")
+                                .is_some_and(super::tool_result::reference_content)
                     })
                 {
                     result.obligations.push(CountingObligation::UnmappedField {

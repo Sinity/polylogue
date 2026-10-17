@@ -1,6 +1,7 @@
 //! Claude-specific cursors and pinned source selection. Durable mutation and
 //! value/origin verification remain in the parent's one materializer core.
 use super::*;
+mod parent;
 use crate::state::claude::View;
 use polylogue_model::{
     merge::{BlockField, MessageField},
@@ -98,10 +99,21 @@ fn response(view: &View<'_>, head: &Head) -> Result<ResponseCell> {
     }
     Ok(r)
 }
-fn contribution(snapshot: &Snapshot, head: &Head, item: u64, b: Budget) -> Result<Contribution> {
-    let view = View::new(snapshot, b)?;
-    let c = callback(&view, view.contribution(&head.pending.message, item))?
+fn contribution(
+    snapshot: &Snapshot,
+    head: &Head,
+    item: u64,
+    b: Budgets,
+    flag: &AtomicBool,
+) -> Result<parent::Qualified> {
+    let view = View::new(snapshot, b.read)?;
+    let mut c = callback(&view, view.contribution(&head.pending.message, item))?
         .ok_or(Error::Unsupported("Claude contribution unavailable"))?;
+    let records = if item == 0 {
+        parent::qualify(&view, head, &mut c, b.metadata, flag)?
+    } else {
+        vec![]
+    };
     if !c.projection.obligations.is_empty() {
         return Err(Error::Unsupported(
             "Claude source mapping/counting obligation remains pending",
@@ -112,7 +124,10 @@ fn contribution(snapshot: &Snapshot, head: &Head, item: u64, b: Budget) -> Resul
             "Claude required companion remains unavailable",
         ));
     }
-    Ok(c)
+    Ok(parent::Qualified {
+        contribution: c,
+        records,
+    })
 }
 pub fn start(
     snapshot: &Snapshot,
@@ -198,6 +213,10 @@ pub fn start(
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) enum Cursor {
+    ParentCitations {
+        index: usize,
+        donor: u8,
+    },
     Citations {
         item: u64,
         after: Option<Vec<String>>,
@@ -328,6 +347,27 @@ fn leaf<'a>(
     c: Option<&'a Contribution>,
     content: Option<&'a BlockContent>,
 ) -> Result<ValueSource<'a>> {
+    if matches!(fact.field, Field::FirstMessage(MessageField::Parent)) {
+        if let Some(recipe) = &fact.selection {
+            let resolved = match &recipe.transform {
+                source::selection::Transform::ParentReferenceV1 { resolved, .. }
+                | source::selection::Transform::ParentViaRecordsV1 { resolved, .. } => {
+                    Some(resolved)
+                }
+                _ => None,
+            };
+            if let Some(resolved) = resolved {
+                let mut bytes = Vec::new();
+                polylogue_model::source_leaf::write_message_reference(resolved, &mut bytes)
+                    .map_err(|e| Error::Source(e.to_string()))?;
+                return Ok(ValueSource::Opaque(
+                    RetainedJson::parse(&bytes)
+                        .map_err(|e| Error::Source(e.to_string()))?
+                        .into_opaque(),
+                ));
+            }
+        }
+    }
     let subject = match &fact.field {
         Field::FirstMessage(_)
         | Field::SelectedMessage(_)
@@ -509,7 +549,7 @@ pub(super) fn compute(
                     b,
                 );
             }
-            let c = contribution(snapshot, head, item, b.read)?;
+            let c = contribution(snapshot, head, item, b, flag)?;
             if !envelope {
                 let range = c
                     .origins
@@ -543,7 +583,7 @@ pub(super) fn compute(
             progress(state, &mut cursor, Cursor::CompletionCitation { item }, b)
         }
         Cursor::CompletionCitation { item } => {
-            let c = contribution(snapshot, head, item, b.read)?;
+            let c = contribution(snapshot, head, item, b, flag)?;
             let next = Cursor::Citations {
                 item: item
                     .checked_add(1)
@@ -553,7 +593,7 @@ pub(super) fn compute(
             };
             // The named completion supplies fields of the earlier launch
             // Message. Cite only that retained record before evaluating them.
-            match c.completion {
+            match &c.completion {
                 Some(completion) => cite(state, &mut cursor, next, completion.range, b),
                 None => progress(state, &mut cursor, next, b),
             }
@@ -563,7 +603,7 @@ pub(super) fn compute(
                 return progress(
                     state,
                     &mut cursor,
-                    Cursor::RecordExtraCitations { after: None },
+                    Cursor::ParentCitations { index: 0, donor: 0 },
                     b,
                 );
             }
@@ -591,6 +631,41 @@ pub(super) fn compute(
             }
             match &r.selected_origins[usize::from(index)] {
                 Some(origin) => cite(state, &mut cursor, next, origin.record, b),
+                None => progress(state, &mut cursor, next, b),
+            }
+        }
+        Cursor::ParentCitations { index, donor } => {
+            let first = contribution(snapshot, head, 0, b, flag)?;
+            let relations = parent::relations(&first);
+            let Some(node) = relations.get(index) else {
+                return progress(
+                    state,
+                    &mut cursor,
+                    Cursor::RecordExtraCitations { after: None },
+                    b,
+                );
+            };
+            if donor >= 6 {
+                return progress(
+                    state,
+                    &mut cursor,
+                    Cursor::ParentCitations {
+                        index: index + 1,
+                        donor: 0,
+                    },
+                    b,
+                );
+            }
+            let range = node.citation(donor);
+            if let Some(range) = range {
+                parent::verify(reader, snapshot, state, node, donor, range, &input, b, flag)?;
+            }
+            let next = Cursor::ParentCitations {
+                index,
+                donor: donor + 1,
+            };
+            match range {
+                Some(range) => cite(state, &mut cursor, next, range, b),
                 None => progress(state, &mut cursor, next, b),
             }
         }
@@ -692,7 +767,7 @@ pub(super) fn compute(
                     b,
                 );
             }
-            let c = contribution(snapshot, head, item, b.read)?;
+            let c = contribution(snapshot, head, item, b, flag)?;
             let Some(fact) = c.projection.facts.get(index) else {
                 return progress(
                     state,
@@ -807,7 +882,7 @@ pub(super) fn compute(
             let Some((key, extra)) = next else {
                 return progress(state, &mut cursor, Cursor::Finish, b);
             };
-            let c = contribution(snapshot, head, extra.item, b.read)?;
+            let c = contribution(snapshot, head, extra.item, b, flag)?;
             let slot = slot(&extra.fact.field)?;
             field_turn(
                 snapshot,
@@ -830,7 +905,7 @@ pub(super) fn compute(
             local: block_local,
             phase,
         } => {
-            let c = contribution(snapshot, head, item, b.read)?;
+            let c = contribution(snapshot, head, item, b, flag)?;
             let Some(original_content) = c.blocks.get(block_local as usize) else {
                 return progress(
                     state,
@@ -1186,7 +1261,7 @@ fn proof(
     let mut completions = 0u64;
     for item in 0..response.items {
         cancelled(flag)?;
-        let c = contribution(snapshot, head, item, b.read)?;
+        let c = contribution(snapshot, head, item, b, flag)?;
         for (previous, current) in baseline
             .iter_mut()
             .zip(c.final_fields().map_err(Error::Source)?)
@@ -1231,16 +1306,21 @@ fn proof(
         let item = extra_baseline.get(key).ok_or(Error::Invariant(
             "Claude selected extra baseline unavailable",
         ))?;
-        let c = contribution(snapshot, head, *item, b.read)?;
+        let c = contribution(snapshot, head, *item, b, flag)?;
         let raw = c.record_extra_raw(key).map_err(Error::Source)?;
         if selected.raw != raw {
             extra_corrections.push((key, source::keyed::SelectedRecordExtra::correction_tag(key)));
             bounded_json(&(&extra_baseline, &extra_corrections), b.metadata)?;
         }
     }
+    let first = contribution(snapshot, head, 0, b, flag)?;
+    parent::validate_acyclic(&view, head, &first, b.metadata, flag)?;
+    let parent_relations = parent::relations(&first);
+    bounded_json(&parent_relations, b.metadata)?;
     let count = response
         .items
-        .checked_add(metadata.len() as u64)
+        .checked_add(parent_relations.len() as u64)
+        .and_then(|n| n.checked_add(metadata.len() as u64))
         .and_then(|n| n.checked_add(extra_corrections.len() as u64))
         .and_then(|n| n.checked_add(bodies))
         .and_then(|n| n.checked_add(completions))
@@ -1251,14 +1331,14 @@ fn proof(
         ));
     }
     let mut framer = if count == 1 && response.items == 1 {
-        let c = contribution(snapshot, head, 0, b.read)?;
+        let c = contribution(snapshot, head, 0, b, flag)?;
         Framer::single_whole_record(c.raw.len() as u64, 0)
     } else {
         Framer::compound(count, Framer::compound_minimum_bytes()).map_err(Error::Evidence)?
     };
     for item in 0..response.items {
         cancelled(flag)?;
-        let c = contribution(snapshot, head, item, b.read)?;
+        let c = contribution(snapshot, head, item, b, flag)?;
         feed(
             &mut framer,
             c.record_unit(item),
@@ -1269,10 +1349,23 @@ fn proof(
     }
     for item in 0..response.items {
         cancelled(flag)?;
-        let c = contribution(snapshot, head, item, b.read)?;
+        let c = contribution(snapshot, head, item, b, flag)?;
         if let Some(unit) = c.completion_unit(item) {
             feed(&mut framer, unit, false, b, flag)?;
         }
+    }
+    for (index, node) in parent_relations.iter().enumerate() {
+        let bytes = node.evidence().map_err(Error::Source)?;
+        bounded_json(node, b.metadata)?;
+        feed_parts(
+            &mut framer,
+            &format!("parent/record/{index}"),
+            Some(&bytes),
+            None,
+            false,
+            b,
+            flag,
+        )?;
     }
     for unit in metadata {
         feed(&mut framer, unit, false, b, flag)?
@@ -1290,7 +1383,7 @@ fn proof(
     }
     for item in 0..response.items {
         cancelled(flag)?;
-        let c = contribution(snapshot, head, item, b.read)?;
+        let c = contribution(snapshot, head, item, b, flag)?;
         for index in 0..c.bodies.len() {
             let unit = c
                 .body_unit(item, index)

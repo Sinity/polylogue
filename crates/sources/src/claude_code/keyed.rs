@@ -159,6 +159,7 @@ pub struct Delta {
     pub sessions: Vec<SessionCell>,
     pub responses: Vec<(String, ResponseKey, ResponseCell)>,
     pub addresses: Vec<(String, String, RecordAddress)>,
+    pub parent_nodes: Vec<(String, String, super::parent::Node)>,
     pub occurrences: Vec<(String, u64)>,
     pub backgrounds: Vec<(String, BackgroundAddress)>,
     pub contributions: Vec<(MessageId, u64, Contribution)>,
@@ -178,6 +179,11 @@ pub trait ReadView {
         session: &str,
         key: &ResponseKey,
     ) -> Result<Option<ResponseCell>, Self::Error>;
+    fn parent_node(
+        &self,
+        session: &str,
+        uuid: &str,
+    ) -> Result<Option<super::parent::Node>, Self::Error>;
     fn record(&self, session: &str, uuid: &str) -> Result<Option<RecordAddress>, Self::Error>;
     fn contribution(
         &self,
@@ -211,6 +217,13 @@ impl<T: ReadView + ?Sized> ReadView for &T {
     ) -> Result<Option<ResponseCell>, Self::Error> {
         (**self).response(session, key)
     }
+    fn parent_node(
+        &self,
+        session: &str,
+        uuid: &str,
+    ) -> Result<Option<super::parent::Node>, Self::Error> {
+        (**self).parent_node(session, uuid)
+    }
     fn record(&self, session: &str, uuid: &str) -> Result<Option<RecordAddress>, Self::Error> {
         (**self).record(session, uuid)
     }
@@ -239,6 +252,7 @@ pub struct MemoryReadView {
     sessions: HashMap<String, SessionCell>,
     responses: HashMap<(String, ResponseKey), ResponseCell>,
     records: HashMap<(String, String), RecordAddress>,
+    parent_nodes: HashMap<(String, String), super::parent::Node>,
     occurrences: HashMap<String, u64>,
     backgrounds: HashMap<String, BackgroundAddress>,
     contributions: HashMap<(MessageId, u64), Contribution>,
@@ -267,6 +281,9 @@ impl MemoryReadView {
         }
         for (s, k, c) in delta.responses {
             self.responses.insert((s, k), c);
+        }
+        for (s, u, c) in delta.parent_nodes {
+            self.parent_nodes.insert((s, u), c);
         }
         for (s, u, c) in delta.addresses {
             self.records.insert((s, u), c);
@@ -298,6 +315,16 @@ impl ReadView for MemoryReadView {
         key: &ResponseKey,
     ) -> Result<Option<ResponseCell>, Self::Error> {
         Ok(self.responses.get(&(session.into(), key.clone())).cloned())
+    }
+    fn parent_node(
+        &self,
+        session: &str,
+        uuid: &str,
+    ) -> Result<Option<super::parent::Node>, Self::Error> {
+        Ok(self
+            .parent_nodes
+            .get(&(session.into(), uuid.into()))
+            .cloned())
     }
     fn record(&self, session: &str, uuid: &str) -> Result<Option<RecordAddress>, Self::Error> {
         Ok(self.records.get(&(session.into(), uuid.into())).cloned())

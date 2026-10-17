@@ -54,7 +54,7 @@ fn p(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| (*s).into()).collect()
 }
 /// Root-level metadata is attributable only when this record has one result.
-pub(super) fn metadata(record: &Value) -> Option<&Value> {
+fn sole_result_sidecar(record: &Value) -> Option<&Value> {
     let count = record
         .get("message")
         .and_then(|m| m.get("content"))
@@ -63,10 +63,66 @@ pub(super) fn metadata(record: &Value) -> Option<&Value> {
         .filter(|v| v.get("type").and_then(Value::as_str) == Some("tool_result"))
         .count();
     if count == 1 {
-        record.get("toolUseResult").filter(|v| v.is_object())
+        record.get("toolUseResult")
     } else {
         None
     }
+}
+pub(super) fn metadata(record: &Value) -> Option<&Value> {
+    sole_result_sidecar(record).filter(|v| v.is_object())
+}
+// These provider-owned members are opaque execution metadata, not normalized
+// status/output, file authority, billing, or additional tool executions.
+fn opaque_member(key: &str) -> bool {
+    matches!(
+        key,
+        "canReadOutputFile"
+            | "content"
+            | "description"
+            | "file"
+            | "filePath"
+            | "gitOperation"
+            | "matches"
+            | "message"
+            | "newString"
+            | "oldString"
+            | "outputFile"
+            | "pin"
+            | "prompt"
+            | "query"
+            | "replaceAll"
+            | "resolvedModel"
+            | "resumedAgentId"
+            | "staleReadFileStateHint"
+            | "staleRecovered"
+            | "success"
+            | "total_deferred_tools"
+            | "type"
+            | "userModified"
+    )
+}
+/// A supported reference array stays structured, including its text/order.
+pub(super) fn reference_content(value: &Value) -> bool {
+    let Some(items) = value.as_array() else {
+        return false;
+    };
+    items
+        .iter()
+        .any(|v| v.get("type").and_then(Value::as_str) == Some("tool_reference"))
+        && items.iter().all(|v| {
+            let Some(m) = v.as_object() else {
+                return false;
+            };
+            match v.get("type").and_then(Value::as_str) {
+                Some("text") => m.len() == 2 && v.get("text").is_some_and(Value::is_string),
+                Some("tool_reference") => {
+                    m.len() == 2
+                        && v.get("tool_name")
+                            .is_some_and(|n| n.is_string() && !n.as_str().unwrap_or("").is_empty())
+                }
+                _ => false,
+            }
+        })
 }
 pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
     let base = vec!["message".into(), "content".into(), index.to_string()];
@@ -168,7 +224,11 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
             }
         }
     }
-    let output = item.get("content").and_then(super::text_of);
+    let references = item.get("content").filter(|v| reference_content(v));
+    let output = item
+        .get("content")
+        .filter(|_| references.is_none())
+        .and_then(super::text_of);
     if exit.is_none() {
         exit = output.as_deref().and_then(super::exit_code_in);
     }
@@ -190,8 +250,9 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
                     | "totalToolUseCount"
                     | "totalDurationMs"
                     | "returnCodeInterpretation"
-            ) || (matches!(key.as_str(), "isImage" | "noOutputExpected")
-                && value.as_bool().is_some())
+            ) || opaque_member(key.as_str())
+                || (matches!(key.as_str(), "isImage" | "noOutputExpected")
+                    && value.as_bool().is_some())
                 || (key == &polylogue_model::NativeId::unicode("interrupted")
                     && value.as_bool() == Some(false))
             {
@@ -214,7 +275,23 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
             }
         }
     }
-    if record.get("toolUseResult").is_some() && meta.is_none() {
+    if let Some(content) = references {
+        data.insert(
+            polylogue_model::NativeId::unicode("content_items"),
+            content.opaque(),
+        );
+        data_paths.push(("content_items".into(), at("content")));
+    }
+    // A string sidecar is a distinct supplied carrier, never presented output.
+    let string_sidecar = sole_result_sidecar(record).filter(|v| v.is_string());
+    if let Some(value) = string_sidecar {
+        data.insert(
+            polylogue_model::NativeId::unicode("toolUseResult"),
+            value.opaque(),
+        );
+        data_paths.push(("toolUseResult".into(), p(&["toolUseResult"])));
+    }
+    if record.get("toolUseResult").is_some() && meta.is_none() && string_sidecar.is_none() {
         unresolved.push(p(&["toolUseResult"]));
     }
     if status_unreadable && matches!(outcome, ToolOutcome::Ok) {

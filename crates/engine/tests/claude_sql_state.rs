@@ -683,3 +683,6 @@ fn interpreted_text_repair_receipt_survives_sqlite_restart_without_changing_reco
 
 #[path = "claude_sql_state/record_extras.rs"]
 mod record_extras;
+
+#[path = "claude_sql_state/parent_nodes.rs"]
+mod parent_nodes;

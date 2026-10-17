@@ -365,5 +365,57 @@ establish this predicate for a later call. Every replacement constructor removes
 the old proof before validation, and later association checks the currently
 retained operation's status origin. This preserves both arrival orders without
 turning the proof into a lasting permission. Existing admission limits apply.
-Codex parser 11 recomputes the former normalization flag from retained inputs;
-Claude remains at parser 15. No read qualification or active-path guard changes.
+Codex parser 11 recomputes the former normalization flag from retained inputs.
+No read qualification or active-path guard changes.
+
+Claude parser version 16 preserves a finite set of additional opaque result
+sidecar members in the existing `tool_result.data` bag: `canReadOutputFile`,
+`content`, `description`, `file`, `filePath`, `gitOperation`, `matches`, `message`,
+`newString`, `oldString`, `outputFile`, `pin`, `prompt`, `query`, `replaceAll`,
+`resolvedModel`, `resumedAgentId`, `staleReadFileStateHint`, `staleRecovered`,
+`success`, `total_deferred_tools`, `type`, and `userModified`. Supplied JSON is
+preserved exactly, including null, numeric spelling and UTF-16 strings. These
+members infer no outcome, billing, execution, model choice or file authority.
+A string root `toolUseResult` belongs to `data.toolUseResult` only when exactly
+one protocol result supplies its attribution. It never replaces inline output.
+Opaque sidecars replace as whole supplied units; omission retains the original
+donor. Existing typed status validation, unknown-member and literal-key collision
+refusals remain in force.
+
+A protocol result content array containing strictly shaped `tool_reference`
+objects (`type`, nonempty string `tool_name`) and text objects (`type`, string `text`) is
+retained whole and in order as `data.content_items`, with its original raw-array
+selector. It is distinct from sidecar `data.content`. Such structured content
+supplies no synthetic text output. Existing all-text output reduction is
+unchanged; unknown kinds, additional nested members and malformed names remain
+unsupported. JSON, export and bounded model metadata expose these named data
+leaves through the existing consumer policy.
+
+Canonical parent selection now follows retained recognized non-Message record
+relations on the pinned provider snapshot. Attachment, system, event and counted
+progress records are skipped to the nearest Message; a compaction boundary uses
+its supplied `logicalParentUuid`, including a summary record between that
+boundary and the next Message. The first contribution owns a folded Message's
+parent. Late records can discharge the retained obligation on a newer snapshot.
+Absent records, invalid relations, conflicting UUID identities, cross-Session
+edges and cycles remain typed unavailable outcomes, including at complete EOF.
+There is no separate graph or retry scheduler.
+
+Retained relation nodes keep field fingerprints for effective duplicate
+detection, supplied link values and exact donors. Corrections replace supplied
+links; omissions keep their donors. Materialization verifies each link and its record/classification identity against
+its original retained bytes before admitting the citation. Public selector
+proofs omit internal duplicate-detection fingerprints. Materialization cites every traversed
+relation's envelope and link/classification donors and frames ordered relation
+value evidence before selected metadata. These units exclude storage positions
+and unrelated event payloads. Direct parent histories retain the original
+`ParentReferenceV1` descriptor and evidence sequence; traversed relations use
+`ParentViaRecordsV1`. Existing encoded-state, point-read and metadata allowances
+admit nodes and temporary traversal/proof state. This does not bound total
+history work, decoded allocation or worker duration, and raises no allowances.
+
+The combined parser replay identities are Claude 16 and Codex 11, and
+the retained upgrade fixture's baseline remains 8. Existing immutable selector,
+framing and model recipes keep their meanings. Older parser cells must replay
+through the existing version-upgrade/recovery path; source EOF alone still does
+not establish readable canonical content.
