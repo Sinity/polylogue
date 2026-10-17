@@ -14,7 +14,7 @@ pub mod projection;
 pub mod prompt_history;
 mod raw;
 pub mod selection;
-pub const PARSER_VERSION: u32 = 8;
+pub const PARSER_VERSION: u32 = 9;
 
 /// Record kinds that carry nothing to keep in the index (their bytes stay stored).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,14 +145,17 @@ fn native_duration(item: &Value) -> Option<u64> {
     if let Some(milliseconds) = item.get("duration_ms").and_then(Value::as_u64) {
         return Some(milliseconds);
     }
-    let duration = item.get("duration")?;
-    let seconds = duration.get("secs")?.as_u64()?;
-    let nanos = duration.get("nanos")?.as_u64()?;
-    if nanos >= 1_000_000_000 {
-        return None;
+    if let Some(duration) = item.get("duration") {
+        let seconds = duration.get("secs")?.as_u64()?;
+        let nanos = duration.get("nanos")?.as_u64()?;
+        if nanos >= 1_000_000_000 {
+            return None;
+        }
+        return seconds.checked_mul(1000)?.checked_add(nanos / 1_000_000);
     }
-    seconds.checked_mul(1000)?.checked_add(nanos / 1_000_000)
+    output_duration(item.get("output")?)
 }
+
 fn unit_item(unit: &keyed::EvidenceUnit) -> Option<Value> {
     let record: Value = serde_json::from_slice(&unit.canonical).ok()?;
     record.get("payload")?.get("item").cloned()
@@ -197,6 +200,122 @@ fn recorded_output(value: Option<&Value>) -> Option<ToolOutput> {
             .map(|text| ToolOutput::Text(text.into())),
         _ => None,
     }
+}
+
+fn wall_seconds(line: &str, prefix: &str) -> bool {
+    line.strip_prefix(prefix)
+        .and_then(|s| s.strip_suffix(" seconds"))
+        .is_some_and(|n| {
+            !n.is_empty()
+                && n.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+                && n.parse::<f64>().is_ok()
+        })
+}
+
+/// Only provider-written headers carry verdicts. A command preamble occupies
+/// one line; its embedded newline cannot move the header's anchored position.
+fn result_header_exit(text: &str) -> Option<i64> {
+    let mut lines = text.lines();
+    let mut first = lines.next()?;
+    if first.starts_with("Command: ") {
+        first = lines.next()?;
+    }
+    if first.starts_with("Chunk ID: ") {
+        first = lines.next()?;
+    }
+    if let Some(code) = first.strip_prefix("Exit code: ") {
+        let code = code.parse().ok()?;
+        let wall = lines.next()?;
+        if !wall_seconds(wall, "Wall time: ") {
+            return None;
+        }
+        let next = lines.next()?;
+        return (next == "Output:"
+            || next
+                .strip_prefix("Total output lines: ")
+                .is_some_and(|n| n.parse::<u64>().is_ok()))
+        .then_some(code);
+    }
+    command_header_status(text)?
+        .strip_prefix("Process exited with code ")
+        .or_else(|| command_header_status(text)?.strip_prefix("Process completed with exit code "))?
+        .parse()
+        .ok()
+}
+fn command_header_status(text: &str) -> Option<&str> {
+    let mut lines = text.lines();
+    let mut first = lines.next()?;
+    if first.starts_with("Command: ") {
+        first = lines.next()?;
+    }
+    if first.starts_with("Chunk ID: ") {
+        first = lines.next()?;
+    }
+    wall_seconds(first, "Wall time: ")
+        .then(|| lines.next())
+        .flatten()
+}
+fn running_session(text: &str) -> Option<&str> {
+    let status = if text.starts_with("Process running with session ID ") {
+        text.lines().next()?
+    } else {
+        command_header_status(text)?
+    };
+    let session = status.strip_prefix("Process running with session ID ")?;
+    (!session.is_empty() && session.bytes().all(|c| c.is_ascii_digit())).then_some(session)
+}
+/// For content-item output, Codex emits the status as a complete separate
+/// item. Text following its Output marker is user data, not that status item.
+fn complete_script_status(output: &Value) -> bool {
+    let Some(items) = output.as_array() else {
+        return true;
+    };
+    let Some(header) = items
+        .first()
+        .and_then(|item| item.get("text"))
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    let mut lines = header.lines();
+    let Some(_) = lines.next() else {
+        return false;
+    };
+    let Some(wall) = lines.next() else {
+        return false;
+    };
+    wall_seconds(wall, "Wall time ") && lines.next() == Some("Output:") && lines.next().is_none()
+}
+
+fn output_duration(output: &Value) -> Option<u64> {
+    let decoded = match output {
+        Value::String(text) => scalar_json(text.text()),
+        Value::Object(_) => Some(output.clone()),
+        _ => None,
+    };
+    if let Some(seconds) = decoded
+        .as_ref()
+        .and_then(|v| v.get("metadata"))
+        .and_then(|v| v.get("duration_seconds"))
+    {
+        return crate::decimal::scaled_integer(seconds, 3)?.try_into().ok();
+    }
+    let (text, prefix) = match output {
+        Value::String(text)
+            if result_header_exit(text.text()).is_some()
+                || running_session(text.text()).is_some() =>
+        {
+            (text.text(), "Wall time: ")
+        }
+        Value::Array(items) if complete_script_status(output) => {
+            (items.first()?.get("text")?.as_str()?, "Wall time ")
+        }
+        _ => return None,
+    };
+    let wall = text.lines().find(|line| line.starts_with(prefix))?;
+    let seconds = wall.strip_prefix(prefix)?.strip_suffix(" seconds")?;
+    let value = Value::parse(seconds.as_bytes()).ok()?;
+    crate::decimal::scaled_integer(&value, 3)?.try_into().ok()
 }
 
 /// The outcome a tool output states (`spec/sources/codex.md`, tool calls and outcomes, sources 2 and 3).
@@ -252,20 +371,23 @@ fn output_outcome(tool: &str, output: &Value, text: &str) -> (ToolOutcome, Optio
             );
         }
     }
-    for line in text.lines() {
-        let rest = line
-            .strip_prefix("Exit code: ")
-            .or_else(|| line.strip_prefix("Process exited with code "));
-        if let Some(code) = rest.and_then(|r| r.trim().parse::<i64>().ok()) {
-            return (
-                if code == 0 {
-                    ToolOutcome::Ok
-                } else {
-                    ToolOutcome::Error { reason: None }
-                },
-                Some(code),
-            );
-        }
+    if let Some(code) = result_header_exit(text) {
+        return (
+            if code == 0 {
+                ToolOutcome::Ok
+            } else {
+                ToolOutcome::Error { reason: None }
+            },
+            Some(code),
+        );
+    }
+    if (is_shell_tool(tool) || tool == "write_stdin") && running_session(text).is_some() {
+        return (
+            ToolOutcome::Unknown {
+                reason: UnknownReason::NoResult,
+            },
+            None,
+        );
     }
     if text.starts_with("Command blocked by PreToolUse hook") {
         return (
@@ -287,7 +409,7 @@ fn output_outcome(tool: &str, output: &Value, text: &str) -> (ToolOutcome, Optio
             return (ToolOutcome::Error { reason: None }, None);
         }
     }
-    if tool == "exec" {
+    if tool == "exec" && complete_script_status(output) {
         let first = text.lines().next().unwrap_or("");
         if first.starts_with("Script completed") {
             return (ToolOutcome::Ok, None);

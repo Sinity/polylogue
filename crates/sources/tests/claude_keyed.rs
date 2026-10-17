@@ -199,7 +199,7 @@ fn selected_metadata_evidence_corrects_base_slot_order_without_coordinate_salt()
         999,
     );
     let cell = response(&memory, "s", &key);
-    let mut baseline: [Option<Vec<u8>>; 5] = Default::default();
+    let mut baseline: [Option<Vec<u8>>; 7] = Default::default();
     let mut cursor = ContributionCursor::default();
     let mut n = 0;
     while let Some((message, item)) = cell.next_contribution(&mut cursor) {
@@ -326,6 +326,17 @@ impl Metered<'_> {
 }
 impl ReadView for Metered<'_> {
     type Error = &'static str;
+    fn background(
+        &self,
+        task: &str,
+    ) -> Result<Option<polylogue_sources::claude_code::keyed::BackgroundAddress>, Self::Error> {
+        self.read("background")?;
+        Ok(self.memory.background(task).unwrap())
+    }
+    fn occurrence(&self, hash: &str) -> Result<u64, Self::Error> {
+        self.read("occurrence")?;
+        Ok(self.memory.occurrence(hash).unwrap())
+    }
     fn header(&self) -> Result<Header, Self::Error> {
         self.read("header")?;
         Ok(self.memory.header().unwrap())

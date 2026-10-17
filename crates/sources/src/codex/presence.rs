@@ -326,14 +326,19 @@ pub(super) fn block(
                 add(B::ExitCode, raw, "exit_code")?;
             }
             if native_duration(&item).is_some() {
-                if let Some(raw) = get("duration_ms").or_else(|| get("duration")) {
+                if let Some(raw) = get("duration_ms")
+                    .or_else(|| get("duration"))
+                    .or_else(|| get("output"))
+                {
                     add(
                         B::DurationMs,
                         raw,
                         if get("duration_ms").is_some() {
                             "duration_ms"
-                        } else {
+                        } else if get("duration").is_some() {
                             "duration"
+                        } else {
+                            "output"
                         },
                     )?;
                 }

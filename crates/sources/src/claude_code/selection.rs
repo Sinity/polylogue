@@ -1,5 +1,6 @@
 //! Claude-owned recipes; decoding/path/admission/streaming belongs to the one
 //! shared selector evaluator. Original donors never name the effective overlay.
+pub use super::background::Leaf as BackgroundLeaf;
 pub use super::tool_result::StatusKind;
 use super::{
     keyed::Contribution,
@@ -27,6 +28,10 @@ pub enum Transform {
         reason: bool,
     },
     ToolOutputV1,
+    UsdNanosV1,
+    BackgroundV1 {
+        leaf: BackgroundLeaf,
+    },
     ParentReferenceV1 {
         native_uuid: polylogue_model::NativeId,
         resolved: MessageId,
@@ -141,6 +146,8 @@ impl Recipe for LeafSelection {
             Transform::ProviderTimeV1 => Operation::ProviderTime,
             Transform::ToolStatusV1 { .. }
             | Transform::ToolOutputV1
+            | Transform::UsdNanosV1
+            | Transform::BackgroundV1 { .. }
             | Transform::ParentReferenceV1 { .. } => Operation::ProviderScalar,
         }
     }
@@ -184,6 +191,29 @@ impl Recipe for LeafSelection {
                 polylogue_model::source_leaf::write_message_reference(resolved, sink)
                     .map_err(ScalarError::Leaf)?;
                 Ok(())
+            }
+            Transform::BackgroundV1 { leaf } => {
+                let completion = super::background::parse(value.as_str().ok_or(ScalarError::Type)?)
+                    .ok_or(ScalarError::Type)?;
+                match leaf {
+                    BackgroundLeaf::Outcome => {
+                        serde_json::to_writer(sink, completion.outcome().as_str())
+                    }
+                    BackgroundLeaf::ExitCode => {
+                        serde_json::to_writer(sink, &completion.exit.ok_or(ScalarError::Type)?)
+                    }
+                    BackgroundLeaf::Status => serde_json::to_writer(sink, completion.status),
+                    BackgroundLeaf::OutputFile => serde_json::to_writer(
+                        sink,
+                        completion.output_file.ok_or(ScalarError::Type)?,
+                    ),
+                    BackgroundLeaf::TaskId => serde_json::to_writer(sink, completion.task),
+                }
+                .map_err(ScalarError::Json)
+            }
+            Transform::UsdNanosV1 => {
+                let nanos = super::usd_nanos(value).ok_or(ScalarError::Type)?;
+                serde_json::to_writer(sink, &nanos).map_err(ScalarError::Json)
             }
             Transform::ToolOutputV1 => {
                 let text = super::text_of(value).ok_or(ScalarError::Type)?;
@@ -259,6 +289,8 @@ fn transform(fact: &Fact) -> Option<Transform> {
         | Field::SelectedMessage(MessageField::Model | MessageField::StopReason) => {
             Transform::JsonStringV1
         }
+        Field::Usage(polylogue_model::merge::UsageField::ProviderCostNusd) => Transform::UsdNanosV1,
+        Field::SelectedMessage(MessageField::DurationMs) => Transform::JsonValueV1,
         Field::Usage(_)
         | Field::Extra { .. }
         | Field::SelectedExtra { .. }
@@ -323,7 +355,7 @@ pub(super) fn for_selected(
     raw: &Value,
     base: &SelectedRaw,
 ) -> Option<LeafSelection> {
-    let prefix = if index == 3 { 1 } else { 2 };
+    let prefix = if index >= 3 { 1 } else { 2 };
     let suffix = origins::typed_path(raw, fact.source_path.get(prefix..)?)?;
     let mut selected = base.clone();
     selected.path.extend(suffix);
@@ -539,4 +571,14 @@ pub(super) fn parent(
         },
         input,
     ))
+}
+
+pub(super) fn background(range: RecordRange, leaf: BackgroundLeaf) -> LeafSelection {
+    LeafSelection::new(
+        Transform::BackgroundV1 { leaf },
+        SelectedRaw {
+            record: range,
+            path: vec![selection::PathPart::Key("content".into())],
+        },
+    )
 }

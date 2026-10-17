@@ -2109,6 +2109,9 @@ impl<V: ReadView> KeyedRecords<V> {
                         .result_present
                         .then(|| outcome.as_str().to_owned());
                     operation.exit_code = exit;
+                    if !operation.origins.iter().any(|origin| matches!(origin, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "status")) {
+                        operation.duration_ms = native_duration(p);
+                    }
                     if let Some(origin) = self.operation_origin() {
                         operation.origins.retain(|o|!matches!(o,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..}if tag=="result"));
                         operation.origins.push(origin);
@@ -2165,11 +2168,11 @@ impl<V: ReadView> KeyedRecords<V> {
                     (result.outcome.clone(), result.exit_code, result.duration_ms)
                 } else {
                     let (outcome, exit) = output_outcome(&tool, &output, text);
-                    (outcome, exit, None)
+                    (outcome, exit, native_duration(&effective))
                 }
             } else {
                 let (outcome, exit) = output_outcome(&tool, &output, text);
-                (outcome, exit, None)
+                (outcome, exit, native_duration(&effective))
             };
             self.edit_block(i, block, |value| {
                 *value = BlockContent::ToolResult(ToolResult {
@@ -2237,7 +2240,8 @@ impl<V: ReadView> KeyedRecords<V> {
             .as_ref()
             .and_then(unit_item)
             .as_ref()
-            .and_then(native_duration);
+            .and_then(native_duration)
+            .or_else(|| native_duration(p));
         let (outcome, exit_code) = match self.remove(Key::Outcome(call_id.clone())) {
             Some(Cell::Outcome(o, r, e)) => (outcome_of_words(&o, r.as_deref()), e),
             _ => output_outcome(&tool, &output, &text),
@@ -2246,20 +2250,18 @@ impl<V: ReadView> KeyedRecords<V> {
         // Running commands (spec/sources/codex.md, running commands): "Process running with
         // session ID N" is not a result; a `write_stdin` on that session continues the command,
         // and the one that reports the exit sets the command's outcome.
-        let running_id = text
-            .lines()
-            .find_map(|l| l.strip_prefix("Process running with session ID "))
-            .map(|r| r.trim().to_owned());
-        let (outcome, exit_code) = if running_id.is_some() && is_shell_tool(&tool) {
-            (
-                ToolOutcome::Unknown {
-                    reason: UnknownReason::NoResult,
-                },
-                None,
-            )
-        } else {
-            (outcome, exit_code)
-        };
+        let running_id = super::running_session(&text).map(str::to_owned);
+        let (outcome, exit_code) =
+            if running_id.is_some() && (is_shell_tool(&tool) || tool == "write_stdin") {
+                (
+                    ToolOutcome::Unknown {
+                        reason: UnknownReason::NoResult,
+                    },
+                    None,
+                )
+            } else {
+                (outcome, exit_code)
+            };
         if tool == "write_stdin" {
             let session = self.call(&call_id).and_then(|c| c.stdin_session);
             if let Some(target) = session
@@ -2363,7 +2365,12 @@ impl<V: ReadView> KeyedRecords<V> {
             .advance(&mut self.current_origins.cursor())
             .ok()??;
         let value: Value = serde_json::from_slice(&self.current_raw).ok()?;
-        let ty = value.get("payload")?.get("type")?.as_str()?;
+        let item = if self.s.legacy {
+            &value
+        } else {
+            value.get("payload")?
+        };
+        let ty = item.get("type")?.as_str()?;
         let tag = if ty.ends_with("_output") {
             "result"
         } else if ty == "item_completed" {

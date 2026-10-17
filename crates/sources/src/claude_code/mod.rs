@@ -6,6 +6,7 @@ use crate::frame::{IgnoredKind, Record, RecordOutcome, RecordParser};
 use polylogue_model::RetainedJson as Value;
 use polylogue_model::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
+mod background;
 pub mod keyed;
 pub mod origins;
 pub mod projection;
@@ -13,7 +14,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 8;
+pub const PARSER_VERSION: u32 = 9;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -109,6 +110,8 @@ pub struct KeyedRecords<R: ReadView> {
     by_id: HashMap<String, usize>,
     responses: HashMap<(String, ResponseKey), ResponseCell>,
     addresses: HashMap<(String, String), RecordAddress>,
+    occurrences: HashMap<String, u64>,
+    backgrounds: HashMap<String, BackgroundAddress>,
     contributions: HashMap<(MessageId, u64), Contribution>,
     sides: HashMap<String, String>,
     emitted_links: HashSet<LinkKey>,
@@ -140,6 +143,8 @@ impl<R: ReadView> KeyedRecords<R> {
             by_id: HashMap::new(),
             responses: HashMap::new(),
             addresses: HashMap::new(),
+            occurrences: HashMap::new(),
+            backgrounds: HashMap::new(),
             contributions: HashMap::new(),
             sides: HashMap::new(),
             emitted_links: HashSet::new(),
@@ -286,7 +291,11 @@ impl<R: ReadView> KeyedRecords<R> {
                         let side = match v.get("agentId").and_then(Value::as_str) {
                             Some(agent) => format!("{stem}/{agent}"),
                             None => {
-                                let original = key_native(uuid)?;
+                                let original = if uuid.starts_with("fallback:") {
+                                    NativeId::unicode(uuid)
+                                } else {
+                                    key_native(uuid)?
+                                };
                                 let scalar = original.unicode_str().ok_or("non-scalar sidechain root needs scoped native Session identity")?;
                                 format!("{stem}~side-{scalar}")
                             }
@@ -445,14 +454,38 @@ impl<R: ReadView> KeyedRecords<R> {
         };
         let incoming = &rec.value;
         validate_structural_keys(incoming)?;
-        let Some(uuid_native) = incoming
+        let supplied_uuid = incoming
             .get("uuid")
             .and_then(Value::native)
-            .filter(|s| !s.as_str().is_empty())
-        else {
-            return Ok(RecordOutcome::Unrecognized("message record without uuid"));
+            .filter(|s| !s.as_str().is_empty());
+        let fallback_hash = supplied_uuid
+            .is_none()
+            .then(|| {
+                polylogue_model::identity::fallback_hash(rec.bytes, &["timestamp", "ordinal"])
+                    .map_err(|e| e.to_string())
+            })
+            .transpose()?;
+        let fallback_occurrence = if let Some(hash) = &fallback_hash {
+            let count = match self.occurrences.get(hash) {
+                Some(count) => *count,
+                None => self.view.occurrence(hash).map_err(|e| e.to_string())?,
+            };
+            self.occurrences.insert(
+                hash.clone(),
+                count
+                    .checked_add(1)
+                    .ok_or("Claude fallback occurrence overflow")?,
+            );
+            count
+        } else {
+            0
         };
-        let uuid_key = native_key(uuid_native)?;
+        let empty_uuid = NativeId::unicode("");
+        let uuid_native = supplied_uuid.unwrap_or(&empty_uuid);
+        let uuid_key = match &fallback_hash {
+            Some(hash) => format!("fallback:{hash}:{fallback_occurrence}"),
+            None => native_key(uuid_native)?,
+        };
         let uuid = uuid_key.as_str();
         let Some((si, copy)) = self.route(incoming, uuid)? else {
             return Ok(RecordOutcome::Unrecognized("unroutable record"));
@@ -479,7 +512,23 @@ impl<R: ReadView> KeyedRecords<R> {
                 "message record without typed message",
             ));
         };
-        let key = if ty == "assistant" {
+        let key = if fallback_hash.is_some()
+            && (ty != "assistant"
+                || (msg.get("id").and_then(Value::native).is_none()
+                    && v.get("requestId")
+                        .and_then(Value::native)
+                        .is_none_or(|id| id.as_str().is_empty())))
+        {
+            ResponseKey {
+                role: if ty == "assistant" {
+                    Role::Assistant
+                } else {
+                    Role::User
+                },
+                response: uuid.into(),
+                request: native_key(&NativeId::unicode(""))?,
+            }
+        } else if ty == "assistant" {
             let empty = NativeId::unicode("");
             let request = v.get("requestId").and_then(Value::native).unwrap_or(&empty);
             let response = msg.get("id").and_then(Value::native);
@@ -526,8 +575,18 @@ impl<R: ReadView> KeyedRecords<R> {
                         "missing committed Claude response referenced by UUID address".into(),
                     );
                 }
-                let id = MessageId::from_native(self.sessions[si].session.id.clone(), uuid_native)
-                    .map_err(|e| e.to_string())?;
+                let session = self.sessions[si].session.id.clone();
+                let id = if fallback_hash.is_some() {
+                    polylogue_model::identity::provisional_message_id(
+                        session,
+                        rec.bytes,
+                        &["timestamp", "ordinal"],
+                        fallback_occurrence,
+                    )
+                    .map_err(|e| e.to_string())?
+                } else {
+                    MessageId::from_native(session, uuid_native).map_err(|e| e.to_string())?
+                };
                 let context = selection::AuthorContext {
                     role: if ty == "assistant" {
                         Role::Assistant
@@ -559,7 +618,11 @@ impl<R: ReadView> KeyedRecords<R> {
                     .ok_or("Claude message ordinal overflow")?;
                 let mut message = Message::new(
                     id,
-                    IdKind::Provider,
+                    if supplied_uuid.is_some() {
+                        IdKind::Provider
+                    } else {
+                        IdKind::Provisional
+                    },
                     if ty == "assistant" {
                         Role::Assistant
                     } else {
@@ -671,9 +734,49 @@ impl<R: ReadView> KeyedRecords<R> {
                             .push(projection::CountingObligation::ParentResolution);
                     }
                 } else {
-                    projected
-                        .obligations
-                        .push(projection::CountingObligation::ParentResolution);
+                    let sidechain_root = if let FileCtx::Main { stem } = &self.ctx {
+                        v.get("isSidechain").and_then(Value::as_bool) == Some(true)
+                            && native != *stem
+                            && self.address(stem, &native_key(parent_uuid)?)?.is_some()
+                    } else {
+                        false
+                    };
+                    if sidechain_root {
+                        // A sidechain's main-chain parent is linkage evidence,
+                        // not an impossible cross-Session Message tree edge.
+                        projected.facts.retain(|f| {
+                            !matches!(
+                                f.field,
+                                projection::Field::FirstMessage(
+                                    polylogue_model::merge::MessageField::Parent
+                                )
+                            )
+                        });
+                        let field = projection::Field::Extra {
+                            local: None,
+                            path: vec!["parentUuid".into()],
+                        };
+                        let mut fact = projection::Fact {
+                            field,
+                            source_path: vec!["parentUuid".into()],
+                            supplied_revision: revision,
+                            selection: None,
+                        };
+                        fact.selection = selection::for_fact(&fact, &v, &record_origins);
+                        projected.retained.push(fact);
+                        let attrs = response
+                            .message
+                            .attrs
+                            .get_or_insert_with(|| Value::Object(Default::default()));
+                        attrs
+                            .as_object_mut()
+                            .ok_or("Claude attrs must be an object")?
+                            .insert("parentUuid".into(), v.get("parentUuid").unwrap().opaque());
+                    } else {
+                        projected
+                            .obligations
+                            .push(projection::CountingObligation::ParentResolution);
+                    }
                 }
             }
             if let Some(previous) = &old {
@@ -709,14 +812,24 @@ impl<R: ReadView> KeyedRecords<R> {
         }
         // Stable item slots own blocks until the body finalizer assigns ordinary
         // one-counter BlockIds. A changed count never mutates a historical body.
-        let contribution = Contribution {
+        let mut contribution = Contribution {
             uuid: uuid.into(),
             raw,
             origins: record_origins,
             blocks: std::mem::take(&mut blocks),
             bodies,
+            completion: None,
             projection: projected,
         };
+        if let Some(previous) = &old {
+            if raw::optional_field(&previous.raw, &["message", "content"])?
+                == raw::optional_field(&contribution.raw, &["message", "content"])?
+                && raw::optional_field(&previous.raw, &["toolUseResult"])?
+                    == raw::optional_field(&contribution.raw, &["toolUseResult"])?
+            {
+                background::carry(Some(previous), &mut contribution);
+            }
+        }
         let old_missing = old.as_ref().map_or(0, |c| {
             c.bodies.iter().filter(|b| b.payload.is_none()).count() as u64
         });
@@ -826,6 +939,31 @@ impl<R: ReadView> KeyedRecords<R> {
                 role: ty.into(),
             },
         );
+        if let Some(task) = tool_result::metadata(&v)
+            .and_then(|m| m.get("backgroundTaskId"))
+            .and_then(Value::as_str)
+        {
+            for (local, block) in contribution.blocks.iter().enumerate() {
+                if let BlockContent::ToolResult(result) = block {
+                    if let Some(call) = &result.call_id {
+                        self.remember_background(
+                            task,
+                            BackgroundAddress {
+                                session: native.clone(),
+                                response: key.clone(),
+                                message: response.message.id.clone(),
+                                item,
+                                local: local
+                                    .try_into()
+                                    .map_err(|_| "background block index overflow")?,
+                                call: call.as_str().into(),
+                                ambiguous: false,
+                            },
+                        )?;
+                    }
+                }
+            }
+        }
         self.contributions
             .insert((response.message.id.clone(), item), contribution);
         self.sessions[si].last_message = Some(response.message.id.clone());
@@ -1122,7 +1260,10 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                 "pr-link" => self.event(rec, "pr_link")?,
                 "permission-mode" => self.event(rec, "permission_mode")?,
                 "mode" => self.event(rec, "mode")?,
-                "queue-operation" => self.event(rec, "queue")?,
+                "queue-operation" => {
+                    self.complete_background(rec)?;
+                    self.event(rec, "queue")?
+                }
                 "last-prompt" => self.event(rec, "last_prompt")?,
                 "file-history-snapshot" | "file-history-delta" => {
                     self.event(rec, "file_history")?
@@ -1250,6 +1391,8 @@ impl<R: ReadView> KeyedRecords<R> {
                 sessions: self.sessions,
                 responses,
                 addresses,
+                occurrences: self.occurrences.into_iter().collect(),
+                backgrounds: self.backgrounds.into_iter().collect(),
                 contributions,
                 sides,
                 links: self.link_order,
@@ -1261,11 +1404,17 @@ impl<R: ReadView> KeyedRecords<R> {
     }
 }
 
-const METADATA_PATHS: [&[&str]; 4] = [
+fn usd_nanos(value: &Value) -> Option<i64> {
+    crate::decimal::scaled_integer(value, 9)
+}
+
+const METADATA_PATHS: [&[&str]; 6] = [
     &["message", "usage"],
     &["message", "stop_reason"],
     &["message", "model"],
     &["timestamp"],
+    &["costUSD"],
+    &["durationMs"],
 ];
 fn apply_selected(response: &mut ResponseCell) -> Result<(), String> {
     let values: Vec<Option<Value>> = response
@@ -1278,6 +1427,14 @@ fn apply_selected(response: &mut ResponseCell) -> Result<(), String> {
         })
         .collect::<Result<_, _>>()?;
     response.message.usage = values[0].as_ref().filter(|v| v.is_object()).map(usage_of);
+    if let Some(cost) = values[4].as_ref().and_then(usd_nanos) {
+        response
+            .message
+            .usage
+            .get_or_insert_with(Usage::default)
+            .provider_cost_nusd = Some(Usd(cost));
+    }
+    response.message.duration_ms = values[5].as_ref().and_then(Value::as_u64);
     response.message.stop_reason = values[1]
         .as_ref()
         .and_then(Value::as_str)

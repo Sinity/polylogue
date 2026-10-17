@@ -150,7 +150,7 @@ fn morrow_has_exact_native_message_identity_source_order_and_replayable_typed_le
                 _ => {}
             }
         }
-        for index in 0..4 {
+        for index in 0..6 {
             for fact in response.selected_unit(index).unwrap().facts {
                 evaluate(
                     fact.selection
@@ -793,7 +793,7 @@ fn correction_units(
     memory: &MemoryReadView,
     response: &claude_code::keyed::ResponseCell,
 ) -> Vec<claude_code::keyed::EvidenceUnit> {
-    let mut baseline: [Option<Vec<u8>>; 5] = Default::default();
+    let mut baseline: [Option<Vec<u8>>; 7] = Default::default();
     for item in 0..response.items {
         let c = memory
             .contribution(&response.message.id, item)
@@ -1010,7 +1010,7 @@ fn morrow_preflight_enumerates_every_extra_and_checks_normalized_source_carriers
                 inspect(fact)
             }
         }
-        for index in 0..4 {
+        for index in 0..6 {
             for fact in &r.selected_unit(index).unwrap().facts {
                 inspect(fact)
             }

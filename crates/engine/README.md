@@ -61,7 +61,7 @@ replays hashing from zero. This proof alone does not certify source-field mappin
 canonical publication, lineage or search readiness.
 
 `canonical_message` uses the provider-owned projection/presence/evidence cores
-to prepare final-head Codex Text/Thinking and supported Claude Messages with
+to prepare final-head supported Codex and Claude Messages with
 typed supplied fields. Both providers use the same State/action/value/origin
 producer and publication core. Claude work is scheduled by one-row keyset
 lookups over retained pending locators; source ordinals determine Message and

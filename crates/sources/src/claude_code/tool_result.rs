@@ -147,7 +147,6 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
                 || m.get("status").and_then(Value::as_str) == Some("async_launched")
         })
     {
-        unresolved.push(p(&["toolUseResult"]));
         outcome = ToolOutcome::Unknown {
             reason: UnknownReason::BackgroundNeverReported,
         };

@@ -406,8 +406,19 @@ fn stale_turn_rolls_back_and_layout_cannot_change_after_install() {
     panic!("block never installed");
 }
 #[test]
-fn unsupported_tool_leaves_typed_pending_without_source_certificate() {
-    let bytes=[line("session_meta",json!({"id":"synthetic-session","cwd":"/synthetic"})),line("response_item",json!({"type":"function_call","id":"call-record","call_id":"call","name":"synthetic","arguments":"{}"}))].concat().into_bytes();
+fn tool_without_invocation_id_leaves_typed_pending_without_source_certificate() {
+    let bytes = [
+        line(
+            "session_meta",
+            json!({"id":"synthetic-session","cwd":"/synthetic"}),
+        ),
+        line(
+            "response_item",
+            json!({"type":"function_call","id":"call-record","name":"synthetic","arguments":"{}"}),
+        ),
+    ]
+    .concat()
+    .into_bytes();
     let mut world = World::new(&bytes);
     let handle = world.begin();
     for _ in 0..200 {

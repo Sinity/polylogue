@@ -512,11 +512,11 @@ pub(super) fn compute(
             )
         }
         Cursor::SelectedCitations { index } => {
-            if index >= 5 {
+            if index >= 7 {
                 return progress(state, &mut cursor, Cursor::AuthorCitation, b);
             }
             let next = Cursor::SelectedCitations { index: index + 1 };
-            if index == 4 {
+            if index == 6 {
                 return match r
                     .stop_sequence
                     .as_ref()
@@ -645,10 +645,10 @@ pub(super) fn compute(
             )
         }
         Cursor::Selected { index, fact } => {
-            if index >= 5 {
+            if index >= 7 {
                 return progress(state, &mut cursor, Cursor::Finish, b);
             }
-            if index == 4 {
+            if index == 6 {
                 let next = Stage::Claude(Cursor::Finish);
                 let Some(value) = &r.stop_sequence else {
                     return progress(state, &mut cursor, Cursor::Finish, b);
@@ -1055,8 +1055,9 @@ fn proof(
 ) -> Result<Proof> {
     let view = View::new(snapshot, b.read)?;
     let response = response(&view, head)?;
-    let mut baseline: [Option<Vec<u8>>; 5] = Default::default();
+    let mut baseline: [Option<Vec<u8>>; 7] = Default::default();
     let mut bodies = 0u64;
+    let mut completions = 0u64;
     for item in 0..response.items {
         cancelled(flag)?;
         let c = contribution(snapshot, head, item, b.read)?;
@@ -1067,6 +1068,11 @@ fn proof(
             if current.is_some() {
                 *previous = current
             }
+        }
+        if c.completion.is_some() {
+            completions = completions
+                .checked_add(1)
+                .ok_or(Error::Invariant("Claude completion count overflow"))?;
         }
         let mut previous = None;
         for body in &c.bodies {
@@ -1086,6 +1092,7 @@ fn proof(
         .items
         .checked_add(metadata.len() as u64)
         .and_then(|n| n.checked_add(bodies))
+        .and_then(|n| n.checked_add(completions))
         .ok_or(Error::Invariant("Claude evidence count overflow"))?;
     if count == 0 {
         return Err(Error::Unsupported(
@@ -1108,6 +1115,13 @@ fn proof(
             b,
             flag,
         )?;
+    }
+    for item in 0..response.items {
+        cancelled(flag)?;
+        let c = contribution(snapshot, head, item, b.read)?;
+        if let Some(unit) = c.completion_unit(item) {
+            feed(&mut framer, unit, false, b, flag)?;
+        }
     }
     for unit in metadata {
         feed(&mut framer, unit, false, b, flag)?

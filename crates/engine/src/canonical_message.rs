@@ -151,6 +151,27 @@ impl EvidenceBasis {
         }
     }
 }
+/// A catalog-selected projection must still name this provider's exact current
+/// predecessor, raw evidence head and retained source binding.
+pub(crate) fn current_codex_projection(
+    source: &SourceProjection,
+    token: &Token,
+    message: &MessageId,
+    head: &EvidenceHead,
+    source_binding: BlobHash,
+) -> std::result::Result<bool, StoreError> {
+    head.validate().map_err(StoreError::Invariant)?;
+    let guard: EvidenceGuard = serde_json::from_slice(source.evidence_guard())
+        .map_err(|e| StoreError::Invariant(format!("Codex selected source guard: {e}")))?;
+    Ok(source.predecessor() == token
+        && source.message() == message
+        && source.evidence_revision() == head.revision
+        && guard
+            == EvidenceGuard {
+                head: EvidenceBasis::Codex(head.clone()),
+                source_binding,
+            })
+}
 enum EvidenceProof {
     Codex(version_proof::Proof),
     Claude(claude::Proof),
@@ -1313,13 +1334,24 @@ pub fn compute(
                         encrypted: t.encrypted,
                     },
                 ),
-                BlockContent::ToolCall(_) => {
+                BlockContent::ToolCall(call) => {
                     let operation = match read(&attempt, &Key::OperationBlock(message, index))? {
                         Some(Cell::Text(id)) => id,
                         _ => {
-                            return Err(Error::Unsupported(
-                                "Codex call lacks scoped operation anchor",
-                            ));
+                            // Generic/legacy response calls have a declared Session-scoped
+                            // invocation, not a modern CommandExecution constructor.
+                            let call_id = call.call_id.as_ref().ok_or(Error::Unsupported(
+                                "Codex call has no supplied invocation ID",
+                            ))?;
+                            polylogue_model::DeclaredOperationId::from_native(
+                                value.id.message().session(),
+                                call_id,
+                            )
+                            .map_err(|_| {
+                                Error::Unsupported("Codex declared call scope unavailable")
+                            })?
+                            .as_str()
+                            .to_owned()
                         }
                     };
                     (None, OwnedBlockKind::ToolCall { operation })

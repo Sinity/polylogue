@@ -1,5 +1,6 @@
 //! Direct Session input influence, never inferred from matching Message rows.
 //! Catalog traversal and every receipt read share the caller's pinned Session.
+mod codex;
 use crate::{owner, source_rows, source_turn::SourceContext, state::claude};
 use polylogue_model::settlement::RecordFailureId;
 use polylogue_model::{Session, settlement::SourceRowBasis};
@@ -163,8 +164,8 @@ fn deadline(until: Instant) -> Result<(), Error> {
         Ok(())
     }
 }
-/// Currently qualifies direct Claude main-file inputs only. Other dependency
-/// shapes are reported unresolved, never counted as irrelevant by row overlap.
+/// Qualifies finite provider-owned Claude and Codex source membership. Other
+/// dependency shapes remain unresolved, never excluded by selected row overlap.
 /// Each input is visited once in immutable catalog order. Same input replays,
 /// source/candidate fanout and historical citation paths cannot multiply errors.
 /// Whole admitted effect cells remain the existing allocation/work unit.
@@ -245,9 +246,24 @@ fn qualify_operation(
         ..Default::default()
     };
     let exact = plan.id.as_deref().filter(|_| {
-        plan.text.is_empty() && plan.origin.as_deref().is_none_or(|o| o == "claude-code")
+        plan.text.is_empty()
+            && plan
+                .origin
+                .as_deref()
+                .is_none_or(|o| matches!(o, "claude-code" | "codex"))
     });
     result.exact = exact.is_some();
+    let target_native = exact
+        .map(|target| {
+            let id = polylogue_model::SessionId::from_stored(target)
+                .map_err(|e| Error::Invariant(e.to_string()))?;
+            session
+                .session(&id, allowance)?
+                .map(|view| view.header().map(|h| h.native_id.clone()))
+                .transpose()
+        })
+        .transpose()?
+        .flatten();
     let mut cursor = None;
     let mut dependency_bytes = 0usize;
     loop {
@@ -297,21 +313,29 @@ fn qualify_operation(
                 false
             };
         result.up_to_date &= caught_up;
-        // Format owns origin; a Codex rollout cannot contribute Claude rows.
+        // Provider-owned source membership is checked before selected row overlap.
+        if dependency.format() == InputFormat::CodexRollout {
+            if plan.origin.as_deref().is_none_or(|o| o == "codex") {
+                codex::qualify(
+                    session,
+                    &dependency,
+                    plan,
+                    exact,
+                    until,
+                    allowance,
+                    &mut result,
+                    cancelled,
+                )?;
+            }
+            continue;
+        }
         if matches!(
             dependency.format(),
-            InputFormat::CodexRollout
-                | InputFormat::CodexHistorySqlite
-                | InputFormat::CodexPromptHistory
+            InputFormat::CodexHistorySqlite | InputFormat::CodexPromptHistory
         ) {
-            if document {
+            if plan.origin.as_deref().is_none_or(|o| o == "codex") {
                 add(&mut result.unresolved_inputs, 1)?;
-                continue;
             }
-            if plan.origin.as_deref().is_some_and(|o| o != "codex") {
-                continue;
-            }
-            add(&mut result.unresolved_inputs, 1)?;
             continue;
         }
         if plan.origin.as_deref().is_some_and(|o| o != "claude-code") {
@@ -345,7 +369,23 @@ fn qualify_operation(
                 if plan
                     .id
                     .as_deref()
-                    .is_some_and(|target| id.as_str() != target) =>
+                    .is_some_and(|target| id.as_str() != target)
+                    && !target_native
+                        .as_deref()
+                        .map(|native| {
+                            cell::<SessionCell>(
+                                session,
+                                &dependency,
+                                claude::SESSION,
+                                &native,
+                                allowance,
+                            )
+                            .map(|source| {
+                                source.is_some_and(|s| Some(s.session.id.as_str()) == exact)
+                            })
+                        })
+                        .transpose()?
+                        .unwrap_or(false) =>
             {
                 if document {
                     if !caught_up {
@@ -464,21 +504,17 @@ fn qualify_operation(
         match receipt {
             Some(bytes) => {
                 let receipt = source_rows::decode(&bytes, head, &input).map_err(owner_error)?;
-                // The existing row audit has checked every known canonical
-                // Message against this exact retained receipt. A bad record
-                // alone leaves topology/population unknown, not those rows.
-                // Unsupported effects, unrecognized records and owner failures
-                // cannot acquire that narrower permission by matching counts.
-                let readable = !receipt.unsupported_effects && head.counts.unrecognized == 0;
+                // Each known Message below must independently carry the exact
+                // current selected source projection. Unsupported neighboring
+                // products keep coverage degraded; they cannot veto that proof.
+                let readable = head.counts.unrecognized == 0;
                 match receipt.rows.state {
                     polylogue_model::settlement::SourceRowState::Unavailable {
                         usable_result,
-                        record_errors,
                         ..
                     } => {
                         unavailable = true;
-                        result.known_rows_readable &=
-                            readable && usable_result && record_errors > 0;
+                        result.known_rows_readable &= readable && usable_result;
                     }
                     polylogue_model::settlement::SourceRowState::Pending { .. } => {
                         add(&mut result.pending_inputs, 1)?
@@ -505,6 +541,7 @@ fn qualify_operation(
                 session,
                 &dependency,
                 target,
+                target_native.as_deref(),
                 until,
                 allowance,
                 &mut result,
@@ -720,15 +757,15 @@ fn qualify_shape(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
     target: &str,
+    native: Option<&str>,
     until: Instant,
     allowance: usize,
     result: &mut Qualification,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<(), Error> {
-    let context = dependency.context();
-    let [_, native] = context else { return Ok(()) };
+    let Some(native) = native else { return Ok(()) };
     if let Some(source) =
-        cell::<SessionCell>(catalog, dependency, claude::SESSION, native, allowance)?
+        cell::<SessionCell>(catalog, dependency, claude::SESSION, &native, allowance)?
     {
         if source.session.id.as_str() != target {
             return Err(Error::Invariant(
@@ -876,6 +913,26 @@ fn qualify_shape(
             result.unsupported.insert(
                 "Inherited/copy counting and original operation scope remain unsupported".into(),
             );
+        }
+        let input = dependency.registered().ok_or(Error::Range)?;
+        let logical = owner::claude_key(&message);
+        let selected = catalog.dependency_selected_projection(dependency, &logical, allowance)?;
+        let proved = match selected {
+            Some(source) => crate::canonical_message::current_claude_projection(
+                &source,
+                &head.token,
+                &p,
+                input.binding,
+                dependency.context(),
+            )
+            .map_err(|e| Error::Invariant(e.to_string()))?,
+            None => false,
+        };
+        if !proved {
+            result.known_rows_readable = false;
+            result
+                .unsupported
+                .insert("Known Claude Message lacks its current selected source projection".into());
         }
         tree.insert(
             p.ordinal,
