@@ -56,6 +56,11 @@ fn flat_codex_conversations_read_without_branches_but_rollback_and_ambiguous_con
             assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
             let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
             assert_eq!(doc["session"]["started_at"], "2025-08-01T10:00:00.000Z");
+            assert_eq!(doc["session"]["repo"], "https://example.invalid/sample.git");
+            assert_eq!(
+                doc["session"]["commit"],
+                "0000000000000000000000000000000000000001"
+            );
         }
         assert!(
             page["shown"]

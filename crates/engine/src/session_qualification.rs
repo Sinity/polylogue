@@ -54,7 +54,10 @@ impl Qualification {
         if let Some(s) = &self.metadata {
             h.title = s.title.clone();
             h.cwd = s.cwd.clone();
+            h.repo = s.repo.clone();
+            h.checkout = s.checkout.clone();
             h.branch = s.branch.clone();
+            h.commit = s.commit.clone();
             h.harness = s.harness.clone();
             h.harness_version = s.harness_version.clone();
             h.started_at = s.started_at.and_then(|t| t.at()).map(|t| t.0);

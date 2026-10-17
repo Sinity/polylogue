@@ -136,6 +136,7 @@ def main():
         assert all('at' not in m for m in legacy_messages[1:])
         legacy_session = initial['legacy-response-records.jsonl']['session']
         assert legacy_session['started_at'] == '2025-08-01T10:00:00.000Z' and legacy_session['branch'] == 'main' and legacy_session['repo'] == 'https://example.invalid/sample.git'
+        assert legacy_session['commit'] == '0000000000000000000000000000000000000001'
         legacy_blocks = [b for m in initial['legacy-response-records.jsonl']['messages'] for b in m['blocks']]
         for call, outcome, exit in [('call_sample_ok','ok',0), ('call_sample_fail','error',1)]:
             assert any(b.get('kind') == 'tool_call' and b.get('call_id') == call and b['input']['command'][0] in ('ls','cat') for b in legacy_blocks)
