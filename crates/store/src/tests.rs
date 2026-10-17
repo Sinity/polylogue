@@ -2,6 +2,26 @@ use super::*;
 use rusqlite::params;
 use std::os::unix::fs::{MetadataExt, symlink};
 
+// A concurrent subprocess test may briefly inherit CLOEXEC file descriptions
+// between fork and exec. This harness expects eventual reopen after its own
+// writer drop, not zero contention time. A leaked read authority still fails
+// at the deadline; product startup keeps its immediate WriterHeld contract.
+pub(crate) fn reopen_after_drop(root: &std::path::Path) -> crate::Writer {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match crate::Writer::open(root) {
+            Ok(writer) => return writer,
+            Err(crate::Error::WriterHeld { ref holder, .. })
+                if holder == &format!("pid={}", std::process::id())
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(error) => panic!("reopen after owned writer drop: {error}"),
+        }
+    }
+}
+
 #[test]
 fn ddl_is_exact_extraction_from_copied_owning_spec() {
     fn extract(md: &str) -> String {
@@ -245,7 +265,7 @@ fn same_archive_alias_cannot_get_second_writer() {
     ));
     assert!(writer.read_handle().is_ok());
     drop(writer);
-    assert!(Writer::open(&alias).is_ok());
+    drop(reopen_after_drop(&alias));
 }
 #[test]
 fn files_and_directories_are_private() {
@@ -935,7 +955,7 @@ fn owned_reader_keeps_archive_coordination_after_writer_drop() {
     ));
     assert!(reader.status().is_ok());
     drop(reader);
-    assert!(Writer::open(tmp.path()).is_ok());
+    drop(reopen_after_drop(tmp.path()));
 }
 
 fn insert_synthetic_embedding(conn: &Connection, n: u8) {
@@ -1005,4 +1025,29 @@ fn aligned_prior_commit_is_an_explicit_expected_head_limit() {
         // internally valid. No checksum-only guard can infer the missing head.
         assert_eq!(status.unwrap().write_counter, 2);
     }
+}
+
+#[test]
+fn duplicated_file_description_retains_actual_writer_lock_after_owner_drop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let writer = Writer::open(tmp.path()).unwrap();
+    // A duplicated descriptor has the same kernel custody as an inherited one.
+    // This distinguishes custody lifetime without depending on spawn timing.
+    let inherited = writer._lock.try_clone().unwrap();
+    drop(writer);
+    let error = Writer::open(tmp.path())
+        .err()
+        .expect("duplicated custody must exclude a new writer");
+    assert!(
+        matches!(error, Error::WriterHeld { ref holder, .. }
+        if holder == &format!("pid={}", std::process::id())),
+        "{error}"
+    );
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        drop(inherited);
+    });
+    let writer = reopen_after_drop(tmp.path());
+    release.join().unwrap();
+    assert!(writer.status().is_ok());
 }

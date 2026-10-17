@@ -495,6 +495,7 @@ impl crate::Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::reopen_after_drop;
     fn budget() -> Budget {
         Budget {
             cells: 1,
@@ -774,26 +775,6 @@ mod tests {
                 .applied,
             0
         );
-    }
-
-    // A concurrent subprocess test may briefly inherit CLOEXEC file descriptions
-    // between fork and exec. This harness expects eventual reopen after its own
-    // writer drop, not zero contention time. A leaked read authority still fails
-    // at the deadline; product startup keeps its immediate WriterHeld contract.
-    fn reopen_after_drop(root: &std::path::Path) -> crate::Writer {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        loop {
-            match crate::Writer::open(root) {
-                Ok(writer) => return writer,
-                Err(crate::Error::WriterHeld { ref holder, .. })
-                    if holder == &format!("pid={}", std::process::id())
-                        && std::time::Instant::now() < deadline =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                Err(error) => panic!("reopen after owned writer drop: {error}"),
-            }
-        }
     }
 
     #[test]
