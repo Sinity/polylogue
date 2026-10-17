@@ -2645,6 +2645,8 @@ impl<V: ReadView> KeyedRecords<V> {
                         previous.tool = operation.tool;
                         previous.message = operation.message;
                         previous.origins.extend(operation.origins);
+                    } else {
+                        self.s.normalization_incomplete = true;
                     }
                     operation = previous;
                 }
@@ -2880,7 +2882,17 @@ impl<V: ReadView> KeyedRecords<V> {
                 && self
                     .completed_operation(p, &item)
                     .is_some_and(|operation| {
-                        self.unified_operation_proved(&operation)
+                        // This completion must supply its own full scope and
+                        // status record; an unscoped correction cannot borrow
+                        // a previously retained native proof via current turn.
+                        p.get("turn_id").and_then(Value::as_str) == operation.turn.as_deref()
+                            && p.get("turn_id").and_then(Value::as_str).is_some()
+                            && p.get("thread_id").and_then(Value::as_str) == Some(operation.native_session.as_str())
+                            && item.get("id").and_then(Value::as_str) == Some(operation.invocation.as_str())
+                            && operation.origins.iter().any(|origin| matches!(origin,
+                                polylogue_model::tool_item::ToolOrigin::Rollout { tag, raw_hash, .. }
+                                    if tag == "status" && raw_hash == blake3::hash(&self.current_raw).as_bytes()))
+                            && self.unified_operation_proved(&operation)
                             && self.call(&operation.invocation).is_some_and(|call| {
                                 matches!(self.get(Key::OperationBlock(call.at.0, call.at.1)),
                                     Some(Cell::Text(id)) if operation.id().ok().as_ref() == Some(&id))

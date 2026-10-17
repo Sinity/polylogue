@@ -374,3 +374,63 @@ fn an_unscoped_call_cannot_borrow_a_later_native_turn_for_read_permission() {
     let (_, resume) = run(view, resume, &completion("unified_exec_startup"));
     assert!(resume.normalization_incomplete());
 }
+
+#[test]
+fn unsupported_native_first_records_cannot_gain_later_call_readability_or_classification() {
+    for record in [
+        completion("user_shell"),
+        completion("future_source"),
+        completed(
+            "unified_exec_startup",
+            "neutral",
+            "T",
+            "C",
+            json!({"secs":"invalid","nanos":0}),
+        ),
+    ] {
+        let (view, resume) = run(
+            MemoryReadView::default(),
+            Resume::default(),
+            &(start() + &record),
+        );
+        let (view, resume) = run(view, resume, &call(true));
+        assert!(resume.normalization_incomplete());
+        assert!(
+            !view
+                .cells
+                .keys()
+                .any(|k| matches!(k, Key::UnifiedOperation(_)))
+        );
+        let op = operation(&view, "T", "C");
+        assert_ne!(op.agent_class, "agent");
+        assert!(!op.counted());
+        assert!(op.message.is_none());
+        if op.result_present {
+            assert_eq!(op.output.as_deref(), Some(OUTPUT));
+        }
+    }
+}
+
+#[test]
+fn a_completion_without_valid_own_turn_cannot_reuse_an_old_scoped_proof() {
+    for source in ["unified_exec_startup", "future_source"] {
+        for turn in [Value::Null, json!(123)] {
+            let (view, resume) = run(
+                MemoryReadView::default(),
+                Resume::default(),
+                &(start() + &call(true) + &completion("unified_exec_startup")),
+            );
+            assert!(!resume.normalization_incomplete());
+            let before = messages(&view, &resume);
+            let mut record: Value = serde_json::from_str(&completion(source)).unwrap();
+            if turn.is_null() {
+                record["payload"].as_object_mut().unwrap().remove("turn_id");
+            } else {
+                record["payload"]["turn_id"] = turn;
+            }
+            let (view, resume) = run(view, resume, &(record.to_string() + "\n"));
+            assert!(resume.normalization_incomplete());
+            assert_eq!(messages(&view, &resume), before);
+        }
+    }
+}
