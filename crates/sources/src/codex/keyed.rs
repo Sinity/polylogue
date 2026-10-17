@@ -44,9 +44,15 @@ pub enum Key {
     PresenceBlock(usize, usize),
     Operation(String),
     OperationBlock(usize, usize),
+    /// Exact native constructor record, scoped by the full operation ID.
+    UnifiedOperation(String),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Cell {
+    UnifiedOperation {
+        raw_hash: [u8; 32],
+        source: String,
+    },
     Operation(polylogue_model::tool_item::Operation),
     /// A Message with no blocks; blocks have separate keys. Public IDs can change.
     Header {
@@ -355,6 +361,9 @@ impl Cell {
         self.fits(key)
     }
     fn fits(&self, k: &Key) -> bool {
+        if let (Key::UnifiedOperation(_), Self::UnifiedOperation { source, .. }) = (k, self) {
+            return unified_source(source);
+        }
         if matches!(
             (k, self),
             (Key::Operation(_), Self::Operation(_)) | (Key::OperationBlock(_, _), Self::Text(_))
@@ -410,6 +419,37 @@ impl Cell {
                     | (Key::CallWitness(_), Self::Association { .. })
             )
     }
+}
+fn unified_source(source: &str) -> bool {
+    matches!(
+        source,
+        "unified_exec_startup"
+            | "unifiedExecStartup"
+            | "unified_exec_interaction"
+            | "unifiedExecInteraction"
+    )
+}
+fn valid_command_duration(item: &Value) -> bool {
+    if item
+        .get("duration_ms")
+        .is_some_and(|v| !v.is_null() && v.as_u64().is_none())
+    {
+        return false;
+    }
+    item.get("duration").is_none_or(|v| {
+        v.is_null() || {
+            v.get("secs")
+                .and_then(Value::as_u64)
+                .zip(v.get("nanos").and_then(Value::as_u64))
+                .is_some_and(|(seconds, nanos)| {
+                    nanos < 1_000_000_000
+                        && seconds
+                            .checked_mul(1000)
+                            .and_then(|n| n.checked_add(nanos / 1_000_000))
+                            .is_some()
+                })
+        }
+    })
 }
 impl<V: ReadView> KeyedRecords<V> {
     pub fn new(view: V, resume: Resume) -> Self {
@@ -2509,6 +2549,32 @@ impl<V: ReadView> KeyedRecords<V> {
                     .map(|(m, _)| m.id.as_str().to_owned())
             && operation.message.is_some()
     }
+    fn unified_operation_proved(
+        &mut self,
+        operation: &polylogue_model::tool_item::Operation,
+    ) -> bool {
+        if !operation.native
+            || operation.kind != "CommandExecution"
+            || operation.correspondence != "established"
+            || operation.agent_class != "unknown"
+            || operation.result_present
+        {
+            return false;
+        }
+        let Ok(id) = operation.id() else {
+            return false;
+        };
+        let Some(Cell::UnifiedOperation { raw_hash, source }) = self.get(Key::UnifiedOperation(id))
+        else {
+            return false;
+        };
+        unified_source(&source)
+            && operation.origins.iter().any(|origin| {
+                matches!(origin,
+            polylogue_model::tool_item::ToolOrigin::Rollout { tag, raw_hash: current, .. }
+                if tag == "status" && current == &raw_hash)
+            })
+    }
     fn direct_operation(
         &mut self,
         call: &str,
@@ -2530,7 +2596,7 @@ impl<V: ReadView> KeyedRecords<V> {
         // An exec wrapper has a proved request block, not a native
         // CommandExecution item ID. Keep that constructor distinction.
         let native = tool != "exec" && self.s.turn.is_some();
-        let operation = polylogue_model::tool_item::Operation {
+        let mut operation = polylogue_model::tool_item::Operation {
             kind: if tool == "exec" {
                 "CodeExecution"
             } else {
@@ -2565,6 +2631,19 @@ impl<V: ReadView> KeyedRecords<V> {
             origins: vec![origin],
         };
         if let Ok(id) = operation.id() {
+            if let Some(Cell::Operation(mut previous)) = self.get(Key::Operation(format!("1:{id}")))
+            {
+                if previous.native && previous.agent_class != "agent" {
+                    // A call supplies its own Message association, not a new
+                    // classification or result for an earlier native command.
+                    if self.unified_operation_proved(&previous) {
+                        previous.tool = operation.tool;
+                        previous.message = operation.message;
+                        previous.origins.extend(operation.origins);
+                    }
+                    operation = previous;
+                }
+            }
             self.put(Key::OperationBlock(message, block), Cell::Text(id));
         }
         if let Ok(id) = operation.id() {
@@ -2576,6 +2655,17 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn command_operation(&mut self, payload: &Value, item: &Value, _at: Option<Timestamp>) -> bool {
+        // Any newer constructor for this claimed scope invalidates the old
+        // source proof, even if validation below refuses the replacement.
+        if let (Some(session), Some(turn), Some(id)) = (
+            self.s.session.as_ref(),
+            payload.get("turn_id").and_then(Value::as_str),
+            item.get("id").and_then(Value::as_str),
+        ) {
+            if let Ok(id) = polylogue_model::tool_item::native_id(&session.id, turn, id) {
+                self.remove(Key::UnifiedOperation(id));
+            }
+        }
         // Only the pinned core shape establishes native correspondence. Older
         // adapter records retain their existing Message interpretation below.
         if !item.get("command").is_some_and(Value::is_array) {
@@ -2720,10 +2810,28 @@ impl<V: ReadView> KeyedRecords<V> {
             self.child(raw, format!("~native:{}", operation.invocation));
         }
         match operation.id() {
-            Ok(id) => self.put(
-                Key::Operation(format!("{}:{id}", if operation.native { 1 } else { 0 })),
-                Cell::Operation(operation),
-            ),
+            Ok(id) => {
+                if operation.native
+                    && operation.correspondence == "established"
+                    && item
+                        .get("source")
+                        .and_then(Value::as_str)
+                        .is_some_and(unified_source)
+                    && valid_command_duration(item)
+                {
+                    self.put(
+                        Key::UnifiedOperation(id.clone()),
+                        Cell::UnifiedOperation {
+                            raw_hash: *blake3::hash(&self.current_raw).as_bytes(),
+                            source: item.get("source").and_then(Value::as_str).unwrap().into(),
+                        },
+                    );
+                }
+                self.put(
+                    Key::Operation(format!("{}:{id}", if operation.native { 1 } else { 0 })),
+                    Cell::Operation(operation),
+                );
+            }
             Err(error) => self.failure = Some(error.to_string()),
         };
         true
@@ -2744,6 +2852,16 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         if native_admitted {
             let direct = self.completed_direct_call(p, &item);
+            if direct
+                && self
+                    .completed_operation(p, &item)
+                    .is_some_and(|operation| self.unified_operation_proved(&operation))
+            {
+                // Supported unified lifecycle evidence has uncertain operation
+                // attribution, not missing independently retained Message text.
+                // Do not project its native status into the call/output body.
+                return self.event("unclassified_command_item", at, false, p);
+            }
             let owned = self
                 .completed_operation(p, &item)
                 .is_some_and(|operation| operation.wrapper.is_some());

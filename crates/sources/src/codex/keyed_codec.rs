@@ -7,6 +7,7 @@ impl Key {
     pub fn family(&self) -> &'static str {
         match self {
             Self::Operation(_) => "operation",
+            Self::UnifiedOperation(_) => "unified_operation",
             Self::OperationBlock(_, _) => "operation_block",
             Self::Message(_) => "message",
             Self::Block(_, _) => "block",
@@ -88,7 +89,8 @@ impl Key {
             | Self::StatusWitness(s)
             | Self::Result(s)
             | Self::ContinuationTarget(s)
-            | Self::Operation(s) => (3, Some(s)),
+            | Self::Operation(s)
+            | Self::UnifiedOperation(s) => (3, Some(s)),
             Self::CallBlock(s, _, _) => (19, Some(s)),
             Self::WrapperCall(s, _) | Self::Child(s, _) | Self::Mutable(_, s) => (11, Some(s)),
             Self::Prompt => (1, None),
@@ -124,6 +126,10 @@ impl Key {
             out.write_all(&[0, 0])
         }
         match self {
+            Self::UnifiedOperation(s) => {
+                out.write_all(&[33])?;
+                text(out, s)?;
+            }
             Self::OperationBlock(m, b) => {
                 out.write_all(&[32])?;
                 number(out, *m)?;
@@ -351,6 +357,7 @@ impl Key {
             30 => Self::PresenceBlock(r.number()?, r.number()?),
             31 => Self::Operation(r.text()?),
             32 => Self::OperationBlock(r.number()?, r.number()?),
+            33 => Self::UnifiedOperation(r.text()?),
             _ => return Err("unknown Codex cell key tag".into()),
         };
         if !r.0.is_empty() {

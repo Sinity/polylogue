@@ -346,3 +346,22 @@ allowances; this adds no bounded allocator, total-history-cost or worker-duratio
 claim. Parser replay advances, while immutable selector and framing recipes keep
 their meanings. Structured-key collisions, unknown nested fields and unaccounted
 effects retain their explicit refusals.
+
+
+Supported Codex unified-command lifecycle records do not make an independently
+retained direct call/output Message unreadable merely because operation agent
+attribution remains unknown. The source adapter requires the admitted native
+constructor, full session/turn/invocation scope, valid supplied duration and
+proved direct Message association. It keeps native result presence and agent
+counts unknown and does not project that lifecycle status into the Message.
+Known branches can remain readable; unknown active membership still refuses.
+
+A small source-owned keyed proof binds the supported unified constructor to its
+full native operation ID and exact status-record hash. The Operation alone has
+an unknown agent class and raw-origin hashes, but no source spelling; it cannot
+establish this predicate for a later call. Every replacement constructor removes
+the old proof before validation, and later association checks the currently
+retained operation's status origin. This preserves both arrival orders without
+turning the proof into a lasting permission. Existing admission limits apply.
+Codex parser 11 recomputes the former normalization flag from retained inputs;
+Claude remains at parser 15. No read qualification or active-path guard changes.
