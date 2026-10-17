@@ -137,11 +137,15 @@ def run_case(binary,output):
             time.sleep(.05)
         report['unsupported_retained']=progress
         continuation.graceful_stop(run)
-        report['passed']=True
-        (output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     finally:
         if c is not None:c.close()
-        run.close()
+        runtime=Path(run.socket_owner.name)
+        native.close_run(run,output)
+        cleanup={'daemon_reaped':run.daemon is None,'mcp_reaped':all(client.process.poll() is not None for client in run.clients),'runtime_removed':not runtime.exists()}
+        (output/'cleanup.json').write_text(json.dumps(cleanup,indent=2)+'\n')
+        assert all(cleanup.values()),cleanup
+    report['passed']=True
+    (output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--binary',required=True,type=Path);parser.add_argument('--output',required=True,type=Path);args=parser.parse_args()
