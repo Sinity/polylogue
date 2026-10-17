@@ -101,6 +101,8 @@ fn flat_page_ranges_reconstruct_new_and_old_snapshots_without_a_dependency_chain
         second.read_bytes, second.changed_bytes
     );
     let second_hash = second.hash;
+    let second_changed = second.changed_bytes;
+    assert!(second_changed > 0);
     let length = second.length;
     let b = w
         .retain_history_pages(second, &observation("b"), 131072)
@@ -126,7 +128,9 @@ fn flat_page_ranges_reconstruct_new_and_old_snapshots_without_a_dependency_chain
     let unchanged = capture
         .capture_history_pages(&path, basis, &AtomicBool::new(false))
         .unwrap();
-    assert_eq!(unchanged.changed_bytes, 0);
+    // Compare to the complete base, not the preceding mixed snapshot: pages
+    // still different from that base must remain in the current patch.
+    assert_eq!(unchanged.changed_bytes, second_changed);
     assert_eq!(unchanged.hash, second_hash);
 }
 
