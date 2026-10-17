@@ -140,7 +140,10 @@ impl CompletedMessageProof {
 pub(super) fn response_turn(item: &Value, context: Option<&str>) -> Option<String> {
     let metadata = match item.get("internal_chat_message_metadata_passthrough") {
         None => return context.filter(|s| !s.is_empty()).map(str::to_owned),
-        Some(value) => value.as_object()?,
+        Some(value) => {
+            value.as_object()?;
+            value
+        }
     };
     match metadata.get("turn_id") {
         Some(v) => {
