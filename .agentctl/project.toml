@@ -183,3 +183,13 @@ result = "exit"
 timeout_seconds = 600
 scratch = "nvme"
 cache = "none"
+
+[operations.local_cold_restore_demo]
+description = "Exercise stopped synthetic custody restore through packaged CLI and official SDK MCP with interruption and missing-object controls"
+exec = ["nix", "develop", "--command", "python3", "scripts/check-local-cold-restore.py"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 600
+scratch = "nvme"
+cache = "none"

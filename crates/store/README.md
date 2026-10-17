@@ -10,9 +10,8 @@ rewriting it. Callers receive typed handles, never raw SQLite connections.
 revisions, parsing or M1 support.
 
 All three schemas are exact SQL-fence extractions from the owning snapshot;
-a drift test compares their text. Archive version 2 retains the immutable import
-identity tuple; embeddings version remains zero and index version is 20. No
-pre-release durable migration is supplied. Existing schemas and versions are checked before database mutations. A newer durable file is
+a drift test compares their text. Archive version 3 retains the immutable import
+identity tuple; embeddings version remains zero and index version is 20. The preserving format migration retains existing database siblings and never assigns historical lineage. Existing schemas and versions are checked before database mutations. A newer durable file is
 refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
 it. Retained state without its coordination lock requires controlled recovery;
 raw headers may explain a newer-version refusal without opening SQLite.
@@ -236,3 +235,6 @@ See [the native scope](../../docs/rewrite/observed-source.md).
 Attributed notes/corrections and withdrawal use the existing archive note tables and shared `client_request` hash/identity transaction. Replay precedes current-head lookup and returns the original immutable effect. Current-head refusal and retained control-parent validation precede any mutation; revision/withdrawal relations form a DAG. Graph reads admit 128 connected revisions and 256 KiB metadata, and refuse unavailable controls. Authored rows remain archive authority across index reconstruction. This selected path changes no pinned SQL text or schema version and does not qualify general note import/union or portable export.
 
 Index20 stores an optional `native_id_encoding` beside each Session native ID. `wtf8` marks exact non-scalar UTF-16 identity; an unmarked literal spelling is never decoded. Preparation and selected reads validate this pair. Index18 and index19 have no reference-preserving transition in this candidate and are refused rather than replayed as index20.
+
+
+Local-only restore preparation uses `copy_preparation::Preparation` under the same noncreating exclusive lock. Only fresh archive initialization creates acquisition lineage. A missing historical lineage refuses preparation and ordinary mutation, while cold reads remain possible. Format 3 introduces no SQL-table changes: a typed versioned `meta.copy_preparation` value pins the source lineage, complete write-counter cut, local backing, custody intent and cursor; `client_request` records final completion atomically with removal of pending work. Preparation validates all stored plain blobs and every retained revision before completion, including mixed base/patch extents. It creates no index or fork children. The process owner may expose durable admission progress before cancellable completion. Historical completion is an idempotency result, never fresh activation.

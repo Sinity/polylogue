@@ -94,11 +94,6 @@ impl World {
         loop {
             let progress = self.progress(input);
             assert!(progress.failure.is_none(), "{:?}", progress.failure);
-            assert!(
-                progress.recovery_error.is_none(),
-                "{:?}",
-                progress.recovery_error
-            );
             assert_eq!(progress.source_rows.basis.input, input.id);
             if native_ids.iter().all(|native| {
                 self.reader
@@ -115,6 +110,14 @@ impl World {
                 );
                 return;
             }
+            // A required companion may report unavailability after these rows
+            // were installed. This wait proves selection; document qualification
+            // owns the complete-source claim, including that missing companion.
+            assert!(
+                progress.recovery_error.is_none(),
+                "{:?}",
+                progress.recovery_error
+            );
             assert!(
                 Instant::now() < deadline,
                 "selected Message deadline: {progress:?}"

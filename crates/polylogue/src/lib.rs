@@ -407,6 +407,11 @@ fn serve(
                     } else {
                         vec![]
                     };
+                    if status.unavailable_blob_files > 0 {
+                        notes.push(
+                            "Retained blob files are unavailable; affected reads cannot complete.",
+                        );
+                    }
                     if acquisition.is_some()
                         || (pending["examined_snapshots"]
                             .as_u64()
@@ -417,7 +422,7 @@ fn serve(
                             "Finite Codex source evidence leaves general Session coverage unknown.",
                         );
                     }
-                    json!({"outcome":if status.recovery.is_some() || acquisition.is_some() || (pending["examined_snapshots"].as_u64().is_some_and(|n|n>0) || pending["scan_complete"]==false) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"continuation":continuation,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-codex-home-v1","configured-codex-continuation-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
+                    json!({"outcome":if status.recovery.is_some() || status.unavailable_blob_files > 0 || acquisition.is_some() || (pending["examined_snapshots"].as_u64().is_some_and(|n|n>0) || pending["scan_complete"]==false) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"continuation":continuation,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-codex-home-v1","configured-codex-continuation-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})

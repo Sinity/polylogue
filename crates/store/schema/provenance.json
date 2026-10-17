@@ -23,5 +23,11 @@
       "copied_sha256": "015c0adb3782df00357a7f4005ce78e04a64a947750c8badc550886128813566"
     }
   ],
-  "snapshot_normalization": "One final newline. The archive recovery clauses follow8c4e221; note_target seen_hash retains its separately pinned predecessor comment, so this delivery does not adopt the unrelated authored-note contract or alter existing sqlite_schema text. Native index20 adopts the session.native_id_encoding fact contract from 5551b6e3 while retaining the predecessor delivery schema and other unadopted text from aca97f21. The base revision and source SHA are explicit; copied and SQL hashes bind this bounded native snapshot, not a byte-identical copy of the complete newer upstream document."
+  "snapshot_normalization": "One final newline. The archive recovery clauses follow8c4e221; note_target seen_hash retains its separately pinned predecessor comment, so this delivery does not adopt the unrelated authored-note contract or alter existing sqlite_schema text. Native index20 adopts the session.native_id_encoding fact contract from 5551b6e3 while retaining the predecessor delivery schema and other unadopted text from aca97f21. The base revision and source SHA are explicit; copied and SQL hashes bind this bounded native snapshot, not a byte-identical copy of the complete newer upstream document.",
+  "runtime_metadata_overlay": {
+    "archive_version": 3,
+    "spec_commit": "6668d9e0a085c11c689add732aa1bd62d3f4fb17",
+    "source": "polylogue-spec/spec/storage/archive-db.md, Independent copies and union admission",
+    "changes": "Fresh acquisition_lineage; versioned meta copy_preparation and existing client_request completion; unchanged SQL tables. Preserving format migration never mints missing historical authority."
+  }
 }

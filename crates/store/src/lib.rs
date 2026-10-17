@@ -38,12 +38,13 @@ pub mod observed;
 mod retained;
 pub use observed::{RetainedSource, SourceIdentity};
 pub use retained::{ImmutableImport, ImportObservation, InputFormat, RetainedInput};
+pub mod copy_preparation;
 pub mod parser_state;
 pub mod recovery;
 pub mod values;
 mod wal;
 
-pub const ARCHIVE_VERSION: u32 = 2;
+pub const ARCHIVE_VERSION: u32 = 3;
 pub const ARCHIVE_SPEC_COMMIT: &str = "8c4e2210692282420d7a5ca91dc005b409a668f1";
 pub const EMBEDDINGS_VERSION: u32 = 0;
 pub const INDEX_VERSION: u32 = 20;
@@ -58,6 +59,8 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("copy preparation refused: {0}")]
+    CopyPreparationRefused(String),
     #[error("observed source refused: {0}")]
     ObservedSourceRefused(String),
     #[error("controlled copy recovery refused: {0}")]
@@ -171,6 +174,10 @@ pub struct Status {
     pub embeddings_version: u32,
     pub write_counter: u64,
     pub recovery: Option<polylogue_model::RecoveryQualification>,
+    pub acquisition_lineage: Option<String>,
+    pub copy_preparation: Option<copy_preparation::Pending>,
+    pub unavailable_blob_files: u64,
+    pub latest_acknowledged_head: &'static str,
 }
 
 /// Acquired only by the daemon's startup path. Its lock lives as long as its connections.
@@ -346,7 +353,7 @@ fn validate_version(
             expected,
         });
     }
-    if durable && found != expected && !(legacy && name == "archive.db" && found == 1) {
+    if durable && found != expected && !(legacy && name == "archive.db" && matches!(found, 1 | 2)) {
         return Err(Error::Schema(file));
     }
     validate_schema(
@@ -455,6 +462,15 @@ fn initialize_db(
                 conn.execute(
                     "INSERT INTO meta(key,value) VALUES ('write_counter','0')",
                     [],
+                )
+            })?;
+        }
+        if name == "archive.db" {
+            let lineage = copy_preparation::fresh_lineage()?;
+            db(&path, || {
+                conn.execute(
+                    "INSERT INTO meta(key,value) VALUES('acquisition_lineage',?1)",
+                    [lineage],
                 )
             })?;
         }
@@ -616,6 +632,7 @@ impl Writer {
         recovery::check_index_compatibility(&root)?;
         recovery::migrate(&root, cancelled)?;
         preflight(&root)?;
+        copy_preparation::writer_guard(&root)?;
         wal::check_cancel(cancelled)?;
         private_dir(&root)?;
         lock.set_len(0)?;
@@ -668,7 +685,7 @@ impl ReadHandle {
         let lock = startup_lock(&root, false, false)?;
         wal::validate(&root, cancelled)?;
         recovery::check_index_compatibility(&root)?;
-        if recovery::raw_versions(&root)? == Some(1) {
+        if matches!(recovery::raw_versions(&root)?, Some(1 | 2)) {
             return Err(wal::required(
                 &root.join("archive.db"),
                 "format migration requires the daemon owner",
@@ -700,6 +717,12 @@ impl ReadHandle {
             embeddings_version: version(&self.embeddings, &self.root.join("embeddings.db"))?,
             write_counter,
             recovery: recovery::qualification(&snapshot, &file)?,
+            acquisition_lineage: copy_preparation::lineage(&snapshot, &file)?,
+            copy_preparation: copy_preparation::pending(&snapshot, &file)?,
+            unavailable_blob_files: copy_preparation::unavailable_blobs(
+                &snapshot, &file, &self.root,
+            )?,
+            latest_acknowledged_head: "unknown",
         })
     }
     pub fn fork(&self) -> Result<Self> {
