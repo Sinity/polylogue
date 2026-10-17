@@ -1,6 +1,8 @@
 use super::*;
 fn config(home: &Path) -> Config {
     Config {
+        paginated_history: None,
+        paginated_interval_seconds: 300,
         home: home.into(),
         machine: "synthetic".into(),
         host: "synthetic".into(),

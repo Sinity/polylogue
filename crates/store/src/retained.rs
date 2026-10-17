@@ -256,6 +256,49 @@ impl Writer {
         observation: &ImportObservation<'_>,
         metadata_allowance: usize,
     ) -> Result<RetainedInput> {
+        if let Some(previous) =
+            self.replay_immutable_import(format, context, observation, metadata_allowance)?
+        {
+            if previous.id != InputId::imported(&hash, format.name(), context).as_str() {
+                return Err(Error::ClientRequestConflict {
+                    id: observation.id.into(),
+                });
+            }
+            return Ok(previous);
+        }
+        let file = self.root.join("archive.db");
+        let length: Option<i64> = db(&file, || {
+            self.archive
+                .query_row(
+                    "SELECT size FROM blob WHERE hash=?1 AND state='present'",
+                    [hash.bytes().as_slice()],
+                    |r| r.get(0),
+                )
+                .optional()
+        })?;
+        let length = length.ok_or(Error::UnknownBlob)?;
+        self.retain_immutable_parts(
+            hash,
+            u64::try_from(length).map_err(|_| Error::Range)?,
+            &[(0, u64::try_from(length).map_err(|_| Error::Range)?, hash, 0)],
+            format,
+            context,
+            observation,
+            metadata_allowance,
+        )
+    }
+    /// Complete immutable bytes can share verified CAS ranges. The capture owner
+    /// computes their whole digest; this transaction publishes the exact layout.
+    pub(crate) fn retain_immutable_parts(
+        &mut self,
+        hash: BlobHash,
+        length_u64: u64,
+        parts: &[(u64, u64, BlobHash, u64)],
+        format: InputFormat,
+        context: &[&str],
+        observation: &ImportObservation<'_>,
+        metadata_allowance: usize,
+    ) -> Result<RetainedInput> {
         let request_hash = request_hash(format, context, observation, metadata_allowance)?;
         if let Some(previous) =
             self.replay_immutable_import(format, context, observation, metadata_allowance)?
@@ -266,6 +309,12 @@ impl Writer {
                 });
             }
             return Ok(previous);
+        }
+        if parts.len() > 8192 {
+            return Err(Error::ParserAdmission {
+                resource: "immutable extent metadata",
+                required: parts.len() as u64,
+            });
         }
         let id = InputId::imported(&hash, format.name(), context).to_string();
         let context_json =
@@ -303,16 +352,30 @@ impl Writer {
         if has_excisions {
             return Err(Error::ExcisionCheckRequired);
         }
-        let length: Option<i64> = db(&file, || {
-            tx.query_row(
-                "SELECT size FROM blob WHERE hash=?1 AND state='present'",
-                [hash.bytes().as_slice()],
-                |row| row.get(0),
-            )
-            .optional()
-        })?;
-        let length = length.ok_or(Error::UnknownBlob)?;
-        let length_u64 = u64::try_from(length).map_err(|_| Error::Range)?;
+        let length = i64::try_from(length_u64).map_err(|_| Error::Range)?;
+        let mut end = 0u64;
+        for &(offset, size, piece, start) in parts {
+            let stored: Option<i64> = db(&file, || {
+                tx.query_row(
+                    "SELECT size FROM blob WHERE hash=?1 AND state='present'",
+                    [piece.bytes().as_slice()],
+                    |r| r.get(0),
+                )
+                .optional()
+            })?;
+            let stored = stored
+                .and_then(|n| u64::try_from(n).ok())
+                .ok_or(Error::UnknownBlob)?;
+            if offset != end || start.checked_add(size).is_none_or(|n| n > stored) {
+                return Err(Error::Invariant("invalid immutable part coverage".into()));
+            }
+            end = end.checked_add(size).ok_or(Error::Range)?;
+        }
+        if end != length_u64 {
+            return Err(Error::Invariant(
+                "incomplete immutable part coverage".into(),
+            ));
+        }
         let next = counter(&tx, &file)?
             .checked_add(1)
             .filter(|value| *value <= i64::MAX as u64)
@@ -353,21 +416,25 @@ impl Writer {
         if !valid_revision {
             return Err(Error::Invariant("immutable input revision changed".into()));
         }
-        changed += db(&file, || {
-            tx.execute(
-                "INSERT OR IGNORE INTO extent(input,chain,offset,length,blob,blob_offset) VALUES(?1,1,0,?2,?3,0)",
-                params![id, length, hash.bytes().as_slice()],
-            )
+        for &(offset, size, piece, start) in parts {
+            changed += db(&file, || {
+                tx.execute("INSERT OR IGNORE INTO extent(input,chain,offset,length,blob,blob_offset) VALUES(?1,1,?2,?3,?4,?5)", params![id,i64::try_from(offset).map_err(|_|rusqlite::Error::InvalidQuery)?,i64::try_from(size).map_err(|_|rusqlite::Error::InvalidQuery)?,piece.bytes().as_slice(),i64::try_from(start).map_err(|_|rusqlite::Error::InvalidQuery)?])
+            })?;
+        }
+        let actual: Vec<(i64, i64, Vec<u8>, i64)> = db(&file, || {
+            let mut q=tx.prepare("SELECT offset,length,blob,blob_offset FROM extent WHERE input=?1 AND chain=1 ORDER BY offset LIMIT 8194")?;
+            q.query_map([&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect()
         })?;
-        let valid_extent: bool = db(&file, || {
-            tx.query_row(
-                "SELECT length=?2 AND blob=?3 AND blob_offset=0 FROM extent WHERE input=?1 AND chain=1 AND offset=0",
-                params![id, length, hash.bytes().as_slice()],
-                |r| r.get(0),
-            )
-        })?;
-        if !valid_extent {
-            return Err(Error::Invariant("immutable input extent changed".into()));
+        if actual.len() != parts.len()
+            || actual.iter().zip(parts).any(|(a, b)| {
+                u64::try_from(a.0).ok() != Some(b.0)
+                    || u64::try_from(a.1).ok() != Some(b.1)
+                    || a.2 != b.2.bytes()
+                    || u64::try_from(a.3).ok() != Some(b.3)
+            })
+        {
+            return Err(Error::Invariant("immutable input extents changed".into()));
         }
         changed += db(&file, || {
             tx.execute(
@@ -424,6 +491,23 @@ mod tests {
             path: "copy:synthetic.jsonl",
             seen_at: 7,
         }
+    }
+    #[test]
+    fn request_retry_precedes_present_blob_lookup() {
+        let root = tempfile::tempdir().unwrap();
+        let mut w = Writer::open(root.path()).unwrap();
+        let hash = w.put_file_blob(b"retained").unwrap();
+        let o = observation("retry-before-lookup");
+        let first = w
+            .retain_immutable_input(hash, InputFormat::CodexRollout, &[], &o, 65536)
+            .unwrap();
+        w.archive
+            .execute("UPDATE blob SET state='deleting'", [])
+            .unwrap();
+        let retry = w
+            .retain_immutable_input(hash, InputFormat::CodexRollout, &[], &o, 65536)
+            .unwrap();
+        assert_eq!(retry, first);
     }
     #[test]
     fn immutable_import_is_retained_and_retry_does_not_invent_another_revision() {

@@ -142,6 +142,10 @@ impl ImportReply {
         }
     }
 }
+enum PreparedCapture {
+    Blob(PreparedBlob),
+    History(polylogue_store::history_pages::PreparedHistory),
+}
 enum Message {
     Note(
         polylogue_model::authored::WriteNote,
@@ -156,7 +160,7 @@ enum Message {
     CheckAcquisition(Reply<()>),
     Progress(String, Reply<Progress>),
     Retry(String, Reply<()>),
-    Captured(Result<PreparedBlob>),
+    Captured(Result<PreparedCapture>),
     Computed(Result<Computation>),
     CanonicalComputed(Result<CanonicalTurn>),
     Wake,
@@ -221,6 +225,22 @@ impl Handle {
         self.send(Message::Import(
             request,
             Some((candidate, expected, expected_length)),
+            ImportReply::Configured(reply),
+        ))?;
+        Ok(rx)
+    }
+    pub fn try_history_import(
+        &self,
+        request: ImportRequest,
+    ) -> Result<Receiver<Result<ConfiguredImport>>> {
+        if request.format != InputFormat::CodexHistorySqlite {
+            return Err(Error::InvalidRequest("expected physical history request"));
+        }
+        self.validate_import(&request, true)?;
+        let (reply, rx) = mpsc::sync_channel(1);
+        self.send(Message::Import(
+            request,
+            None,
             ImportReply::Configured(reply),
         ))?;
         Ok(rx)
@@ -686,21 +706,38 @@ impl Actor {
                         return Ok(());
                     }
                 };
+                let history = request.format == InputFormat::CodexHistorySqlite;
+                let history_basis = if history {
+                    match self.writer.history_basis(&request.observation.borrowed()) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            reply.send(Err(e.into()), false);
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    None
+                };
                 let cancelled = Arc::clone(&self.inner.cancelled);
                 let sender = self.inner.sender.clone();
                 let path = request.path;
-                let history = request.format == InputFormat::CodexHistorySqlite;
                 let expected = configured.as_ref().map(|(_, hash, _)| *hash);
                 let join = thread::Builder::new()
                     .name("polylogue-capture".into())
                     .spawn(move || {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             if let Some((candidate, _, length)) = configured {
-                                capture.capture_codex_candidate(&candidate, length, &cancelled)
+                                capture
+                                    .capture_codex_candidate(&candidate, length, &cancelled)
+                                    .map(PreparedCapture::Blob)
                             } else if history {
-                                capture.capture_history_snapshot(&path, &cancelled)
+                                capture
+                                    .capture_history_pages(&path, history_basis, &cancelled)
+                                    .map(PreparedCapture::History)
                             } else {
-                                capture.capture_regular_file(&path, &cancelled)
+                                capture
+                                    .capture_regular_file(&path, &cancelled)
+                                    .map(PreparedCapture::Blob)
                             }
                         }))
                         .map_err(|_| Error::WorkerPanicked)
@@ -759,7 +796,24 @@ impl Actor {
                     let _ = job.reply.send(Err(Error::Stopped), false);
                     return Ok(());
                 }
+                let mut acquired = true;
                 let result = result.and_then(|proof| {
+                    let proof = match proof {
+                        PreparedCapture::History(p) => {
+                            if let Some(input) = self
+                                .writer
+                                .known_history_snapshot(p.hash(), &job.observation.borrowed())?
+                            {
+                                acquired = false;
+                                return Ok(input);
+                            }
+                            return self
+                                .writer
+                                .retain_history_pages(p, &job.observation.borrowed(), job.allowance)
+                                .map_err(Error::Store);
+                        }
+                        PreparedCapture::Blob(p) => p,
+                    };
                     if job.expected.is_some_and(|hash| hash != proof.hash()) {
                         return Err(Error::InvalidEvidence(
                             "configured source changed after discovery; retry next pass".into(),
@@ -784,7 +838,7 @@ impl Actor {
                         self.restart_scan();
                     }
                 }
-                let _ = job.reply.send(result, true);
+                let _ = job.reply.send(result, acquired);
             }
             Message::Computed(result) => {
                 let Some(job) = self.compute.take() else {

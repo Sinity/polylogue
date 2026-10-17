@@ -163,3 +163,59 @@ fn genuine_worker_failure_still_records_a_parser_defect() {
         Some("parser state invariant: synthetic corrupt source")
     );
 }
+
+#[test]
+fn prepared_physical_history_is_not_selected_after_owner_stop_and_restart_can_retry() {
+    let (temp, mut actor, _input, _head) = fixture();
+    let path = temp.path().join("archive/archive.db");
+    // A synthetic owner database is a valid physical SQLite input; its schema
+    // is deliberately unsupported by the conversation decoder. No engine SQL.
+    let prepared = actor
+        .writer
+        .blob_capture()
+        .unwrap()
+        .capture_history_pages(&path, None, &AtomicBool::new(false))
+        .unwrap();
+    let before = actor.writer.status().unwrap().write_counter;
+    let request = request(&path, "stopped-physical-history");
+    let observation = request.observation.clone();
+    let (reply, received) = mpsc::sync_channel(1);
+    actor.capture = Some(CaptureJob {
+        expected: None,
+        format: InputFormat::CodexHistorySqlite,
+        context: vec![],
+        observation: observation.clone(),
+        allowance: 65536,
+        reply: ImportReply::Ordinary(reply),
+        join: thread::spawn(|| {}),
+    });
+    actor.inner.cancelled.store(true, Ordering::Release);
+    actor
+        .message(Message::Captured(Ok(PreparedCapture::History(prepared))))
+        .unwrap();
+    assert!(matches!(received.try_recv(), Ok(Err(Error::Stopped))));
+    assert_eq!(actor.writer.status().unwrap().write_counter, before);
+    drop(actor);
+    let mut writer = Writer::open(&temp.path().join("archive")).unwrap();
+    let mut after = String::new();
+    while let Some(source) = writer.next_retained_source(&after).unwrap() {
+        assert_ne!(source.format, InputFormat::CodexHistorySqlite);
+        after = source.input.id;
+    }
+    let p = writer
+        .blob_capture()
+        .unwrap()
+        .capture_history_pages(&path, None, &AtomicBool::new(false))
+        .unwrap();
+    let hash = p.hash();
+    let n = p.length();
+    let input = writer
+        .retain_history_pages(p, &observation.borrowed(), 65536)
+        .unwrap();
+    let bytes = writer
+        .read_handle()
+        .unwrap()
+        .read_source_range(&input.id, 1, hash, 0, n)
+        .unwrap();
+    assert_eq!(blake3::hash(&bytes).as_bytes(), hash.bytes());
+}

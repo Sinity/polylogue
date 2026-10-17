@@ -51,6 +51,8 @@ pub(crate) struct Status {
     pub last_pass: Option<Pass>,
     pub last_error: Option<Diagnostic>,
     pub conversation_coverage: Option<bool>,
+    pub paginated_history: Option<Diagnostic>,
+    pub paginated_snapshots: u64,
 }
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Pass {
@@ -96,6 +98,8 @@ impl Status {
             last_pass: None,
             last_error: None,
             conversation_coverage: None,
+            paginated_history: None,
+            paginated_snapshots: 0,
         }
     }
 }
@@ -182,6 +186,111 @@ fn import(
         pause(stop, Duration::from_millis(10));
     }
 }
+fn paginated(
+    handle: &Handle,
+    config: &Config,
+    request: &str,
+    stop: &AtomicBool,
+) -> Result<bool, String> {
+    let path = polylogue_store::configured_codex::paginated_path(config)
+        .map_err(reason)?
+        .ok_or("paginated history is not configured")?;
+    let seen_at = now()?;
+    let candidate = Candidate::paginated(path.clone());
+    let id = candidate.observation_id(request, seen_at).map_err(reason)?;
+    let request = ImportRequest {
+        format: candidate.format(),
+        context: vec![],
+        path: path.clone(),
+        observation: Observation {
+            id,
+            machine: config.machine.clone(),
+            host: config.host.clone(),
+            path: path.to_str().ok_or("history path must be UTF-8")?.into(),
+            seen_at,
+        },
+        metadata_allowance: 131072,
+    };
+    let until = Instant::now() + Duration::from_secs(310);
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Err("history capture stopped".into());
+        }
+        let result = match handle.try_history_import(request.clone()) {
+            Ok(rx) => receive(rx, stop),
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(reply) => return Ok(reply.acquired),
+            Err(Error::Busy) if Instant::now() < until => pause(stop, Duration::from_millis(10)),
+            Err(e) => return Err(reason(e)),
+        }
+    }
+}
+#[derive(Debug, PartialEq, Eq)]
+enum HistoryDecision {
+    Capture,
+    UnchangedMetadata,
+    WaitingForQuiet,
+}
+struct HistoryPoll {
+    interval: Duration,
+    verified_stamp: Option<polylogue_store::configured_codex::HistoryStamp>,
+    observed_stamp: Option<polylogue_store::configured_codex::HistoryStamp>,
+    quiet_since: Instant,
+    verified_at: Option<Instant>,
+}
+impl HistoryPoll {
+    fn new(interval: Duration, now: Instant) -> Self {
+        Self {
+            interval,
+            verified_stamp: None,
+            observed_stamp: None,
+            quiet_since: now,
+            verified_at: None,
+        }
+    }
+    fn decision(
+        &mut self,
+        stamp: Option<&polylogue_store::configured_codex::HistoryStamp>,
+        now: Instant,
+    ) -> HistoryDecision {
+        let Some(stamp) = stamp else {
+            return HistoryDecision::Capture;
+        };
+        if self.observed_stamp.as_ref() != Some(stamp) {
+            self.observed_stamp = Some(stamp.clone());
+            self.quiet_since = now;
+        }
+        let Some(verified_at) = self.verified_at else {
+            return HistoryDecision::Capture;
+        };
+        if now.duration_since(verified_at) >= Duration::from_secs(3600) {
+            return HistoryDecision::Capture;
+        }
+        if self.verified_stamp.as_ref() == Some(stamp) {
+            return HistoryDecision::UnchangedMetadata;
+        }
+        if now.duration_since(self.quiet_since) >= self.interval {
+            HistoryDecision::Capture
+        } else {
+            HistoryDecision::WaitingForQuiet
+        }
+    }
+    fn verified(
+        &mut self,
+        before: Option<polylogue_store::configured_codex::HistoryStamp>,
+        after: Option<polylogue_store::configured_codex::HistoryStamp>,
+        now: Instant,
+    ) {
+        self.verified_stamp = before.filter(|stamp| after.as_ref() == Some(stamp));
+        self.verified_at = Some(now);
+    }
+}
+#[cfg(test)]
+#[path = "codex_continuation/history_poll_tests.rs"]
+mod history_poll_tests;
+
 pub(crate) fn run(
     handle: Handle,
     config: Config,
@@ -193,6 +302,11 @@ pub(crate) fn run(
     let mut pending = VecDeque::new();
     let mut previous: Option<Pass> = None;
     let mut status = Status::initial();
+    let mut next_history = Instant::now() + Duration::from_secs(config.paginated_interval_seconds);
+    let mut history_poll = HistoryPoll::new(
+        Duration::from_secs(config.paginated_interval_seconds),
+        Instant::now(),
+    );
     while !stop.load(Ordering::Acquire) {
         pause(&stop, INTERVAL);
         if stop.load(Ordering::Acquire) {
@@ -208,6 +322,42 @@ pub(crate) fn run(
             status.last_attempt_finished_at = now().ok();
             *shared.lock().expect("continuation status") = Some(status.clone());
             continue;
+        }
+        if config.paginated_history.is_some() && Instant::now() >= next_history {
+            let before = polylogue_store::configured_codex::history_stamp(&config);
+            let decision = history_poll.decision(before.as_ref().ok(), Instant::now());
+            if decision == HistoryDecision::Capture {
+                match paginated(
+                    &handle,
+                    &config,
+                    &format!("{request}:history:{}", status.completed_passes),
+                    &stop,
+                ) {
+                    Ok(acquired) => {
+                        if acquired {
+                            status.paginated_snapshots =
+                                status.paginated_snapshots.saturating_add(1);
+                        }
+                        let after = polylogue_store::configured_codex::history_stamp(&config);
+                        history_poll.verified(before.ok(), after.ok(), Instant::now());
+                        status.paginated_history = Some(diagnostic(if acquired {
+                            "retained_snapshot; interpretation coverage separate"
+                        } else {
+                            "unchanged_verified_snapshot"
+                        }));
+                    }
+                    Err(error) => status.paginated_history = Some(diagnostic(error)),
+                }
+            } else {
+                status.paginated_history = Some(diagnostic(
+                    if decision == HistoryDecision::UnchangedMetadata {
+                        "unchanged_metadata; full byte verification not due"
+                    } else {
+                        "changed_metadata; waiting for quiet interval or hourly full attempt"
+                    },
+                ));
+            }
+            next_history = Instant::now() + Duration::from_secs(config.paginated_interval_seconds);
         }
         let mut pass = if pending.is_empty() {
             let turn = match cursor.next_turn(&config, REQUESTS, &stop) {
