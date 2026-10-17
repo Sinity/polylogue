@@ -258,7 +258,7 @@ fn alternating_flat_base_patch_layout_reuses_two_checked_objects_during_reconstr
     let p = capture
         .capture_history_pages(&path, basis, &AtomicBool::new(false))
         .unwrap();
-    assert_eq!(p.base_explicit_verification_bytes, base_length);
+    assert_eq!(p.base_verification_bytes, base_length);
     let patch_length = p.changed_bytes;
     assert!(p.parts.len() > 40);
     let hash = p.hash;
@@ -341,13 +341,13 @@ fn alternating_flat_base_patch_layout_reuses_two_checked_objects_during_reconstr
     let p = capture
         .capture_history_pages(&path, basis, &AtomicBool::new(false))
         .unwrap();
-    assert_eq!(p.base_explicit_verification_bytes, base_length);
+    assert_eq!(p.base_verification_bytes, base_length);
     assert_eq!(p.changed_bytes, patch_length);
     assert_eq!(p.hash, hash);
     println!(
         "alternating layout: explicit warming calls2, bytes={}, current capture base verification={}, differing page bytes={}",
         base_length + patch_length,
-        p.base_explicit_verification_bytes,
+        p.base_verification_bytes,
         p.changed_bytes
     );
 }
