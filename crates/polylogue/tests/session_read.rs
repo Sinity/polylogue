@@ -851,6 +851,7 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
         "{first}"
     );
     assert_eq!(first["result"]["unknown"]["population_pending_inputs"], 1);
+    assert_eq!(first["result"]["settlement"]["state"], "pending");
     let (socket, _, end) = world.socket_read(&reference());
     assert_eq!(socket, first);
     assert_eq!(end["unknown"], first["result"]["unknown"]);

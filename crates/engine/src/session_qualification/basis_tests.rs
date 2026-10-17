@@ -41,7 +41,8 @@ fn configured_claude_observed_member_permission_uses_full_count_not_display_samp
     q.prefix_effects_supported = true;
     q.include_basis(basis(0), true, 8000).unwrap();
     assert!(q.member_rows_readable());
-    q.include_basis(basis(1), false, 1).unwrap();
+    q.include_basis(basis(1), true, 8000).unwrap();
+    q.basis.truncate(1);
     assert_eq!(
         q.basis.len(),
         1,

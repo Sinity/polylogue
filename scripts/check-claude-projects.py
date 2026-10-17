@@ -116,7 +116,7 @@ def check_text(document, reference, native, message_id, text, role, author, run,
         assert entry['origin']['binding'] == {'input': message['sources'][0]['input'], 'chain': 1}, entry
     text_origin = next(e['origin'] for e in message['field_origins'] if e['field'] == 'blocks[0].text')
     selection = text_origin['selection']
-    assert selection['adapter_version'] == selection['codec_version'] == 1
+    assert selection['adapter_version'] == 2 and selection['codec_version'] == 1
     selected = [selection['input']] if 'input' in selection else selection['inputs']
     assert selected
     for selector in selected:

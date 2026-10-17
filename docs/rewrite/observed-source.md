@@ -231,8 +231,10 @@ represented basis and commit to all of them. The digest is ordinary BLAKE3 over
 `polylogue.session.input-bases.v1\0` followed, in catalog order, by each basis's
 JSON byte length as big-endian u64 and its serialized bytes. It is an operation
 witness, not independent storage authority or complete-population evidence.
-Required source cardinality and the observed-member exception use the full
-contributor count, never the displayed sample length. Relevant witness and
+The observed-member exception counts every proved membership-capable source,
+never the displayed sample length. Incoming relationship witnesses remain in
+the full context count and digest without becoming a source of the requested
+Session’s Message membership. Unresolved relevant inputs still constrain reads. Relevant witness and
 Message-membership metadata retain their separate admission bounds.
 
 `configured_claude_projects_demo` accepts an explicit packaged binary/candidate,

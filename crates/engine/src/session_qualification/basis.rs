@@ -72,6 +72,11 @@ impl Qualification {
         member: bool,
         allowance: usize,
     ) -> Result<(), Error> {
+        // Relationship/context witnesses remain in the full digest, but only
+        // independently proved membership sources constrain the member exception.
+        if member {
+            self.membership_sources = self.membership_sources.checked_add(1).ok_or(Error::Range)?;
+        }
         if self
             .basis_witness
             .include(&basis, self.exact && member, allowance)?

@@ -29,6 +29,7 @@ pub struct Qualification {
     pub expected: BTreeMap<String, u64>,
     pub basis: Vec<SourceRowBasis>,
     basis_witness: basis::BasisWitness,
+    membership_sources: u64,
     input_bytes: usize,
     population_pending_inputs: u64,
     pub inputs: Vec<Value>,
@@ -77,7 +78,7 @@ impl Qualification {
             && self.unresolved_inputs == 0
             && ((self.known_rows_readable && self.pending_inputs == 0)
                 || (self.certified_observed_member
-                    && self.basis_witness.count == 1
+                    && self.membership_sources == 1
                     && self.prefix_effects_supported))
     }
     pub fn active_path_known(&self) -> bool {
