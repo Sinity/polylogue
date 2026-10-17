@@ -14,7 +14,7 @@ use polylogue_sources::{claude_code, codex, frame::StepBudget};
 use polylogue_store::{
     Error as StoreError, ImportObservation, InputFormat, PreparedBlob, ReadHandle, RetainedInput,
     RetainedSource, Writer,
-    parser_state::{Basis, Budget, Head},
+    parser_state::{Basis, Budget, Head, ParserReader},
 };
 use std::{
     path::PathBuf,
@@ -480,7 +480,11 @@ struct CanonicalJob {
     head: Head,
     position: CanonicalPosition,
     handle: Option<canonical_message::Handle>,
-    join: JoinHandle<ReadHandle>,
+    join: JoinHandle<Option<CanonicalReaders>>,
+}
+struct CanonicalReaders {
+    values: ReadHandle,
+    parser: ParserReader,
 }
 enum Active {
     Selecting(
@@ -517,7 +521,7 @@ struct Actor {
     // One worker owns this reader at a time. Returning the idle connections
     // avoids reparsing the SQLite schema on every field turn. Individual store
     // operations still establish fresh views; no transaction spans actor turns.
-    canonical_reader: Option<ReadHandle>,
+    canonical_reader: Option<CanonicalReaders>,
     active: Option<Active>,
     after: String,
     scanning: bool,
@@ -1037,7 +1041,7 @@ impl Actor {
                     .canonical
                     .take()
                     .ok_or(Error::InvalidRequest("unexpected canonical completion"))?;
-                self.canonical_reader = Some(job.join.join().map_err(|_| Error::WorkerPanicked)?);
+                self.canonical_reader = job.join.join().map_err(|_| Error::WorkerPanicked)?;
                 if self.stop_for_completion(&result) {
                     return Ok(());
                 }
@@ -1316,10 +1320,13 @@ impl Actor {
             .record_parser_failure(&head.token, Some(&details), DETAIL_BYTES)?;
         Ok(())
     }
-    fn take_canonical_reader(&mut self) -> Result<ReadHandle> {
+    fn take_canonical_reader(&mut self) -> Result<CanonicalReaders> {
         match self.canonical_reader.take() {
             Some(reader) => Ok(reader),
-            None => Ok(self.writer.read_handle()?),
+            None => Ok(CanonicalReaders {
+                values: self.writer.read_handle()?,
+                parser: self.writer.parser_reader()?,
+            }),
         }
     }
     fn tick(&mut self) -> Result<()> {
@@ -1524,13 +1531,13 @@ impl Actor {
                     .name("polylogue-compatible-source".into())
                     .spawn(move || {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            selection.advance(&reader, 65536, &cancelled)
+                            selection.advance(&reader.values, 65536, &cancelled)
                         }))
                         .map_err(|_| Error::WorkerPanicked)
                         .and_then(|r| r.map_err(Error::Store))
                         .map(CanonicalTurn::Selected);
                         let _ = sender.send(Message::CanonicalComputed(result));
-                        reader
+                        Some(reader)
                     });
                 match join {
                     Ok(join) => {
@@ -1546,8 +1553,11 @@ impl Actor {
                 }
             }
             Active::Canonical(input, head, position, handle) => {
-                let snapshot = self.writer.parser_snapshot(&head.token)?;
-                let reader = self.take_canonical_reader()?;
+                let CanonicalReaders {
+                    values: reader,
+                    parser,
+                } = self.take_canonical_reader()?;
+                let snapshot = parser.snapshot(&head.token)?;
                 let state = handle
                     .as_ref()
                     .map(|h| canonical_message::inspect(&mut self.writer, h, 65536))
@@ -1715,8 +1725,20 @@ impl Actor {
                         ))
                         .map_err(|_| Error::WorkerPanicked)
                         .and_then(|r| r);
+                        // Release the snapshot before the actor can apply its
+                        // result. Reuse preserves connections, never a read view.
+                        let (result, readers) = match snapshot.into_reader() {
+                            Ok(parser) => (
+                                result,
+                                Some(CanonicalReaders {
+                                    values: reader,
+                                    parser,
+                                }),
+                            ),
+                            Err(error) => (Err(error.into()), None),
+                        };
                         let _ = sender.send(Message::CanonicalComputed(result));
-                        reader
+                        readers
                     });
                 match join {
                     Ok(join) => {

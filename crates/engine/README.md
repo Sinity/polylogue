@@ -25,6 +25,12 @@ The tests use actual retained synthetic inputs, prepared writes, reopen and
 owned-process exit. Store peer operations between turns establish a component
 seam; they do not qualify a daemon or public-client end-to-end outcome.
 
+The canonical worker returns its store read handles through the existing worker
+join. Idle connections can retain SQLite schema caches; each parser turn opens
+and validates a fresh source snapshot, then releases it before the actor applies
+the result. Connection reuse does not resume an earlier view or change source,
+generation, cancellation or publication checks.
+
 Encoded-byte allowances are logical admission limits. Whole cells, source
 record decoding, decoded objects, effects buffers, allocator/RSS use, SQLite
 page work and arbitrarily large output fanout are not fully resource-qualified.

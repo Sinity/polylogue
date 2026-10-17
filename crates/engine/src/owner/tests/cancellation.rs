@@ -109,7 +109,7 @@ fn typed_canonical_cancellation_is_not_a_parser_defect() {
             head: head.clone(),
             position: CanonicalPosition::first(InputFormat::CodexRollout),
             handle: None,
-            join: thread::spawn(move || reader),
+            join: thread::spawn(move || Some(reader)),
         });
         actor
             .message(Message::CanonicalComputed(Err(Error::Canonical(error))))
@@ -127,7 +127,7 @@ fn reused_canonical_reader_observes_later_value_writes_and_sealing() {
     let (_temp, mut actor, _input, _head) = fixture();
     let value = actor.writer.begin_value(Codec::Utf8, 3).unwrap();
     let reader = actor.take_canonical_reader().unwrap();
-    assert_eq!(reader.value_head(&value.id).unwrap().appended, 0);
+    assert_eq!(reader.values.value_head(&value.id).unwrap().appended, 0);
     actor.canonical_reader = Some(reader);
 
     actor
@@ -135,17 +135,23 @@ fn reused_canonical_reader_observes_later_value_writes_and_sealing() {
         .append_value_chunk(&value.id, 0, b"new", 3)
         .unwrap();
     let reader = actor.take_canonical_reader().unwrap();
-    assert_eq!(reader.value_head(&value.id).unwrap().appended, 3);
-    let mut proof = reader.validate_value(&value.id).unwrap();
+    assert_eq!(reader.values.value_head(&value.id).unwrap().appended, 3);
+    let mut proof = reader.values.validate_value(&value.id).unwrap();
     while !proof.progress().complete {
-        proof.advance(&reader, 3).unwrap();
+        proof.advance(&reader.values, 3).unwrap();
     }
     actor.canonical_reader = Some(reader);
     actor.writer.seal_value(&proof).unwrap();
 
     let reader = actor.take_canonical_reader().unwrap();
-    assert_eq!(reader.value_head(&value.id).unwrap().state, State::Ready);
-    assert_eq!(reader.value_range(&value.id, 0, 3).unwrap().bytes, b"new");
+    assert_eq!(
+        reader.values.value_head(&value.id).unwrap().state,
+        State::Ready
+    );
+    assert_eq!(
+        reader.values.value_range(&value.id, 0, 3).unwrap().bytes,
+        b"new"
+    );
 }
 
 #[test]
