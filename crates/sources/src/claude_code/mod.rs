@@ -14,7 +14,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 9;
+pub const PARSER_VERSION: u32 = 10;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -153,6 +153,19 @@ impl<R: ReadView> KeyedRecords<R> {
             events: Vec::new(),
             pending: BTreeMap::new(),
         })
+    }
+    /// Folder placement supplies lineage, never native ownership. Missing early
+    /// claims stay unresolved; a later real owner cannot reassign their records.
+    fn subagent_owner(&mut self, claimed: &str) -> Option<String> {
+        match &self.header.owner {
+            Some(owner) if claimed.is_empty() || owner == claimed => Some(owner.clone()),
+            Some(_) => None,
+            None if claimed.is_empty() => None,
+            None => {
+                self.header.owner = Some(claimed.into());
+                Some(claimed.into())
+            }
+        }
     }
     fn session_index(&mut self, native: &str, kind: SessionKind) -> Result<Option<usize>, String> {
         if let Some(&i) = self.by_id.get(native) {
@@ -356,17 +369,9 @@ impl<R: ReadView> KeyedRecords<R> {
                 agent,
                 meta,
             } => {
-                let owner = self
-                    .header
-                    .owner
-                    .get_or_insert_with(|| {
-                        if sid_field.is_empty() {
-                            folder_owner.clone()
-                        } else {
-                            sid_field.clone()
-                        }
-                    })
-                    .clone();
+                let Some(owner) = self.subagent_owner(&sid_field) else {
+                    return Ok(None);
+                };
                 let own = format!("{owner}/{agent}");
                 if !self.by_id.contains_key(&own)
                     && self
@@ -988,27 +993,15 @@ impl<R: ReadView> KeyedRecords<R> {
     fn file_session(&mut self, v: &Value) -> Result<Option<usize>, String> {
         match self.ctx.clone() {
             FileCtx::Main { stem } => self.session_index(&stem, SessionKind::Main),
-            FileCtx::Subagent {
-                folder_owner,
-                agent,
-                ..
-            } => {
+            FileCtx::Subagent { agent, .. } => {
                 let sid_field = v
                     .get("sessionId")
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_owned();
-                let owner = self
-                    .header
-                    .owner
-                    .get_or_insert_with(|| {
-                        if sid_field.is_empty() {
-                            folder_owner.clone()
-                        } else {
-                            sid_field
-                        }
-                    })
-                    .clone();
+                let Some(owner) = self.subagent_owner(&sid_field) else {
+                    return Ok(None);
+                };
                 self.session_index(&format!("{owner}/{agent}"), SessionKind::Subagent)
             }
         }

@@ -210,3 +210,36 @@ acquisition. Selected-source byte totals sum acknowledged lengths, not unique
 bytes or actual IO. Memory documents, session indexes, workflow journals and
 agent metadata are not interpreted by this route. Only explicitly referenced
 required bodies are acquired; unclaimed or hook files are not conversations.
+
+The projects status names the currently acquiring path separately from the last
+acknowledged input. This marker does not publish its prepared prefix. Missing
+initial subagent ownership stays unresolved: the containing folder never
+substitutes for `sessionId`. A later actual owner does not retroactively assign
+those earlier records, and a conflicting later owner does not change an
+established Session. Parser version 10 records this interpretation change.
+
+Requested Session membership is qualified independently of population-wide
+possible relationships. An unrelated main's incomplete suffix leaves global
+relationship coverage pending without declaring the requested, independently
+proved Message membership pending. Unknown relevant dependency shapes and
+current selected-source guards continue to constrain reads.
+
+Qualification streams the pinned source catalog. `target_basis.inputs` is a
+bounded display sample plus required exact-source witnesses; `inputs_total`,
+`inputs_enumerated` and `inputs_digest` identify whether it enumerates every
+represented basis and commit to all of them. The digest is ordinary BLAKE3 over
+`polylogue.session.input-bases.v1\0` followed, in catalog order, by each basis's
+JSON byte length as big-endian u64 and its serialized bytes. It is an operation
+witness, not independent storage authority or complete-population evidence.
+Required source cardinality and the observed-member exception use the full
+contributor count, never the displayed sample length. Relevant witness and
+Message-membership metadata retain their separate admission bounds.
+
+`configured_claude_projects_demo` accepts an explicit packaged binary/candidate,
+SDK interpreter/client, digest tool, output directory, and pinned format-3 binary
+and source. Its synthetic journey includes multiple projects, separate agents,
+shared-parent required bodies, late files/appends, thousands of small sources,
+read service, provider-free restart and the preserving old-preparation route.
+The driver checks default SDK budgets after the larger population exists. Its
+receipts report actual dimensions and elapsed work; they are not a production
+throughput, RSS, whole-corpus or activation qualification.

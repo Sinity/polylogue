@@ -1,5 +1,6 @@
 //! Direct Session input influence, never inferred from matching Message rows.
 //! Catalog traversal and every receipt read share the caller's pinned Session.
+mod basis;
 mod codex;
 use crate::{owner, source_rows, source_turn::SourceContext, state::claude};
 use polylogue_model::settlement::RecordFailureId;
@@ -27,6 +28,9 @@ pub struct Qualification {
     pub metadata: Option<Session>,
     pub expected: BTreeMap<String, u64>,
     pub basis: Vec<SourceRowBasis>,
+    basis_witness: basis::BasisWitness,
+    input_bytes: usize,
+    population_pending_inputs: u64,
     pub inputs: Vec<Value>,
     pub up_to_date: bool,
     pub active_messages: BTreeSet<String>,
@@ -73,7 +77,7 @@ impl Qualification {
             && self.unresolved_inputs == 0
             && ((self.known_rows_readable && self.pending_inputs == 0)
                 || (self.certified_observed_member
-                    && self.basis.len() == 1
+                    && self.basis_witness.count == 1
                     && self.prefix_effects_supported))
     }
     pub fn active_path_known(&self) -> bool {
@@ -84,6 +88,7 @@ impl Qualification {
             && self.pending_inputs == 0
             && self.unresolved_inputs == 0
             && self.unavailable_inputs == 0
+            && self.population_pending_inputs == 0
             && self.unsupported.is_empty()
     }
     pub fn notes(&self) -> Vec<String> {
@@ -96,6 +101,10 @@ impl Qualification {
     fn reason_notes(&self, include_diagnostics: bool) -> Vec<String> {
         let mut notes = self.unsupported.iter().cloned().collect::<Vec<_>>();
         for (count, detail) in [
+            (
+                self.population_pending_inputs,
+                "foreign retained inputs have pending possible Session relationships; requested membership is qualified separately",
+            ),
             (
                 self.record_errors,
                 "undecodable complete records in relevant retained inputs",
@@ -130,6 +139,7 @@ impl Qualification {
     pub fn result(&self, catalog: &SessionCatalog) -> Value {
         let mut unknown = json!({});
         for (name, n) in [
+            ("population_pending_inputs", self.population_pending_inputs),
             ("record_errors", self.record_errors),
             ("pending_inputs", self.pending_inputs),
             ("unavailable_inputs", self.unavailable_inputs),
@@ -142,8 +152,8 @@ impl Qualification {
         json!({"outcome":if self.complete() {"ok"} else {"degraded"},
             "notes":self.notes(), "unknown":unknown,
             "diagnostics":{"text_repairs":self.text_repairs},
-            "settlement":{"scope":if self.exact{"exact_session"}else{"session_selection"},"operation":if self.document{"normalized_read"}else{"selection"},"state":if self.complete(){"settled"}else if self.pending_inputs>0{"pending"}else if self.unavailable_inputs>0||self.record_errors>0{"unavailable"}else{"unsupported"},
-                "target_basis":{"archive_counter":catalog.source_archive_counter(),"recipe":"native-session-v2","configuration":if self.basis.iter().any(|b|b.original_hash.is_none()){"retained-native-context-v1"}else{"fixed-immutable-native-context-v1"},"inputs":self.basis},
+            "settlement":{"scope":if self.exact{"exact_session"}else{"session_selection"},"operation":if self.document{"normalized_read"}else{"selection"},"state":if self.complete(){"settled"}else if self.pending_inputs>0||self.population_pending_inputs>0{"pending"}else if self.unavailable_inputs>0||self.record_errors>0{"unavailable"}else{"unsupported"},
+                "target_basis":{"archive_counter":catalog.source_archive_counter(),"recipe":"native-session-v3","configuration":if self.basis_witness.observed{"retained-native-context-v1"}else{"fixed-immutable-native-context-v1"},"inputs":self.basis,"inputs_total":self.basis_witness.count,"inputs_enumerated":self.basis.len() as u64==self.basis_witness.count,"inputs_digest":self.basis_witness.digest()},
                 "serving_view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()}}})
     }
 }
@@ -265,7 +275,6 @@ fn qualify_operation(
         .transpose()?
         .flatten();
     let mut cursor = None;
-    let mut dependency_bytes = 0usize;
     loop {
         deadline(until)?;
         if cancelled() {
@@ -275,17 +284,8 @@ fn qualify_operation(
             break;
         };
         cursor = Some(next);
-        dependency_bytes = dependency_bytes.saturating_add(
-            dependency.id().len()
-                + dependency.context().iter().map(String::len).sum::<usize>()
-                + 256,
-        );
-        if dependency_bytes > allowance {
-            return Err(Error::ParserAdmission {
-                resource: "Session dependency metadata",
-                required: dependency_bytes as u64,
-            });
-        }
+        // next_dependency admits one descriptor. Streamed work is not live
+        // retained metadata; actual witnesses and Message membership are bounded.
         // Global freshness is independent of this operation's dependency scope.
         // A retained unavailable interpretation is caught up, but not complete.
         let caught_up =
@@ -364,7 +364,7 @@ fn qualify_operation(
         else {
             return Err(Error::Invariant("Claude format/context mismatch".into()));
         };
-        match context.direct_main_session() {
+        match claude_membership(session, &dependency, &input, &context, allowance)? {
             Some(id)
                 if plan
                     .id
@@ -389,8 +389,8 @@ fn qualify_operation(
             {
                 if document {
                     if !caught_up {
-                        result.basis.push(source_rows::basis(&input));
-                        add(&mut result.pending_inputs, 1)?;
+                        result.include_basis(source_rows::basis(&input), false, allowance)?;
+                        add(&mut result.population_pending_inputs, 1)?;
                     } else {
                         let head = dependency.head().ok_or(Error::Range)?;
                         let mut possible =
@@ -438,7 +438,7 @@ fn qualify_operation(
                             }
                         }
                         if possible {
-                            result.basis.push(source_rows::basis(&input));
+                            result.include_basis(source_rows::basis(&input), false, allowance)?;
                             result.unsupported.insert("A foreign main input may contribute Session links or unknown records to this document".into());
                             count_record_failures(
                                 session,
@@ -470,7 +470,7 @@ fn qualify_operation(
                 "Required body unavailable in Session context: {error}"
             ));
         }
-        result.basis.push(source_rows::basis(&input));
+        result.include_basis(source_rows::basis(&input), true, allowance)?;
         result.own_topology_unknown |= !caught_up;
         let Some(head) = dependency.head() else {
             add(&mut result.pending_inputs, 1)?;
@@ -754,6 +754,53 @@ fn cell<T: serde::de::DeserializeOwned>(
         })
         .transpose()
 }
+/// Main context names its own Session. Separate-agent context only names a
+/// role/lineage: its current provider header and Session cell must prove owner.
+fn claude_membership(
+    catalog: &SessionCatalog,
+    dependency: &SessionInputDependency,
+    input: &polylogue_store::RetainedSource,
+    context: &polylogue_sources::claude_code::FileCtx,
+    allowance: usize,
+) -> Result<Option<polylogue_model::SessionId>, Error> {
+    use polylogue_sources::claude_code::{FileCtx, keyed::Header};
+    let FileCtx::Subagent { agent, .. } = context else {
+        return Ok(context.direct_main_session());
+    };
+    let Some(head) = dependency.head() else {
+        return Ok(None);
+    };
+    if head.parser_version != owner::parser_version(input.format)
+        || head.token.basis != owner::parser_basis(input)
+    {
+        return Ok(None);
+    }
+    let Some(header) = cell::<Header>(catalog, dependency, claude::HEADER, &(), allowance)? else {
+        return Ok(None);
+    };
+    let Some(owner) = header.owner else {
+        return Ok(None);
+    };
+    let native = format!("{owner}/{agent}");
+    let Some(source) =
+        cell::<SessionCell>(catalog, dependency, claude::SESSION, &native, allowance)?
+    else {
+        return Err(Error::Invariant(
+            "Claude agent owner lost its Session cell".into(),
+        ));
+    };
+    let id = polylogue_model::SessionId::new(
+        &polylogue_model::Origin::new("claude-code").expect("constant origin"),
+        &native,
+    )
+    .map_err(|e| Error::Invariant(e.to_string()))?;
+    if source.session.id != id || source.session.native_id != native {
+        return Err(Error::Invariant(
+            "Claude agent Session membership disagrees with provider state".into(),
+        ));
+    }
+    Ok(Some(id))
+}
 // A different pending row may lack a current selected projection. That makes
 // whole-catalog coverage unavailable, while an exact independently certified
 // member can still be read. Its own member proof above keeps errors intact.
@@ -794,7 +841,7 @@ fn qualify_shape(
         if let Some(path) = catalog.dependency_first_path(dependency, allowance)? {
             input["path"] = json!(path);
         }
-        result.inputs.push(input);
+        result.include_input(input, allowance)?;
         if let Some(old) = &mut result.metadata {
             for (name, old_value, new_value) in [
                 ("title", &mut old.title, &source.session.title),

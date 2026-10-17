@@ -88,12 +88,12 @@ pub(super) fn qualify(
     {
         return Ok(());
     }
-    result.basis.push(source_rows::basis(&input));
+    result.include_basis(source_rows::basis(&input), true, allowance)?;
     let mut entry = json!({"id":dependency.id(),"format":dependency.format().name(),"parser_version":head.parser_version});
     if let Some(path) = catalog.dependency_first_path(dependency, allowance)? {
         entry["path"] = json!(path);
     }
-    result.inputs.push(entry);
+    result.include_input(entry, allowance)?;
     if head.acquired_upto != input.input.length
         || head.token.basis != owner::parser_basis(&input)
         || head.parser_version != owner::parser_version(input.format)

@@ -9,6 +9,7 @@ pub(crate) struct ProjectStatus {
     pub scan: Option<Scan>,
     pub availability: &'static str,
     pub queued_candidates: usize,
+    pub active_path: Option<String>,
     pub acquired_source_attempts: u64,
     pub selected_source_bytes: u64,
     pub failed_attempts: u64,
@@ -22,6 +23,7 @@ impl ProjectStatus {
             scan: None,
             availability: "pending",
             queued_candidates: 0,
+            active_path: None,
             acquired_source_attempts: 0,
             selected_source_bytes: 0,
             failed_attempts: 0,
@@ -134,6 +136,8 @@ pub(crate) fn run(
             seen_at,
         };
         status.state = "acquiring";
+        status.projects.as_mut().unwrap().active_path =
+            Some(location.path().to_string_lossy().into_owned());
         publish(&shared, &status);
         let result = (|| {
             loop {
@@ -169,6 +173,7 @@ pub(crate) fn run(
         status.attempts += 1;
         let projects = status.projects.as_mut().unwrap();
         projects.queued_candidates = queue.len();
+        projects.active_path = None;
         match result {
             Ok(reply) => {
                 status.state = "discovering";
@@ -201,5 +206,6 @@ pub(crate) fn run(
         publish(&shared, &status);
     }
     status.state = "stopped";
+    status.projects.as_mut().unwrap().active_path = None;
     publish(&shared, &status);
 }

@@ -249,7 +249,9 @@ prior citations. Missing or invalid context in format 4 is unavailable.
 Preserving upgrades from formats 1–3 first retain the exact database sibling set.
 Supported observed Claude rows acquire the exact former first-observation main
 context once, preserving input IDs, bindings, bytes and lineage. A pending format-3
-copy preparation refuses upgrade without changing its authority. Finish the same
+copy preparation refuses upgrade without changing authoritative state. SQLite
+may create a new empty WAL and disposable SHM coordination files; every
+pre-existing authoritative file, including any existing WAL, stays byte-identical. Finish the same
 request using its retained, matching format-3 binary, then open with format 4. The
 qualified format-3 source is `5ddb6975dafae5b79030dabb6c2d6a19cb29ab47`; retain its
 matching binary alongside pending recovery material. There is no new-binary

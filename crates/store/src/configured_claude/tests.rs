@@ -277,31 +277,64 @@ fn pending_v3_preparation_refuses_upgrade_without_changing_authority_or_custody(
         walk(root, root, &mut out);
         out
     }
-    let temp = tempfile::tempdir().unwrap();
-    let archive = temp.path().join("archive");
-    let mut writer = Writer::open(&archive).unwrap();
-    writer.put_file_blob(b"preserved pending custody").unwrap();
-    drop(writer);
-    let stop = AtomicBool::new(false);
-    drop(
-        crate::copy_preparation::Preparation::begin(
-            &archive,
-            "restore",
-            "local",
-            "019a1100-0000-7000-8000-000000000001",
-            true,
-            &stop,
+    for existing_wal in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("archive");
+        let mut writer = Writer::open(&archive).unwrap();
+        writer.put_file_blob(b"preserved pending custody").unwrap();
+        drop(writer);
+        let stop = AtomicBool::new(false);
+        drop(
+            crate::copy_preparation::Preparation::begin(
+                &archive,
+                "restore",
+                "local",
+                "019a1100-0000-7000-8000-000000000001",
+                true,
+                &stop,
+            )
+            .unwrap(),
+        );
+        let conn = crate::open(&archive.join("archive.db"), false, true).unwrap();
+        conn.execute_batch(
+            "DROP TABLE observed_context; PRAGMA user_version=3; PRAGMA wal_checkpoint(TRUNCATE)",
         )
-        .unwrap(),
-    );
-    let conn = crate::open(&archive.join("archive.db"), false, true).unwrap();
-    conn.execute_batch("DROP TABLE observed_context; PRAGMA user_version=3")
         .unwrap();
-    drop(conn);
-    let before = snapshot(&archive);
-    assert!(matches!(
-        Writer::open(&archive),
-        Err(Error::CopyPreparationRefused(_))
-    ));
-    assert_eq!(snapshot(&archive), before);
+        let held = if existing_wal {
+            // A committed WAL remains authoritative even if main already has
+            // the old format header. The refusal must not normalize/drop it.
+            conn.execute(
+                "UPDATE meta SET value=value||' ' WHERE key='copy_preparation'",
+                [],
+            )
+            .unwrap();
+            assert!(archive.join("archive.db-wal").metadata().unwrap().len() > 0);
+            Some(conn)
+        } else {
+            drop(conn);
+            None
+        };
+        let before = snapshot(&archive);
+        assert!(matches!(
+            Writer::open(&archive),
+            Err(Error::CopyPreparationRefused(_))
+        ));
+        let after = snapshot(&archive);
+        for (path, hash) in &before {
+            assert_eq!(
+                after.get(path),
+                Some(hash),
+                "pre-existing authoritative file: {path:?}"
+            );
+        }
+        for path in after.keys().filter(|p| !before.contains_key(*p)) {
+            assert_eq!(path, Path::new("archive.db-wal"));
+            let meta = fs::symlink_metadata(archive.join(path)).unwrap();
+            assert!(
+                meta.is_file() && meta.len() == 0,
+                "only a new empty coordination WAL is allowed"
+            );
+        }
+        drop(held);
+    }
 }
