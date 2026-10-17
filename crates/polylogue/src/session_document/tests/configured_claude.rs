@@ -194,7 +194,7 @@ fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() 
     // A second actual source of main membership must still deny the observed
     // exception, even if a consumer omits that source from display metadata.
     world.path = world._dir.path().join("second-main.jsonl");
-    let second=(json!({"type":"user","uuid":"v","parentUuid":"u","sessionId":SID,"promptSource":"typed","message":{"role":"user","content":"Second main membership source."}}).to_string()+"\n").into_bytes();
+    let second=(json!({"type":"user","uuid":"u","sessionId":SID,"promptSource":"typed","message":{"role":"user","content":"Earlier certified main text."}}).to_string()+"\n").into_bytes();
     let second = world.import(&second, "second-main");
     world.wait_rows(&second, false);
     let (mut q, result) = qualify(&world);
