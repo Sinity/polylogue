@@ -88,6 +88,31 @@ UTF-8 and non-scalar immediate metadata selectors remain unsupported. Encoded
 reasoning/attachment block addresses are refused. Other provider identity cases
 remain unqualified. Codex keeps its scalar-only source boundary.
 
+### Reproducing the native identity regression
+
+[`scripts/check-native-identity.py`](scripts/check-native-identity.py) runs the
+finite three-input/eight-Message corpus through CLI, official SDK reads, export,
+restart, owned provider removal and isolated index reconstruction. It retains
+raw responses, failures, source bindings and hashes in a new private directory.
+Use the checked binary's actual source commit, not a branch name:
+
+```sh
+python3 scripts/check-native-identity.py \
+  --binary /absolute/checked/polylogue --source /absolute/native-checkout \
+  --candidate CURRENT_COMMIT --package-source CHECKED_PACKAGE_COMMIT \
+  --spec-repo /absolute/spec --spec-revision SPEC_COMMIT \
+  --corpus-path polylogue-sinex-joint/realization/demos/native-identity \
+  --oracle-path polylogue-sinex-joint/realization/demos/native-identity/public_oracle.py \
+  --sdk-python /absolute/pinned/python \
+  --sdk-client /absolute/spec/polylogue-sinex-joint/realization/demos/joint-consumer/mcp_client.py \
+  --output /absolute/new/private/results
+```
+
+The runner extracts the corpus and independent oracle from the pinned spec and
+freezes the supplied SDK client and its collector. Package and current source
+must match except for this runner and README. This finite regression does not
+qualify installed migration, unsupported reimport or every export clause above.
+
 ## Delivery boundary
 
 [Replacement disposition](docs/REPLACEMENT.md) records predecessor removal and preserved legal/history material. [Contract snapshot](docs/rewrite/README.md) links current semantic owners; canonical DDL provenance lives beside `crates/store/schema`.
