@@ -1,13 +1,11 @@
-//! Changed identity recipes must not remint durable references by replaying a
-//! predecessor index, even if its schema is recognizable.
+//! An index from an older version is refused, never rebuilt, because the
+//! rebuild would compute different IDs than the notes refer to.
 use super::*;
-use std::collections::BTreeMap;
 
-fn predecessor(root: &Path, version: u32) {
+fn old_index(root: &Path, version: u32) {
     let mut writer = crate::Writer::open(root).unwrap();
     writer.put_file_blob(b"preserved synthetic source").unwrap();
-    // A real durable authored target is exactly what an identity-recipe replay
-    // must not silently orphan or retarget.
+    // A note target is what a rebuild with new ID rules would break.
     use polylogue_model::authored::{NoteKind, Target, WriteNote};
     writer
         .write_note(&WriteNote {
@@ -16,10 +14,10 @@ fn predecessor(root: &Path, version: u32) {
             machine: "synthetic-machine".into(),
             created_at: Some(1),
             kind: Some(NoteKind::Correction),
-            value: "Keep the exact predecessor target".into(),
+            value: "Keep the old target".into(),
             targets: Some(vec![Target {
                 reference: "block:claude-code:a:b:c:0".into(),
-                seen_hash: Some(BlobHash::of(b"predecessor text")),
+                seen_hash: Some(BlobHash::of(b"old text")),
             }]),
             relations: vec![],
         })
@@ -34,37 +32,21 @@ fn predecessor(root: &Path, version: u32) {
     )
     .unwrap();
     drop(conn);
-    // Empty retained siblings are part of the preserved predecessor file set.
+    // Empty WAL and shared-memory files must be left untouched too.
     fs::write(root.join("index.db-wal"), b"").unwrap();
     fs::write(root.join("index.db-shm"), b"").unwrap();
 }
 
-fn contents(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, u64, u32)> {
-    fn visit(root: &Path, at: &Path, out: &mut BTreeMap<PathBuf, (Vec<u8>, u64, u32)>) {
-        for entry in fs::read_dir(at).unwrap() {
-            let path = entry.unwrap().path();
-            let metadata = path.symlink_metadata().unwrap();
-            if metadata.is_dir() {
-                visit(root, &path, out);
-            } else {
-                out.insert(
-                    path.strip_prefix(root).unwrap().into(),
-                    (fs::read(&path).unwrap(), metadata.ino(), metadata.mode()),
-                );
-            }
-        }
-    }
-    let mut out = BTreeMap::new();
-    visit(root, root, &mut out);
-    out
+fn contents(root: &Path) -> Vec<Entry> {
+    inventory(root, &AtomicBool::new(false)).unwrap()
 }
 
 #[test]
-fn predecessor_versions_refuse_before_changing_index_archive_or_blobs() {
+fn old_index_versions_refuse_without_changing_files() {
     for version in [18, 19] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("archive");
-        predecessor(&root, version);
+        old_index(&root, version);
         let before = contents(&root);
         assert!(
             matches!(crate::Writer::open(&root), Err(Error::IndexRebuildRequired { found, expected: 20, .. }) if found == version)
@@ -79,11 +61,11 @@ fn predecessor_versions_refuse_before_changing_index_archive_or_blobs() {
 }
 
 #[test]
-fn predecessor_replacement_marker_never_admits_partial_or_missing_index_as_fresh() {
+fn rebuild_marker_refuses_partial_or_missing_index() {
     for index in [None, Some(b"partial replacement".as_slice())] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("archive");
-        predecessor(&root, 18);
+        old_index(&root, 18);
         for name in ["index.db", "index.db-wal", "index.db-shm"] {
             fs::remove_file(root.join(name)).unwrap();
         }
@@ -92,7 +74,7 @@ fn predecessor_replacement_marker_never_admits_partial_or_missing_index_as_fresh
         }
         let backup = root.join("migrations/index18-to19-preserved");
         fs::create_dir_all(&backup).unwrap();
-        fs::write(backup.join("index.db"), b"preserved predecessor").unwrap();
+        fs::write(backup.join("index.db"), b"old index backup").unwrap();
         fs::write(
             root.join("index-rebuild.json"),
             br#"{"version":1,"from":18,"to":19,"backup":"index18-to19-preserved"}"#,
@@ -113,7 +95,7 @@ fn predecessor_replacement_marker_never_admits_partial_or_missing_index_as_fresh
 }
 
 #[test]
-fn current_index_still_reopens_without_a_predecessor_transition() {
+fn current_index_reopens_without_migration() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("archive");
     let mut writer = crate::Writer::open(&root).unwrap();
@@ -139,11 +121,11 @@ fn current_index_still_reopens_without_a_predecessor_transition() {
 }
 
 #[test]
-fn predecessor_nonempty_wal_and_shm_refuse_without_sqlite_readmark_mutation() {
+fn old_index_with_wal_refuses_without_touching_read_marks() {
     for version in [18, 19] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("archive");
-        predecessor(&root, version);
+        old_index(&root, version);
         let connection = crate::open(&root.join("index.db"), false, false).unwrap();
         connection
             .pragma_update(None, "wal_autocheckpoint", 0)
@@ -153,18 +135,18 @@ fn predecessor_nonempty_wal_and_shm_refuse_without_sqlite_readmark_mutation() {
             .unwrap();
         connection
             .execute(
-                "UPDATE meta SET value='retained-predecessor' WHERE key='generation'",
+                "UPDATE meta SET value='old-generation' WHERE key='generation'",
                 [],
             )
             .unwrap();
         let siblings = ["index.db", "index.db-wal", "index.db-shm"];
-        let retained = siblings.map(|name| fs::read(root.join(name)).unwrap());
-        assert!(retained[1].len() > 32);
-        assert!(!retained[2].is_empty());
+        let saved = siblings.map(|name| fs::read(root.join(name)).unwrap());
+        assert!(saved[1].len() > 32);
+        assert!(!saved[2].is_empty());
         drop(connection);
-        // Recreate a valid stopped/crashed predecessor sibling set. No process
-        // holds it; startup must preserve the bytes rather than update readmarks.
-        for (name, bytes) in siblings.into_iter().zip(retained) {
+        // Put back the files as a crashed old process left them; opening must
+        // refuse without updating the WAL read marks.
+        for (name, bytes) in siblings.into_iter().zip(saved) {
             fs::write(root.join(name), bytes).unwrap();
         }
         let before = contents(&root);
