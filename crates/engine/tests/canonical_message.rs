@@ -1,5 +1,4 @@
-//! Real retained Codex parse -> worker actions -> durable source certificate.
-//! Canonical election/search/export and complete Effects consumption are open.
+//! Codex parse, then worker actions, then a stored source certificate.
 use polylogue_engine::{canonical_message as m, state::codex as adapter};
 use polylogue_model::{
     BlockSlot,
@@ -186,8 +185,8 @@ impl World {
         } = self;
         drop(writer);
         // Concurrent subprocess tests can briefly inherit CLOEXEC lock file
-        // descriptions between fork and exec. Retry only our parent's PID;
-        // an owned authority leak still fails at this short deadline.
+        // descriptions between fork and exec. Retry only for our parent's PID;
+        // a real leak still fails at this short deadline.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         let writer = loop {
             match Writer::open(&root) {
@@ -238,8 +237,8 @@ fn real_text_actions_restart_values_and_source_publication_keep_eof_pending() {
         }
         if kind == "block_install" && !peer_committed {
             assert_eq!(restarts, 1);
-            // Proofs retain archive authority, so create and consume this one
-            // within this turn; no proof may span a deliberate writer restart.
+            // A digest is tied to this writer, so make and use it within the
+            // turn; none may span a writer restart.
             let proof = world
                 .writer
                 .blob_capture()
@@ -655,8 +654,8 @@ fn verified_origin_producer_restarts_and_selected_descriptor_outlives_parser_cel
         else {
             panic!("field conflict")
         };
-        // Range API reads one admitted chunk; assemble only this tiny synthetic
-        // fixture descriptor, not a product whole-field path.
+        // The range API reads one chunk; assembling the whole descriptor is
+        // fine for this tiny fixture.
         let mut descriptor = Vec::new();
         let mut offset = 0;
         loop {
@@ -694,8 +693,8 @@ fn verified_origin_producer_restarts_and_selected_descriptor_outlives_parser_cel
         serde_json::from_slice::<String>(&recovered).unwrap(),
         "synthetic original text"
     );
-    // New parser interpretation generation must not rewrite a selected immutable
-    // field's retained origin descriptor or require the original provider path.
+    // A new parser generation must not rewrite a selected field's stored origin
+    // descriptor or need the original provider file.
     world
         .writer
         .begin_parser(&Basis {
@@ -786,9 +785,9 @@ fn source_selector_value_and_type_mismatches_get_no_certificate() {
                 .is_none()
         );
     }
-    // Deliberately corrupt one typed source-owned selector in the disposable
-    // fixture, keeping its origin/path contract internally coherent. The real
-    // evaluator must reject its missing path, never attach unchecked JSON.
+    // Corrupt one selector in the fixture while keeping origin and path
+    // consistent. The evaluator must reject the missing path, never attach
+    // unchecked JSON.
     let mut world = World::with_mutation(&parsed, &parsed, |delta| {
         let Some(Some(codex::keyed::Cell::Witness(w))) = delta
             .cells
@@ -842,8 +841,8 @@ fn source_set_is_noncontiguous_and_includes_timestamp_only_records() {
     let response_start = header.len() + context.len() + ignored.len();
     let stamp_start = response_start + response.len();
     let mut world = World::with_mutation(&bytes, &bytes, |delta| {
-        // Synthetic valid witness placement exercises the owner seam: timestamps
-        // are not digest members, and must not be dropped by an evidence-only scan.
+        // Timestamps are not part of the digest and must not be dropped by a
+        // scan that only reads evidence.
         let Some(Some(Cell::Witness(w))) = delta.cells.get_mut(&Key::Presence(0, "at".into()))
         else {
             panic!("timestamp witness")
@@ -896,8 +895,7 @@ mod claude_tests;
 #[path = "canonical_message/codex_extras.rs"]
 mod codex_extras;
 
-// Append inside engine/tests/canonical_message.rs after the publication freeze.
-// Diagnostic: demonstrates the currently explicit refusal, not desired support.
+// Shows the current refusal, not the wanted behavior.
 #[test]
 fn parser_generation_replay_replaces_only_verified_prior_candidate_and_preserves_pinned_reads() {
     let bytes = text_input("retained source generation discriminator");

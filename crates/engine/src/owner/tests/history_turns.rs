@@ -44,7 +44,7 @@ fn parked_history_capture_shares_turns_with_regular_capture_and_reads() {
         .unwrap();
     let first = events.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(matches!(&first, Message::CaptureYield(..)));
-    // This is an actual configured regular input, not a bookkeeping counter.
+    // A real configured input, not a counter.
     let home = temp.path().join("home");
     std::fs::create_dir_all(home.join("sessions")).unwrap();
     let regular_path = home.join("sessions/rollout-between-turns.jsonl");
@@ -107,7 +107,7 @@ fn parked_history_capture_shares_turns_with_regular_capture_and_reads() {
     )
     .to_string();
     assert!(reader.source(&physical_id).unwrap().is_none());
-    // Later provider commits cannot alter the already pinned physical read view.
+    // Later provider commits do not change the pinned read view.
     provider
         .put_file_blob(b"later provider generation")
         .unwrap();
@@ -167,8 +167,8 @@ fn owner_stop_during_a_parked_turn_selects_no_prefix_and_fresh_owner_can_retry()
     ));
     assert_eq!(actor.writer.status().unwrap().write_counter, before);
     drop(actor);
-    // The vanished transaction cannot be resumed from a byte cursor. The new
-    // owner must acquire a complete post-cancellation generation afresh.
+    // A lost transaction cannot resume from a byte cursor; the new owner
+    // captures a complete new generation.
     provider
         .put_file_blob(b"new committed generation after cancellation")
         .unwrap();

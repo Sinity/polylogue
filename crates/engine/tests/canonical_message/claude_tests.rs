@@ -1,4 +1,4 @@
-//! Claude uses the same durable Action/State/value/origin core as Codex.
+//! Claude Messages through the same action/state/value/origin code as Codex.
 use super::*;
 use polylogue_engine::state::claude as ca;
 use polylogue_sources::claude_code::{self as cc, FileCtx, KeyedRecords, keyed::PendingMessage};
@@ -158,7 +158,7 @@ fn background_completion_cites_its_own_record_in_the_source_set() {
         .unwrap();
     let request = request(&world, pending);
     let handle = begin(&mut world, &request);
-    // Independent exact coordinates in the frozen synthetic fixture, excluding LF.
+    // Byte ranges in the fixed synthetic fixture, excluding LF.
     let ranges = [(942, 1287), (3018, 3446)];
     for _ in 0..4000 {
         let action = world
@@ -382,7 +382,7 @@ fn a_native_parent_uuid_from_a_later_response_fragment_resolves_its_owning_messa
             assert!(matches!(
                 world.compute_with(&handle, work_budget()),
                 Err(m::Error::Unsupported(
-                    "Claude retained parent record unavailable"
+                    "Claude parent record unavailable"
                 ))
             ));
             continue;

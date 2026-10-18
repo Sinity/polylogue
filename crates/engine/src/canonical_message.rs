@@ -1,10 +1,6 @@
-//! Final-head Codex and Claude Message materialization through one durable core. Worker computation
-//! owns decoding/serialization/hash work; apply owns one bounded writer turn.
-//! This certifies source projections only. Effects-v3 dirty updates, full merge,
-//! canonical selection, operations, search and exports remain separate work.
-//! Retained sources bind immutable identity or an observed chain/context before selectors.
-//! Each field replays admitted source records/leaf/descriptor serialization on
-//! the worker; this is not a universal CPU/RSS or append-locality bound.
+//! Builds Codex and Claude Messages from final parser state. The worker
+//! decodes, serializes and hashes; `apply` runs one writer transaction per
+//! action. Each field's source records are decoded again on the worker.
 mod claude;
 use crate::{state::codex::Attempt, version_digest};
 pub use claude::{ClaudeRequest, start as start_claude};
@@ -127,8 +123,8 @@ impl std::error::Error for ResolveError {}
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct EvidenceGuard {
     head: ProviderHead,
-    // Retain the existing disposable evidence-guard encoding for immutable
-    // inputs; the typed binding also admits a validated observed chain key.
+    // Serialized as `source_hash` for immutable inputs; observed inputs store
+    // their chain key here.
     #[serde(rename = "source_hash")]
     source_binding: BlobHash,
 }
@@ -148,12 +144,12 @@ impl ProviderHead {
     fn codex(&self) -> Result<&EvidenceHead> {
         match self {
             Self::Codex(h) => Ok(h),
-            _ => Err(Error::Invariant("expected Codex evidence basis")),
+            _ => Err(Error::Invariant("expected a Codex evidence head")),
         }
     }
 }
-/// A catalog-selected projection must still name this provider's exact current
-/// predecessor, raw evidence head and retained source binding.
+/// A selected projection must still name the current parser state, evidence
+/// head and source binding.
 pub(crate) fn current_codex_projection(
     source: &SourceProjection,
     token: &Token,
@@ -498,8 +494,9 @@ fn evidence(attempt: &Attempt<'_>, message: usize) -> Result<EvidenceHead> {
         _ => Err(Error::Unsupported("missing Codex evidence head")),
     }
 }
-/// Called off actor with the actor's current reference (if any). Typed guard
-/// decoding is here, never in apply. Only exact same-head replay skips work.
+/// Runs on the worker with the actor's current reference, if any. Guard
+/// decoding happens here, never in `apply`. Only a replay of the same head
+/// skips work.
 pub fn start(
     snapshot: &Snapshot,
     request: &Request,
@@ -574,10 +571,9 @@ pub fn start(
         },
     })
 }
-/// Fixed metadata only; no cursor JSON decode or payload hashing on the actor.
+/// Reads fixed metadata only: no cursor decoding or payload hashing on the actor.
 pub fn inspect(writer: &mut Writer, handle: &Handle, allowance: usize) -> Result<State> {
-    // Both reads validate this exact existing Build. Inspection cannot reserve
-    // rows or allocate a successor; only the initial Prepare action does that.
+    // Both reads check this Build. Only the initial Prepare action reserves rows.
     let projection = writer.message_projection(&handle.build, allowance)?;
     let preparation = writer.inspect_message_preparation(
         &handle.build,
@@ -1247,8 +1243,8 @@ fn field_turn(
     }
 }
 
-/// Hash/validation currently completes the selected Message/value on the worker
-/// with cooperative piece checks. This is not a bounded resumed hash turn.
+/// Hashes and checks the whole selected Message or value on the worker,
+/// checking for cancellation between pieces.
 mod runs;
 pub fn compute(
     snapshot: &Snapshot,
@@ -1269,7 +1265,7 @@ fn compute_one(
     cancelled(flag)?;
     if snapshot.head.token != *state.handle.build.predecessor() {
         return Err(Error::Invariant(
-            "materializer snapshot predecessor changed",
+            "Message builder snapshot parser state changed",
         ));
     }
     if b.value_chunk == 0 || b.value_chunk > 65536 || b.hash_bytes == 0 {
@@ -1378,7 +1374,7 @@ fn compute_one(
                         || proof.head() != state.handle.head.codex()?
                         || proof.message() != message
                     {
-                        return Err(Error::Invariant("Message version proof basis mismatch"));
+                        return Err(Error::Invariant("Message version digest inputs changed"));
                     }
                     let h = header(&attempt, message)?;
                     let finish = match h.in_progress {
@@ -1477,8 +1473,8 @@ fn compute_one(
                     let operation = match read(&attempt, &Key::OperationBlock(message, index))? {
                         Some(Cell::Text(id)) => id,
                         _ => {
-                            // Generic/legacy response calls have a declared Session-scoped
-                            // invocation, not a modern CommandExecution constructor.
+                            // Older generic response calls have a Session-scoped
+                            // invocation, not a CommandExecution.
                             let call_id = call.call_id.as_ref().ok_or(Error::Unsupported(
                                 "Codex call has no supplied invocation ID",
                             ))?;
@@ -1548,8 +1544,8 @@ fn compute_one(
                     .checked_add(1)
                     .ok_or(Error::Invariant("block field cursor overflow"))?,
             };
-            // Extras are opaque mapper-owned values, not semantic Block leaves.
-            // The field turn still verifies this value against its exact raw selector.
+            // Extras are opaque values, not Block leaves. The field turn still
+            // checks the value against its raw selector.
             let extras = match &w.slot {
                 Slot::Extra { key, .. } => Some(RawJson::Object(
                     [(
@@ -1598,7 +1594,7 @@ fn compute_one(
                 Change::Install(bounded_json(&cursor, b.metadata)?),
             ))
         }
-        Stage::Claude(_) => Err(Error::Invariant("Claude cursor on Codex evidence basis")),
+        Stage::Claude(_) => Err(Error::Invariant("Claude cursor on a Codex evidence head")),
         Stage::Proof => Err(Error::Invariant(
             "proof cursor lacks completed source projection",
         )),
@@ -1635,8 +1631,8 @@ fn same_reference(a: Option<&SourceProjection>, b: Option<&SourceProjection>) ->
         _ => false,
     }
 }
-/// Apply ONE owned turn. No provider callback, serde, value hashing, source or
-/// blob IO occurs here. The sole writer rechecks source/cursor/value identity.
+/// Applies one action. No provider callbacks, serialization, hashing or file
+/// IO here; the writer rechecks source, cursor and value identity.
 pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
     match action.inner {
         ActionKind::Prepare {
@@ -1910,10 +1906,9 @@ impl ValueSource<'_> {
         }
     }
 }
-/// Replays the one admitted leaf encoding to count/window it without retaining
-/// the whole output. This is deliberately NOT an append-local compute bound:
-/// a large normalized leaf is serialized again for each chunk until a future
-/// producer/spool supplies a seekable encoding. Captured output stays <=64KiB.
+/// Serializes the leaf again to count or window it without keeping the whole
+/// output, so a large leaf is serialized once per chunk. Captured output stays
+/// at most 64 KiB.
 struct Window {
     offset: u64,
     maximum: usize,
@@ -2022,7 +2017,7 @@ fn owned_value_turn(
                 let (length, bytes) = encode_window(&source, active.appended, b.value_chunk, flag)?;
                 if length != active.length || bytes.is_empty() {
                     return Err(Error::Invariant(
-                        "normalized value encoding differs from admitted length",
+                        "normalized value encoding differs from its checked length",
                     ));
                 }
                 return Ok(ValueTurn::Action(Change::Append {

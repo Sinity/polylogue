@@ -1,4 +1,4 @@
-//! Immediate block members keep opaque values and exact original selectors.
+//! Top-level block members keep opaque values and their original selectors.
 use super::*;
 use polylogue_model::RawJson;
 

@@ -27,8 +27,8 @@ fn absent(r: &ResponseCell, index: usize) -> bool {
         _ => false,
     }
 }
-// Replay only the replaced old no-output step through the real typed cursor
-// mutation. All source/field/proof work uses the current materializer in both.
+// Replays only the old no-output step through the typed cursor write; all
+// other work uses the current code in both runs.
 fn complete(
     w: &mut World,
     h: &m::Handle,
@@ -76,8 +76,8 @@ fn complete(
         }
         let mut b = work_budget();
         b.value_chunk = chunk;
-        // Keep this old-checkpoint comparison at single-action read admission;
-        // separate run tests exercise the larger shared allowance.
+        // Compare with single-action read limits; run tests cover the shared
+        // allowance.
         b.read.cells = 3;
         let a = w.compute_with(h, b).unwrap();
         if let m::Applied::Source(s) = m::apply(&mut w.writer, a).unwrap() {

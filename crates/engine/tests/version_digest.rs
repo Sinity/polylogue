@@ -1,4 +1,4 @@
-//! Synthetic retained SQLite evidence; no canonical publication is certified.
+//! Version digests over synthetic SQLite evidence.
 use polylogue_engine::{
     state::codex as adapter,
     version_digest::{Advance, Driver, Error},
@@ -183,8 +183,8 @@ fn compound_digest_matches_unit_preimage_with_tiny_payload_steps() {
     assert_eq!(digest(&world, 64), BlobHash::of(&preimage));
     let snapshot = world.writer.parser_snapshot(&world.head.token).unwrap();
     let mut driver = Driver::start(&snapshot, 0, 7, budget()).unwrap();
-    // Load and open the large unit once. Subsequent one-byte calls hash its
-    // retained buffer directly; zero read allowance proves no hidden reread.
+    // Load the large unit once. Later one-byte calls hash its buffer directly;
+    // a zero read allowance shows nothing is read again.
     driver.advance(budget(), 64).unwrap();
     for _ in 0..100 {
         match driver
@@ -342,8 +342,7 @@ fn last_payload_byte_yields_without_spending_next_slots_read_budget() {
         assert!(
             matches!(driver.advance(budget(),first_bytes).unwrap(),Advance::Progress {read_cells:1,hashed_bytes:n,..} if n==first_bytes)
         );
-        // This used to hash successfully, then look ahead into an optional
-        // evidence slot and fuse with a native read-admission failure.
+        // Hashing the last byte must not also read the next optional slot.
         assert!(matches!(
             driver
                 .advance(

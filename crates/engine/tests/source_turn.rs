@@ -1,5 +1,5 @@
-//! Actual retained bytes, keyed sources and prepared provider installation.
-//! These tests do not certify canonical Message publication or public clients.
+//! Window parsing over stored bytes and keyed sources, then provider-state
+//! installation.
 use polylogue_engine::{
     converge::{PendingInstall, Turn},
     source_turn::{

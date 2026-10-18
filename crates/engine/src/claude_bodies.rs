@@ -1,5 +1,5 @@
-//! The configured main may acquire explicitly referenced tool-result files in
-//! its own provider directory. No directory discovery or attachment traversal.
+//! Collects tool-result files that a configured Claude main names, from its
+//! own provider directory. No directory scan.
 use polylogue_store::{Error, ImportObservation, StoredSource, Writer};
 use std::{
     collections::BTreeMap,

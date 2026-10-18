@@ -1,4 +1,5 @@
-//! Source-selected immediate record extras, never contribution-order overwrites.
+//! Top-level record extras come from the selected source record, not from the
+//! last contribution.
 use super::*;
 use polylogue_model::RawJson;
 fn row(uuid: &str, text: &str, extras: &str) -> String {
@@ -243,10 +244,9 @@ fn selected_supplier_is_cited_independently_of_effective_contribution_origins() 
         end: (raw.len() - 1) as u64,
     };
     let (mut w, p) = make_world_with(raw.as_bytes(), raw.as_bytes(), |output| {
-        // Isolate the source contract: the selected supplier remains original,
-        // while the effective record's direct donors all name an equal later
-        // record. Values and source paths remain unchanged and independently
-        // verifiable; no incidental contribution citation can cover the winner.
+        // The selected supplier stays the original record while the effective
+        // record's suppliers all name an equal later record. Values and paths
+        // are unchanged; the winner must be cited on its own.
         let c = &mut output
             .delta
             .contributions

@@ -1,5 +1,5 @@
-//! A bounded reference projection over retained prompt snapshots. Presentation
-//! admission never certifies conversation coverage or poisons independent reads.
+//! Session references from stored Codex prompt-history snapshots. A size limit
+//! here never fails other reads.
 use polylogue_store::{Error, ReadHandle};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ pub fn pending(
     let mut sources = reader.codex_prompt_sources()?;
     let catalog_complete = sources.len() <= 512;
     sources.truncate(512);
-    let admitted_snapshots = catalog_complete.then_some(sources.len());
+    let stored_snapshots = catalog_complete.then_some(sources.len());
     let mut references = Vec::new();
     let mut snapshots = Vec::new();
     let mut reference_bytes = 0;
@@ -121,9 +121,9 @@ pub fn pending(
         json!({"recipe":"codex-prompt-references-v1","conversation_coverage":null,"references":references,"snapshots":snapshots,
         "selection":selection,"scan_complete":scan_complete,"reference_observations":scan_complete.then_some(observed),"observed_reference_prefix":observed,
         "matching_reference_observations":scan_complete.then_some(matching),"references_shown":shown,"references_omitted":scan_complete.then_some(matching-shown as u64),
-        "retained_prompt_snapshots":admitted_snapshots,"examined_snapshots":examined,"snapshot_details_shown":snapshot_details,
-        "snapshot_details_omitted":admitted_snapshots.map(|count|count-snapshot_details),"malformed_record_observations":malformed,"incomplete_tail_observations":incomplete_tails,"unavailable_snapshot_observations":unavailable,
+        "prompt_snapshots":stored_snapshots,"examined_snapshots":examined,"snapshot_details_shown":snapshot_details,
+        "snapshot_details_omitted":stored_snapshots.map(|count|count-snapshot_details),"malformed_record_observations":malformed,"incomplete_tail_observations":incomplete_tails,"unavailable_snapshot_observations":unavailable,
         "presentation_complete":scan_complete && shown as u64==matching && snapshot_details==examined,
-        "detail_route":"Use an exact Session read for matching pending-reference details. Retained input cat reads admitted snapshot bytes; omitted metadata is not proof of absent conversation."}),
+        "detail_route":"Use an exact Session read for matching pending-reference details. Input cat reads the stored snapshot bytes; omitted metadata does not mean the conversation is absent."}),
     )
 }

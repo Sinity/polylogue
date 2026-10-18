@@ -1,4 +1,4 @@
-//! The actual canonical materializer verifies exact result data and source recipes.
+//! The Message builder checks result data and source recipes.
 use super::*;
 use polylogue_model::RawJson;
 fn row(meta: &str, content: &str, extra: &str) -> String {

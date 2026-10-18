@@ -102,8 +102,8 @@ fn append_during_finalization_discards_only_obsolete_audit_and_restarts_cleanly(
         .unwrap()
         .unwrap();
     let current = append(&mut actor, &input, &main);
-    // The already selected audit still carries the old input, but its next
-    // pinned snapshot sees contiguous acquisition growth under the same token.
+    // The selected audit still holds the old input, but its next snapshot sees
+    // the input grown under the same token.
     actor.tick().unwrap();
     let event = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(matches!(
@@ -119,8 +119,8 @@ fn append_during_finalization_discards_only_obsolete_audit_and_restarts_cleanly(
             .unwrap()
             .is_none()
     );
-    // Stop immediately after discard. Ordinary owner recovery must consume the
-    // appended record and certify all accounting, without the former failure.
+    // Stop right after the discard. Normal recovery must parse the appended
+    // record and complete the source-row check without the earlier failure.
     drop(actor);
     let service = owner(&temp.path().join("archive"));
     let resumed = until_caught_up(&service.handle(), &input.input.id);

@@ -1,4 +1,4 @@
-//! Finite rollout membership from provider state and exact selected source proofs.
+//! Codex rollout membership from provider state and the selected sources.
 use super::*;
 use crate::state::codex::RESUME_NAMESPACE;
 use polylogue_sources::codex::keyed::{Cell, Key, Resume};
@@ -90,8 +90,8 @@ fn flat_effects(
         let Some(proof) = FlatSessionStep::decode(&bytes, step)? else {
             return Ok(false);
         };
-        // Preserve the no-event fast path. Eventful steps additionally prove
-        // their complete declared family, including its absence boundary.
+        // Steps without events are fast. Steps with events read every event
+        // plus the probe past the last one.
         if proof.events() == 0 {
             continue;
         }
@@ -217,9 +217,9 @@ pub(super) fn check(
         None => result.metadata = Some(source_session.clone()),
         _ => {}
     }
-    // A complete flat log without topology-changing evidence is entirely on
-    // the path. Unknown controls, lineage and conflicting items cannot acquire
-    // active membership merely because the surviving Messages look linear.
+    // A complete flat log with no topology-changing events is entirely on the
+    // path. Unknown controls, lineage and conflicts are not, even when the
+    // remaining Messages look linear.
     let mut flat = head.counts.unrecognized == 0
         && head.counts.undecodable == 0
         && !resume.normalization_incomplete()
@@ -250,7 +250,7 @@ pub(super) fn check(
         };
         if message.id.session() != &source_session.id {
             return Err(Error::Invariant(
-                "Codex retained Message/Session mismatch".into(),
+                "Codex stored Message/Session mismatch".into(),
             ));
         }
         let selected = selected_current_projection(

@@ -1,5 +1,5 @@
-//! Read-side audit of existing provider receipts and selected source certificates.
-//! Restart replays this scalar audit; no second work queue or archive ledger.
+//! Checks that an input's parsed rows are complete: provider receipts and
+//! selected source certificates. A restart reruns the check from the start.
 use super::owner::Result;
 use crate::{
     canonical_message as m,
@@ -78,7 +78,7 @@ impl Receipt {
             || head.acquired_upto != basis.length
         {
             return Err(Error::Invariant(
-                "source row receipt disagrees with its retained completion authority".into(),
+                "source row receipt disagrees with the stored completion state".into(),
             )
             .into());
         }
@@ -118,7 +118,7 @@ pub fn read(snapshot: &Snapshot, input: &StoredSource) -> Result<Option<Receipt>
     let Some(value) = value else {
         if snapshot.head.status == "done" {
             return Err(
-                Error::Invariant("done source lost its row settlement authority".into()).into(),
+                Error::Invariant("done source lost its source-row receipt".into()).into(),
             );
         }
         return Ok(None);
@@ -183,7 +183,7 @@ impl Audit {
             match input.format {
                 InputFormat::CodexPromptHistory => {
                     return Err(Error::Invariant(
-                        "prompt references cannot certify conversation row settlement".into(),
+                        "prompt references cannot complete conversation source rows".into(),
                     )
                     .into());
                 }
@@ -219,8 +219,8 @@ impl Audit {
                         .undecodable
                         .checked_add(effects.undecodable.len() as u64)
                         .ok_or(Error::Range)?;
-                    // Historical scheduling cuts must name an extant effective
-                    // candidate, not resurrect their obsolete intermediate body.
+                    // Old scheduling cuts must name a current candidate, not an
+                    // obsolete intermediate body.
                     for pending in &effects.pending_messages {
                         if view.pending(&pending.message)?.is_none() {
                             return Err(Error::Invariant(
@@ -275,8 +275,8 @@ impl Audit {
             }
             return Ok(Turn::Progress(self));
         }
-        // A ready Session-owned operation is usable without any Message. This
-        // reads the actual publication in the same pinned source snapshot.
+        // A ready Session operation counts without any Message; read its
+        // publication from the same snapshot.
         self.usable |= snapshot.source_has_tool_items()?;
         let position = self
             .position
@@ -381,11 +381,11 @@ impl Audit {
         }
         if head.counts.unrecognized > 0 {
             notes.push(
-                "retained source has unrecognized records with unresolved required effects".into(),
+                "source has unrecognized records with unresolved required effects".into(),
             );
         }
         if head.counts.undecodable > 0 {
-            notes.push("retained source has undecodable complete records".into());
+            notes.push("source has undecodable complete records".into());
         }
         let state = if notes.is_empty() {
             SourceRowState::Settled

@@ -1,5 +1,4 @@
-//! One admitted provider-state installation transaction per owner turn.
-//! Canonical output/finalization remains separate; EOF never earns Done here.
+//! Writes one parsed provider-state delta, one transaction per owner turn.
 use polylogue_store::parser_state::prepared::{Work, WorkPhase};
 use polylogue_store::parser_state::{Budget, CellChange, Head, Phase, Progress, Token};
 use polylogue_store::{Error, Writer};
@@ -11,9 +10,7 @@ pub enum Turn {
     Published(Head),
 }
 
-/// Owns one already admitted encoded provider delta. Its buffers, pinned source
-/// state and decoder allocations have separate caller lifetime charges. This
-/// type does not claim that a single huge cell is physically bounded.
+/// One encoded provider delta being written to parser state.
 pub struct PendingInstall {
     work: Work,
     changes: Vec<CellChange>,
@@ -25,11 +22,10 @@ impl PendingInstall {
         progress: Progress,
         changes: Vec<CellChange>,
     ) -> Result<Self> {
-        // Only a canonical finalizer can earn completion. Installing parser
-        // state/effect receipts proves no public Message or FTS completeness.
+        // Only Message finalization may mark an input done, never a state install.
         if matches!(progress.phase, Phase::Done) || !progress.finalization_pending {
             return Err(Error::Invariant(
-                "provider installation cannot certify finalization".into(),
+                "provider-state install cannot finish an input".into(),
             ));
         }
         let work = writer.prepare_parser(head, progress)?;
@@ -38,9 +34,9 @@ impl PendingInstall {
     pub fn predecessor(&self) -> &Token {
         &self.work.token.head
     }
-    /// Each call performs at most one staging/application/control transaction.
-    /// Staging and application honor the supplied cell/byte budget. A later
-    /// unfit member stays owed; an unfit first member fails without mutation.
+    /// Runs at most one transaction: stage, seal, apply or publish. Staging and
+    /// applying stop at the budget; cells that do not fit wait for the next
+    /// call, and a first cell that does not fit fails before writing.
     pub fn turn(&mut self, writer: &mut Writer, budget: Budget) -> Result<Turn> {
         if self.work.phase != WorkPhase::Applying {
             let staged = usize::try_from(self.work.token.staged).map_err(|_| Error::Range)?;
@@ -75,17 +71,16 @@ pub enum Recovery {
     Published(Head),
 }
 
-/// After process loss, an unsealed delta is incomplete and is discarded in
-/// admitted keysets before reinterpreting its unchanged predecessor. A sealed
-/// delta is complete: finish applying its durable members without replaying a
-/// callback against partly changed state. Failure never manufactures EOF.
+/// After a crash, an unsealed delta is incomplete: discard it in batches and
+/// parse again from the unchanged state. A sealed delta is complete: finish
+/// applying it without parsing against partly changed state.
 pub fn recover_turn(writer: &mut Writer, predecessor: &Token, budget: Budget) -> Result<Recovery> {
     let Some(work) = writer.parser_work(predecessor)? else {
         return Ok(Recovery::Reparse);
     };
     if matches!(work.progress.phase, Phase::Done) || !work.progress.finalization_pending {
         return Err(Error::Invariant(
-            "provider recovery cannot certify finalization".into(),
+            "provider-state recovery cannot finish an input".into(),
         ));
     }
     if work.phase != WorkPhase::Applying {

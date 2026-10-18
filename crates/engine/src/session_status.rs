@@ -1,5 +1,6 @@
-//! Direct Session input influence, never inferred from matching Message rows.
-//! Catalog traversal and every receipt read share the caller's pinned Session.
+//! Works out which stored inputs contribute to a Session and whether they are
+//! fully processed. Membership comes from provider state, never from matching
+//! Message rows. All reads share the caller's pinned Session view.
 mod claude_active;
 mod codex;
 mod contributors;
@@ -19,7 +20,7 @@ use std::{
 #[derive(Clone, Debug, Default)]
 pub struct SessionStatus {
     pub record_errors: u64,
-    /// Counted interpreted-text repairs, separate from exclusive record outcomes.
+    /// Repaired text (unpaired UTF-16), counted apart from record errors.
     pub text_repairs: u64,
     pub interpreted_nonempty_inputs: u64,
     pub pending_inputs: u64,
@@ -66,17 +67,16 @@ impl SessionStatus {
         }
         h
     }
-    /// Known catalog membership/order and every interpreted row have current
-    /// source-row audit authority. This is independent of active-path knowledge
-    /// and never upgrades unavailable population/record qualification.
+    /// Catalog membership and order are known and every parsed row passed the
+    /// current source-row check. Independent of the active path.
     pub fn known_rows_readable(&self) -> bool {
         self.exact
             && self.known_rows_readable
             && self.pending_inputs == 0
             && self.unresolved_inputs == 0
     }
-    /// One observed source can independently certify an exact complete member
-    /// while another row or suffix remains pending. Session context is unchanged.
+    /// Like `known_rows_readable`, but a single observed source with a checked
+    /// complete member also counts while other rows are still pending.
     pub fn member_rows_readable(&self) -> bool {
         self.exact
             && self.unresolved_inputs == 0
@@ -108,11 +108,11 @@ impl SessionStatus {
         for (count, detail) in [
             (
                 self.population_pending_inputs,
-                "foreign retained inputs have pending possible Session relationships; requested membership is qualified separately",
+                "other inputs that may relate to this Session are still pending; the requested members are checked separately",
             ),
             (
                 self.record_errors,
-                "undecodable complete records in relevant retained inputs",
+                "undecodable complete records in contributing inputs",
             ),
             (
                 if include_diagnostics {
@@ -120,19 +120,19 @@ impl SessionStatus {
                 } else {
                     0
                 },
-                "unpaired UTF-16 code units repaired in interpreted source text",
+                "unpaired UTF-16 code units repaired in parsed source text",
             ),
             (
                 self.pending_inputs,
-                "relevant retained inputs have pending interpretation or row effects",
+                "contributing inputs are not fully parsed yet",
             ),
             (
                 self.unavailable_inputs,
-                "relevant retained inputs have unavailable interpretation or effects",
+                "contributing inputs could not be parsed",
             ),
             (
                 self.unresolved_inputs,
-                "retained input dependency shapes remain unresolved",
+                "contributing input dependency shapes are unresolved",
             ),
         ] {
             if count != 0 {
@@ -179,11 +179,9 @@ fn deadline(until: Instant) -> Result<(), Error> {
         Ok(())
     }
 }
-/// Qualifies finite provider-owned Claude and Codex source membership. Other
-/// dependency shapes remain unresolved, never excluded by selected row overlap.
-/// Each input is visited once in immutable catalog order. Same input replays,
-/// source/candidate fanout and historical citation paths cannot multiply errors.
-/// Whole admitted effect cells remain the existing allocation/work unit.
+/// Checks Claude and Codex Session membership. Other dependency shapes are
+/// reported unresolved. Each input is visited once in catalog order, so
+/// replays and citations cannot count an error twice.
 pub fn check(
     session: &SessionView,
     until: Instant,
@@ -199,8 +197,8 @@ pub fn check_with_cancel(
 ) -> Result<SessionStatus, Error> {
     check_session(session, until, allowance, cancelled, None)
 }
-/// Exact member reads preserve unavailable Session context while independently
-/// checking the selected Message's retained body witnesses at handoff.
+/// For one Message: Session context may be unavailable, but the Message's own
+/// stored bodies are checked.
 pub fn check_member_with_cancel(
     session: &SessionView,
     message: &polylogue_store::contributions::MessageView,
@@ -233,8 +231,8 @@ fn check_session(
         member,
     )
 }
-/// Qualify every possible retained contributor, including those that published
-/// no Session or matching Message. EOF alone never becomes a query proof.
+/// Checks every stored input that could contribute, including inputs that
+/// published no Session or matching Message. Reaching EOF is not enough.
 pub fn check_catalog(
     session: &SessionCatalog,
     plan: &polylogue_model::query::SessionQuery,
@@ -289,10 +287,8 @@ fn check_operation(
             break;
         };
         cursor = Some(next);
-        // next_dependency admits one descriptor. Streamed work is not live
-        // retained metadata; actual witnesses and Message membership are bounded.
-        // Global freshness is independent of this operation's dependency scope.
-        // A retained unavailable interpretation is caught up, but not complete.
+        // next_dependency reads one descriptor at a time. An input whose
+        // parse is unavailable counts as caught up but not complete.
         let caught_up =
             if let (Some(input), Some(head)) = (dependency.registered(), dependency.head()) {
                 if head.acquired_upto == input.input.length
@@ -318,7 +314,7 @@ fn check_operation(
                 false
             };
         result.up_to_date &= caught_up;
-        // Provider-owned source membership is checked before selected row overlap.
+        // Check provider membership before looking at selected rows.
         if dependency.format() == InputFormat::CodexRollout {
             if plan.origin.as_deref().is_none_or(|o| o == "codex") {
                 codex::check(
@@ -347,7 +343,7 @@ fn check_operation(
             continue;
         }
         let Some(input) = dependency.registered() else {
-            // Context remains available before disposable input_ref repair.
+            // Context is read before input_ref repair.
             match dependency.context() {
                 [kind, stem] if kind == "claude-main" => {
                     if document
@@ -434,9 +430,9 @@ fn check_operation(
                                     let contribution: polylogue_sources::claude_code::keyed::Contribution =
                                         cell(session, &dependency, claude::CONTRIBUTION, &key, allowance)?
                                             .ok_or_else(|| Error::Invariant("missing foreign Session contribution".into()))?;
-                                    // A native suffix can be an ordinary word or
-                                    // letter. Only the full public ID supplies
-                                    // possible reference evidence in this scan.
+                                    // A native suffix can be an ordinary word,
+                                    // so only the full public ID counts as a
+                                    // possible reference.
                                     if contribution.blocks.iter().any(|block| {
                                         matches!(block, polylogue_model::BlockContent::Text { text }
                                             if exact.is_some_and(|id| text.contains(id)))
@@ -474,7 +470,7 @@ fn check_operation(
         }
         if let Err(error) = session.verify_dependency_bodies(&dependency) {
             let unavailable_body = matches!(&error, Error::Blob(_) | Error::UnknownBlob)
-                || matches!(&error, Error::Invariant(detail) if detail == "required Claude retained body metadata unavailable");
+                || matches!(&error, Error::Invariant(detail) if detail == "required Claude body metadata unavailable");
             if member.is_none() || !unavailable_body {
                 return Err(error);
             }
@@ -517,9 +513,9 @@ fn check_operation(
         match receipt {
             Some(bytes) => {
                 let receipt = source_rows::decode(&bytes, head, &input).map_err(owner_error)?;
-                // Each known Message below must independently carry the exact
-                // current selected source projection. Unsupported neighboring
-                // products keep coverage degraded; they cannot veto that proof.
+                // Each known Message must carry the current selected source
+                // projection. Unsupported neighbors leave the result degraded
+                // but do not block this check.
                 let readable = head.counts.unrecognized == 0;
                 match receipt.rows.state {
                     polylogue_model::settlement::SourceRowState::Unavailable {
@@ -539,7 +535,7 @@ fn check_operation(
             }
             None if head.status == "done" => {
                 return Err(Error::Invariant(
-                    "done Session dependency lost its settlement receipt".into(),
+                    "done Session dependency lost its source-row receipt".into(),
                 ));
             }
             None => {
@@ -556,8 +552,8 @@ fn check_operation(
                 target,
                 target_native.as_deref().or_else(|| match &context {
                     // A declared main file can own metadata before any Message
-                    // publishes its Session header. The dispatch above already
-                    // proves this is the requested main or an owned side Session.
+                    // publishes the Session header. The match above already
+                    // checked that this is the requested main or its side Session.
                     polylogue_sources::claude_code::FileCtx::Main { stem } => Some(stem.as_str()),
                     _ => None,
                 }),
@@ -602,7 +598,7 @@ fn check_operation(
                         if result.expected.get(message.id().as_str()) != Some(&sequence) {
                             result.own_topology_unknown = true;
                             result.known_rows_readable = false;
-                            result.unsupported.insert("Selected Message membership/order is not proved by the retained source contributions".into());
+                            result.unsupported.insert("Selected Message membership or order does not match the source contributions".into());
                         }
                         if message.header()?.written_by == polylogue_model::WrittenBy::Model
                             && !result.own_counting_unknown
@@ -692,11 +688,11 @@ fn check_operation(
             result.known_rows_readable = false;
             result
                 .unsupported
-                .insert("Retained Session contributions have no published catalog owner".into());
+                .insert("Session contributions have no published catalog owner".into());
         }
     }
     if exact.is_none() && result.interpreted_nonempty_inputs > 0 {
-        result.unsupported.insert("Complete nonempty settlement is supported only for an exact Claude Code Session without prose search".into());
+        result.unsupported.insert("Complete settlement of nonempty inputs is supported only for one Claude Code Session without prose search".into());
     }
     if result.own_topology_unknown {
         result.active_messages.clear();
@@ -767,8 +763,8 @@ fn cell<T: serde::de::DeserializeOwned>(
         })
         .transpose()
 }
-/// Main context names its own Session. Separate-agent context only names a
-/// role/lineage: its current provider header and Session cell must prove owner.
+/// A main context names its own Session. A subagent context names only a role;
+/// its provider header and Session cell must show the owner.
 fn claude_membership(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
@@ -814,9 +810,8 @@ fn claude_membership(
     }
     Ok(Some(id))
 }
-// A different pending row may lack a current selected projection. That makes
-// whole-catalog coverage unavailable, while an exact independently certified
-// member can still be read. Its own member proof above keeps errors intact.
+// Another pending row may lack a selected projection. The whole catalog is
+// then unavailable, but a checked member can still be read, with its errors.
 fn selected_current_projection(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
@@ -828,9 +823,8 @@ fn selected_current_projection(
         result => result,
     }
 }
-/// Prove the supported shape from retained interpretation, never from the rows
-/// a search happened to find. Events, lineage/copy and ambiguous metadata keep
-/// their existing degraded qualification until their connected products ship.
+/// Checks the supported shape from parser state, never from the rows a search
+/// found. Events, lineage and ambiguous metadata stay degraded.
 fn check_shape(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
@@ -913,7 +907,7 @@ fn check_shape(
                 }
                 if pending_bytes > allowance {
                     return Err(Error::ParserAdmission {
-                        resource: "Session retained Message membership",
+                        resource: "Session Message membership",
                         required: pending_bytes as u64,
                     });
                 }
@@ -940,10 +934,10 @@ fn check_shape(
             ),
             allowance,
         )?
-        .ok_or_else(|| Error::Invariant("missing retained Session response".into()))?;
+        .ok_or_else(|| Error::Invariant("missing stored Session response".into()))?;
         if response.message.id.as_str() != message.as_str() {
             return Err(Error::Invariant(
-                "retained Session response identity mismatch".into(),
+                "stored Session response identity mismatch".into(),
             ));
         }
         if response.message.written_by == polylogue_model::WrittenBy::Unknown {
@@ -970,7 +964,7 @@ fn check_shape(
                 &(target, &message, item),
                 allowance,
             )?
-            .ok_or_else(|| Error::Invariant("missing retained Session contribution".into()))?;
+            .ok_or_else(|| Error::Invariant("missing stored Session contribution".into()))?;
             if item == 0 {
                 let raw = polylogue_model::RawJson::parse(&contribution.raw)
                     .map_err(|e| Error::Invariant(e.to_string()))?;

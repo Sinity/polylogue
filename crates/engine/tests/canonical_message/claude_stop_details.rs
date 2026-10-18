@@ -1,4 +1,4 @@
-//! Named opaque response metadata through the actual canonical worker/store path.
+//! Named opaque response metadata through the Message worker and store.
 use super::*;
 use polylogue_sources::claude_code::selection::LeafSelection;
 
@@ -126,8 +126,8 @@ fn replacement_of_earlier_contribution_changes_selected_metadata_and_version() {
         a.len() + b.len(),
         corrected.len() - 1,
     );
-    // Same effective contribution records/order, different actual last supplier.
-    // The response correction unit must enter version evidence.
+    // Same contribution records and order, different last supplier: the
+    // response correction must change the version evidence.
     let reordered = replaced_a.clone() + &b;
     let (_world, reordered_source, view) = materialize(&reordered);
     assert_value(

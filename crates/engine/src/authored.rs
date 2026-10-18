@@ -1,5 +1,5 @@
-//! Comparable authored text uses the existing selected, decoded body reader.
-//! Digests are raw UTF-8 body evidence, never display text or continuation hashes.
+//! Hashes the current text of an authored-note target through the selected
+//! body reader. The digest covers the decoded UTF-8 body, not display text.
 use polylogue_model::{BlobHash, BlockSlot, authored};
 use polylogue_store::{
     Error, ReadHandle,
@@ -89,7 +89,7 @@ pub fn selected_text(
             break;
         }
     }
-    // Check current visibility after hashing; a removal is never a hash witness.
+    // Check visibility after hashing so a removed body is never reported.
     m.header()?;
     Ok(TargetText {
         reference: reference.into(),

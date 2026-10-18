@@ -27,7 +27,7 @@ fn actor_closes_idle_readers_before_last_writer_and_plain_restart_accepts_reused
         }),
     );
     actor.canonical_reader = Some(actor.take_canonical_reader().unwrap());
-    // Real SQLite auto-checkpoint/reuse, through the public store write path.
+    // Real SQLite auto-checkpoint and reuse, through the store's write path.
     let mut writes = 0u64;
     for n in 0u64..2048 {
         actor.writer.put_file_blob(&n.to_be_bytes()).unwrap();
@@ -38,8 +38,8 @@ fn actor_closes_idle_readers_before_last_writer_and_plain_restart_accepts_reused
     }
     assert!(previous_generation_tail(&root.join("archive.db-wal")));
     let before = actor.writer.status().unwrap().write_counter;
-    // An opened SQLite connection has not necessarily joined the WAL yet.
-    // Exercise the cached capability, as canonical source verification does.
+    // An open SQLite connection may not have joined the WAL yet; use the
+    // cached reader as Message source checks do.
     assert_eq!(
         actor
             .canonical_reader

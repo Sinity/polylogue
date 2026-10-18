@@ -1,4 +1,4 @@
-//! Whole selected provider usage is distinct from typed normalized counters.
+//! Raw provider usage is kept apart from the normalized counters.
 use super::*;
 use polylogue_model::RawJson;
 fn row(uuid: &str, text: &str, usage: Option<&str>) -> String {

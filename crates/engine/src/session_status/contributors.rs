@@ -1,4 +1,4 @@
-//! Count, digest and display sample of a streamed, pinned contributor catalog.
+//! Count, digest and display sample of a Session's contributing inputs.
 use super::*;
 #[derive(Clone)]
 pub(super) struct ContributorDigest {
@@ -72,8 +72,8 @@ impl SessionStatus {
         member: bool,
         allowance: usize,
     ) -> Result<(), Error> {
-        // Relationship/context witnesses remain in the full digest, but only
-        // independently proved membership sources constrain the member exception.
+        // Every contributor is in the digest; only membership sources count
+        // toward the single-member exception.
         if member {
             self.membership_sources = self.membership_sources.checked_add(1).ok_or(Error::Range)?;
         }
@@ -86,7 +86,7 @@ impl SessionStatus {
         Ok(())
     }
     pub(super) fn include_input(&mut self, input: Value, allowance: usize) -> Result<(), Error> {
-        // Catalog qualification does not return per-Session source-path metadata.
+        // Catalog checks do not return per-Session source paths.
         if !self.exact {
             return Ok(());
         }

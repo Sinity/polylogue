@@ -26,7 +26,7 @@ fn batches_reduce_turns_and_install_every_cell_without_early_progress() {
         let prior = writer.parser_work(&head.token).unwrap().unwrap();
         let result = pending.turn(&mut writer, batch_budget()).unwrap();
         turns += 1;
-        // Peer writes/readback remain possible between every admitted transaction.
+        // Peer writes and reads still work between transactions.
         let blob = writer.put_file_blob(&[turns as u8]).unwrap();
         assert_eq!(
             writer
@@ -57,8 +57,8 @@ fn batches_reduce_turns_and_install_every_cell_without_early_progress() {
             0
         );
     };
-    // 5 bounded staging + seal + 5 bounded application + publication, rather
-    // than 257 staging + seal + 129 two-cell applications + publication.
+    // 5 staging + seal + 5 apply + publish, instead of 257 staging + seal +
+    // 129 two-cell applies + publish.
     assert_eq!(turns, 12);
     assert_eq!(published.parsed_upto, 100);
     assert!(published.finalization_pending);
@@ -172,7 +172,7 @@ fn interrupted_batches_discard_unsealed_and_finish_sealed_without_replay() {
         let work = writer.parser_work(&head.token).unwrap().unwrap();
         assert_eq!(work.phase == WorkPhase::Applying, sealed);
         assert_eq!(work.token.applied, if sealed { 64 } else { 0 });
-        drop(pending); // Cancellation loses the in-memory delta, not durable obligations.
+        drop(pending); // Cancellation loses the in-memory delta, not stored work.
         let mut turns = 0usize;
         loop {
             turns += 1;

@@ -1,4 +1,4 @@
-//! Shared typed Session listing/search over the same admission and body view.
+//! Typed Session listing and prose search over a pinned catalog.
 use crate::session_status;
 use polylogue_model::{SessionKind, query::SessionQuery};
 use polylogue_store::{
@@ -86,7 +86,7 @@ pub fn execute(
         }
         let stored_header = session.header()?;
         let selected = matches(plan, stored_header);
-        // An exact selection has no corpus/ranking dependency on other Sessions.
+        // Selecting one Session by ID does not depend on other Sessions.
         if !selected && plan.text.is_empty() {
             continue;
         }
@@ -203,8 +203,8 @@ pub fn execute(
             "{unresolved_order} Sessions have unresolved Message order"
         ));
     }
-    // Revisit current removal authority after corpus/rank computation. The
-    // selected snapshot stays fixed; a revoked body must not reach output.
+    // Recheck removals after ranking: the snapshot is fixed, but a body
+    // removed since must not reach the output.
     let mut verify = None;
     while let Some((next, session)) = catalog.next(verify.as_ref(), 65536)? {
         check(until, cancelled)?;
@@ -232,11 +232,11 @@ pub fn execute(
         "ok"
     };
     let mut read_as = if status.complete() && plan.id.is_some() {
-        "Select the exact Session and its source-proved owned Message catalog from the pinned retained basis; this selection does not certify the larger normalized document's foreign incoming-link dependencies.".to_owned()
+        "Select the Session and the Messages its sources contain. Incoming links from other Sessions are not checked.".to_owned()
     } else if corpus.is_some() {
-        "Find known selected Sessions with all prose terms in the same human or model Message, phrases within one Text block, ordered by newest known selected Message time; relevance, snippets, complete population and linked subagent expansion remain unqualified.".to_owned()
+        "Find known selected Sessions with all prose terms in the same human or model Message, phrases within one Text block, ordered by newest known selected Message time; relevance, snippets, complete population and linked subagent expansion are not supported yet.".to_owned()
     } else {
-        "List known selected Sessions by newest known selected Message time; complete retained population remains unqualified.".to_owned()
+        "List known selected Sessions by newest known selected Message time; the listing may be incomplete.".to_owned()
     };
     if let Some(origin) = &plan.origin {
         read_as.push_str(&format!(" Origin equals {origin}."));
@@ -262,7 +262,7 @@ pub fn execute(
         "view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()},
         "defaults":{"exclude_subagents":plan.kind.is_none()&&!plan.all_kinds&&plan.id.is_none()},
         "missing":notes,"notes":notes,"unknown":{"record_errors":status.record_errors,"pending_inputs":status.pending_inputs,"unavailable_inputs":status.unavailable_inputs,"unresolved_inputs":status.unresolved_inputs,"unknown_authors":unknown_authors,"pending_messages":pending,"unresolved_message_order":unresolved_order},
-        "settlement":status.result(catalog)["settlement"],"searched":{"known_sessions":sessions,"candidate_sessions":candidate_count,"selected_messages":known_messages,"prose_messages":corpus.as_ref().map(ProseSearch::documents),"scope":"pinned retained admission and selected body catalog"}}),
+        "settlement":status.result(catalog)["settlement"],"searched":{"known_sessions":sessions,"candidate_sessions":candidate_count,"selected_messages":known_messages,"prose_messages":corpus.as_ref().map(ProseSearch::documents),"scope":"pinned input and selected body catalog"}}),
     )
 }
 

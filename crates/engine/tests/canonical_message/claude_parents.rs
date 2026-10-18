@@ -1,4 +1,4 @@
-//! Retained non-Message relations are proved against the pinned SQLite snapshot.
+//! Non-Message relations are checked against the pinned SQLite snapshot.
 use super::*;
 fn message(uuid: &str, parent: Option<&str>) -> String {
     (json!({"type":"assistant","uuid":uuid,"sessionId":SID,"requestId":uuid,"message":{"id":uuid,"role":"assistant","content":[{"type":"text","text":uuid}]}}).as_object().map(|o|{let mut o=o.clone();if let Some(p)=parent{o.insert("parentUuid".into(),json!(p));} Value::Object(o)}).unwrap()).to_string()+"\n"
@@ -236,7 +236,7 @@ fn relation_value_or_supplier_must_match_the_original_record_before_certificatio
                     m::Applied::Source(_)
                 )),
                 Err(m::Error::Unsupported(
-                    "Claude retained parent proof differs from original source",
+                    "Claude parent proof differs from original source",
                 )) => {
                     refused = true;
                     break;

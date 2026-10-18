@@ -1,6 +1,5 @@
-//! Provider interpretation runs against pinned store views outside write
-//! transactions. These primitives do not certify canonical publication or
-//! register live collection, querying or search.
+//! Parses provider files against pinned store snapshots, outside write
+//! transactions, and hands the results to the store's writer.
 pub mod authored;
 pub mod converge;
 pub mod owner;

@@ -1,4 +1,4 @@
-//! Real SQLite state tests. These do not certify canonical output publication.
+//! Codex parser state over real SQLite snapshots.
 use polylogue_engine::state::codex as adapter;
 use polylogue_sources::codex::{
     self,
@@ -463,7 +463,7 @@ fn sealed_partial_application_restarts_without_reinterpreting_and_rejects_stale_
 
 fn prefix(n: usize) -> String {
     let mut bytes = header();
-    // Keep the early suffix unsettled while unrelated completed calls grow.
+    // Keep the early suffix pending while unrelated completed calls grow.
     bytes += &line(
         "response_item",
         json!({"type":"function_call","id":"early","name":"exec_command","call_id":"early","arguments":"{}"}),
@@ -886,8 +886,8 @@ fn message_impacts_cover_version_body_presence_result_and_deletions() {
         vec![adapter::Impact::Block { block: 5 }]
     );
     assert!(collect_impacts(&attempt.message_impacts(1, 7).unwrap()).is_empty());
-    // A deleted unsupported witness must refuse; its semantic slot is never
-    // guessed from a generated value or silently left in canonical rank state.
+    // A deleted unsupported item must fail; its slot is never guessed from a
+    // generated value or left in the ranking state.
     delta
         .cells
         .insert(Key::Presence(9, "unknown-future-field".into()), None);
@@ -902,8 +902,7 @@ fn timestamp_only_delta_emits_work_without_manufacturing_a_version_change() {
         );
     let mut world = World::new(bytes.as_bytes());
     let first = world.parse(bytes.as_bytes());
-    // A synthetic mapped timestamp-only correction tests the adapter seam;
-    // this does not assert that a repeated native item changes its first time.
+    // A synthetic timestamp-only correction, to test the adapter.
     let mut cells = std::collections::BTreeMap::new();
     let mut witness = first
         .cells

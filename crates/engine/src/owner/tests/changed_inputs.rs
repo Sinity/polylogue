@@ -85,8 +85,8 @@ fn captured_input_runs_after_current_input_without_rewinding_background_scan() {
     let captured = receiver.recv().unwrap().unwrap();
     actor.tick().unwrap();
     assert_eq!(actor.active_id(), Some(inputs[1].input.id.as_str()));
-    // The current input finishes before the next selection. Its continuation
-    // is never dropped merely to prioritize a newer retained acquisition.
+    // The current input finishes before the next is selected; a newer import
+    // never drops its continuation.
     actor.active = None;
     actor.tick().unwrap();
     assert_eq!(actor.active_id(), Some(captured.id.as_str()));

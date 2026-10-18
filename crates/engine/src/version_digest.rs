@@ -1,6 +1,6 @@
-//! Ephemeral Codex raw-version digest work over one pinned provider snapshot.
-//! Each advance reads at most one admitted whole cell and hashes only its byte
-//! allowance. Process loss restarts at unit zero; no Hasher state is durable.
+//! Hashes the Codex version evidence of one Message over a pinned snapshot.
+//! Each advance reads at most one cell and hashes at most its byte allowance.
+//! Hasher state is not stored; a restart begins at unit zero.
 use crate::state::codex::Attempt;
 use polylogue_model::{
     BlobHash,
@@ -43,9 +43,8 @@ impl From<FramingError> for Error {
     }
 }
 type Result<T> = std::result::Result<T, Error>;
-/// Evidence membership only. It does not certify a canonical Message, payload
-/// availability, lineage, or rank. The owning writer must CAS this exact token
-/// and revalidate the evidence head before accepting it for the matching row.
+/// The writer must compare this token and recheck the evidence head before
+/// accepting the digest for its row.
 #[derive(Debug)]
 pub struct Digest {
     token: Token,
@@ -106,8 +105,8 @@ fn read(snapshot: &Snapshot, key: &Key, budget: Budget) -> Result<Option<Cell>> 
     result.map_err(Error::Source)
 }
 impl<'a> Driver<'a> {
-    /// Reads one head cell. Subsequent reads use a fresh Attempt per advance,
-    /// so read admission measures that turn, never a hidden whole-prefix load.
+    /// Reads one head cell. Later reads use a fresh Attempt per advance, so
+    /// read limits apply per turn.
     pub fn start(
         snapshot: &'a Snapshot,
         message: usize,
@@ -147,10 +146,9 @@ impl<'a> Driver<'a> {
     pub fn hashed_bytes(&self) -> u64 {
         self.framer.as_ref().map_or(0, Framer::used_bytes)
     }
-    /// Fixed framing operations may require a larger single allowance; that
-    /// minimum is reported without advancing the hash or losing a loaded unit.
-    /// Compound-prefix work reports Framer's source-of-truth minimum.
-    /// Large JSON payloads are borrowed directly from the retained current cell.
+    /// Fixed framing steps may need a larger allowance; that minimum (from the
+    /// Framer) is reported without advancing the hash or dropping the loaded
+    /// unit. Large JSON payloads are borrowed from the current cell.
     pub fn advance(&mut self, read_budget: Budget, byte_allowance: u64) -> Result<Advance> {
         if self.failed || self.finished {
             return Err(Error::Finished);
@@ -282,8 +280,7 @@ impl<'a> Driver<'a> {
                     current.stage = Stage::Payload(0);
                 }
                 Stage::Payload(offset) => {
-                    // Nonempty valid JSON has at least one byte. No full-unit
-                    // clone, concatenation or normalization occurs while hashing.
+                    // Valid JSON has at least one byte.
                     let n = usize::try_from(work).map_err(|_| FramingError::Overflow)?;
                     framer.json(&current.unit.canonical[offset..offset + n])?;
                     if offset + n == current.unit.canonical.len() {
@@ -296,9 +293,8 @@ impl<'a> Driver<'a> {
             }
             self.credit -= work;
             left -= work;
-            // Completing a retained unit is the turn boundary even when this
-            // call read no cell. Do not speculatively consume the next slot's
-            // read admission after successfully hashing this unit's last byte.
+            // Finishing a unit ends the turn even if no cell was read, so the
+            // next slot's read is charged to the next turn.
             if self.current.is_none() {
                 return Ok(progress(reads, self.hashed_bytes() - before, None));
             }

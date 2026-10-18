@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-engine"
-description = "Pinned provider-state adaptation and admitted convergence steps"
+description = "Parses provider files outside the writer and hands the results to the store"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

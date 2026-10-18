@@ -879,7 +879,7 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
             .any(|note| note
                 .as_str()
                 .unwrap()
-                .contains("dependency shapes remain unresolved"))
+                .contains("dependency shapes are unresolved"))
     );
     // Another observation/path into the identical context-qualified input is
     // the same failure identity, not a second Session/candidate dependency.

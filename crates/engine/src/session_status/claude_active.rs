@@ -1,5 +1,5 @@
-//! Follow one declared native leaf through point state before folding responses.
-//! The caller already pins current source/selection proofs for every Message.
+//! Follows one declared Claude leaf through point state to find the active
+//! path. The caller has already checked each Message's selected source.
 use super::*;
 use polylogue_model::{NativeId, RawJson};
 use polylogue_sources::claude_code::{
@@ -73,8 +73,8 @@ fn native(value: &RawJson) -> Option<Option<NativeId>> {
     (!id.as_str().is_empty()).then(|| Some(id.clone()))
 }
 
-/// None means an explicit marker exists but its exact current path is unknown.
-/// Absence of a marker is handled separately by the existing linear proof.
+/// None: a marker exists but its current path is unknown. A missing marker is
+/// handled by the linear check.
 pub(super) fn prove(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
@@ -175,8 +175,8 @@ pub(super) fn prove(
             None => return Ok(None),
         }
     }
-    // A call is answered once even if its identical invocation was re-emitted.
-    // This is source correspondence only, never result/status inference.
+    // A call is answered once even if the same invocation was emitted again.
+    // Matches records only; infers no result or status.
     let mut answered = BTreeSet::new();
     for peer in peers {
         if !peer.valid || peer.calls.is_empty() {
@@ -193,8 +193,8 @@ pub(super) fn prove(
             )?;
         }
     }
-    // Only extra peer membership needs call correspondence. Membership already
-    // witnessed by the native record path makes no operation/status assertion.
+    // Only extra peers need a matching call; Messages already on the record
+    // path do not.
     for peer in peers {
         if active.contains(&peer.message) {
             continue;
@@ -227,8 +227,8 @@ pub(super) fn prove(
             nearest(&mut reads, owner, peer.parent.clone())?
         };
         let Some(address) = address else {
-            // No caller proof is not proof of an inactive caller. The result
-            // may still be a peer of a call on the active response path.
+            // A missing caller does not mean an inactive one; the result may
+            // still be a peer of a call on the active path.
             return Ok(None);
         };
         let Some(p) = pending.get(address.message.as_str()) else {
@@ -257,8 +257,8 @@ pub(super) fn prove(
             let Some(parent) = nearest(&mut reads, owner, peer.parent.clone())? else {
                 return Ok(None);
             };
-            // Different native records of one response agree. A different
-            // response is contradictory tree authority, even for a re-emitted ID.
+            // Records of one response agree. A different response contradicts
+            // the tree, even for a re-emitted ID.
             if parent.message != address.message {
                 return Ok(None);
             }
@@ -346,7 +346,7 @@ fn call_evidence(
         else {
             return Ok(None);
         };
-        // Corrections/re-emissions after the result cannot supply its call.
+        // Corrections or re-emissions after the result cannot supply its call.
         if donor.record.start >= peer.record_start {
             continue;
         }

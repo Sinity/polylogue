@@ -1,5 +1,5 @@
-//! Claude-specific cursors and pinned source selection. Durable mutation and
-//! value/origin verification remain in the parent's one materializer core.
+//! Claude cursors and source selection. Writes and value/origin checks are in
+//! the parent module, shared with Codex.
 use super::*;
 mod parent;
 use crate::state::claude::View;
@@ -19,7 +19,7 @@ pub struct ClaudeRequest {
     pub pending: PendingMessage,
     pub source_binding: BlobHash,
     pub context: Vec<String>,
-    /// Archive revision, independently of pending.revision (provider evidence).
+    /// Archive revision; `pending.revision` is the provider evidence revision.
     pub revision: u64,
     pub logical_key: [u8; 32],
 }
@@ -29,8 +29,8 @@ pub(super) struct Head {
     context: Vec<String>,
     parser_version: u32,
 }
-/// A waiting tail can retain a complete prefix Message. Reuse its exact
-/// current source certificate, not equality of text, counts or logical IDs.
+/// A complete Message before a waiting tail can be reused by its current
+/// source certificate, never by equal text, counts or logical IDs.
 pub(crate) fn current_projection(
     projection: &SourceProjection,
     token: &Token,
@@ -322,8 +322,8 @@ fn local(field: &Field) -> Option<u32> {
 fn is_message(field: &Field, item: u64) -> bool {
     match field {
         Field::FirstMessage(_) => item == 0,
-        // Immediate record extras have one source-selected response winner.
-        // Keep nested unknown paths on their existing explicit refusal route.
+        // Top-level record extras have one selected response. Unknown nested
+        // paths are still unsupported.
         Field::Extra { local: None, path } => path.len() != 1,
         _ => false,
     }
@@ -395,9 +395,9 @@ fn leaf<'a>(
             }
         }
         Field::Extra { local: None, path } => {
-            // An immediate record extra has an unambiguous attrs key. Nested
-            // paths cannot be flattened without colliding with literal keys or
-            // selected normalized extras, so retain their explicit refusal.
+            // A top-level extra has an unambiguous attrs key. Nested paths could
+            // collide with literal keys or normalized extras when flattened, so
+            // they stay unsupported.
             let [key] = path.as_slice() else {
                 return Err(Error::UnsupportedField {
                     path: path.clone(),
@@ -425,8 +425,8 @@ fn leaf<'a>(
             local: Some(local),
             path,
         } => {
-            // One immediate provider block member; nested paths cannot be
-            // flattened into this block's extra-key namespace.
+            // Top-level block member only; nested paths would collide in the
+            // block's extra-key namespace.
             let [message, content, index, key] = path.as_slice() else {
                 return Err(Error::UnsupportedField {
                     path: path.clone(),
@@ -470,10 +470,9 @@ fn leaf<'a>(
     Ok(ValueSource::Leaf { subject, slot })
 }
 
-// This one admitted map is already charged by View. Only adjacent equal
-// ranges coalesce; correction donors A/B/A retain three ordered groups. The
-// durable cursor still names the last covered qualified path, including when
-// resuming a cursor written by the uncoalesced materializer.
+// The map is already charged by View. Only adjacent equal ranges merge, so
+// correction suppliers A/B/A stay three groups. The stored cursor names the
+// last covered path, also when resuming a cursor written before merging.
 fn consecutive_origins(
     origins: &source::origins::RecordOrigins,
     after: Option<&[String]>,
@@ -491,8 +490,8 @@ fn consecutive_origins(
     Ok(last)
 }
 
-// Only absent slots in the already admitted ResponseCell are bookkeeping.
-// At most eight indices are inspected; no provider reads or field proofs move.
+// Skips absent slots in the ResponseCell already read, at most eight per
+// call, with no provider reads.
 fn selected_index(r: &ResponseCell, mut index: u8, flag: &AtomicBool) -> Result<u8> {
     while index < 8 {
         cancelled(flag)?;
@@ -524,7 +523,7 @@ pub(super) fn compute(
 ) -> Result<Action> {
     let ProviderHead::Claude(head) = &state.handle.head else {
         return Err(Error::Invariant(
-            "Claude materializer has another provider basis",
+            "Claude Message builder has another provider head",
         ));
     };
     let view = View::new(snapshot, b.read)?;
@@ -532,13 +531,13 @@ pub(super) fn compute(
     let input = snapshot.message_source_input_id(&state.handle.build, b.metadata)?;
     let retained = reader
         .source(&input)?
-        .ok_or(Error::Unsupported("retained Claude input unavailable"))?;
+        .ok_or(Error::Unsupported("Claude input unavailable"))?;
     if retained.binding != state.handle.request.source_binding
         || retained.input.chain != snapshot.head.token.chain
         || retained.context != head.context
     {
         return Err(Error::Invariant(
-            "retained source binding/context differs from Claude input",
+            "source binding or context differs from Claude input",
         ));
     }
     if let Some(prepared) = &state.preparation.projection {
@@ -645,8 +644,8 @@ pub(super) fn compute(
                 after: None,
                 envelope: false,
             };
-            // The named completion supplies fields of the earlier launch
-            // Message. Cite only that retained record before evaluating them.
+            // The completion supplies fields of the earlier launch Message.
+            // Cite only that record before evaluating them.
             match &c.completion {
                 Some(completion) => cite(state, &mut cursor, next, completion.range, b),
                 None => progress(state, &mut cursor, next, b),
@@ -743,8 +742,8 @@ pub(super) fn compute(
             let Some((key, extra)) = next else {
                 return progress(state, &mut cursor, Cursor::AuthorCitation, b);
             };
-            // A selected supplier can outlive the effective contribution's
-            // current donor map. Bind its own retained record explicitly.
+            // A selected supplier may be missing from the effective
+            // contribution's current supplier map, so cite its own record.
             let donor = extra
                 .fact
                 .selection
@@ -782,8 +781,8 @@ pub(super) fn compute(
             ))
         }
         Cursor::Author { index } => {
-            // written_by is fixed identity metadata; prompt_kind has a separate
-            // retained leaf, derived by the source classifier and unranked.
+            // written_by is fixed identity metadata; prompt_kind is its own
+            // leaf, set by the source classifier and not ranked.
             if index != 0 || r.message.prompt_kind.is_none() {
                 return progress(
                     state,
@@ -882,8 +881,8 @@ pub(super) fn compute(
                 return progress(state, &mut cursor, Cursor::RecordExtras { after: None }, b);
             }
             if index != original_index {
-                // A streaming BeginValue does not carry a cursor checkpoint.
-                // Commit the chosen real field once before opening its lease.
+                // BeginValue carries no cursor, so commit the chosen field
+                // before opening its lease.
                 return progress(state, &mut cursor, Cursor::Selected { index, fact: 0 }, b);
             }
             if index >= 6 {
@@ -1193,7 +1192,7 @@ pub(super) fn compute(
                             local: block_local,
                             phase: if retained {
                                 BlockPhase::Retained(index.checked_add(1).ok_or(
-                                    Error::Invariant("Claude retained field cursor overflow"),
+                                    Error::Invariant("Claude field cursor overflow"),
                                 )?)
                             } else {
                                 BlockPhase::Fields(index.checked_add(1).ok_or(Error::Invariant(
@@ -1245,8 +1244,8 @@ pub(super) fn compute(
                     if !matches!(content,BlockContent::Thinking(t) if t.signature.is_some()) {
                         return progress(state, &mut cursor, next, b);
                     }
-                    // Obtain the existing source-owned auxiliary selector through
-                    // its projection unit, not by manufacturing a raw path.
+                    // Take the auxiliary selector from its projection unit,
+                    // never by building a raw path.
                     let Some(source::projection::Unit::Signature {
                         selection: Some(recipe),
                         ..
@@ -1322,9 +1321,8 @@ pub(super) fn compute(
     }
 }
 
-/// Selected-evidence replay uses point reads and bounded byte feeds. The entire
-/// Message proof runs on this worker; restart replays from zero. This does not
-/// certify a bounded worker-turn duration or append-local hash work.
+/// Hashes the selected evidence of one Message with point reads, on the
+/// worker. A restart starts over.
 fn proof(
     snapshot: &Snapshot,
     head: &Head,
@@ -1335,8 +1333,8 @@ fn proof(
     let view = View::new(snapshot, b.read)?;
     let response = response(&view, head)?;
     let mut baseline: [Option<Vec<u8>>; 8] = Default::default();
-    // Locators only, restricted to the admitted selected key set. Do not retain
-    // a second map of historical values. Charge scratch encoding after updates.
+    // Locators for the selected keys only, not a copy of old values. Scratch
+    // encoding is charged after updates.
     let mut extra_baseline = std::collections::BTreeMap::<String, u64>::new();
     let mut bodies = 0u64;
     let mut completions = 0u64;
@@ -1380,7 +1378,7 @@ fn proof(
         }
     }
     let metadata = response.metadata_units(&baseline);
-    // Keys/tags only: selected raw values remain in the admitted response cell.
+    // Keys and tags only; raw values stay in the response cell.
     let mut extra_corrections = Vec::<(&str, String)>::new();
     for (key, selected) in &response.record_extras {
         cancelled(flag)?;

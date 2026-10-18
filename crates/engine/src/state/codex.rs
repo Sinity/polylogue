@@ -1,6 +1,6 @@
-//! Codex typed cells over one pinned disposable SQLite parser-state snapshot.
-//! Interpretation and encoding happen outside the output writer transaction.
-//! Budgets measure cumulative encoded cell traffic, not allocator/RSS usage.
+//! Codex parser state as typed cells over a pinned SQLite snapshot. Parsing
+//! and encoding run outside the writer transaction. Budgets count encoded cell
+//! traffic, not memory.
 use std::cell::{Cell as Counter, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -22,14 +22,14 @@ const PREFIX: &str = "codex.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReadUsage {
-    /// Admitted lookup attempts, including absent keys and Resume.
+    /// Lookups, including absent keys and Resume.
     pub cells: usize,
     /// Namespace/lookup key bytes plus returned encoded key/value bytes.
     pub encoded_bytes: usize,
 }
-/// A new instance is required for each attempted provider step. The original
-/// typed first failure stays here when the provider's String callback returns
-/// an error; the owner must take it before classifying a source refusal.
+/// Use a new instance for each provider step. When a provider callback returns
+/// a String error, the first typed failure is kept here; take it before
+/// classifying the error.
 pub struct Attempt<'a> {
     snapshot: &'a Snapshot,
     budget: Budget,
@@ -216,9 +216,8 @@ fn admission(resource: &'static str, required: usize) -> StoreError {
     }
 }
 
-/// Bounded writer used for key and JSON encoding before output admission. No
-/// write grows the Vec before checking its length. Unexpected allocator spare
-/// capacity is an explicit failure, not a claimed physical memory bound.
+/// Length-limited writer for key and JSON encoding. Checks the length before
+/// growing the Vec.
 struct Limited {
     bytes: Vec<u8>,
     limit: usize,
@@ -277,17 +276,15 @@ fn limited<E: std::fmt::Display>(
     result.map_err(|e| invalid("encoding", e))?;
     Ok(writer.bytes)
 }
-/// Adapter-only layout identity. Include this in the owning parser basis;
-/// provider interpretation/version evidence is unchanged by this encoding.
+/// Version of this cell layout. Part of the parser identity.
 pub const STATE_LAYOUT_VERSION: u32 = 3;
 pub const EFFECTS_NAMESPACE: &str = "codex.effects.v3";
 const EFFECT_KINDS: usize = 8;
 const EFFECT_KEY_BYTES: usize = 17;
 const EFFECT_HEADER_BYTES: usize = 256;
 
-/// Stable ordering is event, link, pending version, conflict, pending result,
-/// reachback, changed Message, deferred call impact. Source vector order and
-/// sorted dirty addresses are retained without a second interpretation.
+/// Order: event, link, pending version, conflict, pending result, reachback,
+/// changed Message, deferred call impact. Within each kind, source order.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub enum Effect {
@@ -372,8 +369,8 @@ impl EffectsHeader {
 }
 mod flat_session;
 pub(crate) use flat_session::{FlatSessionEvents, FlatSessionStep};
-/// Only scalar position is durable. Opening a reader revalidates its fixed
-/// header against the pinned snapshot; no decoded aggregate receipt is carried.
+/// Only the position is stored. Opening a reader rechecks the header against
+/// the snapshot.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct EffectsCursor {
@@ -382,9 +379,8 @@ pub struct EffectsCursor {
     ordinal: u64,
 }
 impl EffectsCursor {
-    /// Current immutable receipt address; None after all family boundaries.
-    /// The owner may retain this key before advance for atomic consumption,
-    /// but must validate advance successfully before mutating any receipt.
+    /// Current receipt address; None after the last kind. The owner may keep
+    /// this key, but must advance successfully before changing any receipt.
     pub fn key(&self) -> Option<[u8; EFFECT_KEY_BYTES]> {
         (self.kind <= EFFECT_KINDS as u8 && self.kind > 0)
             .then(|| effect_key(self.step, self.kind, self.ordinal))
@@ -457,10 +453,9 @@ impl EffectsReader<'_, '_> {
             ordinal: 0,
         }
     }
-    /// At most one admitted point lookup. Each kind ends with an absence probe
-    /// at its declared count, detecting a shortened header over contiguous
-    /// immutable units. Boundary is a real cursor step, not a hidden scan.
-    /// Failure leaves the cursor unchanged and fuses the whole Attempt.
+    /// At most one point lookup. Each kind ends with a probe for absence at its
+    /// declared count, which catches a shortened header; that probe is its own
+    /// cursor step. A failure leaves the cursor unchanged and stops the Attempt.
     pub fn advance(&self, cursor: &mut EffectsCursor) -> std::result::Result<EffectStep, String> {
         self.attempt.checked(|| {
             if cursor.step != self.header.step
@@ -502,9 +497,8 @@ impl EffectsReader<'_, '_> {
             Ok(EffectStep::Item(unit))
         })
     }
-    /// Inspection convenience only: collects the same point cursor, subject to
-    /// this Attempt's cumulative admission. It does not bound a whole result or
-    /// certify canonical publication, hashing, or consumption of obligations.
+    /// For inspection: runs the same cursor to the end under this Attempt's
+    /// limits.
     pub fn collect(&self) -> std::result::Result<Effects, String> {
         let mut cursor = self.start();
         let mut out = Effects::default();
@@ -531,7 +525,7 @@ impl EffectsReader<'_, '_> {
         }
     }
 }
-/// Whole inspection DTO, never a persisted protocol or finalizer work queue.
+/// Inspection result; never stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Effects {
     pub events: Vec<Event>,
@@ -543,8 +537,7 @@ pub struct Effects {
     pub changed_messages: Vec<usize>,
     pub call_impacts: Vec<String>,
 }
-/// Owns encoded buffers only. It excludes the source Delta, SQLite snapshot,
-/// decoder allocations and canonical output rows, all separately owner-charged.
+/// Encoded buffers only.
 pub struct Encoded {
     pub changes: Vec<CellChange>,
     pub encoded_bytes: usize,
@@ -558,10 +551,9 @@ fn add_bytes(total: &mut usize, n: usize, budget: Budget) -> Result<()> {
     *total = required;
     Ok(())
 }
-/// The caller sets Delta.resume.parsed_upto from complete framing progress and
-/// handles reached_back before application. next_step is pinned predecessor step
-/// + 1, never a byte offset; the writer must reject a stale predecessor.
-/// This encoding earns no canonical row completeness or finalization claim.
+/// The caller sets `Delta.resume.parsed_upto` from framing progress and handles
+/// `reached_back` before applying. `next_step` is the snapshot's step + 1, not a
+/// byte offset; the writer rejects a stale parser state.
 pub fn encode_delta(delta: &Delta, next_step: u64, budget: Budget) -> Result<Encoded> {
     if next_step == 0 {
         return Err(invalid("effects step", "committed steps start at one"));
@@ -594,7 +586,7 @@ pub fn encode_delta(delta: &Delta, next_step: u64, budget: Budget) -> Result<Enc
     if cells > budget.cells {
         return Err(admission("Codex delta cells", cells));
     }
-    // Reject the fixed encoded lower bound before growing the output Vec.
+    // Check the fixed minimum size before growing the output Vec.
     let minimum = receipt_cells
         .checked_mul(EFFECTS_NAMESPACE.len() + EFFECT_KEY_BYTES)
         .and_then(|n| {
@@ -862,8 +854,8 @@ fn push_effect(
     Ok(())
 }
 
-// The same immutable step receipt, addressed by message rather than filtering
-// its global stream. These are addresses/obligations, never copied Messages.
+// The same step receipt addressed by Message instead of filtering the whole
+// stream. Holds addresses, not copies of Messages.
 const IMPACT_KEY_BYTES: usize = 26;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -992,8 +984,8 @@ impl ImpactsReader<'_, '_> {
             ordinal: 0,
         }
     }
-    /// One whole admitted unit or one count-boundary absence probe. This cursor
-    /// is persisted only after the owner's corresponding canonical mutation.
+    /// One unit or one end-of-count probe. The owner stores this cursor only
+    /// after the matching Message write.
     pub fn advance(&self, cursor: &mut ImpactCursor) -> std::result::Result<ImpactStep, String> {
         self.attempt.checked(|| {
             if cursor.step != self.header.step

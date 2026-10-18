@@ -73,7 +73,7 @@ fn provider_turns_allow_peer_reads_and_writes_and_eof_is_not_completion() {
     let published = loop {
         let result = pending.turn(&mut writer, budget()).unwrap();
         turns += 1;
-        // Actual store peer operations, not daemon/public-client acceptance.
+        // Store peer operations.
         let blob = writer.put_file_blob(&[turns]).unwrap();
         assert_eq!(reader.read_blob_range(blob, 0, 1).unwrap(), [turns]);
         assert!(
@@ -173,8 +173,8 @@ fn crash_child() {
     let mut writer = Writer::open(std::path::Path::new(&path)).unwrap();
     let head = writer.parser_head(1, 1).unwrap().unwrap();
     let mut pending = PendingInstall::begin(&mut writer, &head, progress(), changes()).unwrap();
-    // Complete the staged delta, seal, apply only its first member, then exit
-    // without destructors. No reinterpretation may observe that partial state.
+    // Stage, seal, apply only the first member, then exit without destructors.
+    // Parsing must never see that partial state.
     for _ in 0..6 {
         assert!(matches!(
             pending.turn(&mut writer, budget()).unwrap(),

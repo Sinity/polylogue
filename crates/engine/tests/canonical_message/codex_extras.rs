@@ -1,4 +1,4 @@
-//! Block-scoped provider metadata is retained opaque, with verified origins.
+//! Block provider metadata is kept opaque, with checked origins.
 use super::*;
 use polylogue_store::contributions::FieldRead;
 

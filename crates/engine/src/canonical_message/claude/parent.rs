@@ -1,5 +1,5 @@
-//! Resolve only the first contribution's parent on the same pinned provider view.
-//! The view charges cumulative point reads; encoded scratch is admitted separately.
+//! Resolves the first contribution's parent on the same pinned view. Point
+//! reads are charged to the view; scratch encoding has its own limit.
 use super::*;
 use polylogue_sources::{
     claude_code::{parent::Node, projection::CountingObligation, selection},
@@ -28,14 +28,14 @@ fn native(value: &RawJson) -> Result<Option<polylogue_model::NativeId>> {
     }
     let n = value
         .native()
-        .ok_or_else(|| unresolved("Claude retained parent link has wrong type"))?;
+        .ok_or_else(|| unresolved("Claude parent link has wrong type"))?;
     Ok((!n.as_str().is_empty()).then(|| n.clone()))
 }
 fn key(n: &polylogue_model::NativeId) -> Result<String> {
     serde_json::to_string(n).map_err(|e| Error::Source(e.to_string()))
 }
-/// Stop at the nearest Message. Cycles among skipped records and a grouped
-/// self-reference refuse here; this is not global tree/active-path validation.
+/// Stops at the nearest Message. Cycles among skipped records and grouped
+/// self-references fail here; the whole tree is not checked.
 fn walk(
     view: &View<'_>,
     head: &Head,
@@ -49,28 +49,28 @@ fn walk(
         cancelled(flag)?;
         let k = key(&uuid)?;
         if !visited.insert(k.clone()) {
-            return Err(unresolved("Claude retained parent cycle"));
+            return Err(unresolved("Claude parent cycle"));
         }
         bounded_json(visited, allowance)?;
         let address = callback(view, view.record(&head.pending.session_native, &k))?;
         let node = callback(view, view.parent_node(&head.pending.session_native, &k))?;
         if address.is_some() && node.is_some() {
-            return Err(unresolved("Claude retained parent identity conflict"));
+            return Err(unresolved("Claude parent identity conflict"));
         }
         if let Some(address) = address {
             if address.message.session() != head.pending.message.session()
                 || address.message == head.pending.message
             {
                 return Err(unresolved(
-                    "Claude retained parent crosses Session or grouped self",
+                    "Claude parent crosses Session or grouped self",
                 ));
             }
             return Ok(Some(address));
         }
-        let node = node.ok_or_else(|| unresolved("Claude retained parent record unavailable"))?;
+        let node = node.ok_or_else(|| unresolved("Claude parent record unavailable"))?;
         if node.uuid != uuid {
             return Err(Error::Invariant(
-                "Claude retained parent lookup identity changed",
+                "Claude parent lookup identity changed",
             ));
         }
         next = match node.predecessor().map_err(unresolved)? {
@@ -126,27 +126,26 @@ pub(super) fn resolve(
         Some(&mut records),
         flag,
     )?;
-    // All other counting obligations retain their existing typed refusal.
+    // Other counting cases stay unsupported.
     c.projection
         .obligations
         .retain(|o| *o != CountingObligation::ParentResolution);
     if let Some(address) = address {
         c.projection.facts[index].selection = Some(if records.is_empty() {
-            // Existing descriptor semantics and direct-history version evidence.
             selection::parent_reference(uuid, address.message, donor)
         } else {
             selection::parent_via(uuid, address.message, donor, records.clone())
         });
         bounded_json(&(&records, &c.projection.facts[index].selection), allowance)?;
     } else {
-        // A proved non-Message root supplies no fabricated Message reference.
+        // A non-Message root gives no Message reference.
         c.projection.facts.remove(index);
     }
     Ok(records)
 }
 
-/// Verify retained relation evidence before admitting its citation. No provider
-/// path is opened and a failed/cancelled turn returns no installable operation.
+/// Checks the stored relation records before citing them. Opens no provider
+/// file; a failed or cancelled turn returns nothing to install.
 pub(super) fn verify(
     reader: &ReadHandle,
     snapshot: &Snapshot,
@@ -165,7 +164,7 @@ pub(super) fn verify(
         .ok_or(Error::Invariant("Claude parent donor range reversed"))?;
     if range.end > snapshot.head.parsed_upto || length == 0 {
         return Err(Error::Unsupported(
-            "Claude parent donor is outside complete retained records",
+            "Claude parent supplier is outside the complete records",
         ));
     }
     if length > b.read.encoded_bytes as u64 {
@@ -192,7 +191,7 @@ pub(super) fn verify(
     cancelled(flag)?;
     if !node.verify(donor, &raw).map_err(Error::Source)? {
         return Err(Error::Unsupported(
-            "Claude retained parent proof differs from original source",
+            "Claude parent proof differs from original source",
         ));
     }
     Ok(())
