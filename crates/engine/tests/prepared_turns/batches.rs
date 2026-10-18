@@ -19,8 +19,7 @@ fn bounded_batches_reduce_turns_and_install_every_exact_cell_without_early_progr
     let (_dir, mut writer, head) = fixture();
     let pinned = writer.parser_snapshot(&head.token).unwrap();
     let changes = many();
-    let mut pending =
-        PendingInstall::begin(&mut writer, &head, progress(), many()).unwrap();
+    let mut pending = PendingInstall::begin(&mut writer, &head, progress(), many()).unwrap();
     let mut turns = 0usize;
     let published = loop {
         let prior = writer.parser_work(&head.token).unwrap().unwrap();
@@ -161,8 +160,7 @@ fn interrupted_batches_discard_unsealed_and_finish_sealed_without_replay() {
     for sealed in [false, true] {
         let (_dir, mut writer, head) = fixture();
         let changes = many();
-        let mut pending =
-            PendingInstall::begin(&mut writer, &head, progress(), many()).unwrap();
+        let mut pending = PendingInstall::begin(&mut writer, &head, progress(), many()).unwrap();
         let count = if sealed { 7 } else { 1 }; // five stage + seal + one apply.
         for _ in 0..count {
             assert!(matches!(
