@@ -1,10 +1,16 @@
 use std::process::Command;
 
 #[test]
-fn packaged_offline_commands_do_not_create_an_archive() {
+fn help_version_and_schema_work_offline_without_creating_an_archive() {
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("must-not-exist");
-    for args in [vec!["--help"], vec!["--version"], vec!["config", "schema"]] {
+    for args in [
+        vec!["--help"],
+        vec!["status", "--help"],
+        vec!["import", "-h"],
+        vec!["--version"],
+        vec!["config", "schema"],
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_polylogue"))
             .args(["--archive", archive.to_str().unwrap()])
             .args(&args)
@@ -12,6 +18,9 @@ fn packaged_offline_commands_do_not_create_an_archive() {
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
+        if args.contains(&"--help") || args.contains(&"-h") {
+            assert!(String::from_utf8_lossy(&output.stdout).starts_with("Polylogue:"));
+        }
         if args == ["config", "schema"] {
             let schema: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
             assert_eq!(schema["additionalProperties"], false);

@@ -68,7 +68,7 @@ pub(crate) fn uncertain_reply(request: &Value, error: std::io::Error) -> Value {
     polylogue::authored::uncertain_reply(
         request,
         kind,
-        "Authored reply unavailable; commit outcome is unknown.",
+        "No reply from the daemon; the note may or may not have been saved. Retry with the same --request-id.",
     )
 }
 pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
@@ -109,7 +109,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
                 _ => {
                     return Err(Failure::new(
                         ErrorKind::NotYetAvailable,
-                        format!("unsupported authored option {arg}"),
+                        format!("unknown note option {arg}"),
                     ));
                 }
             };
@@ -117,7 +117,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
                 return Err(invalid("duplicate authored option"));
             }
         } else if value.replace(arg.clone()).is_some() {
-            return Err(invalid("one final text value is required"));
+            return Err(invalid("give the note text once"));
         }
         i += 1;
     }
@@ -128,7 +128,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
             "correction" => Ok(NoteKind::Correction),
             _ => Err(Failure::new(
                 ErrorKind::NotYetAvailable,
-                "only note and correction are directly writable in this tracer",
+                "--kind must be note or correction",
             )),
         })
         .transpose()?;
@@ -141,11 +141,11 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
             .read_to_end(&mut bytes)
             .map_err(|e| Failure::new(ErrorKind::Io, e.to_string()))?;
         if bytes.len() > 65536 {
-            return Err(invalid("target basis file exceeds65536 bytes"));
+            return Err(invalid("--target-basis file is larger than 65536 bytes"));
         }
         let parsed: Vec<Target> = serde_json::from_slice(&bytes).map_err(|e| {
             invalid(format!(
-                "target basis must be an array of {{ref,seen_hash?}}: {e}"
+                "--target-basis must be a JSON array of {{\"ref\", \"seen_hash\"?}}: {e}"
             ))
         })?;
         targets = Some(parsed);
@@ -153,13 +153,13 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
     let (kind, value) = match verb.as_str() {
         "note" => {
             if reason.is_some() {
-                return Err(invalid("--reason belongs to withdraw"));
+                return Err(invalid("--reason is only for withdraw"));
             }
             if targets
                 .as_ref()
                 .is_some_and(|t| t.len() != 1 || t[0].reference != *reference)
             {
-                return Err(invalid("basis file must name the exact selected target"));
+                return Err(invalid("--target-basis must name the note's target"));
             }
             if targets.is_none() {
                 targets = Some(vec![Target {
@@ -175,7 +175,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
         "revise" => {
             if kind.is_some() || reason.is_some() {
                 return Err(invalid(
-                    "revise retains kind; provide final text and optional replacement target basis",
+                    "usage: note:ID revise TEXT [--target-basis FILE] [--request-id UUIDv7]",
                 ));
             }
             relations.push(Relation {
@@ -184,12 +184,14 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
             });
             (
                 None,
-                value.ok_or_else(|| invalid("revise requires final text"))?,
+                value.ok_or_else(|| invalid("usage: note:ID revise TEXT"))?,
             )
         }
         "withdraw" => {
             if value.is_some() || kind.is_some() || targets.is_some() || corrects.is_some() {
-                return Err(invalid("withdraw accepts --reason and --request-id only"));
+                return Err(invalid(
+                    "usage: note:ID withdraw --reason TEXT [--request-id UUIDv7]",
+                ));
             }
             relations.push(Relation {
                 kind: "withdraws".into(),
@@ -197,7 +199,9 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
             });
             (
                 Some(NoteKind::Withdrawal),
-                reason.ok_or_else(|| invalid("withdraw requires --reason TEXT"))?,
+                reason.ok_or_else(|| {
+                    invalid("usage: note:ID withdraw --reason TEXT [--request-id UUIDv7]")
+                })?,
             )
         }
         _ => unreachable!(),
@@ -219,10 +223,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
         relations,
     };
     request.validate()?;
-    eprintln!(
-        "authored request {} (reuse --request-id for an unchanged retry)",
-        request.request_id
-    );
+    eprintln!("to retry: --request-id {}", request.request_id);
     let mut value = serde_json::to_value(request).map_err(|e| invalid(e.to_string()))?;
     value["command"] = json!("note");
     Ok(Some(value))

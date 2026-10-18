@@ -191,7 +191,7 @@ fn authored_cli_retries_inherits_basis_and_reconstructs_backlinks_without_provid
     assert!(
         String::from_utf8(unsupported.stderr)
             .unwrap()
-            .contains("unsupported authored option --intent")
+            .contains("unknown note option --intent")
     );
     fs::remove_file(path).unwrap();
     w.restart_without_index();

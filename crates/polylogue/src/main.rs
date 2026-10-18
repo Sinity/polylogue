@@ -30,18 +30,76 @@ fn model_read_io_error(error: io::Error) -> Failure {
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ErrorKind::Timeout,
         _ => ErrorKind::Io,
     };
-    let mut failure = Failure::new(kind, format!("bounded model transport: {error}"));
+    let mut failure = Failure::new(kind, format!("read: {error}"));
     if failure.kind == ErrorKind::Timeout {
-        let suggestion =
-            "Use a narrower Message/block reference or a smaller display budget before retrying.";
+        let suggestion = "Read a single message or block, or use a smaller budget.";
         failure.message.push_str(". ");
         failure.message.push_str(suggestion);
         failure.suggestion = Some(suggestion.into());
     }
     failure
 }
+const HELP: &str = "\
+Polylogue: a local archive of AI coding sessions.
+
+Usage: polylogue [--archive DIR] COMMAND
+
+Archive and daemon:
+  daemon                              Run the archive daemon (Ctrl-C stops it)
+  daemon --config FILE [--until-idle] [--json]
+                                      Also collect from one configured source
+  import PATH --format FORMAT [--context FILE] [--wait [--wait-timeout SECONDS]]
+                                      Store one file; FORMAT is claude-code-jsonl,
+                                      codex-rollout or codex-history-sqlite
+  progress INPUT                      Show parsing progress of a stored file
+  retry INPUT                         Retry a failed parse
+  input cat INPUT                     Print a stored file, credentials masked
+  status                              Show daemon and source status
+  mcp                                 Serve MCP (status, search, read, note) on stdio
+  config schema                       Print the JSON schema of the --config file
+
+Finding and reading:
+  [QUERY] [list] [--json]             List sessions, e.g. 'origin:claude-code | limit 20'
+  find QUERY [--json]                 Search message text (words, \"phrases\", prefix*)
+  SESSION read [--format json|terminal]
+                                      Read a whole session
+  message:ID read                     Read one message in the terminal
+  REF read --budget TOKENS [--continuation TOKEN] [--view VIEW]
+                                      Read in pages sized for a token budget;
+                                      VIEW is dialogue, transcript (with --tools full
+                                      --thinking full --harness full [--branches]),
+                                      annotations, or for notes history, withdrawals,
+                                      current, value
+  SESSION export --format json --to DIR
+                                      Export one session into DIR
+
+Notes:
+  REF note TEXT [--kind note|correction] [--corrects REF] [--target-basis FILE]
+  note:ID revise TEXT [--target-basis FILE]
+  note:ID withdraw --reason TEXT
+                                      All note commands accept --request-id UUIDv7;
+                                      reuse it to retry after a lost reply
+
+Recovery (archive must be stopped):
+  recover --to NEW_DIR                Copy an archive whose last WAL segment is damaged
+  daemon --prepare-copy restore --request-id UUIDv7 --retired-writers
+                                      Prepare a stopped local copy to take over
+
+The archive defaults to $XDG_DATA_HOME/polylogue or ~/.local/share/polylogue.
+Commands talk to the daemon over a socket under $XDG_RUNTIME_DIR.
+Exit codes: 0 ok, 1 empty, 2 invalid request, 3 refused, 4 not found or I/O
+error, 5 partial result, 6 daemon not running, 7 timed out.
+";
+
 fn schema() -> serde_json::Value {
-    json!({"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Polylogue foundation configuration","type":"object","properties":{"archive":{"type":"string","description":"CLI --archive; default XDG_DATA_HOME/polylogue"}},"additionalProperties":false,"$defs":{"observedStartup":{"type":"object","oneOf":[{"required":["claude_main"],"properties":{"claude_main":{"type":"object"}}},{"required":["claude_projects"],"properties":{"claude_projects":{"type":"object"}}},{"required":["codex_home"],"properties":{"codex_home":{"type":"object"}}}],"additionalProperties":false,"properties":{"codex_home":{"type":["object","null"],"required":["home","machine","host"],"additionalProperties":false,"properties":{"home":{"type":"string","description":"Absolute explicit Codex home"},"machine":{"type":"string","minLength":1},"host":{"type":"string","minLength":1},"rollouts":{"type":"string","default":"sessions"},"catalog":{"type":"string","default":"state_5.sqlite"},"history":{"type":"string","default":"history.jsonl"},"paginated_history":{"type":"string","description":"Explicit physical history path within configured home; absent disables collection"},"paginated_interval_seconds":{"type":"integer","minimum":1,"maximum":86400,"default":300}}},"claude_main":{"type":["object","null"],"required":["path","machine","host"],"additionalProperties":false,"properties":{"path":{"type":"string","description":"Absolute regular Claude main JSONL path","pattern":"^/"},"machine":{"type":"string","minLength":1},"host":{"type":"string","minLength":1},"acquisition_quantum_bytes":{"type":"integer","minimum":65536,"maximum":8388608,"default":8388608}}},"claude_projects":{"type":["object","null"],"required":["root","machine","host"],"additionalProperties":false,"properties":{"root":{"type":"string","pattern":"^/","description":"Absolute explicit Claude projects directory; no default home discovery"},"machine":{"type":"string","minLength":1},"host":{"type":"string","minLength":1},"acquisition_quantum_bytes":{"type":"integer","minimum":65536,"maximum":8388608,"default":8388608}}}}}}})
+    json!({"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Polylogue configuration","type":"object","properties":{"archive":{"type":"string","description":"Archive directory, as --archive; default $XDG_DATA_HOME/polylogue"}},"additionalProperties":false,"$defs":{"observedStartup":{"type":"object","oneOf":[{"required":["claude_main"],"properties":{"claude_main":{"type":"object"}}},{"required":["claude_projects"],"properties":{"claude_projects":{"type":"object"}}},{"required":["codex_home"],"properties":{"codex_home":{"type":"object"}}}],"additionalProperties":false,"properties":{"codex_home":{"type":["object","null"],"required":["home","machine","host"],"additionalProperties":false,"properties":{"home":{"type":"string","description":"Absolute path of the Codex home"},"machine":{"type":"string","minLength":1},"host":{"type":"string","minLength":1},"rollouts":{"type":"string","default":"sessions"},"catalog":{"type":"string","default":"state_5.sqlite"},"history":{"type":"string","default":"history.jsonl"},"paginated_history":{"type":"string","description":"Paginated history database inside the Codex home; collected only when set"},"paginated_interval_seconds":{"type":"integer","minimum":1,"maximum":86400,"default":300}}},"claude_main":{"type":["object","null"],"required":["path","machine","host"],"additionalProperties":false,"properties":{"path":{"type":"string","description":"Absolute path of one Claude Code session JSONL file","pattern":"^/"},"machine":{"type":"string","minLength":1},"host":{"type":"string","minLength":1},"acquisition_quantum_bytes":{"type":"integer","minimum":65536,"maximum":8388608,"default":8388608}}},"claude_projects":{"type":["object","null"],"required":["root","machine","host"],"additionalProperties":false,"properties":{"root":{"type":"string","pattern":"^/","description":"Absolute path of a Claude Code projects directory"},"machine":{"type":"string","minLength":1},"host":{"type":"string","minLength":1},"acquisition_quantum_bytes":{"type":"integer","minimum":65536,"maximum":8388608,"default":8388608}}}}}}})
+}
+
+fn stop_on_ctrl_c() -> Result<Arc<AtomicBool>, Failure> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let signalled = Arc::clone(&stop);
+    ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
+    Ok(stop)
 }
 
 fn run() -> Result<i32, Failure> {
@@ -63,8 +121,8 @@ fn run() -> Result<i32, Failure> {
         }
     }
     let mut out = io::stdout().lock();
-    if args == ["--help"] || args == ["-h"] {
-        writeln!(out,"Polylogue foundation\nUsage: polylogue [--archive DIR] <daemon [--config FILE [--until-idle] [--json] | --prepare-copy restore --request-id UUIDv7 --retired-writers]|input cat ID|mcp|status|recover --to NEW_DEST|import PATH --format NAME [--context FILE] [--wait [--wait-timeout SECONDS]]|progress INPUT|retry INPUT|message:REF read --format terminal|SID read [--format json|terminal]|REF read --budget TOKENS [--continuation TOKEN] [--view dialogue|transcript|history|withdrawals|current|value|annotations] [--tools full --thinking full --harness full] [--branches]|REF note TEXT [--kind note|correction] [--target-basis FILE] [--request-id UUIDv7]|note:REF revise TEXT [--target-basis FILE] [--request-id UUIDv7]|note:REF withdraw --reason TEXT [--request-id UUIDv7]|SID export --format json --to DIR|[QUERY] [list] [--json]|config schema>\nRecovery copies a supported reused WAL tail from a stopped archive and returns degraded exit 5 with persistent historical uncertainty. Import retains one regular file. Explicit daemon --config observes one Claude main location, an explicit Claude projects directory or bounded Codex home snapshots using bounded acquisition turns. Projects mode requires the continuing daemon; --until-idle handles only supported single-file/Codex startup snapshots; input cat presents verified retained UTF-8 with credential masking. Selected Message terminal reads remain degraded. Exact native Session JSON/terminal reads can prove the supported provider-title shape; other shapes retain diagnostics. Session listing and prose words/phrases/prefixes share a degraded query capability (origin, kind, id, sort by last_active desc, limit). Exact native Session JSON directory export shares the pinned read. Bounded model reads support retained Text/Thinking selections, within-block continuation and measured structured budgets; explicit --view dialogue supports the human/model Text portion with tool, Thinking and harness omissions; unsupported included attachments refuse. The default subset still refuses included tools. Explicit --view transcript requires --tools full --thinking full --harness full and includes Text/Thinking/ToolCall/ToolResult with typed Message/tool metadata. Boolean --branches on that full selection includes known retained catalog members, preserving degraded qualification when active-path membership is unavailable; pending or invalidated selected rows still refuse. Zero-block Messages refuse rather than disappearing from a full transcript. Structured fields and textual tool output have a 65536-byte normalized JSON admission; other detail/collapse/range modes and included attachments refuse. Exact note/correction creation, current revision and withdrawal share durable request identity; note: reads preserve bounded history/control pages, an explicit authored archive basis and live supplied-basis comparison. Follow named next calls. Pinned --view value retrieves immutable content with effective status explicitly unevaluated. --view annotations pages exact target associations; incomplete associations degrade contextual completeness while preserving usable source text. Exact Text/Thinking reads expose a whole-target decoded UTF-8 authored_basis digest before masking; composite Message comparison stays unknown. MCP stdio exposes status/search/read/note; MCP attribution is harness session or agent. General exports and broader MCP capabilities remain unavailable.").map_err(io_error)?;
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        out.write_all(HELP.as_bytes()).map_err(io_error)?;
         return Ok(0);
     }
     if args == ["--version"] {
@@ -110,12 +168,10 @@ fn run() -> Result<i32, Failure> {
         if args.len() != 3 || args[1] != "--to" || args[2].is_empty() {
             return Err(error(
                 ErrorKind::InvalidQuery,
-                "recover requires exactly --to DEST",
+                "usage: recover --to NEW_DIR",
             ));
         }
-        let stop = Arc::new(AtomicBool::new(false));
-        let signalled = Arc::clone(&stop);
-        ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
+        let stop = stop_on_ctrl_c()?;
         let report = polylogue::Running::recover_copy(&archive, &PathBuf::from(&args[2]), &stop)
             .map_err(io_error)?;
         serde_json::to_writer(&mut out,&json!({"outcome":"degraded","destination":report.destination,"recovery":report.recovery,"receipt":report.receipt,"notes":[polylogue_model::RecoveryRecord::NOTE],"missing":[polylogue_model::RecoveryRecord::NOTE]})).map_err(io_error)?;
@@ -144,14 +200,12 @@ fn run() -> Result<i32, Failure> {
                 _ => {
                     return Err(error(
                         ErrorKind::InvalidQuery,
-                        "preparation supports only --prepare-copy restore --request-id UUIDv7 --retired-writers; independent/primary/configured preparation and --until-idle are unavailable",
+                        "usage: daemon --prepare-copy restore --request-id UUIDv7 --retired-writers",
                     ));
                 }
             }
         }
-        let stop = Arc::new(AtomicBool::new(false));
-        let signalled = Arc::clone(&stop);
-        ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
+        let stop = stop_on_ctrl_c()?;
         let preparation = polylogue_store::copy_preparation::Preparation::begin(
             &archive,
             mode.unwrap_or(""),
@@ -212,7 +266,7 @@ fn run() -> Result<i32, Failure> {
                 _ => {
                     return Err(error(
                         ErrorKind::InvalidQuery,
-                        "export supports one exact native Session with --format json --to DIR only",
+                        "usage: SESSION export --format json --to DIR",
                     ));
                 }
             }
@@ -221,7 +275,7 @@ fn run() -> Result<i32, Failure> {
         Some(destination.filter(|_| format).ok_or_else(|| {
             error(
                 ErrorKind::InvalidQuery,
-                "export requires --format json --to DIR",
+                "usage: SESSION export --format json --to DIR",
             )
         })?)
     } else {
@@ -281,15 +335,10 @@ fn run() -> Result<i32, Failure> {
         ));
     }
     if args == ["daemon"] {
-        let stop = Arc::new(AtomicBool::new(false));
-        let signalled = Arc::clone(&stop);
-        ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
+        let stop = stop_on_ctrl_c()?;
         let mut running = polylogue::Running::start_cancellable(&archive, &runtime, &stop)
             .map_err(|e| error(ErrorKind::Io, format!("archive {}: {e}", archive.display())))?;
-        eprintln!(
-            "listening: {} (retained source replay; no source watcher)",
-            running.socket().display()
-        );
+        eprintln!("listening: {}", running.socket().display());
         while !stop.load(Ordering::Acquire) {
             thread::sleep(Duration::from_millis(10));
         }
@@ -326,9 +375,7 @@ fn run() -> Result<i32, Failure> {
             );
         }
         if reply["outcome"] == "degraded" {
-            eprintln!(
-                "Export coverage is incomplete; detached documents and manifest retain the result diagnostics."
-            );
+            eprintln!("Export is incomplete; manifest.json names what is missing.");
         }
         return reply_exit_code(&reply);
     }
@@ -400,12 +447,10 @@ fn run() -> Result<i32, Failure> {
         }
         if reply["outcome"] == "degraded" {
             if session_json || session_terminal {
-                eprintln!(
-                    "Read coverage is incomplete; result diagnostics name the unsupported or unfinished dependencies."
-                );
+                eprintln!("Read is incomplete; the result names what is missing.");
             } else {
                 eprintln!(
-                    "Read coverage is incomplete: canonical history and source provenance remain pending."
+                    "Read is incomplete: message history and source locations are not shown yet."
                 );
             }
         }
@@ -413,7 +458,7 @@ fn run() -> Result<i32, Failure> {
     }
     if let Some(command) = command.as_ref().filter(|v| v["command"] == "import") {
         eprintln!(
-            "import request {} --seen-at {}",
+            "to retry: --request-id {} --seen-at {}",
             command["id"].as_str().unwrap_or(""),
             command["seen_at"]
         );
@@ -498,7 +543,7 @@ mod tests {
             assert_eq!(failure.outcome().exit_code(), 7);
             assert!(failure.suggestion.is_some());
             assert!(!failure.retryable);
-            assert!(failure.message.contains("narrower Message/block reference"));
+            assert!(failure.message.contains("smaller budget"));
         }
         assert_eq!(
             model_read_io_error(io::Error::new(
