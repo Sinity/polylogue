@@ -1,0 +1,125 @@
+{
+  "accounting": {
+    "framed": 8,
+    "materialized": {
+      "legacy_header": 1,
+      "response_item/function_call": 1,
+      "response_item/function_call_output": 1,
+      "response_item/message": 2,
+      "response_item/reasoning": 1
+    },
+    "refused": {},
+    "unknown": {
+      "state: turn-state marker of 2025 rollouts; holds no content": 2
+    },
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 325,
+        "message": {
+          "blocks": [
+            {
+              "text": "list the files",
+              "type": "text"
+            }
+          ],
+          "id": "codex:019a0000-0000-7000-8000-000000000002@225",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "codex:019a0000-0000-7000-8000-000000000002"
+        },
+        "offset": 225
+      },
+      {
+        "end": 423,
+        "message": {
+          "blocks": [
+            {
+              "redacted": true,
+              "text": null,
+              "type": "thinking"
+            }
+          ],
+          "id": "codex:rs_1",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-000000000002"
+        },
+        "offset": 350
+      },
+      {
+        "end": 574,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_l",
+              "command": "ls",
+              "input": {
+                "command": [
+                  "bash",
+                  "-lc",
+                  "ls"
+                ],
+                "timeout_ms": 10000
+              },
+              "tool": "shell",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:fc_1",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-000000000002"
+        },
+        "offset": 424
+      },
+      {
+        "end": 735,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_l",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "{\"output\": \"Cargo.toml\\nsrc\\n\", \"metadata\": {\"exit_code\": 0, \"duration_seconds\": 0.1}}",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:019a0000-0000-7000-8000-000000000002@575",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:019a0000-0000-7000-8000-000000000002"
+        },
+        "offset": 575
+      },
+      {
+        "end": 843,
+        "message": {
+          "blocks": [
+            {
+              "text": "Two entries.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg_1",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-000000000002"
+        },
+        "offset": 736
+      }
+    ],
+    "sessions": [
+      {
+        "git_branch": "main",
+        "id": "codex:019a0000-0000-7000-8000-000000000002",
+        "kind": "main",
+        "started": "2025-08-11T16:59:28.123Z"
+      }
+    ]
+  }
+}

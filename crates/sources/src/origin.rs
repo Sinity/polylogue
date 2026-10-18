@@ -57,6 +57,17 @@ impl Root {
     };
 }
 
+/// What is stored for a file found at an origin's location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capture {
+    /// The file's bytes.
+    Bytes,
+    /// A tool's SQLite database: a typed logical export of its rows,
+    /// written by the store and parsed in place of the database, never
+    /// page images (architecture 4.2).
+    LogicalExport,
+}
+
 pub struct OriginSpec {
     pub name: &'static str,
     /// Bumped when the parser's output for the same bytes changes; the
@@ -70,6 +81,7 @@ pub struct OriginSpec {
     /// Glob patterns relative to `root`, exactly the layout the tool
     /// writes. Empty for imports.
     pub locations: &'static [&'static str],
+    pub capture: Capture,
     /// Whether a file is this origin's, from its path and first bytes. Runs
     /// before the origin is decided; a suffix alone never decides it.
     pub recognize: fn(&Path, &[u8]) -> bool,
@@ -99,16 +111,12 @@ macro_rules! reserved {
             framing: Framing::Lines,
             root: $root,
             locations: &[$($loc),*],
+            capture: Capture::Bytes,
             recognize: never,
             open: none,
         }
     };
 }
-
-const CODEX_HOME: Root = Root {
-    env: Some("CODEX_HOME"),
-    default: ".codex",
-};
 
 pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
@@ -119,19 +127,48 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Lines,
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::LOCATIONS,
+        capture: Capture::Bytes,
         recognize: crate::claude_code::recognize,
         open: crate::claude_code::open,
     },
-    reserved!(
-        "codex",
-        Live,
-        CODEX_HOME,
-        ["sessions/**/*.jsonl", "history.jsonl"]
-    ),
-    reserved!("codex-database", Live, CODEX_HOME, ["*.sqlite"]),
+    OriginSpec {
+        name: "codex",
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Live,
+        root: crate::codex::ROOT,
+        locations: crate::codex::LOCATIONS,
+        capture: Capture::Bytes,
+        framing: Framing::Lines,
+        recognize: crate::codex::recognize,
+        open: crate::codex::open,
+    },
+    OriginSpec {
+        name: "codex-database",
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Live,
+        root: crate::codex::database::ROOT,
+        locations: crate::codex::database::LOCATIONS,
+        capture: Capture::LogicalExport,
+        framing: Framing::Lines,
+        recognize: crate::codex::database::recognize,
+        open: crate::codex::database::open,
+    },
     reserved!("gemini-cli", Live, [".gemini/tmp/*/chats/*.json"]),
     reserved!("antigravity", Live, [".gemini/antigravity/**"]),
-    reserved!("hermes", Live, [".hermes/state.db"]),
+    OriginSpec {
+        name: "hermes",
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Live,
+        root: Root::HOME,
+        locations: crate::kept_rows::HERMES_LOCATIONS,
+        capture: Capture::LogicalExport,
+        framing: Framing::Lines,
+        recognize: crate::kept_rows::recognize_hermes,
+        open: crate::kept_rows::open,
+    },
     reserved!("grok-cli", Live, [".grok/**"]),
     reserved!(
         "hook-spool",
@@ -151,6 +188,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
+        capture: Capture::Bytes,
         recognize: never,
         open: none,
     },
@@ -162,6 +200,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
+        capture: Capture::Bytes,
         recognize: crate::chatgpt::recognize,
         open: crate::chatgpt::open,
     },
@@ -173,6 +212,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
+        capture: Capture::Bytes,
         recognize: crate::claude_ai::recognize,
         open: crate::claude_ai::open,
     },
@@ -184,6 +224,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
+        capture: Capture::Bytes,
         recognize: crate::claude_ai::recognize_design,
         open: crate::claude_ai::open_design,
     },
@@ -197,6 +238,12 @@ pub static ORIGINS: &[OriginSpec] = &[
 
 pub fn by_name(name: &str) -> Option<&'static OriginSpec> {
     ORIGINS.iter().find(|o| o.name == name)
+}
+
+/// The export file name of a database found at a [`Capture::LogicalExport`]
+/// origin's location: `<db file name>.jsonl`.
+pub fn export_name(db: &Path) -> Option<String> {
+    Some(format!("{}.jsonl", db.file_name()?.to_str()?))
 }
 
 #[cfg(test)]

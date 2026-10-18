@@ -1,0 +1,128 @@
+{
+  "accounting": {
+    "framed": 5,
+    "materialized": {
+      "response_item/function_call": 2,
+      "response_item/function_call_output": 2,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [
+      {
+        "call_id": "call_r",
+        "outcome": {
+          "kind": "ok"
+        },
+        "session": "codex:019a0000-0000-7000-8000-000000000001",
+        "task_id": "process 31337"
+      }
+    ],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 572,
+        "message": {
+          "at": "2026-03-01T10:00:02Z",
+          "blocks": [
+            {
+              "call_id": "call_r",
+              "command": "cargo test",
+              "input": {
+                "cmd": "cargo test"
+              },
+              "tool": "exec_command",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:019a0000-0000-7000-8000-000000000001@381",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 381
+      },
+      {
+        "end": 832,
+        "message": {
+          "at": "2026-03-01T10:00:03Z",
+          "blocks": [
+            {
+              "call_id": "call_r",
+              "outcome": {
+                "kind": "unknown",
+                "reason": "running_in_background"
+              },
+              "output": "Chunk ID: 2b\nWall time: 1.0 seconds\nProcess running with session ID 31337\nOriginal token count: 0\nOutput:\n",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:019a0000-0000-7000-8000-000000000001@573",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 573
+      },
+      {
+        "end": 1063,
+        "message": {
+          "at": "2026-03-01T10:00:04Z",
+          "blocks": [
+            {
+              "call_id": "call_w",
+              "input": {
+                "chars": "",
+                "session_id": 31337,
+                "yield_time_ms": 5000
+              },
+              "tool": "write_stdin",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:019a0000-0000-7000-8000-000000000001@833",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 833
+      },
+      {
+        "end": 1327,
+        "message": {
+          "at": "2026-03-01T10:00:05Z",
+          "blocks": [
+            {
+              "call_id": "call_w",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "Chunk ID: 3c\nWall time: 4.9 seconds\nProcess exited with code 0\nOriginal token count: 4\nOutput:\ntest result: ok",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:019a0000-0000-7000-8000-000000000001@1064",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 1064
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/work/repo"
+        ],
+        "git_branch": "main",
+        "id": "codex:019a0000-0000-7000-8000-000000000001",
+        "kind": "main",
+        "started": "2026-03-01T10:00:00Z",
+        "tool_version": "0.160.0"
+      }
+    ]
+  }
+}

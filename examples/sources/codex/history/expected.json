@@ -1,0 +1,48 @@
+{
+  "accounting": {
+    "framed": 2,
+    "materialized": {
+      "prompt": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "2026-03-01T10:00:00Z",
+        "data": {
+          "session_id": "019a0000-0000-7000-8000-000000000001",
+          "text": "Why does the build fail?",
+          "ts": 1772359200
+        },
+        "kind": "prompt",
+        "range": [
+          0,
+          103
+        ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      },
+      {
+        "at": "2025-08-11T16:59:28Z",
+        "data": {
+          "session_id": "019a0000-0000-7000-8000-000000000002",
+          "text": "list the files",
+          "ts": 1754931568
+        },
+        "kind": "prompt",
+        "range": [
+          104,
+          197
+        ],
+        "session": "codex:019a0000-0000-7000-8000-000000000002"
+      }
+    ],
+    "links": [],
+    "messages": [],
+    "sessions": []
+  }
+}

@@ -9,6 +9,7 @@
 
 pub mod blobs;
 pub mod excise;
+pub mod export;
 pub mod files;
 pub mod notes;
 pub mod read;

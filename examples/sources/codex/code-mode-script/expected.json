@@ -1,0 +1,175 @@
+{
+  "accounting": {
+    "framed": 6,
+    "materialized": {
+      "event_msg/item_completed": 3,
+      "response_item/custom_tool_call": 1,
+      "response_item/custom_tool_call_output": 1,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 652,
+        "message": {
+          "at": "2026-03-01T10:00:02Z",
+          "blocks": [
+            {
+              "call_id": "call_x",
+              "command": "const r = await tools.exec_command({cmd: 'git status --short'}); text(r.output);",
+              "input": "const r = await tools.exec_command({cmd: 'git status --short'}); text(r.output);",
+              "tool": "exec",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:ctc_1",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 381
+      },
+      {
+        "end": 1158,
+        "message": {
+          "at": "2026-03-01T10:00:03Z",
+          "blocks": [
+            {
+              "call_id": "call_inner",
+              "command": "git status --short",
+              "input": {
+                "command": [
+                  "zsh",
+                  "-lc",
+                  "git status --short"
+                ],
+                "cwd": "file:///work/repo",
+                "parsed_cmd": []
+              },
+              "tool": "command_execution",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "call_inner",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": " M src/main.rs",
+              "type": "tool_result"
+            }
+          ],
+          "duration_ms": 30,
+          "id": "codex:call_inner",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 653
+      },
+      {
+        "end": 1588,
+        "message": {
+          "at": "2026-03-01T10:00:04Z",
+          "blocks": [
+            {
+              "call_id": "call_patch",
+              "input": {
+                "/work/repo/src/main.rs": {
+                  "type": "update",
+                  "unified_diff": "@@ -1 +1 @@\n-x\n+y"
+                }
+              },
+              "path": "/work/repo/src/main.rs",
+              "tool": "file_change",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "call_patch",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "Success. Updated the following files:\nM src/main.rs",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:call_patch",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 1159
+      },
+      {
+        "end": 1849,
+        "message": {
+          "at": "2026-03-01T10:00:05Z",
+          "blocks": [
+            {
+              "call_id": "call_x",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "Script completed\nWall time 0.2 seconds\nOutput:\n M src/main.rs",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:ctco_1",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 1589
+      },
+      {
+        "end": 2164,
+        "message": {
+          "at": "2026-03-01T10:00:06Z",
+          "blocks": [
+            {
+              "call_id": "ws_1",
+              "input": {
+                "action": {
+                  "query": "rust E0425",
+                  "type": "search"
+                },
+                "query": "rust E0425"
+              },
+              "tool": "web_search",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "ws_1",
+              "outcome": {
+                "kind": "unknown",
+                "reason": "status_field_unreadable"
+              },
+              "output": null,
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:ws_1",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 1850
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/work/repo"
+        ],
+        "git_branch": "main",
+        "id": "codex:019a0000-0000-7000-8000-000000000001",
+        "kind": "main",
+        "started": "2026-03-01T10:00:00Z",
+        "tool_version": "0.160.0"
+      }
+    ]
+  }
+}

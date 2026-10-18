@@ -37,6 +37,12 @@ impl Archive {
         self.root.join("blobs")
     }
 
+    /// Logical exports of tool databases (architecture 4.2): one
+    /// append-only file per database, stored as an ordinary input.
+    pub fn exports_dir(&self) -> PathBuf {
+        self.root.join("exports")
+    }
+
     /// The daemon's socket. Clients find the daemon of an archive here.
     pub fn socket(&self) -> PathBuf {
         self.root.join("daemon.sock")
