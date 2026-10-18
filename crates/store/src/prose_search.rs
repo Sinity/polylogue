@@ -50,6 +50,8 @@ impl ProseSearch {
     pub fn new() -> Result<Self> {
         let connection = Connection::open_in_memory().map_err(failure)?;
         connection.execute_batch("CREATE TABLE docs(rowid INTEGER PRIMARY KEY, message TEXT, session TEXT, body TEXT); CREATE VIRTUAL TABLE prose USING fts5(body,content='docs',content_rowid='rowid',tokenize='unicode61 remove_diacritics 2'); CREATE TABLE parts(rowid INTEGER PRIMARY KEY,doc INTEGER,body TEXT); CREATE INDEX parts_doc ON parts(doc); CREATE VIRTUAL TABLE prose_parts USING fts5(body,content='parts',content_rowid='rowid',tokenize='unicode61 remove_diacritics 2');").map_err(failure)?;
+        // This transaction belongs only to this disposable query-private database.
+        connection.execute_batch("BEGIN").map_err(failure)?;
         Ok(Self {
             connection,
             bytes: 0,

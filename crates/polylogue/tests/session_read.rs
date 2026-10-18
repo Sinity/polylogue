@@ -2423,3 +2423,6 @@ mod claude_active_leaf;
 
 #[path = "session_read/codex_active.rs"]
 mod codex_active;
+
+#[path = "session_read/prose_search_transaction.rs"]
+mod prose_search_transaction;
