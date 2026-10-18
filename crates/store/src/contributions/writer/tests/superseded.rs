@@ -1,17 +1,7 @@
 use super::*;
 
-fn source(token: &parser_state::Token) -> Source<'_> {
-    Source {
-        predecessor: token,
-        revision: 1,
-        evidence_revision: 1,
-        logical_key: [3; 32],
-        route: RouteKind::Native,
-    }
-}
-
 #[test]
-fn identical_preparation_resumes_but_changed_parser_drains_private_work_across_restart() {
+fn same_preparation_resumes_and_a_new_parser_drains_the_old_one() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     let partial = f
@@ -89,7 +79,7 @@ fn identical_preparation_resumes_but_changed_parser_drains_private_work_across_r
 }
 
 #[test]
-fn superseded_preparation_admission_and_missing_message_do_not_invalidate() {
+fn superseded_turn_checks_limits_and_ignores_missing_message() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     assert!(matches!(

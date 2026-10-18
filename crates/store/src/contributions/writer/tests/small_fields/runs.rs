@@ -1,5 +1,4 @@
 use super::*;
-use crate::contributions::{SmallFieldEntry, SourceRange, SourceRangeEntry};
 fn fields() -> Vec<SmallFieldEntry> {
     ["one", "two", "three"]
         .into_iter()
@@ -27,18 +26,13 @@ fn ranges() -> Vec<SourceRangeEntry> {
         .collect()
 }
 fn parsed(f: &mut Fixture) {
-    f.writer
-        ._index
-        .execute_batch(
-            "UPDATE parse_state SET parsed_upto=acquired_upto,inspected_upto=acquired_upto",
-        )
-        .unwrap();
+    f.exec("UPDATE parse_state SET parsed_upto=acquired_upto,inspected_upto=acquired_upto");
 }
 fn signature(f: &Fixture) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     f.writer._index.prepare("SELECT s.semantic_key,v.hash,o.hash FROM message_field_fact f JOIN message_field_slot s ON s.pk=f.slot_pk JOIN body_value v ON v.pk=f.value_pk JOIN body_value o ON o.pk=f.origin_value_pk ORDER BY s.semantic_key").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<std::result::Result<_,_>>().unwrap()
 }
 #[test]
-fn typed_field_run_matches_single_field_facts_roots_and_every_sequence_after_reopen() {
+fn field_run_matches_single_field_writes_after_reopen() {
     let mut a = Fixture::new();
     let ba = a.prepare().unwrap().build;
     let mut b = Fixture::new();
@@ -55,10 +49,7 @@ fn typed_field_run_matches_single_field_facts_roots_and_every_sequence_after_reo
                 e.supplied,
                 e.block,
                 &e.field,
-                &ProjectionStep {
-                    expected_sequence: e.expected_sequence,
-                    next_cursor: &e.next_cursor,
-                },
+                &step(e.expected_sequence, &e.next_cursor),
                 65536,
             )
             .unwrap();
@@ -77,7 +68,7 @@ fn typed_field_run_matches_single_field_facts_roots_and_every_sequence_after_reo
     );
 }
 #[test]
-fn typed_runs_late_member_failure_rolls_back_values_descriptors_fields_ranges_and_sequence() {
+fn failed_run_member_rolls_back_the_whole_run() {
     for citations in [false, true] {
         let mut f = Fixture::new();
         parsed(&mut f);
@@ -113,7 +104,7 @@ fn typed_runs_late_member_failure_rolls_back_values_descriptors_fields_ranges_an
     }
 }
 #[test]
-fn typed_runs_keep_live_hidden_removal_contributor_excision_and_source_guards() {
+fn runs_check_hidden_removal_contributor_excision_and_source() {
     for sql in [
         "UPDATE message SET hidden=1",
         "UPDATE message SET removal_epoch=removal_epoch+1",
@@ -125,7 +116,7 @@ fn typed_runs_keep_live_hidden_removal_contributor_excision_and_source_guards() 
             let mut f = Fixture::new();
             parsed(&mut f);
             let build = f.prepare().unwrap().build;
-            f.writer._index.execute_batch(sql).unwrap();
+            f.exec(sql);
             let refused = if citations {
                 f.writer.add_message_source_run(&build, &ranges(), 65536)
             } else {
@@ -140,7 +131,7 @@ fn typed_runs_keep_live_hidden_removal_contributor_excision_and_source_guards() 
     }
 }
 #[test]
-fn aggregate_admission_and_typed_key_failure_happen_without_partial_install() {
+fn run_size_or_key_errors_install_nothing() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     let entries = fields();
@@ -162,7 +153,7 @@ fn aggregate_admission_and_typed_key_failure_happen_without_partial_install() {
     );
 }
 #[test]
-fn source_range_run_matches_single_source_set_and_duplicate_semantics() {
+fn source_range_run_matches_single_range_writes() {
     let mut a = Fixture::new();
     parsed(&mut a);
     let ba = a.prepare().unwrap().build;
@@ -177,10 +168,7 @@ fn source_range_run_matches_single_source_set_and_duplicate_semantics() {
             .add_message_source(
                 &bb,
                 e.range,
-                &ProjectionStep {
-                    expected_sequence: e.expected_sequence,
-                    next_cursor: &e.next_cursor,
-                },
+                &step(e.expected_sequence, &e.next_cursor),
                 65536,
             )
             .unwrap();
@@ -196,7 +184,7 @@ fn source_range_run_matches_single_source_set_and_duplicate_semantics() {
     );
 }
 #[test]
-fn scoped_logical_reads_observe_first_action_then_bound_all_adapters_and_restore_on_panic() {
+fn bounded_reads_enforce_after_first_read_and_reset_after_panic() {
     let mut f = Fixture::new();
     let _ = f.prepare().unwrap();
     let snapshot = f.writer.parser_snapshot(&f.head.token).unwrap();
@@ -259,10 +247,10 @@ fn scoped_logical_reads_observe_first_action_then_bound_all_adapters_and_restore
 }
 
 #[test]
-fn every_member_rechecks_live_authority_and_rolls_back_triggered_removal() {
+fn every_run_member_rechecks_message_state() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
-    f.writer._index.execute_batch("CREATE TRIGGER synthetic_hide AFTER INSERT ON message_field_fact BEGIN UPDATE message SET hidden=1; END;").unwrap();
+    f.exec("CREATE TRIGGER synthetic_hide AFTER INSERT ON message_field_fact BEGIN UPDATE message SET hidden=1; END;");
     assert!(matches!(
         f.writer.write_small_field_run(&build, &fields(), 65536),
         Err(Error::StaleMessage)

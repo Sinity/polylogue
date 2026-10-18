@@ -1,12 +1,11 @@
 use super::*;
 
 #[test]
-fn late_directory_edge_failure_rolls_back_ready_nodes_values_roots_and_cursor() {
+fn late_directory_failure_rolls_back_small_field() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
-    // Eight levels and their child acquisitions succeed before the next edge
-    // fails. Ready nodes inserted in this transaction must not survive failure.
-    f.writer._index.execute_batch("CREATE TRIGGER refuse_late_directory_edge BEFORE INSERT ON message_body_edge WHEN NEW.parent_height=8 BEGIN SELECT RAISE(ABORT,'synthetic late directory edge'); END;").unwrap();
+    // Fail the edge insert at height 8, after eight levels were written.
+    f.exec("CREATE TRIGGER refuse_late_directory_edge BEFORE INSERT ON message_body_edge WHEN NEW.parent_height=8 BEGIN SELECT RAISE(ABORT,'synthetic late directory edge'); END;");
     assert!(matches!(
         f.writer.write_small_field(
             &build,
@@ -15,15 +14,12 @@ fn late_directory_edge_failure_rolls_back_ready_nodes_values_roots_and_cursor() 
             true,
             false,
             &payload(),
-            &step(0),
+            &step(0, b"small-field-cursor"),
             65536
         ),
         Err(Error::Sqlite { .. })
     ));
-    f.writer
-        ._index
-        .execute_batch("DROP TRIGGER refuse_late_directory_edge")
-        .unwrap();
+    f.exec("DROP TRIGGER refuse_late_directory_edge");
     let mut f = f.reopen();
     for table in [
         "body_value",
@@ -53,7 +49,7 @@ fn late_directory_edge_failure_rolls_back_ready_nodes_values_roots_and_cursor() 
         ),
         1
     );
-    // Ordinary retry starts from the same Build and creates one complete path.
+    // A retry with the same Build writes one complete path.
     f.writer
         .write_small_field(
             &build,
@@ -62,7 +58,7 @@ fn late_directory_edge_failure_rolls_back_ready_nodes_values_roots_and_cursor() 
             true,
             false,
             &payload(),
-            &step(0),
+            &step(0, b"small-field-cursor"),
             65536,
         )
         .unwrap();
