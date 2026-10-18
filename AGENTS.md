@@ -1,25 +1,55 @@
 # Repository Guidelines
 
-This workspace prepares Polylogue’s Rust replacement. The top-level README and CLI help own supported capabilities and their limits; `docs/rewrite/` records the candidate’s specification basis. Preserve explicit unsupported outcomes while completing a path. Predecessor deployment consumers remain separately pinned until authorized cutover.
+This is the Rust rewrite of Polylogue. The README and CLI help describe what
+works today. The design lives in the spec repository
+(`/realm/inbox/spec/polylogue-spec/`); `docs/rewrite/` holds notes on parts
+already built. The Python Polylogue is still the deployed version until the
+operator switches over.
 
 ## Structure
 
-`crates/model` owns pure identity, value and outcome types. `crates/hashed-blobs` is the reviewed shared file layer with a read-only capability. `crates/store` owns every SQLite connection and mutation. `crates/engine` computes provider work outside the writer and installs it through typed store operations. `crates/polylogue` owns configuration, process lifetime, the daemon actor and CLI. `xtask` runs focused developer checks. Retained-source progress and canonical Message readiness are distinct; source EOF alone cannot certify a complete query.
+- `crates/model`: pure identity, value and outcome types; no IO, no storage.
+- `crates/hashed-blobs`: the content-addressed file store shared with Sinex.
+- `crates/store`: every SQLite connection and write. Nothing else touches SQLite.
+- `crates/engine`: parses provider files outside the writer and hands the
+  results to the store.
+- `crates/polylogue`: configuration, the daemon and the CLI. Clients get typed
+  store handles, never raw connections.
+- `xtask`: developer checks (`boundaries`, `check`).
 
-## Tests
+Reading a source file to its end does not mean its messages are parsed and
+queryable; the two are tracked separately.
 
-Keep substantial unit tests and fixtures in separate source files, using private `#[cfg(test)]` modules for implementation access. Keep production visibility unchanged when moving tests. Small nearby tests may stay inline. Use synthetic inputs and isolated temporary state. CLI and MCP acceptance tests exercise their shared semantics through public routes.
+## Development loop
 
-## Commands and style
+Optimize for fast integration. See `docs/development.md`.
 
-Use the declared AgentCTL operations for builds and suites. `nix flake check` builds packaged binaries and runs foundation checks; `scripts/check-fast.sh` owns routine checks; `cargo run -p xtask -- check` runs the full local workspace suite. Rust uses four spaces and rustfmt. Stage explicit paths; run the normal hooks. Keep the target crate edges: model never depends on storage or IO; only store uses SQLite; surfaces obtain typed store handles, never raw connections.
+- Run focused tests for the change while editing.
+- The pre-push hook runs `scripts/check-fast.sh` (seconds). There is no hosted
+  CI and no required check; open a PR and merge it when it is ready.
+- Run the full suite (`cargo run --locked -p xtask -- check`) or `nix flake
+  check` as an AgentCTL job on batches of merged work, not before every merge.
+  Fix what it finds afterwards.
+- Merge small PRs often. Rebase before pushing; do not keep long-lived
+  branches.
+- Report what you ran and what you did not. A merge is not evidence of testing.
 
-## Development flow
+## Code
 
-Optimize routine development for fast feedback and integration. Use cheap checks and focused behavioral tests for the actual delta; full local packages, full behavioral suites and full-corpus verification are not prerequisites for every development merge. Development bugs can be repaired after integration. Keep pass, fail, pending, unrun and superseded outcomes explicit; integration is not proof of testing. Run extended validation separately on meaningful integrated batches and continue independent development while it runs. Coalesce expensive queued checks to useful latest-main candidates through supported job tooling; do not enqueue a full verification sequence for every small change. Use the normal permitted PR route and existing required checks; do not change branch protection. Real-data custody, secrets, destructive operations and deployment retain their separate safeguards.
+- Rust, four-space indent, `rustfmt`.
+- Comments state constraints and reasons, briefly. No status, history or spec
+  narration in code; Git and Beads hold those.
+- Tests go in separate files (`src/tests.rs` or `tests/`) using `#[cfg(test)]`
+  modules when they need private access; small tests may stay inline. Use
+  synthetic inputs and temporary directories. CLI and MCP tests go through the
+  public commands.
+- Unsupported operations return a typed error, never an empty success.
+  Unknown times stay unknown. IDs are opaque strings and may contain colons.
+  Check the schema version before writing.
 
-## Correctness and delivery
+## Data and safety
 
-Unsupported operations return a typed non-success result. Unknown time remains unknown. IDs are opaque strings; native IDs may contain colons. Never manufacture a completed empty query from unsupported behavior. Durable schema validation precedes mutation. Preserve existing edits and name remaining unsupported acceptance honestly.
-
-Local foundation commits do not authorize PR publication, source-default replacement, task routing, provider import, archive deletion or host activation. Keep credentials, captures, private reports and actual databases outside Git. The retained LICENSE and historical changelog preserve predecessor attribution/history.
+Keep credentials, real captures, private reports and real databases out of
+Git. Merging code is fine at any time; importing real data, deleting an
+archive, replacing the deployed Python Polylogue or activating host services
+needs the operator's say-so.

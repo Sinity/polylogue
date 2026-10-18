@@ -8,7 +8,7 @@ Predecessor base: `b4b61c7eab8daf740bfdccb146e530906839726d`. The Rust foundatio
 |---|---|
 | `.agent` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
 | `.agentctl` | Replaced with declared isolated Nix foundation operations. |
-| `.circleci` | Replaced with the same quick-gate job name running actual Nix foundation checks. |
+| `.circleci` | Removed: there is no hosted CI; checks run locally (`docs/development.md`). |
 | `.claude` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
 | `.codex` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
 | `.config` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
@@ -30,7 +30,7 @@ Predecessor base: `b4b61c7eab8daf740bfdccb146e530906839726d`. The Rust foundatio
 | `browser-extension` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
 | `contrib` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
 | `devtools` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
-| `docs` | Predecessor docs retired with their callers; selected current target contracts copied under docs/rewrite, history preserved separately. |
+| `docs` | Predecessor docs retired with their callers; implementation notes under docs/rewrite, history preserved separately. |
 | `experiments` | Removed from the target workspace; predecessor implementation/configuration remains in the preserved Git history. No successor capability is advertised from this path. |
 | `flake.lock` | Replaced with the reviewed target Nixpkgs lock. |
 | `flake.nix` | Replaced with standalone Rust package, test and development outputs. |

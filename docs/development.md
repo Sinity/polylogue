@@ -1,11 +1,17 @@
 # Development checks
 
-Use focused behavioral tests while editing. Use full `nix flake check --print-build-logs` for meaningful integrated batches, separately from routine integration. The author remains responsible for tests appropriate to the change and for reporting untested scope. `cargo run --locked -p xtask -- check` remains available for a full local workspace test run.
+There is no hosted CI. Checks run on the development machine, which is much
+faster than a hosted runner.
 
-Routine pushes and the required CircleCI `quick-gate` use `scripts/check-fast.sh`: formatting, crate-boundary validation and compilation of all workspace targets, including test code. These checks do not execute behavioral tests. They run through the pinned Nix development environment. Cargo build output and registry downloads are cached by architecture, toolchain lock and dependency lock, with revision-specific saves. Cargo still checks source fingerprints and rebuilds changed code. The first run or a lock change can be cold.
+- **While editing:** run the focused tests for what you changed
+  (`cargo test -p <crate> <filter>`).
+- **On push:** the pre-push hook runs `scripts/check-fast.sh` (formatting,
+  crate boundaries, `cargo check` of every target including tests). It takes a
+  few seconds warm and skips pushes that touch no Rust or build inputs.
+- **On a batch of merged work:** run the full suite, `cargo run --locked -p
+  xtask -- check`, or the clean package build, `nix flake check`. Run them as
+  AgentCTL jobs (`foundation_check`) and keep developing while they run. Fix
+  what they find in follow-up PRs.
 
-The pre-push hook skips Rust work for documentation, CI and hook-only pushes. Unknown bases, changed Rust/build/acceptance inputs and pushes of a commit other than the current checkout take the fast-check path. Prose-only PRs stop before compilation; changes to CI or hooks exercise the gate.
-
-The full clean Nix package build, workspace tests and crate boundaries run separately on master after integration. Master runs that job instead of repeating both jobs. Failure needs repair before treating the revision as a qualified distributable. It is not a second per-PR merge wait. A change to packaging may justify a focused package check; it does not impose full package or corpus qualification on every development PR. Existing hosted required status names and review rules remain unchanged.
-
-Post-merge package jobs share one CircleCI serial group. After admission, each compares its exact checkout with current master: superseded candidates skip the build, while the latest candidate runs the full package check. Queued intermediate commits therefore do not each get an expensive build. The job retains `package-qualification.txt` with the revision and an explicit pending, superseded, passed or failed outcome. A green skipped job does not qualify its package. A running useful batch may finish while development continues; later queued checks converge on latest master.
+A PR merges as soon as it is ready; nothing waits on a hosted check. A bug
+found after merge is fixed after merge.
