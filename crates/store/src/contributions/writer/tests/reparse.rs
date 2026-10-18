@@ -183,7 +183,7 @@ fn reparse_rejects_missing_or_inconsistent_old_source() {
                 "zeroblob(32)".to_string(),
             ),
             "future generation" => {
-                let mut token = old.predecessor().clone();
+                let mut token = old.token().clone();
                 token.generation = f.head.token.generation + 1;
                 let digest = preparation_digest(&token, 1, &[3; 32], 1);
                 f.writer._index.execute("UPDATE message_candidate SET source_state_generation=?2,basis_digest=?3 WHERE pk=?1",params![old_build.candidate,token.generation,digest.as_slice()]).unwrap();
@@ -196,7 +196,7 @@ fn reparse_rejects_missing_or_inconsistent_old_source() {
             _ => (
                 old_build.candidate,
                 "source_state_step",
-                old.predecessor().step.to_string(),
+                old.token().step.to_string(),
             ),
         };
         f.writer

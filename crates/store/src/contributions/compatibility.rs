@@ -487,7 +487,7 @@ impl Writer {
         let current = source::read_current(
             &self._index,
             &path,
-            &source.predecessor,
+            &source.token,
             &source.logical,
             allowance,
         )?
@@ -569,7 +569,7 @@ impl Writer {
         let current = source::read_current(
             &tx,
             &path,
-            &proof.source.predecessor,
+            &proof.source.token,
             &proof.source.logical,
             allowance,
         )?

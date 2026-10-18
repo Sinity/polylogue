@@ -297,7 +297,7 @@ fn real_text_actions_restart_values_and_source_publication_keep_eof_pending() {
         m::apply(&mut world.writer, action).unwrap(),
         m::Applied::Existing(_)
     ));
-    assert_eq!(source.predecessor(), &world.head.token);
+    assert_eq!(source.token(), &world.head.token);
     world
         .writer
         .select_compatible_source_message_for_test(&source, 65536)
