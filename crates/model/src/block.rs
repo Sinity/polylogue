@@ -109,6 +109,10 @@ pub struct Attachment {
     pub blob: Option<BlobHash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// The source's own ID for the file (ChatGPT `file-…`), by which an
+    /// export's separately stored bytes are found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
     pub direction: AttachmentDirection,
 }
 

@@ -1,0 +1,244 @@
+{
+  "accounting": {
+    "framed": 9,
+    "materialized": {
+      "conversation": 1,
+      "execution_output": 1,
+      "multimodal_text": 2,
+      "reasoning_recap": 1,
+      "text": 2,
+      "thoughts": 1,
+      "user_editable_context": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "2026-07-16T02:42:20Z",
+        "data": {
+          "conversation_id": "chatgpt-fixture-conversation",
+          "create_time": 1784164500.0,
+          "current_node": "answer-active",
+          "default_model_slug": "gpt-5-6-pro",
+          "id": "chatgpt-fixture-conversation",
+          "title": "Privacy-safe ChatGPT native fixture",
+          "update_time": 1784169740.0
+        },
+        "kind": "conversation_settings",
+        "session": "chatgpt:chatgpt-fixture-conversation"
+      },
+      {
+        "after": "chatgpt:answer-active-message",
+        "data": null,
+        "kind": "active_leaf",
+        "session": "chatgpt:chatgpt-fixture-conversation"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2026-07-16T01:15:00Z",
+          "blocks": [
+            {
+              "text": "Privacy-safe fixture profile.\n\nPreserve structured provider evidence.",
+              "type": "text"
+            }
+          ],
+          "id": "chatgpt:context-message",
+          "role": "system",
+          "session": "chatgpt:chatgpt-fixture-conversation"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2026-07-16T01:15:40Z",
+          "blocks": [
+            {
+              "text": "Analyze the attached fixture and create an artifact.",
+              "type": "text"
+            },
+            {
+              "direction": "input",
+              "size": 128,
+              "source_id": "fixture-input-image",
+              "type": "image",
+              "url": "file-service://fixture-input-image"
+            },
+            {
+              "direction": "input",
+              "media_type": "text/plain",
+              "name": "input.txt",
+              "size": 42,
+              "source_id": "fixture-upload-1",
+              "type": "file"
+            }
+          ],
+          "id": "chatgpt:user-message",
+          "parent": "chatgpt:context-message",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "chatgpt:chatgpt-fixture-conversation"
+        },
+        "offset": 1
+      },
+      {
+        "end": 3,
+        "message": {
+          "at": "2026-07-16T01:15:42Z",
+          "blocks": [
+            {
+              "text": "Superseded answer.",
+              "type": "text"
+            }
+          ],
+          "id": "chatgpt:answer-inactive-message",
+          "model": "gpt-5-6-pro",
+          "parent": "chatgpt:user-message",
+          "production": {
+            "effort": "standard"
+          },
+          "role": "assistant",
+          "session": "chatgpt:chatgpt-fixture-conversation"
+        },
+        "offset": 2
+      },
+      {
+        "end": 4,
+        "message": {
+          "at": "2026-07-16T01:15:44.946Z",
+          "blocks": [
+            {
+              "text": "Privacy-safe reasoning trace.",
+              "type": "thinking"
+            }
+          ],
+          "id": "chatgpt:thought-active-message",
+          "model": "gpt-5-6-pro",
+          "parent": "chatgpt:user-message",
+          "production": {
+            "effort": "extended"
+          },
+          "role": "assistant",
+          "session": "chatgpt:chatgpt-fixture-conversation"
+        },
+        "offset": 3
+      },
+      {
+        "end": 5,
+        "message": {
+          "at": "2026-07-16T01:15:45Z",
+          "blocks": [
+            {
+              "call_id": "tool-call-message",
+              "input": "{\"query\":\"fixture evidence\"}",
+              "tool": "browser.search",
+              "type": "tool_call"
+            }
+          ],
+          "id": "chatgpt:tool-call-message",
+          "model": "gpt-5-6-pro",
+          "parent": "chatgpt:thought-active-message",
+          "production": {
+            "effort": "extended"
+          },
+          "role": "assistant",
+          "session": "chatgpt:chatgpt-fixture-conversation"
+        },
+        "offset": 4
+      },
+      {
+        "end": 6,
+        "message": {
+          "at": "2026-07-16T01:15:46Z",
+          "blocks": [
+            {
+              "call_id": "tool-call-message",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "Privacy-safe tool result.",
+              "type": "tool_result"
+            }
+          ],
+          "id": "chatgpt:tool-result-message",
+          "parent": "chatgpt:tool-call-message",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "chatgpt:chatgpt-fixture-conversation"
+        },
+        "offset": 5
+      },
+      {
+        "end": 7,
+        "message": {
+          "at": "2026-07-16T02:42:12.588194Z",
+          "blocks": [
+            {
+              "text": "Privacy-safe reasoning summary.",
+              "type": "thinking"
+            }
+          ],
+          "duration_ms": 5190000,
+          "id": "chatgpt:recap-active-message",
+          "model": "gpt-5-6-pro",
+          "parent": "chatgpt:tool-result-message",
+          "production": {
+            "effort": "extended"
+          },
+          "role": "assistant",
+          "session": "chatgpt:chatgpt-fixture-conversation"
+        },
+        "offset": 6
+      },
+      {
+        "end": 8,
+        "message": {
+          "at": "2026-07-16T02:42:13Z",
+          "blocks": [
+            {
+              "text": "Final answer. [Download artifact](sandbox:/mnt/data/fixture-result.zip)",
+              "type": "text"
+            },
+            {
+              "direction": "output",
+              "size": 256,
+              "source_id": "fixture-output-image",
+              "type": "image",
+              "url": "file-service://fixture-output-image"
+            }
+          ],
+          "duration_ms": 5190000,
+          "id": "chatgpt:answer-active-message",
+          "model": "gpt-5-6-pro",
+          "parent": "chatgpt:recap-active-message",
+          "production": {
+            "effort": "extended"
+          },
+          "role": "assistant",
+          "session": "chatgpt:chatgpt-fixture-conversation"
+        },
+        "offset": 7
+      }
+    ],
+    "sessions": [
+      {
+        "id": "chatgpt:chatgpt-fixture-conversation",
+        "kind": "main",
+        "started": "2026-07-16T01:15:00Z",
+        "title": {
+          "source": "generated",
+          "text": "Privacy-safe ChatGPT native fixture"
+        }
+      }
+    ]
+  }
+}

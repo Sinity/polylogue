@@ -1,0 +1,52 @@
+{
+  "accounting": {
+    "framed": 2,
+    "materialized": {
+      "chat": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": {
+          "name": "Polylogue",
+          "uuid": "origin-matrix-project"
+        },
+        "kind": "design_project",
+        "session": "claude-design:origin-matrix-claude-design"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2026-08-01T10:00:01Z",
+          "blocks": [
+            {
+              "text": "Prove the parser claim.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-design:message-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-design:origin-matrix-claude-design"
+        },
+        "offset": 0
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-design:origin-matrix-claude-design",
+        "kind": "main"
+      }
+    ]
+  }
+}

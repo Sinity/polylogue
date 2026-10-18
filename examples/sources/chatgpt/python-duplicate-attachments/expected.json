@@ -1,0 +1,87 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "conversation": 1,
+      "multimodal_text": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": {
+          "id": "native-occurrences",
+          "title": "Synthetic attachment occurrences"
+        },
+        "kind": "conversation_settings",
+        "session": "chatgpt:native-occurrences"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "1970-01-01T00:00:01Z",
+          "blocks": [
+            {
+              "text": "User image",
+              "type": "text"
+            },
+            {
+              "direction": "input",
+              "media_type": "image/png",
+              "source_id": "file-SHARED",
+              "type": "image",
+              "url": "file-service://file-SHARED"
+            }
+          ],
+          "id": "chatgpt:duplicate",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "chatgpt:native-occurrences"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "1970-01-01T00:00:02Z",
+          "blocks": [
+            {
+              "text": "Assistant image",
+              "type": "text"
+            },
+            {
+              "direction": "output",
+              "media_type": "image/png",
+              "source_id": "file-SHARED",
+              "type": "image",
+              "url": "file-service://file-SHARED"
+            }
+          ],
+          "id": "chatgpt:duplicate",
+          "parent": "chatgpt:duplicate",
+          "role": "assistant",
+          "session": "chatgpt:native-occurrences"
+        },
+        "offset": 1
+      }
+    ],
+    "sessions": [
+      {
+        "id": "chatgpt:native-occurrences",
+        "kind": "main",
+        "title": {
+          "source": "generated",
+          "text": "Synthetic attachment occurrences"
+        }
+      }
+    ]
+  }
+}

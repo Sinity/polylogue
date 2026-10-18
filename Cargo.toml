@@ -33,6 +33,7 @@ notify = "8.2"
 libc = "0.2"
 tempfile = "3"
 base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

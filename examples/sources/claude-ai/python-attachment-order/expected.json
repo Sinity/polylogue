@@ -1,0 +1,129 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "conversation": 1,
+      "human": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "2026-01-01T00:02:00Z",
+        "data": {
+          "created_at": "2026-01-01T00:00:00Z",
+          "name": "Synthetic native attachment order",
+          "updated_at": "2026-01-01T00:02:00Z",
+          "uuid": "claude-order-fixture"
+        },
+        "kind": "conversation_settings",
+        "session": "claude-ai:claude-order-fixture"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2026-01-01T00:01:00Z",
+          "blocks": [
+            {
+              "text": "Earlier synthetic message",
+              "type": "text"
+            },
+            {
+              "direction": "input",
+              "media_type": "text/plain",
+              "name": "earlier.txt",
+              "size": 7,
+              "type": "file"
+            },
+            {
+              "data": {
+                "file_name": "earlier.txt",
+                "text": "earlier"
+              },
+              "type": "other",
+              "type_name": "attachment_text"
+            },
+            {
+              "direction": "input",
+              "media_type": "image/png",
+              "name": "reference.png",
+              "source_id": "synthetic-file",
+              "type": "image"
+            }
+          ],
+          "id": "claude-ai:claude-order-fixture#1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-ai:claude-order-fixture"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2026-01-01T00:02:00Z",
+          "blocks": [
+            {
+              "text": "Later synthetic message",
+              "type": "text"
+            },
+            {
+              "direction": "input",
+              "media_type": "text/plain",
+              "name": "duplicate.txt",
+              "size": 5,
+              "type": "file"
+            },
+            {
+              "data": {
+                "file_name": "duplicate.txt",
+                "text": "first"
+              },
+              "type": "other",
+              "type_name": "attachment_text"
+            },
+            {
+              "direction": "input",
+              "media_type": "text/plain",
+              "name": "duplicate.txt",
+              "size": 6,
+              "type": "file"
+            },
+            {
+              "data": {
+                "file_name": "duplicate.txt",
+                "text": "second"
+              },
+              "type": "other",
+              "type_name": "attachment_text"
+            }
+          ],
+          "id": "claude-ai:claude-order-fixture#0",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-ai:claude-order-fixture"
+        },
+        "offset": 1
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-ai:claude-order-fixture",
+        "kind": "main",
+        "started": "2026-01-01T00:00:00Z",
+        "title": {
+          "source": "generated",
+          "text": "Synthetic native attachment order"
+        }
+      }
+    ]
+  }
+}
