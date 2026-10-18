@@ -37,7 +37,7 @@ fn configured_hash_change_fails_before_any_source_effects() {
             3,
         )
         .unwrap()
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(super::WAIT)
         .unwrap();
     assert!(matches!(result, Err(Error::InvalidEvidence(_))));
     assert_eq!(reader.status().unwrap().write_counter, before);
@@ -85,7 +85,7 @@ fn configured_known_content_does_not_bypass_request_conflict() {
         .handle()
         .try_configured_import(request(&path, id), candidate, hash, 3)
         .unwrap()
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(super::WAIT)
         .unwrap();
     assert!(matches!(
         result,

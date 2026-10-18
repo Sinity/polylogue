@@ -3,8 +3,13 @@ use crate::output_json::Encoder;
 use polylogue_model::RawJson;
 use std::{cell::Cell, time::Duration};
 
+/// A deadline no test reaches, for tests that are not about deadlines; a short
+/// one fails slow debug builds on a loaded machine.
+fn no_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(24 * 60 * 60)
+}
 fn streamed(raw: &[u8], piece: usize) -> io::Result<Vec<u8>> {
-    let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
+    let mut encoder = Encoder::new(Vec::new(), no_deadline());
     encoder.string_ranges(
         |offset| {
             let start = offset as usize;
@@ -17,7 +22,7 @@ fn streamed(raw: &[u8], piece: usize) -> io::Result<Vec<u8>> {
 }
 fn ordinary(raw: &[u8]) -> io::Result<Vec<u8>> {
     let value = RawJson::parse(raw).unwrap();
-    let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
+    let mut encoder = Encoder::new(Vec::new(), no_deadline());
     encoder.raw_json(&value, false)?;
     encoder.finish()
 }
@@ -81,7 +86,7 @@ fn string_ranges_reject_nonstring_malformed_trailing_and_zero_progress() {
     ] {
         assert!(streamed(raw, 1).is_err(), "{raw:?}");
     }
-    let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
+    let mut encoder = Encoder::new(Vec::new(), no_deadline());
     assert!(
         encoder
             .string_ranges(|_| Ok((vec![], false)), &mut || false)
@@ -92,7 +97,7 @@ fn string_ranges_reject_nonstring_malformed_trailing_and_zero_progress() {
 fn string_ranges_keep_deadline_cancellation_and_field_read_errors() {
     let raw = serde_json::to_vec(&"neutral".repeat(20000)).unwrap();
     let polls = Cell::new(0);
-    let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
+    let mut encoder = Encoder::new(Vec::new(), no_deadline());
     let error = encoder
         .string_ranges(
             |offset| {
@@ -115,7 +120,7 @@ fn string_ranges_keep_deadline_cancellation_and_field_read_errors() {
             .kind(),
         io::ErrorKind::TimedOut
     );
-    let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
+    let mut encoder = Encoder::new(Vec::new(), no_deadline());
     assert_eq!(
         encoder
             .string_ranges(

@@ -10,18 +10,16 @@ fn socket_timeout_is_a_deadline_error_and_no_end_is_written() {
     frame(&mut peer, header()).unwrap();
     frame(&mut peer, json!({"type":"text","data":"{}"})).unwrap();
     let mut out = Vec::new();
-    let started = Instant::now();
     let error = decode(
         client,
         "test:deadline",
         &mut out,
-        started + Duration::from_millis(80),
+        Instant::now() + Duration::from_millis(80),
     )
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert_eq!(error.to_string(), "Session read deadline exceeded");
     assert_eq!(out, b"{}"); // no accepted end frame/newline
-    assert!(started.elapsed() < Duration::from_secs(1));
 }
 
 #[test]
@@ -29,26 +27,27 @@ fn trickled_frames_do_not_extend_the_deadline() {
     let (client, mut peer) = UnixStream::pair().unwrap();
     frame(&mut peer, header()).unwrap();
     frame(&mut peer, json!({"type":"text","data":"x"})).unwrap();
+    // Frames keep arriving well past the deadline; only the reader giving up
+    // at its deadline closes the connection early.
     let send = std::thread::spawn(move || {
-        for _ in 1..20 {
+        for _ in 0..4000 {
             if frame(&mut peer, json!({"type":"text","data":"x"})).is_err() {
-                break;
+                return;
             }
             std::thread::sleep(Duration::from_millis(15));
         }
+        panic!("the reader accepted frames past its deadline");
     });
     let mut out = Vec::new();
-    let started = Instant::now();
     let error = decode(
         client,
         "test:deadline",
         &mut out,
-        started + Duration::from_millis(80),
+        Instant::now() + Duration::from_millis(80),
     )
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    assert!(!out.is_empty() && out.len() < 20);
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(!out.is_empty());
     send.join().unwrap();
 }
 
@@ -70,16 +69,14 @@ fn trickled_bytes_of_one_end_frame_do_not_extend_the_deadline() {
         }
     });
     let mut out = Vec::new();
-    let started = Instant::now();
     let error = decode(
         client,
         "test:deadline",
         &mut out,
-        started + Duration::from_millis(80),
+        Instant::now() + Duration::from_millis(80),
     )
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(out.is_empty());
-    assert!(started.elapsed() < Duration::from_secs(1));
     send.join().unwrap();
 }

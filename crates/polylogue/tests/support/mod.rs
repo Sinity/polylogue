@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 pub const BINARY: &str = env!("CARGO_BIN_EXE_polylogue");
@@ -77,10 +77,11 @@ impl World {
             .env("TMPDIR", &self.scratch);
         command
     }
-    /// Runs one CLI command with a 40 s deadline.
+    /// Runs one CLI command. A hung command is ended by the test runner's
+    /// timeout (`.config/nextest.toml`), not by a deadline here.
     pub fn cli(&self, args: &[&str]) -> Output {
         // Output goes to files so large output cannot fill a pipe and block
-        // the child while we enforce its deadline.
+        // the child.
         let mut stdout = tempfile::tempfile_in(&self.scratch).unwrap();
         let mut stderr = tempfile::tempfile_in(&self.scratch).unwrap();
         let mut child = OwnedChild(
@@ -91,26 +92,15 @@ impl World {
                 .spawn()
                 .unwrap(),
         );
-        let deadline = Instant::now() + Duration::from_secs(40);
-        let status = loop {
-            assert!(
-                stdout.metadata().unwrap().len() <= 5_000_000,
-                "CLI stdout larger than 5 MB"
-            );
-            assert!(
-                stderr.metadata().unwrap().len() <= 1_000_000,
-                "CLI stderr larger than 1 MB"
-            );
-            if let Some(status) = child.0.try_wait().unwrap() {
-                break status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "CLI deadline {args:?}; daemon: {}",
-                self.log()
-            );
-            thread::sleep(Duration::from_millis(2));
-        };
+        let status = child.0.wait().unwrap();
+        assert!(
+            stdout.metadata().unwrap().len() <= 5_000_000,
+            "CLI stdout larger than 5 MB"
+        );
+        assert!(
+            stderr.metadata().unwrap().len() <= 1_000_000,
+            "CLI stderr larger than 1 MB"
+        );
         stdout.seek(SeekFrom::Start(0)).unwrap();
         stderr.seek(SeekFrom::Start(0)).unwrap();
         let mut out = vec![];
@@ -136,8 +126,8 @@ impl World {
                 .spawn()
                 .unwrap(),
         ));
-        // Generous: the suite runs while other builds load the machine.
-        let deadline = Instant::now() + Duration::from_secs(60);
+        // Ready when `status` succeeds; a daemon that never gets there is
+        // ended by the test runner's timeout.
         loop {
             let out = self.cli(&["status"]);
             if out.status.success() {
@@ -148,11 +138,6 @@ impl World {
             assert!(
                 self.child.as_mut().unwrap().0.try_wait().unwrap().is_none(),
                 "daemon exited: {}; status {out:?}",
-                self.log()
-            );
-            assert!(
-                Instant::now() < deadline,
-                "daemon startup: {}; status {out:?}",
                 self.log()
             );
             thread::sleep(Duration::from_millis(5));

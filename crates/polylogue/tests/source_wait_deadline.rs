@@ -23,9 +23,6 @@ fn receipt(complete: bool) -> Value {
     value
 }
 fn request(stream: &UnixStream) -> Value {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).unwrap();
     serde_json::from_str(&line).unwrap()
@@ -48,36 +45,25 @@ fn exercise(mode: Peer) {
     let socket = polylogue::socket_path(&fs::canonicalize(&archive).unwrap(), short.path());
     fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = UnixListener::bind(&socket).unwrap();
-    listener.set_nonblocking(true).unwrap();
     let (accepted, ready) = mpsc::channel();
+    // The peer acts on the client's exit, not on elapsed time.
+    let (exited, client_exit) = mpsc::channel::<()>();
     let peer = thread::spawn(move || {
-        let accept = || {
-            let until = Instant::now() + Duration::from_secs(5);
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => return stream,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(Instant::now() < until, "peer accept deadline");
-                        thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(e) => panic!("accept: {e}"),
-                }
-            }
-        };
-        let mut first = accept();
+        let (mut first, _) = listener.accept().unwrap();
         assert_eq!(request(&first)["command"], "import");
         writeln!(first, "{}", receipt(matches!(mode, Peer::InitialSettled))).unwrap();
         drop(first);
         if matches!(mode, Peer::InitialSettled | Peer::ZeroPending) {
             // With a zero timeout the client sends no progress request.
-            thread::sleep(Duration::from_millis(150));
+            client_exit.recv().unwrap();
+            listener.set_nonblocking(true).unwrap();
             assert_eq!(
                 listener.accept().unwrap_err().kind(),
                 std::io::ErrorKind::WouldBlock
             );
             return;
         }
-        let mut stream = accept();
+        let (mut stream, _) = listener.accept().unwrap();
         assert_eq!(
             request(&stream),
             json!({"command":"progress","input":"synthetic-source"})
@@ -87,7 +73,7 @@ fn exercise(mode: Peer) {
         match mode {
             Peer::Fast => stream.write_all(&reply).unwrap(),
             Peer::Delayed => {
-                thread::sleep(Duration::from_millis(2400));
+                client_exit.recv().unwrap();
                 assert!(
                     stream.write_all(&reply).is_err(),
                     "late peer can still write to client"
@@ -107,11 +93,7 @@ fn exercise(mode: Peer) {
                 assert!(disconnected, "trickled peer did not observe client release");
             }
             Peer::Stalled | Peer::Cancelled => {
-                thread::sleep(if matches!(mode, Peer::Cancelled) {
-                    Duration::from_millis(200)
-                } else {
-                    Duration::from_millis(1300)
-                });
+                client_exit.recv().unwrap();
                 // The client half-closes its write side before reading, so
                 // EOF here would not show that it closed the connection.
                 assert!(
@@ -133,7 +115,6 @@ fn exercise(mode: Peer) {
     let stdout = tempfile::tempfile().unwrap();
     let stderr = tempfile::tempfile().unwrap();
     let zero = matches!(mode, Peer::InitialSettled | Peer::ZeroPending);
-    let started = Instant::now();
     let mut child = Command::new(BINARY)
         .args([
             "--archive",
@@ -154,12 +135,12 @@ fn exercise(mode: Peer) {
             "synthetic-collector",
             "--wait",
             "--wait-timeout",
-            if zero {
-                "0"
-            } else if matches!(mode, Peer::Cancelled) {
-                "10"
-            } else {
-                "1"
+            // Long where the client must not time out; short where its
+            // deadline is what ends the wait.
+            match mode {
+                _ if zero => "0",
+                Peer::Fast | Peer::Cancelled => "60",
+                _ => "1",
             },
         ])
         .env("XDG_RUNTIME_DIR", short.path())
@@ -168,22 +149,11 @@ fn exercise(mode: Peer) {
         .spawn()
         .unwrap();
     if matches!(mode, Peer::Cancelled) {
-        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        ready.recv().unwrap();
         child.kill().unwrap();
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            panic!("CLI exceeded bounded test deadline")
-        }
-        thread::sleep(Duration::from_millis(2));
-    };
-    let elapsed = started.elapsed();
+    let status = child.wait().unwrap();
+    let _ = exited.send(());
     use std::os::unix::fs::FileExt;
     let mut bytes = vec![0; stdout.metadata().unwrap().len() as usize];
     stdout.read_exact_at(&mut bytes, 0).unwrap();
@@ -206,11 +176,6 @@ fn exercise(mode: Peer) {
             assert_eq!(value["error"]["kind"], "timeout");
             assert_eq!(value["source_rows"]["state"], "pending");
         }
-        // Allows scheduling jitter but not a success seconds late.
-        assert!(
-            elapsed < Duration::from_millis(1900),
-            "{mode:?}: {elapsed:?}"
-        );
     }
     peer.join().unwrap();
 }

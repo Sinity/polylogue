@@ -27,7 +27,7 @@ fn start(actor: &mut Actor, path: &Path, id: &str) -> Receiver<Result<Configured
 fn finish(actor: &mut Actor, events: &Receiver<Message>) -> usize {
     let mut turns = 0;
     loop {
-        let event = events.recv_timeout(Duration::from_secs(10)).unwrap();
+        let event = events.recv_timeout(super::WAIT).unwrap();
         let done = matches!(&event, Message::TurnCaptured(..));
         if let Message::CaptureYield(progress, ..) = &event {
             assert!(progress.charged_bytes <= 65536);
@@ -67,7 +67,7 @@ fn claude_capture_reuses_quanta_and_serves_a_regular_capture_before_selecting_th
         .write_all(&vec![b'\n'; 262144])
         .unwrap();
     let pending = start(&mut actor, &main, "append");
-    let event = events.recv_timeout(Duration::from_secs(10)).unwrap();
+    let event = events.recv_timeout(super::WAIT).unwrap();
     assert!(matches!(&event, Message::CaptureYield(..)));
     let regular = temp.path().join("rollout.jsonl");
     std::fs::write(&regular, raw()).unwrap();
@@ -84,10 +84,10 @@ fn claude_capture_reuses_quanta_and_serves_a_regular_capture_before_selecting_th
     assert!(actor.capture.is_some());
     assert!(actor.turn_capture.as_ref().unwrap().grant.is_some());
     actor
-        .message(events.recv_timeout(Duration::from_secs(10)).unwrap())
+        .message(events.recv_timeout(super::WAIT).unwrap())
         .unwrap();
     let imported = regular_reply
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(super::WAIT)
         .unwrap()
         .unwrap();
     let retained = reader.source(&imported.id).unwrap().unwrap();
@@ -111,7 +111,7 @@ fn claude_capture_reuses_quanta_and_serves_a_regular_capture_before_selecting_th
     actor.advance_capture_turn().unwrap();
     assert!(finish(&mut actor, &events) > 2);
     let appended = pending
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(super::WAIT)
         .unwrap()
         .unwrap();
     assert!(appended.acquired);
@@ -122,7 +122,7 @@ fn claude_capture_reuses_quanta_and_serves_a_regular_capture_before_selecting_th
     assert!(finish(&mut actor, &events) > 2);
     assert!(
         !unchanged
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(super::WAIT)
             .unwrap()
             .unwrap()
             .acquired
@@ -149,16 +149,16 @@ fn claude_parked_cancellation_keeps_acknowledged_prefix_and_restarts_without_a_l
         .unwrap();
     std::fs::write(&main, vec![b'\n'; 196608]).unwrap();
     let pending = start(&mut actor, &main, "cancelled");
-    let first = events.recv_timeout(Duration::from_secs(10)).unwrap();
+    let first = events.recv_timeout(super::WAIT).unwrap();
     assert!(matches!(&first, Message::CaptureYield(..)));
     actor.message(first).unwrap();
     let before = actor.writer.status().unwrap().write_counter;
     actor.begin_stop();
     actor
-        .message(events.recv_timeout(Duration::from_secs(10)).unwrap())
+        .message(events.recv_timeout(super::WAIT).unwrap())
         .unwrap();
     assert!(matches!(
-        pending.recv_timeout(Duration::from_secs(10)).unwrap(),
+        pending.recv_timeout(super::WAIT).unwrap(),
         Err(Error::Stopped)
     ));
     assert_eq!(actor.writer.status().unwrap().write_counter, before);
@@ -178,7 +178,7 @@ fn claude_parked_cancellation_keeps_acknowledged_prefix_and_restarts_without_a_l
     assert!(finish(&mut resumed, &events) > 2);
     assert_eq!(
         completed
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(super::WAIT)
             .unwrap()
             .unwrap()
             .input

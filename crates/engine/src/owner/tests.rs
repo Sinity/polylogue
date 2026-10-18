@@ -1,9 +1,30 @@
 use super::*;
 use std::{path::Path, time::Instant};
 
-/// Upper bound for owner work in tests; generous because the suite runs on a
-/// loaded machine.
+/// Bound on waiting for owner work: a guard against hangs, never a measure of
+/// speed. Generous because the suite runs on a loaded machine.
 const WAIT: Duration = Duration::from_secs(60);
+
+/// Paces a test that polls owner progress. The owner reports progress only on
+/// request; the growing pause keeps a waiting test from flooding its queue and
+/// taking the CPU the awaited work needs.
+struct Wait {
+    end: Instant,
+    pause: Duration,
+}
+impl Wait {
+    fn new() -> Self {
+        Self {
+            end: Instant::now() + WAIT,
+            pause: Duration::from_millis(1),
+        }
+    }
+    fn pause(&mut self, what: &str) {
+        assert!(Instant::now() < self.end, "{what}");
+        thread::sleep(self.pause);
+        self.pause = (self.pause * 2).min(Duration::from_millis(50));
+    }
+}
 
 fn request(path: &Path, id: &str) -> ImportRequest {
     ImportRequest {
@@ -43,19 +64,19 @@ fn import(handle: &Handle, request: ImportRequest) -> StoredInput {
         .unwrap()
 }
 fn progress(handle: &Handle, id: &str) -> Progress {
-    let end = Instant::now() + WAIT;
+    let mut wait = Wait::new();
     loop {
         match handle.try_progress(id) {
             Ok(reply) => {
                 return reply.recv_timeout(WAIT).unwrap().unwrap();
             }
-            Err(Error::Busy) if Instant::now() < end => thread::yield_now(),
+            Err(Error::Busy) => wait.pause("owner queue stayed full"),
             other => panic!("progress admission: {:?}", other.err()),
         }
     }
 }
 fn until_caught_up(handle: &Handle, id: &str) -> Progress {
-    let end = Instant::now() + WAIT;
+    let mut wait = Wait::new();
     loop {
         let p = progress(handle, id);
         assert!(p.failure.is_none(), "{:?}", p.failure);
@@ -63,11 +84,7 @@ fn until_caught_up(handle: &Handle, id: &str) -> Progress {
         if p.parser.as_ref().is_some_and(caught_up) {
             return p;
         }
-        assert!(
-            Instant::now() < end,
-            "provider did not reach stable frontier"
-        );
-        thread::yield_now();
+        wait.pause("provider did not reach stable frontier");
     }
 }
 fn raw() -> &'static [u8] {
@@ -100,17 +117,17 @@ fn authored_reply_does_not_open_derived_status_after_commit() {
     };
     let committed = service
         .handle()
-        .try_note(request.clone(), Instant::now() + Duration::from_secs(30))
+        .try_note(request.clone(), Instant::now() + WAIT)
         .unwrap()
-        .recv_timeout(Duration::from_secs(30))
+        .recv_timeout(WAIT)
         .unwrap()
         .unwrap();
     assert!(committed.recovery.is_none());
     let retry = service
         .handle()
-        .try_note(request, Instant::now() + Duration::from_secs(30))
+        .try_note(request, Instant::now() + WAIT)
         .unwrap()
-        .recv_timeout(Duration::from_secs(30))
+        .recv_timeout(WAIT)
         .unwrap()
         .unwrap();
     assert_eq!(committed.revision, retry.revision);
@@ -140,7 +157,7 @@ fn declared_claude_context_replays_without_provider_and_remains_pending() {
     let root = dir.path().join("archive");
     let service = owner(&root);
     let retained = import(&service.handle(), request.clone());
-    let deadline = Instant::now() + WAIT;
+    let mut wait = Wait::new();
     loop {
         let p = progress(&service.handle(), &retained.id);
         assert_eq!(p.source_rows.parsed_from.input, p.input.id);
@@ -158,11 +175,7 @@ fn declared_claude_context_replays_without_provider_and_remains_pending() {
             assert_ne!(head.status, Phase::Done);
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "Claude parser did not publish its checkpoint"
-        );
-        thread::yield_now();
+        wait.pause("Claude parser did not publish its checkpoint");
     }
     std::fs::remove_file(&path).unwrap();
     assert_eq!(import(&service.handle(), request.clone()), retained);
@@ -225,7 +238,7 @@ fn claude_actor_selects_each_pending_locator_and_replays_after_provider_loss() {
     r.format = InputFormat::ClaudeCodeJsonl;
     r.context = vec!["claude-main".into(), "declared-main".into()];
     let retained = import(&service.handle(), r.clone());
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut wait = Wait::new();
     loop {
         let p = progress(&service.handle(), &retained.id);
         assert!(p.failure.is_none(), "{:?}", p.failure);
@@ -251,11 +264,7 @@ fn claude_actor_selects_each_pending_locator_and_replays_after_provider_loss() {
             }
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "Claude pending locators did not become selected"
-        );
-        thread::yield_now();
+        wait.pause("Claude pending locators did not become selected");
     }
     std::fs::remove_file(&path).unwrap();
     assert_eq!(import(&service.handle(), r.clone()), retained);
@@ -298,7 +307,7 @@ fn actor_selects_a_source_message_but_history_stays_unfinished() {
         request(&path, "synthetic-canonical-request"),
     );
     std::fs::remove_file(&path).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut wait = Wait::new();
     loop {
         let p = progress(&service.handle(), &retained.id);
         assert!(p.failure.is_none(), "{:?}", p.failure);
@@ -319,11 +328,7 @@ fn actor_selects_a_source_message_but_history_stays_unfinished() {
             );
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "canonical source message did not become readable"
-        );
-        thread::yield_now();
+        wait.pause("canonical source message did not become readable");
     }
     // Receipt replay works after the provider file is gone, while the actor
     // serves selected-Message readers.
@@ -428,7 +433,7 @@ fn oversized_logical_record_is_an_inspectable_admission_failure() {
     std::fs::write(&path, &bytes).unwrap();
     let service = owner(&dir.path().join("archive"));
     let retained = import(&service.handle(), request(&path, "synthetic-large-request"));
-    let deadline = Instant::now() + WAIT;
+    let mut wait = Wait::new();
     loop {
         let p = progress(&service.handle(), &retained.id);
         if let Some(failure) = p.failure {
@@ -446,8 +451,7 @@ fn oversized_logical_record_is_an_inspectable_admission_failure() {
             assert_eq!(p.source_rows.parsed_from.input, p.input.id);
             break;
         }
-        assert!(Instant::now() < deadline, "missing admission failure");
-        thread::yield_now();
+        wait.pause("missing admission failure");
     }
     service.shutdown().unwrap();
 }

@@ -157,9 +157,7 @@ fn slow_capture_does_not_block_the_writer() {
             &AtomicBool::new(false),
         )
     });
-    entered
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .unwrap();
+    entered.recv().unwrap();
     w.store_captured_blob(quick).unwrap();
     assert_eq!(rows(&w), 1);
     resume.send(()).unwrap();

@@ -13,7 +13,7 @@ fn exchange(frames: Vec<Value>, expected: &str) -> (io::Result<Value>, Vec<u8>) 
         reader,
         expected,
         &mut out,
-        Instant::now() + Duration::from_secs(2),
+        Instant::now() + Duration::from_secs(24 * 60 * 60),
     );
     send.join().unwrap();
     (result, out)
@@ -108,7 +108,7 @@ fn complete_read_with_text_repair_keeps_notes_and_diagnostics() {
         reader,
         "claude-code:repaired",
         &mut out,
-        Instant::now() + Duration::from_secs(2),
+        Instant::now() + Duration::from_secs(24 * 60 * 60),
     )
     .unwrap();
     send.join().unwrap();
