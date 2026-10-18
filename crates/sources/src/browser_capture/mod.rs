@@ -36,10 +36,12 @@ pub const LOCATIONS: &[&str] = &["polylogue/browser-capture/*/*.json"];
 
 const KIND_KEY: &str = "polylogue_capture_kind";
 
+/// A capture starts `{"polylogue_capture_kind"`, or `{"capture_id"` when
+/// the extension wrote its keys sorted.
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     path.extension().is_some_and(|e| e == "json")
         && first_byte(head) == Some(b'{')
-        && first_key(head) == Some(KIND_KEY)
+        && matches!(first_key(head), Some(KIND_KEY | "capture_id"))
 }
 
 pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
