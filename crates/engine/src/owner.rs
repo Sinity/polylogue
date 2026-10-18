@@ -12,8 +12,8 @@ use crate::{
 use polylogue_model::BlobHash;
 use polylogue_sources::{claude_code, codex, frame::StepBudget};
 use polylogue_store::{
-    Error as StoreError, ImportObservation, InputFormat, PreparedBlob, ReadHandle, RetainedInput,
-    RetainedSource, Writer,
+    Error as StoreError, ImportObservation, InputFormat, PreparedBlob, ReadHandle, StoredInput,
+    StoredSource, Writer,
     parser_state::{Basis, Budget, Head, ParserReader},
 };
 use std::{
@@ -116,7 +116,7 @@ pub struct AuthoredReply {
 }
 #[derive(Debug)]
 pub struct Progress {
-    pub input: RetainedInput,
+    pub input: StoredInput,
     pub parser: Option<Head>,
     pub failure: Option<String>,
     pub recovery_error: Option<String>,
@@ -125,15 +125,15 @@ pub struct Progress {
 }
 #[derive(Debug)]
 pub struct ConfiguredImport {
-    pub input: RetainedInput,
+    pub input: StoredInput,
     pub acquired: bool,
 }
 enum ImportReply {
-    Ordinary(Reply<RetainedInput>),
+    Ordinary(Reply<StoredInput>),
     Configured(Reply<ConfiguredImport>),
 }
 impl ImportReply {
-    fn send(self, result: Result<RetainedInput>, acquired: bool) {
+    fn send(self, result: Result<StoredInput>, acquired: bool) {
         match self {
             Self::Ordinary(reply) => {
                 let _ = reply.send(result);
@@ -211,7 +211,7 @@ impl Handle {
             TrySendError::Disconnected(_) => Error::Stopped,
         })
     }
-    pub fn try_import(&self, request: ImportRequest) -> Result<Receiver<Result<RetainedInput>>> {
+    pub fn try_import(&self, request: ImportRequest) -> Result<Receiver<Result<StoredInput>>> {
         if request.format == InputFormat::ClaudeCodeToolResult {
             return Err(Error::InvalidRequest(
                 "Claude companions require the configured main acquisition path",
@@ -412,7 +412,7 @@ struct CaptureJob {
     join: JoinHandle<()>,
 }
 struct ComputeJob {
-    input: RetainedSource,
+    input: StoredSource,
     head: Head,
     join: JoinHandle<()>,
 }
@@ -476,7 +476,7 @@ enum CanonicalTurn {
     Done,
 }
 struct CanonicalJob {
-    input: RetainedSource,
+    input: StoredSource,
     head: Head,
     position: CanonicalPosition,
     handle: Option<canonical_message::Handle>,
@@ -488,18 +488,18 @@ struct CanonicalReaders {
 }
 enum Active {
     Selecting(
-        RetainedSource,
+        StoredSource,
         Head,
         CanonicalPosition,
         polylogue_store::contributions::CompatibleSelection,
     ),
-    Begin(RetainedSource),
-    Recover(RetainedSource, Head),
-    Compute(RetainedSource, Head, Option<CommittedContinuation>),
-    Install(RetainedSource, Head, PendingInstall, CommitGuard),
-    HistoryInstall(RetainedSource, Head, PendingInstall),
+    Begin(StoredSource),
+    Recover(StoredSource, Head),
+    Compute(StoredSource, Head, Option<CommittedContinuation>),
+    Install(StoredSource, Head, PendingInstall, CommitGuard),
+    HistoryInstall(StoredSource, Head, PendingInstall),
     Canonical(
-        RetainedSource,
+        StoredSource,
         Head,
         CanonicalPosition,
         Option<canonical_message::Handle>,
@@ -684,7 +684,7 @@ impl Actor {
                     }
                     return self
                         .writer
-                        .retain_history_pages(p, &job.observation.borrowed(), job.allowance)
+                        .store_history_pages(p, &job.observation.borrowed(), job.allowance)
                         .map_err(Error::Store);
                 }
                 PreparedCapture::Claude(prepared) => {
@@ -692,7 +692,7 @@ impl Actor {
                         std::path::Path::new(&job.observation.path),
                         &job.observation.machine,
                     )?;
-                    let source = self.writer.retain_claude_main(
+                    let source = self.writer.store_claude_main(
                         prepared.main,
                         &job.observation.machine,
                         &job.observation.host,
@@ -705,7 +705,7 @@ impl Actor {
                         let mut observation = job.observation.clone();
                         observation.id = format!("{}:claude-body:{index}", observation.id);
                         observation.path = format!("copy:{}", path.display());
-                        self.writer.retain_claude_body(
+                        self.writer.store_claude_body(
                             &source.input.id,
                             body,
                             &observation.borrowed(),
@@ -713,7 +713,7 @@ impl Actor {
                     }
                     let after = self
                         .writer
-                        .retained_source(&source.input.id)?
+                        .stored_source(&source.input.id)?
                         .ok_or(Error::UnknownInput)?;
                     acquired = before.as_ref().is_none_or(|old| {
                         old.revision != after.revision || old.companions != after.companions
@@ -727,8 +727,8 @@ impl Actor {
                     "configured source changed after discovery; retry next pass".into(),
                 ));
             }
-            let hash = self.writer.retain_captured_blob(proof)?;
-            Ok(self.writer.retain_immutable_input(
+            let hash = self.writer.store_captured_blob(proof)?;
+            Ok(self.writer.store_immutable_input(
                 hash,
                 job.format,
                 &job.context.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -1250,10 +1250,7 @@ impl Actor {
         Ok(())
     }
     fn progress(&mut self, id: &str) -> Result<Progress> {
-        let input = self
-            .writer
-            .retained_source(id)?
-            .ok_or(Error::UnknownInput)?;
+        let input = self.writer.stored_source(id)?.ok_or(Error::UnknownInput)?;
         let parser = self
             .writer
             .parser_head(input.input.input_pk, input.input.chain)?;
@@ -1303,10 +1300,7 @@ impl Actor {
         })
     }
     fn retry(&mut self, id: &str) -> Result<()> {
-        let input = self
-            .writer
-            .retained_source(id)?
-            .ok_or(Error::UnknownInput)?;
+        let input = self.writer.stored_source(id)?.ok_or(Error::UnknownInput)?;
         if input.format == InputFormat::CodexPromptHistory {
             return Err(Error::InvalidRequest(
                 "prompt references have no conversation parser to retry",
@@ -1353,10 +1347,10 @@ impl Actor {
     // invariant failures. Begin reselects the current basis through normal work.
     fn reselect_obsolete_canonical(
         &mut self,
-        previous: &RetainedSource,
+        previous: &StoredSource,
         predecessor: &Head,
     ) -> Result<bool> {
-        let Some(input) = self.writer.retained_source(&previous.input.id)? else {
+        let Some(input) = self.writer.stored_source(&previous.input.id)? else {
             return Ok(false);
         };
         let head = self
@@ -1407,10 +1401,10 @@ impl Actor {
                 };
                 let next = if let Some(id) = changed {
                     self.background_due = true;
-                    self.writer.retained_source(&id)
+                    self.writer.stored_source(&id)
                 } else {
                     self.background_due = false;
-                    let next = self.writer.next_retained_source(&self.after);
+                    let next = self.writer.next_stored_source(&self.after);
                     if let Ok(Some(input)) = &next {
                         self.after = input.input.id.clone();
                     }
@@ -1875,7 +1869,7 @@ impl Actor {
 }
 fn operation_digest(
     reader: &polylogue_store::ReadHandle,
-    input: &RetainedSource,
+    input: &StoredSource,
     operation: &polylogue_model::tool_item::Operation,
     cancelled: &AtomicBool,
 ) -> Result<BlobHash> {
@@ -1949,7 +1943,7 @@ fn operation_digest(
 
 fn compute_history(
     reader: &polylogue_store::ReadHandle,
-    input: &RetainedSource,
+    input: &StoredSource,
     cancelled: &AtomicBool,
 ) -> Result<Computation> {
     use polylogue_sources::codex::keyed::{Cell, Key};
@@ -1993,7 +1987,7 @@ fn compute_history(
     })
 }
 
-fn can_finalize(input: &RetainedSource, head: &Head) -> bool {
+fn can_finalize(input: &StoredSource, head: &Head) -> bool {
     head.status == "finalizing"
         || (input.observed()
             && input.format == InputFormat::ClaudeCodeJsonl
@@ -2012,7 +2006,7 @@ pub(crate) fn parser_version(format: InputFormat) -> u32 {
         InputFormat::ClaudeCodeToolResult => 0,
     }
 }
-pub(crate) fn parser_context(input: &RetainedSource) -> Result<SourceContext> {
+pub(crate) fn parser_context(input: &StoredSource) -> Result<SourceContext> {
     let parts = input.context.iter().map(String::as_str).collect::<Vec<_>>();
     input.format.validate_context(&parts)?;
     match (input.format, parts.as_slice()) {
@@ -2037,7 +2031,7 @@ pub(crate) fn parser_context(input: &RetainedSource) -> Result<SourceContext> {
         _ => Err(Error::InvalidRequest("unsupported retained source context")),
     }
 }
-fn parser_context_json(input: &RetainedSource) -> Result<String> {
+fn parser_context_json(input: &StoredSource) -> Result<String> {
     if input.format == InputFormat::CodexRollout {
         return Ok(CONTEXT.into());
     }
@@ -2054,7 +2048,7 @@ fn parser_context_json(input: &RetainedSource) -> Result<String> {
     })
     .map_err(|_| Error::InvalidRequest("source context serialization failed"))
 }
-pub(crate) fn parser_basis(input: &RetainedSource) -> [u8; 32] {
+pub(crate) fn parser_basis(input: &StoredSource) -> [u8; 32] {
     if input.format == InputFormat::CodexRollout {
         return basis(&input.binding);
     }
@@ -2161,7 +2155,7 @@ mod tests {
         )
         .unwrap()
     }
-    fn import(handle: &Handle, request: ImportRequest) -> RetainedInput {
+    fn import(handle: &Handle, request: ImportRequest) -> StoredInput {
         handle
             .try_import(request)
             .unwrap()

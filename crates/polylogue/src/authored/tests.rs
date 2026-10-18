@@ -5,7 +5,7 @@ use polylogue_model::{
     BlobHash,
     authored::{NoteKind, Relation, Target, WriteNote},
 };
-use polylogue_store::{InputFormat, RetainedInput, Writer};
+use polylogue_store::{InputFormat, StoredInput, Writer};
 use std::{
     fs,
     path::PathBuf,
@@ -50,7 +50,7 @@ impl World {
             &mut || false,
         )
     }
-    fn wait_rows(&self, input: &RetainedInput) {
+    fn wait_rows(&self, input: &StoredInput) {
         let until = Instant::now() + WAIT;
         loop {
             let p = self
@@ -71,7 +71,7 @@ impl World {
             thread::sleep(Duration::from_millis(5));
         }
     }
-    fn import(&self, native: &str, content: Value) -> RetainedInput {
+    fn import(&self, native: &str, content: Value) -> StoredInput {
         let path = self.dir.path().join(format!("{native}.jsonl"));
         let raw = format!(
             "{}\n{}\n",

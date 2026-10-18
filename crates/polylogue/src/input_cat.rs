@@ -111,7 +111,7 @@ fn unsupported(message: &str) -> Failure {
 }
 fn preflight(
     reader: &ReadHandle,
-    source: &polylogue_store::RetainedSource,
+    source: &polylogue_store::StoredSource,
     check: &mut impl FnMut() -> Result<(), Failure>,
 ) -> Result<u64, Failure> {
     let mut stopped = None;
@@ -143,7 +143,7 @@ impl Write for Count {
 }
 fn present(
     reader: &ReadHandle,
-    source: &polylogue_store::RetainedSource,
+    source: &polylogue_store::StoredSource,
     out: &mut impl Write,
     check: &mut impl FnMut() -> Result<(), Failure>,
 ) -> Result<(), Failure> {
@@ -241,12 +241,12 @@ pub fn request(socket: &Path, id: &str, out: &mut impl Write) -> Result<(), Fail
 mod tests {
     use super::*;
     use polylogue_store::{ImportObservation, InputFormat, Writer};
-    fn source(bytes: &[u8]) -> (tempfile::TempDir, Writer, polylogue_store::RetainedSource) {
+    fn source(bytes: &[u8]) -> (tempfile::TempDir, Writer, polylogue_store::StoredSource) {
         let dir = tempfile::tempdir().unwrap();
         let mut writer = Writer::open(&dir.path().join("archive")).unwrap();
         let hash = writer.put_file_blob(bytes).unwrap();
         let retained = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 InputFormat::ClaudeCodeJsonl,
                 &["claude-main", "synthetic"],
@@ -260,7 +260,7 @@ mod tests {
                 4096,
             )
             .unwrap();
-        let source = writer.retained_source(&retained.id).unwrap().unwrap();
+        let source = writer.stored_source(&retained.id).unwrap().unwrap();
         (dir, writer, source)
     }
     #[test]

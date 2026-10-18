@@ -698,7 +698,7 @@ fn qualify_operation(
 fn certified_observed_member(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
-    input: &polylogue_store::RetainedSource,
+    input: &polylogue_store::StoredSource,
     message: &polylogue_store::contributions::MessageView,
     allowance: usize,
 ) -> Result<bool, Error> {
@@ -764,7 +764,7 @@ fn cell<T: serde::de::DeserializeOwned>(
 fn claude_membership(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
-    input: &polylogue_store::RetainedSource,
+    input: &polylogue_store::StoredSource,
     context: &polylogue_sources::claude_code::FileCtx,
     allowance: usize,
 ) -> Result<Option<polylogue_model::SessionId>, Error> {

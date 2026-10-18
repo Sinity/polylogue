@@ -1,6 +1,6 @@
 //! The configured main may acquire explicitly referenced tool-result files in
 //! its own provider directory. No directory discovery or attachment traversal.
-use polylogue_store::{Error, ImportObservation, RetainedSource, Writer};
+use polylogue_store::{Error, ImportObservation, StoredSource, Writer};
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -8,14 +8,14 @@ use std::{
 };
 pub fn acquire(
     writer: &mut Writer,
-    source: &RetainedSource,
+    source: &StoredSource,
     main: &Path,
     machine: &str,
     host: &str,
     request: &str,
     seen_at: i64,
     cancelled: &AtomicBool,
-) -> Result<RetainedSource, Error> {
+) -> Result<StoredSource, Error> {
     if cancelled.load(Ordering::Acquire) {
         return Err(Error::Cancelled);
     }
@@ -86,9 +86,7 @@ pub fn acquire(
             *inline,
         )?;
     }
-    writer
-        .retained_source(&source.input.id)?
-        .ok_or(Error::Range)
+    writer.stored_source(&source.input.id)?.ok_or(Error::Range)
 }
 
 #[cfg(test)]

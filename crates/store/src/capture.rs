@@ -147,7 +147,7 @@ impl Writer {
     }
     /// Only bounded metadata work occurs on the actor. Completed file bytes,
     /// compression, digest and physical size were established by capture.
-    pub fn retain_captured_blob(&mut self, proof: PreparedBlob) -> Result<BlobHash> {
+    pub fn store_captured_blob(&mut self, proof: PreparedBlob) -> Result<BlobHash> {
         if proof.root != self.root || !Arc::ptr_eq(&proof.authority, &self._lock) {
             return Err(Error::Invariant(
                 "blob capture belongs to another archive authority".into(),
@@ -268,10 +268,10 @@ mod tests {
         assert!(p.stored_size() > 0);
         assert_eq!(p.hash(), BlobHash::of(&vec![b'x'; 65537]));
         assert_eq!(rows(&w), 0);
-        let h = w.retain_captured_blob(p).unwrap();
+        let h = w.store_captured_blob(p).unwrap();
         let counter = w.status().unwrap().write_counter;
         assert_eq!(
-            w.retain_captured_blob(proof(&w, &vec![b'x'; 65537]))
+            w.store_captured_blob(proof(&w, &vec![b'x'; 65537]))
                 .unwrap(),
             h
         );
@@ -326,7 +326,7 @@ mod tests {
         let mut wb = Writer::open(b.path()).unwrap();
         let p = proof(&wa, b"bound");
         assert!(matches!(
-            wb.retain_captured_blob(p),
+            wb.store_captured_blob(p),
             Err(Error::Invariant(_))
         ));
         assert_eq!(rows(&wb), 0);
@@ -385,18 +385,18 @@ mod tests {
         entered
             .recv_timeout(std::time::Duration::from_secs(10))
             .unwrap();
-        w.retain_captured_blob(quick).unwrap();
+        w.store_captured_blob(quick).unwrap();
         assert_eq!(rows(&w), 1);
         resume.send(()).unwrap();
         let p = worker.join().unwrap().unwrap();
-        w.retain_captured_blob(p).unwrap();
+        w.store_captured_blob(p).unwrap();
         assert_eq!(rows(&w), 2);
     }
     #[test]
     fn metadata_recovery_refuses_logical_conflict_without_resurrecting_deletions() {
         let root = tempfile::tempdir().unwrap();
         let mut w = Writer::open(root.path()).unwrap();
-        let h = w.retain_captured_blob(proof(&w, b"body")).unwrap();
+        let h = w.store_captured_blob(proof(&w, b"body")).unwrap();
         w.archive
             .execute(
                 "UPDATE blob SET state='writing',stored_size=0 WHERE hash=?1",
@@ -404,7 +404,7 @@ mod tests {
             )
             .unwrap();
         let counter = w.status().unwrap().write_counter;
-        w.retain_captured_blob(proof(&w, b"body")).unwrap();
+        w.store_captured_blob(proof(&w, b"body")).unwrap();
         assert_eq!(w.status().unwrap().write_counter, counter + 1);
         let state: String = w
             .archive
@@ -413,14 +413,14 @@ mod tests {
         assert_eq!(state, "present");
         w.archive.execute("UPDATE blob SET size=5", []).unwrap();
         assert!(matches!(
-            w.retain_captured_blob(proof(&w, b"body")),
+            w.store_captured_blob(proof(&w, b"body")),
             Err(Error::Invariant(_))
         ));
         w.archive
             .execute("UPDATE blob SET size=4,state='deleting'", [])
             .unwrap();
         assert!(matches!(
-            w.retain_captured_blob(proof(&w, b"body")),
+            w.store_captured_blob(proof(&w, b"body")),
             Err(Error::Invariant(_))
         ));
     }
@@ -492,6 +492,6 @@ mod cooperative_tests {
             .capture_regular_file(&regular, &AtomicBool::new(false))
             .unwrap();
         assert_eq!(proof.length(), 7);
-        w.retain_captured_blob(proof).unwrap();
+        w.store_captured_blob(proof).unwrap();
     }
 }

@@ -63,7 +63,7 @@ impl World {
         let mut writer = Writer::open(&root).unwrap();
         let blob = writer.put_file_blob(retained).unwrap();
         let input = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 blob,
                 InputFormat::CodexRollout,
                 &[],
@@ -247,7 +247,7 @@ fn real_text_actions_restart_values_and_source_publication_keep_eof_pending() {
                 .capture(&b"peer durable metadata"[..], &AtomicBool::new(false))
                 .unwrap();
             let before = world.writer.status().unwrap().write_counter;
-            world.writer.retain_captured_blob(proof).unwrap();
+            world.writer.store_captured_blob(proof).unwrap();
             assert!(world.writer.status().unwrap().write_counter > before);
             peer_committed = true;
         }

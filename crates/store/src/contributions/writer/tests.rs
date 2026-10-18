@@ -22,7 +22,7 @@ impl Fixture {
         let mut writer = Writer::open(&root).unwrap();
         let blob = writer.put_file_blob(b"{\"synthetic\":true}\n").unwrap();
         let input = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 blob,
                 InputFormat::CodexRollout,
                 &[],
@@ -2349,7 +2349,7 @@ fn uncontested_source_selection_is_atomic_and_contested_stays_pending() {
         .unwrap();
     let input = f
         .writer
-        .retain_immutable_input(
+        .store_immutable_input(
             blob,
             InputFormat::CodexRollout,
             &[],
@@ -3299,7 +3299,7 @@ fn compatibility_input(f: &mut Fixture, raw: &[u8], context: &[&str]) -> String 
     };
     let input = f
         .writer
-        .retain_immutable_input(
+        .store_immutable_input(
             blob,
             format,
             context,

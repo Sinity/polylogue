@@ -117,7 +117,7 @@ fn descriptor_relative_capture_refuses_symlink_swaps_and_archive_roots() {
             .is_err()
     );
 }
-fn retain(writer: &mut Writer, location: Location, id: &str) -> crate::RetainedSource {
+fn retain(writer: &mut Writer, location: Location, id: &str) -> crate::StoredSource {
     let prepared = writer
         .blob_capture()
         .unwrap()
@@ -132,7 +132,7 @@ fn retain(writer: &mut Writer, location: Location, id: &str) -> crate::RetainedS
         )
         .unwrap();
     writer
-        .retain_claude_main(prepared.main, "synthetic", "synthetic", id, 1)
+        .store_claude_main(prepared.main, "synthetic", "synthetic", id, 1)
         .unwrap()
 }
 #[test]
@@ -211,7 +211,7 @@ fn preserving_v3_upgrade_materializes_exact_old_context_and_fences_unaware_write
     drop(writer);
     let preserved = fs::read(archive.join("archive.db")).unwrap();
     let mut writer = Writer::open(&archive).unwrap();
-    let after = writer.retained_source(&source.input.id).unwrap().unwrap();
+    let after = writer.stored_source(&source.input.id).unwrap().unwrap();
     assert_eq!(after.context, ["claude-main", "legacy-main"]);
     assert_eq!(after.input.id, source.input.id);
     assert_eq!(after.binding, source.binding);

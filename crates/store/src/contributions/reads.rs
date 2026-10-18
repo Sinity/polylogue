@@ -1699,7 +1699,7 @@ mod tests {
                 .put_file_blob(&b"synthetic retained source bytes\n"[..])
                 .unwrap();
             let input = writer
-                .retain_immutable_input(
+                .store_immutable_input(
                     hash,
                     InputFormat::CodexRollout,
                     &[],
@@ -1986,7 +1986,7 @@ mod tests {
         let hash = f.writer.put_file_blob(b"{malformed}\n").unwrap();
         let input = f
             .writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 InputFormat::ClaudeCodeJsonl,
                 &["claude-main", "context-only"],

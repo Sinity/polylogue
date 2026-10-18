@@ -207,9 +207,9 @@ impl Writer {
         else {
             return Ok(());
         };
-        self.retain_claude_body(main, prepared, observation)
+        self.store_claude_body(main, prepared, observation)
     }
-    pub fn retain_claude_body(
+    pub fn store_claude_body(
         &mut self,
         main: &str,
         prepared: PreparedClaudeBody,
@@ -223,7 +223,7 @@ impl Writer {
         } = prepared;
         let duplicate = inline == Some((proof.hash(), proof.length()));
         let length = proof.length();
-        let hash = self.retain_captured_blob(proof)?;
+        let hash = self.store_captured_blob(proof)?;
         let path = path.to_str().ok_or(Error::Range)?;
         let context = [
             main,
@@ -263,7 +263,7 @@ impl Writer {
         }) {
             return Ok(());
         }
-        self.retain_immutable_input(
+        self.store_immutable_input(
             hash,
             InputFormat::ClaudeCodeToolResult,
             &[

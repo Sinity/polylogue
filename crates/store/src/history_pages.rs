@@ -2,7 +2,7 @@
 //! database descriptor is opened outside SQLite. Partial preparation is not input authority.
 use crate::{
     BlobCapture, BlobHash, Error, ImportObservation, InputFormat, PreparedBlob, ReadHandle, Result,
-    RetainedInput, Writer, db,
+    StoredInput, Writer, db,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::{
@@ -117,7 +117,7 @@ impl Writer {
         &mut self,
         hash: BlobHash,
         o: &ImportObservation<'_>,
-    ) -> Result<Option<RetainedInput>> {
+    ) -> Result<Option<StoredInput>> {
         self.check_import_acquisition()?;
         let file = self.root.join("archive.db");
         let id: Option<String> = db(&file, || {
@@ -155,15 +155,15 @@ impl Writer {
         }))
     }
 
-    pub fn retain_history_pages(
+    pub fn store_history_pages(
         &mut self,
         p: PreparedHistory,
         o: &ImportObservation<'_>,
         allowance: usize,
-    ) -> Result<RetainedInput> {
+    ) -> Result<StoredInput> {
         // PreparedBlob remains archive-bound; certify patch custody before any
         // input is selectable. A crash here leaves only unselected physical data.
-        let patch = self.retain_captured_blob(p.patch)?;
+        let patch = self.store_captured_blob(p.patch)?;
         let parts = p
             .parts
             .into_iter()
@@ -180,7 +180,7 @@ impl Writer {
                 )
             })
             .collect::<Vec<_>>();
-        self.retain_immutable_parts(
+        self.store_immutable_parts(
             p.hash,
             p.length,
             &parts,

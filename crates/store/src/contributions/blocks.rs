@@ -956,7 +956,7 @@ mod tests {
             let mut writer = Writer::open(&root).unwrap();
             let blob = writer.put_file_blob(b"{\"synthetic\":true}\n").unwrap();
             let input = writer
-                .retain_immutable_input(
+                .store_immutable_input(
                     blob,
                     InputFormat::CodexRollout,
                     &[],

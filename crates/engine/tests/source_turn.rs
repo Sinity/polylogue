@@ -76,7 +76,7 @@ impl World {
         let mut writer = Writer::open(&root).unwrap();
         let hash = writer.put_file_blob(bytes).unwrap();
         let input = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 if claude {
                     InputFormat::ClaudeCodeJsonl

@@ -13,7 +13,7 @@ fn fixture() -> (tempfile::TempDir, Writer, Head) {
     let mut writer = Writer::open(dir.path()).unwrap();
     let hash = writer.put_file_blob(&[b'x'; 128]).unwrap();
     let input = writer
-        .retain_immutable_input(
+        .store_immutable_input(
             hash,
             InputFormat::CodexRollout,
             &[],

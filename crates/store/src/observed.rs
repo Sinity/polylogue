@@ -1,7 +1,7 @@
 //! Retained input identity and contiguous source reads. Provider paths are used
 //! only during explicit configured acquisition, never by interpretation/readback.
 use crate::{
-    BlobHash, Error, ImmutableImport, InputFormat, ReadHandle, RetainedInput, Writer, counter, db,
+    BlobHash, Error, ImmutableImport, InputFormat, ReadHandle, StoredInput, Writer, counter, db,
 };
 use rusqlite::{OptionalExtension, params};
 pub(crate) mod context;
@@ -25,8 +25,8 @@ pub enum SourceIdentity {
     },
 }
 #[derive(Clone, Debug)]
-pub struct RetainedSource {
-    pub input: RetainedInput,
+pub struct StoredSource {
+    pub input: StoredInput,
     /// Immutable original hash, or domain-separated observed input/chain key.
     /// This is an interpretation binding, not a full observed-content digest.
     pub binding: BlobHash,
@@ -36,7 +36,7 @@ pub struct RetainedSource {
     pub revision: u64,
     pub companions: Vec<super::claude_bodies::Companion>,
 }
-impl From<ImmutableImport> for RetainedSource {
+impl From<ImmutableImport> for StoredSource {
     fn from(v: ImmutableImport) -> Self {
         Self {
             identity: SourceIdentity::Immutable {
@@ -51,7 +51,7 @@ impl From<ImmutableImport> for RetainedSource {
         }
     }
 }
-impl RetainedSource {
+impl StoredSource {
     pub fn original_hash(&self) -> Option<BlobHash> {
         match self.identity {
             SourceIdentity::Immutable { original_hash } => Some(original_hash),
@@ -80,7 +80,7 @@ pub(crate) fn decode(
     connection: &rusqlite::Connection,
     file: &Path,
     id: &str,
-) -> crate::Result<Option<RetainedSource>> {
+) -> crate::Result<Option<StoredSource>> {
     type Row = (
         String,
         Option<Vec<u8>>,
@@ -97,7 +97,7 @@ pub(crate) fn decode(
         return Ok(None);
     };
     if original.is_some() {
-        let (id, hash, format, context, length) = crate::retained::decode_import_identity(
+        let (id, hash, format, context, length) = crate::imports::decode_import_identity(
             id.into(),
             format,
             length,
@@ -108,8 +108,8 @@ pub(crate) fn decode(
         if revision != 1 || chain != 1 {
             return Err(refusal("unsupported immutable chain"));
         }
-        return Ok(Some(RetainedSource {
-            input: RetainedInput {
+        return Ok(Some(StoredSource {
+            input: StoredInput {
                 input_pk: 0,
                 id,
                 chain,
@@ -132,8 +132,8 @@ pub(crate) fn decode(
         connection.query_row("SELECT CASE WHEN length(CAST(machine AS BLOB))<=65536 THEN machine END,CASE WHEN length(CAST(path AS BLOB))<=65536 THEN path END,device,inode FROM observation WHERE input=?1 AND class='first' ORDER BY rowid LIMIT 1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
     })?;
     let context = context::read(connection, file, id)?;
-    Ok(Some(RetainedSource {
-        input: RetainedInput {
+    Ok(Some(StoredSource {
+        input: StoredInput {
             input_pk: 0,
             id: id.into(),
             chain,
@@ -153,15 +153,15 @@ pub(crate) fn decode(
     }))
 }
 impl Writer {
-    pub fn retained_source(&mut self, id: &str) -> crate::Result<Option<RetainedSource>> {
+    pub fn stored_source(&mut self, id: &str) -> crate::Result<Option<StoredSource>> {
         self.check_import_acquisition()?;
         let Some(mut source) = decode(&self.archive, &self.root.join("archive.db"), id)? else {
             return Ok(None);
         };
-        source.input = self.register_retained_reference(source.input.id, source.input.length)?;
+        source.input = self.register_input_ref(source.input.id, source.input.length)?;
         Ok(Some(source))
     }
-    pub fn next_retained_source(&mut self, after: &str) -> crate::Result<Option<RetainedSource>> {
+    pub fn next_stored_source(&mut self, after: &str) -> crate::Result<Option<StoredSource>> {
         self.check_import_acquisition()?;
         let id: Option<String> = db(&self.root.join("archive.db"), || {
             self.archive
@@ -172,7 +172,7 @@ impl Writer {
                 )
                 .optional()
         })?;
-        id.map(|id| self.retained_source(&id))
+        id.map(|id| self.stored_source(&id))
             .transpose()
             .map(Option::flatten)
     }
@@ -188,7 +188,7 @@ impl Writer {
         id: &str,
         seen_at: i64,
         cancelled: &AtomicBool,
-    ) -> crate::Result<RetainedSource> {
+    ) -> crate::Result<StoredSource> {
         let path_text = path
             .to_str()
             .ok_or_else(|| refusal("non-UTF8 path is unsupported"))?;
@@ -205,13 +205,13 @@ impl Writer {
         let old = self.claude_predecessor(path, machine)?;
         let capture = self.blob_capture()?;
         let prepared = capture.prepare_claude_main(path, old, cancelled, |_| Ok(()), |_| Ok(()))?;
-        self.retain_claude_main(prepared, machine, host, id, seen_at)
+        self.store_claude_main(prepared, machine, host, id, seen_at)
     }
     pub fn claude_predecessor(
         &mut self,
         path: &Path,
         machine: &str,
-    ) -> crate::Result<Option<RetainedSource>> {
+    ) -> crate::Result<Option<StoredSource>> {
         self.check_import_acquisition()?;
         let path_text = path.to_str().ok_or(Error::Range)?;
         let archive_file = self.root.join("archive.db");
@@ -220,18 +220,18 @@ impl Writer {
         })?;
         old_id
             .as_ref()
-            .map(|id| self.retained_source(id))
+            .map(|id| self.stored_source(id))
             .transpose()
             .map(Option::flatten)
     }
-    pub fn retain_claude_main(
+    pub fn store_claude_main(
         &mut self,
         prepared: PreparedClaudeMain,
         machine: &str,
         host: &str,
         id: &str,
         seen_at: i64,
-    ) -> crate::Result<RetainedSource> {
+    ) -> crate::Result<StoredSource> {
         self.check_import_acquisition()?;
         let PreparedClaudeMain {
             location,
@@ -276,7 +276,7 @@ impl Writer {
         }
         let archive_file = self.root.join("archive.db");
         let hash =
-            self.retain_captured_blob(proof.ok_or_else(|| refusal("missing capture proof"))?)?;
+            self.store_captured_blob(proof.ok_or_else(|| refusal("missing capture proof"))?)?;
         let input_id = old.as_ref().map(|s| s.input.id.as_str()).unwrap_or(id);
         let revision = i64::try_from(
             old.as_ref()
@@ -324,7 +324,7 @@ impl Writer {
             )
         })?;
         db(&archive_file, || tx.commit())?;
-        self.retained_source(input_id)?
+        self.stored_source(input_id)?
             .ok_or_else(|| refusal("committed acquisition missing"))
     }
 }
@@ -335,7 +335,7 @@ pub struct PreparedClaude {
 }
 pub struct PreparedClaudeMain {
     location: crate::configured_claude::Location,
-    old: Option<RetainedSource>,
+    old: Option<StoredSource>,
     meta: std::fs::Metadata,
     proof: Option<crate::PreparedBlob>,
 }
@@ -345,7 +345,7 @@ impl crate::BlobCapture {
     pub fn prepare_claude_in_turns(
         &self,
         path: &Path,
-        old: Option<RetainedSource>,
+        old: Option<StoredSource>,
         cancelled: &AtomicBool,
         budget: crate::history_pages::turns::Budget,
         yield_turn: impl FnMut(crate::history_pages::turns::Progress) -> crate::Result<()>,
@@ -366,7 +366,7 @@ impl crate::BlobCapture {
     pub fn prepare_claude_location_in_turns(
         &self,
         location: crate::configured_claude::Location,
-        old: Option<RetainedSource>,
+        old: Option<StoredSource>,
         cancelled: &AtomicBool,
         budget: crate::history_pages::turns::Budget,
         mut yield_turn: impl FnMut(crate::history_pages::turns::Progress) -> crate::Result<()>,
@@ -401,7 +401,7 @@ impl crate::BlobCapture {
     pub(crate) fn prepare_claude_main(
         &self,
         path: &Path,
-        old: Option<RetainedSource>,
+        old: Option<StoredSource>,
         cancelled: &AtomicBool,
         work: impl FnMut(u64) -> crate::Result<()>,
         inspect: impl FnMut(&[u8]) -> crate::Result<()>,
@@ -412,7 +412,7 @@ impl crate::BlobCapture {
     fn prepare_claude_location(
         &self,
         location: crate::configured_claude::Location,
-        old: Option<RetainedSource>,
+        old: Option<StoredSource>,
         cancelled: &AtomicBool,
         mut work: impl FnMut(u64) -> crate::Result<()>,
         mut inspect: impl FnMut(&[u8]) -> crate::Result<()>,
@@ -644,7 +644,7 @@ impl ReadHandle {
     /// exposed. Range reads separately check exact coverage and frame integrity.
     pub fn verify_source(
         &self,
-        source: &RetainedSource,
+        source: &StoredSource,
         mut check: impl FnMut() -> crate::Result<()>,
     ) -> crate::Result<()> {
         let file = self.root.join("archive.db");
@@ -676,7 +676,7 @@ impl ReadHandle {
         }
         Ok(())
     }
-    pub fn source(&self, id: &str) -> crate::Result<Option<RetainedSource>> {
+    pub fn source(&self, id: &str) -> crate::Result<Option<StoredSource>> {
         let file = self.root.join("archive.db");
         let excisions: bool = db(&file, || {
             self.archive
@@ -693,7 +693,7 @@ impl ReadHandle {
 mod tests {
     use super::*;
     use std::{fs::OpenOptions, io::Write};
-    fn acquire(w: &mut Writer, p: &Path, id: &str) -> RetainedSource {
+    fn acquire(w: &mut Writer, p: &Path, id: &str) -> StoredSource {
         w.acquire_claude_main(
             p,
             "synthetic-machine",
@@ -942,7 +942,7 @@ mod tests {
         drop(w);
         std::fs::remove_file(p).unwrap();
         let mut w = Writer::open(&archive).unwrap();
-        let recovered = w.next_retained_source("").unwrap().unwrap();
+        let recovered = w.next_stored_source("").unwrap().unwrap();
         assert_eq!(recovered.input.id, "id");
         assert_eq!(w.status().unwrap().write_counter, before);
         assert_eq!(

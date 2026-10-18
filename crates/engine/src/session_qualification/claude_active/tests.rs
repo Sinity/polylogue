@@ -6,7 +6,7 @@ fn point_proof_checks_cancellation_and_admission_before_accessing_unprepared_sta
     let mut writer = Writer::open(dir.path()).unwrap();
     let blob = writer.put_file_blob(b"{}\n").unwrap();
     writer
-        .retain_immutable_input(
+        .store_immutable_input(
             blob,
             InputFormat::ClaudeCodeJsonl,
             &["claude-main", "s"],

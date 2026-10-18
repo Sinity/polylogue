@@ -40,7 +40,7 @@ impl World {
         let mut writer = Writer::open(&root).unwrap();
         let blob = writer.put_file_blob(bytes).unwrap();
         let retained = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 blob,
                 InputFormat::ClaudeCodeJsonl,
                 &["claude-main", "s"],

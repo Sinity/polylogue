@@ -1,6 +1,6 @@
 //! Snapshot-pinned admission catalog, independent of selected Message rows.
 use super::*;
-use crate::{RetainedSource, parser_state};
+use crate::{StoredSource, parser_state};
 #[derive(Clone)]
 pub struct SessionDependencyCursor {
     read: SharedRead,
@@ -9,7 +9,7 @@ pub struct SessionDependencyCursor {
 pub struct SessionInputDependency {
     read: SharedRead,
     id: String,
-    source: RetainedSource,
+    source: StoredSource,
     registered: Option<i64>,
     head: Option<parser_state::Head>,
     failure: Option<String>,
@@ -30,7 +30,7 @@ impl SessionInputDependency {
     pub fn failure(&self) -> Option<&str> {
         self.failure.as_deref()
     }
-    pub fn registered(&self) -> Option<RetainedSource> {
+    pub fn registered(&self) -> Option<StoredSource> {
         self.registered.map(|input_pk| {
             let mut source = self.source.clone();
             source.input.input_pk = input_pk;
