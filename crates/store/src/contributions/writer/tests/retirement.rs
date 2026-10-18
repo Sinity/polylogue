@@ -112,7 +112,7 @@ fn retiring_a_ready_body_keeps_roots_shared_with_other_bodies() {
     assert_eq!(f.scalar("SELECT body_pk IS NULL FROM message_candidate"), 1);
     assert_eq!(
         f.writer.collect_message_candidate(&candidate).unwrap(),
-        CandidateCollection::Retained
+        CandidateCollection::InUse
     );
     let mut f = f.reopen();
     let reader = f.writer.read_handle().unwrap();
@@ -164,7 +164,7 @@ fn retiring_a_ready_body_keeps_roots_shared_with_other_bodies() {
     assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 1);
     assert_eq!(
         f.writer.collect_message_candidate(&candidate).unwrap(),
-        CandidateCollection::Retained
+        CandidateCollection::InUse
     );
     f.writer.retire_message_preparation(&next).unwrap();
     f.exec("CREATE TRIGGER refuse_fact_release BEFORE DELETE ON message_field_fact BEGIN SELECT RAISE(ABORT,'synthetic fact release failure'); END;");

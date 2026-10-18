@@ -1,5 +1,6 @@
-//! Reuse a certified source body's immutable roots for the next effective state
-//! of that SAME format-declared candidate. This is not donor filling or election.
+//! Starting a new preparation from the previous source body of the same logical
+//! candidate: the new body shares its roots instead of copying them. This is
+//! not filling from other sources.
 use super::{
     blocks,
     bodies::BodyId,
@@ -10,20 +11,18 @@ use crate::{Error, Result, Writer, db};
 use polylogue_model::BlobHash;
 use rusqlite::{OptionalExtension, params};
 
-/// The prior source certificate's digest is reusable only when the provider's
-/// selected evidence revision is unchanged. The source owner must still reject
-/// incomplete evidence/normalization and validate its pinned current head.
+/// The previous body's evidence revision and version hash. The caller may reuse
+/// the hash only if the evidence revision has not changed.
 #[derive(Clone, Debug)]
 pub struct InheritedProjection {
     pub evidence_revision: u64,
     pub version_hash: BlobHash,
 }
 impl Writer {
-    /// Called once at the beginning of a new preparation. The owner selects the
-    /// prior effective source body, not a filled canonical body or arbitrary
-    /// historical donor. Dirty source units then replace/remove their own paths.
-    /// At most three root leases and scalar metadata change; descendants remain
-    /// shared. The source cursor commits in the same transaction.
+    /// Call first in a new preparation, with the previous source body of the
+    /// same logical candidate (not a filled or selected body). The new body
+    /// takes the old block, field and operation roots; changed source units
+    /// then replace their own entries. Commits as the first cursor step.
     pub fn inherit_message_projection(
         &mut self,
         build: &Build,
@@ -32,7 +31,7 @@ impl Writer {
         step: &blocks::ProjectionStep<'_>,
         allowance: usize,
     ) -> Result<InheritedProjection> {
-        blocks::admit(step, allowance)?;
+        blocks::check_step(step, allowance)?;
         let path = self.root.join("index.db");
         if previous.path != path
             || previous.generation != build.source.index_generation
@@ -48,7 +47,7 @@ impl Writer {
             return Err(Error::StaleMessage);
         }
         let tx = db(&path, || self._index.transaction())?;
-        writer::check(&tx, &path, build)?;
+        writer::check_writable(&tx, &path, build)?;
         let empty: bool = db(&path, || {
             tx.query_row(
             "SELECT w.source_cursor=0 AND w.active_value_pk IS NULL AND w.active_block_pk IS NULL AND b.block_root_pk IS NULL AND b.field_root_pk IS NULL AND b.operation_root_pk IS NULL FROM message_build w JOIN message_body b ON b.pk=w.body_pk WHERE w.pk=?1",
@@ -73,17 +72,19 @@ impl Writer {
             params![previous.pk,build.candidate,build.body,build.message,build.session],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,crate::parser_state::unsigned(r,3)?,r.get(4)?,r.get(5)?,r.get(6)?,crate::parser_state::unsigned(r,7)?))).optional()
         })?;
-        let (blocks, fields, operations, evidence_revision, hash, old_basis, logical, revision) =
+        let (blocks, fields, operations, evidence_revision, hash, old_digest, logical, revision) =
             roots.ok_or(Error::StaleMessage)?;
         let logical: [u8; 32] = logical
             .try_into()
-            .map_err(|_| Error::Invariant("source candidate logical key length".into()))?;
-        if old_basis != writer::basis(previous_source, revision, &logical, evidence_revision) {
+            .map_err(|_| Error::Invariant("stored logical key is not 32 bytes".into()))?;
+        if old_digest
+            != writer::preparation_digest(previous_source, revision, &logical, evidence_revision)
+        {
             return Err(Error::StaleMessage);
         }
         let hash: [u8; 32] = hash
             .try_into()
-            .map_err(|_| Error::Invariant("source certificate digest length".into()))?;
+            .map_err(|_| Error::Invariant("stored version hash is not 32 bytes".into()))?;
         let owner = d::Owner {
             message: build.message,
             session: build.session,

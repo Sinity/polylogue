@@ -1,13 +1,14 @@
-//! Atomic installation of one worker-verified small normalized field and its
-//! source descriptor. Streaming/in-flight producers keep their existing API.
+//! Writing small fields whose value and source descriptor are already in
+//! memory: bytes, field and cursor step commit in one transaction. Larger values
+//! use `begin_message_value`, `append_value_chunk` and `seal_message_value`.
 use super::{Build, ProjectionStep, blocks, writer};
 use crate::{Error, Result, Writer, db, values};
 use polylogue_model::merge::Slot;
 use rusqlite::{Transaction, params};
 use std::path::Path;
 
-/// Immutable worker-hashed chunks, not source-selector authority. The engine
-/// must verify the selected source against these exact normalized bytes first.
+/// A small JSON value and its source descriptor, split into hashed chunks by
+/// the worker. The caller must have checked the source against these bytes.
 pub struct SmallField {
     value: values::small::Prepared,
     origin: values::small::Prepared,
@@ -33,8 +34,9 @@ impl SmallField {
     pub fn value_length(&self) -> u64 {
         self.value.len() as u64
     }
-    /// The worker and writer use the same aggregate admission. Reject before
-    /// allocation; a worker can then choose the unchanged streaming path.
+    /// Checks that the field, its key and the cursor fit in `allowance`. The
+    /// worker calls this before writing; on failure it can stream the value
+    /// instead.
     pub fn admit(
         &self,
         slot: &Slot,
@@ -49,7 +51,7 @@ impl SmallField {
             .checked_add(self.origin.len())
             .and_then(|n| n.checked_add(key.len()))
             .ok_or(Error::Range)?;
-        blocks::admit(step, allowance.saturating_sub(bytes)).map_err(|error| match error {
+        blocks::check_step(step, allowance.saturating_sub(bytes)).map_err(|error| match error {
             Error::ParserAdmission { required, .. } => Error::ParserAdmission {
                 resource: "small field metadata bytes",
                 required: required.saturating_add(bytes as u64),
@@ -58,7 +60,7 @@ impl SmallField {
         })
     }
 }
-/// One verified small field and its exact intermediate cursor checkpoint.
+/// One small field and the cursor step it commits with.
 pub struct SmallFieldEntry {
     pub slot: Slot,
     pub source_time: Option<i64>,
@@ -69,7 +71,8 @@ pub struct SmallFieldEntry {
     pub next_cursor: Vec<u8>,
 }
 impl SmallFieldEntry {
-    pub fn retained_bytes(&self, allowance: usize) -> Result<usize> {
+    /// Bytes this entry holds, counted against a run's allowance.
+    pub fn size_bytes(&self, allowance: usize) -> Result<usize> {
         let key = key(&self.slot, self.block, allowance)?;
         self.field
             .value
@@ -101,7 +104,7 @@ fn write_in(
 ) -> Result<()> {
     field.admit(slot, block, step, allowance)?;
     let key = key(slot, block, allowance)?;
-    writer::check(tx, path, build)?;
+    writer::check_writable(tx, path, build)?;
     let active: bool = db(path, || {
         tx.query_row("SELECT active_value_pk IS NOT NULL OR active_origin_value_pk IS NOT NULL FROM message_build WHERE pk=?1",[build.pk],|r|r.get(0))
     })?;
@@ -119,7 +122,16 @@ fn write_in(
     if block {
         blocks::write_field_in(tx, path, build, slot, &key, source_time, supplied)?;
     } else {
-        writer::write_field_in(tx, path, build, &key, None, source_time, supplied)?;
+        writer::update_field_in(
+            tx,
+            path,
+            build,
+            &key,
+            None,
+            source_time,
+            supplied,
+            writer::FieldUpdate::Insert,
+        )?;
     }
     blocks::commit_cursor(tx, path, build, step)
 }
@@ -131,15 +143,13 @@ fn key(slot: &Slot, block: bool, allowance: usize) -> Result<Vec<u8>> {
         slot,
         Slot::Block { .. } | Slot::Extra { block: Some(_), .. }
     ) {
-        return Err(Error::Invariant(
-            "block-local fields require active block ownership".into(),
-        ));
+        return Err(Error::Invariant("a block field needs `block` set".into()));
     }
     writer::field_key(slot, allowance)
 }
 impl Writer {
-    /// Chunks, dedup/producer leases, shared field validation/root transfer and
-    /// cursor CAS commit together. A failed late check leaves no visible IDs.
+    /// Writes one small field: its value chunks, the field and the cursor step
+    /// commit together, or nothing does.
     pub fn write_small_field(
         &mut self,
         build: &Build,
@@ -168,26 +178,26 @@ impl Writer {
         db(&path, || tx.commit())?;
         Ok(())
     }
-    /// All intermediate fields and cursor CAS steps commit together. Each member
-    /// uses the single-field live checks; any late failure rolls back the run.
+    /// Writes several small fields in one transaction, each checked as in
+    /// `write_small_field`. Any failure rolls back the whole run.
     pub fn write_small_field_run(
         &mut self,
         build: &Build,
         entries: &[SmallFieldEntry],
         allowance: usize,
     ) -> Result<()> {
-        let mut retained = 0usize;
+        let mut total = 0usize;
         if entries.is_empty() {
             return Err(Error::Invariant("empty small field run".into()));
         }
         for entry in entries {
-            retained = retained
-                .checked_add(entry.retained_bytes(allowance)?)
+            total = total
+                .checked_add(entry.size_bytes(allowance)?)
                 .ok_or(Error::Range)?;
-            if retained > allowance {
+            if total > allowance {
                 return Err(Error::ParserAdmission {
                     resource: "small field run bytes",
-                    required: retained as u64,
+                    required: total as u64,
                 });
             }
             entry

@@ -135,7 +135,7 @@ fn run_size_or_key_errors_install_nothing() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     let entries = fields();
-    let one = entries[0].retained_bytes(65536).unwrap();
+    let one = entries[0].size_bytes(65536).unwrap();
     assert!(matches!(
         f.writer.write_small_field_run(&build, &entries, one),
         Err(Error::ParserAdmission { .. })
@@ -143,7 +143,7 @@ fn run_size_or_key_errors_install_nothing() {
     let mut bad = fields();
     bad[1].slot = slot(&"x".repeat(2048));
     assert!(matches!(
-        bad[1].retained_bytes(1024),
+        bad[1].size_bytes(1024),
         Err(Error::ParserAdmission { .. })
     ));
     assert_eq!(f.scalar("SELECT count(*) FROM body_value"), 0);

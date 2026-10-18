@@ -444,7 +444,7 @@ fn attached_tool_item_version_keeps_tool_call_and_block() {
         INSERT INTO tool_call(pk,session_pk,message_pk,operation_id,tool_item_pk,tool_item_version_pk,call_block_pk,outcome,outcome_reason) VALUES(1,1,1,'opaque-operation',1,1,1,'unknown','no_result');").unwrap();
     let path = root.join("index.db");
     let tx = writer._index.transaction().unwrap();
-    assert!(retirement::call_summary_referenced(&tx, &path, 1).unwrap());
+    assert!(retirement::tool_call_referenced(&tx, &path, 1).unwrap());
     blocks::release_unreferenced_block(&tx, &path, 1).unwrap();
     assert_eq!(
         tx.query_row("SELECT count(*) FROM tool_call", [], |r| r.get::<_, i64>(0))
@@ -462,7 +462,7 @@ fn attached_tool_item_version_keeps_tool_call_and_block() {
         [],
     )
     .unwrap();
-    assert!(!retirement::call_summary_referenced(&tx, &path, 1).unwrap());
+    assert!(!retirement::tool_call_referenced(&tx, &path, 1).unwrap());
     blocks::release_unreferenced_block(&tx, &path, 1).unwrap();
     assert_eq!(
         tx.query_row("SELECT count(*) FROM tool_call", [], |r| r.get::<_, i64>(0))

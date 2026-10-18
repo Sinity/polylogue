@@ -1,6 +1,7 @@
-//! Invalidated unpublished work drains in owning transactions. Each turn touches
-//! one frontier/root, one <=16-edge node, one fact/source row, or fixed control
-//! metadata. Durable rows remain the work description; no second queue exists.
+//! Retiring an unpublished preparation, one step per call. Each call removes one
+//! frontier entry, root, directory node, field fact or source range, and the
+//! last call removes the build, body and candidate rows. The rows themselves
+//! record what is left; there is no separate queue.
 use super::directory;
 use super::writer::Build;
 use crate::{Error, Result, Writer, db};
@@ -17,7 +18,7 @@ pub(super) fn release_ready_value(
     })? != 1
     {
         return Err(Error::Invariant(
-            "canonical value lost its ready owner lease".into(),
+            "ready value has no lease to release".into(),
         ));
     }
     db(path, || {
@@ -28,9 +29,9 @@ pub(super) fn release_ready_value(
     })?;
     Ok(())
 }
-/// At most one summary belongs to a call block. Read at most two indexed rows
-/// so corrupt/predecessor layouts refuse rather than doing unbounded cleanup.
-pub(super) fn call_summary(
+/// The tool_call row of a tool call block, if any. A second row is an error;
+/// only two rows are read, so a corrupt index cannot cause a long scan.
+pub(super) fn tool_call_of(
     tx: &rusqlite::Transaction<'_>,
     path: &Path,
     block: i64,
@@ -45,16 +46,15 @@ pub(super) fn call_summary(
     };
     if db(path, || rows.next())?.is_some() {
         return Err(Error::Invariant(
-            "call block owns duplicate summaries".into(),
+            "tool call block has more than one tool_call row".into(),
         ));
     }
     Ok(first)
 }
-/// These other owners must release their known summary reference first. This
-/// private staging writer never publishes serving FTS rows or process matches.
-/// An attached ToolItem version is outside this Message-local lifecycle: it
-/// retains its summary even if no selected root currently points at the version.
-pub(super) fn call_summary_referenced(
+/// Whether anything outside the block references this tool_call row: a tool
+/// item version, a directory edge, a process, the last-command table or the
+/// search index. Those owners release their reference first.
+pub(super) fn tool_call_referenced(
     tx: &rusqlite::Transaction<'_>,
     path: &Path,
     call: i64,
@@ -63,17 +63,17 @@ pub(super) fn call_summary_referenced(
         tx.query_row("SELECT EXISTS(SELECT 1 FROM tool_call WHERE pk=?1 AND tool_item_version_pk IS NOT NULL) OR EXISTS(SELECT 1 FROM message_body_edge WHERE tool_call_pk=?1) OR EXISTS(SELECT 1 FROM process WHERE tool_call_pk=?1) OR EXISTS(SELECT 1 FROM repo_command_last WHERE tool_call_pk=?1) OR EXISTS(SELECT 1 FROM tool_call_trigram WHERE rowid=?1)",[call],|r|r.get(0))
     })
 }
-/// Delete one known, unreferenced summary and release EACH counted value lease.
-/// Equal PKs are separate owners. Result ownership is released only after this
-/// summary disappears; another summary or pinned graph may still retain it.
-pub(super) fn release_call_summary(
+/// Deletes an unreferenced tool_call row and releases each of its value leases
+/// (equal pks are separate leases). Then releases its result block, which may
+/// still be held elsewhere. Returns false if the row is still referenced.
+pub(super) fn release_tool_call(
     tx: &rusqlite::Transaction<'_>,
     path: &Path,
     call: i64,
     block: i64,
     session: i64,
 ) -> Result<bool> {
-    if call_summary_referenced(tx, path, call)? {
+    if tool_call_referenced(tx, path, call)? {
         return Ok(false);
     }
     let (tool, command, normalized, path_value, result): (
@@ -95,7 +95,7 @@ pub(super) fn release_call_summary(
         })?;
         if !valid || result == block {
             return Err(Error::Invariant(
-                "call summary has an invalid result block".into(),
+                "tool call points at an invalid result block".into(),
             ));
         }
     }
@@ -107,7 +107,7 @@ pub(super) fn release_call_summary(
     })? != 1
     {
         return Err(Error::Invariant(
-            "call summary disappeared during retirement".into(),
+            "tool_call row disappeared during retirement".into(),
         ));
     }
     for value in [tool, command, normalized, path_value]
@@ -136,18 +136,18 @@ fn drop_fact(tx: &rusqlite::Transaction<'_>, path: &Path, fact: i64, value: i64)
     if let Some(origin) = origin {
         release_ready_value(tx, path, origin)?;
     }
-    let retained: bool = db(path, || {
+    let in_use: bool = db(path, || {
         tx.query_row("SELECT EXISTS(SELECT 1 FROM message_field_fact WHERE slot_pk=?1) OR EXISTS(SELECT 1 FROM message_body_edge WHERE conflict_slot_pk=?1)",[slot],|r|r.get(0))
     })?;
-    if !retained {
+    if !in_use {
         db(path, || {
             tx.execute("DELETE FROM message_field_slot WHERE pk=?1", [slot])
         })?;
     }
     Ok(())
 }
-/// A known leaf can disappear only after its final directory reference AND
-/// retained source-body/current-eligibility ownership have both gone away.
+/// Deletes a field fact once no directory references it and its candidate is
+/// neither eligible nor attached to a body.
 pub(super) fn release_unreferenced_fact(
     tx: &rusqlite::Transaction<'_>,
     path: &Path,
@@ -162,14 +162,14 @@ pub(super) fn release_unreferenced_fact(
     if eligible || body.is_some() {
         return Ok(());
     }
-    let retained: bool = db(path, || {
+    let referenced: bool = db(path, || {
         tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM message_body_edge WHERE field_fact_pk=?1)",
             [fact],
             |r| r.get(0),
         )
     })?;
-    if !retained {
+    if !referenced {
         drop_fact(tx, path, fact, value)?;
     }
     Ok(())
@@ -191,24 +191,13 @@ pub enum ValueCollection {
     Idle,
 }
 impl Writer {
-    /// Resume only an explicitly invalidated, never-published preparation.
-    /// Its source may have advanced or been removed: cleanup cannot publish or
-    /// clear that source's newer parse/effect work. Committed private identity
-    /// and index incarnation still fence every turn.
+    /// Performs one retirement step for a preparation already marked by
+    /// `retire_message_preparation`; call until it returns `Complete`. Works
+    /// after the source has moved on, and never touches the source's newer work.
     pub fn retire_message_turn(&mut self, build: &Build) -> Result<Retirement> {
         let path = self.root.join("index.db");
-        if path != build.path {
-            return Err(Error::StaleMessage);
-        }
         let tx = db(&path, || self._index.transaction())?;
-        let generation: String = db(&path, || {
-            tx.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
-                r.get(0)
-            })
-        })?;
-        if generation != build.source.index_generation {
-            return Err(Error::StaleMessage);
-        }
+        super::writer::check_index(&tx, &path, &build.path, &build.source.index_generation)?;
         let row: Option<(
             String,
             bool,
@@ -230,12 +219,12 @@ impl Writer {
             active_block,
         )) = row
         else {
-            let retained: bool = db(&path, || {
+            let left: bool = db(&path, || {
                 tx.query_row("SELECT EXISTS(SELECT 1 FROM message_body WHERE pk=?1) OR EXISTS(SELECT 1 FROM message_candidate WHERE pk=?2)",params![build.body,build.candidate],|r|r.get(0))
             })?;
-            return if retained {
+            return if left {
                 Err(Error::Invariant(
-                    "missing retirement control with retained preparation".into(),
+                    "preparation rows remain but its build row is gone".into(),
                 ))
             } else {
                 Ok(Retirement::Complete)
@@ -294,7 +283,9 @@ impl Writer {
         })?;
         if let Some(node) = node {
             if !directory::collect(&tx, &path, node)? {
-                return Err(Error::Invariant("retirement node claim changed".into()));
+                return Err(Error::Invariant(
+                    "directory node changed during retirement".into(),
+                ));
             }
             db(&path, || tx.commit())?;
             return Ok(Retirement::Node);
@@ -312,7 +303,7 @@ impl Writer {
             })?;
             if referenced {
                 return Err(Error::Invariant(
-                    "unpublished candidate fact is leased outside its drained preparation".into(),
+                    "unpublished field fact is referenced outside its preparation".into(),
                 ));
             }
             drop_fact(&tx, &path, fact, value)?;
@@ -335,8 +326,8 @@ impl Writer {
             db(&path, || tx.commit())?;
             return Ok(Retirement::Source);
         }
-        // Break the unpublished body/candidate cycle without deleting a ready
-        // certificate. Any unexpected foreign owner refuses and rolls back all.
+        // Break the body/candidate reference cycle, then delete the unready
+        // rows. A foreign key from anywhere else fails and rolls back.
         db(&path, || {
             tx.execute("UPDATE message_candidate SET body_pk=NULL,body_ready=NULL WHERE pk=?1 AND ready=0 AND eligible=0",[build.candidate])
         })?;
@@ -365,9 +356,9 @@ impl Writer {
         db(&path, || tx.commit())?;
         Ok(Retirement::Complete)
     }
-    /// One immutable retired value chunk or final empty metadata row. Building
-    /// and ready values with incoming0 are deliberately excluded: a generic
-    /// in-process handle is not an invalidation/retirement claim.
+    /// Deletes one chunk of a retiring value, or the value row once its chunks
+    /// are gone. Returns `Idle` when no value is retiring. Values still being
+    /// built, or ready with no lease, are left alone.
     pub fn collect_retiring_value(&mut self) -> Result<ValueCollection> {
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
@@ -382,12 +373,12 @@ impl Writer {
         let Some(value) = value else {
             return Ok(ValueCollection::Idle);
         };
-        let retained: bool = db(&path, || {
+        let referenced: bool = db(&path, || {
             tx.query_row("SELECT EXISTS(SELECT 1 FROM message_build WHERE active_value_pk=?1) OR EXISTS(SELECT 1 FROM message_build WHERE active_origin_value_pk=?1) OR EXISTS(SELECT 1 FROM message_field_fact WHERE value_pk=?1) OR EXISTS(SELECT 1 FROM message_field_fact WHERE origin_value_pk=?1) OR EXISTS(SELECT 1 FROM text WHERE value_pk=?1)",[value],|r|r.get(0))
         })?;
-        if retained {
+        if referenced {
             return Err(Error::Invariant(
-                "retiring value still has an owning reference".into(),
+                "retiring value is still referenced".into(),
             ));
         }
         let offset: Option<i64> = db(&path, || {

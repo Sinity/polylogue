@@ -1,6 +1,6 @@
-//! Selected-Message operation associations share immutable directory leaves.
-//! Source body certificates and raw blocks stay unchanged. A derived body
-//! copies only fixed metadata and leases the existing roots plus the new path.
+//! Attaching tool-item operations to the selected body of a Message. Ready
+//! bodies are immutable, so attaching copies the body row with a new operation
+//! root; the copy shares the block and field roots.
 use super::directory as d;
 use crate::{Error, Result, db};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -87,7 +87,7 @@ pub(crate) fn membership(
             None => None,
             _ => {
                 return Err(Error::Invariant(
-                    "operation association directory key differs".into(),
+                    "operation directory entry has the wrong key".into(),
                 ));
             }
         },
@@ -130,8 +130,8 @@ fn attach(
     }
     Ok(true)
 }
-// The caller has already fenced the owner and ready source body. Only a fixed
-// row is copied; all three variable directories keep their original leases.
+/// Copies the ready body row `body` with `root` as its operation root and
+/// leases the three roots for the copy. The caller has checked the body.
 fn clone_with_root(
     tx: &Transaction<'_>,
     p: &Path,
@@ -144,8 +144,6 @@ fn clone_with_root(
     for root in [blocks, fields, Some(root)].into_iter().flatten() {
         d::acquire(tx, p, owner, root)?;
     }
-    // This fixed schema-owned row copy never materializes variable values or
-    // modifies a ready body's roots. The source candidate keeps its own body.
     let columns = BODY_COLUMNS.join(",");
     let values = BODY_COLUMNS
         .iter()
@@ -167,9 +165,10 @@ fn clone_with_root(
     Ok(tx.last_insert_rowid())
 }
 
-/// Source election must not erase independently proved operation membership.
-/// Carry the prior immutable root into a fixed metadata clone of the new body.
-/// A different nonempty operation root needs reconciliation, never union by ID.
+/// When `body` is about to be selected, keeps the operations attached to the
+/// previously selected body: returns a copy of `body` with that operation root.
+/// If `body` has a different non-empty operation root, fails with
+/// `MessagePreparationPending`; the two are never merged by ID.
 pub(super) fn carry_selected(
     tx: &Transaction<'_>,
     p: &Path,
@@ -193,8 +192,10 @@ pub(super) fn carry_selected(
     }
     clone_with_root(tx, p, owner, body, blocks, fields, old)
 }
-/// One operation admits at most16 overlaps plus its direct owner. Replays may
-/// restore membership after source election selects an equivalent source body.
+/// Attaches the selected version of tool item `item` to the selected body of
+/// each Message it is associated with. An operation has at most 17 associations
+/// (16 overlaps and its own Message); more is an admission error. Safe to
+/// repeat, for example after selection replaced a body.
 pub(crate) fn attach_selected(tx: &Transaction<'_>, p: &Path, item: i64) -> Result<bool> {
     let rows: Vec<(i64, i64, i64)> = db(p, || {
         let mut s=tx.prepare("SELECT a.pk,a.message_pk,a.session_pk FROM tool_item_association a JOIN tool_item t ON t.selected_version_pk=a.tool_item_version_pk WHERE t.pk=?1 ORDER BY a.pk LIMIT 18")?;
