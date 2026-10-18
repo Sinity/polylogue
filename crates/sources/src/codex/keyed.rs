@@ -7,6 +7,9 @@
 use super::origins::{Origins, RecordRange};
 use super::*;
 use std::ops::Bound::{Excluded, Unbounded};
+#[path = "keyed_native_messages.rs"]
+mod native_messages;
+pub use native_messages::CompletedMessageProof;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Key {
@@ -44,9 +47,23 @@ pub enum Key {
     PresenceBlock(usize, usize),
     Operation(String),
     OperationBlock(usize, usize),
+    /// Exact native constructor record, scoped by the full operation ID.
+    UnifiedOperation(String),
+    CompletedMessage(String, String),
+    PromptEcho(usize),
+    ResponseScope(String),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Cell {
+    CompletedMessage(CompletedMessageProof),
+    PromptEcho {
+        turn: String,
+        id: String,
+    },
+    UnifiedOperation {
+        raw_hash: [u8; 32],
+        source: String,
+    },
     Operation(polylogue_model::tool_item::Operation),
     /// A Message with no blocks; blocks have separate keys. Public IDs can change.
     Header {
@@ -274,6 +291,10 @@ pub struct Resume {
     prev_total: Option<Value>,
     model: Option<String>,
     pending_prompt: Option<usize>,
+    #[serde(default)]
+    pending_prompt_turn: Option<String>,
+    #[serde(default)]
+    pending_completed_messages: usize,
     mode: SessionMode,
     next_wrapper: usize,
     normalization_incomplete: bool,
@@ -337,7 +358,7 @@ impl Default for Limits {
 }
 impl Resume {
     pub fn normalization_incomplete(&self) -> bool {
-        self.normalization_incomplete
+        self.normalization_incomplete || self.pending_completed_messages > 0
     }
     pub fn session(&self) -> Option<&Session> {
         self.session.as_ref()
@@ -355,6 +376,18 @@ impl Cell {
         self.fits(key)
     }
     fn fits(&self, k: &Key) -> bool {
+        if let (Key::CompletedMessage(turn, id), Self::CompletedMessage(proof)) = (k, self) {
+            return proof.valid_for(turn, id);
+        }
+        if let (Key::PromptEcho(_), Self::PromptEcho { turn, id }) = (k, self) {
+            return !turn.is_empty() && !id.is_empty();
+        }
+        if let (Key::ResponseScope(_), Self::Text(turn)) = (k, self) {
+            return !turn.is_empty();
+        }
+        if let (Key::UnifiedOperation(_), Self::UnifiedOperation { source, .. }) = (k, self) {
+            return unified_source(source);
+        }
         if matches!(
             (k, self),
             (Key::Operation(_), Self::Operation(_)) | (Key::OperationBlock(_, _), Self::Text(_))
@@ -410,6 +443,37 @@ impl Cell {
                     | (Key::CallWitness(_), Self::Association { .. })
             )
     }
+}
+fn unified_source(source: &str) -> bool {
+    matches!(
+        source,
+        "unified_exec_startup"
+            | "unifiedExecStartup"
+            | "unified_exec_interaction"
+            | "unifiedExecInteraction"
+    )
+}
+fn valid_command_duration(item: &Value) -> bool {
+    if item
+        .get("duration_ms")
+        .is_some_and(|v| !v.is_null() && v.as_u64().is_none())
+    {
+        return false;
+    }
+    item.get("duration").is_none_or(|v| {
+        v.is_null() || {
+            v.get("secs")
+                .and_then(Value::as_u64)
+                .zip(v.get("nanos").and_then(Value::as_u64))
+                .is_some_and(|(seconds, nanos)| {
+                    nanos < 1_000_000_000
+                        && seconds
+                            .checked_mul(1000)
+                            .and_then(|n| n.checked_add(nanos / 1_000_000))
+                            .is_some()
+                })
+        }
+    })
 }
 impl<V: ReadView> KeyedRecords<V> {
     pub fn new(view: V, resume: Resume) -> Self {
@@ -1804,10 +1868,11 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn response_item(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
+        self.invalidate_completed_response(p);
         let preview = self.preview_item(p);
         let p = &preview;
         let ty = p.get("type").and_then(Value::as_str).unwrap_or("");
-        match ty {
+        let outcome = match ty {
             "message" => self.message_item(p, at),
             t if is_model_item(t) => self.model_item(p, t, at),
             "function_call_output" | "custom_tool_call_output" | "tool_search_output" => {
@@ -1818,7 +1883,9 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             "ghost_snapshot" | "agent_message" => self.event(ty, at, false, p),
             _ => RecordOutcome::Unrecognized("response_item type"),
-        }
+        };
+        self.resolve_completed_response(p);
+        outcome
     }
 
     fn message_item(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
@@ -1868,7 +1935,7 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             if role == "user" {
                 self.edit(i, |message| message.role = Role::User);
-                self.classify_prompt(i, &text);
+                self.classify_prompt(i, &text, &effective);
                 if is_harness_wrapper(&text) {
                     self.remove_evidence(i, 1, 1);
                 } else {
@@ -1912,7 +1979,7 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         self.context_for(index, role == "user" && !is_harness_wrapper(&text), false);
         if role == "user" {
-            self.classify_prompt(index, &text);
+            self.classify_prompt(index, &text, p);
         }
         RecordOutcome::Used
     }
@@ -1942,7 +2009,7 @@ impl<V: ReadView> KeyedRecords<V> {
             }
         }
     }
-    fn classify_prompt(&mut self, index: usize, text: &str) {
+    fn classify_prompt(&mut self, index: usize, text: &str, item: &Value) {
         self.edit(index, |message| {
             message.written_by = WrittenBy::Harness;
             message.prompt_kind = None;
@@ -1966,6 +2033,7 @@ impl<V: ReadView> KeyedRecords<V> {
             }
         }
         self.s.pending_prompt = Some(index);
+        self.s.pending_prompt_turn = native_messages::response_turn(item, self.s.turn.as_deref());
         self.put(Key::Prompt, Cell::Text(text.into()));
     }
     fn request_message_for_assistant(&mut self, p: &Value, at: Option<Timestamp>) -> Option<usize> {
@@ -2149,6 +2217,7 @@ impl<V: ReadView> KeyedRecords<V> {
         if let Some(call) = p.get("call_id").and_then(Value::as_str) {
             if let Some(key) = self.operation_key(call) {
                 if let Some(Cell::Operation(mut operation)) = self.get(key.clone()) {
+                    let independent_unified = self.unified_operation_proved(&operation);
                     let output = recorded_output(p.get("output"));
                     let text = match &output {
                         Some(ToolOutput::Text(s)) => s.clone(),
@@ -2177,7 +2246,7 @@ impl<V: ReadView> KeyedRecords<V> {
                         .result_present
                         .then(|| outcome.as_str().to_owned());
                     operation.exit_code = exit;
-                    if !operation.origins.iter().any(|origin| matches!(origin, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "status")) {
+                    if independent_unified || !operation.origins.iter().any(|origin| matches!(origin, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "status")) {
                         operation.duration_ms = native_duration(p);
                     }
                     if let Some(origin) = self.operation_origin() {
@@ -2509,6 +2578,36 @@ impl<V: ReadView> KeyedRecords<V> {
                     .map(|(m, _)| m.id.as_str().to_owned())
             && operation.message.is_some()
     }
+    fn unified_operation_proved(
+        &mut self,
+        operation: &polylogue_model::tool_item::Operation,
+    ) -> bool {
+        if !operation.native
+            || operation.kind != "CommandExecution"
+            || operation.correspondence != "established"
+            || operation.agent_class != "unknown"
+            || (operation.result_present
+                && !operation.origins.iter().any(|origin| {
+                    matches!(origin,
+                polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "result")
+                }))
+        {
+            return false;
+        }
+        let Ok(id) = operation.id() else {
+            return false;
+        };
+        let Some(Cell::UnifiedOperation { raw_hash, source }) = self.get(Key::UnifiedOperation(id))
+        else {
+            return false;
+        };
+        unified_source(&source)
+            && operation.origins.iter().any(|origin| {
+                matches!(origin,
+            polylogue_model::tool_item::ToolOrigin::Rollout { tag, raw_hash: current, .. }
+                if tag == "status" && current == &raw_hash)
+            })
+    }
     fn direct_operation(
         &mut self,
         call: &str,
@@ -2530,7 +2629,7 @@ impl<V: ReadView> KeyedRecords<V> {
         // An exec wrapper has a proved request block, not a native
         // CommandExecution item ID. Keep that constructor distinction.
         let native = tool != "exec" && self.s.turn.is_some();
-        let operation = polylogue_model::tool_item::Operation {
+        let mut operation = polylogue_model::tool_item::Operation {
             kind: if tool == "exec" {
                 "CodeExecution"
             } else {
@@ -2565,6 +2664,21 @@ impl<V: ReadView> KeyedRecords<V> {
             origins: vec![origin],
         };
         if let Ok(id) = operation.id() {
+            if let Some(Cell::Operation(mut previous)) = self.get(Key::Operation(format!("1:{id}")))
+            {
+                if previous.native && previous.agent_class != "agent" {
+                    // A call supplies its own Message association, not a new
+                    // classification or result for an earlier native command.
+                    if self.unified_operation_proved(&previous) {
+                        previous.tool = operation.tool;
+                        previous.message = operation.message;
+                        previous.origins.extend(operation.origins);
+                    } else {
+                        self.s.normalization_incomplete = true;
+                    }
+                    operation = previous;
+                }
+            }
             self.put(Key::OperationBlock(message, block), Cell::Text(id));
         }
         if let Ok(id) = operation.id() {
@@ -2653,6 +2767,18 @@ impl<V: ReadView> KeyedRecords<V> {
                 if !operation.native {
                     operation.provisional_anchor = previous.provisional_anchor;
                 }
+                if operation.native && previous.native && operation.turn == previous.turn
+                    && item.get("source").and_then(Value::as_str).is_some_and(unified_source)
+                    && previous.origins.iter().any(|origin| matches!(origin,
+                        polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "result")) {
+                    // Preserve only the separately recorded response output;
+                    // unknown native attribution supplies no result of its own.
+                    operation.result_present = previous.result_present;
+                    operation.output = previous.output.clone();
+                    operation.outcome = previous.outcome.clone();
+                    operation.exit_code = previous.exit_code;
+                    operation.duration_ms = previous.duration_ms;
+                }
                 operation.tool = previous.tool;
                 operation.message = previous.message;
                 operation.origins.splice(0..0,previous.origins.into_iter().filter(|origin|!matches!(origin,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..}if tag=="status")));
@@ -2720,10 +2846,28 @@ impl<V: ReadView> KeyedRecords<V> {
             self.child(raw, format!("~native:{}", operation.invocation));
         }
         match operation.id() {
-            Ok(id) => self.put(
-                Key::Operation(format!("{}:{id}", if operation.native { 1 } else { 0 })),
-                Cell::Operation(operation),
-            ),
+            Ok(id) => {
+                if operation.native
+                    && operation.correspondence == "established"
+                    && item
+                        .get("source")
+                        .and_then(Value::as_str)
+                        .is_some_and(unified_source)
+                    && valid_command_duration(item)
+                {
+                    self.put(
+                        Key::UnifiedOperation(id.clone()),
+                        Cell::UnifiedOperation {
+                            raw_hash: *blake3::hash(&self.current_raw).as_bytes(),
+                            source: item.get("source").and_then(Value::as_str).unwrap().into(),
+                        },
+                    );
+                }
+                self.put(
+                    Key::Operation(format!("{}:{id}", if operation.native { 1 } else { 0 })),
+                    Cell::Operation(operation),
+                );
+            }
             Err(error) => self.failure = Some(error.to_string()),
         };
         true
@@ -2731,6 +2875,27 @@ impl<V: ReadView> KeyedRecords<V> {
 
     fn item_completed(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
         let original = p.get("item").cloned().unwrap_or(Value::Null);
+        // Every replacement constructor for a claimed native scope removes
+        // the old proof before validation, including conflicting item kinds.
+        if let (Some(session), Some(turn), Some(id)) = (
+            self.s.session.as_ref(),
+            p.get("turn_id").and_then(Value::as_str),
+            original.get("id").and_then(Value::as_str),
+        ) {
+            if let Ok(id) = polylogue_model::tool_item::native_id(&session.id, turn, id) {
+                let key = Key::UnifiedOperation(id);
+                let conflicting = self.get(key.clone()).is_some()
+                    && original.get("type").and_then(Value::as_str) != Some("CommandExecution");
+                self.remove(key);
+                if conflicting {
+                    self.s.normalization_incomplete = true;
+                    return RecordOutcome::Unrecognized("native command constructor changed");
+                }
+            }
+        }
+        if let Some(outcome) = self.completed_message(p, at) {
+            return outcome;
+        }
         let item = self.preview_item(&original);
         let ty = item.get("type").and_then(Value::as_str).unwrap_or("");
         let native_admitted = ty == "CommandExecution" && self.command_operation(p, &item, at);
@@ -2744,6 +2909,32 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         if native_admitted {
             let direct = self.completed_direct_call(p, &item);
+            if direct
+                && self
+                    .completed_operation(p, &item)
+                    .is_some_and(|operation| {
+                        // This completion must supply its own full scope and
+                        // status record; an unscoped correction cannot borrow
+                        // a previously retained native proof via current turn.
+                        p.get("turn_id").and_then(Value::as_str) == operation.turn.as_deref()
+                            && p.get("turn_id").and_then(Value::as_str).is_some()
+                            && p.get("thread_id").and_then(Value::as_str) == Some(operation.native_session.as_str())
+                            && item.get("id").and_then(Value::as_str) == Some(operation.invocation.as_str())
+                            && operation.origins.iter().any(|origin| matches!(origin,
+                                polylogue_model::tool_item::ToolOrigin::Rollout { tag, raw_hash, .. }
+                                    if tag == "status" && raw_hash == blake3::hash(&self.current_raw).as_bytes()))
+                            && self.unified_operation_proved(&operation)
+                            && self.call(&operation.invocation).is_some_and(|call| {
+                                matches!(self.get(Key::OperationBlock(call.at.0, call.at.1)),
+                                    Some(Cell::Text(id)) if operation.id().ok().as_ref() == Some(&id))
+                            })
+                    })
+            {
+                // Supported unified lifecycle evidence has uncertain operation
+                // attribution, not missing independently retained Message text.
+                // Do not project its native status into the call/output body.
+                return self.event("unclassified_command_item", at, false, p);
+            }
             let owned = self
                 .completed_operation(p, &item)
                 .is_some_and(|operation| operation.wrapper.is_some());

@@ -2406,3 +2406,6 @@ mod provider_usage;
 
 #[path = "session_read/record_extras.rs"]
 mod record_extras;
+
+#[path = "session_read/result_metadata.rs"]
+mod result_metadata;

@@ -27,7 +27,7 @@ fn complete_repaired_text_keeps_advisory_and_diagnostics_without_missing_content
     });
     let mut out = Vec::new();
     let result = decode(
-        BufReader::new(reader),
+        reader,
         "claude-code:repaired",
         &mut out,
         Instant::now() + Duration::from_secs(2),

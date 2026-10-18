@@ -8,6 +8,8 @@ use crate::{Error, ReadHandle, Result, Writer};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 
+pub(crate) mod small;
+
 pub const MAX_CHUNK: usize = 65_536;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Codec {

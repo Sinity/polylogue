@@ -97,7 +97,7 @@ fn earlier_item_correction_changes_selected_raw_evidence_and_reopens_determinist
     let mut restarts = 0;
     let source = loop {
         let action = w.compute(&h);
-        let field = action.operation() == "field";
+        let field = matches!(action.operation(), "field" | "small_field");
         if let m::Applied::Source(source) = m::apply(&mut w.writer, action).unwrap() {
             break source;
         }
@@ -197,7 +197,7 @@ fn proof_scratch_admission_is_typed_and_does_not_publish_partial_selection() {
             }
             Err(e) => panic!("unexpected {e:?}"),
             Ok(action) => {
-                installed += usize::from(action.operation() == "field");
+                installed += usize::from(matches!(action.operation(), "field" | "small_field"));
                 assert!(!matches!(
                     m::apply(&mut w.writer, action).unwrap(),
                     m::Applied::Source(_)

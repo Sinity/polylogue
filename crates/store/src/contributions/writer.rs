@@ -183,6 +183,145 @@ pub(super) fn admitted_source(
     }
     Ok((head, length))
 }
+fn admit_preparation(
+    identity: &Identity<'_>,
+    source: &Source<'_>,
+    allowance: usize,
+) -> Result<(i64, i64, i64)> {
+    if identity.message.session() != identity.session || identity.native_session.is_empty() {
+        return Err(bad("invalid preparation identity relation"));
+    }
+    let mut bytes = 256usize;
+    for text in [
+        identity.session.as_str(),
+        identity.origin.as_str(),
+        identity.native_session,
+        identity.native_session_encoding.unwrap_or_default(),
+        identity.message.as_str(),
+        source.predecessor.index_generation.as_str(),
+    ] {
+        bytes = bytes.checked_add(text.len()).ok_or(Error::Range)?;
+    }
+    if bytes > allowance {
+        return Err(Error::ParserAdmission {
+            resource: "message preparation metadata bytes",
+            required: bytes as u64,
+        });
+    }
+    polylogue_model::NativeId::from_wire(identity.native_session, identity.native_session_encoding)
+        .map_err(|e| bad(&e.to_string()))?;
+    let sequence = integer(identity.sequence)?;
+    let revision = integer(source.revision)?;
+    let evidence = integer(source.evidence_revision)?;
+    if revision <= 0 {
+        return Err(Error::Range);
+    }
+    Ok((sequence, revision, evidence))
+}
+
+fn load_preparation(
+    conn: &Connection,
+    path: &Path,
+    build: &Build,
+    identity: &Identity<'_>,
+    source: &Source<'_>,
+) -> Result<Preparation> {
+    check_completed(conn, path, build)?;
+    if source.predecessor != &build.source
+        || basis(
+            source.predecessor,
+            source.revision,
+            &source.logical_key,
+            source.evidence_revision,
+        ) != build.digest
+    {
+        return Err(Error::MessagePredecessorChanged);
+    }
+    let kind = match identity.session_kind {
+        SessionKind::Main => "main",
+        SessionKind::Subagent => "subagent",
+        SessionKind::Chat => "chat",
+    };
+    let session_ok: bool = db(path, || {
+        conn.query_row(
+        "SELECT id=?2 AND origin=?3 AND native_id=?4 AND native_id_encoding IS ?5 AND kind=?6 FROM session WHERE pk=?1",
+        params![build.session,identity.session.as_str(),identity.origin.as_str(),identity.native_session,identity.native_session_encoding,kind],|r|r.get(0))
+    })?;
+    if !session_ok {
+        return Err(bad("stored Session identity disagrees with preparation"));
+    }
+    let message_ok: bool = db(path, || {
+        conn.query_row(
+            "SELECT id=?2 AND session_pk=?3 FROM message WHERE pk=?1",
+            params![build.message, identity.message.as_str(), build.session],
+            |r| r.get(0),
+        )
+    })?;
+    if !message_ok {
+        return Err(Error::MessagePredecessorChanged);
+    }
+    let compatible: bool = db(path, || {
+        conn.query_row("SELECT b.role=?2 AND b.written_by=?3 AND c.route=?4 AND c.pk=?5 FROM message_body b JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE b.pk=?1",params![build.body,match identity.role {Role::User=>"user",Role::Assistant=>"assistant",Role::System=>"system",Role::Tool=>"tool"},match identity.written_by {WrittenBy::Human=>"human",WrittenBy::Model=>"model",WrittenBy::Harness=>"harness",WrittenBy::Unknown=>"unknown"},match source.route {RouteKind::PageDom=>0,RouteKind::AccountExport=>1,RouteKind::Native=>2},build.candidate],|r|r.get(0))
+    })?;
+    if !compatible {
+        return Err(bad("preparation metadata changed under the same basis"));
+    }
+    let (phase, hash): (String, Option<Vec<u8>>) = db(path, || {
+        conn.query_row("SELECT w.phase,c.version_hash FROM message_build w JOIN message_body b ON b.pk=w.body_pk JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE w.pk=?1",[build.pk],|r|Ok((r.get(0)?,r.get(1)?)))
+    })?;
+    let projection = if phase == "rank" {
+        let hash: [u8; 32] = hash
+            .ok_or_else(|| bad("completed projection lacks digest"))?
+            .try_into()
+            .map_err(|_| bad("projection digest length"))?;
+        Some(super::completion::PreparedProjection {
+            build: build.clone(),
+            hash: polylogue_model::BlobHash::from_bytes(hash),
+        })
+    } else {
+        None
+    };
+    let (active, origin): (Option<i64>, Option<i64>) = db(path, || {
+        conn.query_row(
+            "SELECT active_value_pk,active_origin_value_pk FROM message_build WHERE pk=?1",
+            [build.pk],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    })?;
+    let active_value = active
+        .map(|pk| {
+            values::head(
+                conn,
+                path,
+                &values::ValueId {
+                    pk,
+                    index_generation: build.source.index_generation.clone(),
+                    index_path: path.to_path_buf(),
+                },
+            )
+        })
+        .transpose()?;
+    let active_origin_value = origin
+        .map(|pk| {
+            values::head(
+                conn,
+                path,
+                &values::ValueId {
+                    pk,
+                    index_generation: build.source.index_generation.clone(),
+                    index_path: path.to_path_buf(),
+                },
+            )
+        })
+        .transpose()?;
+    Ok(Preparation {
+        build: build.clone(),
+        active_value,
+        active_origin_value,
+        projection,
+    })
+}
+
 impl Writer {
     /// Reserve one pending body/candidate. Repeating the identical pinned
     /// request resumes it; a different request must retire the old preparation.
@@ -193,37 +332,7 @@ impl Writer {
         source: Source<'_>,
         allowance: usize,
     ) -> Result<Preparation> {
-        if identity.message.session() != identity.session || identity.native_session.is_empty() {
-            return Err(bad("invalid preparation identity relation"));
-        }
-        let mut bytes = 256usize;
-        for text in [
-            identity.session.as_str(),
-            identity.origin.as_str(),
-            identity.native_session,
-            identity.native_session_encoding.unwrap_or_default(),
-            identity.message.as_str(),
-            source.predecessor.index_generation.as_str(),
-        ] {
-            bytes = bytes.checked_add(text.len()).ok_or(Error::Range)?;
-        }
-        if bytes > allowance {
-            return Err(Error::ParserAdmission {
-                resource: "message preparation metadata bytes",
-                required: bytes as u64,
-            });
-        }
-        polylogue_model::NativeId::from_wire(
-            identity.native_session,
-            identity.native_session_encoding,
-        )
-        .map_err(|e| bad(&e.to_string()))?;
-        let sequence = integer(identity.sequence)?;
-        let revision = integer(source.revision)?;
-        let evidence = integer(source.evidence_revision)?;
-        if revision <= 0 {
-            return Err(Error::Range);
-        }
+        let (sequence, revision, evidence) = admit_preparation(&identity, &source, allowance)?;
         let path = self.root.join("index.db");
         let (head, length) = admitted_source(self, &source)?;
         let length_i = integer(length)?;
@@ -344,68 +453,28 @@ impl Writer {
             removal_epoch: removal,
             digest,
         };
-        let compatible: bool = db(&path, || {
-            tx.query_row("SELECT b.ready=0 AND c.ready=0 AND c.eligible=0 AND b.role=?2 AND b.written_by=?3 AND c.route=?4 FROM message_body b JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE b.pk=?1",params![body,match identity.role {Role::User=>"user",Role::Assistant=>"assistant",Role::System=>"system",Role::Tool=>"tool"},match identity.written_by {WrittenBy::Human=>"human",WrittenBy::Model=>"model",WrittenBy::Harness=>"harness",WrittenBy::Unknown=>"unknown"},match source.route {RouteKind::PageDom=>0,RouteKind::AccountExport=>1,RouteKind::Native=>2}],|r|r.get(0))
-        })?;
-        if !compatible {
-            return Err(bad("preparation metadata changed under the same basis"));
-        }
-        let (phase, hash): (String, Option<Vec<u8>>) = db(&path, || {
-            tx.query_row("SELECT w.phase,c.version_hash FROM message_build w JOIN message_body b ON b.pk=w.body_pk JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE w.pk=?1",[pk],|r|Ok((r.get(0)?,r.get(1)?)))
-        })?;
-        check_at(&tx, &path, &build, false)?;
-        let projection = if phase == "rank" {
-            let hash: [u8; 32] = hash
-                .ok_or_else(|| bad("completed projection lacks digest"))?
-                .try_into()
-                .map_err(|_| bad("projection digest length"))?;
-            Some(super::completion::PreparedProjection {
-                build: build.clone(),
-                hash: polylogue_model::BlobHash::from_bytes(hash),
-            })
-        } else {
-            None
-        };
-        let (active, origin): (Option<i64>, Option<i64>) = db(&path, || {
-            tx.query_row(
-                "SELECT active_value_pk,active_origin_value_pk FROM message_build WHERE pk=?1",
-                [pk],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-        })?;
-        let active_value = active
-            .map(|pk| {
-                values::head(
-                    &tx,
-                    &path,
-                    &values::ValueId {
-                        pk,
-                        index_generation: source.predecessor.index_generation.clone(),
-                        index_path: path.clone(),
-                    },
-                )
-            })
-            .transpose()?;
-        let active_origin_value = origin
-            .map(|pk| {
-                values::head(
-                    &tx,
-                    &path,
-                    &values::ValueId {
-                        pk,
-                        index_generation: source.predecessor.index_generation.clone(),
-                        index_path: path.clone(),
-                    },
-                )
-            })
-            .transpose()?;
+        let preparation = load_preparation(&tx, &path, &build, &identity, &source)?;
         db(&path, || tx.commit())?;
-        Ok(Preparation {
-            build,
-            active_value,
-            active_origin_value,
-            projection,
-        })
+        Ok(preparation)
+    }
+    /// Inspect only this committed private Build. Unlike reservation, this
+    /// performs no INSERT/UPDATE or allocation, including at completed rank.
+    /// The caller's full source/identity admission and all live fences remain
+    /// checked; mutations still revalidate and CAS their own transactions.
+    pub fn inspect_message_preparation(
+        &mut self,
+        build: &Build,
+        identity: Identity<'_>,
+        source: Source<'_>,
+        allowance: usize,
+    ) -> Result<Preparation> {
+        admit_preparation(&identity, &source, allowance)?;
+        admitted_source(self, &source)?;
+        let path = self.root.join("index.db");
+        let tx = db(&path, || self._index.transaction())?;
+        let preparation = load_preparation(&tx, &path, build, &identity, &source)?;
+        db(&path, || tx.commit())?;
+        Ok(preparation)
     }
     /// The value and its durable producer lease are admitted in one transaction.
     /// The returned ID cannot name a rolled-back allocation.

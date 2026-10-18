@@ -200,3 +200,231 @@ fn mixed_prompt_history_cannot_certify_complete_codex_conversation_membership() 
         assert!(page.get("shown").is_none());
     }
 }
+
+fn codex_echo_record(kind: &str, payload: Value) -> Value {
+    json!({"type":kind,"payload":payload})
+}
+fn codex_echo_user(text: &str) -> Value {
+    codex_echo_record(
+        "response_item",
+        json!({"type":"message","id":"user","role":"user","content":[{"type":"input_text","text":text}],"internal_chat_message_metadata_passthrough":{"turn_id":"T"}}),
+    )
+}
+fn codex_echo_native(text: &str) -> Value {
+    codex_echo_record(
+        "event_msg",
+        json!({"type":"item_completed","thread_id":"echo-materialization","turn_id":"T","item":{"type":"UserMessage","id":"echo","content":[{"type":"text","text":text,"text_elements":[]}]}}),
+    )
+}
+fn codex_record_bytes(records: &[Value]) -> (String, Vec<(u64, u64)>) {
+    let mut bytes = String::new();
+    let mut ranges = Vec::new();
+    for record in records {
+        let start = bytes.len() as u64;
+        bytes += &record.to_string();
+        ranges.push((start, bytes.len() as u64));
+        bytes.push('\n');
+    }
+    (bytes, ranges)
+}
+fn has_codex_range(message: &Value, input: &str, range: (u64, u64)) -> bool {
+    message["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["input"] == input && s["start"] == range.0 && s["end"] == range.1)
+}
+#[test]
+fn codex_native_correspondence_echo_materializes_retracts_and_reapplies_exact_donors() {
+    for case in [
+        "confirmed",
+        "retracted",
+        "reapplied",
+        "source-human",
+        "event-human",
+    ] {
+        let mut records = vec![
+            codex_echo_record(
+                "session_meta",
+                json!({"id":"echo-materialization","source":if case=="source-human"{"cli"}else{"future"}}),
+            ),
+            codex_echo_record("turn_context", json!({"turn_id":"T"})),
+            codex_echo_user("original"),
+            codex_echo_native("original"),
+        ];
+        if matches!(case, "retracted" | "reapplied" | "source-human") {
+            records.push(codex_echo_native("corrected"));
+        }
+        if case == "reapplied" {
+            records.push(codex_echo_user("corrected"));
+        }
+        if case == "event-human" {
+            records.extend([
+                codex_echo_user("corrected"),
+                codex_echo_record(
+                    "event_msg",
+                    json!({"type":"user_message","message":"corrected"}),
+                ),
+                codex_echo_native("different"),
+            ]);
+        }
+        let (bytes, ranges) = codex_record_bytes(&records);
+        let mut world = World::new();
+        let receipt = codex_import(&world, "echo-materialization.jsonl", bytes.as_bytes());
+        let input = receipt["retained"]["id"].as_str().unwrap();
+        let out = world.cli(&["codex:echo-materialization", "read", "--format", "json"]);
+        assert!(
+            matches!(out.status.code(), Some(0 | 5)),
+            "{case}: {out:?}; {}",
+            world.log()
+        );
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["messages"].as_array().unwrap().len(), 1);
+        let message = &doc["messages"][0];
+        assert_eq!(
+            message["written_by"],
+            if case == "retracted" {
+                "unknown"
+            } else {
+                "human"
+            },
+            "{case}: {doc}"
+        );
+        let supplier = match case {
+            "confirmed" => Some(3),
+            "reapplied" => Some(4),
+            "event-human" => Some(5),
+            _ => None,
+        };
+        if let Some(index) = supplier {
+            assert!(
+                has_codex_range(message, input, ranges[index]),
+                "{case}: missing exact author donor {doc}"
+            );
+        }
+        if matches!(case, "retracted" | "source-human" | "event-human") {
+            assert!(
+                !has_codex_range(message, input, ranges[3]),
+                "{case}: stale typed echo donor {doc}"
+            );
+        }
+        if case == "source-human" {
+            assert!(
+                has_codex_range(message, input, ranges[0]),
+                "source-mode Human proof missing"
+            );
+        }
+        let mut call = transcript_call("codex:echo-materialization");
+        call["branches"] = json!(true);
+        let page = model_call(&world, &call, Some(65000));
+        if matches!(case, "confirmed" | "reapplied") {
+            assert_ne!(page["outcome"], "error", "{case}: {page}");
+            assert_eq!(page["primary_content_complete"], true);
+            assert_eq!(page["shown"][0]["written_by"], "human");
+        } else {
+            assert_eq!(
+                page["outcome"], "error",
+                "{case}: unresolved correspondence must refuse {page}"
+            );
+        }
+        fs::remove_file(world.work.path().join("echo-materialization.jsonl")).unwrap();
+        world.restart();
+        let after = world.cli(&["codex:echo-materialization", "read", "--format", "json"]);
+        assert!(matches!(after.status.code(), Some(0 | 5)));
+        let after: Value = serde_json::from_slice(&after.stdout).unwrap();
+        assert_eq!(after["messages"], doc["messages"]);
+    }
+}
+#[test]
+fn codex_native_correspondence_model_snapshots_keep_response_values_and_origins() {
+    let header = codex_echo_record("session_meta", json!({"id":"native-model","source":"cli"}));
+    let context = codex_echo_record("turn_context", json!({"turn_id":"T"}));
+    let reasoning = codex_echo_record(
+        "response_item",
+        json!({"type":"reasoning","id":"R","summary":[],"encrypted_content":"opaque encrypted reasoning","internal_chat_message_metadata_passthrough":{"turn_id":"T"}}),
+    );
+    let answer = codex_echo_record(
+        "response_item",
+        json!({"type":"message","id":"A","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"A neutral answer."}],"internal_chat_message_metadata_passthrough":{"turn_id":"T"}}),
+    );
+    let nr = codex_echo_record(
+        "event_msg",
+        json!({"type":"item_completed","thread_id":"native-model","turn_id":"T","item":{"type":"Reasoning","id":"R","summary_text":[],"raw_content":[]}}),
+    );
+    let na = codex_echo_record(
+        "event_msg",
+        json!({"type":"item_completed","thread_id":"native-model","turn_id":"T","item":{"type":"AgentMessage","id":"A","phase":"final_answer","content":[{"type":"Text","text":"A neutral answer."}]}}),
+    );
+    let mut baseline = None;
+    for order in ["baseline", "native-first", "response-first"] {
+        let records = match order {
+            "baseline" => vec![
+                header.clone(),
+                context.clone(),
+                reasoning.clone(),
+                answer.clone(),
+            ],
+            "native-first" => vec![
+                header.clone(),
+                context.clone(),
+                nr.clone(),
+                reasoning.clone(),
+                na.clone(),
+                answer.clone(),
+            ],
+            _ => vec![
+                header.clone(),
+                context.clone(),
+                reasoning.clone(),
+                nr.clone(),
+                answer.clone(),
+                na.clone(),
+            ],
+        };
+        let (bytes, ranges) = codex_record_bytes(&records);
+        let world = World::new();
+        let receipt = codex_import(&world, "native-model.jsonl", bytes.as_bytes());
+        let input = receipt["retained"]["id"].as_str().unwrap();
+        let out = world.cli(&["codex:native-model", "read", "--format", "json"]);
+        assert!(
+            matches!(out.status.code(), Some(0 | 5)),
+            "{order}: {out:?}; {}",
+            world.log()
+        );
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["messages"].as_array().unwrap().len(), 1);
+        let message = &doc["messages"][0];
+        for (i, record) in records.iter().enumerate() {
+            if record["type"] == "event_msg" {
+                assert!(
+                    !has_codex_range(message, input, ranges[i]),
+                    "{order}: redundant native snapshot became Message evidence"
+                );
+            }
+        }
+        let mut comparable = message.clone();
+        comparable.as_object_mut().unwrap().remove("sources");
+        comparable.as_object_mut().unwrap().remove("field_origins");
+        if let Some(expected) = &baseline {
+            assert_eq!(&comparable, expected);
+        } else {
+            baseline = Some(comparable);
+        }
+        for field in message["field_origins"].as_array().unwrap() {
+            for donor in field["origin"]["selection"]["inputs"].as_array().unwrap() {
+                let start = donor["record"]["start"].as_u64().unwrap() as usize;
+                let end = donor["record"]["end"].as_u64().unwrap() as usize;
+                let source: Value = serde_json::from_slice(&bytes.as_bytes()[start..end]).unwrap();
+                assert_ne!(
+                    source["type"], "event_msg",
+                    "{order}: non-response raw supplier"
+                );
+            }
+        }
+        let mut call = transcript_call("codex:native-model");
+        call["branches"] = json!(true);
+        let page = model_call(&world, &call, Some(65000));
+        assert_ne!(page["outcome"], "error", "{order}: {page}");
+        assert_eq!(page["primary_content_complete"], true);
+    }
+}

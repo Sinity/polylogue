@@ -157,12 +157,7 @@ pub fn request(socket: &Path, reference: &str, out: &mut impl Write) -> io::Resu
         &mut stream,
         json!({"command":"session-read","reference":reference,"format":"json"}),
     )?;
-    decode(
-        BufReader::new(stream),
-        reference,
-        out,
-        Instant::now() + TIME,
-    )
+    decode(stream, reference, out, Instant::now() + TIME)
 }
 /// Terminal rendering consumes the same qualified document as JSON. The
 /// bounded client buffer is an explicit surface admission, not another query.
@@ -282,22 +277,50 @@ fn render_terminal(
 }
 
 fn decode(
-    mut reader: BufReader<UnixStream>,
+    stream: UnixStream,
     reference: &str,
     out: &mut impl Write,
     deadline: Instant,
 ) -> io::Result<Value> {
+    // The shared transport checks the SAME deadline before and after each
+    // underlying read, even when read_line needs several partial socket reads.
+    let mut reader = BufReader::new(crate::MetadataTransport {
+        stream,
+        deadline: Some(deadline),
+        cancellation: None,
+    });
     let mut started = false;
     let mut identity = None;
     loop {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::TimedOut, "Session read deadline exceeded")
-            })?;
-        reader.get_ref().set_read_timeout(Some(remaining))?;
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Session read deadline exceeded",
+            ));
+        }
         let mut line = String::new();
-        reader.by_ref().take(FRAME + 1).read_line(&mut line)?;
+        reader
+            .by_ref()
+            .take(FRAME + 1)
+            .read_line(&mut line)
+            .map_err(|error| {
+                // Unix socket SO_RCVTIMEO expiry is WouldBlock on Linux.
+                // Keep the same absolute deadline and expose its meaning.
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) {
+                    io::Error::new(io::ErrorKind::TimedOut, "Session read deadline exceeded")
+                } else {
+                    error
+                }
+            })?;
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Session read deadline exceeded",
+            ));
+        }
         if line.len() > FRAME as usize || !line.ends_with('\n') {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -369,7 +392,7 @@ mod tests {
         });
         let mut out = Vec::new();
         let result = decode(
-            BufReader::new(reader),
+            reader,
             expected,
             &mut out,
             Instant::now() + Duration::from_secs(2),
@@ -443,6 +466,9 @@ mod cancellation_tests {
     }
 }
 
+#[cfg(test)]
+#[path = "session_read/deadline_tests.rs"]
+mod deadline_tests;
 #[cfg(test)]
 #[path = "session_read/retained_tests.rs"]
 mod retained_tests;

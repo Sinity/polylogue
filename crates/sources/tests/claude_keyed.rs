@@ -362,6 +362,14 @@ impl ReadView for Metered<'_> {
         }
         Ok(self.memory.response(session, key).unwrap())
     }
+    fn parent_node(
+        &self,
+        session: &str,
+        uuid: &str,
+    ) -> Result<Option<polylogue_sources::claude_code::parent::Node>, Self::Error> {
+        self.read("parent_node")?;
+        Ok(self.memory.parent_node(session, uuid).unwrap())
+    }
     fn record(&self, session: &str, uuid: &str) -> Result<Option<RecordAddress>, Self::Error> {
         self.read("record")?;
         Ok(self.memory.record(session, uuid).unwrap())
@@ -418,7 +426,7 @@ fn append_cost(prefix: usize) -> (usize, usize) {
     assert_eq!(out.delta.addresses.len(), 1);
     assert_eq!(out.delta.pending_messages.len(), 1);
     assert_eq!(out.delta.responses[0].2.ordinal, 1);
-    assert_eq!(meter.reads.get(), 5);
+    assert_eq!(meter.reads.get(), 6); // Includes the conflicting non-Message UUID lookup.
     let encoded_bytes = serde_json::to_vec(&out.delta).unwrap().len();
     // The u64 counter and absolute original-record coordinates are bounded
     // scalars, not historical collections. Account for their decimal widths

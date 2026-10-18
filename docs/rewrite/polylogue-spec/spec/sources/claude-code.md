@@ -285,13 +285,35 @@ under a new message with the same `id` is the same call, paired once.
 - Content inside `tool_result.content` may be `text`, `image` (kept as an
   image block) or `tool_reference`. Images and documents nested inside a
   `tool_result`'s content become file blocks of that result; the result is
-  never left empty because its content was not plain text.
+  never left empty because its content was not plain text. A recognized
+  `tool_reference` has a string `tool_name`; preserve its exact object and
+  its position among other content items. Keep mixed text/reference arrays
+  in result data as `content_items`, with each item's source origin. Such
+  an array does not imply plain-text output; the existing all-text reduction
+  still applies to arrays containing only text. A reference confers no tool
+  execution authority. Unknown or malformed item shapes remain explicitly
+  unaccounted for.
 - An empty `tool_use_id` never pairs with another empty one; an unpaired
   call or result is kept; an unpaired call has no result.
 - Kept from `toolUseResult`, in the tool_result block's `data_json`, for
   later views: `structuredPatch` / `originalFile` on edits (the `changes`
   view), and `agentId`, `status`, `totalTokens`, `totalToolUseCount`,
-  `totalDurationMs` on Agent results (delegation cards).
+  `totalDurationMs` on Agent results (delegation cards). Also preserve these
+  named sidecar members under their original keys: `canReadOutputFile`,
+  `content`, `description`, `file`, `filePath`, `gitOperation`, `matches`,
+  `message`, `newString`, `oldString`, `outputFile`, `pin`, `prompt`, `query`,
+  `replaceAll`, `resolvedModel`, `resumedAgentId`, `staleReadFileStateHint`,
+  `staleRecovered`, `success`, `total_deferred_tools`, `type`, and
+  `userModified`. Their supplied subtrees are opaque values, including null;
+  they do not independently establish outcome, output, file access or agent
+  lineage. A string-valued `toolUseResult` on a sole result is retained as
+  `data.toolUseResult`, separately from protocol output. Other sidecar shapes
+  and unknown members require explicit accounting rather than silent omission.
+  A supplied sidecar replaces its previous sidecar data atomically, including
+  object/string transitions; omission preserves the earlier supplier. Keep
+  the exact supplying revision and refuse collisions with other result-data
+  suppliers even when their values are equal. Sidecar `content` and protocol
+  `content_items` remain distinct fields.
 - A call with no result is stored as `unknown`: reason
   `passed_without_result` when a later model response exists in the session
   (the harness gives one only after every non-background call of the earlier

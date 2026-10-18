@@ -346,3 +346,102 @@ allowances; this adds no bounded allocator, total-history-cost or worker-duratio
 claim. Parser replay advances, while immutable selector and framing recipes keep
 their meanings. Structured-key collisions, unknown nested fields and unaccounted
 effects retain their explicit refusals.
+
+
+Supported Codex unified-command lifecycle records do not make an independently
+retained direct call/output Message unreadable merely because operation agent
+attribution remains unknown. The source adapter requires the admitted native
+constructor, full session/turn/invocation scope, valid supplied duration and
+proved direct Message association. It leaves agent attribution unknown and
+does not project that lifecycle status into the Message. Any separately recorded
+response output keeps its own result, status and origins in either arrival order;
+an absent independent output gains no result from the native item.
+Known branches can remain readable; unknown active membership still refuses.
+
+A small source-owned keyed proof binds the supported unified constructor to its
+full native operation ID and exact status-record hash. The Operation alone has
+an unknown agent class and raw-origin hashes, but no source spelling; it cannot
+establish this predicate for a later call. Every replacement constructor removes
+the old proof before validation, and later association checks the currently
+retained operation's status origin. This preserves both arrival orders without
+turning the proof into a lasting permission. Existing admission limits apply.
+Codex parser 12 recomputes these normalization and correspondence results from retained inputs.
+No read qualification or active-path guard changes.
+
+Claude parser version 16 preserves a finite set of additional opaque result
+sidecar members in the existing `tool_result.data` bag: `canReadOutputFile`,
+`content`, `description`, `file`, `filePath`, `gitOperation`, `matches`, `message`,
+`newString`, `oldString`, `outputFile`, `pin`, `prompt`, `query`, `replaceAll`,
+`resolvedModel`, `resumedAgentId`, `staleReadFileStateHint`, `staleRecovered`,
+`success`, `total_deferred_tools`, `type`, and `userModified`. Supplied JSON is
+preserved exactly, including null, numeric spelling and UTF-16 strings. These
+members infer no outcome, billing, execution, model choice or file authority.
+A string root `toolUseResult` belongs to `data.toolUseResult` only when exactly
+one protocol result supplies its attribution. It never replaces inline output.
+Opaque sidecars replace as whole supplied units; omission retains the original
+donor. Existing typed status validation, unknown-member and literal-key collision
+refusals remain in force.
+
+A protocol result content array containing strictly shaped `tool_reference`
+objects (`type`, nonempty string `tool_name`) and text objects (`type`, string `text`) is
+retained whole and in order as `data.content_items`, with its original raw-array
+selector. It is distinct from sidecar `data.content`. Such structured content
+supplies no synthetic text output. Existing all-text output reduction is
+unchanged; unknown kinds, additional nested members and malformed names remain
+unsupported. JSON, export and bounded model metadata expose these named data
+leaves through the existing consumer policy.
+
+Canonical parent selection now follows retained recognized non-Message record
+relations on the pinned provider snapshot. Attachment, system, event and counted
+progress records are skipped to the nearest Message; a compaction boundary uses
+its supplied `logicalParentUuid`, including a summary record between that
+boundary and the next Message. The first contribution owns a folded Message's
+parent. Late records can discharge the retained obligation on a newer snapshot.
+Absent records, invalid relations, conflicting UUID identities, cross-Session
+edges, grouped self-references and cycles among skipped records remain typed
+unavailable outcomes, including at complete EOF.
+There is no separate graph or retry scheduler.
+
+Retained relation nodes keep field fingerprints for effective duplicate
+detection, supplied link values and exact donors. Corrections replace supplied
+links; omissions keep their donors. Materialization verifies each link and its record/classification identity against
+its original retained bytes before admitting the citation. Public selector
+proofs omit internal duplicate-detection fingerprints. Materialization cites every traversed
+relation's envelope and link/classification donors and frames ordered relation
+value evidence before selected metadata. These units exclude storage positions
+and unrelated event payloads. Direct parent histories retain the original
+`ParentReferenceV1` descriptor and evidence sequence; traversed relations use
+`ParentViaRecordsV1`. Existing encoded-state, point-read and metadata allowances
+admit nodes and temporary traversal/proof state. Traversal stops at the nearest
+Message without walking that Message's ancestry.
+Direct parent lookup therefore does not grow with conversation depth. Global
+Message-tree validation and active-path membership remain explicitly unresolved;
+a nearest-parent proof does not certify global acyclicity. This does not bound
+total history work, decoded allocation or worker duration, and raises no
+allowances.
+
+The combined parser replay identities are Claude 16 and Codex 11, and
+the retained upgrade fixture's baseline remains 8. Existing immutable selector,
+framing and model recipes keep their meanings. Older parser cells must replay
+through the existing version-upgrade/recovery path; source EOF alone still does
+not establish readable canonical content.
+
+Supported native Codex `AgentMessage` and `Reasoning` completion snapshots can
+precede their response items. A provider-owned pending claim keeps the exact
+constructor and full thread/turn/item scope until a matching response proves
+correspondence; missing or conflicting counterparts leave normalization
+incomplete. Agent text and phase must agree, and an empty native reasoning body
+never replaces independently recorded encrypted content. A redundant rendering
+adds no second Message or evidence unit. Typed `UserMessage` echoes use the
+first unpaired equal prompt in the same recorded turn and preserve its original
+Message identity. A duplicate echo cannot pair with another prompt, and later
+response corrections invalidate its proof. These pending obligations resolve
+separately from unrelated normalization failures, which remain unchanged.
+Unknown constructor members and unsupported raw reasoning content still refuse.
+A typed user echo recorded before its response remains pending even when their
+IDs match or the native item is emitted again later; this order does not satisfy
+the after-response echo rule. Agent and reasoning snapshots support both orders.
+Invalidated typed echoes retract only their own Human attribution and raw echo
+evidence. Independent source-mode or ordinary user-message-echo proof keeps its
+value and exact donor; reapplication uses the typed claim's original source span.
+Malformed explicit turn metadata never falls back to the current turn.

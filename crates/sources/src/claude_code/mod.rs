@@ -9,12 +9,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 mod background;
 pub mod keyed;
 pub mod origins;
+pub mod parent;
 pub mod projection;
 mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 15;
+pub const PARSER_VERSION: u32 = 16;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -110,6 +111,7 @@ pub struct KeyedRecords<R: ReadView> {
     by_id: HashMap<String, usize>,
     responses: HashMap<(String, ResponseKey), ResponseCell>,
     addresses: HashMap<(String, String), RecordAddress>,
+    parent_nodes: HashMap<(String, String), parent::Node>,
     occurrences: HashMap<String, u64>,
     backgrounds: HashMap<String, BackgroundAddress>,
     contributions: HashMap<(MessageId, u64), Contribution>,
@@ -143,6 +145,7 @@ impl<R: ReadView> KeyedRecords<R> {
             by_id: HashMap::new(),
             responses: HashMap::new(),
             addresses: HashMap::new(),
+            parent_nodes: HashMap::new(),
             occurrences: HashMap::new(),
             backgrounds: HashMap::new(),
             contributions: HashMap::new(),
@@ -213,6 +216,42 @@ impl<R: ReadView> KeyedRecords<R> {
             Some(cell) => Ok(Some(cell.clone())),
             None => self.view.record(native, uuid).map_err(|e| e.to_string()),
         }
+    }
+    fn parent_node(&self, native: &str, uuid: &str) -> Result<Option<parent::Node>, String> {
+        match self.parent_nodes.get(&(native.into(), uuid.into())) {
+            Some(n) => Ok(Some(n.clone())),
+            None => self
+                .view
+                .parent_node(native, uuid)
+                .map_err(|e| e.to_string()),
+        }
+    }
+    fn remember_parent_node(&mut self, rec: &Record<'_>, allow_new: bool) -> Result<(), String> {
+        let Some(uuid) = rec.value.get("uuid").and_then(Value::native) else {
+            return Ok(());
+        };
+        let key = native_key(uuid)?;
+        let Some((si, copy)) = self.route(&rec.value, &key)? else {
+            return Ok(());
+        };
+        if copy.is_some() {
+            return Ok(());
+        }
+        let native = self.sessions[si].session.native_id.clone();
+        if self.address(&native, &key)?.is_some() {
+            return Err("Claude UUID names both a Message and a non-Message record".into());
+        }
+        let range = crate::selection::RecordRange::new(rec.start, rec.end)?;
+        let old = self.parent_node(&native, &key)?;
+        if !allow_new && old.is_none() {
+            return Ok(());
+        }
+        let mut node = parent::Node::overlay(old, &rec.value, range)?;
+        if !allow_new {
+            node.conflicted = true;
+        }
+        self.parent_nodes.insert((native, key), node);
+        Ok(())
     }
     fn contribution(&self, message: &MessageId, slot: u64) -> Result<Option<Contribution>, String> {
         match self.contributions.get(&(message.clone(), slot)) {
@@ -496,6 +535,9 @@ impl<R: ReadView> KeyedRecords<R> {
             return Ok(RecordOutcome::Unrecognized("unroutable record"));
         };
         let native = self.sessions[si].session.native_id.clone();
+        if self.parent_node(&native, uuid)?.is_some() {
+            return Err("Claude UUID names both a Message and a non-Message record".into());
+        }
         let address = self.address(&native, uuid)?;
         let old = match &address {
             Some(a) => Some(
@@ -1264,16 +1306,38 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
         {
             return Err("non-scalar fork Session routing is unsupported".into());
         }
-        Ok({
-            let ty = rec.value.get("type").and_then(Value::as_str).unwrap_or("");
-            match ty {
-                "user"
-                    if rec.value.get("isCompactSummary").and_then(Value::as_bool) == Some(true) =>
-                {
-                    self.event(rec, "compaction_summary")?
+        let ty = rec.value.get("type").and_then(Value::as_str).unwrap_or("");
+        let prior_node = if (ty == "system" && rec.value.get("subtype").is_none())
+            || (ty == "user" && rec.value.get("isCompactSummary").is_none())
+            || (ty == "progress" && rec.value.get("data").is_none())
+        {
+            if let Some(uuid) = rec.value.get("uuid").and_then(Value::native) {
+                let key = native_key(uuid)?;
+                if let Some((si, _)) = self.route(&rec.value, &key)? {
+                    self.parent_node(&self.sessions[si].session.native_id, &key)?
+                } else {
+                    None
                 }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let compact_summary = ty == "user"
+            && (rec.value.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
+                || (rec.value.get("isCompactSummary").is_none()
+                    && prior_node.as_ref().is_some_and(|n| n.kind == "user")));
+        let subtype = rec
+            .value
+            .get("subtype")
+            .and_then(Value::as_str)
+            .or_else(|| prior_node.as_ref().and_then(|n| n.subtype.as_deref()));
+        let outcome = {
+            match ty {
+                "user" if compact_summary => self.event(rec, "compaction_summary")?,
                 "user" | "assistant" => self.message_record(rec, ty)?,
-                "system" => match rec.value.get("subtype").and_then(Value::as_str) {
+                "system" => match subtype {
                     Some("compact_boundary") => self.event(rec, "compaction")?,
                     Some("microcompact_boundary") => self.event(rec, "microcompaction")?,
                     Some("model_refusal_no_fallback" | "model_refusal_fallback") => {
@@ -1356,7 +1420,16 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                     .get("data")
                     .and_then(|d| d.get("type"))
                     .and_then(Value::as_str)
-                {
+                    .or_else(|| {
+                        if rec.value.get("data").is_none() {
+                            prior_node
+                                .as_ref()
+                                .and_then(|n| n.progress_kind.as_ref())
+                                .and_then(|l| l.value.as_str())
+                        } else {
+                            None
+                        }
+                    }) {
                     // Subagent evidence and hook runs are kept (spec/sources/claude-code.md, record table).
                     Some("agent_progress") => {
                         RecordOutcome::Unrecognized("agent progress linkage not yet derived")
@@ -1376,7 +1449,16 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                 "atis-latch" => RecordOutcome::Unrecognized("atis-latch"),
                 _ => RecordOutcome::Unrecognized("record type"),
             }
-        })
+        };
+        let ty = rec.value.get("type").and_then(Value::as_str).unwrap_or("");
+        let message = matches!(ty, "user" | "assistant") && !compact_summary;
+        if !message {
+            self.remember_parent_node(
+                rec,
+                matches!(outcome, RecordOutcome::Used | RecordOutcome::Ignored(_)),
+            )?;
+        }
+        Ok(outcome)
     }
     fn finish(self) -> Result<Self::Output, Self::Error> {
         self.finish_output()
@@ -1403,6 +1485,12 @@ impl<R: ReadView> KeyedRecords<R> {
             .map(|((s, u), c)| (s, u, c))
             .collect();
         addresses.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        let mut parent_nodes: Vec<_> = self
+            .parent_nodes
+            .into_iter()
+            .map(|((s, u), node)| (s, u, node))
+            .collect();
+        parent_nodes.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
         let mut contributions: Vec<_> = self
             .contributions
             .into_iter()
@@ -1423,6 +1511,7 @@ impl<R: ReadView> KeyedRecords<R> {
                 sessions: self.sessions,
                 responses,
                 addresses,
+                parent_nodes,
                 occurrences: self.occurrences.into_iter().collect(),
                 backgrounds: self.backgrounds.into_iter().collect(),
                 contributions,

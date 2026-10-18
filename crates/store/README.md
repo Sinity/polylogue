@@ -256,3 +256,22 @@ request using its retained, matching format-3 binary, then open with format 4. T
 qualified format-3 source is `5ddb6975dafae5b79030dabb6c2d6a19cb29ab47`; retain its
 matching binary alongside pending recovery material. There is no new-binary
 resume path for an old pending action or reset of its cut.
+
+`SmallField` carries two immutable worker-hashed JSON chunks for one field. Its
+writer operation charges both payloads, the field key and projection cursor,
+refuses existing producers, and uses the existing sealing/deduplication and
+field-root installation helpers in one transaction. Value/origin aliases retain
+two ownership counts. Predecessor or cursor failure rolls back allocations,
+leases and field-tree edits together. This is an atomic small-field operation,
+not a batch of arbitrary mutations; source-selector authority remains in the
+engine and large/in-flight producers keep their streaming protocol.
+
+`inspect_message_preparation` admits the caller's identity/source and loads only
+an existing private Build, including a completed rank projection. It uses the
+same preparation metadata loader as initial reservation and performs only reads;
+inspection cannot allocate a successor or advance SQLite allocation sequences.
+
+Immutable directory reads reuse compiled node/edge SELECT statements in the
+connection's existing bounded SQLite statement cache. Each visit still reads
+all rows and checks ownership, readiness, edge shape and count summaries; node
+results and visibility are not cached, and charged read work is unchanged.

@@ -3,6 +3,8 @@ use super::*;
 use crate::contributions::Retirement;
 use crate::{ImportObservation, InputFormat};
 use polylogue_model::merge::{MessageField, Slot};
+mod inspection;
+mod small_fields;
 mod superseded;
 struct Fixture {
     dir: tempfile::TempDir,
@@ -92,7 +94,7 @@ impl Fixture {
             message,
         } = self;
         drop(writer);
-        let writer = Writer::open(&root).unwrap();
+        let writer = crate::tests::reopen_after_drop(&root);
         Self {
             dir,
             root,

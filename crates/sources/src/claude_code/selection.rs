@@ -36,6 +36,13 @@ pub enum Transform {
         native_uuid: polylogue_model::NativeId,
         resolved: MessageId,
     },
+    /// Pinned interpretation proves each retained non-Message relation. The
+    /// original direct transform remains unchanged for single-hop histories.
+    ParentViaRecordsV1 {
+        native_uuid: polylogue_model::NativeId,
+        resolved: MessageId,
+        relations: Vec<super::parent::RelationProof>,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeafSelection {
@@ -148,7 +155,8 @@ impl Recipe for LeafSelection {
             | Transform::ToolOutputV1
             | Transform::UsdNanosV1
             | Transform::BackgroundV1 { .. }
-            | Transform::ParentReferenceV1 { .. } => Operation::ProviderScalar,
+            | Transform::ParentReferenceV1 { .. }
+            | Transform::ParentViaRecordsV1 { .. } => Operation::ProviderScalar,
         }
     }
     fn invalid(&self, reason: &'static str) -> Error {
@@ -182,6 +190,11 @@ impl Recipe for LeafSelection {
             Transform::ParentReferenceV1 {
                 native_uuid,
                 resolved,
+            }
+            | Transform::ParentViaRecordsV1 {
+                native_uuid,
+                resolved,
+                ..
             } => {
                 if value.native() != Some(native_uuid) {
                     return Err(ScalarError::Invalid(Error(
@@ -573,6 +586,39 @@ pub(super) fn parent(
     ))
 }
 
+/// Same original single-hop recipe for a relation resolved at finalization.
+pub fn parent_reference(
+    native_uuid: polylogue_model::NativeId,
+    resolved: MessageId,
+    input: SelectedRaw,
+) -> LeafSelection {
+    LeafSelection::new(
+        Transform::ParentReferenceV1 {
+            native_uuid,
+            resolved,
+        },
+        input,
+    )
+}
+/// New interpretation descriptor; never changes ParentReferenceV1 meaning.
+pub fn parent_via(
+    native_uuid: polylogue_model::NativeId,
+    resolved: MessageId,
+    input: SelectedRaw,
+    relations: Vec<super::parent::Node>,
+) -> LeafSelection {
+    LeafSelection::new(
+        Transform::ParentViaRecordsV1 {
+            native_uuid,
+            resolved,
+            relations: relations
+                .iter()
+                .map(super::parent::RelationProof::from)
+                .collect(),
+        },
+        input,
+    )
+}
 pub(super) fn background(range: RecordRange, leaf: BackgroundLeaf) -> LeafSelection {
     LeafSelection::new(
         Transform::BackgroundV1 { leaf },

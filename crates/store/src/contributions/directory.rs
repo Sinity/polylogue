@@ -127,14 +127,16 @@ fn load(
     pk: i64,
     work: &mut Work,
 ) -> Result<Node> {
-    let (height,summary):(u8,Counts)=db(path,||dbh.query_row("SELECT height,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields FROM message_body_node WHERE pk=?1 AND message_pk=?2 AND session_pk=?3 AND kind=?4 AND state='ready'",params![pk,owner.message,owner.session,kind.name()],|r|Ok((r.get(0)?,counts(r,1)?))).optional())?.ok_or_else(||bad("missing or unready directory node"))?;
+    // Cache compiled SQL only. Every visit still reads and validates the node
+    // and all of its edges, including their owner, state and count summaries.
+    let (height,summary):(u8,Counts)=db(path,||dbh.prepare_cached("SELECT height,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields FROM message_body_node WHERE pk=?1 AND message_pk=?2 AND session_pk=?3 AND kind=?4 AND state='ready'")?.query_row(params![pk,owner.message,owner.session,kind.name()],|r|Ok((r.get(0)?,counts(r,1)?))).optional())?.ok_or_else(||bad("missing or unready directory node"))?;
     work.nodes_read += 1;
     let mut node = Node {
         height,
         edges: [None; 16],
     };
     let mut stmt = db(path, || {
-        dbh.prepare("SELECT slot,child_node_pk,child_kind,child_height,block_pk,field_fact_pk,tool_call_pk,association_pk,conflict_slot_pk,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields FROM message_body_edge WHERE parent_pk=?1 ORDER BY slot")
+        dbh.prepare_cached("SELECT slot,child_node_pk,child_kind,child_height,block_pk,field_fact_pk,tool_call_pk,association_pk,conflict_slot_pk,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields FROM message_body_edge WHERE parent_pk=?1 ORDER BY slot")
     })?;
     let mut rows = db(path, || stmt.query([pk]))?;
     let mut total = Counts::default();
@@ -595,6 +597,7 @@ pub(super) fn nth(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod statements;
     fn fixture() -> (tempfile::TempDir, crate::Writer, Owner, i64) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("archive");
