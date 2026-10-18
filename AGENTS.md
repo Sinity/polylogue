@@ -17,9 +17,6 @@ operator switches over.
   store handles, never raw connections.
 - `xtask`: developer checks (`fast`, `check`, `boundaries`).
 
-Reading a source file to its end does not mean its messages are parsed and
-queryable; the two are tracked separately.
-
 ## Development loop
 
 Optimize for fast integration. See `docs/development.md`.
@@ -47,9 +44,8 @@ Optimize for fast integration. See `docs/development.md`.
   Unknown times stay unknown. IDs are opaque strings and may contain colons.
   Check the schema version before writing.
 
-## Data and safety
+## Data
 
-Keep credentials, real captures, private reports and real databases out of
-Git. Merging code is fine at any time; importing real data, deleting an
-archive, replacing the deployed Python Polylogue or activating host services
-needs the operator's say-so.
+The repository is public. Keep credentials, real captures, private reports
+and real databases out of Git; fixtures are synthetic. Reading the operator's
+real files on this machine for development and measurement is fine.
