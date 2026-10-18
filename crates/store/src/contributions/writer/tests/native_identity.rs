@@ -1,4 +1,4 @@
-//! Session native facts survive SQLite without interpreting transport spelling.
+//! Native session IDs are stored and read back exactly, including their encoding.
 use super::*;
 use polylogue_model::NativeId;
 
@@ -7,31 +7,16 @@ fn prepare_native(
     native: &NativeId,
     encoding: Option<&str>,
 ) -> Result<Preparation> {
-    f.writer.prepare_message(
-        Identity {
-            session: &f.session,
-            origin: &f.origin,
-            native_session: native.as_str(),
-            native_session_encoding: encoding,
-            session_kind: SessionKind::Main,
-            message: &f.message,
-            sequence: 0,
-            role: Role::Assistant,
-            written_by: WrittenBy::Model,
-        },
-        Source {
-            predecessor: &f.head.token,
-            revision: 1,
-            evidence_revision: 1,
-            logical_key: [3; 32],
-            route: RouteKind::Native,
-        },
-        4096,
-    )
+    let native = native.as_str().to_owned();
+    let encoding = encoding.map(str::to_owned);
+    f.prepare_with(|identity, _| {
+        identity.native_session = &native;
+        identity.native_session_encoding = encoding.as_deref();
+    })
 }
 
 #[test]
-fn retained_native_session_and_literal_transport_spelling_are_distinct_after_reopen() {
+fn encoded_and_literal_native_ids_stay_distinct_after_reopen() {
     let encoded = NativeId::from_utf16(&[0xd800]);
     let literal = NativeId::unicode(encoded.as_str());
     let mut f = Fixture::new();
@@ -58,7 +43,7 @@ fn retained_native_session_and_literal_transport_spelling_are_distinct_after_reo
 }
 
 #[test]
-fn preparation_refuses_invalid_native_encoding_and_changed_encoding_for_existing_session() {
+fn prepare_rejects_bad_or_changed_native_encoding() {
     let encoded = NativeId::from_utf16(&[0xd800]);
     let mut f = Fixture::new();
     assert!(prepare_native(&mut f, &encoded, Some("unknown")).is_err());
@@ -69,7 +54,7 @@ fn preparation_refuses_invalid_native_encoding_and_changed_encoding_for_existing
 }
 
 #[test]
-fn selected_session_refuses_corrupt_native_encoding_instead_of_claiming_literal_identity() {
+fn selected_session_rejects_corrupt_native_encoding() {
     let encoded = NativeId::from_utf16(&[0xd800]);
     let mut f = Fixture::new();
     prepare_native(&mut f, &encoded, encoded.encoding()).unwrap();

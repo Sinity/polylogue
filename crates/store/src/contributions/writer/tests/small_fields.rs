@@ -1,5 +1,4 @@
 use super::*;
-use crate::contributions::{ProjectionStep, SmallField};
 mod construction;
 fn payload() -> SmallField {
     SmallField::prepare(b"null".to_vec(), b"null".to_vec(), 65536).unwrap()
@@ -10,14 +9,8 @@ fn slot(key: &str) -> Slot {
         key: key.into(),
     }
 }
-fn step(sequence: u64) -> ProjectionStep<'static> {
-    ProjectionStep {
-        expected_sequence: sequence,
-        next_cursor: b"small-field-cursor",
-    }
-}
 #[test]
-fn small_field_same_value_origin_dedup_and_cursor_commit_survive_reopen() {
+fn small_field_dedups_value_and_origin_and_survives_reopen() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     f.writer
@@ -28,7 +21,7 @@ fn small_field_same_value_origin_dedup_and_cursor_commit_survive_reopen() {
             true,
             false,
             &payload(),
-            &step(0),
+            &step(0, b"small-field-cursor"),
             4096,
         )
         .unwrap();
@@ -45,10 +38,7 @@ fn small_field_same_value_origin_dedup_and_cursor_commit_survive_reopen() {
         1
     );
     let mut f = f.reopen();
-    assert_eq!(
-        f.writer.message_projection(&build, 4096).unwrap().sequence,
-        1
-    );
+    assert_eq!(f.sequence(&build), 1);
     let before = f.scalar("SELECT count(*) FROM body_value");
     assert!(matches!(
         f.writer.write_small_field(
@@ -58,7 +48,7 @@ fn small_field_same_value_origin_dedup_and_cursor_commit_survive_reopen() {
             true,
             false,
             &payload(),
-            &step(0),
+            &step(0, b"small-field-cursor"),
             4096
         ),
         Err(Error::StaleMessage)
@@ -67,10 +57,10 @@ fn small_field_same_value_origin_dedup_and_cursor_commit_survive_reopen() {
     assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 1);
 }
 #[test]
-fn small_field_late_cursor_failure_rolls_back_chunks_leases_and_field_tree() {
+fn small_field_cursor_failure_rolls_back_everything() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
-    f.writer._index.execute_batch("CREATE TRIGGER refuse_small_cursor BEFORE INSERT ON parser_cell WHEN NEW.namespace='message.projection.v1' BEGIN SELECT RAISE(ABORT,'synthetic crash boundary'); END;").unwrap();
+    f.exec("CREATE TRIGGER refuse_small_cursor BEFORE INSERT ON parser_cell WHEN NEW.namespace='message.projection.v1' BEGIN SELECT RAISE(ABORT,'synthetic crash boundary'); END;");
     assert!(
         f.writer
             .write_small_field(
@@ -80,15 +70,12 @@ fn small_field_late_cursor_failure_rolls_back_chunks_leases_and_field_tree() {
                 true,
                 false,
                 &payload(),
-                &step(0),
+                &step(0, b"small-field-cursor"),
                 4096
             )
             .is_err()
     );
-    f.writer
-        ._index
-        .execute_batch("DROP TRIGGER refuse_small_cursor;")
-        .unwrap();
+    f.exec("DROP TRIGGER refuse_small_cursor;");
     let f = f.reopen();
     for table in [
         "body_value",
@@ -98,13 +85,10 @@ fn small_field_late_cursor_failure_rolls_back_chunks_leases_and_field_tree() {
     ] {
         assert_eq!(f.scalar(&format!("SELECT count(*) FROM {table}")), 0);
     }
-    assert_eq!(
-        f.writer.message_projection(&build, 4096).unwrap().sequence,
-        0
-    );
+    assert_eq!(f.sequence(&build), 0);
 }
 #[test]
-fn small_field_admission_and_existing_producer_refuse_before_mutation() {
+fn small_field_rejects_oversize_or_active_value_before_writing() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     assert!(matches!(
@@ -115,7 +99,7 @@ fn small_field_admission_and_existing_producer_refuse_before_mutation() {
             true,
             false,
             &payload(),
-            &step(0),
+            &step(0, b"small-field-cursor"),
             1
         ),
         Err(Error::ParserAdmission { .. })
@@ -132,7 +116,7 @@ fn small_field_admission_and_existing_producer_refuse_before_mutation() {
             true,
             false,
             &payload(),
-            &step(0),
+            &step(0, b"small-field-cursor"),
             4096
         ),
         Err(Error::MessagePreparationPending)
@@ -165,7 +149,7 @@ fn small_field_stale_source_cannot_allocate_values() {
             true,
             false,
             &payload(),
-            &step(0),
+            &step(0, b"small-field-cursor"),
             4096
         ),
         Err(Error::StaleMessage)

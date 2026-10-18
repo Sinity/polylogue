@@ -1,29 +1,12 @@
 use super::*;
-use crate::contributions::ProjectionStep;
 fn inspect_with(
     f: &mut Fixture,
     build: &Build,
     change: impl FnOnce(&mut Identity<'_>, &mut Source<'_>),
     allowance: usize,
 ) -> Result<Preparation> {
-    let mut identity = Identity {
-        session: &f.session,
-        origin: &f.origin,
-        native_session: "session:with:colons",
-        native_session_encoding: None,
-        session_kind: SessionKind::Main,
-        message: &f.message,
-        sequence: 0,
-        role: Role::Assistant,
-        written_by: WrittenBy::Model,
-    };
-    let mut source = Source {
-        predecessor: &f.head.token,
-        revision: 1,
-        evidence_revision: 1,
-        logical_key: [3; 32],
-        route: RouteKind::Native,
-    };
+    let mut identity = identity(&f.session, &f.origin, &f.message);
+    let mut source = source(&f.head.token);
     change(&mut identity, &mut source);
     f.writer
         .inspect_message_preparation(build, identity, source, allowance)
@@ -38,7 +21,7 @@ fn wal(f: &Fixture) -> Vec<Vec<u8>> {
         .collect()
 }
 #[test]
-fn exact_preparation_inspection_works_with_sql_writes_denied_and_does_not_reserve_or_write_wal() {
+fn inspection_works_read_only_and_writes_no_wal() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     let writes = (
@@ -47,10 +30,7 @@ fn exact_preparation_inspection_works_with_sql_writes_denied_and_does_not_reserv
     );
     let seq = f.scalar("SELECT seq FROM sqlite_sequence WHERE name='message'");
     let before = wal(&f);
-    f.writer
-        ._index
-        .execute_batch("PRAGMA query_only=ON")
-        .unwrap();
+    f.exec("PRAGMA query_only=ON");
     f.writer
         .archive
         .execute_batch("PRAGMA query_only=ON")
@@ -74,12 +54,9 @@ fn exact_preparation_inspection_works_with_sql_writes_denied_and_does_not_reserv
         f.scalar("SELECT seq FROM sqlite_sequence WHERE name='message'")
     );
     assert_eq!(before, wal(&f));
-    // The oracle distinguishes the existing allocation/reservation path.
+    // prepare_message, unlike inspection, does write.
     assert!(f.prepare().is_err());
-    f.writer
-        ._index
-        .execute_batch("PRAGMA query_only=OFF")
-        .unwrap();
+    f.exec("PRAGMA query_only=OFF");
     f.writer
         .archive
         .execute_batch("PRAGMA query_only=OFF")
@@ -87,7 +64,7 @@ fn exact_preparation_inspection_works_with_sql_writes_denied_and_does_not_reserv
     assert_eq!(f.scalar("SELECT count(*) FROM message"), 1);
 }
 #[test]
-fn exact_preparation_inspection_resumes_both_partial_producers_without_mutation() {
+fn inspection_reports_partial_values_without_writing() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     let value = f
@@ -111,17 +88,14 @@ fn exact_preparation_inspection_resumes_both_partial_producers_without_mutation(
     assert_eq!(before, wal(&f));
 }
 #[test]
-fn exact_preparation_inspection_keeps_completed_rank_and_cursor_after_reopen() {
+fn inspection_keeps_finished_projection_after_reopen() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     let cert = f
         .writer
         .finish_message_projection(
             &build,
-            &ProjectionStep {
-                expected_sequence: 0,
-                next_cursor: b"rank",
-            },
+            &step(0, b"rank"),
             polylogue_model::BlobHash::of(b"synthetic evidence"),
             polylogue_model::merge::FinishState::Unknown,
             4096,
@@ -141,7 +115,7 @@ fn exact_preparation_inspection_keeps_completed_rank_and_cursor_after_reopen() {
     assert_eq!(count, f.scalar("SELECT count(*) FROM message_body"));
 }
 #[test]
-fn exact_preparation_inspection_refuses_hidden_removal_contributor_and_source_changes() {
+fn inspection_rejects_hidden_message_or_changed_source() {
     for sql in [
         "UPDATE message SET hidden=1",
         "UPDATE message SET removal_epoch=removal_epoch+1",
@@ -149,7 +123,7 @@ fn exact_preparation_inspection_refuses_hidden_removal_contributor_and_source_ch
     ] {
         let mut f = Fixture::new();
         let build = f.prepare().unwrap().build;
-        f.writer._index.execute_batch(sql).unwrap();
+        f.exec(sql);
         let before = wal(&f);
         assert!(matches!(inspect(&mut f, &build), Err(Error::StaleMessage)));
         assert_eq!(before, wal(&f));
@@ -170,7 +144,7 @@ fn exact_preparation_inspection_refuses_hidden_removal_contributor_and_source_ch
     assert!(matches!(inspect(&mut f, &build), Err(Error::StaleMessage)));
 }
 #[test]
-fn exact_preparation_inspection_keeps_identity_route_revision_and_admission_guards() {
+fn inspection_checks_identity_route_revision_and_limits() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     assert!(
