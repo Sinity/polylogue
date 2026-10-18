@@ -6,7 +6,7 @@ fn flat_event_reads_check_cancellation_and_cumulative_admission_before_lookup() 
     let mut writer = Writer::open(dir.path()).unwrap();
     let blob = writer.put_file_blob(b"{}\n").unwrap();
     writer
-        .retain_immutable_input(
+        .store_immutable_input(
             blob,
             InputFormat::CodexRollout,
             &[],
@@ -85,7 +85,7 @@ fn benign_events_do_not_supply_an_absent_current_selected_message_projection() {
     let mut writer = Writer::open(dir.path()).unwrap();
     let blob = writer.put_file_blob(raw).unwrap();
     let retained = writer
-        .retain_immutable_input(
+        .store_immutable_input(
             blob,
             InputFormat::CodexRollout,
             &[],
@@ -99,7 +99,7 @@ fn benign_events_do_not_supply_an_absent_current_selected_message_projection() {
             4096,
         )
         .unwrap();
-    let input = writer.retained_source(&retained.id).unwrap().unwrap();
+    let input = writer.stored_source(&retained.id).unwrap().unwrap();
     let head = writer
         .begin_parser(&Basis {
             input_pk: retained.input_pk,

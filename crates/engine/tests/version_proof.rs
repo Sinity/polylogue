@@ -30,7 +30,7 @@ impl World {
         let mut writer = Writer::open(&dir.path().join("archive")).unwrap();
         let blob = writer.put_file_blob(b"").unwrap();
         let input = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 blob,
                 InputFormat::CodexRollout,
                 &[],

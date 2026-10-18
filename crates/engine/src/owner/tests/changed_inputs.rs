@@ -1,6 +1,6 @@
 use super::*;
 
-fn fixture() -> (tempfile::TempDir, Actor, Vec<RetainedSource>) {
+fn fixture() -> (tempfile::TempDir, Actor, Vec<StoredSource>) {
     let temp = tempfile::tempdir().unwrap();
     let mut writer = Writer::open(&temp.path().join("archive")).unwrap();
     let mut inputs = Vec::new();
@@ -11,10 +11,10 @@ fn fixture() -> (tempfile::TempDir, Actor, Vec<RetainedSource>) {
             .unwrap()
             .capture(std::io::Cursor::new(bytes), &AtomicBool::new(false))
             .unwrap();
-        let hash = writer.retain_captured_blob(proof).unwrap();
+        let hash = writer.store_captured_blob(proof).unwrap();
         let observation = request(Path::new("/synthetic/input.jsonl"), &format!("input-{n}"));
         let input = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 InputFormat::CodexRollout,
                 &[],
@@ -22,7 +22,7 @@ fn fixture() -> (tempfile::TempDir, Actor, Vec<RetainedSource>) {
                 4096,
             )
             .unwrap();
-        inputs.push(writer.retained_source(&input.id).unwrap().unwrap());
+        inputs.push(writer.stored_source(&input.id).unwrap().unwrap());
     }
     inputs.sort_by(|a, b| a.input.id.cmp(&b.input.id));
     let (sender, _receiver) = mpsc::sync_channel(COMMANDS);

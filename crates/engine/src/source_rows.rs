@@ -11,7 +11,7 @@ use polylogue_model::{
     settlement::{SourceRowBasis, SourceRowScope, SourceRowState, SourceRows},
 };
 use polylogue_store::{
-    Error, InputFormat, RetainedSource,
+    Error, InputFormat, StoredSource,
     parser_state::{Budget, Snapshot, Token},
 };
 use serde::{Deserialize, Serialize};
@@ -85,7 +85,7 @@ impl Receipt {
         Ok(())
     }
 }
-pub fn basis(input: &RetainedSource) -> SourceRowBasis {
+pub fn basis(input: &StoredSource) -> SourceRowBasis {
     SourceRowBasis {
         input: input.input.id.clone(),
         original_hash: input.original_hash(),
@@ -96,7 +96,7 @@ pub fn basis(input: &RetainedSource) -> SourceRowBasis {
         interpretation: BlobHash::from_bytes(owner::parser_basis(input)),
     }
 }
-pub fn pending(input: &RetainedSource, obligation: &str) -> SourceRows {
+pub fn pending(input: &StoredSource, obligation: &str) -> SourceRows {
     SourceRows {
         scope: if input.observed() {
             SourceRowScope::ObservedSourceRows
@@ -109,7 +109,7 @@ pub fn pending(input: &RetainedSource, obligation: &str) -> SourceRows {
         },
     }
 }
-pub fn read(snapshot: &Snapshot, input: &RetainedSource) -> Result<Option<Receipt>> {
+pub fn read(snapshot: &Snapshot, input: &StoredSource) -> Result<Option<Receipt>> {
     let value = snapshot.cell(
         polylogue_store::parser_state::SOURCE_ROWS_NAMESPACE,
         b"",
@@ -128,7 +128,7 @@ pub fn read(snapshot: &Snapshot, input: &RetainedSource) -> Result<Option<Receip
 pub(crate) fn decode(
     value: &[u8],
     head: &polylogue_store::parser_state::Head,
-    input: &RetainedSource,
+    input: &StoredSource,
 ) -> Result<Receipt> {
     let receipt: Receipt = serde_json::from_slice(value)
         .map_err(|_| Error::Invariant("invalid source row settlement receipt".into()))?;
@@ -167,7 +167,7 @@ impl Audit {
     pub fn advance(
         mut self,
         snapshot: &Snapshot,
-        input: &RetainedSource,
+        input: &StoredSource,
         reads: Budget,
     ) -> Result<Turn> {
         let head = &snapshot.head;

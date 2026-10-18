@@ -182,7 +182,7 @@ mod tests {
                 .put_file_blob(b"{\"synthetic\":true}\n".repeat(8).as_slice())
                 .unwrap();
             let input = writer
-                .retain_immutable_input(
+                .store_immutable_input(
                     blob,
                     InputFormat::CodexRollout,
                     &[],

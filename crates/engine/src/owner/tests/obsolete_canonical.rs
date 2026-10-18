@@ -4,7 +4,7 @@ fn fixture() -> (
     tempfile::TempDir,
     Actor,
     Receiver<Message>,
-    RetainedSource,
+    StoredSource,
     PathBuf,
 ) {
     let temp = tempfile::tempdir().unwrap();
@@ -30,7 +30,7 @@ fn fixture() -> (
         .unwrap();
     let input = actor
         .writer
-        .retained_source(&input.input.id)
+        .stored_source(&input.input.id)
         .unwrap()
         .unwrap();
     actor.active = Some(Active::Begin(input.clone()));
@@ -53,7 +53,7 @@ fn advance(actor: &mut Actor, receiver: &Receiver<Message>) {
             .unwrap();
     }
 }
-fn append(actor: &mut Actor, input: &RetainedSource, main: &Path) -> RetainedSource {
+fn append(actor: &mut Actor, input: &StoredSource, main: &Path) -> StoredSource {
     use std::io::Write;
     std::fs::OpenOptions::new()
         .append(true)
@@ -74,7 +74,7 @@ fn append(actor: &mut Actor, input: &RetainedSource, main: &Path) -> RetainedSou
         .unwrap();
     let current = actor
         .writer
-        .retained_source(&input.input.id)
+        .stored_source(&input.input.id)
         .unwrap()
         .unwrap();
     assert!(current.revision > input.revision);

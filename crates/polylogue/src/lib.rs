@@ -142,7 +142,7 @@ impl Running {
         id: &str,
         seen_at: i64,
         cancelled: &AtomicBool,
-    ) -> Result<(Self, polylogue_store::RetainedSource), polylogue_store::Error> {
+    ) -> Result<(Self, polylogue_store::StoredSource), polylogue_store::Error> {
         let mut writer = Writer::open_cancellable(archive, cancelled)?;
         let retained = writer.acquire_claude_main(source, machine, host, id, seen_at, cancelled)?;
         let retained = polylogue_engine::claude_bodies::acquire(
@@ -171,7 +171,7 @@ impl Running {
         seen_at: i64,
         cancelled: &AtomicBool,
         quantum_bytes: u64,
-    ) -> Result<(Self, polylogue_store::RetainedSource), polylogue_store::Error> {
+    ) -> Result<(Self, polylogue_store::StoredSource), polylogue_store::Error> {
         if !(65536..=8 * 1024 * 1024).contains(&quantum_bytes) {
             return Err(polylogue_store::Error::ObservedSourceRefused(
                 "acquisition quantum must be between 65536 and 8388608 bytes".into(),

@@ -3,7 +3,7 @@ use super::*;
 use polylogue_engine::owner::{self, ImportRequest, Observation, Owner};
 use polylogue_model::{MessageId, Origin, SessionId};
 use polylogue_store::{
-    InputFormat, ReadHandle, RetainedInput, Writer, contributions::SessionCoverage,
+    InputFormat, ReadHandle, StoredInput, Writer, contributions::SessionCoverage,
 };
 use serde_json::{Value, json};
 use std::{
@@ -42,13 +42,13 @@ impl World {
             path,
         }
     }
-    fn import(&self, bytes: &[u8], id: &str) -> RetainedInput {
+    fn import(&self, bytes: &[u8], id: &str) -> StoredInput {
         self.import_as(bytes, id, SID)
     }
-    fn import_as(&self, bytes: &[u8], id: &str, native: &str) -> RetainedInput {
+    fn import_as(&self, bytes: &[u8], id: &str, native: &str) -> StoredInput {
         self.import_context(bytes, id, vec!["claude-main".into(), native.into()])
     }
-    fn import_context(&self, bytes: &[u8], id: &str, context: Vec<String>) -> RetainedInput {
+    fn import_context(&self, bytes: &[u8], id: &str, context: Vec<String>) -> StoredInput {
         fs::write(&self.path, bytes).unwrap();
         let request = ImportRequest {
             format: InputFormat::ClaudeCodeJsonl,
@@ -73,7 +73,7 @@ impl World {
             }
         }
     }
-    fn progress(&self, input: &RetainedInput) -> owner::Progress {
+    fn progress(&self, input: &StoredInput) -> owner::Progress {
         let deadline = Instant::now() + WAIT;
         loop {
             match self
@@ -92,7 +92,7 @@ impl World {
     fn session(&self) -> SessionId {
         SessionId::new(&Origin::new("claude-code").unwrap(), SID).unwrap()
     }
-    fn wait_selected(&self, input: &RetainedInput, native_ids: &[&str]) {
+    fn wait_selected(&self, input: &StoredInput, native_ids: &[&str]) {
         let deadline = Instant::now() + SOURCE_WAIT;
         loop {
             let progress = self.progress(input);
@@ -128,7 +128,7 @@ impl World {
             thread::sleep(POLL);
         }
     }
-    fn wait_rows(&self, input: &RetainedInput, unavailable: bool) {
+    fn wait_rows(&self, input: &StoredInput, unavailable: bool) {
         let deadline = Instant::now() + SOURCE_WAIT;
         loop {
             let progress = self.progress(input);

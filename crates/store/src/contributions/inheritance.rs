@@ -167,7 +167,7 @@ mod tests {
         let mut w = Writer::open(&root).unwrap();
         let hash = w.put_file_blob(b"{}\n").unwrap();
         let input = w
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 InputFormat::CodexRollout,
                 &[],

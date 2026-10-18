@@ -1,12 +1,12 @@
 //! Worker-side configured acquisition. Parsing discovers only explicitly named
 //! companions; the store prepares opaque proofs and the owner installs them.
 use polylogue_model::BlobHash;
-use polylogue_store::{BlobCapture, Error, RetainedSource, observed::PreparedClaude};
+use polylogue_store::{BlobCapture, Error, StoredSource, observed::PreparedClaude};
 use std::{collections::BTreeMap, sync::atomic::AtomicBool};
 pub(crate) fn prepare(
     capture: BlobCapture,
     location: polylogue_store::configured_claude::Location,
-    old: Option<RetainedSource>,
+    old: Option<StoredSource>,
     cancelled: &AtomicBool,
     budget: polylogue_store::history_pages::turns::Budget,
     mut yield_turn: impl FnMut(

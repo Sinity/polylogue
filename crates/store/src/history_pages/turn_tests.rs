@@ -40,7 +40,7 @@ fn reusable_turns_keep_one_wal_view_and_retry_no_prefix_after_cancel() {
     assert!(turns.len() > 8 && changed);
     let hash = prepared.hash();
     let retained = writer
-        .retain_history_pages(prepared, &observation("turns"), 131072)
+        .store_history_pages(prepared, &observation("turns"), 131072)
         .unwrap();
     let raw = writer
         .read_handle()
@@ -89,7 +89,7 @@ fn reusable_turns_keep_one_wal_view_and_retry_no_prefix_after_cancel() {
         .unwrap();
     let retry_hash = retried.hash();
     let retry = writer
-        .retain_history_pages(retried, &observation("retry-turns"), 131072)
+        .store_history_pages(retried, &observation("retry-turns"), 131072)
         .unwrap();
     let bytes = writer
         .read_handle()
@@ -136,7 +136,7 @@ fn many_turns_preserve_one_base_verification_and_current_removal_fences() {
     let base_len = base.length();
     let base_hash = base.hash();
     writer
-        .retain_history_pages(base, &observation("base-turns"), 131072)
+        .store_history_pages(base, &observation("base-turns"), 131072)
         .unwrap();
     let basis = writer.history_basis(&observation("next-turns")).unwrap();
     let mut phases = Vec::new();

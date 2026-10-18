@@ -186,7 +186,7 @@ impl crate::parser_state::Snapshot {
 impl Writer {
     /// Independent partial usability survives a failed Message merge. This
     /// witnesses a ready operation, never source-row or Session completion.
-    pub fn source_has_tool_items(&self, input: &crate::RetainedInput) -> Result<bool> {
+    pub fn source_has_tool_items(&self, input: &crate::StoredInput) -> Result<bool> {
         published_for_source(
             &self._index,
             &self.root.join("index.db"),

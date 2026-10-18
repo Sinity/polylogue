@@ -128,7 +128,7 @@ fn killed_preparation_restarts_with_a_fresh_complete_view() {
         .unwrap();
     let hash = fresh.hash();
     let retained = writer
-        .retain_history_pages(
+        .store_history_pages(
             fresh,
             &ImportObservation {
                 id: "after-process-loss",

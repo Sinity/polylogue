@@ -39,7 +39,7 @@ pub struct ImportObservation<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RetainedInput {
+pub struct StoredInput {
     pub input_pk: i64,
     pub id: String,
     pub chain: i64,
@@ -48,7 +48,7 @@ pub struct RetainedInput {
 
 #[derive(Clone, Debug)]
 pub struct ImmutableImport {
-    pub input: RetainedInput,
+    pub input: StoredInput,
     pub hash: BlobHash,
     pub format: InputFormat,
     pub context: Vec<String>,
@@ -176,7 +176,7 @@ impl Writer {
         };
         let (id, hash, format, context, length) =
             decode_import_identity(id, format, length, digest, original, context_json)?;
-        let input = self.register_retained_reference(id, length)?;
+        let input = self.register_input_ref(id, length)?;
         Ok(Some(ImmutableImport {
             input,
             hash,
@@ -193,7 +193,7 @@ impl Writer {
         context: &[&str],
         observation: &ImportObservation<'_>,
         allowance: usize,
-    ) -> Result<Option<RetainedInput>> {
+    ) -> Result<Option<StoredInput>> {
         let expected = request_hash(format, context, observation, allowance)?;
         self.check_import_acquisition()?;
         let file = self.root.join("archive.db");
@@ -213,11 +213,7 @@ impl Writer {
         Ok(Some(imported.input))
     }
 
-    pub(crate) fn register_retained_reference(
-        &mut self,
-        id: String,
-        length: u64,
-    ) -> Result<RetainedInput> {
+    pub(crate) fn register_input_ref(&mut self, id: String, length: u64) -> Result<StoredInput> {
         let file = self.root.join("index.db");
         let tx = db(&file, || self._index.transaction())?;
         db(&file, || {
@@ -234,7 +230,7 @@ impl Writer {
             ));
         }
         db(&file, || tx.commit())?;
-        Ok(RetainedInput {
+        Ok(StoredInput {
             input_pk,
             id,
             chain: 1,
@@ -248,14 +244,14 @@ impl Writer {
     /// Metadata allowance is caller admission, not a provider semantic size cap.
     /// Archives with any excision require the not-yet-wired refusal-aware
     /// collector and return ExcisionCheckRequired before changing metadata.
-    pub fn retain_immutable_input(
+    pub fn store_immutable_input(
         &mut self,
         hash: BlobHash,
         format: InputFormat,
         context: &[&str],
         observation: &ImportObservation<'_>,
         metadata_allowance: usize,
-    ) -> Result<RetainedInput> {
+    ) -> Result<StoredInput> {
         if let Some(previous) =
             self.replay_immutable_import(format, context, observation, metadata_allowance)?
         {
@@ -277,7 +273,7 @@ impl Writer {
                 .optional()
         })?;
         let length = length.ok_or(Error::UnknownBlob)?;
-        self.retain_immutable_parts(
+        self.store_immutable_parts(
             hash,
             u64::try_from(length).map_err(|_| Error::Range)?,
             &[(0, u64::try_from(length).map_err(|_| Error::Range)?, hash, 0)],
@@ -289,7 +285,7 @@ impl Writer {
     }
     /// Complete immutable bytes can share verified CAS ranges. The capture owner
     /// computes their whole digest; this transaction publishes the exact layout.
-    pub(crate) fn retain_immutable_parts(
+    pub(crate) fn store_immutable_parts(
         &mut self,
         hash: BlobHash,
         length_u64: u64,
@@ -298,7 +294,7 @@ impl Writer {
         context: &[&str],
         observation: &ImportObservation<'_>,
         metadata_allowance: usize,
-    ) -> Result<RetainedInput> {
+    ) -> Result<StoredInput> {
         let request_hash = request_hash(format, context, observation, metadata_allowance)?;
         if let Some(previous) =
             self.replay_immutable_import(format, context, observation, metadata_allowance)?
@@ -476,7 +472,7 @@ impl Writer {
         }
         db(&file, || tx.commit())?;
         // An interrupted disposable index reconstructs this reference from archive.
-        self.register_retained_reference(id, length_u64)
+        self.register_input_ref(id, length_u64)
     }
 }
 
@@ -499,13 +495,13 @@ mod tests {
         let hash = w.put_file_blob(b"retained").unwrap();
         let o = observation("retry-before-lookup");
         let first = w
-            .retain_immutable_input(hash, InputFormat::CodexRollout, &[], &o, 65536)
+            .store_immutable_input(hash, InputFormat::CodexRollout, &[], &o, 65536)
             .unwrap();
         w.archive
             .execute("UPDATE blob SET state='deleting'", [])
             .unwrap();
         let retry = w
-            .retain_immutable_input(hash, InputFormat::CodexRollout, &[], &o, 65536)
+            .store_immutable_input(hash, InputFormat::CodexRollout, &[], &o, 65536)
             .unwrap();
         assert_eq!(retry, first);
     }
@@ -515,7 +511,7 @@ mod tests {
         let mut writer = Writer::open(root.path()).unwrap();
         let hash = writer.put_file_blob(b"synthetic\n").unwrap();
         let imported = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 InputFormat::CodexRollout,
                 &[],
@@ -526,7 +522,7 @@ mod tests {
         let counter = writer.status().unwrap().write_counter;
         assert_eq!(
             writer
-                .retain_immutable_input(
+                .store_immutable_input(
                     hash,
                     InputFormat::CodexRollout,
                     &[],
@@ -559,7 +555,7 @@ mod tests {
         );
         assert!(
             writer
-                .retain_immutable_input(
+                .store_immutable_input(
                     hash,
                     InputFormat::ClaudeCodeJsonl,
                     &[],
@@ -577,7 +573,7 @@ mod tests {
         let hash = writer.put_file_blob(b"retained before index\n").unwrap();
         writer._index.execute_batch("CREATE TRIGGER reject_input BEFORE INSERT ON input_ref BEGIN SELECT RAISE(ABORT,'synthetic registration refusal'); END;").unwrap();
         assert!(matches!(
-            writer.retain_immutable_input(
+            writer.store_immutable_input(
                 hash,
                 InputFormat::CodexRollout,
                 &[],
@@ -601,7 +597,7 @@ mod tests {
         drop(writer);
         let mut writer = Writer::open(root.path()).unwrap();
         let imported = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 InputFormat::CodexRollout,
                 &[],
@@ -620,19 +616,13 @@ mod tests {
         for (bytes, id) in [(b"a".as_slice(), "a"), (b"b".as_slice(), "b")] {
             let hash = writer.put_file_blob(bytes).unwrap();
             writer
-                .retain_immutable_input(
-                    hash,
-                    InputFormat::CodexRollout,
-                    &[],
-                    &observation(id),
-                    1024,
-                )
+                .store_immutable_input(hash, InputFormat::CodexRollout, &[], &observation(id), 1024)
                 .unwrap();
         }
         writer._index.execute("DELETE FROM input_ref", []).unwrap();
         drop(writer);
         let mut writer = Writer::open(root.path()).unwrap();
-        let first = writer.next_retained_source("").unwrap().unwrap();
+        let first = writer.next_stored_source("").unwrap().unwrap();
         assert_eq!(
             first.input.id,
             InputId::imported(&first.binding, first.format.name(), &[]).to_string()
@@ -648,19 +638,16 @@ mod tests {
                 .unwrap(),
             1
         );
-        let second = writer
-            .next_retained_source(&first.input.id)
-            .unwrap()
-            .unwrap();
+        let second = writer.next_stored_source(&first.input.id).unwrap().unwrap();
         assert!(second.input.id > first.input.id);
         assert!(
             writer
-                .next_retained_source(&second.input.id)
+                .next_stored_source(&second.input.id)
                 .unwrap()
                 .is_none()
         );
         assert_eq!(
-            writer.next_retained_source("").unwrap().unwrap().input,
+            writer.next_stored_source("").unwrap().unwrap().input,
             first.input
         );
         writer.archive.execute("INSERT INTO excision(id,scope,created_at,local_seq) VALUES('removal','session:unknown',1,1)",[]).unwrap();
@@ -669,7 +656,7 @@ mod tests {
             Err(Error::ExcisionCheckRequired)
         ));
         assert!(matches!(
-            writer.next_retained_source(""),
+            writer.next_stored_source(""),
             Err(Error::ExcisionCheckRequired)
         ));
     }
@@ -682,7 +669,7 @@ mod tests {
         let huge = "x".repeat(65536);
         let before = writer.status().unwrap().write_counter;
         assert!(matches!(
-            writer.retain_immutable_input(
+            writer.store_immutable_input(
                 hash,
                 InputFormat::ClaudeCodeJsonl,
                 &["claude-main", &huge],
@@ -716,7 +703,7 @@ mod tests {
             .put_file_blob(b"same synthetic provider bytes")
             .unwrap();
         let a = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 InputFormat::ClaudeCodeJsonl,
                 &["claude-main", "a"],
@@ -725,7 +712,7 @@ mod tests {
             )
             .unwrap();
         let b = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 InputFormat::ClaudeCodeJsonl,
                 &["claude-main", "b"],
@@ -734,7 +721,7 @@ mod tests {
             )
             .unwrap();
         let native = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 InputFormat::CodexRollout,
                 &[],
@@ -767,7 +754,7 @@ mod tests {
         );
         assert!(
             writer
-                .retain_immutable_input(
+                .store_immutable_input(
                     hash,
                     InputFormat::ClaudeCodeJsonl,
                     &[],
@@ -778,7 +765,7 @@ mod tests {
         );
         assert!(
             writer
-                .retain_immutable_input(
+                .store_immutable_input(
                     hash,
                     InputFormat::CodexRollout,
                     &["unexpected"],
@@ -806,7 +793,7 @@ mod tests {
         let mut writer = Writer::open(root.path()).unwrap();
         let hash = writer.put_file_blob(b"original").unwrap();
         let imported = writer
-            .retain_immutable_input(
+            .store_immutable_input(
                 hash,
                 InputFormat::CodexRollout,
                 &[],
@@ -873,11 +860,11 @@ mod tests {
         let b = writer.put_file_blob(b"b").unwrap();
         let before = writer.status().unwrap().write_counter;
         assert!(matches!(
-            writer.retain_immutable_input(a, InputFormat::CodexRollout, &[], &observation("id"), 1),
+            writer.store_immutable_input(a, InputFormat::CodexRollout, &[], &observation("id"), 1),
             Err(Error::ParserAdmission { .. })
         ));
         assert!(matches!(
-            writer.retain_immutable_input(
+            writer.store_immutable_input(
                 BlobHash::of(b"missing"),
                 InputFormat::CodexRollout,
                 &[],
@@ -888,12 +875,12 @@ mod tests {
         ));
         assert_eq!(writer.status().unwrap().write_counter, before);
         writer
-            .retain_immutable_input(a, InputFormat::CodexRollout, &[], &observation("id"), 1024)
+            .store_immutable_input(a, InputFormat::CodexRollout, &[], &observation("id"), 1024)
             .unwrap();
         let before = writer.status().unwrap().write_counter;
         assert!(
             writer
-                .retain_immutable_input(b, InputFormat::CodexRollout, &[], &observation("id"), 1024)
+                .store_immutable_input(b, InputFormat::CodexRollout, &[], &observation("id"), 1024)
                 .is_err()
         );
         assert_eq!(writer.status().unwrap().write_counter, before);
@@ -914,7 +901,7 @@ mod tests {
         writer.archive.execute("INSERT INTO excision(id,scope,created_at,local_seq) VALUES('synthetic-removal','session:unknown',1,1)", []).unwrap();
         let before = writer.status().unwrap().write_counter;
         assert!(matches!(
-            writer.retain_immutable_input(
+            writer.store_immutable_input(
                 hash,
                 InputFormat::CodexRollout,
                 &[],

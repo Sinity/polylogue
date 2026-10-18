@@ -165,7 +165,7 @@ fn claude_parked_cancellation_keeps_acknowledged_prefix_and_restarts_without_a_l
     assert_eq!(
         actor
             .writer
-            .retained_source(&source.input.id)
+            .stored_source(&source.input.id)
             .unwrap()
             .unwrap()
             .input

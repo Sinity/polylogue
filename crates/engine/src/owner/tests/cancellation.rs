@@ -1,6 +1,6 @@
 use super::*;
 
-fn fixture() -> (tempfile::TempDir, Actor, RetainedSource, Head) {
+fn fixture() -> (tempfile::TempDir, Actor, StoredSource, Head) {
     let temp = tempfile::tempdir().unwrap();
     let mut writer = Writer::open(&temp.path().join("archive")).unwrap();
     let proof = writer
@@ -8,13 +8,13 @@ fn fixture() -> (tempfile::TempDir, Actor, RetainedSource, Head) {
         .unwrap()
         .capture(std::io::Cursor::new(raw()), &AtomicBool::new(false))
         .unwrap();
-    let hash = writer.retain_captured_blob(proof).unwrap();
+    let hash = writer.store_captured_blob(proof).unwrap();
     let request = request(
         Path::new("/synthetic/input.jsonl"),
         "synthetic-cancellation",
     );
     let input = writer
-        .retain_immutable_input(
+        .store_immutable_input(
             hash,
             request.format,
             &[],
@@ -22,7 +22,7 @@ fn fixture() -> (tempfile::TempDir, Actor, RetainedSource, Head) {
             request.metadata_allowance,
         )
         .unwrap();
-    let source = writer.retained_source(&input.id).unwrap().unwrap();
+    let source = writer.stored_source(&input.id).unwrap().unwrap();
     let context = parser_context_json(&source).unwrap();
     let head = writer
         .begin_parser(&Basis {
@@ -44,7 +44,7 @@ fn fixture() -> (tempfile::TempDir, Actor, RetainedSource, Head) {
     (temp, Actor::new(writer, inner), source, head)
 }
 
-fn source_job(actor: &mut Actor, input: RetainedSource, head: Head) {
+fn source_job(actor: &mut Actor, input: StoredSource, head: Head) {
     actor.compute = Some(ComputeJob {
         input,
         head,
@@ -232,7 +232,7 @@ fn prepared_physical_history_is_not_selected_after_owner_stop_and_restart_can_re
     drop(actor);
     let mut writer = Writer::open(&temp.path().join("archive")).unwrap();
     let mut after = String::new();
-    while let Some(source) = writer.next_retained_source(&after).unwrap() {
+    while let Some(source) = writer.next_stored_source(&after).unwrap() {
         assert_ne!(source.format, InputFormat::CodexHistorySqlite);
         after = source.input.id;
     }
@@ -244,7 +244,7 @@ fn prepared_physical_history_is_not_selected_after_owner_stop_and_restart_can_re
     let hash = p.hash();
     let n = p.length();
     let input = writer
-        .retain_history_pages(p, &observation.borrowed(), 65536)
+        .store_history_pages(p, &observation.borrowed(), 65536)
         .unwrap();
     let bytes = writer
         .read_handle()

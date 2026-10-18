@@ -34,11 +34,11 @@ pub mod claude_bodies;
 pub mod configured_claude;
 pub mod configured_codex;
 pub mod contributions;
+mod imports;
 mod native;
 pub mod observed;
-mod retained;
-pub use observed::{RetainedSource, SourceIdentity};
-pub use retained::{ImmutableImport, ImportObservation, InputFormat, RetainedInput};
+pub use imports::{ImmutableImport, ImportObservation, InputFormat, StoredInput};
+pub use observed::{SourceIdentity, StoredSource};
 pub mod copy_preparation;
 pub mod parser_state;
 pub mod recovery;
@@ -681,7 +681,7 @@ impl Writer {
         let proof = self
             .blob_capture()?
             .capture(bytes, &AtomicBool::new(false))?;
-        self.retain_captured_blob(proof)
+        self.store_captured_blob(proof)
     }
 }
 impl ReadHandle {

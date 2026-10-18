@@ -88,7 +88,7 @@ fn flat_page_ranges_reconstruct_new_and_old_snapshots_without_a_dependency_chain
     let first_hash = first.hash;
     let first_length = first.length;
     let a = w
-        .retain_history_pages(first, &observation("a"), 131072)
+        .store_history_pages(first, &observation("a"), 131072)
         .unwrap();
     c.execute_batch("INSERT INTO t VALUES('later');").unwrap();
     let basis = w.history_basis(&observation("b")).unwrap();
@@ -105,7 +105,7 @@ fn flat_page_ranges_reconstruct_new_and_old_snapshots_without_a_dependency_chain
     assert!(second_changed > 0);
     let length = second.length;
     let b = w
-        .retain_history_pages(second, &observation("b"), 131072)
+        .store_history_pages(second, &observation("b"), 131072)
         .unwrap();
     let reader = w.read_handle().unwrap();
     let raw = reader
@@ -151,9 +151,9 @@ fn raw_snapshot_acquisition_exceeds_interpretation_limit_and_fragmentation_rebas
         .unwrap();
     assert!(p.length > 16 * 1024 * 1024);
     let source = w
-        .retain_history_pages(p, &observation("large"), 131072)
+        .store_history_pages(p, &observation("large"), 131072)
         .unwrap();
-    let retained = w.retained_source(&source.id).unwrap().unwrap();
+    let retained = w.stored_source(&source.id).unwrap().unwrap();
     assert!(matches!(
         w.read_handle()
             .unwrap()
@@ -180,7 +180,7 @@ fn raw_snapshot_acquisition_exceeds_interpretation_limit_and_fragmentation_rebas
     let hash = p.hash;
     let n = p.length;
     let r = w
-        .retain_history_pages(p, &observation("fragmented"), 131072)
+        .store_history_pages(p, &observation("fragmented"), 131072)
         .unwrap();
     let bytes = w
         .read_handle()
@@ -210,7 +210,7 @@ fn prepared_or_failed_parts_never_select_an_incomplete_input() {
     );
     p.parts.pop();
     assert!(
-        w.retain_history_pages(p, &observation("failed-parts"), 131072)
+        w.store_history_pages(p, &observation("failed-parts"), 131072)
             .is_err()
     );
     for table in [
@@ -254,7 +254,7 @@ fn alternating_flat_base_patch_layout_reuses_two_checked_objects_during_reconstr
         .capture_history_pages(&path, None, &AtomicBool::new(false))
         .unwrap();
     let base_length = p.length;
-    w.retain_history_pages(p, &observation("base"), 131072)
+    w.store_history_pages(p, &observation("base"), 131072)
         .unwrap();
     c.execute_batch("UPDATE t SET value=randomblob(3000) WHERE rowid%2=0")
         .unwrap();
@@ -268,9 +268,9 @@ fn alternating_flat_base_patch_layout_reuses_two_checked_objects_during_reconstr
     let hash = p.hash;
     let n = p.length;
     let input = w
-        .retain_history_pages(p, &observation("fragmented"), 131072)
+        .store_history_pages(p, &observation("fragmented"), 131072)
         .unwrap();
-    let source = w.retained_source(&input.id).unwrap().unwrap();
+    let source = w.stored_source(&input.id).unwrap().unwrap();
     let reader = w.read_handle().unwrap();
     let mut good_polls = 0u64;
     reader
@@ -369,7 +369,7 @@ fn earlier_bytes_observed_again_keep_identity_and_canonical_extent_layout() {
         .unwrap();
     let first_hash = p.hash;
     let first = w
-        .retain_history_pages(p, &observation("first"), 131072)
+        .store_history_pages(p, &observation("first"), 131072)
         .unwrap();
     // Another path selecting equal physical bytes must reuse the checked layout,
     // even when this candidate arrived as an independently encoded whole image.
@@ -379,7 +379,7 @@ fn earlier_bytes_observed_again_keep_identity_and_canonical_extent_layout() {
     assert!(p.canonical_read_bytes > 0);
     let mut other = observation("another-path");
     other.path = "copy:independent-history";
-    let duplicate = w.retain_history_pages(p, &other, 131072).unwrap();
+    let duplicate = w.store_history_pages(p, &other, 131072).unwrap();
     assert_eq!(duplicate, first);
     c.execute_batch("INSERT INTO t VALUES(2)").unwrap();
     let p = capture
@@ -389,7 +389,7 @@ fn earlier_bytes_observed_again_keep_identity_and_canonical_extent_layout() {
             &AtomicBool::new(false),
         )
         .unwrap();
-    w.retain_history_pages(p, &observation("second"), 131072)
+    w.store_history_pages(p, &observation("second"), 131072)
         .unwrap();
     assert!(
         w.known_history_snapshot(first_hash, &observation("again"))
@@ -397,7 +397,7 @@ fn earlier_bytes_observed_again_keep_identity_and_canonical_extent_layout() {
             .is_none()
     );
     let reader = w.read_handle().unwrap();
-    let first_source = w.retained_source(&first.id).unwrap().unwrap();
+    let first_source = w.stored_source(&first.id).unwrap().unwrap();
     let original = reader
         .read_source_range(&first.id, 1, first_hash, 0, first_source.input.length)
         .unwrap();
@@ -414,7 +414,7 @@ fn earlier_bytes_observed_again_keep_identity_and_canonical_extent_layout() {
     assert_eq!(p.hash, first_hash);
     assert!(p.canonical_read_bytes > 0);
     let again = w
-        .retain_history_pages(p, &observation("again"), 131072)
+        .store_history_pages(p, &observation("again"), 131072)
         .unwrap();
     assert_eq!(again, first);
     let observed: String = w
@@ -445,7 +445,7 @@ fn cancelled_first_object_warming_is_retried_and_cached_reads_keep_metadata_fenc
     let hash = p.hash;
     let n = p.length;
     let input = w
-        .retain_history_pages(p, &observation("cancelled-warming"), 131072)
+        .store_history_pages(p, &observation("cancelled-warming"), 131072)
         .unwrap();
     let reader = w.read_handle().unwrap();
     let mut polls = 0;

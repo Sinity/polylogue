@@ -1,5 +1,5 @@
 //! Read-only physical Codex history snapshots. Every SQLite operation stays here.
-use crate::{BlobCapture, Error, PreparedBlob, ReadHandle, Result, RetainedSource, db};
+use crate::{BlobCapture, Error, PreparedBlob, ReadHandle, Result, StoredSource, db};
 use polylogue_model::tool_item::HistoryRow;
 use rusqlite::{Connection, OpenFlags};
 use std::{
@@ -84,7 +84,7 @@ impl ReadHandle {
     /// never consulted. This first adapter admits a bounded snapshot per turn.
     pub fn codex_history_rows(
         &self,
-        input: &RetainedSource,
+        input: &StoredSource,
         cancelled: &AtomicBool,
     ) -> Result<Vec<HistoryRow>> {
         const MAX: u64 = 16 * 1024 * 1024;

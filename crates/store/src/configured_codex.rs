@@ -1,6 +1,6 @@
 //! Bounded configured-home discovery and acquisition. SQLite access and mutation stay
 //! in store. Catalog membership never gates independent rollout enumeration.
-use crate::{Error, ImportObservation, InputFormat, ReadHandle, RetainedSource, Writer};
+use crate::{Error, ImportObservation, InputFormat, ReadHandle, StoredSource, Writer};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -661,7 +661,7 @@ impl Writer {
         machine: &str,
         host: &str,
         path: &str,
-    ) -> crate::Result<Option<crate::RetainedInput>> {
+    ) -> crate::Result<Option<crate::StoredInput>> {
         use rusqlite::OptionalExtension;
         self.check_import_acquisition()?;
         let file = self.root.join("archive.db");
@@ -810,7 +810,7 @@ impl Writer {
         seen_at: i64,
         total: &mut u64,
         cancel: &AtomicBool,
-    ) -> crate::Result<RetainedSource> {
+    ) -> crate::Result<StoredSource> {
         let candidate = Candidate {
             path: path.to_path_buf(),
             format,
@@ -823,12 +823,12 @@ impl Writer {
         let proof = self
             .blob_capture()?
             .capture_codex_candidate(&candidate, size, cancel)?;
-        let hash = self.retain_captured_blob(proof)?;
+        let hash = self.store_captured_blob(proof)?;
         let path_text = path
             .to_str()
             .ok_or_else(|| refused("Codex path must be UTF-8"))?;
         let id = candidate.observation_id(request, seen_at)?;
-        let input = self.retain_immutable_input(
+        let input = self.store_immutable_input(
             hash,
             format,
             &[],
@@ -841,7 +841,7 @@ impl Writer {
             },
             131072,
         )?;
-        self.retained_source(&input.id)?
+        self.stored_source(&input.id)?
             .ok_or_else(|| refused("retained Codex source missing"))
     }
 }
@@ -862,7 +862,7 @@ impl ReadHandle {
 
     /// Durable finite prompt snapshots. Bytes are verified through the ordinary
     /// retained source reader; no provider filesystem or SQLite leaves store.
-    pub fn codex_prompt_sources(&self) -> crate::Result<Vec<RetainedSource>> {
+    pub fn codex_prompt_sources(&self) -> crate::Result<Vec<StoredSource>> {
         let file = self.root.join("archive.db");
         let mut query = crate::db(&file, || {
             self.archive.prepare(

@@ -398,7 +398,7 @@ pub(crate) fn blobs(
                 row.get(5)?,
             ))
         })?;
-        crate::retained::decode_import_identity(id, format, length, hash, original, context)?;
+        crate::imports::decode_import_identity(id, format, length, hash, original, context)?;
     }
     let mut stmt = db(&path, || {
         archive.prepare("SELECT hash,size,place,encoding,state FROM blob ORDER BY hash")
