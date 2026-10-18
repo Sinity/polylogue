@@ -19,7 +19,8 @@ pub mod publish;
 pub mod stage;
 
 use polylogue_model::Json;
-use polylogue_sources::{Framing, ORIGINS, OriginSpec, Support};
+use polylogue_sources::{Capture, Framing, ORIGINS, OriginSpec, Support};
+use polylogue_store::export::Exporter;
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };
@@ -260,6 +261,7 @@ pub struct Engine {
     blobs: Arc<hashed_blobs::Store>,
     inputs: HashMap<PathBuf, InputState>,
     loaded: bool,
+    exporter: Exporter,
 }
 
 /// The bytes a zip file starts with.
@@ -313,7 +315,24 @@ impl Engine {
             blobs,
             inputs: HashMap::new(),
             loaded: false,
+            exporter: Exporter::default(),
         })
+    }
+
+    /// Brings a tool database's export up to date when due; returns the
+    /// export file, or `None` when there is none yet.
+    fn export(
+        &mut self,
+        db: &Path,
+        origin: &'static OriginSpec,
+        pass: &mut Pass,
+    ) -> Option<PathBuf> {
+        let name = polylogue_sources::origin::export_name(db)?;
+        let out = self.archive.exports_dir().join(origin.name).join(name);
+        if let Err(e) = self.exporter.export(db, &out) {
+            pass.errors.push(format!("export {}: {e}", db.display()));
+        }
+        out.is_file().then_some(out)
     }
 
     /// A location's input id: stable for one path on one machine.
@@ -374,6 +393,19 @@ impl Engine {
         let mut plans = Vec::new();
         let mut seen = HashSet::new();
         for f in found {
+            // A tool database is never stored as bytes: its logical export
+            // is the input (architecture 4.2).
+            let f = if f.origin.capture == Capture::LogicalExport {
+                let Some(export) = self.export(&f.path, f.origin, &mut pass) else {
+                    continue;
+                };
+                collect::Found {
+                    path: export,
+                    origin: f.origin,
+                }
+            } else {
+                f
+            };
             seen.insert(f.path.clone());
             let Ok(meta) = std::fs::metadata(&f.path) else {
                 continue;

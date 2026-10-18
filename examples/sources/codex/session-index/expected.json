@@ -1,0 +1,28 @@
+{
+  "accounting": {
+    "framed": 2,
+    "materialized": {
+      "thread_name": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [],
+    "sessions": [
+      {
+        "id": "codex:019a0000-0000-7000-8000-000000000001",
+        "kind": "main",
+        "title": {
+          "source": "generated",
+          "text": "Fix undefined x"
+        }
+      }
+    ]
+  }
+}

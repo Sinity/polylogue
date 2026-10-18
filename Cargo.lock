@@ -902,6 +902,7 @@ dependencies = [
 name = "polylogue-store"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "hashed-blobs",
  "polylogue-model",

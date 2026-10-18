@@ -1,0 +1,8 @@
+{"id":"019a0000-0000-7000-8000-000000000002","timestamp":"2025-08-11T16:59:28.123Z","instructions":null,"git":{"commit_hash":"abc","branch":"main","repository_url":"https://example.invalid/repo.git"}}
+{"record_type":"state"}
+{"type":"message","id":null,"role":"user","content":[{"type":"input_text","text":"list the files"}]}
+{"record_type":"state"}
+{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"gAAAA"}
+{"type":"function_call","id":"fc_1","name":"shell","arguments":"{\"command\": [\"bash\", \"-lc\", \"ls\"], \"timeout_ms\": 10000}","call_id":"call_l"}
+{"type":"function_call_output","call_id":"call_l","output":"{\"output\": \"Cargo.toml\\nsrc\\n\", \"metadata\": {\"exit_code\": 0, \"duration_seconds\": 0.1}}"}
+{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"Two entries."}]}

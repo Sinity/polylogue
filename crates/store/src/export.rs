@@ -1,0 +1,391 @@
+//! Tool databases as typed logical exports (architecture 4.2; operator
+//! 58jjk: "source disappearance must not erase archived material … full
+//! database version history is not a requirement").
+//!
+//! A tool's SQLite database (Codex `state`, `goals`, `memories` and
+//! thread history; Hermes `state.db`) is never stored as page images.
+//! Each export reads it inside one read transaction, which sees a
+//! consistent snapshot including the WAL, and appends to an append-only
+//! JSON Lines file in the archive:
+//!
+//! - `{"db", "at_ms", "schema": {table: sql}}` when the schema changes;
+//! - `{"t": table, "k": key, "r": row, "h": digest}` for a row that is new
+//!   or changed since the last export;
+//! - `{"t": table, "k": key, "gone": true}` for a row no longer there.
+//!
+//! The file is an ordinary input: the loop stores its appended bytes and
+//! the origin's parser reads the lines. A row the tool deletes stays in
+//! the export. Values keep their SQLite types; blobs are base64.
+//!
+//! A database is exported when it has gone quiet (its files unchanged
+//! across one pass) and differs from the last export, and at least hourly
+//! while it keeps changing. The digest of every row exported is kept in
+//! memory; after a restart it is rebuilt from the export file the next
+//! time the database changes.
+
+use crate::FileFacts;
+use base64::Engine as _;
+use rusqlite::types::ValueRef;
+use rusqlite::{Connection, OpenFlags};
+use serde_json::{Map, Value, json};
+use std::collections::HashMap;
+use std::fs::{self, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// While a database keeps changing, it is still exported this often.
+const BUSY_EXPORT: Duration = Duration::from_secs(3600);
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExportError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("{0}: {1}")]
+    Sqlite(PathBuf, rusqlite::Error),
+}
+
+/// The database file and its WAL: either changing is a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DbFacts {
+    db: Option<FileFacts>,
+    wal: Option<FileFacts>,
+}
+
+impl DbFacts {
+    fn of(db: &Path) -> Self {
+        let facts = |p: &Path| fs::metadata(p).ok().map(|m| FileFacts::of(&m));
+        let mut wal = db.as_os_str().to_owned();
+        wal.push("-wal");
+        Self {
+            db: facts(db),
+            wal: facts(Path::new(&wal)),
+        }
+    }
+}
+
+#[derive(Default)]
+struct DbState {
+    /// Facts seen at the previous pass, and at the last export.
+    last_seen: Option<DbFacts>,
+    exported: Option<DbFacts>,
+    exported_at: Option<Instant>,
+    /// Row digests by `table \0 key`, as in the export; `None` until
+    /// loaded from the export file.
+    rows: Option<HashMap<String, u64>>,
+    schema: Option<u64>,
+}
+
+#[derive(Default)]
+pub struct Exporter {
+    dbs: HashMap<PathBuf, DbState>,
+}
+
+/// What one export call did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Exported {
+    pub rows: u64,
+    pub gone: u64,
+}
+
+impl Exporter {
+    /// Exports `db` into `out` when due. Returns `None` when nothing was
+    /// due.
+    pub fn export(&mut self, db: &Path, out: &Path) -> Result<Option<Exported>, ExportError> {
+        let now = DbFacts::of(db);
+        let st = self.dbs.entry(db.to_path_buf()).or_default();
+        let quiet = st.last_seen == Some(now);
+        st.last_seen = Some(now);
+        let changed = st.exported != Some(now);
+        let first = st.exported.is_none();
+        let overdue = st.exported_at.is_none_or(|at| at.elapsed() >= BUSY_EXPORT);
+        if !(changed && (first || quiet || overdue)) {
+            return Ok(None);
+        }
+        if st.rows.is_none() {
+            let (rows, schema) = load(out)?;
+            st.rows = Some(rows);
+            st.schema = schema;
+        }
+        let done = write_export(db, out, st)?;
+        st.exported = Some(now);
+        st.exported_at = Some(Instant::now());
+        Ok(Some(done))
+    }
+}
+
+/// The row digests and schema digest an export file holds.
+fn load(out: &Path) -> Result<(HashMap<String, u64>, Option<u64>), ExportError> {
+    let mut rows = HashMap::new();
+    let mut schema = None;
+    let file = match fs::File::open(out) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((rows, schema)),
+        Err(e) => return Err(e.into()),
+    };
+    for line in BufReader::new(file).lines() {
+        let Ok(v) = serde_json::from_str::<Value>(&line?) else {
+            continue;
+        };
+        if let Some(s) = v.get("schema") {
+            schema = Some(digest(&s.to_string()));
+            continue;
+        }
+        let (Some(t), Some(k)) = (v.get("t").and_then(Value::as_str), v.get("k")) else {
+            continue;
+        };
+        let key = row_key(t, k);
+        if v.get("gone").is_some() {
+            rows.remove(&key);
+        } else if let Some(h) = v
+            .get("h")
+            .and_then(Value::as_str)
+            .and_then(|h| u64::from_str_radix(h, 16).ok())
+        {
+            rows.insert(key, h);
+        }
+    }
+    Ok((rows, schema))
+}
+
+fn row_key(table: &str, key: &Value) -> String {
+    format!("{table}\0{key}")
+}
+
+fn digest(s: &str) -> u64 {
+    let h = blake3::hash(s.as_bytes());
+    u64::from_le_bytes(h.as_bytes()[..8].try_into().expect("8 bytes"))
+}
+
+fn value(v: ValueRef<'_>) -> Value {
+    match v {
+        ValueRef::Null => Value::Null,
+        ValueRef::Integer(i) => i.into(),
+        ValueRef::Real(f) => {
+            serde_json::Number::from_f64(f).map_or_else(|| f.to_string().into(), Value::Number)
+        }
+        ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned().into(),
+        ValueRef::Blob(b) => {
+            json!({ "base64": base64::engine::general_purpose::STANDARD.encode(b) })
+        }
+    }
+}
+
+struct Table {
+    name: String,
+    sql: String,
+    columns: Vec<String>,
+    /// Primary-key column positions; empty when the rowid is the key.
+    key: Vec<usize>,
+}
+
+fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
+    let mut out = Vec::new();
+    let mut stmt = conn.prepare(
+        "SELECT name, sql FROM sqlite_master
+         WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    )?;
+    let names: Vec<(String, String)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (name, sql) in names {
+        let mut info = conn.prepare(&format!(
+            "PRAGMA table_info(\"{}\")",
+            name.replace('"', "\"\"")
+        ))?;
+        let cols: Vec<(String, i64)> = info
+            .query_map([], |r| Ok((r.get(1)?, r.get(5)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut key: Vec<(i64, usize)> = cols
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, pk))| *pk > 0)
+            .map(|(i, (_, pk))| (*pk, i))
+            .collect();
+        key.sort_unstable();
+        out.push(Table {
+            name,
+            sql,
+            columns: cols.into_iter().map(|(c, _)| c).collect(),
+            key: key.into_iter().map(|(_, i)| i).collect(),
+        });
+    }
+    Ok(out)
+}
+
+fn write_export(db: &Path, out: &Path, st: &mut DbState) -> Result<Exported, ExportError> {
+    let sql_err = |e| ExportError::Sqlite(db.to_path_buf(), e);
+    let conn = Connection::open_with_flags(
+        db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(sql_err)?;
+    conn.busy_timeout(Duration::from_secs(10))
+        .map_err(sql_err)?;
+    // One read transaction: every table from the same snapshot, WAL
+    // included, without blocking the tool's writer.
+    conn.execute_batch("BEGIN").map_err(sql_err)?;
+    let tables = tables(&conn).map_err(sql_err)?;
+    if let Some(dir) = out.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut w = BufWriter::new(OpenOptions::new().create(true).append(true).open(out)?);
+    let schema: Map<String, Value> = tables
+        .iter()
+        .map(|t| (t.name.clone(), Value::String(t.sql.clone())))
+        .collect();
+    let schema = Value::Object(schema);
+    let schema_digest = digest(&schema.to_string());
+    if st.schema != Some(schema_digest) {
+        let at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as i64);
+        let name = db.file_name().map(|n| n.to_string_lossy().into_owned());
+        serde_json::to_writer(
+            &mut w,
+            &json!({ "db": name, "at_ms": at_ms, "schema": schema }),
+        )
+        .map_err(std::io::Error::from)?;
+        w.write_all(b"\n")?;
+        st.schema = Some(schema_digest);
+    }
+    let rows = st.rows.get_or_insert_with(HashMap::new);
+    let mut done = Exported::default();
+    for t in &tables {
+        let quoted = t.name.replace('"', "\"\"");
+        let select = if t.key.is_empty() {
+            format!("SELECT rowid, * FROM \"{quoted}\"")
+        } else {
+            format!("SELECT NULL, * FROM \"{quoted}\"")
+        };
+        let mut stmt = conn.prepare(&select).map_err(sql_err)?;
+        let mut seen: HashMap<String, ()> = HashMap::new();
+        let mut q = stmt.query([]).map_err(sql_err)?;
+        while let Some(r) = q.next().map_err(sql_err)? {
+            let mut row = Map::new();
+            for (i, c) in t.columns.iter().enumerate() {
+                row.insert(c.clone(), value(r.get_ref(i + 1).map_err(sql_err)?));
+            }
+            let k = if t.key.is_empty() {
+                json!([value(r.get_ref(0).map_err(sql_err)?)])
+            } else {
+                Value::Array(t.key.iter().map(|&i| row[&t.columns[i]].clone()).collect())
+            };
+            let row = Value::Object(row);
+            let h = digest(&row.to_string());
+            let key = row_key(&t.name, &k);
+            if rows.get(&key) != Some(&h) {
+                serde_json::to_writer(
+                    &mut w,
+                    &json!({ "t": t.name, "k": k, "r": row, "h": format!("{h:016x}") }),
+                )
+                .map_err(std::io::Error::from)?;
+                w.write_all(b"\n")?;
+                rows.insert(key.clone(), h);
+                done.rows += 1;
+            }
+            seen.insert(key, ());
+        }
+        let prefix = format!("{}\0", t.name);
+        let gone: Vec<String> = rows
+            .keys()
+            .filter(|k| k.starts_with(&prefix) && !seen.contains_key(*k))
+            .cloned()
+            .collect();
+        for key in gone {
+            let k: Value = serde_json::from_str(&key[prefix.len()..]).unwrap_or(Value::Null);
+            serde_json::to_writer(&mut w, &json!({ "t": t.name, "k": k, "gone": true }))
+                .map_err(std::io::Error::from)?;
+            w.write_all(b"\n")?;
+            rows.remove(&key);
+            done.gone += 1;
+        }
+    }
+    w.flush()?;
+    conn.execute_batch("COMMIT").map_err(sql_err)?;
+    Ok(done)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(p: &Path) -> Vec<Value> {
+        fs::read_to_string(p)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn exports_new_changed_and_gone_rows_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state_5.sqlite");
+        let out = dir.path().join("exports/state_5.sqlite.jsonl");
+        let c = Connection::open(&db).unwrap();
+        c.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, data BLOB, n REAL);
+             CREATE TABLE notes (body TEXT);
+             INSERT INTO threads VALUES ('a', 'first', x'00ff', 1.5), ('b', 'second', NULL, NULL);
+             INSERT INTO notes VALUES ('kept');",
+        )
+        .unwrap();
+        let mut ex = Exporter::default();
+        let first = ex.export(&db, &out).unwrap().unwrap();
+        assert_eq!(first, Exported { rows: 3, gone: 0 });
+        let l = lines(&out);
+        assert!(
+            l[0]["schema"]["threads"]
+                .as_str()
+                .unwrap()
+                .contains("CREATE TABLE threads")
+        );
+        let a = l.iter().find(|v| v["k"] == json!(["a"])).unwrap();
+        assert_eq!(a["r"]["data"]["base64"], "AP8=");
+        assert_eq!(a["r"]["n"], 1.5);
+        // Unchanged files: nothing is due.
+        assert_eq!(ex.export(&db, &out).unwrap(), None);
+        c.execute_batch("UPDATE threads SET title = 'renamed' WHERE id = 'a'; DELETE FROM threads WHERE id = 'b';")
+            .unwrap();
+        // Changed: due once quiet, so the first look only notes the change.
+        assert_eq!(ex.export(&db, &out).unwrap(), None);
+        let second = ex.export(&db, &out).unwrap().unwrap();
+        assert_eq!(second, Exported { rows: 1, gone: 1 });
+        let l = lines(&out);
+        assert_eq!(l.len(), 6);
+        assert_eq!(l[4]["r"]["title"], "renamed");
+        assert_eq!(l[5], json!({"t": "threads", "k": ["b"], "gone": true}));
+    }
+
+    #[test]
+    fn a_restart_rebuilds_what_was_exported_from_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("goals_1.sqlite");
+        let out = dir.path().join("goals_1.sqlite.jsonl");
+        let c = Connection::open(&db).unwrap();
+        c.execute_batch(
+            "CREATE TABLE g (id INTEGER PRIMARY KEY, s TEXT); INSERT INTO g VALUES (1, 'x');",
+        )
+        .unwrap();
+        Exporter::default().export(&db, &out).unwrap().unwrap();
+        c.execute_batch("INSERT INTO g VALUES (2, 'y');").unwrap();
+        let mut fresh = Exporter::default();
+        let done = fresh.export(&db, &out).unwrap().unwrap();
+        assert_eq!(done, Exported { rows: 1, gone: 0 });
+        // The schema line is not repeated.
+        assert_eq!(
+            lines(&out)
+                .iter()
+                .filter(|v| v.get("schema").is_some())
+                .count(),
+            1
+        );
+    }
+}

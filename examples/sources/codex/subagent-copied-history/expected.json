@@ -1,0 +1,120 @@
+{
+  "accounting": {
+    "framed": 8,
+    "materialized": {
+      "inter_agent_communication_metadata": 1,
+      "response_item/agent_message": 1,
+      "response_item/message": 2,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {
+      "compacted: copied from the parent thread, which stores it": 1,
+      "response_item/message: copied from the parent thread, which stores it": 1,
+      "turn_context: copied from the parent thread, which stores it": 1
+    },
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "2026-03-01T10:00:06Z",
+        "data": {
+          "trigger_turn": true
+        },
+        "kind": "inter_agent_communication_metadata",
+        "range": [
+          1615,
+          1743
+        ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      }
+    ],
+    "links": [
+      {
+        "at": "codex:msg_p2",
+        "child": "codex:019a0000-0000-7000-8000-000000000001",
+        "evidence": "parent_thread_id",
+        "kind": "spawn",
+        "parent": "codex:019a0000-0000-7000-8000-0000000000aa"
+      }
+    ],
+    "messages": [
+      {
+        "end": 1421,
+        "message": {
+          "at": "2026-03-01T10:00:04Z",
+          "blocks": [
+            {
+              "text": "I will split the work.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg_p2",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-0000000000aa"
+        },
+        "offset": 1217
+      },
+      {
+        "end": 1975,
+        "message": {
+          "at": "2026-03-01T10:00:07Z",
+          "blocks": [
+            {
+              "data": {
+                "author": "/root",
+                "recipient": "/root/check"
+              },
+              "type": "other",
+              "type_name": "agent_message"
+            },
+            {
+              "text": "Check the changelog.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:amsg_1",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 1744
+      },
+      {
+        "end": 2184,
+        "message": {
+          "at": "2026-03-01T10:00:08Z",
+          "blocks": [
+            {
+              "text": "The changelog is complete.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg_c1",
+          "role": "assistant",
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
+        },
+        "offset": 1976
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/work/repo"
+        ],
+        "git_branch": "main",
+        "id": "codex:019a0000-0000-7000-8000-000000000001",
+        "kind": "subagent",
+        "started": "2026-03-01T10:00:00Z",
+        "title": {
+          "source": "agent_name",
+          "text": "Volta"
+        },
+        "tool_version": "0.160.0"
+      }
+    ]
+  }
+}
