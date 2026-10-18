@@ -81,7 +81,7 @@ display text stays text; the provider's quoted, redacted display text is not
 treated as argv.
 
 Counts are reported separately: stored representations, decoded items, row
-dispositions and correspondence. `retained_items` is null because the full
+dispositions and correspondence. `total_items` is null because the full
 population is unknown. While correspondence is unresolved, `tool_calls` and
 `failed` are null and `known_agent_items` counts the known subset; an unknown
 result also keeps `failed` null, and `outcomes_complete` shows which. Unknown
