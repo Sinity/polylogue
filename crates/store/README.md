@@ -1,277 +1,110 @@
-# Foundation store
+# polylogue-store
 
-The daemon acquires `Writer::open` and holds it until shutdown. The canonical
-archive's exclusive file lock rejects competing writers and cold readers,
-including aliases. Writer-created read handles retain that authority until
-their connections close; they use the active SQLite view without scanning a WAL
-being appended. Cold read handles acquire the existing lock without creating or
-rewriting it. Callers receive typed handles, never raw SQLite connections.
-`put_file_blob` is a foundation byte-storage diagnostic, not provider ingestion,
-revisions, parsing or M1 support.
+Every SQLite connection and every write in Polylogue goes through this crate.
+Other crates get typed handles and typed operations; raw connections and SQL
+never leave it (compile-fail doctests in `lib.rs` check this).
 
-All three schemas are exact SQL-fence extractions from the owning snapshot;
-a drift test compares their text. Archive version 4 retains the immutable import
-identity tuple; embeddings version remains zero and index version is 20. The preserving format migration retains existing database siblings and never assigns historical lineage. Existing schemas and versions are checked before database mutations. A newer durable file is
-refused unchanged; an index mismatch returns `IndexRebuildRequired`, preserving
-it. Retained state without its coordination lock requires controlled recovery;
-raw headers may explain a newer-version refusal without opening SQLite.
+## An archive directory
 
-Before any cold SQLite open, the lock holder checks durable WAL headers,
-current frame salts, page numbers and rolling checksums. Memory is bounded by
-one page (at most 64 KiB); total IO scales with WAL length. Cancellation is
-checked before and between frames. Valid complete uncommitted frames are
-allowed. A bad header/frame, partial frame, orphan WAL or uncertain generation
-tail returns `RecoveryRequired` before SQLite can discard or checkpoint bytes.
-Refusal and scan cancellation preserve retained files. After successful
-validation, SQLite may update SHM coordination state during inspection.
+| File | Contents | Rebuildable |
+|---|---|---|
+| `archive.db` | inputs, blobs, notes, client requests (`schema/archive.sql`, `schema/observed-context.sql`) | no |
+| `blobs/` | content-addressed bytes, managed by [`hashed-blobs`](../hashed-blobs/README.md) | no |
+| `index.db` | parsed sessions, messages, blocks, tool calls, parser state (`schema/index.sql`) | yes, from the two above |
+| `embeddings.db` | text embeddings; the schema exists, nothing writes it yet (`schema/embeddings.sql`) | no |
+| `writer.lock` | the exclusive lock file | |
 
-This intermediate guard may refuse legitimate torn uncommitted tails and stale
-frames from `RESTART` reuse. It needs controlled recovery and does not qualify
-full startup availability. Aligned truncation to an earlier valid commit,
-older consistent main/WAL pairs, valid-prefix salt/header/history changes and
-checksum collisions cannot be excluded without an independent expected head.
-There is no external commit ledger. Runtime live-WAL corruption and complete
-recovery remain unqualified.
+Versions: archive format 4, index 20, embeddings 0 (`ARCHIVE_VERSION`,
+`INDEX_VERSION`, `EMBEDDINGS_VERSION` in `lib.rs`). Directories are created
+`0700`, files `0600`, and a fresh archive directory gets No_COW on btrfs.
 
-Bundled SQLite 3.53.2 is checked at build time and runtime. Its matching
-checksum VFS has one documented local fault callback. Main-database checksum
-failures retain `SQLITE_IOERR_DATA` and report the VFS's actual file, page,
-offset and page size through operation-scoped thread-local evidence. The VFS
-does not wrap WAL reads; the cold guard above is a separate boundary. Index
-uses the underlying Unix VFS and is rebuildable.
+## Handles
 
-Fresh archive directories get No_COW on btrfs before children exist. Directories
-use 0700 and owned files 0600. Synthetic tests cover actual writes, read-only
-mutation denial, range/page corruption, killed-process retained-WAL faults,
-legitimate/ambiguous tails, cancellation, lock lifetimes, schema refusal and
-privacy. Compile-fail examples deny writer methods and raw connections. These
-checks do not qualify coupled cross-file views, ingestion, excision, index
-rebuild/swap, full recovery or M0 completion.
+- `Writer::open(dir)` takes the exclusive lock on `writer.lock` and holds it
+  until dropped. Only the daemon opens a writer. Read handles made from it
+  (`writer.read_handle()`) share the lock and see the current state.
+- `ReadHandle::open(dir)` opens a stopped archive read-only. It fails with
+  `WriterHeld` while a writer runs.
+- `ReadHandle::fork` gives another handle on the same lock, for a separate
+  request or thread.
+- `BlobCapture` (from `writer.blob_capture()`) hashes and stores bytes on a
+  worker thread without holding a SQLite connection; the writer then records
+  the result in one short transaction.
 
-Disposable parser state uses typed Writer admission and read-only pinned
-snapshots, with no connection or SQL escape. Small state deltas, supplied output and
-checkpoint share the final step transaction; the store primitive does not infer
-canonical completion from EOF. A per-index monotonic allocator survives head
-and input-key removal. Snapshot, stale-result, bounded retirement and actual
-child-process crash tests qualify this component, including the real archive
-writer lock. The Codex owner uses this provider-state protocol through public import/progress
-requests. Canonical message finalization remains unfinished.
+## Startup checks
 
-Larger provider deltas can be staged in admitted encoded-cell batches, sealed,
-and applied in bounded cell/byte steps. New parser snapshots wait while this
-work exists; already pinned readers retain the old SQLite view. Interrupted
-unsealed preparation can be discarded in bounded steps. Sealed application
-resumes after process exit and publishes its head/counts/checkpoint only after
-all staged members have been consumed. This protocol changes no canonical
-Message, block or search rows. The eventual canonical writer must couple its
-message-local selection to final publication. Whole-cell encoding, decoding and
-SQLite page work remain explicitly unqualified for arbitrarily large cells.
+Before any database is opened for writing, `Writer::open` and
+`ReadHandle::open`:
 
+1. check every WAL file's header, frame salts and checksums without letting
+   SQLite touch it. A damaged, partial or orphaned WAL returns
+   `RecoveryRequired` and leaves all files unchanged. This check can also
+   refuse some harmless torn tails; those need `recovery::recover_copy` too.
+2. check schema versions. A newer archive returns `NewerSchema`. An index of a
+   different version returns `IndexRebuildRequired`; older index versions
+   (18, 19) are refused because their IDs were computed differently, and there
+   is no index rebuild yet.
+3. upgrade archive formats 1 to 3 to format 4 (writer only). The upgrade
+   first copies every database file into `migrations/v<N>-to-v4-*/` with a
+   manifest, then adds the `observed_context` table.
+4. compare each database's schema text with the expected SQL and refuse any
+   difference.
 
-The forward index SQL derives from the pinned owning specification revision
-`INDEX_SPEC_COMMIT` for the native index20 identity encoding contract, with the
-predecessor basis for unadopted schema clauses recorded in
-`schema/provenance.json`. It is checked against `INDEX_SQL_BLAKE3`, copied Markdown, and
-actual SQLite application. Its Message head/body/directory schema replaces the
-old mutable Message columns. The inbox index8 executable comparison remains
-separate and cannot qualify this forward representation. These schema checks do
-not establish canonical publication, public-client restart or giant-value/search
-resource acceptance.
+SQLite is the bundled 3.53.2, checked at build time and startup. `archive.db`
+and `embeddings.db` use SQLite's checksum VFS (`vendor/cksumvfs.c`): a page
+that fails its checksum returns `CorruptPage` with the file, page and offset.
+`index.db` uses the plain Unix VFS.
 
-Canonical normalized payloads now use `values`: at most64KiB per immutable
-append/range read, UTF8 validation and bounded ordinary-BLAKE3 proof steps outside
-write transactions. Process restart keeps appended bytes and restarts hashing at
-zero; sealing performs fixed metadata/digest work. JSON typed encoding remains
-its producer contract. No complete payload is hidden in a final readiness row.
+## Recovery and copies
 
-Message directory primitives copy a fixed radix16 path and retain unchanged
-children through counted references. Collection drains one at-most16-edge node
-per transaction, with pinned readers retaining their historical WAL snapshot.
-`ReadHandle::selected_message` pins one SQLite snapshot; block ordinals traverse
-at most32 fixed directory nodes and text reads return admitted value ranges.
-Unselected preparation is invisible. Current hidden/removal epochs revoke old
-snapshot reads; ordinary replacement preserves the pinned incarnation. This read
-primitive does not register a
-public consumer or qualify election and ready-body retirement.
+- `recovery::recover_copy(source, destination)` makes a new, verified copy of
+  a stopped archive whose WAL ends in a torn previous-generation tail. It
+  never modifies the source. The copy carries a permanent `RecoveryRecord`
+  (archive `meta` key `recovery_qualification`), and every read reports it,
+  because the last committed state before the damage is unknown.
+- `copy_preparation::Preparation` prepares a stopped archive to become a
+  restored copy: it checks every stored blob and revision, then records
+  completion in `client_request`. A pending preparation blocks the writer.
+  A preparation left pending in a format-3 archive also blocks the upgrade to
+  format 4; finish it with a format-3 build (commit `5ddb6975dafa`) first.
 
-Pending Message preparation is separate from body selection. `prepare_message`
-reserves a committed, basis-pinned body/candidate without making it eligible or
-public. A build owns one active normalized value while bytes are appended and
-verified; sealing deduplicates and transfers that producer lease atomically.
-`write_message_field` transfers it into one source field fact and copies one
-fixed-depth directory path. Source changes, removal epochs and archive/index
-identity mismatches reject further preparation. Invalidation releases its active
-value lease even after the source basis changes. Unpublished invalidated builds drain with `retire_message_turn`: one frontier/root,
-one fixed-size directory node, one fact/source row, or final control metadata per
-turn. `collect_retiring_value` drains one chunk or final value row; building and
-ready unleased generic values are excluded. Candidate reconciliation, body
-activation and public-client/whole-path resource acceptance
-remain open.
+## What is stored, by module
 
-`begin_block`/`write_block_field`/`install_block` stage Text, Thinking, ToolCall
-and ToolResult through the same group/local directories; `write_block` is the
-atomic convenience over those helpers. A call block owns one private summary
-with an opaque caller-proved operation identity. Tool names lease the same ready
-JSON field value; `write_tool_command` transfers an independently prepared UTF-8
-producer without decoding JSON in the writer. No prepared summary enters serving
-FTS. A result retains its own typed outcome facts without invented pairing.
-Producer leases, directory roots and the projection cursor commit together.
-Old unleased paths release known leaves and each counted payload lease during
-bounded node collection. Attached ToolItem versions and external serving owners
-retain summaries until their owning cleanup releases its known reference;
-this module does not implement global operation pairing or ToolItem cleanup. Field and no-output projection units use
-the same cursor CAS. `finish_message_projection` checks fixed roots and records a
-source producer's completed projection/evidence metadata. Body and candidate
-remain unready and ineligible, so interrupted folding still uses bounded abort.
-Restart recovers that projection through `prepare_message`. Source semantic
-coverage and the exact evidence proof remain required caller prerequisites.
+- **Inputs** (`retained`, `observed`, `capture`, `claude_bodies`,
+  `history_pages`, `codex_history`): every imported source file is stored
+  once, immutably, with its byte digest and format context. A retried import
+  with the same client request replays the stored result. `observed` reads
+  stored source bytes by range and verifies them.
+- **Discovery** (`configured_claude`, `configured_codex`): walk the
+  configured Claude projects directory and Codex home in resumable turns and
+  hand each found file to acquisition.
+- **Parser state** (`parser_state`): disposable per-input parser checkpoints in
+  `index.db`. Parsing reads a pinned snapshot; its output and checkpoint
+  commit in one transaction. Large outputs are staged in batches and applied
+  in steps that survive a restart.
+- **Values** (`values`): normalized text and JSON payloads, appended in chunks
+  of at most 64 KiB and sealed with a BLAKE3 hash computed outside write
+  transactions.
+- **Messages** (`contributions`): each source contributes a candidate body
+  for a message, built field by field and block by block in a radix-16
+  directory of immutable nodes, so a change copies one path rather than the
+  whole message. One candidate is selected; readers pin one SQLite snapshot
+  and see one complete body. Abandoned builds and old bodies are removed in
+  small steps.
+- **Tool items** (`tool_items`): session-owned tool operations and their
+  versions, linked to message blocks.
+- **Notes** (`authored`): attributed notes, corrections and withdrawals, kept
+  in `archive.db` so they survive an index rebuild.
+- **Search** (`prose_search`): a per-query, in-memory FTS5 index over
+  selected message bodies. There is no persistent search index yet.
 
-`retire_message_body` checks selection, active-build ownership and an indexed
-eligible-candidate liveness probe. One turn detaches an ineligible candidate's
-payload pointer, or deletes one unselected body and releases its fixed roots.
-Immutable rank/digest certificates and shared canonical/frontier leaves survive.
-Known leaf release reclaims facts/text only after directory and source-body
-ownership ends; `collect_message_candidate` drains one locator or its unused
-certificate. These APIs are being qualified independently of canonical election
-and public consumers. They do not implement privacy/excision closure or giant
-search retirement.
+## Not built yet
 
-Occupied field-conflict leaves pin a shared immutable witness subtree. They
-remain distinct from missing fields, contribute no new source-rank facts, and
-retain exact alternatives independently of mutable input representatives.
-Directory lookup/copy/collection uses the same leases and fixed-depth paths;
-no per-body alternative list is copied on an unrelated field change. The pure
-model compares canonical typed values one witness at a time. Serving conflict
-views, export/import and full canonical activation are still unwired.
+Persistent search, index rebuild and migration from older index versions,
+excision, export, and recovery from general corruption.
 
+## Tests
 
-Immutable inputs retain their original byte digest and explicit format-owned
-interpretation context. `InputId::imported` implements the pinned version-1
-framing from spec191adbec; physical CAS remains named by raw byte digest.
-Registration/recovery validates that tuple. The primitive accepts explicit
-Claude contexts; the public actor accepts self-identifying Codex rollouts with
-empty context and explicit Claude declarations. It does not choose a Claude pathname from competing
-observations. Any existing excision refuses acquisition until the refusal-aware
-collector is wired.
-
-`BlobCapture` holds archive lock authority without SQLite capability. It streams
-and verifies bytes on a worker before opaque proof admission writes metadata.
-Retained-source verification and ranges share the file layer's bounded decoder and
-opened-representation lifetime; ReadHandle keeps one retained slot and rechecks SQL
-admission on each range. Public operation reads fork that capability per request.
-The [file-layer contract](../hashed-blobs/README.md) owns cache, concurrency and codec limits.
-`client_request` and the import observation commit together; an unchanged retry
-replays the retained result before opening its provider path. Archive commit
-precedes repairable disposable `input_ref` registration. Capture cancellation is
-cooperative around decoder reads; seek tables, record/cell allocations and physical
-IO work remain outside a complete memory/latency qualification.
-
-Text and thinking preparation can hold one private block while its normalized
-field values stream. Each field changes one local field-directory path and the
-same source cursor; installation transfers the complete block to its prepared
-body directory atomically. Restart retains the active block, and abort releases
-its text/field leases before bounded collection. Block-local semantic keys omit
-the public ordinal; the mapper proves membership and the selected block root
-owns correspondence. Thinking text and encryption may remain unknown. These
-primitives do not certify source completeness or select a canonical body.
-
-`begin_compatible_source_selection` publishes a singleton certified source with an indexed membership proof; it requires no independent-import equality witness. With competing candidates it starts a conservative complete-body equality proof. Worker turns visit one immutable field/block/candidate at a time using integrity-ready value summaries. The certificate also binds source evidence, supplied rank, parser/context and explicitly recorded source order. Unknown, unequal, conflict or unsupported operation shapes stay contested; this does not implement nested version ranking or missing-field fill. Each input keeps its own source projection, immutable origin descriptors and exact spans. Equal carriers use the validated content-derived imported InputId as a provenance tie, so both import orders retain the same preferred field origin and all input citations. The typed writer fences the eligible-membership revision (including withdraw/re-add), removal epoch, source predecessor and index generation before selection. A fixed per-body digest owns no payload lease and disappears with that body's bounded retirement.
-
-Startup refuses predecessor index18 and index19 before migration or replacement. A known old schema does not establish reference-preserving replay after identity recipes change. Existing main/WAL/SHM files, retained archive and blobs remain in place. An `index-rebuild.json` marker also refuses, including when the index is missing or partially replaced; this candidate never resumes the retired index18 replacement route. Fresh index20 creation and ordinary reopening are supported. No predecessor transition or online generation swap is qualified.
-
-`message_reference` resolves an opaque Message ID through its stored Session
-relation and distinguishes absent from not-yet-selected bodies. `block_at`
-uses the same fixed-depth order-statistic traversal as ordinal block reads,
-including interleaved separate reasoning IDs. The terminal client streams
-selected UTF-8 ranges; it reports degraded coverage rather than treating this
-consumer as complete source accounting or export support.
-
-Index 15 pins exact candidate source-span sets. Abort and historical candidate
-collection remove one full `(input, chain, start, end)` key per turn, with native
-failure rollback. Provider record citations are separate from field selectors
-and lazy payload extents. Historical field-origin descriptors and their second
-producer lease are the next owning schema/runtime seam, still unimplemented.
-
-Field facts may retain a separate chunked JSON origin descriptor. Preparation owns independent normalized-value and origin-value leases, including two counts when deduplication aliases them. Fact publication transfers both atomically; `FieldView::origin_range` reads the descriptor through the same selected snapshot. Integrity-ready JSON is only a carrier: source selector/transform validation, pinned-span membership and export remain separate unfinished obligations.
-
-Source certificates retain the exact parser generation, step and basis alongside
-the preparation digest. Reparse can withdraw only a verified strictly older
-generation of the same input/chain/archive revision/logical candidate; a missing
-same-generation receipt or inconsistent certificate refuses publication. This
-works after old parser cells are collected. Source replacement leaves the selected
-body unchanged until explicit selection, and pinned readers retain their old view.
-There is no automatic index migration or general rebuild/swap implementation.
-
-The existing parser-cell owner retains a source-row settlement receipt after the
-engine audits dispositions/effects and selected source certificates. Publication
-binds the exact head, complete-record frontier and input removal state in one
-fixed metadata transaction. This producer-supplied semantic proof is distinct
-from arbitrary row counts and from Session/query/search completeness. Missing or
-corrupt authority refuses; no second progress ledger or automatic migration is
-introduced.
-
-Session views also pin immutable admission metadata. The archive counter is
-read before and after establishing the index snapshot; movement refuses rather
-than mixing two catalogs. Archive admission missing disposable registration is
-a visible pending dependency. Opaque cursors and input cell reads share the
-same view; immutable import identity validation is shared with the writer.
-Current excision authority conservatively refuses Session dependency reads;
-partial-excision qualification remains open. No new schema or migration is added.
-
-
-`session_catalog` generalizes the existing Session read view without creating another publication catalog. Exact Session reads and query traversal share its pinned admission/index connections, generation, archive counter and opaque view-bound cursors. It includes Sessions independently of matches and retains the existing direct-input dependency cell access even when no Session exists. Current excision authority conservatively refuses. Query-local `ProseSearch` builds an isolated in-memory FTS5 corpus only through selected Message body readers; raw SQL/SQLite handles never escape. Staged bodies remain outside matching. It has explicit whole-Message/corpus/count admission and returns retained Message IDs, without slicing credential-bearing text into contextless snippets. This does not publish durable FTS rows, certify complete source populations, or qualify arbitrary corpus CPU/RSS costs.
-
-The query-local Message conjunction index has separate selected Text-block phrase membership. It does not let a phrase cross a block boundary. Canonical distinct-text relevance is explicitly unavailable; query-local Message documents never acquire authority as canonical BM25 statistics.
-
-`recovery::recover_copy` is the one-shot process owner entry. It holds the stopped source lock without rewriting it, verifies independent files and one admitted previous-generation WAL tail, then uses only the pinned SQLite/checksum VFS on staging. Format 2 and the typed archive meta qualification commit before native reopen and atomic no-replace publication. Every pinned read view carries that qualification; parsing, imports and index recreation cannot clear it. Healthy format-1 startup preserves database sibling sets before the concrete migration. Receipts record exact source-manifest bytes and internal checks, not external latest-head certainty. Present plain file blobs are supported; other blob codecs and general corruption recovery explicitly refuse.
-
-`observed::RetainedSource` shares closed immutable/location identity modes and
-contiguous retained-range reading across the source owner and field verifier.
-Startup acquisition supports one Claude main regular location, full predecessor
-prefix comparison and immutable CAS pieces. It refuses changed prefixes, inode
-replacement, short reads and gaps without synthesizing normalized empty output.
-See [the native scope](../../docs/rewrite/observed-source.md).
-
-Attributed notes/corrections and withdrawal use the existing archive note tables and shared `client_request` hash/identity transaction. Replay precedes current-head lookup and returns the original immutable effect. Current-head refusal and retained control-parent validation precede any mutation; revision/withdrawal relations form a DAG. Graph reads admit 128 connected revisions and 256 KiB metadata, and refuse unavailable controls. Authored rows remain archive authority across index reconstruction. This selected path changes no pinned SQL text or schema version and does not qualify general note import/union or portable export.
-
-Index20 stores an optional `native_id_encoding` beside each Session native ID. `wtf8` marks exact non-scalar UTF-16 identity; an unmarked literal spelling is never decoded. Preparation and selected reads validate this pair. Index18 and index19 have no reference-preserving transition in this candidate and are refused rather than replayed as index20.
-
-
-Local-only restore preparation uses `copy_preparation::Preparation` under the same noncreating exclusive lock. Only fresh archive initialization creates acquisition lineage. A missing historical lineage refuses preparation and ordinary mutation, while cold reads remain possible. Format 3 introduces no SQL-table changes: a typed versioned `meta.copy_preparation` value pins the source lineage, complete write-counter cut, local backing, custody intent and cursor; `client_request` records final completion atomically with removal of pending work. Preparation validates all stored plain blobs and every retained revision before completion, including mixed base/patch extents. It creates no index or fork children. The process owner may expose durable admission progress before cancellable completion. Historical completion is an idempotency result, never fresh activation.
-
-
-Configured Claude discovery adds `schema/observed-context.sql` as an explicit native
-archive overlay; the pinned base SQL and immutable-import identity CHECK stay
-unchanged. The normalized relation atomically records each observed binding's
-validated source role. Later conflicting declarations refuse rather than changing
-prior citations. Missing or invalid context in format 4 is unavailable.
-
-Preserving upgrades from formats 1–3 first retain the exact database sibling set.
-Supported observed Claude rows acquire the exact former first-observation main
-context once, preserving input IDs, bindings, bytes and lineage. A pending format-3
-copy preparation refuses upgrade without changing authoritative state. SQLite
-may create a new empty WAL and disposable SHM coordination files; every
-pre-existing authoritative file, including any existing WAL, stays byte-identical. Finish the same
-request using its retained, matching format-3 binary, then open with format 4. The
-qualified format-3 source is `5ddb6975dafae5b79030dabb6c2d6a19cb29ab47`; retain its
-matching binary alongside pending recovery material. There is no new-binary
-resume path for an old pending action or reset of its cut.
-
-`SmallField` carries two immutable worker-hashed JSON chunks for one field. Its
-writer operation charges both payloads, the field key and projection cursor,
-refuses existing producers, and uses the existing sealing/deduplication and
-field-root installation helpers in one transaction. Value/origin aliases retain
-two ownership counts. Predecessor or cursor failure rolls back allocations,
-leases and field-tree edits together. This is an atomic small-field operation,
-not a batch of arbitrary mutations; source-selector authority remains in the
-engine and large/in-flight producers keep their streaming protocol.
-
-`inspect_message_preparation` admits the caller's identity/source and loads only
-an existing private Build, including a completed rank projection. It uses the
-same preparation metadata loader as initial reservation and performs only reads;
-inspection cannot allocate a successor or advance SQLite allocation sequences.
-
-Immutable directory reads reuse compiled node/edge SELECT statements in the
-connection's existing bounded SQLite statement cache. Each visit still reads
-all rows and checks ownership, readiness, edge shape and count summaries; node
-results and visibility are not cached, and charged read work is unchanged.
+`cargo test -p polylogue-store`. Tests use synthetic data in temporary
+directories, including killed child processes for crash cases, corrupted
+pages and WAL tails, and lock contention.
