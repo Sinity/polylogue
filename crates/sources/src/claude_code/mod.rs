@@ -83,6 +83,262 @@ pub struct StepOutput {
 /// A record's Session index, and the (Session, UUID) it was copied from.
 type Route = (usize, Option<(String, String)>);
 
+/// The response a message record joins. Assistant records group by
+/// `requestId` and `message.id`; user records, and assistant records with
+/// neither ID nor a UUID, stand alone.
+fn response_key(
+    ty: &str,
+    v: &Value,
+    msg: &Value,
+    provisional: bool,
+    uuid: &str,
+    uuid_native: &NativeId,
+) -> Result<ResponseKey, String> {
+    let empty = NativeId::unicode("");
+    let request = v.get("requestId").and_then(Value::native);
+    let response = msg.get("id").and_then(Value::native);
+    let standalone = ty != "assistant"
+        || (provisional && response.is_none() && request.is_none_or(|id| id.as_str().is_empty()));
+    if standalone {
+        return Ok(ResponseKey {
+            role: if ty == "assistant" {
+                Role::Assistant
+            } else {
+                Role::User
+            },
+            response: uuid.into(),
+            request: native_key(&empty)?,
+        });
+    }
+    let request = request.unwrap_or(&empty);
+    let response = response.unwrap_or(if request.as_str().is_empty() {
+        uuid_native
+    } else {
+        &empty
+    });
+    Ok(ResponseKey {
+        role: Role::Assistant,
+        response: native_key(response)?,
+        request: native_key(request)?,
+    })
+}
+
+/// Record extras this record supplied replace the response's earlier ones.
+/// The last record to supply a key wins, in parse order.
+fn select_record_extras(
+    response: &mut ResponseCell,
+    contribution: &Contribution,
+    incoming: &Value,
+    item: u64,
+    revision: u64,
+) -> Result<(), String> {
+    // The last record to supply a field wins, in parse order. An
+    // identical repeated record changes nothing (`old_same`).
+    for fact in &contribution.projection.facts {
+        let projection::Field::Extra { local: None, path } = &fact.field else {
+            continue;
+        };
+        let [key] = path.as_slice() else {
+            continue;
+        };
+        if fact.supplied_revision != revision || incoming.get(key).is_none() {
+            continue;
+        }
+        let raw = contribution.record_extra_raw(key)?.to_vec();
+        response.record_extras.insert(
+            key.clone(),
+            keyed::SelectedRecordExtra {
+                item,
+                fact: fact.clone(),
+                raw,
+            },
+        );
+    }
+    Ok(())
+}
+
+/// `message.stop_sequence` and `message.stop_details`, when this record
+/// supplied them, become response attrs. Supplied null is a value.
+fn select_stop_fields(
+    response: &mut ResponseCell,
+    contribution: &Contribution,
+    rec: &Record<'_>,
+    v: &Value,
+) -> Result<(), String> {
+    let incoming = &rec.value;
+    for key in ["stop_sequence", "stop_details"] {
+        if incoming
+            .get("message")
+            .and_then(|message| message.get(key))
+            .is_none()
+        {
+            continue;
+        }
+        let fact = contribution.projection.facts.iter().find(|fact|
+            matches!(&fact.field, projection::Field::SelectedExtra { key: found } if found == key)
+        ).cloned().ok_or("Claude selected extra supplier lost its source fact")?;
+        let value = v
+            .get("message")
+            .and_then(|message| message.get(key))
+            .cloned()
+            .ok_or("Claude selected extra normalized value unavailable")?;
+        let raw = Some(raw::canonical(
+            crate::raw::field(rec.bytes, &["message", key])?
+                .ok_or("Claude selected extra raw supplier unavailable")?,
+        )?);
+        match key {
+            "stop_sequence" => {
+                response.stop_sequence_raw = raw;
+                response.stop_sequence = Some(fact);
+            }
+            "stop_details" => {
+                response.stop_details_raw = raw;
+                response.stop_details = Some(fact);
+            }
+            _ => unreachable!("fixed selected extra keys"),
+        }
+        let attrs = response
+            .message
+            .attrs
+            .get_or_insert_with(|| Value::Object(Default::default()))
+            .as_object_mut()
+            .ok_or("Claude normalized extras carrier is not an object")?;
+        attrs.insert(key.into(), value);
+    }
+    Ok(())
+}
+
+/// Usage, stop reason, model and completion time this record supplied, with
+/// their raw values and origins.
+fn select_metadata(
+    response: &mut ResponseCell,
+    rec: &Record<'_>,
+    v: &Value,
+    item: u64,
+    revision: u64,
+) -> Result<(), String> {
+    let source_range = crate::selection::RecordRange {
+        start: rec.start,
+        end: rec.end,
+    };
+    for (index, path) in METADATA_PATHS.iter().enumerate() {
+        if let Some(value) = crate::raw::field(rec.bytes, path)? {
+            response.selected[index] = Some(raw::canonical(value)?);
+            response.selected_from[index] = Some(item);
+            let semantic = path
+                .iter()
+                .try_fold(v, |node, key| node.get(key))
+                .ok_or("Claude supplied metadata missing from its record")?;
+            // Decode from the original record so text repairs keep their
+            // byte offsets.
+            if index == 0 {
+                let _ = semantic.get("service_tier").and_then(Value::text);
+            } else {
+                let _ = semantic.text();
+            }
+            response.selected_facts[index] = projection::selected(index, semantic, revision);
+            let selected = crate::selection::SelectedRaw {
+                record: source_range,
+                path: path
+                    .iter()
+                    .map(|key| crate::selection::PathPart::Key((*key).into()))
+                    .collect(),
+            };
+            response.selected_origins[index] = Some(selected.clone());
+            for fact in &mut response.selected_facts[index] {
+                fact.selection = selection::for_selected(fact, index, semantic, &selected);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The record's UUID and parent link, for parent lookups that skip records.
+fn record_relation(
+    v: &Value,
+    contribution: &Contribution,
+) -> Result<Option<keyed::RecordRelation>, String> {
+    v.get("uuid")
+        .and_then(Value::native)
+        .map(|uuid| {
+            let parent = v
+                .get("parentUuid")
+                .map(|value| {
+                    let origin = contribution
+                        .origins
+                        .select(&[crate::selection::PathPart::Key("parentUuid".into())])
+                        .ok_or("Claude record parent origin unavailable")?;
+                    Ok::<_, String>(parent::Link {
+                        value: value.opaque(),
+                        origin,
+                    })
+                })
+                .transpose()?;
+            Ok::<_, String>(keyed::RecordRelation {
+                uuid: uuid.clone(),
+                record: contribution
+                    .origins
+                    .envelope
+                    .ok_or("Claude record envelope unavailable")?,
+                parent,
+            })
+        })
+        .transpose()
+}
+
+/// Whether a same-UUID update changes what the author fields were read from.
+fn author_changed(
+    previous: &Contribution,
+    v: &Value,
+    response: &ResponseCell,
+) -> Result<bool, String> {
+    let old_raw: Value = serde_json::from_slice(&previous.raw).map_err(|e| e.to_string())?;
+    if previous
+        .projection
+        .unresolved
+        .contains(&projection::Unresolved::FirstAuthorUpdate)
+    {
+        return Ok(true);
+    }
+    let content = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .unwrap_or(&Value::Null);
+    if response.author_selection.as_ref().is_some_and(|selection| {
+        selection::classify_author(v, content, selection.context)
+            != (
+                response.message.written_by,
+                response.message.prompt_kind,
+                response.message.from_name.clone(),
+            )
+    }) {
+        return Ok(true);
+    }
+    Ok([
+        "origin",
+        "promptSource",
+        "isMeta",
+        "isVisibleInTranscriptOnly",
+        "isApiErrorMessage",
+    ]
+    .iter()
+    .any(|key| old_raw.get(key) != v.get(key)))
+}
+
+/// Copy the first supplied `cwd`, `gitBranch` and `version` to the Session.
+fn fill_session_metadata(session: &mut Session, v: &Value) {
+    let text = |key: &str| v.get(key).and_then(Value::as_str).map(str::to_owned);
+    if session.cwd.is_none() {
+        session.cwd = text("cwd");
+    }
+    if session.branch.is_none() {
+        session.branch = text("gitBranch");
+    }
+    if session.harness_version.is_none() {
+        session.harness_version = text("version");
+    }
+}
+
 pub struct KeyedRecords<R: ReadView> {
     ctx: FileCtx,
     view: R,
@@ -484,20 +740,9 @@ impl<R: ReadView> KeyedRecords<R> {
                     .map_err(|e| e.to_string())
             })
             .transpose()?;
-        let fallback_occurrence = if let Some(hash) = &fallback_hash {
-            let count = match self.occurrences.get(hash) {
-                Some(count) => *count,
-                None => self.view.occurrence(hash).map_err(|e| e.to_string())?,
-            };
-            self.occurrences.insert(
-                hash.clone(),
-                count
-                    .checked_add(1)
-                    .ok_or("Claude fallback occurrence overflow")?,
-            );
-            count
-        } else {
-            0
+        let fallback_occurrence = match &fallback_hash {
+            Some(hash) => self.next_occurrence(hash)?,
+            None => 0,
         };
         let empty_uuid = NativeId::unicode("");
         let uuid_native = supplied_uuid.unwrap_or(&empty_uuid);
@@ -534,42 +779,7 @@ impl<R: ReadView> KeyedRecords<R> {
                 "message record without typed message",
             ));
         };
-        let key = if fallback_hash.is_some()
-            && (ty != "assistant"
-                || (msg.get("id").and_then(Value::native).is_none()
-                    && v.get("requestId")
-                        .and_then(Value::native)
-                        .is_none_or(|id| id.as_str().is_empty())))
-        {
-            ResponseKey {
-                role: if ty == "assistant" {
-                    Role::Assistant
-                } else {
-                    Role::User
-                },
-                response: uuid.into(),
-                request: native_key(&NativeId::unicode(""))?,
-            }
-        } else if ty == "assistant" {
-            let empty = NativeId::unicode("");
-            let request = v.get("requestId").and_then(Value::native).unwrap_or(&empty);
-            let response = msg.get("id").and_then(Value::native);
-            ResponseKey {
-                role: Role::Assistant,
-                response: native_key(response.unwrap_or(if request.as_str().is_empty() {
-                    uuid_native
-                } else {
-                    &empty
-                }))?,
-                request: native_key(request)?,
-            }
-        } else {
-            ResponseKey {
-                role: Role::User,
-                response: uuid.to_owned(),
-                request: native_key(&NativeId::unicode(""))?,
-            }
-        };
+        let key = response_key(ty, &v, msg, fallback_hash.is_some(), uuid, uuid_native)?;
         if address
             .as_ref()
             .is_some_and(|a| a.response != key || a.role != ty)
@@ -585,7 +795,6 @@ impl<R: ReadView> KeyedRecords<R> {
             Some(source_range),
         );
         let (mut blocks, bodies) = self.blocks_and_bodies(&v, &raw)?;
-        let content = msg.get("content").unwrap_or(&Value::Null);
         let old_same = old
             .as_ref()
             .is_some_and(|c| c.raw == raw && c.bodies == bodies);
@@ -609,77 +818,23 @@ impl<R: ReadView> KeyedRecords<R> {
                 } else {
                     MessageId::from_native(session, uuid_native).map_err(|e| e.to_string())?
                 };
-                let context = selection::AuthorContext {
-                    role: if ty == "assistant" {
-                        Role::Assistant
-                    } else {
-                        Role::User
-                    },
-                    first_subagent_instruction: ty == "user"
-                        && !blocks
-                            .iter()
-                            .any(|b| matches!(b, BlockContent::ToolResult(_)))
-                        && copy.is_none()
-                        && !self.sessions[si].seen_own_user
-                        && self.sessions[si].session.kind == SessionKind::Subagent,
-                    copied: copy.is_some(),
+                let id_kind = if supplied_uuid.is_some() {
+                    IdKind::Provider
+                } else {
+                    IdKind::Provisional
                 };
-                let (written_by, prompt_kind, from_name) =
-                    selection::classify_author(&v, content, context);
-                if ty == "user"
-                    && !blocks
-                        .iter()
-                        .any(|b| matches!(b, BlockContent::ToolResult(_)))
-                    && copy.is_none()
-                {
-                    self.sessions[si].seen_own_user = true;
-                }
-                let ordinal = self.sessions[si].next_message_ordinal;
-                self.sessions[si].next_message_ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or("Claude message ordinal overflow")?;
-                let mut message = Message::new(
-                    id,
-                    if supplied_uuid.is_some() {
-                        IdKind::Provider
-                    } else {
-                        IdKind::Provisional
-                    },
-                    if ty == "assistant" {
-                        Role::Assistant
-                    } else {
-                        Role::User
-                    },
-                    written_by,
-                );
-                message.prompt_kind = prompt_kind;
-                message.from_name = from_name;
-                message.at = crate::time::intrinsic_field(v.get("timestamp"));
-                if let Some((source, msg)) = &copy {
-                    message.inherited_from = sid(source).and_then(|s| {
-                        key_native(msg)
-                            .ok()
-                            .and_then(|n| MessageId::from_native(s, &n).ok())
-                    });
-                    message.copy_origin = Some(CopyOrigin::Known);
-                }
-                ResponseCell {
-                    message,
-                    ordinal,
-                    author_selection: Some(selection::AuthorSelection::new(source_range, context)),
-                    items: 0,
-                    revision: 0,
-                    selected: Default::default(),
-                    incomplete_bodies: 0,
-                    selected_from: Default::default(),
-                    selected_facts: Default::default(),
-                    selected_origins: Default::default(),
-                    stop_sequence: None,
-                    stop_sequence_raw: None,
-                    stop_details: None,
-                    stop_details_raw: None,
-                    record_extras: Default::default(),
-                }
+                let has_tool_result = blocks
+                    .iter()
+                    .any(|b| matches!(b, BlockContent::ToolResult(_)));
+                self.new_response(
+                    si,
+                    ty,
+                    &v,
+                    has_tool_result,
+                    copy.as_ref(),
+                    (id, id_kind),
+                    source_range,
+                )?
             }
         };
         if response.ordinal >= self.sessions[si].next_message_ordinal {
@@ -728,105 +883,23 @@ impl<R: ReadView> KeyedRecords<R> {
         }
         if item == 0 {
             response.message.parent = None;
-            if let Some(parent_uuid) = v
-                .get("parentUuid")
-                .and_then(Value::native)
-                .filter(|p| !p.as_str().is_empty())
+            self.resolve_parent(
+                &native,
+                &v,
+                &mut response,
+                &mut projected,
+                &record_origins,
+                revision,
+            )?;
+            if old
+                .as_ref()
+                .map(|previous| author_changed(previous, &v, &response))
+                .transpose()?
+                == Some(true)
             {
-                let resolved = self
-                    .address(&native, &native_key(parent_uuid)?)?
-                    .filter(|parent| {
-                        // Every contribution UUID maps to its Message, including
-                        // later fragments of a response.
-                        parent.message != response.message.id
-                            && parent.message.session() == response.message.id.session()
-                    });
-                let parent_fact = projected.facts.iter_mut().find(|fact| {
-                    matches!(
-                        fact.field,
-                        projection::Field::FirstMessage(
-                            polylogue_model::merge::MessageField::Parent
-                        )
-                    )
-                });
-                if let (Some(parent), Some(fact)) = (resolved, parent_fact) {
-                    fact.selection =
-                        selection::parent(parent_uuid, parent.message.clone(), &record_origins);
-                    if fact.selection.is_some() {
-                        response.message.parent = Some(parent.message);
-                    } else {
-                        projected
-                            .unresolved
-                            .push(projection::Unresolved::ParentResolution);
-                    }
-                } else {
-                    let sidechain_root = if let FileCtx::Main { stem } = &self.ctx {
-                        v.get("isSidechain").and_then(Value::as_bool) == Some(true)
-                            && native != *stem
-                            && self.address(stem, &native_key(parent_uuid)?)?.is_some()
-                    } else {
-                        false
-                    };
-                    if sidechain_root {
-                        // A sidechain's main-chain parent is link evidence, not a
-                        // parent Message (it is in another Session).
-                        projected.facts.retain(|f| {
-                            !matches!(
-                                f.field,
-                                projection::Field::FirstMessage(
-                                    polylogue_model::merge::MessageField::Parent
-                                )
-                            )
-                        });
-                        let field = projection::Field::Extra {
-                            local: None,
-                            path: vec!["parentUuid".into()],
-                        };
-                        let mut fact = projection::Fact {
-                            field,
-                            source_path: vec!["parentUuid".into()],
-                            supplied_revision: revision,
-                            selection: None,
-                        };
-                        fact.selection = selection::for_fact(&fact, &v, &record_origins);
-                        // Kept as a record extra, not as a Message parent.
-                        projected.facts.push(fact);
-                    } else {
-                        projected
-                            .unresolved
-                            .push(projection::Unresolved::ParentResolution);
-                    }
-                }
-            }
-            if let Some(previous) = &old {
-                let old_raw: Value =
-                    serde_json::from_slice(&previous.raw).map_err(|e| e.to_string())?;
-                if previous
-                    .projection
+                projected
                     .unresolved
-                    .contains(&projection::Unresolved::FirstAuthorUpdate)
-                    || response.author_selection.as_ref().is_some_and(|selection| {
-                        selection::classify_author(&v, content, selection.context)
-                            != (
-                                response.message.written_by,
-                                response.message.prompt_kind,
-                                response.message.from_name.clone(),
-                            )
-                    })
-                    || [
-                        "origin",
-                        "promptSource",
-                        "isMeta",
-                        "isVisibleInTranscriptOnly",
-                        "isApiErrorMessage",
-                    ]
-                    .iter()
-                    .any(|key| old_raw.get(key) != v.get(key))
-                {
-                    projected
-                        .unresolved
-                        .push(projection::Unresolved::FirstAuthorUpdate);
-                }
+                    .push(projection::Unresolved::FirstAuthorUpdate);
             }
         }
         // Blocks keep per-contribution positions; the engine assigns BlockIds
@@ -868,99 +941,9 @@ impl<R: ReadView> KeyedRecords<R> {
             .as_ref()
             .is_none_or(|previous| previous.raw != contribution.raw)
         {
-            // The last record to supply a field wins, in parse order. An
-            // identical repeated record changes nothing (`old_same`).
-            for fact in &contribution.projection.facts {
-                let projection::Field::Extra { local: None, path } = &fact.field else {
-                    continue;
-                };
-                let [key] = path.as_slice() else {
-                    continue;
-                };
-                if fact.supplied_revision != revision || incoming.get(key).is_none() {
-                    continue;
-                }
-                let raw = contribution.record_extra_raw(key)?.to_vec();
-                response.record_extras.insert(
-                    key.clone(),
-                    keyed::SelectedRecordExtra {
-                        item,
-                        fact: fact.clone(),
-                        raw,
-                    },
-                );
-            }
-            // These opaque response fields get an attrs key. Supplied null is a
-            // value; an omitted field keeps its earlier supplier.
-            for key in ["stop_sequence", "stop_details"] {
-                if incoming
-                    .get("message")
-                    .and_then(|message| message.get(key))
-                    .is_none()
-                {
-                    continue;
-                }
-                let fact = contribution.projection.facts.iter().find(|fact|
-                    matches!(&fact.field, projection::Field::SelectedExtra { key: found } if found == key)
-                ).cloned().ok_or("Claude selected extra supplier lost its source fact")?;
-                let value = v
-                    .get("message")
-                    .and_then(|message| message.get(key))
-                    .cloned()
-                    .ok_or("Claude selected extra normalized value unavailable")?;
-                let raw = Some(raw::canonical(
-                    crate::raw::field(rec.bytes, &["message", key])?
-                        .ok_or("Claude selected extra raw supplier unavailable")?,
-                )?);
-                match key {
-                    "stop_sequence" => {
-                        response.stop_sequence_raw = raw;
-                        response.stop_sequence = Some(fact);
-                    }
-                    "stop_details" => {
-                        response.stop_details_raw = raw;
-                        response.stop_details = Some(fact);
-                    }
-                    _ => unreachable!("fixed selected extra keys"),
-                }
-                let attrs = response
-                    .message
-                    .attrs
-                    .get_or_insert_with(|| Value::Object(Default::default()))
-                    .as_object_mut()
-                    .ok_or("Claude normalized extras carrier is not an object")?;
-                attrs.insert(key.into(), value);
-            }
-            for (index, path) in METADATA_PATHS.iter().enumerate() {
-                if let Some(value) = crate::raw::field(rec.bytes, path)? {
-                    response.selected[index] = Some(raw::canonical(value)?);
-                    response.selected_from[index] = Some(item);
-                    let semantic = path
-                        .iter()
-                        .try_fold(&v, |node, key| node.get(key))
-                        .ok_or("Claude supplied metadata missing from its record")?;
-                    // Decode from the original record so text repairs keep their
-                    // byte offsets.
-                    if index == 0 {
-                        let _ = semantic.get("service_tier").and_then(Value::text);
-                    } else {
-                        let _ = semantic.text();
-                    }
-                    response.selected_facts[index] =
-                        projection::selected(index, semantic, revision);
-                    let selected = crate::selection::SelectedRaw {
-                        record: source_range,
-                        path: path
-                            .iter()
-                            .map(|key| crate::selection::PathPart::Key((*key).into()))
-                            .collect(),
-                    };
-                    response.selected_origins[index] = Some(selected.clone());
-                    for fact in &mut response.selected_facts[index] {
-                        fact.selection = selection::for_selected(fact, index, semantic, &selected);
-                    }
-                }
-            }
+            select_record_extras(&mut response, &contribution, incoming, item, revision)?;
+            select_stop_fields(&mut response, &contribution, rec, &v)?;
+            select_metadata(&mut response, rec, &v, item, revision)?;
         }
         if item == 0 {
             response.message.at = crate::time::intrinsic_field(v.get("timestamp"));
@@ -987,33 +970,7 @@ impl<R: ReadView> KeyedRecords<R> {
             ),
             pending,
         );
-        let relation = v
-            .get("uuid")
-            .and_then(Value::native)
-            .map(|uuid| {
-                let parent = v
-                    .get("parentUuid")
-                    .map(|value| {
-                        let origin = contribution
-                            .origins
-                            .select(&[crate::selection::PathPart::Key("parentUuid".into())])
-                            .ok_or("Claude record parent origin unavailable")?;
-                        Ok::<_, String>(parent::Link {
-                            value: value.opaque(),
-                            origin,
-                        })
-                    })
-                    .transpose()?;
-                Ok::<_, String>(keyed::RecordRelation {
-                    uuid: uuid.clone(),
-                    record: contribution
-                        .origins
-                        .envelope
-                        .ok_or("Claude record envelope unavailable")?,
-                    parent,
-                })
-            })
-            .transpose()?;
+        let relation = record_relation(&v, &contribution)?;
         self.addresses.insert(
             (native.clone(), uuid.into()),
             RecordAddress {
@@ -1024,7 +981,40 @@ impl<R: ReadView> KeyedRecords<R> {
                 role: ty.into(),
             },
         );
-        if let Some(task) = tool_result::metadata(&v)
+        self.remember_launches(&v, &contribution, &native, &key, &response.message.id, item)?;
+        self.contributions
+            .insert((response.message.id.clone(), item), contribution);
+        self.sessions[si].last_message = Some(response.message.id.clone());
+        self.sessions[si].facts_pending = true;
+        fill_session_metadata(&mut self.sessions[si].session, &v);
+        self.responses.insert((native, key), response);
+        Ok(RecordOutcome::Used)
+    }
+    /// How many earlier records without a UUID had this content hash; counts
+    /// this one.
+    fn next_occurrence(&mut self, hash: &str) -> Result<u64, String> {
+        let count = match self.occurrences.get(hash) {
+            Some(count) => *count,
+            None => self.view.occurrence(hash).map_err(|e| e.to_string())?,
+        };
+        let next = count
+            .checked_add(1)
+            .ok_or("Claude fallback occurrence overflow")?;
+        self.occurrences.insert(hash.to_owned(), next);
+        Ok(count)
+    }
+    /// Remember where each result of a background launch lives, so the task's
+    /// completion notification can find it.
+    fn remember_launches(
+        &mut self,
+        v: &Value,
+        contribution: &Contribution,
+        native: &str,
+        key: &ResponseKey,
+        message: &MessageId,
+        item: u64,
+    ) -> Result<(), String> {
+        if let Some(task) = tool_result::metadata(v)
             .and_then(|m| m.get("backgroundTaskId"))
             .and_then(Value::as_str)
         {
@@ -1035,9 +1025,9 @@ impl<R: ReadView> KeyedRecords<R> {
                     self.remember_background(
                         task,
                         BackgroundAddress {
-                            session: native.clone(),
+                            session: native.into(),
                             response: key.clone(),
-                            message: response.message.id.clone(),
+                            message: message.clone(),
                             item,
                             local: local
                                 .try_into()
@@ -1049,25 +1039,158 @@ impl<R: ReadView> KeyedRecords<R> {
                 }
             }
         }
-        self.contributions
-            .insert((response.message.id.clone(), item), contribution);
-        self.sessions[si].last_message = Some(response.message.id.clone());
-        self.sessions[si].facts_pending = true;
-        let session = &mut self.sessions[si].session;
-        if session.cwd.is_none() {
-            session.cwd = v.get("cwd").and_then(Value::as_str).map(str::to_owned);
+        Ok(())
+    }
+    /// Set the Message parent from the first record's `parentUuid`, when it
+    /// names a record of another Message in this Session. A sidechain root's
+    /// main-chain parent is kept as a record extra instead.
+    fn resolve_parent(
+        &self,
+        native: &str,
+        v: &Value,
+        response: &mut ResponseCell,
+        projected: &mut projection::RecordFacts,
+        record_origins: &origins::RecordOrigins,
+        revision: u64,
+    ) -> Result<(), String> {
+        if let Some(parent_uuid) = v
+            .get("parentUuid")
+            .and_then(Value::native)
+            .filter(|p| !p.as_str().is_empty())
+        {
+            let resolved = self
+                .address(native, &native_key(parent_uuid)?)?
+                .filter(|parent| {
+                    // Every contribution UUID maps to its Message, including
+                    // later fragments of a response.
+                    parent.message != response.message.id
+                        && parent.message.session() == response.message.id.session()
+                });
+            let parent_fact = projected.facts.iter_mut().find(|fact| {
+                matches!(
+                    fact.field,
+                    projection::Field::FirstMessage(polylogue_model::merge::MessageField::Parent)
+                )
+            });
+            if let (Some(parent), Some(fact)) = (resolved, parent_fact) {
+                fact.selection =
+                    selection::parent(parent_uuid, parent.message.clone(), record_origins);
+                if fact.selection.is_some() {
+                    response.message.parent = Some(parent.message);
+                } else {
+                    projected
+                        .unresolved
+                        .push(projection::Unresolved::ParentResolution);
+                }
+            } else {
+                let sidechain_root = if let FileCtx::Main { stem } = &self.ctx {
+                    v.get("isSidechain").and_then(Value::as_bool) == Some(true)
+                        && native != stem
+                        && self.address(stem, &native_key(parent_uuid)?)?.is_some()
+                } else {
+                    false
+                };
+                if sidechain_root {
+                    // A sidechain's main-chain parent is link evidence, not a
+                    // parent Message (it is in another Session).
+                    projected.facts.retain(|f| {
+                        !matches!(
+                            f.field,
+                            projection::Field::FirstMessage(
+                                polylogue_model::merge::MessageField::Parent
+                            )
+                        )
+                    });
+                    let field = projection::Field::Extra {
+                        local: None,
+                        path: vec!["parentUuid".into()],
+                    };
+                    let mut fact = projection::Fact {
+                        field,
+                        source_path: vec!["parentUuid".into()],
+                        supplied_revision: revision,
+                        selection: None,
+                    };
+                    fact.selection = selection::for_fact(&fact, v, record_origins);
+                    // Kept as a record extra, not as a Message parent.
+                    projected.facts.push(fact);
+                } else {
+                    projected
+                        .unresolved
+                        .push(projection::Unresolved::ParentResolution);
+                }
+            }
         }
-        if session.branch.is_none() {
-            session.branch = v
-                .get("gitBranch")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+        Ok(())
+    }
+    /// The response cell for a response's first record: a new Message with
+    /// its author, time and copy origin, and the next ordinal in the Session.
+    #[allow(clippy::too_many_arguments)]
+    fn new_response(
+        &mut self,
+        si: usize,
+        ty: &str,
+        v: &Value,
+        has_tool_result: bool,
+        copy: Option<&(String, String)>,
+        (id, id_kind): (MessageId, IdKind),
+        range: crate::selection::RecordRange,
+    ) -> Result<ResponseCell, String> {
+        let role = if ty == "assistant" {
+            Role::Assistant
+        } else {
+            Role::User
+        };
+        let own_user_prompt = ty == "user" && !has_tool_result && copy.is_none();
+        let cell = &mut self.sessions[si];
+        let context = selection::AuthorContext {
+            role,
+            first_subagent_instruction: own_user_prompt
+                && !cell.seen_own_user
+                && cell.session.kind == SessionKind::Subagent,
+            copied: copy.is_some(),
+        };
+        let content = v
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .unwrap_or(&Value::Null);
+        let (written_by, prompt_kind, from_name) = selection::classify_author(v, content, context);
+        if own_user_prompt {
+            cell.seen_own_user = true;
         }
-        if session.harness_version.is_none() {
-            session.harness_version = v.get("version").and_then(Value::as_str).map(str::to_owned);
+        let ordinal = cell.next_message_ordinal;
+        cell.next_message_ordinal = ordinal
+            .checked_add(1)
+            .ok_or("Claude message ordinal overflow")?;
+        let mut message = Message::new(id, id_kind, role, written_by);
+        message.prompt_kind = prompt_kind;
+        message.from_name = from_name;
+        message.at = crate::time::intrinsic_field(v.get("timestamp"));
+        if let Some((source, msg)) = copy {
+            message.inherited_from = sid(source).and_then(|s| {
+                key_native(msg)
+                    .ok()
+                    .and_then(|n| MessageId::from_native(s, &n).ok())
+            });
+            message.copy_origin = Some(CopyOrigin::Known);
         }
-        self.responses.insert((native, key), response);
-        Ok(RecordOutcome::Used)
+        Ok(ResponseCell {
+            message,
+            ordinal,
+            author_selection: Some(selection::AuthorSelection::new(range, context)),
+            items: 0,
+            revision: 0,
+            selected: Default::default(),
+            incomplete_bodies: 0,
+            selected_from: Default::default(),
+            selected_facts: Default::default(),
+            selected_origins: Default::default(),
+            stop_sequence: None,
+            stop_sequence_raw: None,
+            stop_details: None,
+            stop_details_raw: None,
+            record_extras: Default::default(),
+        })
     }
     /// The session a non-message record of this file belongs to.
     fn file_session(&mut self, v: &Value) -> Result<Option<usize>, String> {
