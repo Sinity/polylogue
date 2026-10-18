@@ -10,9 +10,9 @@ publish = false
 
 [workspace.dependencies]
 polylogue-model = { path = "crates/model" }
-credential-masking = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.1.0" }
-hashed-blobs = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.1.0" }
-devkit = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.1.0" }
+credential-masking = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.2.0" }
+hashed-blobs = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.2.0" }
+devkit = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.2.0" }
 polylogue-store = { path = "crates/store" }
 polylogue-sources = { path = "crates/sources" }
 polylogue-query = { path = "crates/query" }
