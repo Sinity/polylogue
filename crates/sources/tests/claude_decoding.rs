@@ -1,4 +1,4 @@
-//! Native Claude source controls: no database or public-renderer qualification.
+//! Claude decoding: native IDs, number tokens, text repairs and refused inputs.
 use polylogue_model::{BlockContent, NativeId, RawJson, Role};
 use polylogue_sources::claude_code::{FileCtx, KeyedRecords, keyed::MemoryReadView};
 use polylogue_sources::frame::{FailurePhase, ParseError, drive_jsonl};
@@ -108,7 +108,7 @@ fn native_ids_opaque_tokens_and_text_repairs_remain_distinct() {
 }
 
 #[test]
-fn excessive_depth_is_owed_and_does_not_become_an_accepted_undecodable_record() {
+fn excessive_depth_fails_the_step_instead_of_counting_as_undecodable() {
     let mut bytes = b"{\"type\":\"user\",\"uuid\":\"u\",\"message\":{\"content\":".to_vec();
     bytes.extend(std::iter::repeat_n(b'[', 65));
     bytes.extend_from_slice(b"0");
@@ -128,7 +128,7 @@ fn excessive_depth_is_owed_and_does_not_become_an_accepted_undecodable_record() 
 }
 
 #[test]
-fn encoded_structural_key_and_non_scalar_source_session_are_explicit_refusals() {
+fn encoded_structural_key_and_non_scalar_session_are_refused() {
     for bytes in [
         br#"{"type":"user","uuid":"u","sessionId":"\ud800","message":{"content":"x"}}
 "#

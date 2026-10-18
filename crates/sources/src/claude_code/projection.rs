@@ -810,15 +810,14 @@ pub(super) fn record(
     }
     if let Some(old) = old {
         for fact in result.facts.iter_mut().chain(&mut result.derived) {
-            if at(incoming, &fact.source_path).is_none() {
-                if let Some(before) = old
+            if at(incoming, &fact.source_path).is_none()
+                && let Some(before) = old
                     .facts
                     .iter()
                     .chain(&old.derived)
                     .find(|f| f.field == fact.field)
-                {
-                    fact.supplied_revision = before.supplied_revision;
-                }
+            {
+                fact.supplied_revision = before.supplied_revision;
             }
         }
     }

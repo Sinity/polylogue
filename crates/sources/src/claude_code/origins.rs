@@ -61,12 +61,12 @@ impl RecordOrigins {
             return None;
         };
         let mut key = vec![first.clone()];
-        if first == "message" {
-            if let Some(PathPart::Key(second)) = path.get(1) {
-                let qualified = vec![first.clone(), second.clone()];
-                if self.fields.contains_key(&qualified) {
-                    key = qualified;
-                }
+        if first == "message"
+            && let Some(PathPart::Key(second)) = path.get(1)
+        {
+            let qualified = vec![first.clone(), second.clone()];
+            if self.fields.contains_key(&qualified) {
+                key = qualified;
             }
         }
         let mut selected = self.fields.get(&key)?.clone();

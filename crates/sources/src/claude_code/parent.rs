@@ -60,10 +60,10 @@ impl Node {
         let fingerprint =
             *blake3::hash(&serde_json::to_vec(&field_fingerprints).map_err(|e| e.to_string())?)
                 .as_bytes();
-        if let Some(previous) = &old {
-            if previous.fingerprint == fingerprint {
-                return Ok(previous.clone());
-            }
+        if let Some(previous) = &old
+            && previous.fingerprint == fingerprint
+        {
+            return Ok(previous.clone());
         }
         let conflicted = old.as_ref().is_some_and(|o| {
             o.conflicted

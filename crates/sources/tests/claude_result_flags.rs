@@ -1,4 +1,4 @@
-//! Exact supplied execution flags, including the grouped-parent first failure.
+//! Claude tool-result execution flags.
 use polylogue_model::BlockContent;
 use polylogue_sources::{
     claude_code::{
@@ -151,7 +151,7 @@ fn supplied_flags_preserve_presence_values_origins_and_version_evidence_without_
     );
 }
 #[test]
-fn wrong_types_and_unknown_metadata_keep_exact_typed_obligations() {
+fn wrong_types_and_unknown_metadata_stay_unresolved() {
     for key in ["isImage", "noOutputExpected", "unknownFlag"] {
         for value in [
             json!(null),

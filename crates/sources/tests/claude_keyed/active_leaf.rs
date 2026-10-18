@@ -31,7 +31,7 @@ fn markers_follow_source_order_across_steps_including_invalid_summary_and_reappl
     }
 }
 #[test]
-fn explicit_bad_scope_never_borrows_the_declared_main_owner() {
+fn bad_session_id_never_takes_the_main_files_owner() {
     for claim in [json!("foreign"), Value::Null, json!(17), json!({})] {
         let mut memory = MemoryReadView::default();
         let first = line(json!({"type":"last-prompt","leafUuid":"good"}));
@@ -71,8 +71,7 @@ fn omitted_leaf_overwrites_prior_marker_and_partial_marker_does_not_parse() {
 }
 
 #[test]
-fn point_parent_relation_retains_omitted_donor_and_replaces_supplied_correction_without_body_hydration()
- {
+fn parent_link_keeps_omitted_origin_and_takes_supplied_correction() {
     let mut memory = MemoryReadView::default();
     let mut first = user("large");
     first["parentUuid"] = json!("before");

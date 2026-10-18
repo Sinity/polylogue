@@ -1,4 +1,4 @@
-//! Exact current original-record contributions, independent of hash bytes.
+//! Codex field origins point at the original records, across overlays.
 use polylogue_model::{
     BlockSlot,
     merge::{BlockField, MessageField, Slot},
@@ -107,7 +107,7 @@ fn missing_field_overlay_pins_old_name_and_new_arguments_without_history_chain()
     assert_eq!(fields["arguments"].record, b);
 }
 #[test]
-fn identical_reemission_retains_selected_origin_without_changing_revision() {
+fn identical_reemission_keeps_selected_origin_and_revision() {
     let call = line(
         "response_item",
         json!({"type":"function_call","id":"a","call_id":"c","name":"tool","arguments":"{}"}),
@@ -290,7 +290,7 @@ fn missing_or_corrupt_origin_cannot_become_a_completed_source_list() {
 }
 
 #[test]
-fn full_replacement_drops_old_contributors_without_mutating_retained_descriptor() {
+fn full_replacement_drops_old_contributors_and_leaves_stored_descriptor_alone() {
     let h = header();
     let first = line(
         "response_item",

@@ -1,4 +1,4 @@
-//! Source-owned field selectors are captured with mapping, not reconstructed by readers.
+//! Codex field descriptors are recorded by the parser and evaluate to the parsed values.
 use polylogue_model::{
     BlockSlot,
     merge::{BlockField, Slot},
@@ -77,7 +77,7 @@ fn extract(bytes: &str, selection: &FactSelection) -> Vec<Value> {
         .collect()
 }
 #[test]
-fn text_and_thinking_use_exact_original_leaf_indices_and_one_normalization_iterator() {
+fn text_and_thinking_select_original_leaf_indices() {
     let bytes = line("session_meta", json!({"id":"selector-test"}))
         + &line("turn_context", json!({"model":"selected-model"}))
         + &line(
@@ -157,7 +157,7 @@ fn text_and_thinking_use_exact_original_leaf_indices_and_one_normalization_itera
     );
 }
 #[test]
-fn overlay_selection_retains_original_content_and_replacement_uses_new_record() {
+fn overlay_keeps_original_content_origin_and_replacement_uses_new_record() {
     let header = line("session_meta", json!({"id":"selector-overlay"}));
     let first = line(
         "response_item",
@@ -191,11 +191,11 @@ fn overlay_selection_retains_original_content_and_replacement_uses_new_record() 
         ),
         vec![json!("new")]
     );
-    // An earlier admitted descriptor remains bound to its earlier original.
+    // An earlier descriptor still points at the earlier record.
     assert_eq!(extract(&changed, &selected), vec![json!("old")]);
 }
 #[test]
-fn identical_reemission_preserves_frozen_selection_and_direct_tools_have_proved_selectors() {
+fn identical_reemission_keeps_selection_and_direct_tools_have_selectors() {
     let header = line("session_meta", json!({"id":"selector-replay"}));
     let item = line(
         "response_item",
@@ -484,7 +484,7 @@ fn evaluator_joins_selected_string_leaves_using_serde_escaping_and_adjacent_reco
     assert!(sink.calls > 5);
 }
 #[test]
-fn evaluator_read_admission_byte_count_and_original_resolver_errors_are_distinct() {
+fn evaluator_size_limit_byte_count_and_resolver_errors_are_distinct() {
     use PathPart::Key;
     use polylogue_sources::codex::selection::ValueError;
     let raw = br#"{"v":"ok"}"#;
@@ -618,8 +618,7 @@ fn evaluator_first_and_middle_sink_failure_keep_original_error_and_stop_future_r
         assert_eq!(sink.calls, fail);
         assert!(reads <= 1);
     }
-    // A nonadjacent return to an earlier record must reload it, not retain all
-    // decoded inputs in a growing cache.
+    // Returning to an earlier record reloads it; decoded records are not cached.
     selected.inputs.push(selected.inputs[0].clone());
     let mut reads = 0;
     selected
@@ -700,7 +699,7 @@ fn evaluator_sink_error_object_survives_json_fragment_and_typed_time_wrappers() 
     }
 }
 #[test]
-fn evaluator_captured_text_thinking_and_message_witnesses_match_owning_leaf_encoder() {
+fn evaluator_output_for_text_thinking_and_message_slots_matches_the_parser() {
     use polylogue_model::source_leaf::{self, PresenceStatus, Subject};
     use std::convert::Infallible;
     let bytes = line("session_meta", json!({"id":"leaf-evaluation"}))

@@ -1,4 +1,4 @@
-//! Usage witnesses must reproduce normalized values from original numeric leaves.
+//! Codex usage descriptors recompute values from the original numbers.
 use polylogue_model::{merge::Slot, source_leaf};
 use polylogue_sources::{
     codex::{
@@ -175,7 +175,7 @@ fn uncached_input_reads_both_original_operands_and_rejects_wrong_types() {
 }
 
 #[test]
-fn persisted_usage_witness_refuses_wrong_slot_record_operand_order_or_field() {
+fn stored_usage_slot_value_rejects_wrong_slot_record_operand_order_or_field() {
     let (_, view) = usage_view(json!({"input_tokens":10,"cached_input_tokens":6}));
     let key = Key::Presence(0, "usage:input_tokens".into());
     let Cell::SlotValue(witness) = &view.cells[&key] else {
@@ -196,9 +196,6 @@ fn persisted_usage_witness_refuses_wrong_slot_record_operand_order_or_field() {
             3 => changed.slot = Slot::Usage(polylogue_model::merge::UsageField::Output),
             _ => selection.inputs[0].path.clear(),
         }
-        assert!(
-            Cell::SlotValue(changed).valid_for(&key) == false,
-            "damage {damage}"
-        );
+        assert!(!Cell::SlotValue(changed).valid_for(&key), "damage {damage}");
     }
 }

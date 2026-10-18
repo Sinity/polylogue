@@ -1,4 +1,4 @@
-//! Source-local projection/presence, not canonical publication qualification.
+//! Claude contribution units and slot facts.
 use polylogue_model::merge::{BlockField, FinishState, UsageField};
 use polylogue_model::{BlockContent, Thinking};
 use polylogue_sources::claude_code::keyed::{
@@ -310,7 +310,7 @@ fn unresolved_mapping_and_required_body_never_become_completed_empty_projection(
 }
 
 #[test]
-fn completion_proof_is_explicit_and_record_witness_disappears_on_replacement() {
+fn aborted_mid_stream_is_per_record_and_cleared_by_replacement() {
     let mut memory = MemoryReadView::default();
     let mut a = record("a", json!([]));
     a["isAbortedMidStream"] = json!(true);

@@ -158,7 +158,7 @@ fn absent_output_and_unowned_items_do_not_gain_a_result_or_latest_wrapper_parent
 }
 
 #[test]
-fn scope_source_and_duration_negatives_never_get_a_unified_proof() {
+fn bad_scope_source_or_duration_never_links_a_unified_operation() {
     for record in [
         completion("user_shell"),
         completion("future_source"),
@@ -213,7 +213,7 @@ fn scope_source_and_duration_negatives_never_get_a_unified_proof() {
 }
 
 #[test]
-fn a_new_constructor_invalidates_the_exact_previous_record_proof_in_both_orders() {
+fn a_new_constructor_replaces_the_previous_record_in_both_orders() {
     for native_first in [false, true] {
         for replacement in [
             completion("agent"),
@@ -266,7 +266,7 @@ fn a_new_constructor_invalidates_the_exact_previous_record_proof_in_both_orders(
 }
 
 #[test]
-fn a_proof_for_a_different_status_record_cannot_associate_a_later_call() {
+fn a_different_status_record_cannot_associate_a_later_call() {
     let (mut view, resume) = run(
         MemoryReadView::default(),
         Resume::default(),
@@ -286,7 +286,7 @@ fn a_proof_for_a_different_status_record_cannot_associate_a_later_call() {
 }
 
 #[test]
-fn unified_proof_writes_respect_existing_admission_limits() {
+fn unified_operation_writes_respect_cell_limits() {
     let (view, resume) = run(MemoryReadView::default(), Resume::default(), &start());
     let record = completion("unified_exec_startup");
     let framed = drive_jsonl(
@@ -345,7 +345,7 @@ fn unified_native_items_do_not_borrow_an_exec_wrapper_parent() {
 }
 
 #[test]
-fn conflicting_constructor_invalidates_the_proof_without_changing_messages() {
+fn conflicting_constructor_drops_the_link_without_changing_messages() {
     let (view, resume) = run(
         MemoryReadView::default(),
         Resume::default(),
@@ -412,7 +412,7 @@ fn unsupported_native_first_records_cannot_gain_later_call_readability_or_classi
 }
 
 #[test]
-fn a_completion_without_valid_own_turn_cannot_reuse_an_old_scoped_proof() {
+fn a_completion_without_its_own_turn_cannot_reuse_an_old_scope() {
     for source in ["unified_exec_startup", "future_source"] {
         for turn in [Value::Null, json!(123)] {
             let (view, resume) = run(

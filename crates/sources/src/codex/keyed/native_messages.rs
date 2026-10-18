@@ -211,12 +211,12 @@ impl<V: ReadView> KeyedRecords<V> {
             _ => None,
         };
         let old = previous.as_ref().is_some_and(|p| p.unresolved);
-        if proof.is_none() {
-            if let Some(previous) = &previous {
-                self.retract_prompt_echo(previous);
-                if let Some(message) = previous.prompt {
-                    self.remove(Key::PromptEcho(message));
-                }
+        if proof.is_none()
+            && let Some(previous) = &previous
+        {
+            self.retract_prompt_echo(previous);
+            if let Some(message) = previous.prompt {
+                self.remove(Key::PromptEcho(message));
             }
         }
         let new = proof.as_ref().is_some_and(|p| p.unresolved);
@@ -283,15 +283,14 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         if let Some((message, _)) =
             self.position(Key::NativeItem("response_item".into(), id.into()))
+            && let Some(Cell::PromptEcho { turn, id }) = self.get(Key::PromptEcho(message))
         {
-            if let Some(Cell::PromptEcho { turn, id }) = self.get(Key::PromptEcho(message)) {
-                let key = Key::CompletedMessage(turn, id);
-                if self.get(key.clone()).is_none() {
-                    self.missing("prompt echo claim");
-                    return;
-                }
-                self.invalidate_completed(key);
+            let key = Key::CompletedMessage(turn, id);
+            if self.get(key.clone()).is_none() {
+                self.missing("prompt echo claim");
+                return;
             }
+            self.invalidate_completed(key);
         }
     }
     fn independent_prompt_echo(&mut self, message: usize) -> bool {
@@ -370,10 +369,10 @@ impl<V: ReadView> KeyedRecords<V> {
         }
     }
     fn retract_linked_prompt(&mut self, message: usize) {
-        if let Some(Cell::PromptEcho { turn, id }) = self.get(Key::PromptEcho(message)) {
-            if let Some(Cell::CompletedMessage(proof)) = self.get(Key::CompletedMessage(turn, id)) {
-                self.retract_prompt_echo(&proof);
-            }
+        if let Some(Cell::PromptEcho { turn, id }) = self.get(Key::PromptEcho(message))
+            && let Some(Cell::CompletedMessage(proof)) = self.get(Key::CompletedMessage(turn, id))
+        {
+            self.retract_prompt_echo(&proof);
         }
     }
     pub(super) fn resolve_completed_response(&mut self, item: &Value) {
@@ -400,15 +399,15 @@ impl<V: ReadView> KeyedRecords<V> {
         };
         self.put(Key::ResponseScope(id.into()), Cell::Text(turn.clone()));
         let key = Key::CompletedMessage(turn.clone(), id.into());
-        if let Some(Cell::CompletedMessage(mut proof)) = self.get(key.clone()) {
-            if let Some(c) = proof.claim() {
-                // A typed user echo that arrives before its response never pairs,
-                // even when the IDs match.
-                proof.unresolved = matches!(c.body, Body::User { .. })
-                    || c.turn != turn
-                    || !corresponds(&c.body, &response);
-                self.store_completed(key, Some(proof));
-            }
+        if let Some(Cell::CompletedMessage(mut proof)) = self.get(key.clone())
+            && let Some(c) = proof.claim()
+        {
+            // A typed user echo that arrives before its response never pairs,
+            // even when the IDs match.
+            proof.unresolved = matches!(c.body, Body::User { .. })
+                || c.turn != turn
+                || !corresponds(&c.body, &response);
+            self.store_completed(key, Some(proof));
         }
         if let Some(Cell::PromptEcho {
             turn: echo_turn,
@@ -416,16 +415,16 @@ impl<V: ReadView> KeyedRecords<V> {
         }) = self.get(Key::PromptEcho(message))
         {
             let key = Key::CompletedMessage(echo_turn.clone(), echo_id);
-            if let Some(Cell::CompletedMessage(mut proof)) = self.get(key.clone()) {
-                if let Some(c) = proof.claim() {
-                    proof.unresolved = echo_turn != turn || !corresponds(&c.body, &response);
-                    if !proof.unresolved {
-                        self.apply_prompt_echo(message, &proof);
-                    } else {
-                        self.retract_prompt_echo(&proof);
-                    }
-                    self.store_completed(key, Some(proof));
+            if let Some(Cell::CompletedMessage(mut proof)) = self.get(key.clone())
+                && let Some(c) = proof.claim()
+            {
+                proof.unresolved = echo_turn != turn || !corresponds(&c.body, &response);
+                if !proof.unresolved {
+                    self.apply_prompt_echo(message, &proof);
+                } else {
+                    self.retract_prompt_echo(&proof);
                 }
+                self.store_completed(key, Some(proof));
             }
         }
     }
@@ -441,11 +440,11 @@ impl<V: ReadView> KeyedRecords<V> {
         let supported = matches!(kind, Some("Reasoning" | "AgentMessage" | "UserMessage"));
         let key = Self::completed_key(p);
         if !supported {
-            if let Some(key) = key {
-                if self.get(key.clone()).is_some() {
-                    self.store_completed(key, None);
-                    self.s.normalization_incomplete = true;
-                }
+            if let Some(key) = key
+                && self.get(key.clone()).is_some()
+            {
+                self.store_completed(key, None);
+                self.s.normalization_incomplete = true;
             }
             return None;
         }
@@ -495,21 +494,20 @@ impl<V: ReadView> KeyedRecords<V> {
                 {
                     proof.prompt = self.s.pending_prompt;
                 }
-                if let Some(message) = proof.prompt {
-                    if self
+                if let Some(message) = proof.prompt
+                    && self
                         .response_at(message, None)
                         .is_some_and(|response| corresponds(&c.body, &response))
-                    {
-                        proof.unresolved = false;
-                        self.put(
-                            Key::PromptEcho(message),
-                            Cell::PromptEcho {
-                                turn: c.turn,
-                                id: c.id,
-                            },
-                        );
-                        self.apply_prompt_echo(message, &proof);
-                    }
+                {
+                    proof.unresolved = false;
+                    self.put(
+                        Key::PromptEcho(message),
+                        Cell::PromptEcho {
+                            turn: c.turn,
+                            id: c.id,
+                        },
+                    );
+                    self.apply_prompt_echo(message, &proof);
                 }
             }
             _ => {

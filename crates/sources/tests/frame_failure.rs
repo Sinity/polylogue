@@ -1,4 +1,4 @@
-//! Storage errors fuse the existing per-record route; EOF cannot turn them into success.
+//! A parser error fails the step at the right offset, for every framing.
 #![allow(clippy::unwrap_used)]
 use polylogue_sources::frame::{
     FailurePhase, IgnoredKind, JsonlDriver, Record, RecordOutcome, RecordParser, Row, StepBudget,
@@ -103,8 +103,8 @@ fn mutate_then_fail_cannot_resume_or_finalize_and_restart_replays_uncommitted_at
         "failed state must never reach provider finalization"
     );
 
-    // The external committed checkpoint was40, not the failed attempt's50.
-    // Reconstruct from that pinned state and replay the complete uncommitted run.
+    // The last commit was at 40, not the failed attempt's 50: restart from
+    // there and replay the whole uncommitted run.
     let (reader, calls, finishes) = parser(None, false);
     let mut restarted = JsonlDriver::new(reader, 40);
     restarted.advance(input, budget()).unwrap();

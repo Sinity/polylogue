@@ -53,7 +53,7 @@ impl SlotValue {
             }
             Slot::Usage(_) => Transform::JsonValueV1,
             Slot::Block { field, .. } if matches!(selection.transform,Transform::ToolFieldV1{field:f} if f==*field) => {
-                selection.transform.clone()
+                selection.transform
             }
             _ => return false,
         };
@@ -274,44 +274,41 @@ pub(super) fn block(
                 .get("name")
                 .and_then(Value::as_str)
                 .is_some_and(is_shell_tool)
+                && let Some(args) = get("arguments").or_else(|| get("input"))
             {
-                if let Some(args) = get("arguments").or_else(|| get("input")) {
-                    let parsed = value(args);
-                    let inner = parsed
-                        .as_ref()
-                        .and_then(Value::as_str)
-                        .map(str::as_bytes)
-                        .unwrap_or(args);
-                    if let Ok(command) =
-                        raw::field(inner, &["cmd"]).or_else(|_| raw::field(inner, &["command"]))
-                    {
-                        if value(command).is_some_and(|v| {
-                            v.is_string()
-                                || v.as_array().is_some_and(|a| a.iter().all(Value::is_string))
-                        }) {
-                            add(
-                                B::Command,
-                                command,
-                                if get("arguments").is_some() {
-                                    "arguments"
-                                } else {
-                                    "input"
-                                },
-                            )?;
-                        }
-                    }
+                let parsed = value(args);
+                let inner = parsed
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .map(str::as_bytes)
+                    .unwrap_or(args);
+                if let Ok(command) =
+                    raw::field(inner, &["cmd"]).or_else(|_| raw::field(inner, &["command"]))
+                    && value(command).is_some_and(|v| {
+                        v.is_string()
+                            || v.as_array().is_some_and(|a| a.iter().all(Value::is_string))
+                    })
+                {
+                    add(
+                        B::Command,
+                        command,
+                        if get("arguments").is_some() {
+                            "arguments"
+                        } else {
+                            "input"
+                        },
+                    )?;
                 }
             }
             // Tool, call ID and input are derived from the item; only `command` is
             // supplied.
         }
         Kind::Result => {
-            if owner == Owner::Primary {
-                if let Some(raw) =
+            if owner == Owner::Primary
+                && let Some(raw) =
                     get("call_id").filter(|raw| value(raw).is_some_and(|v| v.is_string()))
-                {
-                    add(B::CallId, raw, "call_id")?;
-                }
+            {
+                add(B::CallId, raw, "call_id")?;
             }
             let output = get("aggregated_output").or_else(|| get("output"));
             if let Some(raw) = output.filter(|raw| {
@@ -339,23 +336,22 @@ pub(super) fn block(
             {
                 add(B::ExitCode, raw, "exit_code")?;
             }
-            if native_duration(&item).is_some() {
-                if let Some(raw) = get("duration_ms")
+            if native_duration(&item).is_some()
+                && let Some(raw) = get("duration_ms")
                     .or_else(|| get("duration"))
                     .or_else(|| get("output"))
-                {
-                    add(
-                        B::DurationMs,
-                        raw,
-                        if get("duration_ms").is_some() {
-                            "duration_ms"
-                        } else if get("duration").is_some() {
-                            "duration"
-                        } else {
-                            "output"
-                        },
-                    )?;
-                }
+            {
+                add(
+                    B::DurationMs,
+                    raw,
+                    if get("duration_ms").is_some() {
+                        "duration_ms"
+                    } else if get("duration").is_some() {
+                        "duration"
+                    } else {
+                        "output"
+                    },
+                )?;
             }
             // An exit code supplies ExitCode; the Ok/Error derived from it is not
             // a supplied Outcome.
@@ -464,23 +460,19 @@ fn output_status(output: &[u8]) -> Result<Vec<(B, Vec<u8>)>, String> {
     let mut code = None;
     let mut is_error = None;
     let mut candidate = |raw: &[u8]| {
-        if code.is_none() {
-            if let Ok(raw) = raw::field(raw, &["exit_code"])
+        if code.is_none()
+            && let Ok(raw) = raw::field(raw, &["exit_code"])
                 .or_else(|_| raw::field(raw, &["metadata", "exit_code"]))
-            {
-                if value(raw).is_some_and(|v| v.as_i64().is_some()) {
-                    code = Some(raw.to_vec());
-                }
-            }
+            && value(raw).is_some_and(|v| v.as_i64().is_some())
+        {
+            code = Some(raw.to_vec());
         }
-        if is_error.is_none() {
-            if let Ok(raw) = raw::field(raw, &["is_error"])
+        if is_error.is_none()
+            && let Ok(raw) = raw::field(raw, &["is_error"])
                 .or_else(|_| raw::field(raw, &["metadata", "is_error"]))
-            {
-                if value(raw).is_some_and(|v| v.as_bool().is_some()) {
-                    is_error = Some(raw.to_vec());
-                }
-            }
+            && value(raw).is_some_and(|v| v.as_bool().is_some())
+        {
+            is_error = Some(raw.to_vec());
         }
     };
     match output.first() {
@@ -494,10 +486,10 @@ fn output_status(output: &[u8]) -> Result<Vec<(B, Vec<u8>)>, String> {
             let items: Vec<&serde_json::value::RawValue> =
                 serde_json::from_slice(output).map_err(|e| e.to_string())?;
             for item in items {
-                if let Ok(text) = raw::field(item.get().as_bytes(), &["text"]) {
-                    if let Ok(inner) = serde_json::from_slice::<String>(text) {
-                        candidate(inner.as_bytes());
-                    }
+                if let Ok(text) = raw::field(item.get().as_bytes(), &["text"])
+                    && let Ok(inner) = serde_json::from_slice::<String>(text)
+                {
+                    candidate(inner.as_bytes());
                 }
             }
         }

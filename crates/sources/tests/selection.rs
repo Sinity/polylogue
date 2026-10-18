@@ -1,4 +1,4 @@
-//! The common decoder has no provider attribution policy or descriptor wire.
+//! The shared descriptor evaluator, with a synthetic provider recipe.
 use polylogue_model::RawJson as Value;
 use polylogue_sources::{
     codex,

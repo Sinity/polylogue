@@ -75,10 +75,10 @@ impl<R: ReadView> KeyedRecords<R> {
             Some(value) => Some(value.clone()),
             None => self.view.background(task).map_err(|e| e.to_string())?,
         };
-        if let Some(old) = previous {
-            if old != address {
-                address.ambiguous = true;
-            }
+        if let Some(old) = previous
+            && old != address
+        {
+            address.ambiguous = true;
         }
         self.backgrounds.insert(task.into(), address);
         Ok(())
@@ -156,7 +156,7 @@ impl<R: ReadView> KeyedRecords<R> {
                 field,
                 source_path: vec!["content".into()],
                 supplied_revision: revision,
-                selection: Some(selection::background(range.clone(), leaf)),
+                selection: Some(selection::background(range, leaf)),
             })
         };
         add(

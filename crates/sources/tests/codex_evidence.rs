@@ -1,4 +1,4 @@
-//! Raw source evidence and unknown ownership, independent of writer finalization.
+//! Codex version evidence cells and items with unknown owners.
 use polylogue_model::{BlockContent, BlockSlot, ToolOutcome};
 use polylogue_sources::{
     codex::keyed::{Cell, EvidenceCursor, EvidenceHead, Key, KeyedRecords, MemoryReadView, Resume},
@@ -151,7 +151,7 @@ fn unowned_child_never_enters_latest_wrapper_message() {
     }
 }
 #[test]
-fn exact_numeric_fallback_and_structured_error_are_not_normalized_away() {
+fn numeric_fallback_and_structured_error_are_kept_as_written() {
     let a = header()
         + "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"text\":\"hello\"}],\"n\":1E2}}\n";
     let b = a.replace("1E2", "1e2");
@@ -178,7 +178,7 @@ fn exact_numeric_fallback_and_structured_error_are_not_normalized_away() {
 }
 
 #[test]
-fn assistant_snapshot_replaces_its_block_and_retains_missing_raw_fields() {
+fn assistant_snapshot_replaces_its_block_and_keeps_missing_raw_fields() {
     let first = line(
         "response_item",
         json!({"type":"message","id":"answer","role":"assistant","phase":"final_answer","content":[{"text":"first"}]}),
@@ -356,7 +356,7 @@ fn unmapped_message_content_is_preserved_without_completed_empty_text() {
     assert!(matches!(&message.blocks[0].content,BlockContent::Other{data,..} if data==&item));
 }
 #[test]
-fn explicitly_unreadable_model_context_does_not_reuse_a_stale_model() {
+fn unreadable_model_context_does_not_reuse_a_stale_model() {
     let known = line("turn_context", json!({"model":"model-before"}));
     let unknown = line("turn_context", json!({"model":null}));
     let answer = line(
@@ -508,7 +508,7 @@ fn evidence_validation_owns_roles_required_slots_and_count_bounds() {
 }
 
 #[test]
-fn pinned_unowned_command_keeps_wrapper_messages_and_raw_evidence_unchanged() {
+fn unowned_command_leaves_wrapper_messages_and_raw_evidence_unchanged() {
     let w = |id: &str| {
         line(
             "response_item",
@@ -580,7 +580,7 @@ fn pinned_unowned_command_keeps_wrapper_messages_and_raw_evidence_unchanged() {
 }
 
 #[test]
-fn provisional_call_uses_its_real_block_and_only_an_exact_session_witness_refines_it() {
+fn provisional_call_uses_its_block_and_only_a_matching_completion_refines_it() {
     let bytes = header()
         + &line(
             "response_item",

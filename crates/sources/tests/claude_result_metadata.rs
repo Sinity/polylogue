@@ -1,4 +1,4 @@
-//! Named opaque result sidecars preserve supplied evidence without tool semantics.
+//! Claude tool-result sidecar members are kept as data and set no status.
 use polylogue_model::{BlockContent, RawJson};
 use polylogue_sources::{
     claude_code::{
@@ -97,7 +97,7 @@ fn evaluate(c: &Contribution, key: &str, raw: &str) -> (RawJson, u64) {
     (RawJson::parse(&out).unwrap(), recipe.inputs[0].record.start)
 }
 #[test]
-fn finite_named_members_preserve_all_supplied_shapes_exactly_with_no_output_or_status_inference() {
+fn named_sidecar_members_are_kept_unchanged_and_set_no_output_or_status() {
     for key in NAMES {
         for value in [
             "null",
@@ -133,7 +133,7 @@ fn finite_named_members_preserve_all_supplied_shapes_exactly_with_no_output_or_s
     );
 }
 #[test]
-fn whole_sidecar_replacement_and_omission_keep_separate_exact_suppliers() {
+fn sidecar_replacement_and_omission_keep_separate_suppliers() {
     let a = row(
         Some(
             r#"{"gitOperation":{"pr":{"action":"create","number":7,"url":"https://example.invalid/7"}},"success":false}"#,
@@ -165,8 +165,7 @@ fn whole_sidecar_replacement_and_omission_keep_separate_exact_suppliers() {
     assert_ne!(changed.record_unit(0), c.record_unit(0));
 }
 #[test]
-fn string_carrier_requires_exactly_one_result_and_unknown_status_and_sidecar_containers_still_refuse()
- {
+fn string_sidecar_needs_exactly_one_result_and_unknown_members_stay_unresolved() {
     for meta in [
         "null",
         "true",

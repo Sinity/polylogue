@@ -155,7 +155,7 @@ pub fn map(row: &HistoryRow) -> Result<Option<Operation>, String> {
         return Err("history row and item coordinates disagree".into());
     }
     let session =
-        SessionId::from_stored(&format!("codex:{}", row.thread_id)).map_err(|e| e.to_string())?;
+        SessionId::from_stored(format!("codex:{}", row.thread_id)).map_err(|e| e.to_string())?;
     let origin = ToolOrigin::History {
         schema: SCHEMA.into(),
         table: "thread_items".into(),
@@ -202,7 +202,7 @@ pub fn map(row: &HistoryRow) -> Result<Option<Operation>, String> {
 mod tests {
     use super::*;
     #[test]
-    fn row_qualification_facts_change_version_evidence_for_identical_item_json() {
+    fn row_timestamps_change_the_version_for_identical_item_json() {
         let mut row = HistoryRow { thread_id:"S".into(),turn_id:"T".into(),item_id:"C".into(),rollout_ordinal:1,updated_at_ordinal:1,created_at_ms:1,started_at_ms:None,completed_at_ms:None,item_type:"commandExecution".into(),item_json:serde_json::json!({"type":"commandExecution","id":"C","source":"agent","command":"same","status":"completed"}).to_string() };
         let unknown = map(&row).unwrap().unwrap();
         row.started_at_ms = Some(1);

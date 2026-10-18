@@ -485,5 +485,4 @@ fn scalar_json(text: &str) -> Option<Value> {
 }
 
 #[cfg(test)]
-#[path = "scalar_compatibility_tests.rs"]
-mod scalar_compatibility_tests;
+mod tests;

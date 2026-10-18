@@ -64,10 +64,10 @@ pub(super) fn overlay(
     let kept = missing.clone();
     let mut conflicts = missing;
     for name in ["role", "type"] {
-        if let (Some(a), Some(b)) = (previous.get(name), newer.get(name)) {
-            if a.get() != b.get() {
-                conflicts.push(name.into());
-            }
+        if let (Some(a), Some(b)) = (previous.get(name), newer.get(name))
+            && a.get() != b.get()
+        {
+            conflicts.push(name.into());
         }
     }
     previous.extend(newer);

@@ -1,5 +1,5 @@
-//! Provider-cell equivalence and access discrimination. These tests do not
-//! qualify a durable SQLite adapter or the daemon's bounded owner route.
+//! Codex state cells: step-by-step parsing matches a whole parse, and the
+//! parser reads only the cells it needs.
 use polylogue_sources::codex::keyed::{
     Cell, Delta, Key, KeyedRecords, Limits, MemoryReadView, ReadView, Resume,
 };
@@ -101,7 +101,7 @@ impl ReadView for Meter<'_> {
 }
 fn prefix(n: usize) -> (MemoryReadView, Resume) {
     let mut bytes = header();
-    // One early running result keeps the old contiguous suffix unsettled.
+    // One early running result keeps everything after it open.
     bytes += &line(
         "response_item",
         json!({"type":"function_call","id":"early","name":"exec_command","call_id":"early","arguments":"{}"}),
@@ -128,8 +128,8 @@ fn prefix(n: usize) -> (MemoryReadView, Resume) {
     }
     let mut view = MemoryReadView::default();
     let mut resume = Resume::default();
-    // Build the fixture through admitted provider steps; constructing a large
-    // fixture in one overlay must not disable the production admission limit.
+    // Build the fixture one record per step, so the default change limit
+    // still applies.
     for record in bytes.as_bytes().split_inclusive(|b| *b == b'\n') {
         let (next, state, _) = run(view, resume, record);
         view = next;
@@ -197,7 +197,7 @@ fn lookup_failure_fuses_driver_and_never_acknowledges_attempted_step() {
     assert_eq!(framed.counts.used, 0);
 }
 #[test]
-fn cell_corruption_and_overlay_admission_are_errors_not_missing_provider_records() {
+fn corrupt_cells_and_change_limits_are_errors_not_missing_records() {
     let (mut view, resume) = prefix(1);
     view.cells.insert(Key::Call("c0".into()), Cell::Present);
     let bytes = line(
@@ -453,8 +453,8 @@ fn missing_referenced_cells_fail_instead_of_becoming_provider_unknown_records() 
         assert_eq!(framed.counts.used, 0);
         assert!(framed.counts.unrecognized.is_empty());
     }
-    // A provider can genuinely record a result without a known call. Absence
-    // is an error only when another retained state cell promises the call.
+    // A result without a known call is valid. A missing call is an error only
+    // when another stored cell refers to it.
     let (view, resume, _) = run(
         MemoryReadView::default(),
         Resume::default(),
