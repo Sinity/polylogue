@@ -7,7 +7,7 @@ inside `nix develop`.
 | --- | --- | --- | --- |
 | Focused tests | `cargo test -p <crate> <filter>` | while editing | seconds |
 | Fast check | `cargo run -p xtask -- fast` | every push (pre-push hook) | 2-10 s warm, 40 s cold |
-| Full suite | `cargo run -p xtask -- check` | a batch of merged work | about 10 min |
+| Full suite | `cargo run -p xtask -- check` | a batch of merged work | 30+ min under load |
 | End-to-end scenarios | `cargo test -p polylogue --test '*'` | after daemon, CLI or MCP changes | a few minutes |
 | Package build | `nix flake check` | after dependency or packaging changes | about 2.5 min |
 

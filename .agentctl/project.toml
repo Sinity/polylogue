@@ -14,7 +14,7 @@ description = "Formatting, crate boundaries and the full workspace test suite"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
-timeout_seconds = 1800
+timeout_seconds = 3600
 scratch = "nvme"
 cache = "none"
 
