@@ -1,5 +1,6 @@
 use super::*;
 use crate::contributions::{ProjectionStep, SmallField};
+mod construction;
 fn payload() -> SmallField {
     SmallField::prepare(b"null".to_vec(), b"null".to_vec(), 65536).unwrap()
 }
