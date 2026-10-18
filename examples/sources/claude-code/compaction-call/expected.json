@@ -1,0 +1,87 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "assistant": 1,
+      "user": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [
+      {
+        "child": "claude-code:agent-acompact-5e",
+        "evidence": "agentId acompact",
+        "kind": "spawn",
+        "parent": "claude-code:s3"
+      }
+    ],
+    "messages": [
+      {
+        "end": 177,
+        "message": {
+          "at": "2026-04-01T10:00:00Z",
+          "blocks": [
+            {
+              "text": "Earlier request.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:h1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:agent-acompact-5e"
+        },
+        "offset": 0
+      },
+      {
+        "end": 405,
+        "message": {
+          "at": "2026-04-01T10:05:00Z",
+          "blocks": [
+            {
+              "text": "Summarize the conversation so far.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:c1",
+          "parent": "claude-code:h1",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:agent-acompact-5e"
+        },
+        "offset": 178
+      },
+      {
+        "end": 687,
+        "message": {
+          "at": "2026-04-01T10:05:09Z",
+          "blocks": [
+            {
+              "text": "The work so far: one request.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:c2",
+          "parent": "claude-code:c1",
+          "role": "assistant",
+          "session": "claude-code:agent-acompact-5e",
+          "stop_reason": "end_turn"
+        },
+        "offset": 406
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-code:agent-acompact-5e",
+        "kind": "compaction",
+        "started": "2026-04-01T10:00:00Z"
+      }
+    ]
+  }
+}

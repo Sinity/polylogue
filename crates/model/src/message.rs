@@ -50,6 +50,121 @@ pub struct Message {
     /// How long the response took, as the tool reported it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// How the harness produced the message, beyond its content.
+    #[serde(default, skip_serializing_if = "Production::is_empty")]
+    pub production: Production,
+}
+
+/// What the harness recorded about producing a message: the settings it
+/// ran with, who asked for it, and the API's own diagnostics. Measurement
+/// reads these; none of it is content.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Production {
+    /// Reasoning effort the request asked for (`low`, `medium`, `high`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// The model the request named, when the one that answered differs
+    /// (a fallback) or carries a variant suffix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<String>,
+    /// The model consulted as an advisor for this response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisor_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Attribution::is_empty")]
+    pub attribution: Attribution,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_ms: Option<u64>,
+    /// Time to the first token of the response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_token_ms: Option<u64>,
+    /// The API error this message reports, instead of a response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_error: Option<ApiError>,
+    /// Why the prompt cache missed, as the API reported it, with the
+    /// tokens it cost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_miss: Option<serde_json::Value>,
+    /// The refusal category and explanation, when the model refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<serde_json::Value>,
+    /// The permission decision for the tool call this message answers:
+    /// decision, its source and the kind of reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<serde_json::Value>,
+    /// The harness's ID for the API request that produced this message,
+    /// which its request records carry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    /// What started the turn, when not a person at the terminal (`sdk`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_origin: Option<String>,
+    /// The subscription's rate-limit state the API returned with this
+    /// response: which window, whether it was exceeded, when it resets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<serde_json::Value>,
+}
+
+impl Production {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Takes what a later record of the same message states; facts it is
+    /// silent about stay as they were.
+    pub fn merge(&mut self, later: Production) {
+        fn take<T>(into: &mut Option<T>, from: Option<T>) {
+            if from.is_some() {
+                *into = from;
+            }
+        }
+        take(&mut self.effort, later.effort);
+        take(&mut self.requested_model, later.requested_model);
+        take(&mut self.advisor_model, later.advisor_model);
+        let (a, b) = (&mut self.attribution, later.attribution);
+        take(&mut a.agent, b.agent);
+        take(&mut a.skill, b.skill);
+        take(&mut a.plugin, b.plugin);
+        take(&mut a.mcp_server, b.mcp_server);
+        take(&mut a.mcp_tool, b.mcp_tool);
+        take(&mut self.thinking_ms, later.thinking_ms);
+        take(&mut self.first_token_ms, later.first_token_ms);
+        take(&mut self.api_error, later.api_error);
+        take(&mut self.cache_miss, later.cache_miss);
+        take(&mut self.refusal, later.refusal);
+        take(&mut self.permission, later.permission);
+        take(&mut self.request, later.request);
+        take(&mut self.turn_origin, later.turn_origin);
+        take(&mut self.quota, later.quota);
+    }
+}
+
+/// Which agent, skill, plugin or MCP tool the work was done for.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attribution {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_server: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tool: Option<String>,
+}
+
+impl Attribution {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiError {
+    /// The harness's label (`rate_limit`, `invalid_request`).
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
 }
 
 impl Message {

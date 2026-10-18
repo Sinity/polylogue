@@ -19,7 +19,7 @@ CREATE TABLE session (
   id                TEXT NOT NULL UNIQUE,   -- '<origin>:<native id>'
   origin            TEXT NOT NULL,
   native_id         TEXT NOT NULL,
-  kind              TEXT NOT NULL,          -- main | subagent | sidechain (continuations are links, not a kind)
+  kind              TEXT NOT NULL,          -- main | subagent | sidechain | compaction (continuations are links, not a kind)
   stub              INTEGER NOT NULL DEFAULT 0,  -- 1: created by a hook or process line naming a session that has no
                                             --   transcript yet, so its live state exists; cleared when its messages arrive
   title             TEXT,                   -- provider title only

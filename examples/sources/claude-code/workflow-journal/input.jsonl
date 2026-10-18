@@ -1,0 +1,5 @@
+{"type":"launched","key":"run","phase":"Review"}
+{"type":"started","agentId":"w1","key":"review:a","label":"review a.rs","phase":"Review"}
+{"type":"started","agentId":"w2","key":"review:b","label":"review b.rs","phase":"Review"}
+{"type":"result","agentId":"w1","key":"review:a","result":{"findings":0}}
+{"type":"result","agentId":"w2","key":"review:b","result":{"findings":2}}

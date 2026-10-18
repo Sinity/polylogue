@@ -25,6 +25,24 @@ pub enum Route {
     Spool,
 }
 
+/// The directory an origin's locations are relative to: the tool's own
+/// override variable when it is set, otherwise a directory under home.
+/// Exactly where the tool itself writes (architecture 5.5b): Claude Code
+/// honours `CLAUDE_CONFIG_DIR`, Codex `CODEX_HOME`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Root {
+    pub env: Option<&'static str>,
+    /// Relative to home; empty for home itself.
+    pub default: &'static str,
+}
+
+impl Root {
+    pub const HOME: Root = Root {
+        env: None,
+        default: "",
+    };
+}
+
 pub struct OriginSpec {
     pub name: &'static str,
     /// Bumped when the parser's output for the same bytes changes; the
@@ -33,8 +51,9 @@ pub struct OriginSpec {
     pub parser_version: u32,
     pub support: Support,
     pub route: Route,
-    /// Glob patterns relative to the home directory, exactly the layout
-    /// the tool writes. Empty for imports.
+    pub root: Root,
+    /// Glob patterns relative to `root`, exactly the layout the tool
+    /// writes. Empty for imports.
     pub locations: &'static [&'static str],
     /// Whether a file is this origin's, from its path and first bytes. Runs
     /// before the origin is decided; a suffix alone never decides it.
@@ -54,11 +73,15 @@ fn none(_: &Path) -> Option<Box<dyn StepParser>> {
 
 macro_rules! reserved {
     ($name:literal, $route:ident, [$($loc:literal),*]) => {
+        reserved!($name, $route, Root::HOME, [$($loc),*])
+    };
+    ($name:literal, $route:ident, $root:expr, [$($loc:literal),*]) => {
         OriginSpec {
             name: $name,
             parser_version: 0,
             support: Support::Reserved,
             route: Route::$route,
+            root: $root,
             locations: &[$($loc),*],
             recognize: never,
             open: none,
@@ -66,12 +89,18 @@ macro_rules! reserved {
     };
 }
 
+const CODEX_HOME: Root = Root {
+    env: Some("CODEX_HOME"),
+    default: ".codex",
+};
+
 pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Live,
+        root: crate::claude_code::ROOT,
         locations: crate::claude_code::LOCATIONS,
         recognize: crate::claude_code::recognize,
         open: crate::claude_code::open,
@@ -79,9 +108,10 @@ pub static ORIGINS: &[OriginSpec] = &[
     reserved!(
         "codex",
         Live,
-        [".codex/sessions/**/*.jsonl", ".codex/history.jsonl"]
+        CODEX_HOME,
+        ["sessions/**/*.jsonl", "history.jsonl"]
     ),
-    reserved!("codex-database", Live, [".codex/*.sqlite"]),
+    reserved!("codex-database", Live, CODEX_HOME, ["*.sqlite"]),
     reserved!("gemini-cli", Live, [".gemini/tmp/*/chats/*.json"]),
     reserved!("antigravity", Live, [".gemini/antigravity/**"]),
     reserved!("hermes", Live, [".hermes/state.db"]),

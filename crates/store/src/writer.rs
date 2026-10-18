@@ -717,6 +717,11 @@ struct Version {
     input_pk: i64,
     chain: i64,
     start: i64,
+    end: i64,
+    /// Whether the version's session is a main session. A spawned
+    /// session's file can repeat its parent's messages; the parent's own
+    /// record is the original.
+    main: bool,
     complete: bool,
     rank: i64,
     hash: Vec<u8>,
@@ -726,15 +731,19 @@ impl Version {
     /// Architecture 5.5 and 5.5a. Within one input: a newer revision chain
     /// wins (a rewrite), and within a chain the earliest wire record wins;
     /// the same record sent again (a response still being written) replaces
-    /// itself. Across inputs: a complete version, then the more faithful
-    /// route, then the smaller content hash, so the choice does not depend
-    /// on which input arrived first.
+    /// itself. Across inputs: the originating session's own record over a
+    /// copy in a session it spawned, then a complete version, then the
+    /// more faithful route, then the smaller content hash, so the choice
+    /// does not depend on which input arrived first.
     fn beats(&self, cur: &Version) -> bool {
         if self.input_pk == cur.input_pk {
             if self.chain != cur.chain {
                 return self.chain > cur.chain;
             }
             return self.start <= cur.start;
+        }
+        if self.main != cur.main {
+            return self.main;
         }
         if self.complete != cur.complete {
             return self.complete;
@@ -883,6 +892,8 @@ impl Ctx<'_, '_> {
             input_pk: self.input_pk,
             chain: self.chain,
             start: offset,
+            end: row.end.max(row.offset) as i64,
+            main: self.session_kind(session_pk)? == "main",
             complete: !(m.role == Role::Assistant && m.stop_reason.is_none()),
             rank: self.rank,
             hash: hash.to_vec(),
@@ -891,9 +902,10 @@ impl Ctx<'_, '_> {
             .tx
             .prepare_cached(
                 "SELECT m.pk, m.order_input_pk, m.seq, m.input_pk, m.source_chain, m.source_start,
-                        m.in_progress, m.route_rank, s.version_hash
+                        m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind
                  FROM message m LEFT JOIN message_source s
                    ON s.message_pk = m.pk AND s.preferred = 1
+                 JOIN session ss ON ss.pk = m.session_pk
                  WHERE m.id = ?1",
             )?
             .query_row([m.id.to_string()], |r| {
@@ -904,15 +916,18 @@ impl Ctx<'_, '_> {
                         input_pk: r.get(3)?,
                         chain: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
                         start: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                        end: 0,
+                        main: r.get::<_, String>(10)? == "main",
                         complete: r.get::<_, i64>(6)? == 0,
                         rank: r.get(7)?,
                         hash: r.get::<_, Option<Vec<u8>>>(8)?.unwrap_or_default(),
                     },
+                    (r.get::<_, i64>(9)?, r.get::<_, String>(10)?),
                 ))
             })
             .optional()?;
 
-        let Some((pk, order, preferred)) = cur else {
+        let Some((pk, order, preferred, (cur_session, cur_kind))) = cur else {
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, offset))?;
             self.upsert_source(pk, &new, true)?;
             self.insert_blocks(pk, session_pk, m, bodies)?;
@@ -944,6 +959,19 @@ impl Ctx<'_, '_> {
             }
             return Ok(false);
         }
+        // A message is stored once, in the session where it originated
+        // (architecture 5.4). A spawned session's file can repeat its
+        // parent's messages (a compaction call, a side question replaying
+        // the history); such a copy may become the shown version, but it
+        // never moves the message out of a main session.
+        let session_pk = if cur_session != session_pk
+            && cur_kind == "main"
+            && self.session_kind(session_pk)? != "main"
+        {
+            cur_session
+        } else {
+            session_pk
+        };
         self.tx
             .prepare_cached("UPDATE message_source SET preferred = 0 WHERE message_pk = ?1")?
             .execute([pk])?;
@@ -959,7 +987,7 @@ impl Ctx<'_, '_> {
             .prepare_cached(
                 "INSERT INTO message_source(message_pk, input_pk, chain, source_start, source_end,
                      preferred, complete, version_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7)
+                 VALUES (?1, ?2, ?3, ?4, ?8, ?5, ?6, ?7)
                  ON CONFLICT(message_pk, input_pk, chain) DO UPDATE SET
                      source_start = excluded.source_start, source_end = excluded.source_end,
                      preferred = excluded.preferred, complete = excluded.complete,
@@ -972,9 +1000,17 @@ impl Ctx<'_, '_> {
                 v.start,
                 i64::from(preferred),
                 i64::from(v.complete),
-                v.hash
+                v.hash,
+                v.end
             ])?;
         Ok(())
+    }
+
+    fn session_kind(&self, session_pk: i64) -> Result<String> {
+        Ok(self
+            .tx
+            .prepare_cached("SELECT kind FROM session WHERE pk = ?1")?
+            .query_row([session_pk], |r| r.get(0))?)
     }
 
     fn insert_message(
@@ -1021,17 +1057,26 @@ impl Ctx<'_, '_> {
             .filter_map(Block::text)
             .map(|t| t.split_whitespace().count() as i64)
             .sum();
-        let attrs = m
-            .reported_cost_usd
-            .as_ref()
-            .map(|c| serde_json::json!({ "reported_cost_usd": c }).to_string());
+        let attrs = {
+            let mut a = serde_json::Map::new();
+            if let Some(c) = &m.reported_cost_usd {
+                a.insert("reported_cost_usd".into(), c.clone().into());
+            }
+            if !m.production.is_empty() {
+                a.insert(
+                    "production".into(),
+                    serde_json::to_value(&m.production).unwrap_or_default(),
+                );
+            }
+            (!a.is_empty()).then(|| serde_json::Value::Object(a).to_string())
+        };
         let u = &m.usage;
         let n = |x: Option<u64>| x.map(|x| x as i64);
         let sql = if pk.is_some() {
             "UPDATE message SET session_pk = ?2, order_input_pk = ?3, seq = ?4, route_rank = ?5,
                  role = ?6, written_by = ?7, prompt_kind = ?8, model = ?9, at = ?10,
                  parent_id = ?11, input_pk = ?12, source_chain = ?13, source_start = ?14,
-                 source_end = ?14, in_progress = ?15, input_tokens = ?16, output_tokens = ?17,
+                 source_end = ?27, in_progress = ?15, input_tokens = ?16, output_tokens = ?17,
                  cache_read_tokens = ?18, cache_write_tokens = ?19, reasoning_tokens = ?20,
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
                  words = ?25, parser_version = ?26
@@ -1042,7 +1087,7 @@ impl Ctx<'_, '_> {
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, parser_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15, ?16,
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?27, ?15, ?16,
                  ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)"
         };
         let first: rusqlite::types::Value = match pk {
@@ -1076,6 +1121,7 @@ impl Ctx<'_, '_> {
             attrs,
             words,
             self.parser_version,
+            v.end,
         ])?;
         Ok(pk.unwrap_or_else(|| self.tx.last_insert_rowid()))
     }
@@ -1337,21 +1383,32 @@ impl Ctx<'_, '_> {
                 .optional()?,
             None => None,
         };
+        // An event with its own byte range sorts by it among the input's
+        // messages (whose `seq` is their record offset); otherwise it takes
+        // the position of the message it follows.
+        let seq = e
+            .range
+            .map(|(start, _)| start as i64)
+            .or(after.map(|a| a.1))
+            .unwrap_or(0);
         self.tx
             .prepare_cached(
                 "INSERT OR IGNORE INTO event(id, session_pk, seq, after_message_pk, kind, at,
-                     input_pk, parser_version, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     input_pk, parser_version, source_chain, source_start, source_end, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?
             .execute(params![
                 id,
                 session_pk,
-                after.map_or(0, |a| a.1),
+                seq,
                 after.map(|a| a.0),
                 e.kind,
                 ms(e.at),
                 self.input_pk,
                 self.parser_version,
+                e.range.map(|_| self.chain),
+                e.range.map(|r| r.0 as i64),
+                e.range.map(|r| r.1 as i64),
                 data,
             ])?;
         Ok(())

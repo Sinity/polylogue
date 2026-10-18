@@ -1,9 +1,11 @@
-//! Finding inputs at the origins' fixed locations (architecture 5.1).
+//! Finding inputs at the origins' fixed locations (architecture 5.1, 5.5b).
 //! Exactly the layout each tool writes: each origin's location patterns are
-//! walked under the home directory, and a recognizer runs before a new
+//! walked under its root (the tool's own directory variable, or a default
+//! under home), and a recognizer runs before a new
 //! path's origin is decided. An unreadable root is a state, never an empty
 //! backlog.
 
+use crate::Config;
 use polylogue_sources::{ORIGINS, OriginSpec, Route, Support};
 use std::fs;
 use std::io::Read;
@@ -24,14 +26,15 @@ fn collected() -> impl Iterator<Item = &'static OriginSpec> {
 /// Every file matching a live or spool location, and the directories that
 /// exist but could not be read. Recognition is separate ([`recognize`]),
 /// so known paths are not reopened every pass.
-pub fn scan(home: &Path) -> (Vec<Found>, Vec<PathBuf>) {
+pub fn scan(config: &Config) -> (Vec<Found>, Vec<PathBuf>) {
     let mut found = Vec::new();
     let mut unreadable = Vec::new();
     for origin in collected() {
+        let root = config.root(origin.root);
         for pattern in origin.locations {
             let segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
             let mut paths = Vec::new();
-            walk(home, &segs, &mut paths, &mut unreadable);
+            walk(&root, &segs, &mut paths, &mut unreadable);
             found.extend(paths.into_iter().map(|path| Found { path, origin }));
         }
     }
@@ -51,15 +54,15 @@ pub fn recognize(found: &Found) -> bool {
 
 /// The directories to watch: each pattern's longest prefix without a
 /// wildcard, where it exists.
-pub fn roots(home: &Path) -> Vec<PathBuf> {
+pub fn roots(config: &Config) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = collected()
-        .flat_map(|o| o.locations.iter())
-        .map(|pattern| {
+        .flat_map(|o| o.locations.iter().map(move |l| (config.root(o.root), l)))
+        .map(|(root, pattern)| {
             let fixed: Vec<&str> = pattern
                 .split('/')
                 .take_while(|s| !s.contains('*'))
                 .collect();
-            home.join(fixed.join("/"))
+            root.join(fixed.join("/"))
         })
         .filter(|p| p.is_dir())
         .collect();
@@ -152,29 +155,70 @@ mod tests {
         assert!(!wildcard("a*b*c", "aXcYb"));
     }
 
+    fn config(home: &Path) -> Config {
+        Config {
+            home: home.to_owned(),
+            tool_dirs: Default::default(),
+            workers: 1,
+            bytes_in_flight: 1 << 20,
+            machine: "m".into(),
+            host: "h".into(),
+            chunk: 1 << 20,
+        }
+    }
+
     #[test]
     fn scans_exactly_the_claude_code_layout() {
         let home = tempfile::tempdir().unwrap();
         let p = home.path().join(".claude/projects/-proj");
-        fs::create_dir_all(p.join("s1/subagents")).unwrap();
+        fs::create_dir_all(p.join("s1/subagents/workflows/wf_1")).unwrap();
         fs::write(p.join("s1.jsonl"), "{}\n").unwrap();
+        fs::write(p.join("s1/s1.jsonl"), "{}\n").unwrap();
         fs::write(p.join("s1/subagents/agent-a.jsonl"), "{}\n").unwrap();
+        fs::write(p.join("s1/subagents/workflows/wf_1/agent-b.jsonl"), "{}\n").unwrap();
+        fs::write(p.join("s1/subagents/workflows/wf_1/journal.jsonl"), "{}\n").unwrap();
         fs::write(p.join("notes.txt"), "x").unwrap();
         fs::write(p.join("s1/subagents/other.jsonl"), "{}\n").unwrap();
-        let (found, unreadable) = scan(home.path());
+        fs::write(p.join("s1/other.jsonl"), "{}\n").unwrap();
+        let (found, unreadable) = scan(&config(home.path()));
         let names: Vec<_> = found
             .iter()
             .map(|f| f.path.strip_prefix(&p).unwrap().to_owned())
             .collect();
+        let recognized: Vec<_> = found
+            .iter()
+            .filter(|f| recognize(f))
+            .map(|f| f.path.strip_prefix(&p).unwrap().to_owned())
+            .collect();
         assert_eq!(
-            names,
+            recognized,
             [
+                PathBuf::from("s1/s1.jsonl"),
                 PathBuf::from("s1/subagents/agent-a.jsonl"),
-                PathBuf::from("s1.jsonl")
+                PathBuf::from("s1/subagents/workflows/wf_1/agent-b.jsonl"),
+                PathBuf::from("s1/subagents/workflows/wf_1/journal.jsonl"),
+                PathBuf::from("s1.jsonl"),
             ]
         );
+        assert!(names.contains(&PathBuf::from("s1/other.jsonl")));
         assert!(unreadable.is_empty());
-        assert!(found.iter().all(recognize));
-        assert_eq!(roots(home.path()), [home.path().join(".claude/projects")]);
+        assert_eq!(
+            roots(&config(home.path())),
+            [home.path().join(".claude/projects")]
+        );
+    }
+
+    #[test]
+    fn a_tool_directory_variable_moves_the_root() {
+        let home = tempfile::tempdir().unwrap();
+        let own = home.path().join(".config/claude");
+        fs::create_dir_all(own.join("projects/-proj")).unwrap();
+        fs::write(own.join("projects/-proj/s1.jsonl"), "{}\n").unwrap();
+        let mut c = config(home.path());
+        c.tool_dirs.insert("CLAUDE_CONFIG_DIR".into(), own.clone());
+        let (found, _) = scan(&c);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].path.starts_with(&own));
+        assert_eq!(roots(&c), [own.join("projects")]);
     }
 }

@@ -92,6 +92,7 @@ mod tests {
             stop_reason: None,
             reported_cost_usd: None,
             duration_ms: None,
+            production: Default::default(),
         };
         Document::new(vec![SessionExport {
             session,

@@ -11,6 +11,17 @@ pub enum SessionKind {
     Subagent,
     /// A side conversation kept inside its parent's file.
     Sidechain,
+    /// The model call that compacted another session's history (a Claude
+    /// Code `agent-acompact` file): the summarize prompt and the summary.
+    Compaction,
+}
+
+impl SessionKind {
+    /// Sessions another session started. A message copied into one of
+    /// these from its parent still belongs to the parent.
+    pub fn is_spawned(self) -> bool {
+        !matches!(self, SessionKind::Main)
+    }
 }
 
 /// Where a title came from, highest precedence first.
@@ -52,6 +63,10 @@ pub struct Session {
     pub tool_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<Timestamp>,
+    /// How the harness ran the session, when not interactively (Claude
+    /// Code `bg` for a background session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 impl Session {
@@ -64,6 +79,7 @@ impl Session {
             git_branch: None,
             tool_version: None,
             started: None,
+            mode: None,
         }
     }
 
@@ -121,6 +137,9 @@ impl Session {
         }
         if let Some(at) = other.started {
             self.offer_start(at);
+        }
+        if other.mode.is_some() {
+            self.mode.clone_from(&other.mode);
         }
     }
 }

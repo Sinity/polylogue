@@ -39,6 +39,10 @@
           "uuid": "main-bg-notification"
         },
         "kind": "queue",
+        "range": [
+          3018,
+          3446
+        ],
         "session": "claude-code:claude-normalization-main"
       }
     ],
@@ -58,6 +62,7 @@
     ],
     "messages": [
       {
+        "end": 190,
         "message": {
           "at": "2026-07-01T10:00:00Z",
           "blocks": [
@@ -74,6 +79,7 @@
         "offset": 0
       },
       {
+        "end": 941,
         "message": {
           "at": "2026-07-01T10:00:01Z",
           "blocks": [
@@ -122,6 +128,7 @@
         "offset": 191
       },
       {
+        "end": 1287,
         "message": {
           "at": "2026-07-01T10:00:02Z",
           "blocks": [
@@ -147,6 +154,7 @@
         "offset": 942
       },
       {
+        "end": 1578,
         "message": {
           "at": "2026-07-01T10:00:03Z",
           "blocks": [
@@ -164,6 +172,7 @@
         "offset": 1288
       },
       {
+        "end": 1754,
         "message": {
           "at": "2026-07-01T10:00:03.5Z",
           "blocks": [
@@ -180,6 +189,7 @@
         "offset": 1579
       },
       {
+        "end": 1945,
         "message": {
           "at": "2026-07-01T10:00:04Z",
           "blocks": [
@@ -196,6 +206,7 @@
         "offset": 1755
       },
       {
+        "end": 2210,
         "message": {
           "at": "2026-07-01T10:00:05Z",
           "blocks": [
@@ -213,6 +224,7 @@
         "offset": 1946
       },
       {
+        "end": 2397,
         "message": {
           "at": "2026-07-01T10:00:06Z",
           "blocks": [
@@ -230,6 +242,7 @@
         "offset": 2211
       },
       {
+        "end": 2751,
         "message": {
           "at": "2026-07-01T10:00:07Z",
           "blocks": [
@@ -256,6 +269,7 @@
         "offset": 2398
       },
       {
+        "end": 3017,
         "message": {
           "at": "2026-07-01T10:00:08Z",
           "blocks": [
@@ -277,6 +291,7 @@
         "offset": 2752
       },
       {
+        "end": 3681,
         "message": {
           "at": "2026-07-01T10:00:09.5Z",
           "blocks": [
@@ -294,6 +309,7 @@
         "offset": 3447
       },
       {
+        "end": 4088,
         "message": {
           "at": "2026-07-01T10:00:10Z",
           "blocks": [

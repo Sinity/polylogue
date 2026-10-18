@@ -1,0 +1,2 @@
+{"type":"user","uuid":"o1","sessionId":"s2","agentId":"c7","isSidechain":true,"timestamp":"2025-08-01T09:00:00Z","message":{"role":"user","content":"Summarize the diff."}}
+{"type":"assistant","uuid":"o2","parentUuid":"o1","sessionId":"s2","agentId":"c7","isSidechain":true,"timestamp":"2025-08-01T09:00:04Z","message":{"id":"msg_o","role":"assistant","content":[{"type":"text","text":"Two files changed."}],"stop_reason":"end_turn"}}

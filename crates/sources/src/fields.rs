@@ -8,8 +8,9 @@ use polylogue_model::Json;
 pub enum Rule {
     /// The parser reads it into a row.
     Read,
-    /// Kept whole in the stored record or an event's data, not interpreted.
-    Kept,
+    /// Kept whole in the stored record or an event's data, not interpreted
+    /// yet, for the stated reason.
+    Kept(&'static str),
     /// Not read, for the stated reason.
     Excluded(&'static str),
 }

@@ -3,6 +3,7 @@
 //! against real data without storing or printing any content.
 //!
 //! `cargo run --release -p polylogue-sources --example scan -- claude-code FILE...`
+//! An argument `@LIST` reads one path per line from LIST.
 
 use polylogue_sources::Accounting;
 use polylogue_sources::origin::by_name;
@@ -13,10 +14,20 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let origin = args.next().expect("origin name");
     let spec = by_name(&origin).expect("known origin");
+    let paths: Vec<String> = args
+        .flat_map(|a| match a.strip_prefix('@') {
+            Some(list) => std::fs::read_to_string(list)
+                .expect("path list")
+                .lines()
+                .map(str::to_owned)
+                .collect(),
+            None => vec![a],
+        })
+        .collect();
     let mut total = Accounting::default();
     let (mut bytes, mut files, mut messages, mut failures) = (0u64, 0u64, 0u64, 0u64);
     let started = Instant::now();
-    for path in args {
+    for path in paths {
         let path = Path::new(&path);
         let Ok(input) = std::fs::read(path) else {
             failures += 1;
@@ -49,7 +60,7 @@ fn main() {
         let mut v: Vec<_> = map.iter().collect();
         v.sort_by(|a, b| b.1.cmp(a.1));
         println!("{name}:");
-        for (k, n) in v.into_iter().take(40) {
+        for (k, n) in v {
             println!("  {n:>9}  {k}");
         }
     };

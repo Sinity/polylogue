@@ -22,6 +22,7 @@ impl World {
         let (archive, lock) = Archive::open_or_create(&self.root).unwrap();
         let config = Config {
             home: self.home.clone(),
+            tool_dirs: Default::default(),
             workers: 3,
             bytes_in_flight: 1 << 20,
             machine: "test-machine".into(),
