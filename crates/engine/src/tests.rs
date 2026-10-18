@@ -90,7 +90,10 @@ fn assistant(uuid: &str, session: &str, text: &str) -> String {
 #[test]
 fn a_first_build_stores_and_parses_and_a_second_pass_reads_nothing() {
     let w = World::new();
-    w.append("s1.jsonl", &(user("u1", "s1", "hello") + &assistant("a1", "s1", "hi")));
+    w.append(
+        "s1.jsonl",
+        &(user("u1", "s1", "hello") + &assistant("a1", "s1", "hi")),
+    );
     let (mut e, _lock) = w.engine(64 << 20);
     let pass = e.converge().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
@@ -116,7 +119,11 @@ fn appends_cost_only_their_bytes_and_a_partial_line_waits() {
     assert_eq!(w.texts("s1"), ["one"]);
     w.append("s1.jsonl", rest);
     let pass = e.converge().unwrap();
-    assert_eq!(pass.bytes_read, second.len() as u64, "the waiting line and its rest");
+    assert_eq!(
+        pass.bytes_read,
+        second.len() as u64,
+        "the waiting line and its rest"
+    );
     assert_eq!(w.texts("s1"), ["one", "two"]);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 3);
     assert_eq!(
@@ -141,7 +148,10 @@ fn after_a_restart_state_is_rebuilt_only_when_the_input_changes() {
     w.append("s1.jsonl", &line);
     let pass = e.converge().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert!(pass.bytes_read > line.len() as u64, "s1 was parsed again from the start");
+    assert!(
+        pass.bytes_read > line.len() as u64,
+        "s1 was parsed again from the start"
+    );
     assert_eq!(w.texts("s1"), ["one", "two"]);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 3);
 }
@@ -211,7 +221,7 @@ fn importing_the_same_bytes_twice_stores_them_once() {
     fs::write(&outside, user("x1", "s9", "imported")).unwrap();
     let (mut e, _lock) = w.engine(64 << 20);
     let first = e.import(std::slice::from_ref(&outside)).unwrap();
-    assert_eq!(first.imported, [outside.clone()]);
+    assert_eq!(first.imported, std::slice::from_ref(&outside));
     assert_eq!(w.texts("s9"), ["imported"]);
     let second = e.import(std::slice::from_ref(&outside)).unwrap();
     assert_eq!(second.already_stored, [outside]);

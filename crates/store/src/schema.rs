@@ -4,7 +4,7 @@
 //! it in.
 
 use crate::{Result, StoreError};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 pub const ARCHIVE: &str = include_str!("schema/archive.sql");
 pub const INDEX: &str = include_str!("schema/index.sql");
@@ -12,7 +12,7 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
 /// Bumped whenever `INDEX` changes; a different stored version means the
 /// index is rebuilt into a new file.
-pub const INDEX_VERSION: u32 = 3;
+pub const INDEX_VERSION: u32 = 5;
 
 /// Migrations for `archive.db`, applied in order after the base schema.
 /// Each is additive; an archive at a higher number than this list is refused.
@@ -59,6 +59,18 @@ pub fn ensure_index(conn: &Connection) -> Result<()> {
             wanted: INDEX_VERSION,
         }),
     }
+}
+
+/// Whether the index was being built without syncs and never settled
+/// (`meta.unsynced = 1`): after a crash such a file may be damaged, so it is
+/// rebuilt rather than trusted.
+pub fn unsynced(conn: &Connection) -> Result<bool> {
+    let v: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = 'unsynced'", [], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(v.as_deref() == Some("1"))
 }
 
 /// Applies pending archive migrations inside one transaction.

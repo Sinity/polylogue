@@ -195,8 +195,10 @@ mod tests {
 
     #[test]
     fn merge_adds_every_map() {
-        let mut a = Accounting::default();
-        a.framed = 1;
+        let mut a = Accounting {
+            framed: 1,
+            ..Accounting::default()
+        };
         a.add("user", &Disposition::Materialized);
         let mut b = a.clone();
         b.unread("user", "x");
@@ -209,12 +211,33 @@ mod tests {
     #[test]
     fn order_key_sorts_by_input_then_offset() {
         let mut keys = [
-            OrderKey { input: 2, offset: 0 },
-            OrderKey { input: 1, offset: 90 },
-            OrderKey { input: 1, offset: 10 },
+            OrderKey {
+                input: 2,
+                offset: 0,
+            },
+            OrderKey {
+                input: 1,
+                offset: 90,
+            },
+            OrderKey {
+                input: 1,
+                offset: 10,
+            },
         ];
         keys.sort();
-        assert_eq!(keys[0], OrderKey { input: 1, offset: 10 });
-        assert_eq!(keys[2], OrderKey { input: 2, offset: 0 });
+        assert_eq!(
+            keys[0],
+            OrderKey {
+                input: 1,
+                offset: 10
+            }
+        );
+        assert_eq!(
+            keys[2],
+            OrderKey {
+                input: 2,
+                offset: 0
+            }
+        );
     }
 }

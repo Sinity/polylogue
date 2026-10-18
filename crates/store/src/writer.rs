@@ -61,17 +61,96 @@ pub struct ParseStep {
     /// computed on the parse pool ([`ParseStep::hash_messages`]). Empty
     /// means the writer computes them.
     pub hashes: Vec<[u8; 32]>,
+    /// Block texts compressed for the `text` table, by BLAKE3 of the text,
+    /// prepared on the parse pool. A text missing here is compressed by the
+    /// writer.
+    pub packed: HashMap<[u8; 32], Vec<u8>>,
+    /// Each message's blocks as stored (compressed JSON without their
+    /// text), in `output.messages` and block order.
+    pub bodies: Vec<Vec<Vec<u8>>>,
+    /// Each event's id and compressed payload, in `output.events` order.
+    pub events: Vec<(String, Vec<u8>)>,
 }
 
 impl ParseStep {
-    /// Computes the version hash of every message, off the writer thread.
-    pub fn hash_messages(&mut self) {
+    /// Does the per-message work that needs no database off the writer
+    /// thread: version hashes and compressed block texts.
+    pub fn prepare(&mut self) {
         self.hashes = self
             .output
             .messages
             .iter()
             .map(|r| message_hash(&r.message))
             .collect();
+        let mut packer = zstd::bulk::Compressor::new(TEXT_LEVEL).ok();
+        for row in &self.output.messages {
+            for block in &row.message.blocks {
+                let Some(text) = block_text(block) else {
+                    continue;
+                };
+                let hash = *blake3::hash(text.as_bytes()).as_bytes();
+                if let (std::collections::hash_map::Entry::Vacant(slot), Some(p)) =
+                    (self.packed.entry(hash), packer.as_mut())
+                    && let Ok(bytes) = p.compress(text.as_bytes())
+                {
+                    slot.insert(bytes);
+                }
+            }
+        }
+        let prepared: Result<Vec<Vec<Vec<u8>>>> = self
+            .output
+            .messages
+            .iter()
+            .map(|r| r.message.blocks.iter().map(pack_block).collect())
+            .collect();
+        self.bodies = prepared.unwrap_or_default();
+        let events: Result<Vec<(String, Vec<u8>)>> =
+            self.output.events.iter().map(pack_event).collect();
+        self.events = events.unwrap_or_default();
+    }
+}
+
+/// A block as the `block.body` column stores it.
+fn pack_block(block: &Block) -> Result<Vec<u8>> {
+    let mut body = block.clone();
+    take_text(&mut body);
+    Ok(zstd::bulk::compress(
+        &serde_json::to_vec(&body)?,
+        TEXT_LEVEL,
+    )?)
+}
+
+/// An event's id (computed from its session, kind, time and payload, so the
+/// same record parsed again is the same row) and stored payload.
+fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
+    let data = serde_json::to_vec(&e.data)?;
+    let mut h = blake3::Hasher::new();
+    h.update(e.session.to_string().as_bytes());
+    h.update(b"\0");
+    h.update(e.kind.as_bytes());
+    h.update(b"\0");
+    h.update(&ms(e.at).unwrap_or(i64::MIN).to_le_bytes());
+    h.update(&data);
+    Ok((
+        h.finalize().to_hex().to_string(),
+        zstd::bulk::compress(&data, TEXT_LEVEL)?,
+    ))
+}
+
+/// Reads a block back from `block.body`.
+pub(crate) fn unpack_block(packed: &[u8]) -> Result<Block> {
+    Ok(serde_json::from_slice(&zstd::stream::decode_all(packed)?)?)
+}
+
+/// The text a block keeps in the `text` table (see [`take_text`]).
+fn block_text(block: &Block) -> Option<&str> {
+    match block {
+        Block::Text { text } if !text.is_empty() => Some(text),
+        Block::Thinking { text: Some(t), .. } if !t.is_empty() => Some(t),
+        Block::ToolResult {
+            output: Some(o), ..
+        } if !o.is_empty() => Some(o),
+        _ => None,
     }
 }
 
@@ -141,11 +220,36 @@ const ROWS_PER_TRANSACTION: usize = 50_000;
 
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
+    /// An empty index is built without syncs (architecture 2: "index.db
+    /// built unsynced"): every row in it can be recomputed, and syncing a
+    /// first build of tens of GB through a busy drive costs more than the
+    /// build. The first flush syncs it and clears the mark; an index still
+    /// marked when the archive is next opened is set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
+        let index = open_write(&archive.index_db())?;
+        let empty: bool =
+            index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
+                r.get(0)
+            })?;
+        if empty {
+            index.execute(
+                "INSERT INTO meta(key, value) VALUES ('unsynced', '1')
+                 ON CONFLICT(key) DO UPDATE SET value = '1'",
+                [],
+            )?;
+            index.pragma_update(None, "synchronous", "off")?;
+            // Pages go straight to the database file, once, instead of to
+            // the WAL and again at checkpoint: a first build wrote 2.2 times
+            // what it kept in WAL mode. The rollback journal stays in memory,
+            // so a failed transaction still rolls back; a crash leaves the
+            // mark set and the index is rebuilt.
+            index.pragma_update(None, "journal_mode", "memory")?;
+        }
         let mut inner = Inner {
             archive: open_write(&archive.archive_db())?,
-            index: open_write(&archive.index_db())?,
+            index,
             report: WriteReport::default(),
+            unsynced: empty,
         };
         let (tx, rx) = sync_channel::<Msg>(256);
         let handle = std::thread::Builder::new()
@@ -169,9 +273,7 @@ impl Writer {
 
     /// A cheap handle the parse pool's threads send through.
     pub fn sender(&self) -> Result<WriterSender> {
-        Ok(WriterSender(
-            self.tx.clone().ok_or(StoreError::WriterGone)?,
-        ))
+        Ok(WriterSender(self.tx.clone().ok_or(StoreError::WriterGone)?))
     }
 
     /// Waits until every batch sent before this call is committed, and
@@ -212,6 +314,8 @@ struct Inner {
     archive: Connection,
     index: Connection,
     report: WriteReport,
+    /// The index is being built without syncs ([`Writer::start`]).
+    unsynced: bool,
 }
 
 impl Inner {
@@ -246,10 +350,33 @@ impl Inner {
             if !group.is_empty() {
                 self.write_group(&group);
             }
+            if !flushes.is_empty()
+                && let Err(e) = self.settle()
+            {
+                self.report.errors.push(format!("sync the index: {e}"));
+            }
             for reply in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
         }
+        let _ = self.settle();
+    }
+
+    /// Ends an unsynced build: makes the index durable, then clears the mark
+    /// and returns to normal syncing.
+    fn settle(&mut self) -> Result<()> {
+        if !self.unsynced {
+            return Ok(());
+        }
+        let i = &self.index;
+        i.pragma_update(None, "synchronous", "full")?;
+        // Back to WAL, so readers and the writer stop waiting on each
+        // other; the switch syncs the database file.
+        i.query_row("PRAGMA journal_mode = wal", [], |_| Ok(()))?;
+        i.execute("UPDATE meta SET value = '0' WHERE key = 'unsynced'", [])?;
+        i.pragma_update(None, "synchronous", "normal")?;
+        self.unsynced = false;
+        Ok(())
     }
 
     /// Writes a group in one transaction per database. If it fails, each
@@ -411,7 +538,14 @@ fn insert_revision(
         "INSERT INTO revision(input, number, produced, chain, length, local_seq)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?
-    .execute(params![b.input.id, number, produced, chain, b.length as i64, seq])?;
+    .execute(params![
+        b.input.id,
+        number,
+        produced,
+        chain,
+        b.length as i64,
+        seq
+    ])?;
     Ok(())
 }
 
@@ -493,6 +627,7 @@ fn write_rows(
         rank: i64::from(b.input.route_rank),
         parser_version: i64::from(p.parser_version),
         counter,
+        packed: &p.packed,
     };
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
@@ -508,7 +643,16 @@ fn write_rows(
             .get(i)
             .copied()
             .unwrap_or_else(|| message_hash(&row.message));
-        written += u64::from(ctx.write_message(row, session_pk, hash)?);
+        let bodies = match p.bodies.get(i) {
+            Some(b) if b.len() == row.message.blocks.len() => b.clone(),
+            _ => row
+                .message
+                .blocks
+                .iter()
+                .map(pack_block)
+                .collect::<Result<_>>()?,
+        };
+        written += u64::from(ctx.write_message(row, session_pk, hash, &bodies)?);
         if let Some(at) = ms(row.message.at) {
             let last = activity.entry(session_pk).or_insert(at);
             *last = (*last).max(at);
@@ -522,9 +666,13 @@ fn write_rows(
         )?
         .execute(params![session_pk, at, counter])?;
     }
-    for e in &p.output.events {
+    for (i, e) in p.output.events.iter().enumerate() {
         let session_pk = ctx.session_pk(&mut sessions, &e.session)?;
-        ctx.write_event(e, session_pk)?;
+        let packed = match p.events.get(i) {
+            Some(prepared) if p.events.len() == p.output.events.len() => prepared.clone(),
+            _ => pack_event(e)?,
+        };
+        ctx.write_event(e, session_pk, &packed)?;
     }
     for l in &p.output.links {
         ctx.write_link(l)?;
@@ -535,7 +683,13 @@ fn write_rows(
             "UPDATE tool_call SET outcome = ?1, outcome_reason = ?2, exit_code = ?3
              WHERE session_pk = (SELECT pk FROM session WHERE id = ?4) AND call_id = ?5",
         )?
-        .execute(params![outcome, reason, exit, u.session.to_string(), u.call_id])?;
+        .execute(params![
+            outcome,
+            reason,
+            exit,
+            u.session.to_string(),
+            u.call_id
+        ])?;
     }
     for pk in sessions.values() {
         tx.prepare_cached(
@@ -555,6 +709,7 @@ struct Ctx<'a, 't> {
     rank: i64,
     parser_version: i64,
     counter: i64,
+    packed: &'a HashMap<[u8; 32], Vec<u8>>,
 }
 
 /// The preferred version of a message, as compared with a new one.
@@ -643,13 +798,12 @@ impl Ctx<'_, '_> {
             .optional()?;
         let (pk, merged) = match existing {
             Some((pk, kind, title, title_source, cwd, branch, version, started)) => {
-                let mut cur = Session::new(
-                    s.id.clone(),
-                    parse_name(&kind).unwrap_or(SessionKind::Main),
-                );
-                if let (Some(text), Some(source)) =
-                    (title, title_source.as_deref().and_then(parse_name::<TitleSource>))
-                {
+                let mut cur =
+                    Session::new(s.id.clone(), parse_name(&kind).unwrap_or(SessionKind::Main));
+                if let (Some(text), Some(source)) = (
+                    title,
+                    title_source.as_deref().and_then(parse_name::<TitleSource>),
+                ) {
                     cur.offer_title(&text, source);
                 }
                 cur.cwd = cwd
@@ -716,7 +870,13 @@ impl Ctx<'_, '_> {
 
     /// Stores one version of a message and makes it the shown one when it
     /// beats the current one. Returns whether the message row was written.
-    fn write_message(&self, row: &MessageRow, session_pk: i64, hash: [u8; 32]) -> Result<bool> {
+    fn write_message(
+        &self,
+        row: &MessageRow,
+        session_pk: i64,
+        hash: [u8; 32],
+        bodies: &[Vec<u8>],
+    ) -> Result<bool> {
         let m = &row.message;
         let offset = row.offset as i64;
         let new = Version {
@@ -755,9 +915,7 @@ impl Ctx<'_, '_> {
         let Some((pk, order, preferred)) = cur else {
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, offset))?;
             self.upsert_source(pk, &new, true)?;
-            for (idx, block) in m.blocks.iter().enumerate() {
-                self.insert_block(pk, session_pk, idx as i64, block, ms(m.at))?;
-            }
+            self.insert_blocks(pk, session_pk, m, bodies)?;
             return Ok(true);
         };
 
@@ -779,7 +937,9 @@ impl Ctx<'_, '_> {
             self.upsert_source(pk, &new, false)?;
             if new_order != order {
                 self.tx
-                    .prepare_cached("UPDATE message SET order_input_pk = ?2, seq = ?3 WHERE pk = ?1")?
+                    .prepare_cached(
+                        "UPDATE message SET order_input_pk = ?2, seq = ?3 WHERE pk = ?1",
+                    )?
                     .execute(params![pk, new_order.0, new_order.1])?;
             }
             return Ok(false);
@@ -788,8 +948,9 @@ impl Ctx<'_, '_> {
             .prepare_cached("UPDATE message_source SET preferred = 0 WHERE message_pk = ?1")?
             .execute([pk])?;
         self.upsert_source(pk, &new, true)?;
+        self.clear_blocks(pk)?;
         self.update_message(pk, m, session_pk, &new, new_order)?;
-        self.replace_blocks(pk, session_pk, m)?;
+        self.insert_blocks(pk, session_pk, m, bodies)?;
         Ok(true)
     }
 
@@ -834,7 +995,8 @@ impl Ctx<'_, '_> {
         v: &Version,
         order: (i64, i64),
     ) -> Result<()> {
-        self.set_message(Some(pk), m, session_pk, v, order).map(drop)
+        self.set_message(Some(pk), m, session_pk, v, order)
+            .map(drop)
     }
 
     /// Writes every column of the preferred version in one statement: an
@@ -887,42 +1049,42 @@ impl Ctx<'_, '_> {
             Some(pk) => pk.into(),
             None => m.id.to_string().into(),
         };
-        self.tx
-            .prepare_cached(sql)?
-            .execute(params![
-                first,
-                session_pk,
-                order.0,
-                order.1,
-                v.rank,
-                name(&m.role),
-                written_by,
-                m.prompt_kind.map(|k| name(&k)),
-                m.model,
-                ms(m.at),
-                m.parent.as_ref().map(ToString::to_string),
-                v.input_pk,
-                v.chain,
-                v.start,
-                i64::from(!v.complete),
-                n(u.input),
-                n(u.output),
-                n(u.cached_input),
-                n(u.cache_write),
-                n(u.reasoning),
-                u.service_tier,
-                m.stop_reason,
-                n(m.duration_ms),
-                attrs,
-                words,
-                self.parser_version,
-            ])?;
+        self.tx.prepare_cached(sql)?.execute(params![
+            first,
+            session_pk,
+            order.0,
+            order.1,
+            v.rank,
+            name(&m.role),
+            written_by,
+            m.prompt_kind.map(|k| name(&k)),
+            m.model,
+            ms(m.at),
+            m.parent.as_ref().map(ToString::to_string),
+            v.input_pk,
+            v.chain,
+            v.start,
+            i64::from(!v.complete),
+            n(u.input),
+            n(u.output),
+            n(u.cached_input),
+            n(u.cache_write),
+            n(u.reasoning),
+            u.service_tier,
+            m.stop_reason,
+            n(m.duration_ms),
+            attrs,
+            words,
+            self.parser_version,
+        ])?;
         Ok(pk.unwrap_or_else(|| self.tx.last_insert_rowid()))
     }
 
-    /// Replaces a message's blocks with the preferred version's, keeping
-    /// search entries and tool-call pairs in step.
-    fn replace_blocks(&self, message_pk: i64, session_pk: i64, m: &Message) -> Result<()> {
+    /// Removes a message's blocks, keeping search entries and tool-call
+    /// pairs in step, before another version replaces them. It runs before
+    /// the message row changes: a version from another session moves the
+    /// message, and its old blocks must not outlive the move.
+    fn clear_blocks(&self, message_pk: i64) -> Result<()> {
         // Calls of the old blocks go, with their trigram entries; results of
         // the old blocks are unpaired from their calls.
         let old_calls: Vec<(i64, Option<String>, Option<String>)> = self
@@ -954,9 +1116,20 @@ impl Ctx<'_, '_> {
         self.tx
             .prepare_cached("DELETE FROM block WHERE message_pk = ?1")?
             .execute([message_pk])?;
+        Ok(())
+    }
 
-        for (idx, block) in m.blocks.iter().enumerate() {
-            self.insert_block(message_pk, session_pk, idx as i64, block, ms(m.at))?;
+    /// Inserts a message's blocks; `bodies` are their stored forms
+    /// ([`pack_block`]), in the same order.
+    fn insert_blocks(
+        &self,
+        message_pk: i64,
+        session_pk: i64,
+        m: &Message,
+        bodies: &[Vec<u8>],
+    ) -> Result<()> {
+        for (idx, (block, body)) in m.blocks.iter().zip(bodies).enumerate() {
+            self.insert_block(message_pk, session_pk, idx as i64, block, body, ms(m.at))?;
         }
         Ok(())
     }
@@ -967,12 +1140,16 @@ impl Ctx<'_, '_> {
         session_pk: i64,
         idx: i64,
         block: &Block,
+        body: &[u8],
         at: Option<i64>,
     ) -> Result<()> {
-        let mut body = block.clone();
-        let (text, bit) = take_text(&mut body);
-        let text_id = match text {
-            Some(t) => Some(self.intern(&t, bit)?),
+        let bit = if matches!(block, Block::ToolResult { .. }) {
+            2
+        } else {
+            1
+        };
+        let text_id = match block_text(block) {
+            Some(t) => Some(self.intern(t, bit)?),
             None => None,
         };
         let (kind, call_id, attachment) = match block {
@@ -998,7 +1175,7 @@ impl Ctx<'_, '_> {
         };
         self.tx
             .prepare_cached(
-                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body_json, call_id,
+                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
                      blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
                      other_type)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
@@ -1009,7 +1186,7 @@ impl Ctx<'_, '_> {
                 idx,
                 kind,
                 text_id,
-                serde_json::to_string(&body)?,
+                body,
                 call_id,
                 attachment.and_then(|a| a.blob).map(|h| h.0.to_vec()),
                 attachment.and_then(|a| a.media_type.as_deref()),
@@ -1080,24 +1257,26 @@ impl Ctx<'_, '_> {
             ])?;
         let pk = self.tx.last_insert_rowid();
         self.tx
-            .prepare_cached("INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)")?
+            .prepare_cached(
+                "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
+            )?
             .execute(params![pk, command, path])?;
         // The result may have been stored first (a late call record, or a
         // message replaced after its result arrived).
         let Some(call_id) = call_id else {
             return Ok(());
         };
-        let result: Option<(i64, String)> = self
+        let result: Option<(i64, Vec<u8>)> = self
             .tx
             .prepare_cached(
-                "SELECT pk, body_json FROM block
+                "SELECT pk, body FROM block
                  WHERE session_pk = ?1 AND call_id = ?2 AND kind = 'tool_result'
                  ORDER BY pk LIMIT 1",
             )?
             .query_row(params![session_pk, call_id], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
         if let Some((result_pk, body)) = result
-            && let Ok(Block::ToolResult { outcome, .. }) = serde_json::from_str::<Block>(&body)
+            && let Ok(Block::ToolResult { outcome, .. }) = unpack_block(&body)
         {
             let (outcome, reason, exit) = outcome_columns(&outcome);
             self.tx
@@ -1123,10 +1302,13 @@ impl Ctx<'_, '_> {
         let (id, indexed) = match found {
             Some(f) => f,
             None => {
-                let packed = zstd::bulk::compress(body.as_bytes(), TEXT_LEVEL)?;
+                let packed = match self.packed.get(hash.as_bytes()) {
+                    Some(p) => std::borrow::Cow::Borrowed(p.as_slice()),
+                    None => zstd::bulk::compress(body.as_bytes(), TEXT_LEVEL)?.into(),
+                };
                 self.tx
                     .prepare_cached("INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, 0)")?
-                    .execute(params![&hash.as_bytes()[..], packed])?;
+                    .execute(params![&hash.as_bytes()[..], &*packed])?;
                 (self.tx.last_insert_rowid(), 0)
             }
         };
@@ -1144,15 +1326,9 @@ impl Ctx<'_, '_> {
         Ok(id)
     }
 
-    fn write_event(&self, e: &Event, session_pk: i64) -> Result<()> {
-        let data = serde_json::to_string(&e.data)?;
-        let mut h = blake3::Hasher::new();
-        h.update(e.session.to_string().as_bytes());
-        h.update(b"\0");
-        h.update(e.kind.as_bytes());
-        h.update(b"\0");
-        h.update(&ms(e.at).unwrap_or(i64::MIN).to_le_bytes());
-        h.update(data.as_bytes());
+    /// `packed` is the event's id and stored payload ([`pack_event`]).
+    fn write_event(&self, e: &Event, session_pk: i64, packed: &(String, Vec<u8>)) -> Result<()> {
+        let (id, data) = packed;
         let after: Option<(i64, i64)> = match &e.after {
             Some(id) => self
                 .tx
@@ -1164,11 +1340,11 @@ impl Ctx<'_, '_> {
         self.tx
             .prepare_cached(
                 "INSERT OR IGNORE INTO event(id, session_pk, seq, after_message_pk, kind, at,
-                     input_pk, parser_version, data_json)
+                     input_pk, parser_version, data)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?
             .execute(params![
-                h.finalize().to_hex().as_str(),
+                id,
                 session_pk,
                 after.map_or(0, |a| a.1),
                 after.map(|a| a.0),

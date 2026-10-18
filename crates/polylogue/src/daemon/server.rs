@@ -159,7 +159,11 @@ pub fn serve() -> std::io::Result<()> {
         std::fs::remove_file(&socket)?;
     }
     let listener = UnixListener::bind(&socket)?;
-    eprintln!("polylogue: serving {} on {}", root.display(), socket.display());
+    eprintln!(
+        "polylogue: serving {} on {}",
+        root.display(),
+        socket.display()
+    );
     for stream in listener.incoming() {
         let Ok(stream) = stream else {
             continue;

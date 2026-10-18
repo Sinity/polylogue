@@ -184,8 +184,8 @@ CREATE TABLE block (
                                             --   (model.md Identity); exactly one of idx, reasoning_idx and attach_key is set
   kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
   text_id           INTEGER REFERENCES text(id),
-  body_json         TEXT NOT NULL,          -- the model Block as JSON, with its prose or output text moved to
-                                            --   `text` (text_id): reading a block back is lossless
+  body              BLOB NOT NULL,          -- the model Block as zstd-compressed JSON, with its prose or output
+                                            --   text moved to `text` (text_id): reading a block back is lossless
   input_pk          INTEGER REFERENCES input_ref(pk),  -- only when a field came from another input than the message's
   source_chain      INTEGER,                -- with input_pk: the revision chain the range is in (as message.source_chain)
   source_start      INTEGER,                -- with input_pk: where the block's bytes are in that chain, for a
@@ -226,6 +226,10 @@ CREATE VIRTUAL TABLE output_fts USING fts5(body, content='', contentless_delete=
 -- Document frequency of each word, for the search planner.
 CREATE VIRTUAL TABLE fts_vocab_text USING fts5vocab(text_fts, 'row');
 CREATE VIRTUAL TABLE fts_vocab_output USING fts5vocab(output_fts, 'row');
+-- Merge segments less eagerly than the default (4): segment merging was
+-- about a tenth of the writer's time on a first build.
+INSERT INTO text_fts(text_fts, rank) VALUES ('automerge', 16);
+INSERT INTO output_fts(output_fts, rank) VALUES ('automerge', 16);
 
 -- One row per tool call, paired with its result inside the same session. The
 -- one owner of every derived call fact.
@@ -324,7 +328,7 @@ CREATE TABLE event (
   source_chain      INTEGER,                -- revision chain of the byte range (as message.source_chain)
   source_start      INTEGER,
   source_end        INTEGER,
-  data_json         TEXT NOT NULL           -- the provider's payload as given; export `data`
+  data              BLOB NOT NULL           -- the provider's payload as given, zstd-compressed JSON; export `data`
 ) STRICT;
 CREATE INDEX event_session ON event(session_pk, seq);
 CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;   -- foreign-key check

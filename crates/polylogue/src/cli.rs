@@ -187,7 +187,12 @@ pub fn run(args: Args) -> ExitCode {
         }
         Some(Command::Completions { shell }) => {
             use clap::CommandFactory;
-            clap_complete::generate(shell, &mut Args::command(), "polylogue", &mut std::io::stdout());
+            clap_complete::generate(
+                shell,
+                &mut Args::command(),
+                "polylogue",
+                &mut std::io::stdout(),
+            );
             return ExitCode::SUCCESS;
         }
         Some(Command::Status) => Request::Status,
@@ -230,7 +235,11 @@ pub fn run(args: Args) -> ExitCode {
         },
         Some(other) => {
             let name = format!("{other:?}");
-            let name = name.split([' ', '(', '{']).next().unwrap_or("").to_lowercase();
+            let name = name
+                .split([' ', '(', '{'])
+                .next()
+                .unwrap_or("")
+                .to_lowercase();
             return fail(json, "not_built", &format!("`{name}` is not built yet"), 2);
         }
         None => Request::Query {
@@ -304,7 +313,10 @@ pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Resp
 
 fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
     if json {
-        println!("{}", serde_json::json!({ "error": { "kind": kind, "message": message } }));
+        println!(
+            "{}",
+            serde_json::json!({ "error": { "kind": kind, "message": message } })
+        );
     } else {
         eprintln!("polylogue: {kind}: {message}");
     }

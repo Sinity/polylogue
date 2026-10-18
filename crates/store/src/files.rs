@@ -101,22 +101,34 @@ impl Archive {
     }
 }
 
-/// An index built by another version is moved aside (`index.db.v<N>`), so
-/// a new one is built from `archive.db` by the loop. Nothing in it is
-/// lost: every row is recomputed from stored bytes.
+/// An index built by another version, or left unsynced by a stop in the
+/// middle of a first build, is moved aside (`index.db.v<N>`,
+/// `index.db.unsynced`), so a new one is built from `archive.db` by the
+/// loop. Nothing in it is lost: every row is recomputed from stored bytes.
 fn set_aside_old_index(archive: &Archive) -> Result<()> {
     let path = archive.index_db();
     if !path.exists() {
         return Ok(());
     }
-    let found = schema::version(&open_read(&path)?)?;
-    if found == 0 || found == schema::INDEX_VERSION {
+    let conn = open_read(&path)?;
+    let found = schema::version(&conn)?;
+    let unsynced = found == schema::INDEX_VERSION && schema::unsynced(&conn)?;
+    drop(conn);
+    let suffix_for = if unsynced {
+        "unsynced".to_owned()
+    } else if found == 0 || found == schema::INDEX_VERSION {
         return Ok(());
-    }
+    } else {
+        format!("v{found}")
+    };
     for suffix in ["", "-wal", "-shm"] {
         let from = archive.root.join(format!("index.db{suffix}"));
+        let to = archive.root.join(format!("index.db.{suffix_for}{suffix}"));
         if from.exists() {
-            fs::rename(&from, archive.root.join(format!("index.db.v{found}{suffix}")))?;
+            if to.exists() {
+                fs::remove_file(&to)?;
+            }
+            fs::rename(&from, to)?;
         }
     }
     Ok(())
@@ -146,10 +158,25 @@ fn tune(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// A connection the writer (or setup) uses.
+/// A connection the writer (or setup) uses. Each connection belongs to one
+/// thread, so SQLite's own mutexes are off (they cost about 3% of the
+/// writer's time).
 pub fn open_write(path: &Path) -> Result<Connection> {
-    let conn = Connection::open(path)?;
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI,
+    )?;
     tune(&conn)?;
+    // The writer's page cache holds the indexes it probes on every insert
+    // (text hashes, message ids) and the search segments it merges; at
+    // 256 MB a first build read back from disk more than twice its input.
+    conn.pragma_update(None, "cache_size", -2_097_152)?;
+    // Checkpoint after about 1 GB of WAL rather than 4 MB, so a page written
+    // by many transactions reaches the database file once.
+    conn.pragma_update(None, "wal_autocheckpoint", 262_144)?;
     Ok(conn)
 }
 
@@ -157,7 +184,9 @@ pub fn open_write(path: &Path) -> Result<Connection> {
 pub fn open_read(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(
         path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_URI,
     )?;
     conn.pragma_update(None, "cache_size", -65_536)?;
     conn.pragma_update(None, "mmap_size", 1_i64 << 32)?;
@@ -180,5 +209,24 @@ mod tests {
         ));
         drop(_lock);
         Archive::open_or_create(&root).unwrap();
+    }
+
+    #[test]
+    fn an_index_left_unsynced_is_set_aside_and_rebuilt() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("a");
+        let (archive, lock) = Archive::open_or_create(&root).unwrap();
+        let writer = crate::Writer::start(&archive).unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+        // A stop in the middle of a first build leaves the mark set.
+        open_write(&archive.index_db())
+            .unwrap()
+            .execute("UPDATE meta SET value = '1' WHERE key = 'unsynced'", [])
+            .unwrap();
+        drop(lock);
+        let (archive, _lock) = Archive::open_or_create(&root).unwrap();
+        assert!(root.join("index.db.unsynced").exists());
+        assert!(!schema::unsynced(&open_read(&archive.index_db()).unwrap()).unwrap());
     }
 }

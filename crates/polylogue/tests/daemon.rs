@@ -48,10 +48,17 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     let archive = dir.path().join("archive");
     let project = home.join(".claude/projects/-p");
     std::fs::create_dir_all(&project).unwrap();
-    std::fs::write(project.join("live.jsonl"), line("u1", "live", "from a live file")).unwrap();
+    std::fs::write(
+        project.join("live.jsonl"),
+        line("u1", "live", "from a live file"),
+    )
+    .unwrap();
     let export = dir.path().join("export.jsonl");
     std::fs::write(&export, line("x1", "exported", "from an import")).unwrap();
-    let env = [("POLYLOGUE_ARCHIVE", archive.as_path()), ("POLYLOGUE_HOME", home.as_path())];
+    let env = [
+        ("POLYLOGUE_ARCHIVE", archive.as_path()),
+        ("POLYLOGUE_HOME", home.as_path()),
+    ];
 
     let mut child = Command::new(BIN)
         .arg("daemon")
@@ -70,7 +77,11 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let out = cli(&env, &["--json", "status"]);
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         if json(&out)["store"]["messages"].as_u64() == Some(1) {
             break;
         }
@@ -79,7 +90,11 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     }
 
     let out = cli(&env, &["--json", "import", export.to_str().unwrap()]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(json(&out)["imported"].as_array().unwrap().len(), 1);
 
     let out = cli(&env, &["--json", "list"]);

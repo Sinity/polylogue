@@ -125,8 +125,7 @@ fn entries(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<PathBuf> {
 fn wildcard(pattern: &str, name: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
     let (first, last) = (parts[0], parts[parts.len() - 1]);
-    if !name.starts_with(first) || name.len() < first.len() + last.len() || !name.ends_with(last)
-    {
+    if !name.starts_with(first) || name.len() < first.len() + last.len() || !name.ends_with(last) {
         return false;
     }
     let mut rest = &name[first.len()..name.len() - last.len()];
@@ -169,7 +168,10 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            [PathBuf::from("s1/subagents/agent-a.jsonl"), PathBuf::from("s1.jsonl")]
+            [
+                PathBuf::from("s1/subagents/agent-a.jsonl"),
+                PathBuf::from("s1.jsonl")
+            ]
         );
         assert!(unreadable.is_empty());
         assert!(found.iter().all(recognize));

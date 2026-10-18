@@ -91,6 +91,9 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             parsed_upto: start + 100,
             parser_version: 1,
             hashes: vec![],
+            packed: Default::default(),
+            bodies: vec![],
+            events: vec![],
         }),
     }
 }
@@ -115,7 +118,13 @@ fn messages_read_back_in_order_and_unchanged() {
     let a = text_message("a", "s", Role::User, "hello", None);
     let b = text_message("b", "s", Role::Assistant, "hi", Some("end_turn"));
     w.writer
-        .send(batch("i1", 0, 0, vec![row(50, b.clone()), row(10, a.clone())], &["s"]))
+        .send(batch(
+            "i1",
+            0,
+            0,
+            vec![row(50, b.clone()), row(10, a.clone())],
+            &["s"],
+        ))
         .unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -129,8 +138,12 @@ fn the_same_record_sent_longer_replaces_itself() {
     let w = world();
     let short = text_message("r", "s", Role::Assistant, "part", None);
     let long = text_message("r", "s", Role::Assistant, "part and more", Some("end_turn"));
-    w.writer.send(batch("i1", 0, 0, vec![row(0, short)], &["s"])).unwrap();
-    w.writer.send(batch("i1", 0, 100, vec![row(0, long)], &["s"])).unwrap();
+    w.writer
+        .send(batch("i1", 0, 0, vec![row(0, short)], &["s"]))
+        .unwrap();
+    w.writer
+        .send(batch("i1", 0, 100, vec![row(0, long)], &["s"]))
+        .unwrap();
     w.writer.flush().unwrap();
     assert_eq!(texts(&w, "s"), ["part and more"]);
 }
@@ -141,7 +154,13 @@ fn within_one_input_the_earliest_record_wins() {
     let first = text_message("u", "s", Role::User, "original", None);
     let dup = text_message("u", "s", Role::User, "conflicting duplicate", None);
     w.writer
-        .send(batch("i1", 0, 0, vec![row(10, first), row(90, dup)], &["s"]))
+        .send(batch(
+            "i1",
+            0,
+            0,
+            vec![row(10, first), row(90, dup)],
+            &["s"],
+        ))
         .unwrap();
     w.writer.flush().unwrap();
     assert_eq!(texts(&w, "s"), ["original"]);
@@ -163,6 +182,30 @@ fn across_inputs_a_complete_version_beats_an_open_one_whichever_comes_first() {
         w.writer.flush().unwrap();
         assert_eq!(texts(&w, "s"), ["done"], "order {order:?}");
     }
+}
+
+#[test]
+fn a_winning_version_from_another_session_moves_the_message_with_its_blocks() {
+    let w = world();
+    let mut open = text_message("r", "first", Role::Assistant, "open", None);
+    open.blocks.push(Block::ToolCall {
+        call_id: Some("t1".into()),
+        tool: Some("Bash".into()),
+        input: Json::Null,
+        command: Some("ls".into()),
+        path: None,
+    });
+    let done = text_message("r", "second", Role::Assistant, "done", Some("end_turn"));
+    w.writer
+        .send(batch("a", 0, 0, vec![row(0, open)], &["first"]))
+        .unwrap();
+    w.writer
+        .send(batch("b", 0, 0, vec![row(0, done)], &["second"]))
+        .unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(texts(&w, "first").is_empty());
+    assert_eq!(texts(&w, "second"), ["done"]);
 }
 
 #[test]
@@ -192,8 +235,12 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
         } else {
             (call, result)
         };
-        w.writer.send(batch("i", 0, 0, vec![row(0, first)], &["s"])).unwrap();
-        w.writer.send(batch("i", 0, 100, vec![row(100, second)], &["s"])).unwrap();
+        w.writer
+            .send(batch("i", 0, 0, vec![row(0, first)], &["s"]))
+            .unwrap();
+        w.writer
+            .send(batch("i", 0, 100, vec![row(100, second)], &["s"]))
+            .unwrap();
         w.writer.flush().unwrap();
         let pool = ReadPool::open(&w.archive).unwrap();
         let r = pool.reader().unwrap();
@@ -229,14 +276,25 @@ fn prose_and_tool_output_are_searchable_in_the_same_transaction() {
         data: None,
         attachments: vec![],
     });
-    w.writer.send(batch("i", 0, 0, vec![row(0, m)], &["s"])).unwrap();
+    w.writer
+        .send(batch("i", 0, 0, vec![row(0, m)], &["s"]))
+        .unwrap();
     w.writer.flush().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     let n = |sql: &str| r.query(sql, &[]).unwrap()[0]["n"].clone();
-    assert_eq!(n("SELECT COUNT(*) AS n FROM text_fts WHERE text_fts MATCH 'walrus'"), 1);
-    assert_eq!(n("SELECT COUNT(*) AS n FROM output_fts WHERE output_fts MATCH 'narwhal'"), 1);
-    assert_eq!(n("SELECT COUNT(*) AS n FROM text_fts WHERE text_fts MATCH 'narwhal'"), 0);
+    assert_eq!(
+        n("SELECT COUNT(*) AS n FROM text_fts WHERE text_fts MATCH 'walrus'"),
+        1
+    );
+    assert_eq!(
+        n("SELECT COUNT(*) AS n FROM output_fts WHERE output_fts MATCH 'narwhal'"),
+        1
+    );
+    assert_eq!(
+        n("SELECT COUNT(*) AS n FROM text_fts WHERE text_fts MATCH 'narwhal'"),
+        0
+    );
 }
 
 #[test]
@@ -282,7 +340,10 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
             &[],
         )
         .unwrap();
-    assert_eq!(link, vec![serde_json::json!({"resolved": 1, "spawning_call": "toolu_1"})]);
+    assert_eq!(
+        link,
+        vec![serde_json::json!({"resolved": 1, "spawning_call": "toolu_1"})]
+    );
 }
 
 #[test]
@@ -290,10 +351,24 @@ fn copied_messages_are_stored_once_and_read_logically() {
     let w = world();
     // The parent's own file.
     let a = text_message("a", "parent", Role::User, "first", None);
-    w.writer.send(batch("parent-file", 0, 0, vec![row(0, a.clone())], &["parent"])).unwrap();
+    w.writer
+        .send(batch(
+            "parent-file",
+            0,
+            0,
+            vec![row(0, a.clone())],
+            &["parent"],
+        ))
+        .unwrap();
     // The child's file repeats the parent's message, then adds its own.
     let b = text_message("b", "child", Role::User, "second", None);
-    let mut child = batch("child-file", 0, 0, vec![row(0, a), row(50, b)], &["parent", "child"]);
+    let mut child = batch(
+        "child-file",
+        0,
+        0,
+        vec![row(0, a), row(50, b)],
+        &["parent", "child"],
+    );
     child.parse.as_mut().unwrap().output.links = vec![Link {
         kind: LinkKind::Copy,
         parent: sid("parent"),
@@ -308,8 +383,18 @@ fn copied_messages_are_stored_once_and_read_logically() {
     let r = pool.reader().unwrap();
     let n = r.query("SELECT COUNT(*) AS n FROM message", &[]).unwrap();
     assert_eq!(n[0]["n"], 2);
-    let physical: Vec<_> = r.messages(&sid("child"), false).unwrap().iter().map(Message::text).collect();
-    let logical: Vec<_> = r.messages(&sid("child"), true).unwrap().iter().map(Message::text).collect();
+    let physical: Vec<_> = r
+        .messages(&sid("child"), false)
+        .unwrap()
+        .iter()
+        .map(Message::text)
+        .collect();
+    let logical: Vec<_> = r
+        .messages(&sid("child"), true)
+        .unwrap()
+        .iter()
+        .map(Message::text)
+        .collect();
     assert_eq!(physical, ["second"]);
     assert_eq!(logical, ["first", "second"]);
 }
@@ -317,8 +402,20 @@ fn copied_messages_are_stored_once_and_read_logically() {
 #[test]
 fn a_step_whose_counts_do_not_add_up_is_refused_alone() {
     let w = world();
-    let good = batch("good", 0, 0, vec![row(0, text_message("g", "s", Role::User, "ok", None))], &["s"]);
-    let mut bad = batch("bad", 0, 0, vec![row(0, text_message("x", "t", Role::User, "x", None))], &["t"]);
+    let good = batch(
+        "good",
+        0,
+        0,
+        vec![row(0, text_message("g", "s", Role::User, "ok", None))],
+        &["s"],
+    );
+    let mut bad = batch(
+        "bad",
+        0,
+        0,
+        vec![row(0, text_message("x", "t", Role::User, "x", None))],
+        &["t"],
+    );
     bad.parse.as_mut().unwrap().accounting.framed = 5;
     w.writer.send(good).unwrap();
     w.writer.send(bad).unwrap();
@@ -346,7 +443,10 @@ fn revisions_extents_and_parse_state_follow_appends() {
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     let revs = r
-        .query("SELECT number, chain, produced, length FROM a.revision ORDER BY number", &[])
+        .query(
+            "SELECT number, chain, produced, length FROM a.revision ORDER BY number",
+            &[],
+        )
         .unwrap();
     assert_eq!(
         revs,

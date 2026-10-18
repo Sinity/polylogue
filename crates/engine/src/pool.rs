@@ -147,6 +147,12 @@ impl Drop for Pool {
 /// Jobs a worker groups under one blob commit, by bytes read.
 const GROUP_BYTES: u64 = 64 << 20;
 
+/// How a group's blobs become durable: each file synced, then each
+/// directory the group touched once. `syncfs` would flush every dirty page
+/// on the filesystem, other programs' included, which on a shared busy
+/// drive took far longer than syncing only our files.
+const DURABILITY: hashed_blobs::Durability = hashed_blobs::Durability::PerFile;
+
 /// A worker's finished jobs whose large blobs are not yet durable.
 struct Group<'s> {
     blobs: hashed_blobs::Batch<'s>,
@@ -156,7 +162,7 @@ struct Group<'s> {
 
 fn work(shared: &Shared, writer: &WriterSender, store: &hashed_blobs::Store, done: &Sender<Done>) {
     let mut group = Group {
-        blobs: store.batch(hashed_blobs::Durability::Filesystem),
+        blobs: store.batch(DURABILITY),
         held: Vec::new(),
         bytes: 0,
     };
@@ -205,7 +211,7 @@ fn flush<'s>(
     store: &'s hashed_blobs::Store,
     done: &Sender<Done>,
 ) -> bool {
-    let blobs = std::mem::replace(&mut group.blobs, store.batch(hashed_blobs::Durability::Filesystem));
+    let blobs = std::mem::replace(&mut group.blobs, store.batch(DURABILITY));
     let committed = if blobs.is_empty() {
         Ok(())
     } else {
@@ -220,9 +226,10 @@ fn flush<'s>(
                     .iter_mut()
                     .chain(batch.blobs.iter_mut())
                     .try_for_each(|p| p.settle(store));
-                match settled.map_err(|e| e.to_string()).and_then(|()| {
-                    writer.send(batch).map_err(|e| e.to_string())
-                }) {
+                match settled
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| writer.send(batch).map_err(|e| e.to_string()))
+                {
                     Ok(()) => {}
                     Err(e) => result.error = Some(e),
                 }
@@ -293,8 +300,11 @@ fn run(job: Job, blobs: &mut hashed_blobs::Batch<'_>) -> (Option<Batch>, Done) {
                     parsed_upto: job.start + step.consumed,
                     parser_version: job.origin.parser_version,
                     hashes: Vec::new(),
+                    packed: Default::default(),
+                    bodies: Vec::new(),
+                    events: Vec::new(),
                 };
-                p.hash_messages();
+                p.prepare();
                 Some(p)
             }
             Err(e) => {

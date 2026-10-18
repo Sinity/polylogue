@@ -41,13 +41,74 @@ impl Rng {
 }
 
 const WORDS: &[&str] = &[
-    "parser", "archive", "session", "index", "message", "daemon", "writer", "query", "token",
-    "commit", "branch", "review", "failure", "fixture", "golden", "record", "offset", "chain",
-    "revision", "extent", "blob", "search", "render", "budget", "context", "brief", "lineage",
-    "subagent", "compaction", "the", "a", "to", "of", "and", "in", "is", "it", "that", "for",
-    "with", "this", "we", "should", "check", "test", "build", "error", "warning", "cargo", "nix",
-    "rust", "python", "sqlite", "fts", "trigram", "operator", "measure", "throughput", "latency",
-    "memory", "cache", "thread", "pool", "channel", "batch", "transaction", "schema", "migration",
+    "parser",
+    "archive",
+    "session",
+    "index",
+    "message",
+    "daemon",
+    "writer",
+    "query",
+    "token",
+    "commit",
+    "branch",
+    "review",
+    "failure",
+    "fixture",
+    "golden",
+    "record",
+    "offset",
+    "chain",
+    "revision",
+    "extent",
+    "blob",
+    "search",
+    "render",
+    "budget",
+    "context",
+    "brief",
+    "lineage",
+    "subagent",
+    "compaction",
+    "the",
+    "a",
+    "to",
+    "of",
+    "and",
+    "in",
+    "is",
+    "it",
+    "that",
+    "for",
+    "with",
+    "this",
+    "we",
+    "should",
+    "check",
+    "test",
+    "build",
+    "error",
+    "warning",
+    "cargo",
+    "nix",
+    "rust",
+    "python",
+    "sqlite",
+    "fts",
+    "trigram",
+    "operator",
+    "measure",
+    "throughput",
+    "latency",
+    "memory",
+    "cache",
+    "thread",
+    "pool",
+    "channel",
+    "batch",
+    "transaction",
+    "schema",
+    "migration",
 ];
 
 fn prose(rng: &mut Rng, len: u64) -> String {
@@ -162,7 +223,12 @@ fn generate(home: &Path, sizes_path: &Path, total_mb: u64) -> std::io::Result<u6
     while total < target {
         let size = sizes[rng.below(sizes.len() as u64) as usize].max(500);
         let session = format!("{:08x}-gen{i}", rng.next() as u32);
-        total += session_file(&project.join(format!("{session}.jsonl")), &session, size, &mut rng)?;
+        total += session_file(
+            &project.join(format!("{session}.jsonl")),
+            &session,
+            size,
+            &mut rng,
+        )?;
         i += 1;
     }
     eprintln!("generated {i} files, {:.1} MB", total as f64 / 1e6);
@@ -176,7 +242,11 @@ fn dir_size(p: &Path) -> u64 {
     rd.filter_map(Result::ok)
         .map(|e| {
             let p = e.path();
-            if p.is_dir() { dir_size(&p) } else { e.metadata().map_or(0, |m| m.len()) }
+            if p.is_dir() {
+                dir_size(&p)
+            } else {
+                e.metadata().map_or(0, |m| m.len())
+            }
         })
         .sum()
 }
@@ -203,7 +273,10 @@ fn main() {
         Some(h) => PathBuf::from(h),
         None => {
             let home = dir.join("home");
-            let mb: u64 = arg("--generate-mb").expect("--home or --generate-mb").parse().unwrap();
+            let mb: u64 = arg("--generate-mb")
+                .expect("--home or --generate-mb")
+                .parse()
+                .unwrap();
             let sizes = PathBuf::from(arg("--sizes").expect("--sizes <stat.tsv>"));
             generate(&home, &sizes, mb).unwrap();
             home
@@ -223,6 +296,16 @@ fn main() {
     let pass = engine.converge().unwrap();
     let secs = started.elapsed().as_secs_f64();
     drop(engine);
+    // Bytes this process made the kernel read and write, for write
+    // amplification (bytes written against bytes kept).
+    let io = fs::read_to_string("/proc/self/io").unwrap_or_default();
+    let io_field = |name: &str| {
+        io.lines()
+            .find_map(|l| l.strip_prefix(name))
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    let (read_bytes, write_bytes) = (io_field("read_bytes:"), io_field("write_bytes:"));
     let index = dir_size(&archive.index_db()) + dir_size(&root.join("index.db-wal"));
     let stored = dir_size(&archive.archive_db()) + dir_size(&archive.blobs_dir());
     println!(
@@ -237,6 +320,9 @@ fn main() {
             "index_mb": index as f64 / 1e6,
             "index_over_input": index as f64 / input.max(1) as f64,
             "stored_mb": stored as f64 / 1e6,
+            "disk_read_mb": read_bytes as f64 / 1e6,
+            "disk_written_mb": write_bytes as f64 / 1e6,
+            "written_over_kept": write_bytes as f64 / (index + stored).max(1) as f64,
             "errors": pass.errors.len(),
             "first_errors": pass.errors.iter().take(5).collect::<Vec<_>>(),
         })

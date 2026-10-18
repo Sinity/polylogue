@@ -164,7 +164,8 @@ struct Plan {
 
 impl Plan {
     fn finished(&self) -> bool {
-        self.failed || (self.piece_pos >= self.size && (self.waiting || self.parse_pos >= self.size))
+        self.failed
+            || (self.piece_pos >= self.size && (self.waiting || self.parse_pos >= self.size))
     }
 
     fn next_job(&mut self) -> Job {
@@ -243,7 +244,11 @@ impl Engine {
     pub fn new(config: Config, archive: Archive) -> Result<Self, EngineError> {
         let writer = Writer::start(&archive)?;
         let reads = ReadPool::open(&archive)?;
-        let blobs = Arc::new(hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600)?);
+        let blobs = Arc::new(hashed_blobs::Store::open(
+            archive.root.clone(),
+            vec![],
+            0o600,
+        )?);
         Ok(Self {
             config,
             archive,
@@ -415,7 +420,9 @@ impl Engine {
                     (st.stored, 0, None, Priority::Live)
                 }
             }
-            Change::Unchanged if version_changed && st.stored > 0 => (st.stored, 0, None, Priority::Bulk),
+            Change::Unchanged if version_changed && st.stored > 0 => {
+                (st.stored, 0, None, Priority::Bulk)
+            }
             Change::Unchanged | Change::Disappeared => return Ok(None),
         };
         Ok(Some(Plan {
@@ -596,11 +603,12 @@ impl Engine {
     ) -> Result<(), EngineError> {
         use notify::Watcher as _;
         let wake = tx.clone();
-        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if res.is_ok() {
-                let _ = wake.send(LoopMsg::Changed);
-            }
-        })?;
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                if res.is_ok() {
+                    let _ = wake.send(LoopMsg::Changed);
+                }
+            })?;
         for root in collect::roots(&self.config.home) {
             watcher.watch(&root, notify::RecursiveMode::Recursive)?;
         }

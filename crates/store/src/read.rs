@@ -1,10 +1,10 @@
 //! Read connections. The daemon keeps a pool; every read in one request
 //! sees one consistent snapshot of `index.db` with `archive.db` attached.
 
+use crate::Result;
 use crate::blobs::FileFacts;
 use crate::files::{Archive, open_read};
-use crate::writer::{restore_text, unpack_text};
-use crate::Result;
+use crate::writer::{restore_text, unpack_block, unpack_text};
 use polylogue_model::{
     Block, Message, MessageId, PromptKind, Role, Session, SessionId, SessionKind, Timestamp,
     TitleSource, Usage,
@@ -123,7 +123,9 @@ fn ts(ms: Option<i64>) -> Option<Timestamp> {
 
 impl Reader<'_> {
     fn conn(&self) -> &Connection {
-        self.conn.as_ref().expect("reader holds a connection until dropped")
+        self.conn
+            .as_ref()
+            .expect("reader holds a connection until dropped")
     }
 
     pub fn session(&self, id: &SessionId) -> Result<Option<Session>> {
@@ -145,19 +147,24 @@ impl Reader<'_> {
                 ))
             })
             .optional()?;
-        Ok(row.map(|(kind, title, source, cwd, branch, version, started)| {
-            let mut s = Session::new(id.clone(), parse_name(&kind).unwrap_or(SessionKind::Main));
-            if let (Some(text), Some(source)) =
-                (title, source.as_deref().and_then(parse_name::<TitleSource>))
-            {
-                s.offer_title(&text, source);
-            }
-            s.cwd = cwd.and_then(|c| serde_json::from_str(&c).ok()).unwrap_or_default();
-            s.git_branch = branch;
-            s.tool_version = version;
-            s.started = ts(started);
-            s
-        }))
+        Ok(
+            row.map(|(kind, title, source, cwd, branch, version, started)| {
+                let mut s =
+                    Session::new(id.clone(), parse_name(&kind).unwrap_or(SessionKind::Main));
+                if let (Some(text), Some(source)) =
+                    (title, source.as_deref().and_then(parse_name::<TitleSource>))
+                {
+                    s.offer_title(&text, source);
+                }
+                s.cwd = cwd
+                    .and_then(|c| serde_json::from_str(&c).ok())
+                    .unwrap_or_default();
+                s.git_branch = branch;
+                s.tool_version = version;
+                s.started = ts(started);
+                s
+            }),
+        )
     }
 
     /// Sessions by latest activity, newest first. `before` continues a page
@@ -243,7 +250,9 @@ impl Reader<'_> {
                 "SELECT parent_id, kind, branch_point FROM link
                  WHERE child_id = ?1 AND kind IN ('fork', 'copy') ORDER BY pk",
             )?
-            .query_map([child.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map([child.to_string()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         for (parent, kind, at) in links {
             let Ok(parent) = SessionId::parse(&parent) else {
@@ -296,20 +305,20 @@ impl Reader<'_> {
         let mut blocks: HashMap<i64, Vec<Block>> = HashMap::new();
         {
             let mut stmt = self.conn().prepare_cached(
-                "SELECT b.message_pk, b.body_json, t.body FROM block b
+                "SELECT b.message_pk, b.body, t.body FROM block b
                  LEFT JOIN text t ON t.id = b.text_id
                  WHERE b.session_pk = ?1 ORDER BY b.message_pk, b.idx",
             )?;
             let rows = stmt.query_map([session_pk], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
+                    r.get::<_, Vec<u8>>(1)?,
                     r.get::<_, Option<Vec<u8>>>(2)?,
                 ))
             })?;
             for row in rows {
                 let (pk, body, text) = row?;
-                let mut block: Block = serde_json::from_str(&body)?;
+                let mut block: Block = unpack_block(&body)?;
                 if let Some(packed) = text {
                     restore_text(&mut block, unpack_text(&packed)?);
                 }
@@ -387,11 +396,11 @@ impl Reader<'_> {
 
     pub fn status(&self) -> Result<Status> {
         let c = self.conn();
-        let count = |sql: &str| -> Result<u64> {
-            Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64)
-        };
+        let count =
+            |sql: &str| -> Result<u64> { Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64) };
         let mut parse_states = BTreeMap::new();
-        let mut stmt = c.prepare_cached("SELECT status, COUNT(*) FROM parse_state GROUP BY status")?;
+        let mut stmt =
+            c.prepare_cached("SELECT status, COUNT(*) FROM parse_state GROUP BY status")?;
         for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
             let (s, n) = row?;
             parse_states.insert(s, n as u64);
@@ -505,7 +514,11 @@ impl Reader<'_> {
         params: &[rusqlite::types::Value],
     ) -> Result<Vec<serde_json::Value>> {
         let mut stmt = self.conn().prepare(sql)?;
-        let names: Vec<String> = stmt.column_names().iter().map(|s| (*s).to_owned()).collect();
+        let names: Vec<String> = stmt
+            .column_names()
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
             let mut obj = serde_json::Map::new();
             for (i, name) in names.iter().enumerate() {
@@ -515,7 +528,11 @@ impl Reader<'_> {
                     ValueRef::Integer(n) => n.into(),
                     ValueRef::Real(f) => serde_json::json!(f),
                     ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned().into(),
-                    ValueRef::Blob(b) => b.iter().map(|x| format!("{x:02x}")).collect::<String>().into(),
+                    ValueRef::Blob(b) => b
+                        .iter()
+                        .map(|x| format!("{x:02x}"))
+                        .collect::<String>()
+                        .into(),
                 };
                 obj.insert(name.clone(), v);
             }
