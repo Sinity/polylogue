@@ -1,24 +1,25 @@
-//! Durable provider-state application. This barrier never mutates canonical
-//! messages. Whole encoded cells are admitted explicitly; chunked huge-cell
-//! installation and physical SQLite work remain unqualified.
+//! Parser steps too large for one transaction. Cell changes are staged under a
+//! reserved `@work:<id>` namespace, sealed, applied in budgeted batches, then
+//! published with the step's progress. While work is pending no new snapshot or
+//! step can start on that state. Message rows are never touched here.
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkToken {
-    pub predecessor: Token,
+    /// The parser state this work applies to.
+    pub head: Token,
     pub work_id: i64,
     pub staged: i64,
     pub applied: i64,
 }
 impl WorkToken {
-    /// Admit one staging transaction using the same encoded framing as stage().
-    /// An unfit first member fails before mutation; a later unfit member remains
-    /// owed. The returned count never exceeds either caller allowance.
+    /// How many leading `changes` fit in one `stage` call under `budget`, using
+    /// the same size accounting as `stage`. Fails if not even the first fits.
     pub fn staging_prefix(&self, changes: &[CellChange], budget: Budget) -> Result<usize> {
         if changes.is_empty() {
             return Ok(0);
         }
-        validate(&changes[..1], budget)?;
+        check_changes(&changes[..1], budget)?;
         let mut bytes = 0usize;
         let mut count = 0;
         for change in changes.iter().take(budget.cells) {
@@ -50,10 +51,15 @@ fn staging_bytes(token: &WorkToken, change: &CellChange) -> Result<usize> {
     .into_iter()
     .try_fold(0usize, |sum, n| sum.checked_add(n).ok_or(StoreError::Range))
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkPhase {
+    Staging,
+    Applying,
+    Discarding,
+}
 pub struct Work {
     pub token: WorkToken,
-    pub applying: bool,
-    pub discarding: bool,
+    pub phase: WorkPhase,
     pub acquired_upto: u64,
     pub progress: Progress,
 }
@@ -115,11 +121,10 @@ fn load(db: &Connection, path: &Path, token: &Token) -> Result<Option<Work>> {
             if generation != token.generation || step != token.step || basis != token.basis {
                 return Err(StoreError::StaleParserState);
             }
-            let discarding = phase == "discarding";
             let phase = match phase.as_str() {
-                "staging" => false,
-                "applying" => true,
-                "discarding" => false,
+                "staging" => WorkPhase::Staging,
+                "applying" => WorkPhase::Applying,
+                "discarding" => WorkPhase::Discarding,
                 _ => return Err(StoreError::Invariant("invalid prepared phase".into())),
             };
             let next = match status.as_str() {
@@ -135,13 +140,12 @@ fn load(db: &Connection, path: &Path, token: &Token) -> Result<Option<Work>> {
             };
             Ok(Work {
                 token: WorkToken {
-                    predecessor: token.clone(),
+                    head: token.clone(),
                     work_id: id,
                     staged,
                     applied,
                 },
-                applying: phase,
-                discarding,
+                phase,
                 acquired_upto: acquired,
                 progress: Progress {
                     inspected_upto: inspected,
@@ -156,7 +160,7 @@ fn load(db: &Connection, path: &Path, token: &Token) -> Result<Option<Work>> {
     .transpose()
 }
 fn expected(db: &Connection, path: &Path, token: &WorkToken) -> Result<Work> {
-    load(db, path, &token.predecessor)?
+    load(db, path, &token.head)?
         .filter(|w| w.token == *token)
         .ok_or(StoreError::StaleParserState)
 }
@@ -175,7 +179,7 @@ fn encode(change: &CellChange) -> Vec<u8> {
     bytes
 }
 fn decode(bytes: &[u8]) -> Result<CellChange> {
-    let invalid = || StoreError::Invariant("corrupt prepared provider cell".into());
+    let invalid = || StoreError::Invariant("corrupt staged parser cell".into());
     if bytes.len() < 17 || bytes[0] > 1 {
         return Err(invalid());
     }
@@ -202,7 +206,7 @@ fn decode(bytes: &[u8]) -> Result<CellChange> {
         key: bytes[middle..end].to_vec(),
         value: (bytes[0] == 1).then(|| bytes[end..].to_vec()),
     };
-    validate(
+    check_changes(
         std::slice::from_ref(&change),
         Budget {
             cells: 1,
@@ -217,15 +221,14 @@ pub(crate) fn admit(
     head: &Head,
     progress: Progress,
 ) -> Result<Work> {
-    // Use the same progress validator as immediate small-step publication.
     let tx = sql!(path, db.transaction())?;
     let now = current(&tx, path, &head.token)?;
-    validate_expected_head(head, &now)?;
+    check_unchanged(head, &now)?;
     ensure_idle(&tx, path, &head.token)?;
     if now.status == "retired" {
         return Err(StoreError::StaleParserState);
     }
-    validate_progress(head, &progress)?;
+    check_progress(head, &progress)?;
     let id = allocate_generation(&tx, path)?;
     let values = [
         progress.inspected_upto,
@@ -256,8 +259,8 @@ pub(crate) fn stage(
     changes: &[CellChange],
     budget: Budget,
 ) -> Result<Work> {
-    validate(changes, budget)?;
-    // Prefix selection and whole-slice staging share exact encoded framing.
+    check_changes(changes, budget)?;
+    // Same size accounting as `staging_prefix`.
     let bytes = changes.iter().try_fold(0usize, |sum, change| {
         sum.checked_add(staging_bytes(token, change)?)
             .ok_or(StoreError::Range)
@@ -277,29 +280,29 @@ pub(crate) fn stage(
         .ok_or_else(|| StoreError::Invariant("prepared ordinal overflow".into()))?;
     let tx = sql!(path, db.transaction())?;
     let work = expected(&tx, path, token)?;
-    if work.applying || work.discarding {
+    if work.phase != WorkPhase::Staging {
         return Err(StoreError::Invariant("cannot stage after seal".into()));
     }
     let ns = namespace(token.work_id);
     for (ordinal, value) in (token.staged..end).zip(encoded) {
         sql!(path,tx.execute("INSERT INTO parser_cell(input_pk,chain,state_generation,namespace,key,value) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![token.predecessor.input_pk,token.predecessor.chain,token.predecessor.generation,ns,ordinal.to_be_bytes().as_slice(),value]))?;
+            params![token.head.input_pk,token.head.chain,token.head.generation,ns,ordinal.to_be_bytes().as_slice(),value]))?;
     }
     sql!(
         path,
         tx.execute(
             "UPDATE parse_work SET staged=?3 WHERE input_pk=?1 AND chain=?2",
-            params![token.predecessor.input_pk, token.predecessor.chain, end]
+            params![token.head.input_pk, token.head.chain, end]
         )
     )?;
-    let result = load(&tx, path, &token.predecessor)?.ok_or(StoreError::StaleParserState)?;
+    let result = load(&tx, path, &token.head)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
 pub(crate) fn seal(db: &mut Connection, path: &Path, token: &WorkToken) -> Result<Work> {
     let tx = sql!(path, db.transaction())?;
     let work = expected(&tx, path, token)?;
-    if work.discarding {
+    if work.phase == WorkPhase::Discarding {
         return Err(StoreError::Invariant(
             "cannot seal discarded preparation".into(),
         ));
@@ -308,10 +311,10 @@ pub(crate) fn seal(db: &mut Connection, path: &Path, token: &WorkToken) -> Resul
         path,
         tx.execute(
             "UPDATE parse_work SET phase='applying' WHERE input_pk=?1 AND chain=?2",
-            params![token.predecessor.input_pk, token.predecessor.chain]
+            params![token.head.input_pk, token.head.chain]
         )
     )?;
-    let result = load(&tx, path, &token.predecessor)?.ok_or(StoreError::StaleParserState)?;
+    let result = load(&tx, path, &token.head)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
@@ -329,9 +332,9 @@ pub(crate) fn apply(
     }
     let tx = sql!(path, db.transaction())?;
     let work = expected(&tx, path, token)?;
-    if !work.applying {
+    if work.phase != WorkPhase::Applying {
         return Err(StoreError::Invariant(
-            "seal all provider changes before application".into(),
+            "seal staged changes before applying them".into(),
         ));
     }
     let ns = namespace(token.work_id);
@@ -344,7 +347,7 @@ pub(crate) fn apply(
         let allowance_i = integer(allowance as u64)?;
         let (required,bytes)=sql!(path,tx.query_row("SELECT length(value),CASE WHEN length(value)<=?6 THEN value ELSE NULL END FROM parser_cell
             WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",
-            params![token.predecessor.input_pk,token.predecessor.chain,token.predecessor.generation,ns,cursor.to_be_bytes().as_slice(),allowance_i],
+            params![token.head.input_pk,token.head.chain,token.head.generation,ns,cursor.to_be_bytes().as_slice(),allowance_i],
             |r|Ok((unsigned(r,0)?,r.get::<_,Option<Vec<u8>>>(1)?))))?;
         let Some(bytes) = bytes else {
             if cursor > token.applied {
@@ -358,11 +361,11 @@ pub(crate) fn apply(
         let c = decode(&bytes)?;
         if let Some(value) = c.value {
             sql!(path,tx.execute("INSERT INTO parser_cell(input_pk,chain,state_generation,namespace,key,value) VALUES(?1,?2,?3,?4,?5,?6)
-            ON CONFLICT(input_pk,chain,state_generation,namespace,key) DO UPDATE SET value=excluded.value",params![token.predecessor.input_pk,token.predecessor.chain,token.predecessor.generation,c.namespace,c.key,value]))?;
+            ON CONFLICT(input_pk,chain,state_generation,namespace,key) DO UPDATE SET value=excluded.value",params![token.head.input_pk,token.head.chain,token.head.generation,c.namespace,c.key,value]))?;
         } else {
-            sql!(path,tx.execute("DELETE FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",params![token.predecessor.input_pk,token.predecessor.chain,token.predecessor.generation,c.namespace,c.key]))?;
+            sql!(path,tx.execute("DELETE FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",params![token.head.input_pk,token.head.chain,token.head.generation,c.namespace,c.key]))?;
         }
-        sql!(path,tx.execute("DELETE FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",params![token.predecessor.input_pk,token.predecessor.chain,token.predecessor.generation,ns,cursor.to_be_bytes().as_slice()]))?;
+        sql!(path,tx.execute("DELETE FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",params![token.head.input_pk,token.head.chain,token.head.generation,ns,cursor.to_be_bytes().as_slice()]))?;
         charged = charged.saturating_add(bytes.len());
         cursor += 1;
     }
@@ -370,16 +373,16 @@ pub(crate) fn apply(
         path,
         tx.execute(
             "UPDATE parse_work SET applied=?3 WHERE input_pk=?1 AND chain=?2",
-            params![token.predecessor.input_pk, token.predecessor.chain, cursor]
+            params![token.head.input_pk, token.head.chain, cursor]
         )
     )?;
-    let result = load(&tx, path, &token.predecessor)?.ok_or(StoreError::StaleParserState)?;
+    let result = load(&tx, path, &token.head)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
-/// An unsealed preparation has made no provider changes and may be discarded
-/// after a crash. Once sealed, it must finish or be invalidated by a new basis.
-/// Cleanup charges deleted member lengths without materializing their bodies.
+/// Deletes unsealed work in budgeted batches, without loading cell values.
+/// Sealed work cannot be discarded: it must finish or be invalidated by a new
+/// `begin` digest.
 pub(crate) fn discard(
     db: &mut Connection,
     path: &Path,
@@ -394,9 +397,9 @@ pub(crate) fn discard(
     }
     let tx = sql!(path, db.transaction())?;
     let work = expected(&tx, path, token)?;
-    if work.applying {
+    if work.phase == WorkPhase::Applying {
         return Err(StoreError::Invariant(
-            "sealed provider work must finish or change basis".into(),
+            "sealed parser work must finish or be invalidated".into(),
         ));
     }
     let ns = namespace(token.work_id);
@@ -406,7 +409,7 @@ pub(crate) fn discard(
         && (cursor - token.applied) < i64::try_from(budget.cells).unwrap_or(i64::MAX)
     {
         let required=sql!(path,tx.query_row("SELECT length(value) FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",
-            params![token.predecessor.input_pk,token.predecessor.chain,token.predecessor.generation,ns,cursor.to_be_bytes().as_slice()],|r|unsigned(r,0)))?;
+            params![token.head.input_pk,token.head.chain,token.head.generation,ns,cursor.to_be_bytes().as_slice()],|r|unsigned(r,0)))?;
         if required > budget.encoded_bytes.saturating_sub(charged) as u64 {
             if cursor > token.applied {
                 break;
@@ -416,36 +419,31 @@ pub(crate) fn discard(
                 required,
             });
         }
-        sql!(path,tx.execute("DELETE FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",params![token.predecessor.input_pk,token.predecessor.chain,token.predecessor.generation,ns,cursor.to_be_bytes().as_slice()]))?;
+        sql!(path,tx.execute("DELETE FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",params![token.head.input_pk,token.head.chain,token.head.generation,ns,cursor.to_be_bytes().as_slice()]))?;
         charged = charged.saturating_add(required as usize);
         cursor += 1;
     }
     let result = if cursor == token.staged {
-        invalidate(
-            &tx,
-            path,
-            token.predecessor.input_pk,
-            token.predecessor.chain,
-        )?;
+        invalidate(&tx, path, token.head.input_pk, token.head.chain)?;
         None
     } else {
-        sql!(path,tx.execute("UPDATE parse_work SET phase='discarding',applied=?3 WHERE input_pk=?1 AND chain=?2",params![token.predecessor.input_pk,token.predecessor.chain,cursor]))?;
-        load(&tx, path, &token.predecessor)?
+        sql!(path,tx.execute("UPDATE parse_work SET phase='discarding',applied=?3 WHERE input_pk=?1 AND chain=?2",params![token.head.input_pk,token.head.chain,cursor]))?;
+        load(&tx, path, &token.head)?
     };
     sql!(path, tx.commit())?;
     Ok(result)
 }
 pub(crate) fn publish(db: &mut Connection, path: &Path, token: &WorkToken) -> Result<Head> {
     let work = expected(db, path, token)?;
-    if !work.applying || token.applied != token.staged {
+    if work.phase != WorkPhase::Applying || token.applied != token.staged {
         return Err(StoreError::ParserWorkPending);
     }
-    let head = current(db, path, &token.predecessor)?;
+    let head = current(db, path, &token.head)?;
     let admitted = Head {
         acquired_upto: work.acquired_upto,
         ..head
     };
-    write_step_inner(
+    step(
         db,
         path,
         &admitted,
@@ -458,21 +456,16 @@ pub(crate) fn publish(db: &mut Connection, path: &Path, token: &WorkToken) -> Re
         true,
         |tx| {
             let work = expected(tx, path, token)?;
-            if !work.applying || work.token.applied != work.token.staged {
+            if work.phase != WorkPhase::Applying || work.token.applied != work.token.staged {
                 return Err(StoreError::ParserWorkPending);
             }
-            let remains:bool=sql!(path,tx.query_row("SELECT EXISTS(SELECT 1 FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4)",params![token.predecessor.input_pk,token.predecessor.chain,token.predecessor.generation,namespace(token.work_id)],|r|r.get(0)))?;
+            let remains:bool=sql!(path,tx.query_row("SELECT EXISTS(SELECT 1 FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4)",params![token.head.input_pk,token.head.chain,token.head.generation,namespace(token.work_id)],|r|r.get(0)))?;
             if remains {
                 return Err(StoreError::Invariant(
-                    "prepared cursor skipped retained cells".into(),
+                    "applied work left staged cells behind".into(),
                 ));
             }
-            invalidate(
-                tx,
-                path,
-                token.predecessor.input_pk,
-                token.predecessor.chain,
-            )
+            invalidate(tx, path, token.head.input_pk, token.head.chain)
         },
     )
 }
@@ -522,402 +515,4 @@ impl crate::Writer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tests::reopen_after_drop;
-    fn budget() -> Budget {
-        Budget {
-            cells: 1,
-            encoded_bytes: 4096,
-        }
-    }
-    fn basis(input_pk: i64, end: u64) -> Basis<'static> {
-        Basis {
-            input_pk,
-            chain: 1,
-            parser_version: 1,
-            digest: [7; 32],
-            acquired_upto: end,
-            companions_json: None,
-            excisions_seen: 0,
-        }
-    }
-    fn progress() -> Progress {
-        Progress {
-            inspected_upto: 100,
-            parsed_upto: 100,
-            phase: Phase::Done,
-            finalization_pending: false,
-            counts: Accounting {
-                framed: 1,
-                used: 1,
-                ..Accounting::default()
-            },
-        }
-    }
-    fn change(key: &str, value: &str) -> CellChange {
-        CellChange {
-            namespace: "provider".into(),
-            key: key.as_bytes().to_vec(),
-            value: Some(value.as_bytes().to_vec()),
-        }
-    }
-    fn fixture() -> (tempfile::TempDir, std::path::PathBuf, crate::Writer, Head) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("archive");
-        let mut writer = crate::Writer::open(&root).unwrap();
-        writer
-            ._index
-            .execute("INSERT INTO input_ref(id) VALUES('prepared-fixture')", [])
-            .unwrap();
-        let input = writer
-            ._index
-            .query_row("SELECT pk FROM input_ref", [], |r| r.get(0))
-            .unwrap();
-        let head = writer.begin_parser(&basis(input, 100)).unwrap();
-        (dir, root, writer, head)
-    }
-    #[test]
-    fn bounded_application_blocks_new_parser_views_but_preserves_old_snapshot_and_newer_suffix() {
-        let (_dir, root, mut writer, head) = fixture();
-        let old = writer.parser_snapshot(&head.token).unwrap();
-        let mut work = writer.prepare_parser(&head, progress()).unwrap();
-        assert!(matches!(
-            writer.parser_snapshot(&head.token),
-            Err(StoreError::ParserWorkPending)
-        ));
-        assert!(matches!(
-            writer.prepare_parser(&head, progress()),
-            Err(StoreError::ParserWorkPending)
-        ));
-        assert!(matches!(
-            write_step(
-                &mut writer._index,
-                &root.join("index.db"),
-                &head,
-                progress(),
-                &[],
-                budget(),
-                |_| Ok(())
-            ),
-            Err(StoreError::ParserWorkPending)
-        ));
-        work = writer
-            .stage_parser(&work.token, &[change("a", "one")], budget())
-            .unwrap();
-        work = writer
-            .stage_parser(&work.token, &[change("b", "two")], budget())
-            .unwrap();
-        assert!(matches!(
-            writer.publish_parser(&work.token),
-            Err(StoreError::ParserWorkPending)
-        ));
-        work = writer.seal_parser(&work.token).unwrap();
-        let stale = work.token.clone();
-        work = writer.apply_parser(&work.token, budget()).unwrap();
-        assert_eq!(work.token.applied, 1);
-        assert!(matches!(
-            writer.apply_parser(&stale, budget()),
-            Err(StoreError::StaleParserState)
-        ));
-        assert_eq!(old.cell("provider", b"a", 100).unwrap(), None);
-        assert_eq!(
-            writer
-                .parser_head(head.token.input_pk, 1)
-                .unwrap()
-                .unwrap()
-                .parsed_upto,
-            0
-        );
-        assert!(matches!(
-            writer.parser_snapshot(&head.token),
-            Err(StoreError::ParserWorkPending)
-        ));
-        writer
-            .begin_parser(&basis(head.token.input_pk, 200))
-            .unwrap();
-        work = writer.apply_parser(&work.token, budget()).unwrap();
-        let published = writer.publish_parser(&work.token).unwrap();
-        assert_eq!(
-            (
-                published.parsed_upto,
-                published.acquired_upto,
-                published.status.as_str()
-            ),
-            (100, 200, "parsing")
-        );
-        assert_eq!(published.counts.framed, 1);
-        assert!(matches!(
-            writer.publish_parser(&work.token),
-            Err(StoreError::StaleParserState)
-        ));
-        let new = writer.parser_snapshot(&published.token).unwrap();
-        assert_eq!(new.cell("provider", b"a", 100).unwrap().unwrap(), b"one");
-        assert_eq!(
-            new.neighbor("provider", b"a", true, 100)
-                .unwrap()
-                .unwrap()
-                .0,
-            b"b"
-        );
-        assert_eq!(old.cell("provider", b"b", 100).unwrap(), None);
-    }
-    #[test]
-    fn restart_resumes_staging_and_partial_application_without_reinterpretation() {
-        let (_dir, root, mut writer, head) = fixture();
-        let work = writer.prepare_parser(&head, progress()).unwrap();
-        let work = writer
-            .stage_parser(&work.token, &[change("a", "one")], budget())
-            .unwrap();
-        drop(writer);
-        let mut writer = reopen_after_drop(&root);
-        let resumed = writer.parser_work(&head.token).unwrap().unwrap();
-        assert_eq!(resumed.token, work.token);
-        let work = writer
-            .stage_parser(&resumed.token, &[change("b", "two")], budget())
-            .unwrap();
-        let work = writer.seal_parser(&work.token).unwrap();
-        let work = writer.apply_parser(&work.token, budget()).unwrap();
-        drop(writer);
-        let mut writer = reopen_after_drop(&root);
-        let resumed = writer.parser_work(&head.token).unwrap().unwrap();
-        assert_eq!(resumed.token, work.token);
-        assert_eq!(resumed.token.applied, 1);
-        assert!(matches!(
-            writer.parser_snapshot(&head.token),
-            Err(StoreError::ParserWorkPending)
-        ));
-        let work = writer.apply_parser(&resumed.token, budget()).unwrap();
-        let published = writer.publish_parser(&work.token).unwrap();
-        assert_eq!(published.status, "done");
-        assert_eq!(published.counts.used, 1);
-        drop(writer);
-        let writer = reopen_after_drop(&root);
-        assert!(writer.parser_work(&published.token).unwrap().is_none());
-        assert_eq!(
-            writer
-                .parser_snapshot(&published.token)
-                .unwrap()
-                .cell("provider", b"b", 100)
-                .unwrap()
-                .unwrap(),
-            b"two"
-        );
-    }
-    #[test]
-    fn invalidated_work_cannot_publish_and_prepared_members_have_bounded_gc() {
-        let (_dir, root, mut writer, head) = fixture();
-        let work = writer.prepare_parser(&head, progress()).unwrap();
-        let work = writer
-            .stage_parser(&work.token, &[change("a", "one")], budget())
-            .unwrap();
-        let work = writer.seal_parser(&work.token).unwrap();
-        let work = writer.apply_parser(&work.token, budget()).unwrap();
-        let mut new_basis = basis(head.token.input_pk, 100);
-        new_basis.digest = [8; 32];
-        let next = writer.begin_parser(&new_basis).unwrap();
-        assert!(matches!(
-            writer.publish_parser(&work.token),
-            Err(StoreError::StaleParserState)
-        ));
-        assert_eq!(
-            writer
-                .parser_snapshot(&next.token)
-                .unwrap()
-                .cell("provider", b"a", 100)
-                .unwrap(),
-            None
-        );
-        let gc = collect_retired(
-            &mut writer._index,
-            &root.join("index.db"),
-            &next.token,
-            budget(),
-        )
-        .unwrap();
-        assert_eq!(gc.deleted, 1);
-        assert!(!gc.remaining);
-        let new_work = writer.prepare_parser(&next, progress()).unwrap();
-        assert_ne!(new_work.token.work_id, work.token.work_id);
-        assert!(matches!(
-            writer.seal_parser(&work.token),
-            Err(StoreError::StaleParserState)
-        ));
-    }
-    #[test]
-    fn admission_and_seal_keep_invalid_or_unadmitted_changes_out_of_live_state() {
-        let (_dir, _root, mut writer, head) = fixture();
-        let work = writer.prepare_parser(&head, progress()).unwrap();
-        assert!(matches!(
-            writer.stage_parser(
-                &work.token,
-                &[change("a", "one")],
-                Budget {
-                    cells: 1,
-                    encoded_bytes: 3
-                }
-            ),
-            Err(StoreError::ParserAdmission { .. })
-        ));
-        let reserved = CellChange {
-            namespace: namespace(work.token.work_id),
-            key: vec![],
-            value: Some(vec![]),
-        };
-        assert!(matches!(
-            writer.stage_parser(&work.token, &[reserved], budget()),
-            Err(StoreError::Invariant(_))
-        ));
-        assert_eq!(
-            writer
-                .parser_work(&head.token)
-                .unwrap()
-                .unwrap()
-                .token
-                .staged,
-            0
-        );
-        let work = writer
-            .stage_parser(&work.token, &[change("a", "one")], budget())
-            .unwrap();
-        let work = writer.seal_parser(&work.token).unwrap();
-        assert!(matches!(
-            writer.stage_parser(&work.token, &[change("b", "two")], budget()),
-            Err(StoreError::Invariant(_))
-        ));
-        assert!(matches!(
-            writer.apply_parser(
-                &work.token,
-                Budget {
-                    cells: 1,
-                    encoded_bytes: 1
-                }
-            ),
-            Err(StoreError::ParserAdmission { .. })
-        ));
-        assert_eq!(
-            writer
-                .parser_work(&head.token)
-                .unwrap()
-                .unwrap()
-                .token
-                .applied,
-            0
-        );
-    }
-
-    #[test]
-    fn interrupted_unsealed_preparation_is_discarded_in_bounded_steps() {
-        let (_dir, root, mut writer, head) = fixture();
-        let work = writer.prepare_parser(&head, progress()).unwrap();
-        let work = writer
-            .stage_parser(&work.token, &[change("a", "one")], budget())
-            .unwrap();
-        writer
-            .stage_parser(&work.token, &[change("b", "two")], budget())
-            .unwrap();
-        drop(writer);
-        let mut writer = reopen_after_drop(&root);
-        let work = writer.parser_work(&head.token).unwrap().unwrap();
-        let work = writer
-            .discard_parser_preparation(&work.token, budget())
-            .unwrap()
-            .unwrap();
-        assert_eq!(work.token.applied, 1);
-        assert!(work.discarding);
-        assert!(matches!(
-            writer.seal_parser(&work.token),
-            Err(StoreError::Invariant(_))
-        ));
-        drop(writer);
-        let mut writer = reopen_after_drop(&root);
-        let work = writer.parser_work(&head.token).unwrap().unwrap();
-        assert!(
-            writer
-                .discard_parser_preparation(&work.token, budget())
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            writer
-                .parser_snapshot(&head.token)
-                .unwrap()
-                .cell("provider", b"a", 100)
-                .unwrap(),
-            None
-        );
-        assert_eq!(
-            writer
-                .parser_head(head.token.input_pk, 1)
-                .unwrap()
-                .unwrap()
-                .parsed_upto,
-            0
-        );
-        let replacement = writer.prepare_parser(&head, progress()).unwrap();
-        assert_ne!(replacement.token.work_id, work.token.work_id);
-        assert!(matches!(
-            writer.seal_parser(&work.token),
-            Err(StoreError::StaleParserState)
-        ));
-    }
-
-    #[test]
-    fn process_exit_between_apply_and_publish_keeps_checkpoint_owed() {
-        let (_dir, root, mut writer, head) = fixture();
-        let work = writer.prepare_parser(&head, progress()).unwrap();
-        let work = writer
-            .stage_parser(&work.token, &[change("a", "one")], budget())
-            .unwrap();
-        let work = writer
-            .stage_parser(&work.token, &[change("b", "two")], budget())
-            .unwrap();
-        writer.seal_parser(&work.token).unwrap();
-        drop(writer);
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "parser_state::prepared::tests::prepared_crash_child",
-                "--nocapture",
-            ])
-            .env("POLYLOGUE_PREPARED_CRASH_ROOT", &root)
-            .status()
-            .unwrap();
-        assert_eq!(status.code(), Some(73));
-        let mut writer = crate::Writer::open(&root).unwrap();
-        let resumed = writer.parser_work(&head.token).unwrap().unwrap();
-        assert_eq!(resumed.token.applied, 1);
-        assert_eq!(
-            writer
-                .parser_head(head.token.input_pk, 1)
-                .unwrap()
-                .unwrap()
-                .parsed_upto,
-            0
-        );
-        assert!(matches!(
-            writer.parser_snapshot(&head.token),
-            Err(StoreError::ParserWorkPending)
-        ));
-        let completed = writer.apply_parser(&resumed.token, budget()).unwrap();
-        let head = writer.publish_parser(&completed.token).unwrap();
-        assert_eq!(head.counts.framed, 1);
-        assert_eq!(head.parsed_upto, 100);
-    }
-
-    #[test]
-    fn prepared_crash_child() {
-        let Some(root) = std::env::var_os("POLYLOGUE_PREPARED_CRASH_ROOT") else {
-            return;
-        };
-        let mut writer = crate::Writer::open(std::path::Path::new(&root)).unwrap();
-        let input = writer
-            ._index
-            .query_row("SELECT pk FROM input_ref", [], |r| r.get(0))
-            .unwrap();
-        let head = writer.parser_head(input, 1).unwrap().unwrap();
-        let work = writer.parser_work(&head.token).unwrap().unwrap();
-        writer.apply_parser(&work.token, budget()).unwrap();
-        std::process::exit(73);
-    }
-}
+mod tests;
