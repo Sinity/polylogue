@@ -90,4 +90,5 @@ fn recognizes_captures_by_their_first_key() {
         b"{\"polylogue_capture_kind\": \"conversation\""
     ));
     assert!(!recognize(p, b"{\"title\": \"x\""));
+    assert!(recognize(p, b"{\n  \"capture_id\": \"chatgpt:6a67\""));
 }

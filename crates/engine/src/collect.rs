@@ -125,6 +125,37 @@ fn entries(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 /// `*` matches any run of characters within one path segment.
+/// Whether `path` ends in the layout `pattern` describes: its last
+/// components match the pattern's segments, a `**` matching any number.
+pub fn ends_in(path: &Path, pattern: &str) -> bool {
+    let segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let names: Vec<&str> = path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    ends_with(&names, &segs)
+}
+
+fn ends_with(names: &[&str], segs: &[&str]) -> bool {
+    let Some((last, rest)) = segs.split_last() else {
+        return true;
+    };
+    if *last == "**" {
+        return (0..=names.len()).any(|k| ends_with(&names[..names.len() - k], rest));
+    }
+    match names.split_last() {
+        Some((name, before)) => {
+            let matches = if last.contains('*') {
+                wildcard(last, name)
+            } else {
+                last == name
+            };
+            matches && ends_with(before, rest)
+        }
+        None => false,
+    }
+}
+
 fn wildcard(pattern: &str, name: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
     let (first, last) = (parts[0], parts[parts.len() - 1]);
@@ -144,6 +175,16 @@ fn wildcard(pattern: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_ends_in_a_layout() {
+        let grok = Path::new("/x/.grok/sessions/%2Fhome/01a0/chat_history.jsonl");
+        assert!(ends_in(grok, ".grok/sessions/*/*/chat_history.jsonl"));
+        assert!(!ends_in(grok, ".claude/projects/*/*.jsonl"));
+        let deep = Path::new("/c/.codex/sessions/2026/09/01/r.jsonl");
+        assert!(ends_in(deep, "sessions/**/*.jsonl"));
+        assert!(!ends_in(Path::new("/x/r.jsonl"), "sessions/**/*.jsonl"));
+    }
 
     #[test]
     fn wildcards_match_within_a_segment() {

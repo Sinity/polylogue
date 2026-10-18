@@ -274,10 +274,25 @@ const IMPORT_GROUP: u64 = 1 << 30;
 /// The origin that reads a zip member, or the one that keeps it as bytes.
 fn recognize_member(at: &Path, bytes: &[u8]) -> &'static OriginSpec {
     let head = &bytes[..bytes.len().min(64)];
-    ORIGINS
-        .iter()
-        .find(|o| o.support == Support::Parsed && (o.recognize)(at, head))
+    recognize_import(at, head)
         .unwrap_or_else(|| polylogue_sources::origin::by_name(KEPT).expect("declared origin"))
+}
+
+/// The origin an imported file belongs to. Several recognizers can accept
+/// one file (Claude Code takes any JSON-lines transcript, since an exported
+/// transcript can sit anywhere); the one whose own layout the path ends in
+/// is preferred, so a Grok CLI history or a hook carrier copied with its
+/// directories keeps its origin.
+fn recognize_import(path: &Path, head: &[u8]) -> Option<&'static OriginSpec> {
+    let mut found = ORIGINS
+        .iter()
+        .filter(|o| o.support == Support::Parsed && (o.recognize)(path, head));
+    let first = found.next()?;
+    let in_layout = |o: &OriginSpec| o.locations.iter().any(|l| collect::ends_in(path, l));
+    if in_layout(first) {
+        return Some(first);
+    }
+    Some(found.find(|o| in_layout(o)).unwrap_or(first))
 }
 
 /// The origin of export members no parser reads: kept as bytes.
@@ -656,9 +671,7 @@ impl Engine {
             let mut head = [0u8; 64];
             let n = std::io::Read::read(&mut std::fs::File::open(path)?, &mut head)?;
             let head = &head[..n];
-            let whole = ORIGINS
-                .iter()
-                .find(|o| o.support == Support::Parsed && (o.recognize)(path, head));
+            let whole = recognize_import(path, head);
             if whole.is_none() && head.starts_with(ZIP_MAGIC) {
                 let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)
                     .map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?;
