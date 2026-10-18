@@ -18,9 +18,19 @@ pub enum Request {
         limit: u64,
         before: Option<i64>,
     },
+    /// A query in the query language. `cursor` continues a previous page;
+    /// `page_size` overrides the unit's default page; `why` explains an
+    /// empty result clause by clause.
     Query {
         text: String,
         cursor: Option<String>,
+        #[serde(default)]
+        page_size: Option<u64>,
+        #[serde(default)]
+        why: bool,
+        /// The calling session, which `self` names.
+        #[serde(default)]
+        session: Option<String>,
     },
     Read {
         session: SessionId,
@@ -122,6 +132,10 @@ pub enum Response {
     Error {
         kind: String,
         message: String,
+        /// Structured detail: for a query error, the position, the
+        /// candidates and a corrected query that runs as given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<serde_json::Value>,
     },
 }
 
@@ -134,6 +148,9 @@ mod tests {
         let r = Request::Query {
             text: "repo:x".into(),
             cursor: None,
+            page_size: None,
+            why: false,
+            session: None,
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["op"], "query");

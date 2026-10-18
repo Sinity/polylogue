@@ -12,6 +12,9 @@ pub mod context;
 pub mod excise;
 pub mod export;
 pub mod files;
+#[cfg(any(test, feature = "fixture"))]
+pub mod fixture;
+pub mod functions;
 pub mod notes;
 pub mod read;
 pub mod schema;
@@ -23,7 +26,7 @@ pub use blobs::{Change, FileFacts, Piece};
 pub use context::{DeliveryRow, Obligations, Prompt};
 pub use files::{Archive, ArchiveLock};
 pub use notes::NoteFilter;
-pub use read::{KnownInput, ReadPool, Reader, SessionSummary, Status};
+pub use read::{KnownInput, ReadPool, Reader, SessionSummary, SqlValue, Status};
 pub use user::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{Batch, InputKey, Observation, ParseStep, WriteReport, Writer, WriterSender};
 

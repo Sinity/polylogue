@@ -11,6 +11,9 @@ polylogue-model.workspace = true
 pest.workspace = true
 pest_derive.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+jiff.workspace = true
+strsim.workspace = true
 
 [lints]
 workspace = true

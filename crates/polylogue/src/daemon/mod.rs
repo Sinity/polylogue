@@ -3,6 +3,7 @@
 //! caches (compiled queries, recent results and pages, embedding vectors,
 //! completion data), and serves every client over one request shape.
 
+pub mod query;
 pub mod request;
 pub mod server;
 

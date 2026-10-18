@@ -1,0 +1,309 @@
+//! A small archive written row by row, for tests of what reads it (the
+//! query language, rendering, the daemon). Rows go straight into the
+//! tables, the way the writer leaves them, so a test states the facts it
+//! needs without a parser or an input file. Enabled with the `fixture`
+//! feature; never part of the product.
+
+use crate::files::{Archive, ArchiveLock, open_write};
+use crate::{ReadPool, Result};
+use polylogue_model::text::fold;
+use rusqlite::{Connection, params};
+use std::path::Path;
+
+pub struct Fixture {
+    pub archive: Archive,
+    _lock: ArchiveLock,
+    index: Connection,
+    notes: Connection,
+    input_pk: i64,
+    seq: i64,
+    local_seq: i64,
+}
+
+/// A session's facts; everything not given is unknown.
+#[derive(Debug, Clone, Default)]
+pub struct S<'a> {
+    pub id: &'a str,
+    pub kind: &'a str,
+    pub title: Option<&'a str>,
+    pub cwd: Option<&'a str>,
+    pub repo: Option<&'a str>,
+    pub started: Option<i64>,
+    pub last: Option<i64>,
+}
+
+/// A message's facts.
+#[derive(Debug, Clone, Default)]
+pub struct M<'a> {
+    pub id: &'a str,
+    pub role: &'a str,
+    pub written_by: &'a str,
+    pub prompt_kind: Option<&'a str>,
+    pub at: Option<i64>,
+    pub model: Option<&'a str>,
+    pub text: Option<&'a str>,
+    pub thinking: Option<&'a str>,
+    pub cost_nusd: Option<i64>,
+    pub inherited_from: Option<&'a str>,
+    pub on_active_path: Option<bool>,
+}
+
+/// A tool call's facts, with its result when `outcome` is not `unknown`.
+#[derive(Debug, Clone, Default)]
+pub struct T<'a> {
+    pub tool: &'a str,
+    pub action: &'a str,
+    pub command: Option<&'a str>,
+    pub path: Option<&'a str>,
+    pub outcome: &'a str,
+    pub exit_code: Option<i64>,
+    pub at: Option<i64>,
+    pub output: Option<&'a str>,
+}
+
+impl Fixture {
+    pub fn new(root: &Path) -> Result<Self> {
+        let (archive, lock) = Archive::open_or_create(root)?;
+        let index = open_write(&archive.index_db())?;
+        let notes = open_write(&archive.archive_db())?;
+        index.execute("INSERT INTO input_ref(id) VALUES ('fixture')", [])?;
+        let input_pk = index.last_insert_rowid();
+        Ok(Self {
+            archive,
+            _lock: lock,
+            index,
+            notes,
+            input_pk,
+            seq: 0,
+            local_seq: 0,
+        })
+    }
+
+    pub fn reads(&self) -> Result<ReadPool> {
+        ReadPool::open(&self.archive)
+    }
+
+    pub fn session(&mut self, s: S<'_>) -> Result<i64> {
+        let (origin, native) = s.id.split_once(':').unwrap_or(("test", s.id));
+        let kind = if s.kind.is_empty() { "main" } else { s.kind };
+        self.index.execute(
+            "INSERT INTO session(id, origin, native_id, kind, title, cwd, cwd_json, repo, started_at,
+                 last_activity_at, changed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)",
+            params![
+                s.id,
+                origin,
+                native,
+                kind,
+                s.title,
+                s.cwd,
+                s.cwd.map(|c| serde_json::json!([c]).to_string()),
+                s.repo,
+                s.started,
+                s.last
+            ],
+        )?;
+        Ok(self.index.last_insert_rowid())
+    }
+
+    fn text(&self, body: &str, bit: i64) -> Result<i64> {
+        let hash = blake3::hash(body.as_bytes());
+        let packed = zstd::bulk::compress(body.as_bytes(), 3)?;
+        self.index.execute(
+            "INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, ?3)
+             ON CONFLICT(hash) DO UPDATE SET indexed = indexed | ?3",
+            params![&hash.as_bytes()[..], packed, bit],
+        )?;
+        let id: i64 = self.index.query_row(
+            "SELECT id FROM text WHERE hash = ?1",
+            [&hash.as_bytes()[..]],
+            |r| r.get(0),
+        )?;
+        let table = if bit == 2 { "output_fts" } else { "text_fts" };
+        self.index.execute(
+            &format!("INSERT INTO {table}(rowid, body) VALUES (?1, ?2)"),
+            params![id, fold(body)],
+        )?;
+        Ok(id)
+    }
+
+    fn block(
+        &self,
+        message_pk: i64,
+        session_pk: i64,
+        idx: i64,
+        kind: &str,
+        text_id: Option<i64>,
+        body: serde_json::Value,
+    ) -> Result<i64> {
+        let packed = zstd::bulk::compress(body.to_string().as_bytes(), 3)?;
+        self.index.execute(
+            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![message_pk, session_pk, idx, kind, text_id, packed],
+        )?;
+        Ok(self.index.last_insert_rowid())
+    }
+
+    pub fn message(&mut self, session_pk: i64, m: M<'_>) -> Result<i64> {
+        self.seq += 1;
+        let words = m.text.map_or(0, |t| t.split_whitespace().count() as i64);
+        self.index.execute(
+            "INSERT INTO message(id, session_pk, order_input_pk, seq, role, written_by, prompt_kind,
+                 model, at, input_pk, cost_nusd, inherited_from, on_active_path, words, parser_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?3, ?10, ?11, ?12, ?13, 1)",
+            params![
+                m.id,
+                session_pk,
+                self.input_pk,
+                self.seq,
+                m.role,
+                m.written_by,
+                m.prompt_kind,
+                m.model,
+                m.at,
+                m.cost_nusd,
+                m.inherited_from,
+                m.on_active_path.map(i64::from),
+                words
+            ],
+        )?;
+        let pk = self.index.last_insert_rowid();
+        let mut idx = 0;
+        if let Some(t) = m.thinking {
+            let id = self.text(t, 1)?;
+            self.block(
+                pk,
+                session_pk,
+                idx,
+                "thinking",
+                Some(id),
+                serde_json::json!({"type": "thinking", "text": null}),
+            )?;
+            idx += 1;
+        }
+        if let Some(t) = m.text {
+            let id = self.text(t, 1)?;
+            self.block(
+                pk,
+                session_pk,
+                idx,
+                "text",
+                Some(id),
+                serde_json::json!({"type": "text", "text": ""}),
+            )?;
+        }
+        Ok(pk)
+    }
+
+    /// A tool call in its own message, with its result when it has one.
+    pub fn tool_call(&mut self, session_pk: i64, message_pk: i64, t: T<'_>) -> Result<i64> {
+        let idx: i64 = self.index.query_row(
+            "SELECT COALESCE(max(idx), -1) + 1 FROM block WHERE message_pk = ?1",
+            [message_pk],
+            |r| r.get(0),
+        )?;
+        let call = self.block(
+            message_pk,
+            session_pk,
+            idx,
+            "tool_call",
+            None,
+            serde_json::json!({"type": "tool_call", "call_id": format!("c{message_pk}-{idx}"),
+                               "tool": t.tool, "input": {"command": t.command, "path": t.path}}),
+        )?;
+        let result = match t.output {
+            Some(out) => {
+                let id = self.text(out, 2)?;
+                Some(self.block(
+                    message_pk,
+                    session_pk,
+                    idx + 1,
+                    "tool_result",
+                    Some(id),
+                    serde_json::json!({"type": "tool_result", "outcome": {"kind": t.outcome}}),
+                )?)
+            }
+            None => None,
+        };
+        self.index.execute(
+            "INSERT INTO tool_call(session_pk, call_block_pk, call_id, result_block_pk, at, tool,
+                 action, command, path, outcome, exit_code)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                session_pk,
+                call,
+                format!("c{message_pk}-{idx}"),
+                result,
+                t.at,
+                t.tool,
+                t.action,
+                t.command,
+                t.path,
+                if t.outcome.is_empty() {
+                    "unknown"
+                } else {
+                    t.outcome
+                },
+                t.exit_code
+            ],
+        )?;
+        let pk = self.index.last_insert_rowid();
+        self.index.execute(
+            "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
+            params![pk, t.command, t.path],
+        )?;
+        Ok(pk)
+    }
+
+    pub fn link(&mut self, parent: &str, child: &str, kind: &str, how: &str) -> Result<()> {
+        self.index.execute(
+            "INSERT INTO link(parent_id, child_id, child_pk, kind, how, evidence, input_pk, parser_version)
+             VALUES (?1, ?2, (SELECT pk FROM session WHERE id = ?2), ?3, ?4, 'fixture', ?5, 1)",
+            params![parent, child, kind, how, self.input_pk],
+        )?;
+        Ok(())
+    }
+
+    pub fn event(&mut self, session_pk: i64, kind: &str, at: Option<i64>) -> Result<()> {
+        self.seq += 1;
+        let data = zstd::bulk::compress(b"{}", 3)?;
+        self.index.execute(
+            "INSERT INTO event(id, session_pk, seq, kind, at, input_pk, parser_version, data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
+            params![
+                format!("e{}", self.seq),
+                session_pk,
+                self.seq,
+                kind,
+                at,
+                self.input_pk,
+                data
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// A note on `target` (`session:<id>`, `message:<id>`, `note:<root>`).
+    /// Returns its ID, which is also its family's root.
+    pub fn note(
+        &mut self,
+        kind: &str,
+        key: Option<&str>,
+        value: Option<&str>,
+        target: &str,
+    ) -> Result<String> {
+        self.local_seq += 1;
+        let id = format!("n{}", self.local_seq);
+        self.notes.execute(
+            "INSERT INTO note(id, root, kind, key, value, author, machine, created_at, local_seq)
+             VALUES (?1, ?1, ?2, ?3, ?4, 'operator', 'test', ?5, ?5)",
+            params![id, kind, key, value, self.local_seq],
+        )?;
+        self.notes.execute(
+            "INSERT INTO note_target(note_id, ref) VALUES (?1, ?2)",
+            params![id, target],
+        )?;
+        Ok(id)
+    }
+}

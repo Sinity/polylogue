@@ -1,67 +1,155 @@
-//! The query language (architecture 7): the existing language ported, not a
-//! second one. One read program is query × projection × render. Parsing is
-//! pure; the field table is data; compiling produces SQL for the store.
+//! The query language (architecture 7; spec query.md): the existing
+//! language ported, not a second one. One read program is query ×
+//! projection × render. Parsing, checking and compiling are pure: the
+//! result is SQL with bound parameters that the daemon runs against
+//! `index.db` (with `archive.db` attached as `a`) in one consistent read.
 
 pub mod ast;
-pub mod check;
 pub mod compile;
 pub mod fields;
+pub mod parse;
+pub mod time;
+
+pub use compile::{
+    Attach, ColKind, Column, IdCheck, Options, Param, Program, Shape, WhyClause, compile,
+};
+pub use parse::parse;
+pub use time::Clock;
 
 use pest_derive::Parser;
+use serde::Serialize;
 
 #[derive(Parser)]
 #[grammar = "query.pest"]
 pub struct Grammar;
 
-#[derive(Debug, thiserror::Error)]
+/// The CLI's command and verb names. A query whose first unquoted word is
+/// one of these, or a near miss of one, is refused with a suggestion rather
+/// than searched for (spec query.md, principle 2).
+pub const COMMAND_WORDS: &[&str] = &[
+    "status",
+    "daemon",
+    "import",
+    "list",
+    "read",
+    "export",
+    "note",
+    "brief",
+    "continue",
+    "recall",
+    "measure",
+    "work",
+    "notices",
+    "sql",
+    "excise",
+    "embed",
+    "sinex",
+    "web",
+    "mcp",
+    "hook",
+    "completions",
+    "find",
+];
+
+#[derive(Debug, Clone, PartialEq, thiserror::Error, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum QueryError {
-    /// With a caret under the position and the nearest alternative.
-    #[error("{message}\n{line}\n{caret}")]
+    /// With a caret under the position and, when a simple repair parses,
+    /// a corrected query.
+    #[error("{message} at position {position}\n  {line}\n  {caret}")]
     Syntax {
         message: String,
+        position: usize,
         line: String,
         caret: String,
+        suggestion: Option<String>,
     },
-    #[error("unknown field {field:?} for {unit}; did you mean {suggestion:?}?")]
+    #[error("parentheses nest more than {max} deep")]
+    TooDeep { max: usize },
+    #[error("unknown field {field:?} at position {position}{}", hint(.candidates))]
     UnknownField {
         field: String,
         unit: String,
+        position: usize,
+        candidates: Vec<String>,
         suggestion: Option<String>,
     },
+    /// A value the field cannot take: a closed set, or a malformed number,
+    /// time, duration or amount.
+    #[error("{message}")]
+    BadValue {
+        field: String,
+        value: String,
+        position: usize,
+        message: String,
+    },
+    /// The first word is a command, or a near miss of a unit or command.
+    #[error("{message}")]
+    NotAQuery {
+        word: String,
+        message: String,
+        suggestion: Option<String>,
+    },
+    #[error("{message}")]
+    Invalid { message: String, position: usize },
+    /// Valid, but the part it needs is not built yet.
+    #[error("{what} is not built yet ({section})")]
+    NotBuilt { what: String, section: String },
 }
 
-pub fn parse(_text: &str) -> Result<ast::Query, QueryError> {
-    // Architecture 7: pest parse tree to AST, errors with caret.
-    todo!()
+fn hint(candidates: &[String]) -> String {
+    match candidates {
+        [] => String::new(),
+        [one] => format!("; did you mean {one:?}?"),
+        many => format!(
+            "; did you mean one of {}?",
+            many.iter()
+                .map(|c| format!("{c:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pest::Parser;
-
-    #[test]
-    fn the_grammar_accepts_both_entry_shapes() {
-        for text in [
-            "repo:polylogue since:7d \"json envelope\"",
-            "origin:(codex|claude-code) -tag:stale",
-            "messages:>=10 words:>=200",
-            "date between 2026-01-01 and 2026-02-01",
-            "sessions where (repo:polylogue OR origin:chatgpt) AND NOT tag:stale",
-            "messages where role:assistant AND text:timeout | group by role | count | sort by count desc",
-            "exists assertion(value.status:approved)",
-            "timeout",
-            "repo:polylogue OR repo:sinex",
-            "",
-        ] {
-            Grammar::parse(Rule::query, text).unwrap_or_else(|e| panic!("{text:?}: {e}"));
+impl QueryError {
+    pub(crate) fn syntax(
+        text: &str,
+        at: usize,
+        message: String,
+        suggestion: Option<String>,
+    ) -> Self {
+        let at = at.min(text.len());
+        let line = text.to_owned();
+        let caret = format!("{}^", " ".repeat(text[..at].chars().count()));
+        QueryError::Syntax {
+            message,
+            position: at,
+            line,
+            caret,
+            suggestion,
         }
     }
 
-    #[test]
-    fn the_grammar_refuses_broken_input() {
-        for text in ["repo:(a|", "messages where", "\"unclosed"] {
-            assert!(Grammar::parse(Rule::query, text).is_err(), "{text:?}");
+    /// The stable machine name of the error, as surfaces report it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            QueryError::Syntax { .. } | QueryError::TooDeep { .. } | QueryError::Invalid { .. } => {
+                "invalid_query"
+            }
+            QueryError::UnknownField { .. } => "unknown_field",
+            QueryError::BadValue { .. } => "bad_value",
+            QueryError::NotAQuery { .. } => "not_a_query",
+            QueryError::NotBuilt { .. } => "not_built",
+        }
+    }
+
+    /// The corrected query that runs as given, when one could be formed.
+    pub fn suggestion(&self) -> Option<&str> {
+        match self {
+            QueryError::Syntax { suggestion, .. }
+            | QueryError::UnknownField { suggestion, .. }
+            | QueryError::NotAQuery { suggestion, .. } => suggestion.as_deref(),
+            _ => None,
         }
     }
 }

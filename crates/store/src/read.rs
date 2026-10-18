@@ -113,6 +113,28 @@ impl Drop for Reader<'_> {
     }
 }
 
+/// A parameter of read-only SQL, so callers outside the store need no
+/// SQLite types.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SqlValue {
+    Int(i64),
+    Real(f64),
+    Text(String),
+    Null,
+}
+
+impl rusqlite::ToSql for SqlValue {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        use rusqlite::types::{ToSqlOutput, ValueRef};
+        Ok(match self {
+            SqlValue::Int(n) => ToSqlOutput::Borrowed(ValueRef::Integer(*n)),
+            SqlValue::Real(f) => ToSqlOutput::Borrowed(ValueRef::Real(*f)),
+            SqlValue::Text(s) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
+            SqlValue::Null => ToSqlOutput::Borrowed(ValueRef::Null),
+        })
+    }
+}
+
 fn parse_name<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
     serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
 }
@@ -530,19 +552,24 @@ impl Reader<'_> {
             .exists([id])?)
     }
 
-    /// Runs read-only SQL and returns each row as a JSON object.
-    pub fn query(
-        &self,
-        sql: &str,
-        params: &[rusqlite::types::Value],
-    ) -> Result<Vec<serde_json::Value>> {
-        let mut stmt = self.conn().prepare(sql)?;
+    /// Runs read-only SQL and returns each row as a JSON object. Parameters
+    /// bind by number (`?1`, `?2`, …); those past the highest number the
+    /// statement uses are not bound, so one parameter list serves several
+    /// statements of one compiled query.
+    pub fn query(&self, sql: &str, params: &[SqlValue]) -> Result<Vec<serde_json::Value>> {
+        let mut stmt = self.conn().prepare_cached(sql)?;
         let names: Vec<String> = stmt
             .column_names()
             .iter()
             .map(|s| (*s).to_owned())
             .collect();
-        let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
+        let wanted = stmt.parameter_count();
+        for (i, p) in params.iter().take(wanted).enumerate() {
+            stmt.raw_bind_parameter(i + 1, p)?;
+        }
+        let mut rows = stmt.raw_query();
+        let mut out = vec![];
+        while let Some(r) = rows.next()? {
             let mut obj = serde_json::Map::new();
             for (i, name) in names.iter().enumerate() {
                 use rusqlite::types::ValueRef;
@@ -559,8 +586,8 @@ impl Reader<'_> {
                 };
                 obj.insert(name.clone(), v);
             }
-            Ok(serde_json::Value::Object(obj))
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+            out.push(serde_json::Value::Object(obj));
+        }
+        Ok(out)
     }
 }

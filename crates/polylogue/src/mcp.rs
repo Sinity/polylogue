@@ -19,12 +19,25 @@ pub struct Polylogue {
     socket: PathBuf,
 }
 
+/// An error as tool text, with the corrected query when the daemon formed
+/// one, so an agent can retry with it as given.
+fn error_text(kind: &str, message: &str, detail: Option<&serde_json::Value>) -> String {
+    match detail.and_then(|d| d["suggestion"].as_str()) {
+        Some(s) => format!("error ({kind}): {message}\ntry: {s}"),
+        None => format!("error ({kind}): {message}"),
+    }
+}
+
 /// Turns a daemon answer into tool text: the data as JSON, or the error.
 fn answer(request: &Request, socket: &std::path::Path) -> String {
     match crate::cli::send(socket, request) {
         Ok(Response::Ok { data }) => serde_json::to_string_pretty(&data).unwrap_or_default(),
         Ok(Response::Accepted { request_id }) => format!("accepted {request_id}"),
-        Ok(Response::Error { kind, message }) => format!("error ({kind}): {message}"),
+        Ok(Response::Error {
+            kind,
+            message,
+            detail,
+        }) => error_text(&kind, &message, detail.as_ref()),
         Err(e) => format!(
             "error (daemon_required): no Polylogue daemon answered ({e}); start it with `polylogue daemon`"
         ),
@@ -38,7 +51,11 @@ fn context_text(request: &Request, socket: &std::path::Path) -> String {
             .as_str()
             .unwrap_or_default()
             .to_owned(),
-        Ok(Response::Error { kind, message }) => format!("error ({kind}): {message}"),
+        Ok(Response::Error {
+            kind,
+            message,
+            detail,
+        }) => error_text(&kind, &message, detail.as_ref()),
         Ok(Response::Accepted { request_id }) => format!("accepted {request_id}"),
         Err(e) => format!("error (daemon_required): {e}"),
     }

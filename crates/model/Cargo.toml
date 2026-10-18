@@ -12,6 +12,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 jiff.workspace = true
 blake3.workspace = true
+unicode-normalization.workspace = true
 
 [lints]
 workspace = true
