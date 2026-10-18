@@ -1,14 +1,12 @@
 //! Terminal `message:` reads against a real daemon process.
 use serde_json::{Value, json};
 use std::{
-    fs::{self, File},
-    io::{Read, Seek, SeekFrom},
-    path::{Path, PathBuf},
-    process::{Child, Command, Output, Stdio},
+    fs,
+    io::Read,
+    path::Path,
     thread,
     time::{Duration, Instant},
 };
-const BINARY: &str = env!("CARGO_BIN_EXE_polylogue");
 const WAIT: Duration = Duration::from_secs(120);
 fn assert_content(bytes: &[u8], expected: &str) {
     assert!(
@@ -26,138 +24,9 @@ fn assert_content(bytes: &[u8], expected: &str) {
         expected.len()
     );
 }
-struct OwnedChild(Child);
-impl Drop for OwnedChild {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-struct World {
-    child: Option<OwnedChild>,
-    work: tempfile::TempDir,
-    _socket_owner: tempfile::TempDir,
-    archive: PathBuf,
-    runtime: PathBuf,
-    scratch: PathBuf,
-    log: PathBuf,
-}
+mod support;
+use support::World;
 impl World {
-    fn new() -> Self {
-        let work = tempfile::tempdir().unwrap();
-        let archive = work.path().join("archive");
-        let scratch = work.path().join("tmp");
-        fs::create_dir(&scratch).unwrap();
-        // Only the socket lives in /tmp (short path limit); everything else
-        // stays in the test's work directory.
-        let socket_owner = tempfile::tempdir_in("/tmp").unwrap();
-        let runtime = socket_owner.path().join("run");
-        fs::create_dir(&runtime).unwrap();
-        let log = work.path().join("daemon.log");
-        let mut world = Self {
-            child: None,
-            work,
-            _socket_owner: socket_owner,
-            archive,
-            runtime,
-            scratch,
-            log,
-        };
-        world.start();
-        world
-    }
-    fn command(&self) -> Command {
-        let mut command = Command::new(BINARY);
-        command
-            .arg("--archive")
-            .arg(&self.archive)
-            .env("XDG_RUNTIME_DIR", &self.runtime)
-            .env("TMPDIR", &self.scratch);
-        command
-    }
-    fn cli(&self, args: &[&str]) -> Output {
-        // Output goes to files so large output cannot fill a pipe and block
-        // the child while we enforce its deadline.
-        let mut stdout = tempfile::tempfile_in(&self.scratch).unwrap();
-        let mut stderr = tempfile::tempfile_in(&self.scratch).unwrap();
-        let mut child = OwnedChild(
-            self.command()
-                .args(args)
-                .stdout(Stdio::from(stdout.try_clone().unwrap()))
-                .stderr(Stdio::from(stderr.try_clone().unwrap()))
-                .spawn()
-                .unwrap(),
-        );
-        let deadline = Instant::now() + Duration::from_secs(40);
-        let status = loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                break status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "CLI deadline {args:?}; daemon: {}",
-                self.log()
-            );
-            thread::sleep(Duration::from_millis(2));
-        };
-        stdout.seek(SeekFrom::Start(0)).unwrap();
-        stderr.seek(SeekFrom::Start(0)).unwrap();
-        let mut out = vec![];
-        let mut err = vec![];
-        stdout.read_to_end(&mut out).unwrap();
-        stderr.read_to_end(&mut err).unwrap();
-        Output {
-            status,
-            stdout: out,
-            stderr: err,
-        }
-    }
-    fn log(&self) -> String {
-        fs::read_to_string(&self.log).unwrap_or_default()
-    }
-    fn start(&mut self) {
-        assert!(self.child.is_none());
-        self.child = Some(OwnedChild(
-            self.command()
-                .arg("daemon")
-                .stdout(Stdio::null())
-                .stderr(Stdio::from(File::create(&self.log).unwrap()))
-                .spawn()
-                .unwrap(),
-        ));
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            let out = self.cli(&["status"]);
-            if out.status.success() {
-                let value: Value = serde_json::from_slice(&out.stdout).unwrap();
-                assert_eq!(value["archive"], self.archive.to_str().unwrap());
-                return;
-            }
-            assert!(
-                self.child.as_mut().unwrap().0.try_wait().unwrap().is_none(),
-                "daemon exited: {}; status {out:?}",
-                self.log()
-            );
-            assert!(
-                Instant::now() < deadline,
-                "daemon startup: {}; status {out:?}",
-                self.log()
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-    fn kill(&mut self) {
-        drop(self.child.take());
-    }
-    fn restart(&mut self) {
-        self.kill();
-        self.start();
-    }
-    fn input(&self, name: &str, bytes: &[u8]) -> PathBuf {
-        let path = self.work.path().join(name);
-        fs::write(&path, bytes).unwrap();
-        path
-    }
     fn import(&self, path: &Path, request_id: &str) -> Value {
         let out = self.cli(&[
             "import",
@@ -235,11 +104,6 @@ impl World {
             );
             thread::sleep(Duration::from_millis(5));
         }
-    }
-}
-impl Drop for World {
-    fn drop(&mut self) {
-        self.kill();
     }
 }
 fn line(payload: Value) -> String {

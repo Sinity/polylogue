@@ -49,7 +49,7 @@ fn fork() -> Vec<Value> {
     ]
 }
 #[test]
-fn authoritative_leaf_selects_record_path_without_adding_file_tail_and_survives_restart() {
+fn leaf_marker_selects_the_record_path_without_the_file_tail_and_survives_restart() {
     let mut world = World::new();
     let mut records = fork();
     records.push(marker("last-prompt", json!("chosen")));
@@ -109,8 +109,8 @@ fn non_message_ancestors_are_walked_and_folded_message_keeps_its_complete_body()
     let (_, doc) = import(&world, records, 2);
     let selected = page(&world, false);
     assert_ne!(selected["outcome"], "error", "{selected}");
-    // The owning rule is any active record -> whole grouped Message. The
-    // off-path second contribution retains the same selected body/version.
+    // Any active record makes its whole grouped message active; the off-path
+    // second record keeps the same body and version.
     assert_eq!(text(&selected), vec!["root", "First block", "Other block"]);
     for shown in selected["shown"].as_array().unwrap().iter().skip(1) {
         assert_eq!(shown["version_hash"], doc["messages"][1]["version_hash"]);
@@ -124,7 +124,7 @@ fn result(id: &str, parent: &str, call: &str) -> Value {
     json!({"type":"user","uuid":id,"parentUuid":parent,"sessionId":SID,"message":{"content":[{"type":"tool_result","tool_use_id":call,"content":id}]}})
 }
 #[test]
-fn results_of_proved_calls_are_peers_but_unrelated_or_ambiguous_ids_do_not_grant_membership() {
+fn results_of_known_calls_are_on_path_but_unrelated_or_ambiguous_ids_are_not() {
     for mode in [
         "known",
         "unrelated",
@@ -208,7 +208,7 @@ fn current_record_correction_is_used_and_real_record_cycles_refuse() {
 }
 
 #[test]
-fn direct_call_record_authority_supports_identical_reemission_and_refuses_conflicting_witnesses() {
+fn identical_call_reemission_is_accepted_and_conflicting_records_fail() {
     for mode in [
         "identical",
         "conflict",
@@ -259,7 +259,7 @@ fn direct_call_record_authority_supports_identical_reemission_and_refuses_confli
 }
 
 #[test]
-fn pending_observed_summary_does_not_borrow_old_leaf_and_completion_reapplies_current_marker() {
+fn pending_summary_does_not_reuse_the_old_leaf_and_completion_applies_the_new_marker() {
     let mut world = World::new();
     world.kill();
     let mut records = fork();
@@ -368,7 +368,7 @@ fn direct_caller_and_tree_parent_may_name_different_fragments_of_same_response()
 }
 
 #[test]
-fn off_path_result_requires_established_caller_before_it_can_be_inactive() {
+fn off_path_result_needs_a_known_caller_before_it_is_inactive() {
     for mode in ["absent", "null", "known-inactive", "inactive-mismatch"] {
         let world = World::new();
         let mut active = assistant("active", "active-response", "root", "");
@@ -401,8 +401,8 @@ fn off_path_result_requires_established_caller_before_it_can_be_inactive() {
             ],
             5,
         );
-        // Root results with absent/null tree parent are real selected Messages,
-        // so whole-row projection readiness cannot settle their caller scope.
+        // Root results with no tree parent are still selected messages, so
+        // having their rows ready does not decide their caller.
         assert_eq!(doc["messages"].as_array().unwrap().len(), 5);
         assert_ne!(page(&world, true)["outcome"], "error", "{mode}");
         let selected = page(&world, false);

@@ -1,4 +1,4 @@
-//! Actual CLI JSON/export and bounded metadata share one block-extra policy.
+//! Block extras appear the same way in CLI JSON, export and model page metadata.
 use super::*;
 use polylogue_model::RawJson;
 
@@ -47,7 +47,7 @@ fn exported(world: &World, reference: &str) -> Vec<u8> {
     documents.pop().unwrap()
 }
 #[test]
-fn claude_block_metadata_keeps_tool_data_and_other_attrs_in_cli_export_and_bounded_pages() {
+fn claude_block_metadata_keeps_tool_data_and_attrs_in_export_and_model_pages() {
     let world = World::new();
     let raw = format!(
         r#"{{"type":"assistant","uuid":"a","sessionId":"{SID}","requestId":"r","message":{{"id":"response","content":[{{"type":"tool_use","id":"call","name":"synthetic","input":{{}},"caller":{{"type":"direct","n":1.2300,"s":"\ud800","nullable":null}}}},{{"type":"text","text":"Neutral text","metadata":null}},{{"type":"thinking","thinking":"Neutral thought","signature":"neutral","metadata":{{"count":9007199254740993}}}}],"stop_reason":"end_turn"}}}}

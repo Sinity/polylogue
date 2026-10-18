@@ -2,7 +2,7 @@
 use super::*;
 use polylogue_model::RawJson;
 #[test]
-fn sidecar_and_reference_content_have_distinct_exact_public_data_leaves_and_origins() {
+fn sidecar_and_reference_content_have_separate_data_fields_and_origins() {
     let w = World::new();
     let meta = r#"{"canReadOutputFile":false,"content":"sidecar","description":null,"file":{},"filePath":"synthetic/path","gitOperation":{"pr":{"action":"create","number":9007199254740993,"raw":[1.2300,"\ud800"]}},"matches":[],"message":"metadata","newString":"n","oldString":"o","outputFile":"synthetic/output","pin":{},"prompt":null,"query":"q","replaceAll":false,"resolvedModel":"supplied","resumedAgentId":null,"staleReadFileStateHint":{},"staleRecovered":false,"success":true,"total_deferred_tools":0,"type":"opaque","userModified":false}"#;
     let content = r#"[{"type":"text","text":"actual text"},{"type":"tool_reference","tool_name":"synthetic"}]"#;

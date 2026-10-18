@@ -2,7 +2,7 @@
 use super::*;
 use polylogue_model::RawJson;
 #[test]
-fn selected_provider_usage_is_opaque_in_public_routes_and_separate_from_counter_values() {
+fn provider_usage_is_opaque_in_reads_and_separate_from_counters() {
     let world = World::new();
     let usage = r#"{"input_tokens":2,"output_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":0},"inference_geo":null,"iterations":[1.2300,"\ud800"],"server_tool_use":{"n":9007199254740993,"empty":{}},"speed":"provider speed"}"#;
     let raw = format!(

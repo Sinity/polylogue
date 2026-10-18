@@ -47,7 +47,7 @@ fn matches(search: &ProseSearch) -> Vec<String> {
         .collect()
 }
 #[test]
-fn prose_scratch_add_hits_add_hits_uses_real_selected_bodies() {
+fn text_index_built_in_steps_uses_the_selected_bodies() {
     let mut world = World::new();
     let [first, second] = selected(&mut world);
     let mut search = ProseSearch::new().unwrap();
@@ -65,7 +65,7 @@ fn prose_scratch_add_hits_add_hits_uses_real_selected_bodies() {
     assert_eq!(matches(&search), expected);
 }
 #[test]
-fn prose_scratch_cancel_drop_fresh_query_keeps_no_partial_index() {
+fn cancelled_text_index_leaves_nothing_behind() {
     let mut world = World::new();
     let [first, second] = selected(&mut world);
     let mut cancelled = ProseSearch::new().unwrap();

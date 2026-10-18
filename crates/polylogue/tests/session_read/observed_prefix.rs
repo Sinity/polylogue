@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn bounded_selected_message_uses_current_proof_while_observed_suffix_is_pending() {
+fn selected_message_reads_while_the_observed_suffix_is_pending() {
     let mut world = World::new();
     world.kill();
     let initial = observed_user("earlier", "Independent earlier human text.", None);
@@ -122,8 +122,8 @@ fn bounded_selected_message_uses_current_proof_while_observed_suffix_is_pending(
         assert!(Instant::now() < deadline, "late body: {out:?}");
         thread::sleep(Duration::from_millis(10));
     }
-    // An unrecognized complete record has no source audit authority. A later
-    // partial record cannot turn the earlier selected body into that authority.
+    // An unrecognized complete record cannot be checked against the source,
+    // and a later partial record does not change that for the earlier body.
     raw.extend_from_slice(b"{\"type\":\"unsupported-synthetic-record\"}\n{\"type\":");
     fs::write(&main, &raw).unwrap();
     await_pending(&world, &source, raw.len());

@@ -115,7 +115,7 @@ fn mcp_client_searches_pages_a_dialogue_read_and_writes_a_note() {
     assert!(dialogue.starts_with("Set up a new Rust library crate called morrow"));
     assert!(dialogue.ends_with("Next step: implement relative dates in parse.rs."));
 
-    let target = model_ref(&fixture_records()[6]["uuid"].as_str().unwrap());
+    let target = model_ref(fixture_records()[6]["uuid"].as_str().unwrap());
     let note = client.tool(
         "note",
         json!({"targets":[target],"value":"Check the parse module next."}),
