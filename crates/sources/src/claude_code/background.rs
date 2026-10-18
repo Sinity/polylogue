@@ -1,4 +1,5 @@
-//! Claude's structured background notification, never command-output prose.
+//! Background task completion notifications (`<task-notification>` records),
+//! which complete the ToolResult of the call that launched the task.
 use polylogue_model::{ErrorReason, ToolOutcome};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,8 +226,8 @@ impl<R: ReadView> KeyedRecords<R> {
     }
 }
 
-/// A metadata-only UUID supplement cannot erase a later named completion.
-/// A replacement with a different invocation loses that old completion.
+/// Keep a completion across a same-UUID record that only adds metadata. A
+/// replacement naming a different invocation drops it.
 pub(super) fn carry(previous: Option<&Contribution>, current: &mut Contribution) {
     let Some(previous) = previous.filter(|c| c.completion.is_some()) else {
         return;

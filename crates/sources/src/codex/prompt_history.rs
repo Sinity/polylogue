@@ -1,5 +1,5 @@
-//! Prompt-history records prove references and prompt bytes only. They never
-//! establish a conversation boundary, assistant response, or complete history.
+//! `history.jsonl` records: which Session a prompt was typed in. They create
+//! no Messages or Sessions.
 use polylogue_model::RawJson as Value;
 use serde::Serialize;
 #[derive(Debug, Serialize)]

@@ -1,7 +1,6 @@
-//! Claude Code's single point-keyed interpretation core. The caller supplies a
-//! pinned predecessor and companions; this library never opens source files.
-//! Response reconstruction, ordinary-index reflow, digest work and publication
-//! remain explicit obligations over addressable contribution cells.
+//! Claude Code JSONL parser. It reads stored state through a `ReadView` and
+//! returns changed cells: one contribution per record, grouped into responses.
+//! The engine assembles, hashes and publishes the Messages.
 use crate::frame::{IgnoredKind, Record, RecordOutcome, RecordParser};
 use polylogue_model::RawJson as Value;
 use polylogue_model::*;
@@ -15,7 +14,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 18;
+pub const PARSER_VERSION: u32 = 19;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -32,8 +31,8 @@ impl FileCtx {
     pub fn main(stem: &str) -> Self {
         Self::Main { stem: stem.into() }
     }
-    /// Main-file context proves membership even without one parseable record.
-    /// Subagent ownership needs its own records; folder lineage alone is not it.
+    /// A main file's Session is known from its name alone. A subagent file's
+    /// owner comes from its records, never from the folder.
     pub fn direct_main_session(&self) -> Option<SessionId> {
         match self {
             Self::Main { stem } => sid(stem),
@@ -47,8 +46,8 @@ fn origin() -> Origin {
 fn sid(native: &str) -> Option<SessionId> {
     SessionId::new(&origin(), native).ok()
 }
-/// Parser-cell keys use strict NativeId JSON, never the transport spelling alone.
-/// String and encoded-object keys remain disjoint, including literal `~u:` IDs.
+/// Cell keys are NativeId JSON, so string IDs and encoded IDs (even a literal
+/// `~u:` string) never collide.
 fn native_key(native: &NativeId) -> Result<String, String> {
     serde_json::to_string(native).map_err(|e| e.to_string())
 }
@@ -56,9 +55,10 @@ fn key_native(key: &str) -> Result<NativeId, String> {
     serde_json::from_str(key).map_err(|e| e.to_string())
 }
 
-/// Record kinds that carry nothing to keep in the index (their bytes stay stored).
+/// Record kinds with nothing to index; their bytes stay stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ignored {
+    /// Progress of a running tool or query.
     ProgressCountedOnly,
 }
 
@@ -68,18 +68,10 @@ impl IgnoredKind for Ignored {
             Self::ProgressCountedOnly => "progress (counted only)",
         }
     }
-    fn reason(self) -> &'static str {
-        match self {
-            Self::ProgressCountedOnly => {
-                "transient progress of a running tool or query; counted per input, payload kept only in the stored bytes"
-            }
-        }
-    }
 }
 
-/// Changed metadata and per-record interpretation cells. No `Parsed` here is
-/// advertised as a complete reconstructed Message: even first publication must
-/// discharge the pending contribution/layout/evidence obligations.
+/// The cells one step changed. Messages here are not complete; the engine
+/// builds them from `pending_messages`.
 #[derive(Clone, Debug)]
 pub struct StepOutput {
     pub header: Header,
@@ -142,8 +134,8 @@ impl<R: ReadView> KeyedRecords<R> {
             pending: BTreeMap::new(),
         })
     }
-    /// Folder placement supplies lineage, never native ownership. Missing early
-    /// claims stay unresolved; a later real owner cannot reassign their records.
+    /// The subagent file's owner Session. The first `sessionId` seen claims it;
+    /// records before that, and records naming another owner, get none.
     fn subagent_owner(&mut self, claimed: &str) -> Option<String> {
         match &self.header.owner {
             Some(owner) if claimed.is_empty() || owner == claimed => Some(owner.clone()),
@@ -295,8 +287,8 @@ impl<R: ReadView> KeyedRecords<R> {
             .to_owned();
         Ok(match self.ctx.clone() {
             FileCtx::Main { stem } => {
-                // A later supplement may omit every sidechain routing field.
-                // The first UUID's established membership remains authoritative.
+                // A later record for a known UUID may omit the sidechain fields;
+                // the UUID keeps the Session it first got.
                 let established = match self.sides.get(uuid) {
                     Some(side) => Some(side.clone()),
                     None => self.view.side(uuid).map_err(|e| e.to_string())?,
@@ -318,7 +310,7 @@ impl<R: ReadView> KeyedRecords<R> {
                     .transpose()?
                     .unwrap_or_default();
                 if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
-                    // A sidechain subtree in a main file: its own session, named by its root.
+                    // A sidechain in a main file is its own Session, named by its root.
                     let known = match self.sides.get(&parent) {
                         Some(side) => Some(side.clone()),
                         None => self.view.side(&parent).map_err(|e| e.to_string())?,
@@ -747,8 +739,8 @@ impl<R: ReadView> KeyedRecords<R> {
                 let resolved = self
                     .address(&native, &native_key(parent_uuid)?)?
                     .filter(|parent| {
-                        // Every native contribution UUID names its owning
-                        // Message, including a later response fragment.
+                        // Every contribution UUID maps to its Message, including
+                        // later fragments of a response.
                         parent.message != response.message.id
                             && parent.message.session() == response.message.id.session()
                     });
@@ -779,8 +771,8 @@ impl<R: ReadView> KeyedRecords<R> {
                         false
                     };
                     if sidechain_root {
-                        // A sidechain's main-chain parent is linkage evidence,
-                        // not an impossible cross-Session Message tree edge.
+                        // A sidechain's main-chain parent is link evidence, not a
+                        // parent Message (it is in another Session).
                         projected.facts.retain(|f| {
                             !matches!(
                                 f.field,
@@ -800,8 +792,7 @@ impl<R: ReadView> KeyedRecords<R> {
                             selection: None,
                         };
                         fact.selection = selection::for_fact(&fact, &v, &record_origins);
-                        // The generic extra projector owns the raw value and
-                        // field origin; it does not make this a Message parent.
+                        // Kept as a record extra, not as a Message parent.
                         projected.facts.push(fact);
                     } else {
                         projected
@@ -841,8 +832,8 @@ impl<R: ReadView> KeyedRecords<R> {
                 }
             }
         }
-        // Stable item slots own blocks until the body finalizer assigns ordinary
-        // one-counter BlockIds. A changed count never mutates a historical body.
+        // Blocks keep per-contribution positions; the engine assigns BlockIds
+        // when it builds the body.
         let mut contribution = Contribution {
             uuid: uuid.into(),
             raw,
@@ -875,15 +866,14 @@ impl<R: ReadView> KeyedRecords<R> {
             .and_then(|n| n.checked_add(missing))
             .ok_or("Claude required-body counter mismatch")?;
         response.revision = revision;
-        // Only newly supplied fields advance their response-level selection.
-        // Inherited fields in a same-UUID overlay do not become later updates.
+        // Only fields this record supplies update the response selection;
+        // fields inherited through a same-UUID overlay do not.
         if old
             .as_ref()
             .is_none_or(|previous| previous.raw != contribution.raw)
         {
-            // Selection follows actual supplied response revisions, not stable
-            // contribution order. Overlay omissions retain the earlier donor;
-            // old_same above makes identical effective records a no-op.
+            // The last record to supply a field wins, in parse order. An
+            // identical repeated record changes nothing (`old_same`).
             for fact in &contribution.projection.facts {
                 let projection::Field::Extra { local: None, path } = &fact.field else {
                     continue;
@@ -904,9 +894,8 @@ impl<R: ReadView> KeyedRecords<R> {
                     },
                 );
             }
-            // Only these named opaque response extras have a normalized attrs
-            // key. They carry supplied values, including null, without inferring
-            // finish state. Missing overlay fields keep the original supplier.
+            // These opaque response fields get an attrs key. Supplied null is a
+            // value; an omitted field keeps its earlier supplier.
             for key in ["stop_sequence", "stop_details"] {
                 if incoming
                     .get("message")
@@ -953,9 +942,9 @@ impl<R: ReadView> KeyedRecords<R> {
                     let semantic = path
                         .iter()
                         .try_fold(&v, |node, key| node.get(key))
-                        .ok_or("Claude supplied metadata lost its retained value")?;
-                    // Typed metadata is a text projection too; keep diagnostics
-                    // on the original record rather than a canonical reparse.
+                        .ok_or("Claude supplied metadata missing from its record")?;
+                    // Decode from the original record so text repairs keep their
+                    // byte offsets.
                     if index == 0 {
                         let _ = semantic.get("service_tier").and_then(Value::text);
                     } else {
@@ -1009,13 +998,13 @@ impl<R: ReadView> KeyedRecords<R> {
                 let parent = v
                     .get("parentUuid")
                     .map(|value| {
-                        let donor = contribution
+                        let origin = contribution
                             .origins
                             .select(&[crate::selection::PathPart::Key("parentUuid".into())])
-                            .ok_or("Claude record parent donor unavailable")?;
+                            .ok_or("Claude record parent origin unavailable")?;
                         Ok::<_, String>(parent::Link {
                             value: value.opaque(),
-                            donor,
+                            origin,
                         })
                     })
                     .transpose()?;
@@ -1106,8 +1095,8 @@ impl<R: ReadView> KeyedRecords<R> {
         let Some(si) = self.file_session(&rec.value)? else {
             return Ok(());
         };
-        // Metadata in a main file belongs to its declared owner. An explicit
-        // conflicting/malformed claim invalidates the marker, not that owner.
+        // Metadata in a main file belongs to the file's Session. A conflicting
+        // or malformed `sessionId` drops the marker, not the owner.
         let scoped = match &self.ctx {
             FileCtx::Main { stem } => rec
                 .value
@@ -1149,8 +1138,8 @@ impl<R: ReadView> KeyedRecords<R> {
     }
 }
 
-/// The first Claude Code version writing `promptSource` (spec/sources/claude-code.md;
-/// measured over the operator's files, evidence/claude-code-real-accounting.md).
+/// The first Claude Code version that writes `promptSource`
+/// (spec/sources/claude-code.md).
 const PROMPT_SOURCE_SINCE: [u32; 3] = [2, 1, 161];
 
 fn predates_prompt_source(version: &str) -> bool {
@@ -1172,9 +1161,8 @@ fn prompt_kind_of(content: &Value) -> PromptKind {
         _ => "",
     };
     let t = text.trim_start();
-    // A bare slash command typed as plain text (`/compact`, `/model opus`): one line whose first
-    // word is `/name`. Seen on real data without the `<command-name>` wrapper
-    // (evidence/briefing-trial.md), where it had been read as an unanswered prose prompt.
+    // A slash command typed as plain text (`/compact`, `/model opus`) without
+    // the `<command-name>` wrapper: one line whose first word is `/name`.
     let slash = t.starts_with('/')
         && !t.trim_end().contains('\n')
         && t[1..].split_whitespace().next().is_some_and(|w| {
@@ -1308,8 +1296,8 @@ fn blocks_of(record: &Value, content: &Value) -> Vec<BlockContent> {
     }
 }
 
-/// The exit code a shell result states in its output text (`Exit code N`, `exit code: N`;
-/// spec/sources/claude-code.md, tool results); the last such line wins.
+/// The exit code a shell result prints (`Exit code N`, `exit code: N`); the last
+/// such line wins.
 fn exit_code_in(text: &str) -> Option<i64> {
     text.lines().rev().find_map(|line| {
         let l = line.trim().to_ascii_lowercase();
@@ -1384,9 +1372,8 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                     Some("model_refusal_no_fallback" | "model_refusal_fallback") => {
                         self.event(rec, "model_refusal")?
                     }
-                    // turn_duration, api_error, away_summary, stop_hook_summary, local_command,
-                    // scheduled_task_fire, bridge_status, informational and other subtypes: an event of
-                    // the same name (spec/sources/claude-code.md, record table).
+                    // Other system subtypes (turn_duration, api_error, local_command,
+                    // ...) become an event of the same name.
                     Some(sub) => {
                         let sub = sub.to_owned();
                         self.event(rec, &sub)?
@@ -1454,8 +1441,7 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                         && self.header.title.as_ref().is_none_or(|(r, _)| rank >= *r)
                     {
                         self.header.title = Some((rank, t.to_owned()));
-                        // Metadata-only input is itself a possible Session contributor;
-                        // preserve its owner even when it has no Message rows.
+                        // A metadata-only file still names its Session's owner.
                         if let FileCtx::Main { stem } = self.ctx.clone() {
                             self.session_index(&stem, SessionKind::Main)?;
                         }
@@ -1477,12 +1463,12 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                             None
                         }
                     }) {
-                    // Subagent evidence and hook runs are kept (spec/sources/claude-code.md, record table).
+                    // Subagent evidence and hook runs become events.
                     Some("agent_progress") => {
                         RecordOutcome::Unrecognized("agent progress linkage not yet derived")
                     }
                     Some("hook_progress") => self.event(rec, "hook_run")?,
-                    // Counted only: payload not stored in the index.
+                    // Counted only; the payload stays in the stored bytes.
                     Some(
                         "bash_progress"
                         | "waiting_for_task"
@@ -1492,7 +1478,7 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                     ) => RecordOutcome::Ignored(Ignored::ProgressCountedOnly),
                     _ => RecordOutcome::Unrecognized("progress kind"),
                 },
-                // The table: counted under unrecognized, its string kept in the stored input.
+                // Anything else is counted as unrecognized.
                 "atis-latch" => RecordOutcome::Unrecognized("atis-latch"),
                 _ => RecordOutcome::Unrecognized("record type"),
             }
@@ -1595,8 +1581,8 @@ fn apply_selected(response: &mut ResponseCell) -> Result<(), String> {
         })
         .collect::<Result<_, _>>()?;
     response.message.usage = values[0].as_ref().filter(|v| v.is_object()).map(usage_of);
-    // The selected raw usage object is independent provider evidence. Its
-    // presence follows the existing usage supplier, not an enriched counter.
+    // `provider_usage` is present exactly when the selected usage record
+    // supplied one of its members.
     if response.selected_facts[0].iter().any(|fact| {
         matches!(&fact.field,
         projection::Field::SelectedExtra { key } if key == "provider_usage")
@@ -1728,7 +1714,8 @@ fn body_path<'a>(
         })
 }
 
-/// Exact content-list item reference, shared by acquisition and origin proof.
+/// The tool-result body file a record's content item `index` refers to. Used by
+/// acquisition and by origin checks.
 pub fn required_body_path(record: &Value, index: usize) -> Option<String> {
     let items = record.get("message")?.get("content")?.as_array()?;
     let item = items.get(index)?;
@@ -1743,7 +1730,8 @@ pub fn required_body_path(record: &Value, index: usize) -> Option<String> {
     body_path(record, item, count, &text).map(str::to_owned)
 }
 
-/// Source-owned inline witnesses used only to recognize an exact redundant copy.
+/// Each referenced body path with the hash and length of the inline text, used
+/// to recognize a body file that only repeats the inline copy.
 pub fn body_references(record: &Value) -> Vec<(String, polylogue_model::BlobHash, u64)> {
     let Some(items) = record
         .get("message")

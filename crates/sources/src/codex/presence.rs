@@ -1,6 +1,6 @@
-//! Source-supplied witnesses, captured beside the single mapping core. Values
-//! remain canonical raw fields, not normalized DTO values. A group has one entry
-//! per semantic slot; replacement removes only that source owner's old fields.
+//! Which normalized fields a Codex item actually supplied, with their raw
+//! values and origins. A block's `Group` has one `SlotValue` per slot; each
+//! owner (item, status, continuation) replaces only its own entries.
 use super::origins::Origins;
 use super::selection::{FactSelection, PathPart, Transform};
 use super::{
@@ -154,7 +154,7 @@ pub(super) fn extra(key: &str, raw: &[u8]) -> Result<SlotValue, String> {
         Owner::Primary,
     )
 }
-/// kind is the mapper's target branch, not evidence that a field was supplied.
+/// The block kind the item maps to.
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
     Text,
@@ -246,7 +246,7 @@ pub(super) fn block(
             {
                 add(B::ThinkingData, raw, "encrypted_content")?;
             }
-            // encrypted is derived from summary/data, never a supplied boolean.
+            // `encrypted` is derived from summary/data, not supplied.
         }
         Kind::Call => {
             for (name, field) in [
@@ -302,8 +302,8 @@ pub(super) fn block(
                     }
                 }
             }
-            // Native item type -> tool, item ID -> call ID and whole item ->
-            // input are mapper-generated. Only explicit command is supplied.
+            // Tool, call ID and input are derived from the item; only `command` is
+            // supplied.
         }
         Kind::Result => {
             if owner == Owner::Primary {
@@ -357,9 +357,8 @@ pub(super) fn block(
                     )?;
                 }
             }
-            // The outcome classifier gives explicit exit codes priority across
-            // all supported candidate objects. A code supplies ExitCode; the
-            // derived Ok/Error is not a second supplied Outcome field.
+            // An exit code supplies ExitCode; the Ok/Error derived from it is not
+            // a supplied Outcome.
             if let Some(output) = output {
                 for (field, raw) in output_status(output)? {
                     add(
@@ -375,8 +374,7 @@ pub(super) fn block(
             }
         }
         Kind::Other => {
-            // An unmapped payload is retained but is not a claim that all its
-            // semantic fields were recognized. The owning evidence stays pending.
+            // An unmapped payload is kept, but its fields are not recognized.
             add(B::OtherData, itemraw, "")?;
             if let Some(w) = group.fields.last_mut() {
                 w.origins = origins.clone();
@@ -438,8 +436,7 @@ pub(super) fn block(
     Ok(group)
 }
 
-/// Source-owned identity for message witness insertion and deletion. No old
-/// normalized value or guessed semantic name is needed to remove a witness.
+/// The slot a message-level presence key stands for.
 pub fn message_slot(key: &str) -> Option<Slot> {
     Some(match key {
         "at" => Slot::Message(M::At),

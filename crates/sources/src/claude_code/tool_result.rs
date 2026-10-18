@@ -1,5 +1,5 @@
-//! One source-owned result reduction used by body mapping and presence recipes.
-//! Inline content is the presented output; named channels remain separate data.
+//! Tool result status, output and data, shared by the parser and descriptor
+//! evaluation. Inline content is the output; named sidecar members are data.
 use polylogue_model::RawJson as Value;
 use polylogue_model::{ErrorReason, ToolOutcome, ToolOutput, ToolResult, UnknownReason};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -9,7 +9,7 @@ pub enum StatusKind {
     Interrupted,
     TimedOut,
 }
-/// Same supplied-status interpretation for normalized mapping and raw recipe.
+/// The outcome a supplied status field states.
 pub(super) fn status(kind: StatusKind, value: &Value) -> Option<ToolOutcome> {
     Some(match kind {
         StatusKind::IsError => {
@@ -53,7 +53,7 @@ pub(super) struct Decision {
 fn p(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| (*s).into()).collect()
 }
-/// Root-level metadata is attributable only when this record has one result.
+/// `toolUseResult` belongs to a result only when the record has exactly one.
 fn sole_result_sidecar(record: &Value) -> Option<&Value> {
     let count = record
         .get("message")
@@ -71,8 +71,7 @@ fn sole_result_sidecar(record: &Value) -> Option<&Value> {
 pub(super) fn metadata(record: &Value) -> Option<&Value> {
     sole_result_sidecar(record).filter(|v| v.is_object())
 }
-// These provider-owned members are opaque execution metadata, not normalized
-// status/output, file authority, billing, or additional tool executions.
+// Opaque execution metadata; none of these sets status or output.
 fn opaque_member(key: &str) -> bool {
     matches!(
         key,
@@ -101,7 +100,7 @@ fn opaque_member(key: &str) -> bool {
             | "userModified"
     )
 }
-/// A supported reference array stays structured, including its text/order.
+/// A content array of `tool_reference` and text items, kept as data.
 pub(super) fn reference_content(value: &Value) -> bool {
     let Some(items) = value.as_array() else {
         return false;
@@ -194,8 +193,8 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
             }
         }
     }
-    // Launch acknowledgements are retained, but this mapper does not claim to
-    // have joined their eventual completion notification.
+    // A background launch: the outcome stays unknown until a completion
+    // notification arrives (see background.rs).
     if item.get("backgroundTaskId").is_some()
         || meta.is_some_and(|m| {
             m.get("backgroundTaskId").is_some()
@@ -232,8 +231,7 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
     if exit.is_none() {
         exit = output.as_deref().and_then(super::exit_code_in);
     }
-    // Supplied boolean flags are execution metadata only. They do not infer
-    // image content, outcome, or output absence. Missing flags stay absent.
+    // Kept as metadata only; they set no image, outcome or output.
     let mut data = std::collections::BTreeMap::new();
     let mut data_paths = Vec::new();
     if let Some(meta) = meta.and_then(Value::as_object) {
@@ -268,8 +266,7 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
                     | "backgroundTaskId"
                     | "isAsync"
             ) {
-                // Retain unknown named metadata without pretending its semantic
-                // reduction is complete. No opaque wrapper completeness bonus.
+                // Keep unknown members as data, but mark them unresolved.
                 data.insert(key.clone(), value.opaque());
                 unresolved.push(p(&["toolUseResult", key.as_str()]));
             }
@@ -282,7 +279,7 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
         );
         data_paths.push(("content_items".into(), at("content")));
     }
-    // A string sidecar is a distinct supplied carrier, never presented output.
+    // A string `toolUseResult` is data, never output.
     let string_sidecar = sole_result_sidecar(record).filter(|v| v.is_string());
     if let Some(value) = string_sidecar {
         data.insert(

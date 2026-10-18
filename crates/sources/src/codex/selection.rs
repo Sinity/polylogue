@@ -1,13 +1,13 @@
-//! Immutable extraction instructions for one mapper-proved field. These are
-//! record selectors, never payload byte extents or content-version evidence.
+//! Codex field descriptors: how to recompute one normalized field from its
+//! original rollout records.
 use super::origins::RecordRange;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 
-/// Descriptor wire layout, independent of parser checkpoint/cell storage.
+/// Descriptor JSON layout version.
 pub const CODEC_VERSION: u32 = 1;
-/// Source interpretation recipe. Unrelated parser-cell layout changes must not
-/// make immutable historical field descriptors unreadable.
+/// Transform semantics version. Stored descriptors must stay readable, so
+/// change this only when a transform's meaning changes.
 pub const ADAPTER_RECIPE_VERSION: u32 = 2;
 
 pub use crate::selection::{Binding, Cursor, PathPart, SelectedRaw};
@@ -20,17 +20,16 @@ use polylogue_model::{
 pub type ValueError<E> = crate::selection::ValueError<E, Error>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Transform {
-    /// Decode as the adapter's polylogue_model::RawJson; retain an opaque typed value,
-    /// not raw numeric spelling or raw content-version canonical bytes.
+    /// The selected JSON value.
     JsonValueV1,
-    /// Decode the one selected JSON string.
+    /// The selected JSON string.
     JsonStringV1,
-    /// Decode selected strings in this exact order and join with LF.
+    /// The selected strings, in order, joined with LF.
     TextJoinLfV1,
-    /// Current adapter: RFC3339 via jiff, milliseconds, Intrinsic/Instant.
+    /// An RFC 3339 timestamp, to the millisecond.
     ProviderTimeV1,
-    /// Supplied input_tokens minus supplied cached_input_tokens, saturating at
-    /// zero. Inputs are exact original numeric leaves, in that order.
+    /// `input_tokens - cached_input_tokens`, saturating at zero; inputs in that
+    /// order.
     UncachedInputV1,
     ToolFieldV1 {
         field: BlockField,
@@ -93,7 +92,7 @@ impl FactSelection {
         crate::selection::validate_count(&self.inputs, self.operation()).map_err(Error::Invalid)?;
         cursor.advance(&self.inputs).map_err(Error::Invalid)
     }
-    /// Uses the shared evaluator without changing this historical Codex recipe.
+    /// Recompute the value; see `selection::write_value`.
     pub fn write_value<E, W: Write>(
         &self,
         resolver: impl FnMut(RecordRange) -> Result<Vec<u8>, E>,
@@ -102,10 +101,8 @@ impl FactSelection {
     ) -> Result<(), ValueError<E>> {
         crate::selection::write_value(self, resolver, record_allowance, writer)
     }
-    /// Stream an already admitted descriptor into the caller's chunk producer.
-    /// Binding must come from the pinned source snapshot. The owning writer must
-    /// separately validate candidate membership and supported interpretation.
-    /// A failed write is not resumable; discard the partial producer or replay.
+    /// Write this descriptor with its input binding. On error the output is
+    /// partial and must be discarded.
     pub fn write_bound<W: Write>(&self, binding: Binding<'_>, writer: &mut W) -> Result<(), Error> {
         self.validate()?;
         binding.validate().map_err(Error::Invalid)?;

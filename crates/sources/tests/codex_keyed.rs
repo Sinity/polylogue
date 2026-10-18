@@ -222,7 +222,7 @@ fn cell_corruption_and_overlay_admission_are_errors_not_missing_provider_records
             json!({"type":"message","role":"user","content":[{"text":"owed"}]}),
         );
     let e = drive_jsonl(p, bytes.as_bytes(), 0).output.unwrap_err();
-    assert!(e.error.to_string().contains("admission exceeded"));
+    assert!(e.error.to_string().contains("changed too many cells"));
 }
 #[test]
 fn a_long_open_message_does_not_materialize_blocks_to_replace_one_reasoning_item() {

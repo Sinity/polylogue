@@ -417,7 +417,7 @@ fn native_echo_correction_retracts_only_echo_owned_human_value_and_evidence() {
     }
 }
 #[test]
-fn a_separate_user_message_echo_keeps_its_human_value_and_exact_donor() {
+fn a_separate_user_message_echo_keeps_its_human_value_and_exact_origin() {
     let (v, s) = run(
         MemoryReadView::default(),
         Resume::default(),
@@ -437,13 +437,13 @@ fn a_separate_user_message_echo_keeps_its_human_value_and_exact_donor() {
         ),
     );
     assert_eq!(author(&v), "human");
-    let donor = serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap();
+    let origin = serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap();
     let (v, s) = run(v, s, &completed("UserMessage", "echo", "still different"));
     assert!(s.normalization_incomplete());
     assert_eq!(author(&v), "human");
     assert_eq!(
         serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap(),
-        donor
+        origin
     );
 }
 #[test]
@@ -466,17 +466,17 @@ fn reapplying_a_valid_native_echo_keeps_the_native_claim_origins() {
     )
     .unwrap();
     // The later response resolves the stored native claim, so its own current
-    // source range must not become the donor of the retained echo raw unit.
+    // source range must not become the origin of the retained echo raw unit.
     let (v, s) = run(v, s, &response("user", "U", "corrected"));
     assert!(!s.normalization_incomplete());
     assert_eq!(author(&v), "human");
-    let donor = serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap();
+    let origin = serde_json::to_value(v.cells.get(&Key::Evidence(0, 1, 3)).unwrap()).unwrap();
     assert_eq!(
-        donor["Evidence"]["origins"],
+        origin["Evidence"]["origins"],
         proof["CompletedMessage"]["origins"]
     );
     assert_eq!(
-        donor["Evidence"]["canonical"],
+        origin["Evidence"]["canonical"],
         proof["CompletedMessage"]["raw"]
     );
 }

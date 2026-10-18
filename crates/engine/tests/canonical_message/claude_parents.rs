@@ -154,7 +154,7 @@ fn event_link_correction_and_omission_select_exact_supplier_and_change_relation_
     assert_eq!(parent["id"], p[1].message.as_str());
     let node = &origin["selection"]["transform"]["ParentViaRecordsV1"]["relations"][0];
     assert_eq!(
-        node["parent"]["donor"]["record"]["start"],
+        node["parent"]["origin"]["record"]["start"],
         a.len() + c.len() + first.len() + b.len()
     );
     let (_duplicate, s_duplicate, _, _) = materialize(
@@ -215,10 +215,10 @@ fn relation_value_or_supplier_must_match_the_original_record_before_certificatio
                 node.parent.as_mut().unwrap().value =
                     polylogue_model::RawJson::parse(br#""c""#).unwrap();
             } else if tamper == 1 {
-                node.parent.as_mut().unwrap().donor.path =
+                node.parent.as_mut().unwrap().origin.path =
                     vec![polylogue_sources::selection::PathPart::Key("wrong".into())];
             } else {
-                node.parent.as_mut().unwrap().donor.record =
+                node.parent.as_mut().unwrap().origin.record =
                     polylogue_sources::selection::RecordRange {
                         start: 0,
                         end: message("a", None).len() as u64 - 1,

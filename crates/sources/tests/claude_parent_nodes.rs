@@ -24,7 +24,7 @@ fn step(
     memory.parent_node("s", &key()).unwrap().unwrap()
 }
 #[test]
-fn supplied_link_corrections_omission_and_identical_replay_have_deterministic_donors() {
+fn supplied_link_corrections_omission_and_identical_replay_have_deterministic_origins() {
     let a = "{\"type\":\"attachment\",\"uuid\":\"event\",\"sessionId\":\"s\",\"parentUuid\":\"a\",\"attachment\":{\"type\":\"synthetic\"}}\n";
     let b =
         "{\"type\":\"attachment\",\"uuid\":\"event\",\"sessionId\":\"s\",\"parentUuid\":\"b\"}\n";
@@ -48,8 +48,8 @@ fn supplied_link_corrections_omission_and_identical_replay_have_deterministic_do
         (a.len() + b.len() + omitted.len() + b.len()) as u64,
     );
     assert_ne!(
-        selected.parent.as_ref().unwrap().donor,
-        second.parent.as_ref().unwrap().donor
+        selected.parent.as_ref().unwrap().origin,
+        second.parent.as_ref().unwrap().origin
     );
     assert_ne!(selected.fingerprint, first.fingerprint);
     let restored: polylogue_sources::claude_code::parent::Node =

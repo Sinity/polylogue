@@ -129,11 +129,11 @@ fn supplied_flags_preserve_presence_values_origins_and_version_evidence_without_
                     path.into_iter().map(PathPart::Key).collect::<Vec<_>>()
                 );
                 let record = recipe.inputs[0].record;
-                let donor: Value =
+                let origin: Value =
                     serde_json::from_slice(&bytes[record.start as usize..record.end as usize])
                         .unwrap();
-                assert_eq!(donor["uuid"], "000-result");
-                assert_eq!(donor["toolUseResult"][key], value);
+                assert_eq!(origin["uuid"], "000-result");
+                assert_eq!(origin["toolUseResult"][key], value);
                 assert_eq!(evaluate(recipe, &bytes), value);
             } else {
                 assert!(data.get(key).is_none());

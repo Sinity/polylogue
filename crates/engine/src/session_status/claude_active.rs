@@ -145,8 +145,8 @@ pub(super) fn prove(
                 }
                 match &relation.parent {
                     Some(link)
-                        if link.donor.record.start < link.donor.record.end
-                            && link.donor.record.end <= head.parsed_upto =>
+                        if link.origin.record.start < link.origin.record.end
+                            && link.origin.record.end <= head.parsed_upto =>
                     {
                         native(&link.value)
                     }

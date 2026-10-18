@@ -1,6 +1,6 @@
-//! Direct donors of the effective record's immediate fields. Opaque nested
-//! values replace as units, so a nested leaf extends its original donor path.
-//! None is unavailable provenance, never a fabricated effective-overlay span.
+//! Which original record supplied each top-level field (and each `message`
+//! member) of an overlaid Claude record. A nested value is replaced as a
+//! whole, so a nested leaf's origin is its parent field's origin plus a path.
 use crate::selection::{PathPart, RecordRange, SelectedRaw};
 use polylogue_model::RawJson as Value;
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordOrigins {
     pub envelope: Option<RecordRange>,
-    /// Qualified component vectors avoid collisions with literal dotted keys.
+    /// Keyed by path components, so a literal dotted key cannot collide.
     #[serde(with = "field_entries")]
     pub fields: BTreeMap<Vec<String>, SelectedRaw>,
 }
@@ -73,7 +73,7 @@ impl RecordOrigins {
         selected.path.extend_from_slice(&path[key.len()..]);
         Some(selected)
     }
-    /// Scalar keyset cursor over this one admitted map, not a response scan.
+    /// The entry after `after`, for callers that read one entry at a time.
     pub fn next(&self, after: Option<&[String]>) -> Option<(&[String], &SelectedRaw)> {
         use std::ops::Bound::{Excluded, Unbounded};
         let entry = match after {
@@ -117,8 +117,8 @@ pub(super) fn typed_path(root: &Value, path: &[String]) -> Option<Vec<PathPart>>
     Some(result)
 }
 
-// JSON object keys cannot encode typed paths. A sequence retains the component
-// boundaries and rejects repeated keys instead of silently selecting a donor.
+// Serialized as a list of entries because JSON object keys cannot hold a path.
+// Repeated paths are rejected.
 mod field_entries {
     use super::*;
     use serde::{

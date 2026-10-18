@@ -29,9 +29,10 @@ pub(super) fn session_argument(raw: &[u8], legacy: bool) -> Result<Vec<u8>, Stri
         canonical_field(args, &["session_id"])
     }
 }
-/// Field overlay at the provider item boundary. New field values replace whole
-/// fields (including arrays); fields absent from the newer snapshot survive.
-/// Structural rollout envelopes are rebuilt without decoding numeric values.
+/// Overlay a newer snapshot of the item at `path` on an older one. Fields in
+/// the newer snapshot replace whole fields; fields it lacks are kept. Returns
+/// the new record with the merged item, and which fields were kept or
+/// conflict.
 pub(super) fn overlay(
     old: &[u8],
     new: &[u8],

@@ -101,6 +101,6 @@ fn point_parent_relation_retains_omitted_donor_and_replaces_supplied_correction_
     let relation = memory.record("s", &key).unwrap().unwrap().relation.unwrap();
     let link = relation.parent.unwrap();
     assert_eq!(link.value, RawJson::from("after"));
-    assert_eq!(link.donor.record.start, bytes.len() as u64);
+    assert_eq!(link.origin.record.start, bytes.len() as u64);
     assert_eq!(relation.record.start, (bytes.len() + patch.len()) as u64);
 }

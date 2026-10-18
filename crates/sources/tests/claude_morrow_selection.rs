@@ -242,7 +242,7 @@ fn uuid_overlay_retains_original_nested_donors_and_first_response_ordinal() {
         second.message.id,
         MessageId::new(second.message.id.session().clone(), "a-second").unwrap()
     );
-    // A coordinate shift changes donor references, never semantic evidence bytes.
+    // A coordinate shift changes origin references, never semantic evidence bytes.
     let mut shifted = MemoryReadView::default();
     run(&mut shifted, text.as_bytes(), 1000);
     let moved = shifted
@@ -623,7 +623,7 @@ fn false_interrupted_is_its_own_supplied_status_not_a_default_outcome_witness() 
 }
 
 #[test]
-fn parent_reference_uses_session_scoped_record_address_and_original_donor() {
+fn parent_reference_uses_session_scoped_record_address_and_original_origin() {
     let first = line(
         "parent:opaque",
         "parent-response",
@@ -935,7 +935,7 @@ fn stop_sequence_is_one_normalized_selected_extra_with_original_donor_and_raw_co
     );
 }
 #[test]
-fn stop_sequence_null_is_supplied_and_omission_preserves_its_original_donor() {
+fn stop_sequence_null_is_supplied_and_omission_preserves_its_original_origin() {
     let a=json!({"type":"assistant","uuid":"a","requestId":"request","sessionId":SID,"message":{"id":"response","content":[{"type":"text","text":"a"}],"stop_sequence":null}}).to_string()+"\n";
     let omitted=json!({"type":"assistant","uuid":"b","requestId":"request","sessionId":SID,"message":{"id":"response","content":[{"type":"text","text":"b"}]}}).to_string()+"\n";
     let mut memory = MemoryReadView::default();
@@ -1009,7 +1009,7 @@ fn morrow_preflight_enumerates_every_extra_and_checks_normalized_source_carriers
                 assert_eq!(
                     serde_json::from_slice::<Value>(&bytes).unwrap(),
                     evaluate(fact.selection.as_ref().unwrap(), MORROW),
-                    "normalized donor differs at {:?}",
+                    "normalized origin differs at {:?}",
                     fact.source_path
                 );
             }

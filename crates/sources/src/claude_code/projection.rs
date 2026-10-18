@@ -1,6 +1,6 @@
-//! Provider-owned, source-local output units. Interpretation records facts here
-//! before fill/enrichment; projection never scores an enriched Message. The owner
-//! retains (contribution, local block) identity and assigns final BlockIds later.
+//! Facts each Claude record supplies, and the units the engine reads one at a
+//! time to build a response. Blocks are numbered within their contribution;
+//! the engine assigns final BlockIds.
 use super::keyed::{Contribution, EvidenceUnit, ResponseCell};
 use polylogue_model::RawJson as Value;
 use polylogue_model::merge::{BlockField, FinishState, MessageField, UsageField};
@@ -9,15 +9,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Field {
-    /// Applies only to contribution zero, never filled from a later record.
+    /// Only from the response's first contribution.
     FirstMessage(MessageField),
     SelectedMessage(MessageField),
-    /// Fixed provider extra whose one response-level winner is source-owned.
+    /// A response-level extra; the last supplying record wins.
     SelectedExtra {
         key: String,
     },
     Usage(UsageField),
-    /// Named structured result member; the container itself has no rank slot.
+    /// A named member of a structured tool result.
     ResultData {
         local: u32,
         key: String,
@@ -26,8 +26,8 @@ pub enum Field {
         local: u32,
         field: BlockField,
     },
-    /// Exact path components distinguish a top-level "message.x" key from x
-    /// inside message. Each immediate extra is opaque, including empty keys.
+    /// Path components, so a top-level "message.x" key differs from x inside
+    /// `message`. Extras are opaque; empty keys are allowed.
     Extra {
         local: Option<u32>,
         path: Vec<String>,
@@ -37,8 +37,8 @@ pub enum Field {
 pub struct Fact {
     pub field: Field,
     pub source_path: Vec<String>,
-    /// File interpretation order of the last supplied fact. Not arrival time,
-    /// not part of version evidence, and never a cross-input tie breaker.
+    /// Parse order of the record that last supplied this fact. Not part of
+    /// version evidence.
     pub supplied_revision: u64,
     pub selection: Option<super::selection::LeafSelection>,
 }
@@ -52,12 +52,12 @@ pub enum Unresolved {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordFacts {
     pub facts: Vec<Fact>,
-    /// Derived auxiliary leaves retained with origins, absent from rank/fill.
+    /// Values derived from a supplied field (such as an outcome reason). They
+    /// keep origins but are not supplied slots.
     pub derived: Vec<Fact>,
     pub block_counts: Vec<(bool, bool)>,
     pub unresolved: Vec<Unresolved>,
-    /// Positive proof on this effective record only. Removing/replacing the
-    /// record removes its witness; the owner combines selected group witnesses.
+    /// `isAbortedMidStream: true` on this record.
     pub aborted_mid_stream: bool,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,7 +72,7 @@ pub enum Unit {
         fact: Fact,
         value: Value,
     },
-    /// Stored/exported auxiliary value; deliberately absent from ranking facts.
+    /// Thinking signature; stored and exported, not a supplied slot.
     Signature {
         item: u64,
         local: u32,
@@ -110,14 +110,14 @@ pub enum Unit {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeaderUnit {
-    /// Header only: this has no response blocks and its version remains pending.
+    /// Header only: no blocks yet, and no version.
     pub message: Message,
     pub revision: u64,
     pub ordinal: u64,
     pub author_selection: Option<super::selection::AuthorSelection>,
     pub contributions: u64,
     pub finish: FinishState,
-    /// Existing active-path/global operation pairing remain separate owner work.
+    /// Active path and call pairing are resolved by the engine.
     pub active_path_unresolved: bool,
     pub pairing_unresolved: bool,
 }
@@ -153,8 +153,7 @@ impl ResponseCell {
             pairing_unresolved: true,
         })
     }
-    /// Four fixed point units: usage, stop_reason, model, completed timestamp.
-    /// An owner reduces each semantic slot once, not once per source record.
+    /// The selected usage, stop_reason, model and completion time, one unit each.
     pub fn selected_unit(&self, index: u8) -> Option<SelectedUnit> {
         let i = usize::from(index);
         if i >= 6 {
@@ -175,7 +174,7 @@ impl ResponseCell {
     }
 }
 impl Contribution {
-    /// One source-owned, non-ranking auxiliary at an exact contribution-local block.
+    /// The thinking signature of block `local`, if any.
     pub fn signature_unit(&self, item: u64, local: u32) -> Result<Option<Unit>, String> {
         let Some(BlockContent::Thinking(thinking)) = self.blocks.get(local as usize) else {
             return Ok(None);
@@ -190,9 +189,28 @@ impl Contribution {
             selection: super::selection::signature(self, local),
         }))
     }
-    /// One loaded/admitted source cell, one output unit per call. The caller
-    /// persists this cursor and uses the existing ContributionCursor between
-    /// groups. This never walks other records or assigns prefix block offsets.
+    /// The value a fact points at: in the background completion record for
+    /// background facts, otherwise in this record.
+    fn source_value(&self, fact: &Fact) -> Result<Value, String> {
+        let raw = if matches!(
+            fact.selection.as_ref().map(|s| &s.transform),
+            Some(super::selection::Transform::BackgroundV1 { .. })
+        ) {
+            &self
+                .completion
+                .as_ref()
+                .ok_or("background fact lost its notification")?
+                .raw
+        } else {
+            &self.raw
+        };
+        let source: Value = serde_json::from_slice(raw).map_err(|e| e.to_string())?;
+        at(&source, &fact.source_path)
+            .cloned()
+            .ok_or_else(|| "Claude fact value missing from its record".into())
+    }
+    /// The next unit of this contribution. The caller stores the cursor between
+    /// calls and moves between contributions with `ContributionCursor`.
     pub fn next_output(
         &self,
         item: u64,
@@ -238,27 +256,10 @@ impl Contribution {
                                 .ok_or("Claude projection cursor overflow")?;
                             continue;
                         }
-                        let raw = if matches!(
-                            fact.selection.as_ref().map(|s| &s.transform),
-                            Some(super::selection::Transform::BackgroundV1 { .. })
-                        ) {
-                            &self
-                                .completion
-                                .as_ref()
-                                .ok_or("background fact lost its notification")?
-                                .raw
-                        } else {
-                            &self.raw
-                        };
-                        let source: Value =
-                            serde_json::from_slice(raw).map_err(|e| e.to_string())?;
-                        let value = at(&source, &fact.source_path)
-                            .ok_or("Claude presence fact lost its raw value")?
-                            .clone();
                         Some(Unit::Fact {
                             item,
                             fact: fact.clone(),
-                            value,
+                            value: self.source_value(fact)?,
                         })
                     } else {
                         None
@@ -283,27 +284,10 @@ impl Contribution {
                 },
                 6 => {
                     if let Some(fact) = self.projection.derived.get(n) {
-                        let raw = if matches!(
-                            fact.selection.as_ref().map(|s| &s.transform),
-                            Some(super::selection::Transform::BackgroundV1 { .. })
-                        ) {
-                            &self
-                                .completion
-                                .as_ref()
-                                .ok_or("background fact lost its notification")?
-                                .raw
-                        } else {
-                            &self.raw
-                        };
-                        let source: Value =
-                            serde_json::from_slice(raw).map_err(|e| e.to_string())?;
-                        let value = at(&source, &fact.source_path)
-                            .ok_or("Claude retained leaf lost its raw value")?
-                            .clone();
                         Some(Unit::Derived {
                             item,
                             fact: fact.clone(),
-                            value,
+                            value: self.source_value(fact)?,
                         })
                     } else {
                         cursor.phase = 8;
@@ -417,8 +401,7 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
                         name,
                         "inference_geo" | "iterations" | "server_tool_use" | "speed"
                     ) {
-                        // These named members are opaque provider evidence in
-                        // the selected whole usage object, never new counters.
+                        // Opaque members of the usage object, not counters.
                     } else if matches!(name, "cache_creation" | "output_tokens_details") {
                         if let Some(members) = value.as_object() {
                             for (native_key, value) in members {
@@ -736,8 +719,8 @@ pub(super) fn record(
                         );
                     }
                 }
-                // A reason derived from the same status witness is retained,
-                // not a second supplied semantic status slot.
+                // The reason comes from the same status field, so it is derived,
+                // not a second supplied slot.
                 if let Some(path) = decision.reason {
                     add(
                         &mut result.derived,
@@ -843,8 +826,7 @@ pub(super) fn record(
 }
 
 impl SelectedUnit {
-    /// Resolve one supplied source fact from this selected raw subtree. This
-    /// reads no other contribution and never substitutes an enriched body field.
+    /// The value of `fact` inside this selected subtree.
     pub fn fact_value(&self, fact: &Fact) -> Result<Value, String> {
         let raw = self
             .raw

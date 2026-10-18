@@ -1,11 +1,6 @@
-//! Provider-owned point projection. Each advance performs at most one state
-//! lookup and emits at most one whole admitted cell or annotation. It never
-//! assembles a result string, response, or wrapper children array. The caller
-//! pins the ReadView and cursor to one committed parser/evidence revision.
-//!
-//! Message projection does not consume session-scoped unresolved native items
-//! or Effects obligations. Those remain separately retained; neither this
-//! cursor nor byte EOF certifies normalization, source rank, or version hashes.
+//! Reads one Codex Message out of stored state as a stream of units (header,
+//! slot values, blocks, result chunks, wrapper children). Each step does at
+//! most one state lookup, so the engine can stop and resume anywhere.
 use super::keyed::{Cell, Key, MemoryReadView, ReadView};
 use polylogue_model::RawJson as Value;
 use polylogue_model::*;
@@ -37,8 +32,9 @@ enum Scope {
     Header,
     Block(usize),
 }
-/// Persist only with its pinned predecessor and after the emitted unit commits.
-/// A read failure fuses this cursor; restart from the last committed cursor.
+/// Store this only together with the state it was read from, after the
+/// emitted unit is committed. After a read error, restart from the last
+/// committed cursor.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cursor {
     message: usize,
@@ -66,8 +62,8 @@ pub enum Unit {
         index: usize,
         value: Block,
     },
-    /// The result's effective output is replaced by the following chunk units.
-    /// No chunk means absent output; an empty chunk means present empty text.
+    /// The result's output is the following chunks. No chunk means no output;
+    /// an empty chunk means empty text.
     ResultStart {
         block: usize,
     },
@@ -76,14 +72,14 @@ pub enum Unit {
         slot: usize,
         text: String,
     },
-    /// Closes the chunk stream, including a stream with no chunks.
+    /// Ends the chunk stream.
     ResultEnd {
         block: usize,
     },
     Continuation {
         call_id: String,
     },
-    /// Replaces a previous entry for this wrapper, as the source map did.
+    /// Replaces any earlier entry for this wrapper.
     WrapperStart {
         call_id: String,
         children: usize,
@@ -118,14 +114,13 @@ impl Cursor {
             after_presence: None,
         }
     }
-    /// Select only the current header; no witness or block enumeration.
+    /// Read only the header.
     pub fn header(message: usize, mode: Mode) -> Self {
         let mut cursor = Self::new(message, mode);
         cursor.scope = Scope::Header;
         cursor
     }
-    /// Select one block through this same interpretation/projection machine.
-    /// Header/ID reanchor, presence, result chunks and annotations are unchanged.
+    /// Read one block.
     pub fn block(message: usize, block: usize, mode: Mode) -> Self {
         let mut cursor = Self::new(message, mode);
         cursor.scope = Scope::Block(block);
@@ -202,7 +197,7 @@ impl Cursor {
                         Err("invalid Codex presence neighbor".into())
                     }
                     Some((Key::Presence(message, _), _)) if message == self.message => {
-                        Err("invalid Codex message witness".into())
+                        Err("invalid Codex message slot value".into())
                     }
                     _ => {
                         self.phase = Phase::Block;
@@ -376,8 +371,7 @@ impl Cursor {
                     .checked_add(1)
                     .ok_or("Codex projection block index overflow")?;
                 self.phase = Phase::Block;
-                // AdvanceBlock itself performs no reads or output. Reenter at
-                // Block exactly once, so this call still does at most one read.
+                // AdvanceBlock does no reads, so continue into Block once.
                 self.step(view)
             }
             Phase::Done => Ok(Step::Done),
@@ -385,8 +379,8 @@ impl Cursor {
     }
 }
 
-/// Explicit unbounded inspection collector. Production finalizers consume
-/// units directly; only this helper assembles full strings and arrays.
+/// Collect a whole Message, for tests and inspection. The engine reads units
+/// one at a time instead.
 pub fn collect(
     view: &impl ReadView,
     message: usize,
