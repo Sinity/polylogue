@@ -316,11 +316,11 @@ fn ordered_extras_zero_count_conflict_is_occupied_and_not_dropped() {
     let owner = d::Owner { message, session };
     let mut work = d::Work::default();
     let path = f.writer.root.join("index.db");
-    let witness = d::replace(
+    let facts = d::replace(
         &tx,
         &path,
         owner,
-        d::Kind::Witnesses,
+        d::Kind::ConflictFacts,
         None,
         fact as u64,
         Some(d::Edge {
@@ -344,7 +344,7 @@ fn ordered_extras_zero_count_conflict_is_occupied_and_not_dropped() {
         Some(d::Edge {
             link: d::Link::Conflict {
                 slot,
-                root: witness,
+                root: facts,
                 height: 15,
             },
             counts: d::Counts::default(),
