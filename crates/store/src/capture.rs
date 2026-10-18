@@ -1,6 +1,6 @@
-//! Worker-side CAS capture and opaque proof admission. Archive mutation stays
-//! with Writer; capture retains archive lock authority. Explicit native history
-//! capture additionally opens its supplied SQLite source read-only in store.
+//! Blob capture on worker threads. Workers write blob files; only the Writer
+//! records them in the archive. A capture holds the archive lock until the
+//! blob is recorded or dropped.
 use crate::{BlobHash, Error, Result, Writer, counter, db, private_dir};
 use rusqlite::{OptionalExtension, params};
 use std::{
@@ -16,13 +16,13 @@ use std::{
 
 pub struct BlobCapture {
     root: PathBuf,
-    authority: Arc<File>,
+    lock: Arc<File>,
 }
-/// Minted only after the reviewed CAS put has finished durably. Not a claim of
-/// provider parsing, immutable-input retention, or garbage-collection coverage.
+/// A blob written and verified in the store, ready for
+/// `Writer::store_captured_blob`.
 pub struct PreparedBlob {
     root: PathBuf,
-    authority: Arc<File>,
+    lock: Arc<File>,
     hash: BlobHash,
     length: u64,
     stored_size: u64,
@@ -56,11 +56,10 @@ impl<R: Read> Read for Counted<R> {
 }
 impl BlobCapture {
     pub(crate) fn read_handle(&self) -> Result<crate::ReadHandle> {
-        crate::ReadHandle::owned(self.root.clone(), Arc::clone(&self.authority))
+        crate::ReadHandle::owned(self.root.clone(), Arc::clone(&self.lock))
     }
-    /// Explicit regular-file import only. Nonblocking/no-follow open prevents
-    /// FIFO opens and final-component symlinks from trapping the worker before
-    /// descriptor type validation. This is not a general collector policy.
+    /// Capture one regular file. The nonblocking, no-follow open keeps a FIFO
+    /// or final symlink from blocking the worker before the type check.
     pub fn capture_regular_file(
         &self,
         path: &Path,
@@ -78,14 +77,13 @@ impl BlobCapture {
         }
         self.capture(file, cancelled)
     }
-    /// Run on a worker. The underlying store streams through bounded frames;
-    /// its seek table still grows with frame count (no whole-input Vec here).
+    /// Run on a worker. Streams the input; memory grows only with the blob's
+    /// frame count.
     pub fn capture(&self, reader: impl Read, cancelled: &AtomicBool) -> Result<PreparedBlob> {
         self.capture_with_check(reader, cancelled, |_| Ok(()))
     }
-    /// History's parked worker supplies its cooperative work grant. The shared
-    /// library's no-byte polls are conservatively charged as 64 KiB each, not
-    /// reported as measured IO; decoded verification callbacks carry exact size.
+    /// `work` is charged per step: an estimated 64 KiB per store poll and the
+    /// exact size of each verified chunk.
     pub(crate) fn capture_with_check(
         &self,
         reader: impl Read,
@@ -111,11 +109,11 @@ impl BlobCapture {
         let hash = result?;
         if !matches!(blobs.kind(&hash)?, hashed_blobs::Kind::Plain) {
             return Err(Error::Invariant(
-                "capture requires a plain CAS representation".into(),
+                "captured blob is not stored as a plain file".into(),
             ));
         }
-        // put may deduplicate against an existing filename. Certify those actual
-        // retained bytes, not just the hash computed from the incoming stream.
+        // put may find an existing file with this hash. Verify that file, not
+        // only the incoming stream.
         blobs.verify_plain::<Error>(&hash, counted.length, |bytes| {
             if cancelled.load(Ordering::Acquire) {
                 Err(Error::Cancelled)
@@ -130,7 +128,7 @@ impl BlobCapture {
         }
         Ok(PreparedBlob {
             root: self.root.clone(),
-            authority: Arc::clone(&self.authority),
+            lock: Arc::clone(&self.lock),
             hash: BlobHash::from_bytes(hash.0),
             length: counted.length,
             stored_size,
@@ -138,19 +136,19 @@ impl BlobCapture {
     }
 }
 impl Writer {
-    /// Minting performs no source/blob IO; the worker opens its write-only CAS.
+    /// Does no IO; the worker opens the blob store itself.
     pub fn blob_capture(&self) -> Result<BlobCapture> {
         Ok(BlobCapture {
             root: self.root.clone(),
-            authority: Arc::clone(&self._lock),
+            lock: Arc::clone(&self._lock),
         })
     }
-    /// Only bounded metadata work occurs on the actor. Completed file bytes,
-    /// compression, digest and physical size were established by capture.
+    /// Record a captured blob in the archive. Only metadata work happens
+    /// here; the capture already wrote and verified the bytes.
     pub fn store_captured_blob(&mut self, proof: PreparedBlob) -> Result<BlobHash> {
-        if proof.root != self.root || !Arc::ptr_eq(&proof.authority, &self._lock) {
+        if proof.root != self.root || !Arc::ptr_eq(&proof.lock, &self._lock) {
             return Err(Error::Invariant(
-                "blob capture belongs to another archive authority".into(),
+                "blob was captured for a different archive".into(),
             ));
         }
         let length = i64::try_from(proof.length).map_err(|_| Error::Range)?;
@@ -223,275 +221,5 @@ impl Writer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::mpsc;
-    struct Small {
-        remaining: usize,
-        calls: usize,
-    }
-    impl Read for Small {
-        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-            self.calls += 1;
-            let n = bytes.len().min(self.remaining).min(7);
-            bytes[..n].fill(b'x');
-            self.remaining -= n;
-            Ok(n)
-        }
-    }
-    fn proof(w: &Writer, bytes: &[u8]) -> PreparedBlob {
-        w.blob_capture()
-            .unwrap()
-            .capture(bytes, &AtomicBool::new(false))
-            .unwrap()
-    }
-    fn rows(w: &Writer) -> i64 {
-        w.archive
-            .query_row("SELECT count(*) FROM blob", [], |r| r.get(0))
-            .unwrap()
-    }
-    #[test]
-    fn many_small_reads_are_captured_and_metadata_is_idempotent() {
-        let root = tempfile::tempdir().unwrap();
-        let mut w = Writer::open(root.path()).unwrap();
-        let mut reader = Small {
-            remaining: 65537,
-            calls: 0,
-        };
-        let p = w
-            .blob_capture()
-            .unwrap()
-            .capture(&mut reader, &AtomicBool::new(false))
-            .unwrap();
-        assert!(reader.calls > 9000);
-        assert_eq!(p.length(), 65537);
-        assert!(p.stored_size() > 0);
-        assert_eq!(p.hash(), BlobHash::of(&vec![b'x'; 65537]));
-        assert_eq!(rows(&w), 0);
-        let h = w.store_captured_blob(p).unwrap();
-        let counter = w.status().unwrap().write_counter;
-        assert_eq!(
-            w.store_captured_blob(proof(&w, &vec![b'x'; 65537]))
-                .unwrap(),
-            h
-        );
-        assert_eq!(w.status().unwrap().write_counter, counter);
-        assert_eq!(rows(&w), 1);
-    }
-    #[test]
-    fn cancellation_and_original_source_failure_do_not_publish_metadata() {
-        struct Failing;
-        impl Read for Failing {
-            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-                Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "synthetic source denied",
-                ))
-            }
-        }
-        struct Cancels<'a>(&'a AtomicBool);
-        impl Read for Cancels<'_> {
-            fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
-                self.0.store(true, Ordering::Release);
-                b[0] = 1;
-                Ok(1)
-            }
-        }
-        let root = tempfile::tempdir().unwrap();
-        let w = Writer::open(root.path()).unwrap();
-        let c = w.blob_capture().unwrap();
-        let cancelled = AtomicBool::new(false);
-        assert!(matches!(
-            c.capture(Cancels(&cancelled), &cancelled),
-            Err(Error::Cancelled)
-        ));
-        assert!(matches!(
-            c.capture(&b"ignored"[..], &cancelled),
-            Err(Error::Cancelled)
-        ));
-        match c.capture(Failing, &AtomicBool::new(false)) {
-            Err(Error::Blob(hashed_blobs::Error::Io(e))) => {
-                assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
-                assert_eq!(e.to_string(), "synthetic source denied");
-            }
-            _ => panic!("original source failure was not retained"),
-        }
-        assert_eq!(rows(&w), 0);
-    }
-    #[test]
-    fn proof_is_archive_bound_and_keeps_lock_authority_alive() {
-        let a = tempfile::tempdir().unwrap();
-        let b = tempfile::tempdir().unwrap();
-        let wa = Writer::open(a.path()).unwrap();
-        let mut wb = Writer::open(b.path()).unwrap();
-        let p = proof(&wa, b"bound");
-        assert!(matches!(
-            wb.store_captured_blob(p),
-            Err(Error::Invariant(_))
-        ));
-        assert_eq!(rows(&wb), 0);
-        let capture = wa.blob_capture().unwrap();
-        drop(wa);
-        assert!(matches!(
-            Writer::open(a.path()),
-            Err(Error::WriterHeld { .. })
-        ));
-        let p = capture
-            .capture(&b"lock"[..], &AtomicBool::new(false))
-            .unwrap();
-        drop(capture);
-        assert!(matches!(
-            Writer::open(a.path()),
-            Err(Error::WriterHeld { .. })
-        ));
-        drop(p);
-        assert!(Writer::open(a.path()).is_ok());
-    }
-    #[test]
-    fn worker_capture_does_not_block_actor_metadata_progress() {
-        struct Blocked {
-            entered: mpsc::Sender<()>,
-            resume: mpsc::Receiver<()>,
-            done: bool,
-        }
-        impl Read for Blocked {
-            fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
-                if self.done {
-                    return Ok(0);
-                }
-                self.entered.send(()).map_err(io::Error::other)?;
-                self.resume.recv().map_err(io::Error::other)?;
-                b[..4].copy_from_slice(b"slow");
-                self.done = true;
-                Ok(4)
-            }
-        }
-        let root = tempfile::tempdir().unwrap();
-        let mut w = Writer::open(root.path()).unwrap();
-        let quick = proof(&w, b"quick");
-        let capture = w.blob_capture().unwrap();
-        let (entered_rx_tx, entered) = mpsc::channel();
-        let (resume, receiver) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            capture.capture(
-                Blocked {
-                    entered: entered_rx_tx,
-                    resume: receiver,
-                    done: false,
-                },
-                &AtomicBool::new(false),
-            )
-        });
-        entered
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .unwrap();
-        w.store_captured_blob(quick).unwrap();
-        assert_eq!(rows(&w), 1);
-        resume.send(()).unwrap();
-        let p = worker.join().unwrap().unwrap();
-        w.store_captured_blob(p).unwrap();
-        assert_eq!(rows(&w), 2);
-    }
-    #[test]
-    fn metadata_recovery_refuses_logical_conflict_without_resurrecting_deletions() {
-        let root = tempfile::tempdir().unwrap();
-        let mut w = Writer::open(root.path()).unwrap();
-        let h = w.store_captured_blob(proof(&w, b"body")).unwrap();
-        w.archive
-            .execute(
-                "UPDATE blob SET state='writing',stored_size=0 WHERE hash=?1",
-                [h.bytes().as_slice()],
-            )
-            .unwrap();
-        let counter = w.status().unwrap().write_counter;
-        w.store_captured_blob(proof(&w, b"body")).unwrap();
-        assert_eq!(w.status().unwrap().write_counter, counter + 1);
-        let state: String = w
-            .archive
-            .query_row("SELECT state FROM blob", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(state, "present");
-        w.archive.execute("UPDATE blob SET size=5", []).unwrap();
-        assert!(matches!(
-            w.store_captured_blob(proof(&w, b"body")),
-            Err(Error::Invariant(_))
-        ));
-        w.archive
-            .execute("UPDATE blob SET size=4,state='deleting'", [])
-            .unwrap();
-        assert!(matches!(
-            w.store_captured_blob(proof(&w, b"body")),
-            Err(Error::Invariant(_))
-        ));
-    }
-    #[test]
-    fn corrupt_existing_cas_is_not_certified_by_fresh_incoming_stream() {
-        let root = tempfile::tempdir().unwrap();
-        let w = Writer::open(root.path()).unwrap();
-        let p = proof(&w, b"original");
-        let hex = p.hash().to_string();
-        let path = root
-            .path()
-            .join("blobs")
-            .join(&hex[..2])
-            .join(format!("{hex}.zst"));
-        std::fs::write(&path, b"not a zstd object").unwrap();
-        drop(p);
-        assert!(
-            w.blob_capture()
-                .unwrap()
-                .capture(&b"original"[..], &AtomicBool::new(false))
-                .is_err()
-        );
-        assert_eq!(std::fs::read(path).unwrap(), b"not a zstd object");
-        assert_eq!(rows(&w), 0);
-    }
-}
-
-#[cfg(test)]
-mod cooperative_tests {
-    use super::*;
-    #[test]
-    fn explicit_file_capture_refuses_fifo_symlink_and_nonregular_descriptor() {
-        use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir().unwrap();
-        let input = tempfile::tempdir().unwrap();
-        let mut w = Writer::open(root.path()).unwrap();
-        let capture = w.blob_capture().unwrap();
-        let regular = input.path().join("source");
-        std::fs::write(&regular, b"regular").unwrap();
-        let link = input.path().join("link");
-        symlink(&regular, &link).unwrap();
-        assert!(
-            capture
-                .capture_regular_file(&link, &AtomicBool::new(false))
-                .is_err()
-        );
-        assert!(
-            capture
-                .capture_regular_file(input.path(), &AtomicBool::new(false))
-                .is_err()
-        );
-        let fifo = input.path().join("pipe");
-        let status = std::process::Command::new("mkfifo")
-            .arg("--mode=600")
-            .arg(&fifo)
-            .status()
-            .unwrap();
-        assert!(status.success(), "mkfifo fixture failed: {status}");
-        assert!(
-            capture
-                .capture_regular_file(&fifo, &AtomicBool::new(false))
-                .is_err()
-        );
-        assert!(matches!(
-            capture.capture_regular_file(&fifo, &AtomicBool::new(true)),
-            Err(Error::Cancelled)
-        ));
-        let proof = capture
-            .capture_regular_file(&regular, &AtomicBool::new(false))
-            .unwrap();
-        assert_eq!(proof.length(), 7);
-        w.store_captured_blob(proof).unwrap();
-    }
-}
+#[path = "capture/tests.rs"]
+mod tests;

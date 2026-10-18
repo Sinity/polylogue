@@ -1,6 +1,6 @@
-//! Two object-affine readers for one retained source capability. A snapshot's
-//! base and patch cannot evict one another's checked object. Other source shapes
-//! keep correctness and may evict; no global or pathname cache is introduced.
+//! Two blob readers for the source being read. A snapshot that alternates
+//! between its base and patch blobs keeps both verified instead of evicting one
+//! on every switch. Other layouts stay correct but may re-verify.
 use crate::{BlobHash, Error, Result};
 use std::{path::Path, sync::Mutex};
 type Key = (String, i64, BlobHash);
@@ -12,9 +12,9 @@ pub(crate) struct SourceReaders {
     readers: [hashed_blobs::Reader; 2],
     state: Mutex<State>,
     #[cfg(test)]
-    pub explicit_verification_bytes: std::sync::atomic::AtomicU64,
+    pub verified_bytes: std::sync::atomic::AtomicU64,
     #[cfg(test)]
-    pub explicit_verifications: std::sync::atomic::AtomicU64,
+    pub verifications: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     pub force_shared_slot: std::sync::atomic::AtomicBool,
 }
@@ -30,13 +30,15 @@ impl SourceReaders {
                 hashes: [None, None],
             }),
             #[cfg(test)]
-            explicit_verification_bytes: std::sync::atomic::AtomicU64::new(0),
+            verified_bytes: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
-            explicit_verifications: std::sync::atomic::AtomicU64::new(0),
+            verifications: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             force_shared_slot: std::sync::atomic::AtomicBool::new(false),
         }
     }
+    /// The reader for `hash`, and whether it has to verify the blob first.
+    /// Reading a different source resets both slots.
     pub fn select(
         &self,
         id: &str,
@@ -82,9 +84,8 @@ impl SourceReaders {
         #[cfg(test)]
         {
             use std::sync::atomic::Ordering;
-            self.explicit_verification_bytes
-                .fetch_add(bytes, Ordering::Relaxed);
-            self.explicit_verifications.fetch_add(1, Ordering::Relaxed);
+            self.verified_bytes.fetch_add(bytes, Ordering::Relaxed);
+            self.verifications.fetch_add(1, Ordering::Relaxed);
         }
         #[cfg(not(test))]
         let _ = bytes;

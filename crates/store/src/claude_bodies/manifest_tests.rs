@@ -8,15 +8,19 @@ use std::sync::{
 fn measured(connection: &rusqlite::Connection, file: &Path, main: &str) -> (Vec<Companion>, usize) {
     let steps = Arc::new(AtomicUsize::new(0));
     let counter = steps.clone();
-    connection.progress_handler(
-        1,
-        Some(move || {
-            counter.fetch_add(1, Ordering::Relaxed);
-            false
-        }),
-    );
+    connection
+        .progress_handler(
+            1,
+            Some(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
     let result = manifest(connection, file, main);
-    connection.progress_handler(0, None::<fn() -> bool>);
+    connection
+        .progress_handler(0, None::<fn() -> bool>)
+        .unwrap();
     (result.unwrap(), steps.load(Ordering::Relaxed))
 }
 

@@ -1,5 +1,5 @@
-//! Immutable retained input registration. Archive commit precedes disposable
-//! index registration, so retry repairs a crash between the two databases.
+//! Immutable imported inputs. The archive commit comes before the index
+//! registration, so retrying an import repairs a crash between the two.
 use crate::{BlobHash, Error, Result, Writer, counter, db};
 use polylogue_model::InputId;
 use rusqlite::{OptionalExtension, params};
@@ -10,14 +10,10 @@ pub enum InputFormat {
     ClaudeCodeToolResult,
     CodexRollout,
     CodexHistorySqlite,
-    /// Retained prompt references only; never a conversation parser input.
+    /// Prompt references only; never parsed as a conversation.
     CodexPromptHistory,
 }
 impl InputFormat {
-    /// Validate declared interpretation context without source IO or mutation.
-    pub fn validate_context(self, context: &[&str]) -> Result<()> {
-        validate_context(self, context)
-    }
     pub fn name(self) -> &'static str {
         match self {
             Self::ClaudeCodeJsonl => "claude-code-jsonl",
@@ -27,9 +23,68 @@ impl InputFormat {
             Self::CodexPromptHistory => "codex-prompt-history",
         }
     }
+    fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::ClaudeCodeJsonl,
+            Self::ClaudeCodeToolResult,
+            Self::CodexRollout,
+            Self::CodexHistorySqlite,
+            Self::CodexPromptHistory,
+        ]
+        .into_iter()
+        .find(|format| format.name() == name)
+    }
+
+    /// Check the context strings an input of this format must carry. Pure; no IO.
+    pub fn validate_context(self, context: &[&str]) -> Result<()> {
+        const MAXIMUM: usize = 65536;
+        let too_large = |required| Error::ImportContextTooLarge {
+            required,
+            maximum: MAXIMUM,
+        };
+        // Each field costs 8 framing bytes plus its length. Check the count
+        // before scanning so a huge context is refused cheaply.
+        let mut required = context
+            .len()
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(8))
+            .ok_or(Error::Range)?;
+        if required > MAXIMUM {
+            return Err(too_large(required));
+        }
+        for field in context {
+            required = required.checked_add(field.len()).ok_or(Error::Range)?;
+            if required > MAXIMUM {
+                return Err(too_large(required));
+            }
+        }
+        let plain_name = |s: &str| !s.is_empty() && !s.contains('/') && !s.contains('\0');
+        let valid = match self {
+            Self::CodexRollout | Self::CodexHistorySqlite | Self::CodexPromptHistory => {
+                context.is_empty()
+            }
+            Self::ClaudeCodeToolResult => matches!(context, [main, path, kind]
+                if !main.is_empty()
+                    && std::path::Path::new(path).is_absolute()
+                    && matches!(*kind, "required" | "inline-duplicate")),
+            Self::ClaudeCodeJsonl => match context {
+                ["claude-main", stem] => plain_name(stem),
+                ["claude-subagent", agent] => plain_name(agent),
+                ["claude-subagent", agent, owner] => plain_name(agent) && !owner.is_empty(),
+                _ => false,
+            },
+        };
+        if !valid {
+            return Err(Error::Invariant(format!(
+                "invalid {} import context",
+                self.name()
+            )));
+        }
+        Ok(())
+    }
 }
 
-/// Caller-supplied acquisition evidence; retention never invents a host/path/time.
+/// Where and when the caller found the input. The store never fills these in.
 pub struct ImportObservation<'a> {
     pub id: &'a str,
     pub machine: &'a str,
@@ -54,47 +109,10 @@ pub struct ImmutableImport {
     pub context: Vec<String>,
 }
 
-fn validate_context(format: InputFormat, context: &[&str]) -> Result<()> {
-    const MAXIMUM: usize = 65536;
-    let mut required = context
-        .len()
-        .checked_mul(8)
-        .and_then(|n| n.checked_add(8))
-        .ok_or(Error::Range)?;
-    if required > MAXIMUM {
-        return Err(Error::ImportContextTooLarge {
-            required,
-            maximum: MAXIMUM,
-        });
-    }
-    for field in context {
-        required = required.checked_add(field.len()).ok_or(Error::Range)?;
-        if required > MAXIMUM {
-            return Err(Error::ImportContextTooLarge {
-                required,
-                maximum: MAXIMUM,
-            });
-        }
-    }
-    match format {
-        InputFormat::CodexRollout
-        | InputFormat::CodexHistorySqlite
-        | InputFormat::CodexPromptHistory
-            if context.is_empty() => {}
-        InputFormat::ClaudeCodeToolResult if matches!(context,[main,path,kind] if !main.is_empty() && std::path::Path::new(path).is_absolute() && matches!(*kind,"required"|"inline-duplicate")) =>
-            {}
-        InputFormat::ClaudeCodeJsonl if matches!(context,["claude-main",stem] if !stem.is_empty() && !stem.contains('/') && !stem.contains('\0')) =>
-            {}
-        InputFormat::ClaudeCodeJsonl if matches!(context,["claude-subagent",agent] | ["claude-subagent",agent,_] if !agent.is_empty() && !agent.contains('/') && !agent.contains('\0') && context.iter().all(|v|!v.is_empty())) =>
-            {}
-        _ => {
-            return Err(Error::Invariant(
-                "missing or invalid immutable interpretation context".into(),
-            ));
-        }
-    }
-    Ok(())
-}
+/// One piece of an input: `(offset, length, blob, blob_offset)`.
+pub(crate) type Part = (u64, u64, BlobHash, u64);
+
+const MAX_PARTS: usize = 8192;
 
 fn request_hash(
     format: InputFormat,
@@ -102,7 +120,7 @@ fn request_hash(
     observation: &ImportObservation<'_>,
     allowance: usize,
 ) -> Result<BlobHash> {
-    validate_context(format, context)?;
+    format.validate_context(context)?;
     let mut length = 64usize + format.name().len();
     for field in [
         observation.id,
@@ -111,15 +129,11 @@ fn request_hash(
         observation.path,
     ] {
         if field.is_empty() {
-            return Err(Error::Invariant("empty immutable-import provenance".into()));
+            return Err(Error::Invariant(
+                "import observation has an empty field".into(),
+            ));
         }
         length = length.checked_add(field.len()).ok_or(Error::Range)?;
-    }
-    if length > allowance {
-        return Err(Error::ParserAdmission {
-            resource: "immutable import metadata bytes",
-            required: length as u64,
-        });
     }
     for field in context {
         length = length
@@ -129,7 +143,7 @@ fn request_hash(
     }
     if length > allowance {
         return Err(Error::ParserAdmission {
-            resource: "immutable import metadata bytes",
+            resource: "import metadata bytes",
             required: length as u64,
         });
     }
@@ -138,9 +152,8 @@ fn request_hash(
 }
 
 impl Writer {
-    /// Provider acquisition must check this before copying any source bytes.
-    /// Until the refusal-aware collector is wired, even an unrelated excision
-    /// prevents source acquisition. Generic blob storage is not that collector.
+    /// Call before copying any source bytes. Any excision in the archive blocks
+    /// imports, because nothing yet checks new bytes against excisions.
     pub fn check_import_acquisition(&self) -> Result<()> {
         let file = self.root.join("archive.db");
         let exists: bool = db(&file, || {
@@ -155,22 +168,15 @@ impl Writer {
         Ok(())
     }
 
-    /// Exact retained-import lookup. Does not inspect provider records or paths.
+    /// Look up an imported input by ID.
     pub fn immutable_import(&mut self, id: &str) -> Result<Option<ImmutableImport>> {
         self.check_import_acquisition()?;
         let file = self.root.join("archive.db");
-        let row = db(&file, || {
+        let row: Option<(String, String, i64, Vec<u8>, Vec<u8>, String)> = db(&file, || {
             self.archive.query_row(
             "SELECT i.id,i.format,r.length,r.blake3,i.original_hash,CASE WHEN length(CAST(i.context_json AS BLOB))<=524288 THEN i.context_json ELSE NULL END FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.id=?1 AND r.produced='imported' AND r.chain=1", [id],
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()
         })?;
-        self.decode_immutable_import(row)
-    }
-
-    fn decode_immutable_import(
-        &mut self,
-        row: Option<(String, String, i64, Vec<u8>, Vec<u8>, String)>,
-    ) -> Result<Option<ImmutableImport>> {
         let Some((id, format, length, digest, original, context_json)) = row else {
             return Ok(None);
         };
@@ -185,8 +191,9 @@ impl Writer {
         }))
     }
 
-    /// Retry the same write request without opening its source path again.
-    /// An existing request ID with changed command metadata is refused.
+    /// Return the input an earlier request with this observation ID stored,
+    /// without opening the source path again. The same ID with different
+    /// arguments is refused.
     pub fn replay_immutable_import(
         &mut self,
         format: InputFormat,
@@ -207,10 +214,33 @@ impl Writer {
                 |r| r.get(0),
             )
         })?;
-        let imported = self.immutable_import(&id)?.ok_or_else(|| {
-            Error::Invariant("import receipt has no retained immutable input".into())
-        })?;
+        let imported = self
+            .immutable_import(&id)?
+            .ok_or_else(|| Error::Invariant("import request has no stored input".into()))?;
         Ok(Some(imported.input))
+    }
+
+    /// Like `replay_immutable_import`, but also refuses a replay whose stored
+    /// input has different bytes.
+    fn replay_same_import(
+        &mut self,
+        hash: BlobHash,
+        format: InputFormat,
+        context: &[&str],
+        observation: &ImportObservation<'_>,
+        allowance: usize,
+    ) -> Result<Option<StoredInput>> {
+        let Some(previous) =
+            self.replay_immutable_import(format, context, observation, allowance)?
+        else {
+            return Ok(None);
+        };
+        if previous.id != InputId::imported(&hash, format.name(), context).as_str() {
+            return Err(Error::ClientRequestConflict {
+                id: observation.id.into(),
+            });
+        }
+        Ok(Some(previous))
     }
 
     pub(crate) fn register_input_ref(&mut self, id: String, length: u64) -> Result<StoredInput> {
@@ -225,9 +255,7 @@ impl Writer {
             })
         })?;
         if excised {
-            return Err(Error::Invariant(
-                "immutable input is excised in index".into(),
-            ));
+            return Err(Error::Invariant("input is excised".into()));
         }
         db(&file, || tx.commit())?;
         Ok(StoredInput {
@@ -238,12 +266,10 @@ impl Writer {
         })
     }
 
-    /// Register an already retained whole blob as one immutable imported input.
-    /// No source filesystem access or provider interpretation occurs here. This
-    /// does not infer lineage with any live file that happens to share messages.
-    /// Metadata allowance is caller admission, not a provider semantic size cap.
-    /// Archives with any excision require the not-yet-wired refusal-aware
-    /// collector and return ExcisionCheckRequired before changing metadata.
+    /// Record a blob already in the store as one immutable imported input.
+    /// Never reads the source path or parses the bytes, and never links the
+    /// input to a live file with the same content. `metadata_allowance` bounds
+    /// the request metadata, not the input.
     pub fn store_immutable_input(
         &mut self,
         hash: BlobHash,
@@ -252,14 +278,10 @@ impl Writer {
         observation: &ImportObservation<'_>,
         metadata_allowance: usize,
     ) -> Result<StoredInput> {
+        // Replay first: a retry must succeed even if the blob is gone by now.
         if let Some(previous) =
-            self.replay_immutable_import(format, context, observation, metadata_allowance)?
+            self.replay_same_import(hash, format, context, observation, metadata_allowance)?
         {
-            if previous.id != InputId::imported(&hash, format.name(), context).as_str() {
-                return Err(Error::ClientRequestConflict {
-                    id: observation.id.into(),
-                });
-            }
             return Ok(previous);
         }
         let file = self.root.join("archive.db");
@@ -272,24 +294,25 @@ impl Writer {
                 )
                 .optional()
         })?;
-        let length = length.ok_or(Error::UnknownBlob)?;
+        let length = u64::try_from(length.ok_or(Error::UnknownBlob)?).map_err(|_| Error::Range)?;
         self.store_immutable_parts(
             hash,
-            u64::try_from(length).map_err(|_| Error::Range)?,
-            &[(0, u64::try_from(length).map_err(|_| Error::Range)?, hash, 0)],
+            length,
+            &[(0, length, hash, 0)],
             format,
             context,
             observation,
             metadata_allowance,
         )
     }
-    /// Complete immutable bytes can share verified CAS ranges. The capture owner
-    /// computes their whole digest; this transaction publishes the exact layout.
+
+    /// Record an immutable input made of ranges of stored blobs. The caller
+    /// has computed `hash` over the whole input.
     pub(crate) fn store_immutable_parts(
         &mut self,
         hash: BlobHash,
         length_u64: u64,
-        parts: &[(u64, u64, BlobHash, u64)],
+        parts: &[Part],
         format: InputFormat,
         context: &[&str],
         observation: &ImportObservation<'_>,
@@ -297,18 +320,13 @@ impl Writer {
     ) -> Result<StoredInput> {
         let request_hash = request_hash(format, context, observation, metadata_allowance)?;
         if let Some(previous) =
-            self.replay_immutable_import(format, context, observation, metadata_allowance)?
+            self.replay_same_import(hash, format, context, observation, metadata_allowance)?
         {
-            if previous.id != InputId::imported(&hash, format.name(), context).as_str() {
-                return Err(Error::ClientRequestConflict {
-                    id: observation.id.to_owned(),
-                });
-            }
             return Ok(previous);
         }
-        if parts.len() > 8192 {
+        if parts.len() > MAX_PARTS {
             return Err(Error::ParserAdmission {
-                resource: "immutable extent metadata",
+                resource: "import extents",
                 required: parts.len() as u64,
             });
         }
@@ -324,9 +342,7 @@ impl Writer {
                 .optional()
         })?;
         if excised == Some(true) {
-            return Err(Error::Invariant(
-                "immutable input is excised in index".into(),
-            ));
+            return Err(Error::Invariant("input is excised".into()));
         }
         let file = self.root.join("archive.db");
         let tx = db(&file, || self.archive.transaction())?;
@@ -337,9 +353,8 @@ impl Writer {
             request_hash,
             observation.seen_at,
         )?;
-        // This foundation primitive does not interpret refused_json or guess
-        // session/text removal closure. Until the collector owns that check,
-        // refuse explicitly instead of reintroducing removed provider bytes.
+        // Re-check inside the transaction: an import must never bring back
+        // bytes an excision removed.
         let has_excisions: bool = db(&file, || {
             tx.query_row("SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)", [], |r| {
                 r.get(0)
@@ -363,13 +378,15 @@ impl Writer {
                 .and_then(|n| u64::try_from(n).ok())
                 .ok_or(Error::UnknownBlob)?;
             if offset != end || start.checked_add(size).is_none_or(|n| n > stored) {
-                return Err(Error::Invariant("invalid immutable part coverage".into()));
+                return Err(Error::Invariant(
+                    "import parts are not contiguous or exceed their blob".into(),
+                ));
             }
             end = end.checked_add(size).ok_or(Error::Range)?;
         }
         if end != length_u64 {
             return Err(Error::Invariant(
-                "incomplete immutable part coverage".into(),
+                "import parts do not cover the whole input".into(),
             ));
         }
         let next = counter(&tx, &file)?
@@ -383,18 +400,17 @@ impl Writer {
                     params![id, format.name(),hash.bytes().as_slice(),context_json],
                 )
             })?;
-        let existing_format: String = db(&file, || {
-            tx.query_row("SELECT format FROM input WHERE id=?1", [&id], |r| r.get(0))
-        })?;
-        let tuple_valid: bool = db(&file, || {
+        let same_input: bool = db(&file, || {
             tx.query_row(
-                "SELECT original_hash=?2 AND context_json=?3 FROM input WHERE id=?1",
-                params![id, hash.bytes().as_slice(), context_json],
+                "SELECT format=?2 AND original_hash=?3 AND context_json=?4 FROM input WHERE id=?1",
+                params![id, format.name(), hash.bytes().as_slice(), context_json],
                 |r| r.get(0),
             )
         })?;
-        if existing_format != format.name() || !tuple_valid {
-            return Err(Error::Invariant("immutable input format changed".into()));
+        if !same_input {
+            return Err(Error::Invariant(
+                "stored input has a different format, hash or context".into(),
+            ));
         }
         changed += db(&file, || {
             tx.execute(
@@ -402,35 +418,39 @@ impl Writer {
                 params![id, length, hash.bytes().as_slice(), next as i64],
             )
         })?;
-        let valid_revision: bool = db(&file, || {
+        let same_revision: bool = db(&file, || {
             tx.query_row(
                 "SELECT produced='imported' AND chain=1 AND length=?2 AND blake3=?3 FROM revision WHERE input=?1 AND number=1",
                 params![id, length, hash.bytes().as_slice()],
                 |r| r.get(0),
             )
         })?;
-        if !valid_revision {
-            return Err(Error::Invariant("immutable input revision changed".into()));
+        if !same_revision {
+            return Err(Error::Invariant(
+                "stored input has a different first revision".into(),
+            ));
         }
         for &(offset, size, piece, start) in parts {
             changed += db(&file, || {
                 tx.execute("INSERT OR IGNORE INTO extent(input,chain,offset,length,blob,blob_offset) VALUES(?1,1,?2,?3,?4,?5)", params![id,i64::try_from(offset).map_err(|_|rusqlite::Error::InvalidQuery)?,i64::try_from(size).map_err(|_|rusqlite::Error::InvalidQuery)?,piece.bytes().as_slice(),i64::try_from(start).map_err(|_|rusqlite::Error::InvalidQuery)?])
             })?;
         }
-        let actual: Vec<(i64, i64, Vec<u8>, i64)> = db(&file, || {
+        let stored: Vec<(i64, i64, Vec<u8>, i64)> = db(&file, || {
             let mut q=tx.prepare("SELECT offset,length,blob,blob_offset FROM extent WHERE input=?1 AND chain=1 ORDER BY offset LIMIT 8194")?;
             q.query_map([&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
                 .collect()
         })?;
-        if actual.len() != parts.len()
-            || actual.iter().zip(parts).any(|(a, b)| {
+        if stored.len() != parts.len()
+            || stored.iter().zip(parts).any(|(a, b)| {
                 u64::try_from(a.0).ok() != Some(b.0)
                     || u64::try_from(a.1).ok() != Some(b.1)
                     || a.2 != b.2.bytes()
                     || u64::try_from(a.3).ok() != Some(b.3)
             })
         {
-            return Err(Error::Invariant("immutable input extents changed".into()));
+            return Err(Error::Invariant(
+                "stored input has different extents".into(),
+            ));
         }
         changed += db(&file, || {
             tx.execute(
@@ -450,16 +470,16 @@ impl Writer {
                 params![observation.id, id, observation.machine, observation.path, length, observation.seen_at, env!("CARGO_PKG_VERSION")],
             )
         })?;
-        let valid_observation: bool = db(&file, || {
+        let same_observation: bool = db(&file, || {
             tx.query_row(
                 "SELECT input=?2 AND machine=?3 AND path=?4 AND class='imported' AND revision=1 AND length=?5 AND seen_at=?6 FROM observation WHERE id=?1",
                 params![observation.id, id, observation.machine, observation.path, length, observation.seen_at],
                 |r| r.get(0),
             )
         })?;
-        if !valid_observation {
+        if !same_observation {
             return Err(Error::Invariant(
-                "immutable import observation identity reused".into(),
+                "observation ID is already used by a different import".into(),
             ));
         }
         if changed != 0 {
@@ -471,465 +491,13 @@ impl Writer {
             })?;
         }
         db(&file, || tx.commit())?;
-        // An interrupted disposable index reconstructs this reference from archive.
+        // If this fails, the next lookup re-registers the input from the archive.
         self.register_input_ref(id, length_u64)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn observation(id: &str) -> ImportObservation<'_> {
-        ImportObservation {
-            id,
-            machine: "synthetic-machine",
-            host: "test-host",
-            path: "copy:synthetic.jsonl",
-            seen_at: 7,
-        }
-    }
-    #[test]
-    fn request_retry_precedes_present_blob_lookup() {
-        let root = tempfile::tempdir().unwrap();
-        let mut w = Writer::open(root.path()).unwrap();
-        let hash = w.put_file_blob(b"retained").unwrap();
-        let o = observation("retry-before-lookup");
-        let first = w
-            .store_immutable_input(hash, InputFormat::CodexRollout, &[], &o, 65536)
-            .unwrap();
-        w.archive
-            .execute("UPDATE blob SET state='deleting'", [])
-            .unwrap();
-        let retry = w
-            .store_immutable_input(hash, InputFormat::CodexRollout, &[], &o, 65536)
-            .unwrap();
-        assert_eq!(retry, first);
-    }
-    #[test]
-    fn immutable_import_is_retained_and_retry_does_not_invent_another_revision() {
-        let root = tempfile::tempdir().unwrap();
-        let mut writer = Writer::open(root.path()).unwrap();
-        let hash = writer.put_file_blob(b"synthetic\n").unwrap();
-        let imported = writer
-            .store_immutable_input(
-                hash,
-                InputFormat::CodexRollout,
-                &[],
-                &observation("import-1"),
-                1024,
-            )
-            .unwrap();
-        let counter = writer.status().unwrap().write_counter;
-        assert_eq!(
-            writer
-                .store_immutable_input(
-                    hash,
-                    InputFormat::CodexRollout,
-                    &[],
-                    &observation("import-1"),
-                    1024
-                )
-                .unwrap(),
-            imported
-        );
-        assert_eq!(writer.status().unwrap().write_counter, counter);
-        let reader = writer.read_handle().unwrap();
-        assert_eq!(
-            reader.read_blob_range(hash, 0, imported.length).unwrap(),
-            b"synthetic\n"
-        );
-        assert_eq!(
-            writer
-                .archive
-                .query_row("SELECT count(*) FROM revision", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            writer
-                .archive
-                .query_row("SELECT count(*) FROM observation", [], |r| r
-                    .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        assert!(
-            writer
-                .store_immutable_input(
-                    hash,
-                    InputFormat::ClaudeCodeJsonl,
-                    &[],
-                    &observation("import-2"),
-                    1024
-                )
-                .is_err()
-        );
-        assert_eq!(writer.status().unwrap().write_counter, counter);
-    }
-    #[test]
-    fn disposable_registration_failure_keeps_archive_and_retry_repairs_index() {
-        let root = tempfile::tempdir().unwrap();
-        let mut writer = Writer::open(root.path()).unwrap();
-        let hash = writer.put_file_blob(b"retained before index\n").unwrap();
-        writer._index.execute_batch("CREATE TRIGGER reject_input BEFORE INSERT ON input_ref BEGIN SELECT RAISE(ABORT,'synthetic registration refusal'); END;").unwrap();
-        assert!(matches!(
-            writer.store_immutable_input(
-                hash,
-                InputFormat::CodexRollout,
-                &[],
-                &observation("import-1"),
-                1024
-            ),
-            Err(Error::Sqlite { .. })
-        ));
-        let archive_counter = writer.status().unwrap().write_counter;
-        assert_eq!(
-            writer
-                .archive
-                .query_row("SELECT count(*) FROM extent", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        writer
-            ._index
-            .execute_batch("DROP TRIGGER reject_input;")
-            .unwrap();
-        drop(writer);
-        let mut writer = Writer::open(root.path()).unwrap();
-        let imported = writer
-            .store_immutable_input(
-                hash,
-                InputFormat::CodexRollout,
-                &[],
-                &observation("import-1"),
-                1024,
-            )
-            .unwrap();
-        assert_eq!(writer.status().unwrap().write_counter, archive_counter);
-        assert_eq!(imported.chain, 1);
-        assert_eq!(imported.length, 22);
-    }
-    #[test]
-    fn retained_source_recovery_pages_and_repairs_only_registered_archive_inputs() {
-        let root = tempfile::tempdir().unwrap();
-        let mut writer = Writer::open(root.path()).unwrap();
-        for (bytes, id) in [(b"a".as_slice(), "a"), (b"b".as_slice(), "b")] {
-            let hash = writer.put_file_blob(bytes).unwrap();
-            writer
-                .store_immutable_input(hash, InputFormat::CodexRollout, &[], &observation(id), 1024)
-                .unwrap();
-        }
-        writer._index.execute("DELETE FROM input_ref", []).unwrap();
-        drop(writer);
-        let mut writer = Writer::open(root.path()).unwrap();
-        let first = writer.next_stored_source("").unwrap().unwrap();
-        assert_eq!(
-            first.input.id,
-            InputId::imported(&first.binding, first.format.name(), &[]).to_string()
-        );
-        assert!(
-            matches!(first.identity, crate::SourceIdentity::Immutable { original_hash } if original_hash == first.binding)
-        );
-        assert_eq!(first.input.length, 1);
-        assert_eq!(
-            writer
-                ._index
-                .query_row("SELECT count(*) FROM input_ref", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        let second = writer.next_stored_source(&first.input.id).unwrap().unwrap();
-        assert!(second.input.id > first.input.id);
-        assert!(
-            writer
-                .next_stored_source(&second.input.id)
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            writer.next_stored_source("").unwrap().unwrap().input,
-            first.input
-        );
-        writer.archive.execute("INSERT INTO excision(id,scope,created_at,local_seq) VALUES('removal','session:unknown',1,1)",[]).unwrap();
-        assert!(matches!(
-            writer.check_import_acquisition(),
-            Err(Error::ExcisionCheckRequired)
-        ));
-        assert!(matches!(
-            writer.next_stored_source(""),
-            Err(Error::ExcisionCheckRequired)
-        ));
-    }
-
-    #[test]
-    fn context_declared_bound_precedes_scanning_encoding_or_sql_mutation() {
-        let root = tempfile::tempdir().unwrap();
-        let mut writer = Writer::open(root.path()).unwrap();
-        let hash = writer.put_file_blob(b"synthetic").unwrap();
-        let huge = "x".repeat(65536);
-        let before = writer.status().unwrap().write_counter;
-        assert!(matches!(
-            writer.store_immutable_input(
-                hash,
-                InputFormat::ClaudeCodeJsonl,
-                &["claude-main", &huge],
-                &observation("large"),
-                usize::MAX
-            ),
-            Err(Error::ImportContextTooLarge { maximum: 65536, .. })
-        ));
-        assert!(matches!(
-            validate_context(InputFormat::CodexRollout, &vec![""; 8192]),
-            Err(Error::ImportContextTooLarge { .. })
-        ));
-        assert!(
-            validate_context(InputFormat::ClaudeCodeJsonl, &["claude-main", "bad\0stem"]).is_err()
-        );
-        assert_eq!(writer.status().unwrap().write_counter, before);
-        assert_eq!(
-            writer
-                .archive
-                .query_row("SELECT count(*) FROM input", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-    }
-
-    #[test]
-    fn same_bytes_different_contexts_have_distinct_inputs_and_one_physical_blob() {
-        let root = tempfile::tempdir().unwrap();
-        let mut writer = Writer::open(root.path()).unwrap();
-        let hash = writer
-            .put_file_blob(b"same synthetic provider bytes")
-            .unwrap();
-        let a = writer
-            .store_immutable_input(
-                hash,
-                InputFormat::ClaudeCodeJsonl,
-                &["claude-main", "a"],
-                &observation("a"),
-                4096,
-            )
-            .unwrap();
-        let b = writer
-            .store_immutable_input(
-                hash,
-                InputFormat::ClaudeCodeJsonl,
-                &["claude-main", "b"],
-                &observation("b"),
-                4096,
-            )
-            .unwrap();
-        let native = writer
-            .store_immutable_input(
-                hash,
-                InputFormat::CodexRollout,
-                &[],
-                &observation("native"),
-                4096,
-            )
-            .unwrap();
-        assert_ne!(a.id, b.id);
-        assert_ne!(a.id, native.id);
-        assert_eq!(
-            writer
-                .archive
-                .query_row("SELECT count(*) FROM blob", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            writer.immutable_import(&a.id).unwrap().unwrap().context,
-            vec!["claude-main", "a"]
-        );
-        assert!(
-            writer
-                .replay_immutable_import(
-                    InputFormat::ClaudeCodeJsonl,
-                    &["claude-main", "b"],
-                    &observation("a"),
-                    4096
-                )
-                .is_err()
-        );
-        assert!(
-            writer
-                .store_immutable_input(
-                    hash,
-                    InputFormat::ClaudeCodeJsonl,
-                    &[],
-                    &observation("bad"),
-                    4096
-                )
-                .is_err()
-        );
-        assert!(
-            writer
-                .store_immutable_input(
-                    hash,
-                    InputFormat::CodexRollout,
-                    &["unexpected"],
-                    &observation("bad"),
-                    4096
-                )
-                .is_err()
-        );
-        writer
-            .archive
-            .execute(
-                "UPDATE input SET context_json='[\"claude-main\",\"different\"]' WHERE id=?1",
-                [&a.id],
-            )
-            .unwrap();
-        assert!(writer.immutable_import(&a.id).is_err());
-        assert_eq!(writer.immutable_import(&b.id).unwrap().unwrap().input, b);
-        // Nullable paired schema fields cannot admit a torn tuple.
-        assert!(writer.archive.execute("INSERT INTO input(id,format,original_hash) VALUES('invalid','codex-rollout',zeroblob(32))",[]).is_err());
-    }
-
-    #[test]
-    fn request_retry_replays_retained_result_and_rejects_changed_arguments() {
-        let root = tempfile::tempdir().unwrap();
-        let mut writer = Writer::open(root.path()).unwrap();
-        let hash = writer.put_file_blob(b"original").unwrap();
-        let imported = writer
-            .store_immutable_input(
-                hash,
-                InputFormat::CodexRollout,
-                &[],
-                &observation("request"),
-                4096,
-            )
-            .unwrap();
-        let counter = writer.status().unwrap().write_counter;
-        drop(writer);
-        let mut writer = Writer::open(root.path()).unwrap();
-        assert_eq!(
-            writer
-                .replay_immutable_import(
-                    InputFormat::CodexRollout,
-                    &[],
-                    &observation("request"),
-                    4096
-                )
-                .unwrap(),
-            Some(imported.clone())
-        );
-        assert_eq!(
-            writer
-                .immutable_import(&imported.id)
-                .unwrap()
-                .unwrap()
-                .input,
-            imported
-        );
-        assert_eq!(writer.status().unwrap().write_counter, counter);
-        let changed = ImportObservation {
-            path: "/different-path",
-            ..observation("request")
-        };
-        assert!(
-            writer
-                .replay_immutable_import(InputFormat::CodexRollout, &[], &changed, 4096)
-                .is_err()
-        );
-        assert!(
-            writer
-                .replay_immutable_import(
-                    InputFormat::ClaudeCodeJsonl,
-                    &[],
-                    &observation("request"),
-                    4096
-                )
-                .is_err()
-        );
-        assert!(
-            writer
-                .replay_immutable_import(InputFormat::CodexRollout, &[], &observation("new"), 4096)
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(writer.status().unwrap().write_counter, counter);
-    }
-
-    #[test]
-    fn provenance_conflict_admission_and_missing_bytes_do_not_mutate_archive() {
-        let root = tempfile::tempdir().unwrap();
-        let mut writer = Writer::open(root.path()).unwrap();
-        let a = writer.put_file_blob(b"a").unwrap();
-        let b = writer.put_file_blob(b"b").unwrap();
-        let before = writer.status().unwrap().write_counter;
-        assert!(matches!(
-            writer.store_immutable_input(a, InputFormat::CodexRollout, &[], &observation("id"), 1),
-            Err(Error::ParserAdmission { .. })
-        ));
-        assert!(matches!(
-            writer.store_immutable_input(
-                BlobHash::of(b"missing"),
-                InputFormat::CodexRollout,
-                &[],
-                &observation("missing"),
-                1024
-            ),
-            Err(Error::UnknownBlob)
-        ));
-        assert_eq!(writer.status().unwrap().write_counter, before);
-        writer
-            .store_immutable_input(a, InputFormat::CodexRollout, &[], &observation("id"), 1024)
-            .unwrap();
-        let before = writer.status().unwrap().write_counter;
-        assert!(
-            writer
-                .store_immutable_input(b, InputFormat::CodexRollout, &[], &observation("id"), 1024)
-                .is_err()
-        );
-        assert_eq!(writer.status().unwrap().write_counter, before);
-        assert_eq!(
-            writer
-                .archive
-                .query_row("SELECT count(*) FROM input", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-    }
-
-    #[test]
-    fn existing_excisions_require_the_collector_before_retaining_input_metadata() {
-        let root = tempfile::tempdir().unwrap();
-        let mut writer = Writer::open(root.path()).unwrap();
-        let hash = writer.put_file_blob(b"synthetic retained bytes").unwrap();
-        writer.archive.execute("INSERT INTO excision(id,scope,created_at,local_seq) VALUES('synthetic-removal','session:unknown',1,1)", []).unwrap();
-        let before = writer.status().unwrap().write_counter;
-        assert!(matches!(
-            writer.store_immutable_input(
-                hash,
-                InputFormat::CodexRollout,
-                &[],
-                &observation("new-observation"),
-                1024
-            ),
-            Err(Error::ExcisionCheckRequired)
-        ));
-        assert_eq!(writer.status().unwrap().write_counter, before);
-        assert_eq!(
-            writer
-                .archive
-                .query_row("SELECT count(*) FROM input", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            writer
-                ._index
-                .query_row("SELECT count(*) FROM input_ref", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-    }
-}
-
-/// One interpretation of immutable archive identity metadata for writer and
-/// pinned readers. Registration/repair remains writer-only.
+/// Decode and check an imported input's archive row. Shared by the writer
+/// and pinned readers; only the writer registers index references.
 pub(crate) fn decode_import_identity(
     id: String,
     format: String,
@@ -941,35 +509,28 @@ pub(crate) fn decode_import_identity(
     let hash = BlobHash::from_bytes(
         digest
             .try_into()
-            .map_err(|_| Error::Invariant("invalid immutable import hash".into()))?,
+            .map_err(|_| Error::Invariant("invalid import hash".into()))?,
     );
     let original = BlobHash::from_bytes(
         original
             .try_into()
-            .map_err(|_| Error::Invariant("invalid import original digest".into()))?,
+            .map_err(|_| Error::Invariant("invalid import original hash".into()))?,
     );
     let context: Vec<String> =
         serde_json::from_str(&context_json).map_err(|e| Error::Invariant(e.to_string()))?;
     let parts: Vec<&str> = context.iter().map(String::as_str).collect();
     if hash != original || id != InputId::imported(&original, &format, &parts).as_str() {
         return Err(Error::Invariant(
-            "immutable import identity tuple mismatch".into(),
+            "import ID does not match its hash, format and context".into(),
         ));
     }
-    let format = match format.as_str() {
-        "codex-rollout" => InputFormat::CodexRollout,
-        "codex-history-sqlite" => InputFormat::CodexHistorySqlite,
-        "codex-prompt-history" => InputFormat::CodexPromptHistory,
-        "claude-code-jsonl" => InputFormat::ClaudeCodeJsonl,
-        "claude-code-tool-result" => InputFormat::ClaudeCodeToolResult,
-        _ => {
-            return Err(Error::Invariant(
-                "unsupported immutable import format".into(),
-            ));
-        }
-    };
-    // Validate provider semantics as well as the identity framing.
-    validate_context(format, &parts)?;
+    let format = InputFormat::from_name(&format)
+        .ok_or_else(|| Error::Invariant("unknown import format".into()))?;
+    format.validate_context(&parts)?;
     let length = u64::try_from(length).map_err(|_| Error::Range)?;
     Ok((id, hash, format, context, length))
 }
+
+#[cfg(test)]
+#[path = "imports/tests.rs"]
+mod tests;
