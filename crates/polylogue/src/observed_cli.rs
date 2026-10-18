@@ -7,10 +7,7 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 #[derive(Deserialize)]
@@ -126,7 +123,7 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
             running.socket().display()
         );
         if json_output {
-            serde_json::to_writer(&mut *out,&json!({"outcome":"degraded","acquisition":"configured-claude-projects-v1","scope":"discovery_pending"})).map_err(io_error)?;
+            serde_json::to_writer(&mut *out,&json!({"outcome":"degraded","source":"claude_projects","scope":"discovery_pending"})).map_err(io_error)?;
             writeln!(out).map_err(io_error)?;
             out.flush().map_err(io_error)?;
         }
@@ -156,41 +153,16 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
             "acquisition_quantum_bytes must be between 65536 and 8388608",
         ));
     }
-    let start = |archive: &Path,
-                 runtime: &Path,
-                 source: &Path,
-                 machine: &str,
-                 host: &str,
-                 id: &str,
-                 seen_at: i64,
-                 stop: &AtomicBool| {
-        if until_idle {
-            polylogue::Running::start_observed(
-                archive, runtime, source, machine, host, id, seen_at, stop,
-            )
-        } else {
-            polylogue::Running::start_observed_continuing(
-                archive,
-                runtime,
-                source,
-                machine,
-                host,
-                id,
-                seen_at,
-                stop,
-                claude.acquisition_quantum_bytes,
-            )
-        }
+    let file = polylogue::ClaudeFile {
+        path: claude.path.clone(),
+        machine: claude.machine.clone(),
+        host: claude.host.clone(),
+        request_id: id.clone(),
+        seen_at: i64::try_from(now.as_micros()).map_err(io_error)?,
     };
-    let (mut running, source) = start(
-        archive,
-        &runtime,
-        &claude.path,
-        &claude.machine,
-        &claude.host,
-        &id,
-        i64::try_from(now.as_micros()).map_err(io_error)?,
-        &stop,
+    let follow = (!until_idle).then_some(claude.acquisition_quantum_bytes);
+    let (mut running, source) = polylogue::Running::start_claude_file(
+        archive, &runtime, &file, follow, &stop,
     )
     .map_err(|e| match e {
         polylogue_store::Error::ObservedSourceRefused(reason) => error(
@@ -206,7 +178,7 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
         running.socket().display()
     );
     if json_output && !until_idle {
-        serde_json::to_writer(&mut *out,&json!({"outcome":"ok","acquisition":"observed-claude-location-v1","scope":"retention_only","input":{"id":source.input.id,"chain":source.input.chain,"revision":source.revision,"length":source.input.length}})).map_err(io_error)?;
+        serde_json::to_writer(&mut *out,&json!({"outcome":"ok","source":"claude_session_file","scope":"stored_only","input":{"id":source.input.id,"chain":source.input.chain,"revision":source.revision,"length":source.input.length}})).map_err(io_error)?;
         writeln!(out).map_err(io_error)?;
         out.flush().map_err(io_error)?;
     }
@@ -245,7 +217,7 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
     running.stop();
     if let Some(progress) = final_progress {
         let ok = progress["source_rows"]["state"] == "complete";
-        let result = json!({"outcome":if ok{"ok"}else{"degraded"},"acquisition":"observed-claude-location-v1","input":source.input.id,"chain":source.input.chain,"revision":source.revision,"length":source.input.length,"progress":progress});
+        let result = json!({"outcome":if ok{"ok"}else{"degraded"},"source":"claude_session_file","input":source.input.id,"chain":source.input.chain,"revision":source.revision,"length":source.input.length,"progress":progress});
         if json_output {
             serde_json::to_writer(&mut *out, &result).map_err(io_error)?;
             writeln!(out).map_err(io_error)?;
@@ -282,7 +254,7 @@ fn run_codex(
     eprintln!("listening: {} (Codex home)", running.socket().display());
     if !until_idle {
         if json_output {
-            serde_json::to_writer(&mut *out,&json!({"outcome":"degraded","acquisition":acquisition,"scope":"retention_only","missing":["general_session_coverage"]})).map_err(io_error)?;
+            serde_json::to_writer(&mut *out,&json!({"outcome":"degraded","acquisition":acquisition,"scope":"stored_only","missing":["general_session_coverage"]})).map_err(io_error)?;
             writeln!(out).map_err(io_error)?;
             out.flush().map_err(io_error)?;
         }
@@ -313,10 +285,10 @@ fn run_codex(
             .map_err(io_error)?;
             let physical = &status["continuation"];
             if physical["paginated_pending"] == false && physical["paginated_state"] != "disabled" {
-                if let Some(input) = physical["paginated_input"].as_str() {
-                    if !admitted.iter().any(|old| old == input) {
-                        admitted.push(input.to_owned());
-                    }
+                if let Some(input) = physical["paginated_input"].as_str()
+                    && !admitted.iter().any(|old| old == input)
+                {
+                    admitted.push(input.to_owned());
                 }
                 break;
             }

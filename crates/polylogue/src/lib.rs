@@ -1,4 +1,5 @@
-//! Foundation process ownership. Unsupported product operations stay unregistered.
+//! The daemon: it owns the archive writer, serves clients on a Unix socket,
+//! and runs the configured collectors. Also the client side of the protocol.
 use polylogue_engine::owner::{Handle, Owner};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, Writer};
@@ -64,8 +65,8 @@ fn pending_codex_references(
     }
     Ok(pending)
 }
-/// Omit optional discovery detail while preserving all primary rows and the
-/// summary's uncertainty. Shared by CLI response and MCP budget presentation.
+/// Drop the per-reference and per-snapshot details from a status reply, keeping
+/// the counts. Used when a reply must fit a budget.
 pub fn summarize_pending_references(value: &mut Value) {
     let Some(pending) = value.get_mut("pending_references") else {
         return;
@@ -92,6 +93,16 @@ pub fn socket_path(archive: &Path, runtime: &Path) -> PathBuf {
     runtime.join("polylogue").join(&key[..12]).join("socket")
 }
 
+/// One Claude Code session file to collect, and who is collecting it.
+#[derive(Clone, Debug)]
+pub struct ClaudeFile {
+    pub path: PathBuf,
+    pub machine: String,
+    pub host: String,
+    pub request_id: String,
+    pub seen_at: i64,
+}
+
 pub struct Running {
     owner: Option<Owner>,
     collector: Option<JoinHandle<()>>,
@@ -103,7 +114,7 @@ pub struct Running {
     socket: OwnedSocket,
 }
 impl Running {
-    /// One-shot daemon ownership; no socket, actor or ingestion is started.
+    /// Recover a stopped archive into a new directory. Starts no socket or writer.
     pub fn recover_copy(
         source: &Path,
         destination: &Path,
@@ -133,80 +144,59 @@ impl Running {
         let writer = Writer::open_cancellable(archive, cancelled).map_err(|e| e.to_string())?;
         Self::start_writer(writer, archive, runtime, fail_after_bind, None, false)
     }
-    pub fn start_observed(
+    /// Store the Claude Code session file now, then start the daemon. With
+    /// `follow`, keep polling the file in chunks of that many bytes.
+    pub fn start_claude_file(
         archive: &Path,
         runtime: &Path,
-        source: &Path,
-        machine: &str,
-        host: &str,
-        id: &str,
-        seen_at: i64,
+        file: &ClaudeFile,
+        follow: Option<u64>,
         cancelled: &AtomicBool,
     ) -> Result<(Self, polylogue_store::StoredSource), polylogue_store::Error> {
-        let mut writer = Writer::open_cancellable(archive, cancelled)?;
-        let retained = writer.acquire_claude_main(source, machine, host, id, seen_at, cancelled)?;
-        let retained = polylogue_engine::claude_bodies::acquire(
-            &mut writer,
-            &retained,
-            source,
-            machine,
-            host,
-            id,
-            seen_at,
-            cancelled,
-        )?;
-        Ok((
-            Self::start_writer(writer, archive, runtime, false, None, false)
-                .map_err(polylogue_store::Error::Invariant)?,
-            retained,
-        ))
-    }
-    pub fn start_observed_continuing(
-        archive: &Path,
-        runtime: &Path,
-        source: &Path,
-        machine: &str,
-        host: &str,
-        id: &str,
-        seen_at: i64,
-        cancelled: &AtomicBool,
-        quantum_bytes: u64,
-    ) -> Result<(Self, polylogue_store::StoredSource), polylogue_store::Error> {
-        if !(65536..=8 * 1024 * 1024).contains(&quantum_bytes) {
+        if follow.is_some_and(|bytes| !(65536..=8 * 1024 * 1024).contains(&bytes)) {
             return Err(polylogue_store::Error::ObservedSourceRefused(
                 "acquisition quantum must be between 65536 and 8388608 bytes".into(),
             ));
         }
-        let (mut running, retained) = Self::start_observed(
-            archive, runtime, source, machine, host, id, seen_at, cancelled,
+        let ClaudeFile {
+            path,
+            machine,
+            host,
+            request_id,
+            seen_at,
+        } = file;
+        let mut writer = Writer::open_cancellable(archive, cancelled)?;
+        let stored =
+            writer.acquire_claude_main(path, machine, host, request_id, *seen_at, cancelled)?;
+        let stored = polylogue_engine::claude_bodies::acquire(
+            &mut writer,
+            &stored,
+            path,
+            machine,
+            host,
+            request_id,
+            *seen_at,
+            cancelled,
         )?;
-        *running.claude_continuation.lock().expect("Claude status") =
-            Some(claude_continuation::Status::initial(quantum_bytes));
-        let handle = running.owner.as_ref().expect("running owner").handle();
-        let source = source.to_path_buf();
-        let machine = machine.to_owned();
-        let host = host.to_owned();
-        let id = id.to_owned();
-        let stop = Arc::clone(&running.stop);
-        let status = Arc::clone(&running.claude_continuation);
-        running.collector = Some(
-            thread::Builder::new()
-                .name("polylogue-claude-main".into())
-                .spawn(move || {
-                    claude_continuation::run(
-                        handle,
-                        source,
-                        machine,
-                        host,
-                        id,
-                        quantum_bytes,
-                        stop,
-                        status,
-                    )
-                })
-                .map_err(polylogue_store::Error::Io)?,
-        );
-        Ok((running, retained))
+        let mut running = Self::start_writer(writer, archive, runtime, false, None, false)
+            .map_err(polylogue_store::Error::Invariant)?;
+        if let Some(quantum_bytes) = follow {
+            *running.claude_continuation.lock().expect("Claude status") =
+                Some(claude_continuation::Status::initial(quantum_bytes));
+            let handle = running.owner.as_ref().expect("running owner").handle();
+            let file = file.clone();
+            let stop = Arc::clone(&running.stop);
+            let status = Arc::clone(&running.claude_continuation);
+            running.collector = Some(
+                thread::Builder::new()
+                    .name("polylogue-claude-main".into())
+                    .spawn(move || {
+                        claude_continuation::run(handle, file, quantum_bytes, stop, status)
+                    })
+                    .map_err(polylogue_store::Error::Io)?,
+            );
+        }
+        Ok((running, stored))
     }
     pub fn start_claude_projects(
         archive: &Path,
@@ -220,7 +210,7 @@ impl Running {
         let mut running = Self::start_writer(writer, archive, runtime, false, None, false)
             .map_err(polylogue_store::Error::Invariant)?;
         let mut initial = claude_continuation::Status::initial(config.acquisition_quantum_bytes);
-        initial.mode = "bounded_configured_claude_projects_v1";
+        initial.mode = "claude_projects";
         initial.state = "discovering";
         initial.projects = Some(claude_continuation::projects::ProjectStatus::initial());
         *running.claude_continuation.lock().expect("Claude status") = Some(initial);
@@ -444,10 +434,10 @@ impl Running {
         if let Some(collector) = self.collector.take() {
             let _ = collector.join();
         }
-        if let Some(owner) = self.owner.take() {
-            if let Err(error) = owner.shutdown() {
-                eprintln!("writer shutdown: {error}");
-            }
+        if let Some(owner) = self.owner.take()
+            && let Err(error) = owner.shutdown()
+        {
+            eprintln!("writer shutdown: {error}");
         }
     }
 }
@@ -463,10 +453,10 @@ struct OwnedSocket {
 }
 impl OwnedSocket {
     fn remove(&mut self) {
-        if let Some(inode) = self.inode.take() {
-            if fs::symlink_metadata(&self.path).is_ok_and(|m| m.ino() == inode) {
-                let _ = fs::remove_file(&self.path);
-            }
+        if let Some(inode) = self.inode.take()
+            && fs::symlink_metadata(&self.path).is_ok_and(|m| m.ino() == inode)
+        {
+            let _ = fs::remove_file(&self.path);
         }
     }
 }
@@ -487,7 +477,7 @@ fn serve(
 ) -> Result<(), String> {
     let mut line = String::new();
     use std::io::Read;
-    // Admission is on request metadata, never a semantic provider-record cap.
+    // Limits the request line only; provider records are not limited here.
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
@@ -496,7 +486,7 @@ fn serve(
         .read_line(&mut line)
         .map_err(|e| e.to_string())?;
     if line.len() > 65536 || !line.ends_with('\n') {
-        return Err("request metadata exceeds admission or lacks a newline".into());
+        return Err("request is larger than 65536 bytes or has no newline".into());
     }
     let reply = match serde_json::from_str::<Value>(&line) {
         Ok(request) if request == json!({"command":"status"}) => {
@@ -516,9 +506,8 @@ fn serve(
                         vec![]
                     };
                     if status.unavailable_blob_files > 0 {
-                        notes.push(
-                            "Retained blob files are unavailable; affected reads cannot complete.",
-                        );
+                        notes
+                            .push("Some stored blob files are missing; reads that need them fail.");
                     }
                     if acquisition.is_some()
                         || (pending["examined_snapshots"]
@@ -526,11 +515,9 @@ fn serve(
                             .is_some_and(|n| n > 0)
                             || pending["scan_complete"] == false)
                     {
-                        notes.push(
-                            "Finite Codex source evidence leaves general Session coverage unknown.",
-                        );
+                        notes.push("Codex sessions found so far may be incomplete.");
                     }
-                    json!({"outcome":if status.recovery.is_some() || status.unavailable_blob_files > 0 || acquisition.is_some() || (pending["examined_snapshots"].as_u64().is_some_and(|n|n>0) || pending["scan_complete"]==false) {"degraded"}else{"ok"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"foundation":status,"acquisition":acquisition,"continuation":continuation,"claude_continuation":claude_continuation,"pending_references":pending,"capabilities":["schema","status","context-qualified-immutable-retention","observed-claude-startup-v1","configured-claude-continuation-v1","configured-claude-projects-v1","configured-codex-home-v1","configured-codex-continuation-v1","masked-retained-input-cat-v1","provider-progress","selected-message-terminal-read","selected-session-json-read","bounded-text-model-read-v1","session-query-list-prose-v1","authored-correction-v1"],"product_path":"partial"})
+                    json!({"outcome":if notes.is_empty() {"ok"} else {"degraded"},"recovery":status.recovery,"notes":notes,"missing":notes,"archive":archive,"store":status,"acquisition":acquisition,"continuation":continuation,"claude_continuation":claude_continuation,"pending_references":pending})
                 }
                 Err(error) => {
                     json!({"outcome":"error","error":Failure::new(ErrorKind::Io,error.to_string()),"archive":archive})
@@ -557,8 +544,8 @@ fn serve(
             json!({"outcome":"error","error":Failure::new(ErrorKind::InvalidQuery,error.to_string()),"archive":archive})
         }
     };
-    // Retained interpretation diagnostics may contain provider-controlled text.
-    // Use the same response-boundary policy as normalized JSON documents.
+    // Diagnostics can contain provider text, so replies get the same credential
+    // masking as session documents.
     let mut encoded = output_json::Encoder::new(
         &mut stream,
         std::time::Instant::now() + Duration::from_secs(30),
@@ -571,13 +558,11 @@ fn serve(
 pub fn request(socket: &Path) -> Result<Value, io::Error> {
     request_value(socket, &json!({"command":"status"}))
 }
-/// Send one request and read one bounded metadata response. Import success means
-/// durable raw retention; query readiness is reported independently.
+/// Send one request and read its one-line reply.
 pub fn request_value(socket: &Path, value: &Value) -> Result<Value, io::Error> {
     request_metadata(socket, value, None, None)
 }
-/// The absolute deadline covers connect, every write/read, framing and decode.
-/// No helper thread owns a transport after this call returns or is cancelled.
+/// Like `request_value`, with one deadline covering connect, writes and reads.
 pub fn request_value_until(
     socket: &Path,
     value: &Value,
@@ -585,8 +570,8 @@ pub fn request_value_until(
 ) -> Result<Value, io::Error> {
     request_metadata(socket, value, Some(deadline), None)
 }
-/// A cancellable metadata request, sharing the normal decoder. Closing its
-/// transport does not undo a write already accepted by the archive owner.
+/// Like `request_value_until` with a 30-second deadline, closed early when
+/// `cancellation` fires. A write the daemon already accepted stays done.
 pub fn request_value_cancellable(
     socket: &Path,
     value: &Value,
@@ -610,7 +595,7 @@ fn request_metadata(
     if bytes.len() >= 65536 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "request metadata exceeds admission",
+            "request is larger than 65535 bytes",
         ));
     }
     let mut stream = metadata_transport_cancellable(socket, deadline, cancellation)?;
@@ -619,14 +604,14 @@ fn request_metadata(
     stream.stream.shutdown(std::net::Shutdown::Write)?;
     let mut line = String::new();
     use std::io::Read;
-    // Every underlying read uses the SAME absolute deadline; a trickle cannot
-    // renew a per-frame or per-request timeout through BufReader/read_line.
+    // Every read uses the same absolute deadline, so a slow trickle of bytes
+    // cannot extend it.
     BufReader::new(stream).take(65537).read_line(&mut line)?;
     remaining(deadline)?;
     if line.len() > 65536 || !line.ends_with('\n') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "invalid response metadata frame",
+            "reply is larger than 65536 bytes or has no newline",
         ));
     }
     let result =
@@ -643,8 +628,7 @@ pub(crate) fn metadata_transport_cancellable(
         c.check()?;
     }
     let stream = if deadline.is_some() {
-        // socket2 owns nonblocking connect/poll without a blocked helper thread.
-        // Remaining time is recomputed after address/socket construction too.
+        // socket2 gives a connect with a timeout, without a helper thread.
         let address = socket2::SockAddr::unix(socket)?;
         let stream = if cancellation.is_some() {
             loop {
@@ -660,9 +644,8 @@ pub(crate) fn metadata_transport_cancellable(
                         stream.set_nonblocking(false)?;
                         break stream;
                     }
-                    // For a saturated local Unix listener EAGAIN means no
-                    // connection was queued. Retry before sending any bytes,
-                    // with a fresh socket because failed state is unspecified.
+                    // EAGAIN on a Unix socket means the listener's queue is full.
+                    // Retry with a fresh socket; a failed one is unusable.
                     Err(e)
                         if e.kind() == io::ErrorKind::WouldBlock
                             || e.raw_os_error() == Some(libc::EINPROGRESS) =>
@@ -741,114 +724,4 @@ impl Write for MetadataTransport {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn metadata_write_uses_the_same_absolute_deadline_after_partial_progress() {
-        let (stream, _unread) = UnixStream::pair().unwrap();
-        socket2::SockRef::from(&stream)
-            .set_send_buffer_size(1024)
-            .unwrap();
-        let started = std::time::Instant::now();
-        let mut transport = MetadataTransport {
-            stream,
-            deadline: Some(started + Duration::from_millis(80)),
-            cancellation: None,
-        };
-        let error = transport.write_all(&vec![b'x'; 65536]).unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-        ));
-        assert!(started.elapsed() < Duration::from_secs(1));
-    }
-    #[test]
-    fn saturated_unix_connect_never_blocks_beyond_absolute_deadline() {
-        let temp = tempfile::tempdir_in("/tmp").unwrap();
-        let path = temp.path().join("socket");
-        let listener =
-            socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None).unwrap();
-        listener
-            .bind(&socket2::SockAddr::unix(&path).unwrap())
-            .unwrap();
-        listener.listen(0).unwrap();
-        let _queued = UnixStream::connect(&path).unwrap();
-        let started = std::time::Instant::now();
-        assert!(
-            request_value_until(
-                &path,
-                &json!({"command":"progress"}),
-                started + Duration::from_millis(80)
-            )
-            .is_err()
-        );
-        assert!(started.elapsed() < Duration::from_secs(1));
-    }
-    #[test]
-    fn independent_stacks_shutdown_only_owned_clients_and_socket() {
-        let temp = tempfile::tempdir().unwrap();
-        // Unix socket names have a kernel length limit independent of TMPDIR.
-        // Only socket dentries live here; database/blob work stays in managed TMPDIR.
-        let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
-        let runtime = runtime_owner.path().join("runtime");
-        let mut first = Running::start(&temp.path().join("a"), &runtime).unwrap();
-        let second = Running::start(&temp.path().join("b"), &runtime).unwrap();
-        assert_eq!(request(first.socket()).unwrap()["product_path"], "partial");
-        assert_eq!(request(second.socket()).unwrap()["outcome"], "ok");
-        let mut stalled = UnixStream::connect(first.socket()).unwrap();
-        stalled.write_all(b"{\"command\":").unwrap();
-        let first_path = first.socket().to_owned();
-        first.stop();
-        assert!(!first_path.exists());
-        assert!(request(second.socket()).is_ok());
-        let replacement = Running::start(&temp.path().join("a"), &runtime).unwrap();
-        drop(first);
-        assert!(request(replacement.socket()).is_ok());
-    }
-    #[test]
-    fn startup_failure_removes_only_its_bound_socket_and_releases_writer() {
-        let temp = tempfile::tempdir().unwrap();
-        let archive = temp.path().join("archive");
-        // Unix socket names have a kernel length limit independent of TMPDIR.
-        // Only socket dentries live here; database/blob work stays in managed TMPDIR.
-        let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
-        let runtime = runtime_owner.path().join("runtime");
-        assert!(Running::start_inner(&archive, &runtime, true).is_err());
-        let socket = socket_path(&fs::canonicalize(&archive).unwrap(), &runtime);
-        assert!(!socket.exists());
-        let running = Running::start(&archive, &runtime).unwrap();
-        assert!(request(running.socket()).is_ok());
-    }
-    #[test]
-    fn occupied_endpoint_is_never_adopted_or_removed() {
-        let temp = tempfile::tempdir().unwrap();
-        let archive = temp.path().join("archive");
-        let writer = Writer::open(&archive).unwrap();
-        drop(writer);
-        // Unix socket names have a kernel length limit independent of TMPDIR.
-        // Only socket dentries live here; database/blob work stays in managed TMPDIR.
-        let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
-        let runtime = runtime_owner.path().join("runtime");
-        let socket = socket_path(&fs::canonicalize(&archive).unwrap(), &runtime);
-        fs::create_dir_all(socket.parent().unwrap()).unwrap();
-        let foreign = UnixListener::bind(&socket).unwrap();
-        let inode = fs::symlink_metadata(&socket).unwrap().ino();
-        assert!(Running::start(&archive, &runtime).is_err());
-        assert_eq!(fs::symlink_metadata(&socket).unwrap().ino(), inode);
-        assert!(UnixStream::connect(&socket).is_ok());
-        drop(foreign);
-    }
-    #[test]
-    fn replaced_socket_survives_owner_drop() {
-        let temp = tempfile::tempdir().unwrap();
-        let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
-        let running = Running::start(&temp.path().join("archive"), runtime_owner.path()).unwrap();
-        let path = running.socket().to_owned();
-        fs::remove_file(&path).unwrap();
-        let foreign = UnixListener::bind(&path).unwrap();
-        let inode = fs::symlink_metadata(&path).unwrap().ino();
-        drop(running);
-        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), inode);
-        drop(foreign);
-    }
-}
+mod tests;

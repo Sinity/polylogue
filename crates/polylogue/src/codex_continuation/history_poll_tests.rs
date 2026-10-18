@@ -27,7 +27,7 @@ fn stamps_are_only_a_skip_hint_and_due_or_failed_full_checks_cannot_certify_new_
         p.decision(Some(&first), now + Duration::from_secs(3600)),
         HistoryDecision::Capture
     );
-    // A failed full attempt does not call verified and remains due.
+    // A failed full check is not recorded as verified, so it stays due.
     assert_eq!(
         p.decision(Some(&first), now + Duration::from_secs(3601)),
         HistoryDecision::Capture
@@ -44,7 +44,7 @@ fn stamps_are_only_a_skip_hint_and_due_or_failed_full_checks_cannot_certify_new_
         p.decision(Some(&changed), now + Duration::from_secs(300)),
         HistoryDecision::Capture
     );
-    // A producer commit during capture means its post-capture stamp was not read.
+    // If Codex writes during the copy, the stamp after the copy was not seen.
     p.verified(Some(changed.clone()), None, now + Duration::from_secs(300));
     assert!(p.verified_stamp.is_none());
     assert_eq!(

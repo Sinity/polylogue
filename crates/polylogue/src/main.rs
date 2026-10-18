@@ -105,24 +105,67 @@ fn stop_on_ctrl_c() -> Result<Arc<AtomicBool>, Failure> {
     Ok(stop)
 }
 
+fn take_archive_flag(args: &mut Vec<String>) -> Result<Option<PathBuf>, Failure> {
+    let Some(i) = args.iter().position(|arg| arg == "--archive") else {
+        return Ok(None);
+    };
+    if args.get(i + 1).is_none_or(|dir| dir.is_empty()) {
+        return Err(error(
+            ErrorKind::InvalidQuery,
+            "--archive needs a directory",
+        ));
+    }
+    let dir = PathBuf::from(args.remove(i + 1));
+    args.remove(i);
+    Ok(Some(dir))
+}
+
+/// `--archive`, else `$XDG_DATA_HOME/polylogue`, else
+/// `~/.local/share/polylogue`; relative paths are made absolute.
+fn archive_dir(explicit: Option<PathBuf>) -> Result<PathBuf, Failure> {
+    let data_home = || {
+        env::var_os("XDG_DATA_HOME")
+            .filter(|value| !value.is_empty())
+            .map(|p| PathBuf::from(p).join("polylogue"))
+    };
+    let home = || {
+        env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(|p| PathBuf::from(p).join(".local/share/polylogue"))
+    };
+    let archive = explicit.or_else(data_home).or_else(home).ok_or_else(|| {
+        error(
+            ErrorKind::InvalidQuery,
+            "no archive selected; pass --archive DIR",
+        )
+    })?;
+    if archive.is_absolute() {
+        Ok(archive)
+    } else {
+        Ok(env::current_dir().map_err(io_error)?.join(archive))
+    }
+}
+
+fn runtime_dir(archive: &std::path::Path) -> Result<PathBuf, Failure> {
+    match env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+        Some(runtime) if runtime.is_absolute() => Ok(runtime),
+        Some(_) => Err(error(
+            ErrorKind::InvalidQuery,
+            format!(
+                "XDG_RUNTIME_DIR must be absolute; archive {}",
+                archive.display()
+            ),
+        )),
+        None => Err(error(
+            ErrorKind::InvalidQuery,
+            format!("XDG_RUNTIME_DIR is required; archive {}", archive.display()),
+        )),
+    }
+}
+
 fn run() -> Result<i32, Failure> {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
-    let mut archive = None;
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--archive" {
-            if i + 1 == args.len() || args[i + 1].is_empty() {
-                return Err(error(
-                    ErrorKind::InvalidQuery,
-                    "--archive needs a directory",
-                ));
-            }
-            archive = Some(PathBuf::from(args.remove(i + 1)));
-            args.remove(i);
-        } else {
-            i += 1;
-        }
-    }
+    let archive = take_archive_flag(&mut args)?;
     let mut out = io::stdout().lock();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         out.write_all(HELP.as_bytes()).map_err(io_error)?;
@@ -137,28 +180,7 @@ fn run() -> Result<i32, Failure> {
         writeln!(out).map_err(io_error)?;
         return Ok(0);
     }
-    let archive = archive
-        .or_else(|| {
-            env::var_os("XDG_DATA_HOME")
-                .filter(|value| !value.is_empty())
-                .map(|p| PathBuf::from(p).join("polylogue"))
-        })
-        .or_else(|| {
-            env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|p| PathBuf::from(p).join(".local/share/polylogue"))
-        })
-        .ok_or_else(|| {
-            error(
-                ErrorKind::InvalidQuery,
-                "no archive selected; pass --archive DIR",
-            )
-        })?;
-    let archive = if archive.is_absolute() {
-        archive
-    } else {
-        env::current_dir().map_err(io_error)?.join(archive)
-    };
+    let archive = archive_dir(archive)?;
     if args.first().map(String::as_str) == Some("mcp") {
         if args != ["mcp"] {
             return Err(error(ErrorKind::InvalidQuery, "mcp accepts no arguments"));
@@ -320,23 +342,7 @@ fn run() -> Result<i32, Failure> {
     } else {
         None
     };
-    let runtime = env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            error(
-                ErrorKind::InvalidQuery,
-                format!("XDG_RUNTIME_DIR is required; archive {}", archive.display()),
-            )
-        })?;
-    if !runtime.is_absolute() {
-        return Err(error(
-            ErrorKind::InvalidQuery,
-            format!(
-                "XDG_RUNTIME_DIR must be absolute; archive {}",
-                archive.display()
-            ),
-        ));
-    }
+    let runtime = runtime_dir(&archive)?;
     if args == ["daemon"] {
         let stop = stop_on_ctrl_c()?;
         let mut running = polylogue::Running::start_cancellable(&archive, &runtime, &stop)
@@ -534,65 +540,6 @@ fn reply_exit_code(value: &serde_json::Value) -> Result<i32, Failure> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn model_transport_deadlines_preserve_timeout_exit_seven() {
-        for kind in [io::ErrorKind::TimedOut, io::ErrorKind::WouldBlock] {
-            let failure = model_read_io_error(io::Error::new(kind, "synthetic deadline"));
-            assert_eq!(failure.kind, ErrorKind::Timeout);
-            assert_eq!(failure.outcome().exit_code(), 7);
-            assert!(failure.suggestion.is_some());
-            assert!(!failure.retryable);
-            assert!(failure.message.contains("smaller budget"));
-        }
-        assert_eq!(
-            model_read_io_error(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "synthetic frame"
-            ))
-            .kind,
-            ErrorKind::Io
-        );
-    }
-    #[test]
-    fn remote_outcomes_preserve_typed_exit_codes() {
-        for kind in [
-            ErrorKind::InvalidQuery,
-            ErrorKind::NotYetAvailable,
-            ErrorKind::NotFound,
-            ErrorKind::Ambiguous,
-            ErrorKind::Conflict,
-            ErrorKind::Refused {
-                reason: "unsupported".into(),
-            },
-            ErrorKind::Timeout,
-            ErrorKind::NotRunning,
-            ErrorKind::Io,
-        ] {
-            let expected = kind.exit_code();
-            let reply = json!({"outcome":"error","error":Failure::new(kind,"failed")});
-            assert_eq!(reply_exit_code(&reply).unwrap(), expected);
-        }
-        for (reply, code) in [
-            (json!({"outcome":"ok"}), 0),
-            (json!({"outcome":"empty"}), 1),
-            (json!({"outcome":"degraded","missing":["input"]}), 5),
-        ] {
-            assert_eq!(reply_exit_code(&reply).unwrap(), code);
-        }
-        for reply in [
-            json!({}),
-            json!({"outcome":"error"}),
-            json!({"outcome":"unknown"}),
-        ] {
-            assert_eq!(reply_exit_code(&reply).unwrap_err().kind, ErrorKind::Io);
-        }
-    }
-}
-
 fn terminal_text(text: &str) -> String {
     text.chars()
         .flat_map(|c| {
@@ -614,3 +561,7 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

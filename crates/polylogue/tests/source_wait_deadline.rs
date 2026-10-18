@@ -1,4 +1,4 @@
-//! Actual CLI transport controls. Synthetic peers prove deadlines, not source settlement.
+//! `import --wait` deadline behavior, against a fake daemon socket.
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -11,9 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 const BINARY: &str = env!("CARGO_BIN_EXE_polylogue");
-fn receipt(settled: bool) -> Value {
+fn receipt(complete: bool) -> Value {
     let mut value = json!({"outcome":"ok","input":{"id":"synthetic-source","chain":1,"length":7},"source_rows":{"scope":"imported_source_rows","parsed_from":{"input":"synthetic-source","original_hash":polylogue_model::BlobHash::of(b"raw"),"chain":1,"revision":1,"length":7,"parser_version":1,"interpretation":polylogue_model::BlobHash::of(b"basis")},"state":"pending","pending_work":["canonical source rows"]}});
-    if settled {
+    if complete {
         value["source_rows"]["state"] = json!("complete");
         value["source_rows"]
             .as_object_mut()
@@ -69,7 +69,7 @@ fn exercise(mode: Peer) {
         writeln!(first, "{}", receipt(matches!(mode, Peer::InitialSettled))).unwrap();
         drop(first);
         if matches!(mode, Peer::InitialSettled | Peer::ZeroPending) {
-            // Check-once makes no progress RPC at all.
+            // With a zero timeout the client sends no progress request.
             thread::sleep(Duration::from_millis(150));
             assert_eq!(
                 listener.accept().unwrap_err().kind(),
@@ -94,8 +94,8 @@ fn exercise(mode: Peer) {
                 );
             }
             Peer::Trickle => {
-                // Each byte is timely under an idle timeout; the frame never
-                // completes before the ONE absolute deadline.
+                // Each byte arrives in time for a per-read timeout, but the
+                // whole reply does not arrive before the overall deadline.
                 let mut disconnected = false;
                 for byte in reply {
                     if stream.write_all(&[byte]).is_err() {
@@ -112,8 +112,8 @@ fn exercise(mode: Peer) {
                 } else {
                     Duration::from_millis(1300)
                 });
-                // Request protocol half-closes writes before the response, so
-                // read EOF would not prove the exact transport was dropped.
+                // The client half-closes its write side before reading, so
+                // EOF here would not show that it closed the connection.
                 assert!(
                     stream.write_all(&reply).is_err(),
                     "client transport remains owned after timeout/cancellation"
@@ -206,7 +206,7 @@ fn exercise(mode: Peer) {
             assert_eq!(value["error"]["kind"], "timeout");
             assert_eq!(value["source_rows"]["state"], "pending");
         }
-        // Allows scheduling jitter, rejects the reproduced 2.4s late success.
+        // Allows scheduling jitter but not a success seconds late.
         assert!(
             elapsed < Duration::from_millis(1900),
             "{mode:?}: {elapsed:?}"
@@ -215,33 +215,33 @@ fn exercise(mode: Peer) {
     peer.join().unwrap();
 }
 #[test]
-fn delayed_settled_frame_cannot_succeed_after_absolute_wait_deadline() {
+fn complete_reply_after_the_deadline_is_a_timeout() {
     exercise(Peer::Delayed)
 }
 #[test]
-fn stalled_progress_drops_transport_at_deadline() {
+fn stalled_progress_closes_the_connection_at_the_deadline() {
     exercise(Peer::Stalled)
 }
 #[test]
-fn trickled_frame_cannot_renew_absolute_wait_deadline() {
+fn slowly_trickled_reply_does_not_extend_the_deadline() {
     exercise(Peer::Trickle)
 }
 #[test]
-fn ordinary_fast_progress_keeps_fixed_receipt_and_succeeds() {
+fn fast_progress_reply_succeeds_with_the_original_receipt() {
     exercise(Peer::Fast)
 }
 #[test]
-fn zero_wait_checks_admission_once_without_rpc() {
+fn zero_timeout_checks_the_import_reply_without_a_request() {
     exercise(Peer::InitialSettled);
     exercise(Peer::ZeroPending)
 }
 #[test]
-fn cancelled_waiter_closes_exact_transport_without_waiting_for_owner() {
+fn interrupted_wait_closes_its_connection_without_waiting() {
     exercise(Peer::Cancelled)
 }
 
 #[test]
-fn already_expired_transport_does_not_connect_or_write() {
+fn expired_deadline_does_not_connect() {
     let short = tempfile::tempdir_in("/tmp").unwrap();
     let socket = short.path().join("socket");
     let listener = UnixListener::bind(&socket).unwrap();

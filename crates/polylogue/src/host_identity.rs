@@ -1,4 +1,5 @@
-//! Explicit process machine attribution, shared by CLI and MCP adapters.
+//! The machine ID recorded on imports and notes, read from /etc/machine-id or
+//! POLYLOGUE_MACHINE_ID_FILE. Shared by the CLI and MCP.
 use polylogue_model::{ErrorKind, Failure};
 use std::{fs::File, io::Read, path::Path};
 
