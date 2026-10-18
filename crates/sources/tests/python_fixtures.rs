@@ -1,4 +1,5 @@
-//! Independent selected predecessor facts, not executed Python-parser parity.
+//! Fixtures copied from the Python Polylogue, checked against the facts its
+//! tests assert (see docs/rewrite/python-port.md). The old parser is not run.
 use polylogue_model::BlockContent;
 use polylogue_sources::{
     codex::keyed::{KeyedRecords, MemoryReadView, Resume},
@@ -6,8 +7,8 @@ use polylogue_sources::{
 };
 
 #[test]
-fn retained_codex_headers_distinguish_provider_status_from_captured_prose() {
-    let input = include_bytes!("fixtures/donor/tool-result-headers.jsonl");
+fn codex_result_status_comes_from_provider_headers_not_output_text() {
+    let input = include_bytes!("fixtures/python/tool-result-headers.jsonl");
     let memory = MemoryReadView::default();
     let framed = drive_jsonl(KeyedRecords::new(&memory, Resume::default()), input, 0);
     assert!(framed.counts.balanced());
@@ -33,7 +34,7 @@ fn retained_codex_headers_distinguish_provider_status_from_captured_prose() {
         ("call_stdin_running", "unknown", None),
         ("call_patch_fail", "error", Some(1)),
         ("call_shell_ok", "ok", Some(0)),
-        // Current spec promotes complete exec transport status; predecessor did not.
+        // Python ignored the exec status item; the spec now reads it.
         ("call_script_ok", "ok", None),
         ("call_script_fail", "error", None),
         ("call_prose_decoy", "unknown", None),
@@ -49,12 +50,12 @@ fn retained_codex_headers_distinguish_provider_status_from_captured_prose() {
 }
 
 #[test]
-fn retained_claude_family_admits_idless_records_and_keeps_literal_contributions() {
+fn claude_fixture_accepts_records_without_ids_and_keeps_each_contribution() {
     use polylogue_sources::claude_code::{FileCtx, KeyedRecords, keyed::MemoryReadView};
     let memory = MemoryReadView::default();
     let framed = drive_jsonl(
         KeyedRecords::new(FileCtx::main("claude-normalization-main"), &memory).unwrap(),
-        include_bytes!("fixtures/donor/claude-normalization-main.jsonl"),
+        include_bytes!("fixtures/python/claude-normalization-main.jsonl"),
         0,
     );
     assert!(framed.counts.balanced());
@@ -191,11 +192,11 @@ fn identical_idless_claude_records_get_distinct_stable_occurrence_identity() {
 }
 
 #[test]
-fn retained_legacy_codex_preserves_reasoning_calls_outputs_and_metadata_verdicts() {
+fn legacy_codex_keeps_reasoning_calls_outputs_and_metadata_outcomes() {
     let memory = MemoryReadView::default();
     let framed = drive_jsonl(
         KeyedRecords::new(&memory, Resume::default()),
-        include_bytes!("fixtures/donor/legacy-response-records.jsonl"),
+        include_bytes!("fixtures/python/legacy-response-records.jsonl"),
         0,
     );
     assert!(framed.counts.balanced());
@@ -241,7 +242,7 @@ fn named_background_completion_survives_a_later_metadata_only_uuid_supplement() 
     let mut memory = MemoryReadView::default();
     let framed = drive_jsonl(
         KeyedRecords::new(FileCtx::main("claude-normalization-main"), &memory).unwrap(),
-        include_bytes!("fixtures/donor/claude-normalization-main.jsonl"),
+        include_bytes!("fixtures/python/claude-normalization-main.jsonl"),
         0,
     );
     let mut output = framed.output.unwrap();

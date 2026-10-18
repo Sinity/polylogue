@@ -1,421 +1,222 @@
-# One observed Claude location
+# Configured Claude Code sources
 
-This native subset retains and interprets one explicitly configured regular
-Claude main JSONL file. Normal configured daemon mode checks the main and its
-explicit required tool-result bodies once per second. `--until-idle` admits one
-startup snapshot and waits for its existing parser work; it does not wait for
-future polling timers. Directory discovery remains unsupported.
+The daemon can follow one configured Claude Code main JSONL file or one Claude
+projects directory. Choose exactly one of `claude_main`, `claude_projects` and
+`codex_home` in the configuration file; no home source is selected by default.
 
-Each acquisition compares the entire retained predecessor prefix before
-accepting new bytes. A worker retains the checked descriptor, parser-reference
-scan and CAS proofs while the existing owner grants reusable acquisition
-quanta. The owner installs typed proofs; provider IO and full-prefix verification
-run outside its writer. The initial descriptor size bounds the read. Changed
-metadata, a short read, changed prefix, shrink or replacement refuses that
-attempt and preserves previously acknowledged bytes. This checked read is not
-an atomic filesystem snapshot or capture of unexamined revisions.
+## One main file
 
-Create a source configuration outside the repository:
+Create a configuration outside the repository:
 
 ```json
 {"claude_main":{"path":"/absolute/path/SESSION.jsonl","machine":"collector-id","host":"collector-label"}}
 ```
 
-Run `polylogue --archive DIR daemon --config FILE --until-idle --json`.
-The output identifies the acquisition route, input, chain, revision, retained
-length and actual parser/source-row outcome. This idle check concerns the one
-configured input, not every archive dependency. A waiting tail or unavailable
-interpretation returns degraded exit 5 with its reason. General watcher
-convergence and whole-archive idle acceptance remain open. Interrupting the
-pending idle wait returns an interruption refusal (exit 3), never success; actual deadline expiry remains `Timeout` (exit 7).
+Run `polylogue --archive DIR daemon --config FILE --until-idle --json`. The
+daemon reads the file and its required tool-result bodies once at startup,
+waits for that parser work and prints the route, input, chain, revision, stored
+length and parser outcome. A waiting partial last line or unavailable parse
+returns degraded exit 5 with the reason. Interrupting the wait returns exit 3;
+a deadline returns `Timeout` (exit 7). The idle check covers this one input,
+not the whole archive.
 
-Without `--until-idle`, the daemon stays available for ordinary clients and continues the configured acquisition. Adding
-`--json` prints and flushes a `scope: retention_only` admission before waiting;
-that admission does not certify normalized rows. Plain `daemon` also recovers
-already retained observed inputs without reopening their provider paths.
+Without `--until-idle` the daemon serves clients and checks the file once per
+second. `--json` then prints a `scope: retention_only` report before waiting.
+Plain `daemon` with no configuration recovers already stored observed inputs
+without opening their provider paths. Directory discovery is not part of this
+mode.
 
-The location keeps its UUID input and chain across verified appends. The first
-retained pathname supplies Claude context. Every acquired piece, including blank
-separators and unfinished records, retains its original byte position. A
-separator-only append advances byte progress without inventing a Session or
-record. An unfinished nonblank record waits at its complete-record checkpoint;
-restart rereads the retained tail and a later piece may finish that same record.
-Complete prefix Messages can finish their existing canonical publication while
-the tail waits; the source as a whole remains pending. Bounded exact Message
-and Block reads require that prefix's selected body and current source evidence
-in the same pinned view. They preserve pending Session context. A whole-Session
-transcript still refuses pending work, as do rows without that current proof.
-Changed acquisition invalidates the old row-settlement receipt. Observed
-receipts use `scope: observed_source_rows`, identify the admitted revision and
-length, and omit the immutable-only `original_hash` field. Their interpretation
-binding is not a full-content hash.
+### Appends
 
-`polylogue --archive DIR input cat ID` reads retained pieces without provider
-fallback and verifies backing piece hashes before output. Default output passes
-through the shared daemon-side credential masker. Hashes, citations and source
-byte offsets continue to identify the original retained bytes, independently of
-changed display length. This subset refuses invalid UTF-8, binary/control bytes
-and JSON escape spellings before payload output; encoded strings need a decoded
-presentation that is not implemented here. There is no `--reveal` support.
-Credential-free supported inputs can still reproduce their exact retained bytes
-through this presentation. Unknown inputs return `NotFound`; unsupported safe
-presentation returns `NotYetAvailable`, excision requires a refusal, and expiry
-returns `Timeout`. The client preserves these typed failures. Verification and
-presentation check peer disappearance at bounded read boundaries; disconnecting
-a read does not cancel the retained source owner.
+Each read compares the whole stored prefix before accepting new bytes. Changed
+metadata, a short read, a changed prefix, a shrink or a replacement refuses the
+attempt and keeps the bytes already acknowledged. Verification and provider IO
+run outside the writer; the owner installs the checked result. The read is
+bounded by the size seen at open and is not an atomic filesystem snapshot.
 
-Source scanning, sampled verification, renames, rewrites, revision coalescing,
-piece joining, general companion acquisition, marker/attachment equivalence, corpus
-resource guarantees, deployment and full M1 are not qualified by this subset.
+The file keeps one input ID and chain across appends, and the first stored path
+supplies the Claude context. Every piece keeps its byte position, including
+blank separators and partial records. A separator-only append advances byte
+progress without creating a Session or record. A partial nonblank record waits;
+restart rereads the stored tail and a later append can finish the record.
+Complete Messages before the tail can publish while the tail waits, but the
+source as a whole stays pending.
 
-## Required tool-result bodies
+Exact Message and Block reads need the selected body and current source evidence
+for that prefix in the same pinned view, and they keep pending Session context.
+A whole-Session transcript still refuses while work is pending. A changed
+acquisition invalidates the old row receipt. Observed receipts use
+`scope: observed_source_rows`, name the admitted revision and length, and omit
+`original_hash`; their binding is not a full-content hash.
 
-Configured main acquisition also reads tool-result paths explicitly named by
-complete retained records. The supported location is
-`<main directory>/<main stem>/tool-results/*.txt`. The source adapter owns
-`persistedOutputPath` and the existing saved-output text spellings. Acquisition
-does not enumerate the directory. Each attempt scans the full checked main in 64 KiB windows under cooperative grants; this does not establish append-local scan cost. Required bodies are checked even when the main metadata and bytes are unchanged. It admits at most 32 referenced paths, a
-1 MiB reference record and 1 MiB per regular body. The configured main parent resolves normally. Held directory handles then open
-the appended session directory, `tool-results` directory and body leaf with
-`NOFOLLOW`; symlinks in any of those components and nonregular descriptors refuse. UTF-8 is required for normalized text.
-Full structured output keeps the public reader's existing 65536-byte normalized
-JSON admission; larger retained bodies can still refuse that presentation.
+### Reading stored bytes
 
-Each acquired body is an immutable `claude-code-tool-result` input. Its context
-contains the owning main input ID, exact path and `required` or
-`inline-duplicate`. The last local acquisition observation for each path selects
-its snapshot. This reuses Archive input, revision, extent, blob and observation
-ownership. It adds no durable table or mutable parser authority. A checked exact
-copy of complete inline text stays redundant. Its bytes do not join the Message
-version, and losing that retained replica cannot invalidate the inline result.
+`polylogue --archive DIR input cat ID` reads stored pieces without touching the
+provider file and verifies piece hashes before output. Output goes through the
+daemon's credential masker; hashes, citations and byte offsets still refer to
+the original bytes. Invalid UTF-8, binary or control bytes and JSON escape
+spellings are refused before output. There is no `--reveal`. Errors: unknown
+input `NotFound`, unsupported presentation `NotYetAvailable`, excised content is
+refused, expiry `Timeout`. Disconnecting a reader does not cancel source work.
 
-The sorted retained manifest participates in the main parser basis. A changed
-required snapshot causes normal re-evaluation from retained bytes. The parser
-gets body cells on that same basis, and the result Message version includes its
-raw record and exact required-body digest/length under the owning compound
-evidence recipe. The assistant call's version stays independent. Missing bodies
-leave required work unresolved. Denied reads and retained corruption are errors;
-neither becomes an empty result. Missing provider copies preserve already
-acquired snapshots, and ordinary daemon restart reads only retained bytes.
+### Required tool-result bodies
 
-Session JSON and bounded CLI/MCP rows expose the selected Message's
-`version_hash`. Full tool-result text has a `claude-code-tool-result-body` field
-origin with the companion input, chain, snapshot revision, exact path, byte
-range and raw blob hash. The origin verifier reads and hashes that retained
-snapshot instead of treating the inline preview as the full output. Public
-Session qualification also verifies required retained snapshots. A normalized
-copy cannot make a lost or changed required witness readable. Output and
-`input cat` retain their existing credential masking.
+The daemon also reads tool-result files that complete stored records name
+explicitly, at `<main directory>/<main stem>/tool-results/*.txt`. The source
+adapter recognizes `persistedOutputPath` and the saved-output text forms. The
+directory is never listed. Each attempt scans the whole main in 64 KiB windows,
+even when the main is unchanged. Limits: 32 referenced paths, a 1 MiB reference
+record and 1 MiB per body. The main's parent directory resolves normally; the
+session directory, `tool-results` and the body file are opened `NOFOLLOW`
+through held directory handles, and symlinks or non-regular files are refused.
+Normalized text must be UTF-8. Full structured output keeps the reader's
+65536-byte JSON limit.
 
-An exact Message or block read verifies the required body witnesses pinned by
-that selected Message's field origins. A different Message's lost required body
-does not prevent an independently backed Text member from being read: its
-Session context remains degraded and unavailable. A full Session read and the
-owning tool-result read still refuse the missing witness.
+Each body is an immutable `claude-code-tool-result` input whose context holds
+the owning main input ID, the path and `required` or `inline-duplicate`. The last
+local observation of a path selects its snapshot. A checked copy of complete
+inline text is redundant: it is not part of the Message version, and losing it
+does not affect the inline result.
 
-## Configured continuation controls
+The sorted body manifest is part of the main parser's input, so a changed
+required body reparses from stored bytes. The result Message version includes
+its raw record and the body's digest and length; the assistant call's version
+is independent. A missing body leaves the Message pending. Denied reads and
+corrupt stored bytes are errors, never empty results. Removing a provider copy
+keeps stored snapshots, and restart reads only stored bytes.
 
-The optional `claude_main.acquisition_quantum_bytes` sets a reusable charged-work
-quantum from 65536 through 8388608 bytes (default 8388608). It limits a granted
-turn, including retained verification, rather than the source's lifetime size.
-The same parked acquisition slot and ordinary-import arbitration serve physical
-history and Claude. Ordinary read workers continue using acknowledged retained
-state before a larger capture is admitted. A yielded proof is never a selected
-input or settled candidate. Cancellation discards uninstalled acquisition
-proofs; a later process verifies the retained predecessor afresh.
+Session JSON and CLI/MCP rows show the Message's `version_hash`. Full result
+text has a `claude-code-tool-result-body` field origin naming the body input,
+chain, revision, path, byte range and blob hash; the verifier rereads that
+snapshot rather than trusting the inline preview. Reading one Message or block
+checks only the bodies its own field origins use, so another Message's lost
+body does not block it (the Session context is then degraded). A full Session
+read and the owning tool-result read still refuse a missing body.
 
-Status exposes `claude_continuation`: active acquisition, attempts, acknowledged
-length, unchanged passes and bounded diagnostics. Missing and denied main paths
-remain distinct from an accessible empty main. Missing required provider bodies
-preserve any retained snapshot; a never-acquired body leaves its Message pending.
-Unchanged polls add neither input revisions nor body observations and do not
-restart unchanged parser work. A changed required manifest restarts the existing
-interpretation even when the main revision is unchanged. Pending incomplete
-records remain owed until a later append completes them.
+### Acquisition turns
 
-## Explicit Claude projects directory
+`claude_main.acquisition_quantum_bytes` sets the work allowed per turn, from
+65536 to 8388608 bytes (default 8388608), including verification. It limits a
+turn, not the file. Claude and physical Codex history share one parked
+acquisition slot with ordinary imports, and readers keep using acknowledged
+state while a large capture waits. Cancellation discards uninstalled work; a
+later process verifies the stored prefix again.
 
-A daemon can select one provider directory instead of one main:
+Status reports `claude_continuation`: active acquisition, attempts,
+acknowledged length, unchanged passes and diagnostics. Missing and denied main
+paths are reported separately from an empty file. Unchanged polls add no
+revisions or body observations and do not restart parser work. A changed
+required-body manifest reparses even when the main is unchanged.
+
+## A projects directory
 
 ```json
 {"claude_projects":{"root":"/absolute/synthetic/projects","machine":"collector-id","host":"collector-label","acquisition_quantum_bytes":65536}}
 ```
 
-Choose exactly one of `claude_projects`, `claude_main` and `codex_home`. No home
-source is selected implicitly. Projects collection currently runs continuously;
-`--until-idle` refuses before archive creation for this configuration.
+This mode runs continuously; `--until-idle` is refused before the archive is
+created. Recognized paths:
 
-The anchored predecessor layout admits `-project/SESSION.jsonl` or `.ndjson`,
-`-project/OWNER/subagents/agent-AGENT.jsonl`, and the corresponding
-`subagents/workflows/RUN/agent-AGENT.jsonl` path. Main stems supply main context;
-separate-agent records supply membership, while the containing owner supplies
-lineage. The durable observed-context relation preserves that declaration across
-provider removal and parser rebuild. A main declaration cannot silently replace
-an established agent declaration.
+- `-project/SESSION.jsonl` or `.ndjson` (main sessions),
+- `-project/OWNER/subagents/agent-AGENT.jsonl`,
+- `-project/OWNER/subagents/workflows/RUN/agent-AGENT.jsonl`.
 
-Traversal uses at most 128 entries per turn and a fixed-depth directory stack.
-Runnable scan/capture backlog continues without waiting for another filesystem
-event; completed cycles pause before rescanning. Each transcript uses the same
-parked acquisition slot, charged-byte grants and required-body resolver as the
-single-main route. Reads continue using acknowledged state. Full-prefix
-verification remains source work on every capture attempt; no metadata-only
-unchanged-file shortcut or corpus throughput guarantee is claimed.
+Main stems give main context. Subagent records give their own membership and
+the owner directory gives lineage. This declaration is stored and survives
+provider removal and reparsing; a main declaration cannot replace an
+established agent declaration. A subagent file's missing `sessionId` stays
+unresolved: the folder never substitutes for it, a later owner does not claim
+earlier records, and a conflicting later owner does not move an established
+Session.
 
-Retained interpretation finishes its current input before choosing another.
-A recent acquisition or explicit retry can run between background catalog inputs;
-these choices alternate so ongoing acquisition cannot suppress the background
-scan. One recent-input hint coalesces intermediate changes without replacing the
-durable catalog. Restart recovers work through that catalog. This does not
-preempt a large current input or promise a fixed interpretation latency.
+Traversal reads at most 128 entries per turn with a fixed-depth directory
+stack, and continues without waiting for filesystem events; a finished cycle
+pauses before rescanning. Each transcript uses the same acquisition slot,
+per-turn byte grants and body resolver as the single-file mode, and every
+capture verifies the full prefix. The current input is parsed to completion
+before another is chosen. Recent changes and background catalog inputs
+alternate so ongoing writes cannot starve the scan; a durable catalog drives
+restart recovery.
 
-Held directory descriptors and descriptor-relative, beneath-root, no-symlink
-opens fence traversal and capture. An archive cannot be used as the configured
-provider root. Root replacement starts a fresh walk; root absence or denied
-access is unavailable, distinct from an accessible empty scope. Neither an
-interrupted scan nor a partial JSONL tail certifies complete conversation
-coverage.
+Traversal and capture use held directory descriptors and descriptor-relative,
+no-symlink opens beneath the root. The archive cannot be inside the configured
+root. Replacing the root starts a new walk; a missing or denied root is
+unavailable, distinct from an empty one. Neither an interrupted scan nor a
+partial tail means complete coverage.
 
-Status reports scan-cycle progress, deferred/excluded entries, attempted source
-acquisitions and a bounded sample of retained input IDs. The sample never drives
-acquisition. Selected-source byte totals sum acknowledged lengths, not unique
-bytes or actual IO. Memory documents, session indexes, workflow journals and
-agent metadata are not interpreted by this route. Only explicitly referenced
-required bodies are acquired; unclaimed or hook files are not conversations.
+Status reports scan progress, deferred and excluded entries, attempted
+acquisitions, a sample of stored input IDs (never used to drive acquisition)
+and the path currently being acquired. Byte totals sum acknowledged lengths.
+Memory documents, session indexes, workflow journals, agent metadata, hook
+files and unreferenced bodies are not read.
 
-The projects status names the currently acquiring path separately from the last
-acknowledged input. This marker does not publish its prepared prefix. Missing
-initial subagent ownership stays unresolved: the containing folder never
-substitutes for `sessionId`. A later actual owner does not retroactively assign
-those earlier records, and a conflicting later owner does not change an
-established Session. Parser version 10 records this interpretation change.
+A Session's membership is checked on its own: an unrelated file's partial tail
+leaves global relationship coverage pending without making the requested
+Session's Messages pending. `settled_through.inputs` is a display sample plus the
+exact sources needed; `inputs_total`, `inputs_enumerated` and `inputs_digest`
+say whether every input was enumerated and commit to all of them. The digest is
+BLAKE3 over `polylogue.session.input-bases.v1\0` followed, in catalog order, by
+each input's JSON length as big-endian u64 and its JSON bytes.
 
-Requested Session membership is qualified independently of population-wide
-possible relationships. An unrelated main's incomplete suffix leaves global
-relationship coverage pending without declaring the requested, independently
-proved Message membership pending. Unknown relevant dependency shapes and
-current selected-source guards continue to constrain reads.
+Body lookup uses a partial expression index on the main context value, so
+unrelated inputs are not scanned. Archive formats 1 through 3 upgrade in place;
+unpublished format-4 archives from commit `14cc1c702` predate this index and may
+be refused by schema validation.
 
-Qualification streams the pinned source catalog. `settled_through.inputs` is a
-bounded display sample plus required exact-source witnesses; `inputs_total`,
-`inputs_enumerated` and `inputs_digest` identify whether it enumerates every
-represented basis and commit to all of them. The digest is ordinary BLAKE3 over
-`polylogue.session.input-bases.v1\0` followed, in catalog order, by each basis's
-JSON byte length as big-endian u64 and its serialized bytes. It is an operation
-witness, not independent storage authority or complete-population evidence.
-The observed-member exception counts every proved membership-capable source,
-never the displayed sample length. Incoming relationship witnesses remain in
-the full context count and digest without becoming a source of the requested
-Session’s Message membership. Unresolved relevant inputs still constrain reads. Relevant witness and
-Message-membership metadata retain their separate admission bounds.
+## What the Claude parser reads
 
-Companion lookup uses an archive-owned partial expression index on the exact
-main context value. Unrelated inputs do not contribute to that lookup's row
-scan; NULL or nonmatching context values retain the query's existing semantics.
-This does not change capture, snapshot selection or publication authority.
-The earlier private format-4 candidate at `14cc1c702` predates this schema
-index. Its retained acceptance fixtures belong to that exact binary and source;
-current exact-schema validation may refuse them. Formats 1 through 3 retain
-the preserving upgrade route described above. No installed format-4 archive
-compatibility is claimed for those unpublished candidates.
+Parser versions are part of the parse input: after a version change, stored
+contributions are reparsed before they are current. Selection codec 1 and
+adapter recipe 2 keep their meanings.
 
-Claude parser version 11 admits supplied boolean `toolUseResult.isImage` and
-`toolUseResult.noOutputExpected` as named execution metadata. Each present value
-has its exact retained source path and ordinary JSON leaf selection. Absence
-adds no default; neither flag infers image content, outcome, or missing output.
-Wrong types and unknown metadata still leave mapping obligations pending.
+- `toolUseResult.isImage` and `toolUseResult.noOutputExpected` are kept as named
+  execution metadata when supplied. Absence adds no default, and neither infers
+  image content, outcome or missing output.
+- `message.stop_details` is kept as opaque response metadata `stop_details`.
+  Supplied null is a value; absence adds none. The last record that supplied it
+  wins, and an overlay that omits it keeps the earlier origin. It never sets
+  finish state or stop reason.
+- Immediate unknown block members are kept as opaque block extras with their raw
+  paths. A member that collides with a structured ToolResult channel is refused.
+  JSON and export put extras in `data` on ToolCall and ToolResult and in
+  `attrs` on other blocks; a Thinking block's ciphertext `data` stays separate.
+- `inference_geo`, `iterations`, `server_tool_use` and `speed` usage members are
+  kept in `attrs.provider_usage` as the raw `message.usage` object, separate from
+  the normalized counters. A later usage record without them removes the bag;
+  an overlay that omits usage keeps it. Unknown usage members, unknown nested
+  counter details and invalid counters still block certification.
+- Each immediate record extra is selected once per grouped response; the last
+  record that supplied it wins, including a correction to an earlier
+  contribution. Version evidence appends differing corrections ordered by key,
+  tagged `response/record_extra/` plus the lowercase hex of the key's UTF-8
+  bytes, after the fixed metadata units and before required bodies.
+- These `toolUseResult` members go to `tool_result.data` unchanged:
+  `canReadOutputFile`, `content`, `description`, `file`, `filePath`,
+  `gitOperation`, `matches`, `message`, `newString`, `oldString`, `outputFile`,
+  `pin`, `prompt`, `query`, `replaceAll`, `resolvedModel`, `resumedAgentId`,
+  `staleReadFileStateHint`, `staleRecovered`, `success`, `total_deferred_tools`,
+  `type`, `userModified`. A string `toolUseResult` becomes
+  `data.toolUseResult` only when exactly one result in the record can own it.
+- A result content array of `tool_reference` objects (`type`, nonempty
+  `tool_name`) and text objects (`type`, string `text`) is kept whole as
+  `data.content_items`. It supplies no text output.
+- A Message's parent follows recognized non-Message records to the nearest
+  Message: attachment, system, event and progress records are skipped, and a
+  compaction boundary uses its `logicalParentUuid`. The first contribution owns
+  a folded Message's parent. Missing records, invalid relations, conflicting
+  UUIDs, cross-Session edges, self-references and cycles leave the parent
+  unavailable. Direct parents keep `ParentReferenceV1`; parents found through
+  skipped records use `ParentViaRecordsV1`, which cites every traversed record.
+  The lookup stops at the nearest Message and does not walk its ancestry.
 
-The parser-version basis changes normal retained-source interpretation, so a
-retained contribution parsed by an older version is re-evaluated before it can
-be current. This also re-applies the existing later-fragment parent resolution
-repair. Selection codec 1 and adapter recipe 2 keep their existing meanings;
-no archive reset, provider edit, or new recovery operation is required by this
-mapping change. This does not establish complete source restoration.
+## Long string fields in documents
 
-Claude parser version 12 additionally selects supplied `message.stop_details`
-as the named opaque response metadata key `stop_details`. Supplied null is a
-value; absence creates no default. The last actual supplier wins in the existing
-response update order. A same-UUID overlay that omits the field preserves its
-previous donor and cannot become a later supplier. Selected values retain their
-exact raw selectors; response correction evidence distinguishes a later update
-to an earlier contribution from contribution-order reduction. This metadata
-never infers finish state or stop reason. Unknown nested extras and collisions
-with a literal top-level selected key still refuse canonical certification.
-The normal parser-version basis re-evaluates retained interpretation; existing
-selection codec and recipe meanings are unchanged. No private replay or complete
-source restoration is established by this mapping's synthetic checks.
-
-Claude parser version 13 admits immediate provider block members as opaque,
-source-backed block extras. Each leaf keeps its exact raw path and original
-value. A block member that aliases a selected structured ToolResult channel
-still refuses, as do ambiguous nested paths and existing unmapped effects.
-No status or image meaning is inferred from an extra.
-
-Normalized JSON and export use `data` for the extra bag on ToolCall and
-ToolResult blocks. Other block kinds use `attrs`. These bags hold named opaque
-provider members; a Thinking block's typed ciphertext `data` remains separate
-from `attrs`, including an extra whose own key is `data`. Bounded model metadata
-uses the same container names, with canonical-JSON envelopes after privacy
-assessment, and field origins use the same qualified paths. Existing leaf,
-metadata, deadline and cancellation admissions apply. Unknown active-path
-membership still refuses default bounded reads; when current known rows are
-readable with no pending inputs, the refusal points to explicit `--branches`
-(MCP `branches:true`) for known retained catalog members.
-
-Claude parser version 14 retains supplied `inference_geo`, `iterations`,
-`server_tool_use` and `speed` usage metadata through `attrs.provider_usage`.
-This explicitly named extra is the exact selected raw `message.usage` object,
-separate from normalized Usage counters. Any supplied value of these four
-members is preserved, including null, empty values and type changes; no billing,
-status, geography or aggregate-count meaning is inferred. Missing members add
-no default. A later usage supplier without these members removes the owned bag;
-an overlay omitting usage retains its previous supplier. The existing usage
-selection, original donor and raw correction evidence own this interpretation.
-No new raw slot or immutable recipe is introduced.
-
-Unknown usage members, unknown nested counter-detail members and invalid typed
-counters still refuse canonical certification, even when the opaque bag also
-contains their bytes. A literal top-level `provider_usage` key cannot collide
-with the selected attrs key. JSON/export and bounded model metadata preserve
-the same logical object and source provenance under their existing privacy and
-admission rules. This focused mapping does not certify a complete provider source.
-
-
-Claude parser version 15 selects each already-supported immediate record extra
-once per grouped response. The last actually supplied accepted update owns its
-exact value and original field donor, including a correction to an earlier
-contribution. An omitted overlay keeps that supplier; an identical effective
-record is a no-op. Equal values do not erase supplier identity. Selection uses
-provider interpretation order, never timestamps or contribution ordinal.
-
-The ordered selection map uses existing response-state admission. Canonical
-materialization verifies and inserts each selected attrs key once. Version
-proofs retain only admitted-key contribution locators for their baseline and
-append differing selected raw correction units, ordered by exact key, tagged
-`response/record_extra/` followed by lowercase hex of that key’s exact UTF-8
-bytes. Existing fixed metadata units
-precede these units; required bodies follow them. Histories needing no correction
-retain their evidence sequence. Scratch, reads and state encoding use existing
-allowances; this adds no bounded allocator, total-history-cost or worker-duration
-claim. Parser replay advances, while immutable selector and framing recipes keep
-their meanings. Structured-key collisions, unknown nested fields and unaccounted
-effects retain their explicit refusals.
-
-
-Supported Codex unified-command lifecycle records do not make an independently
-retained direct call/output Message unreadable merely because operation agent
-attribution remains unknown. The source adapter requires the admitted native
-constructor, full session/turn/invocation scope, valid supplied duration and
-proved direct Message association. It leaves agent attribution unknown and
-does not project that lifecycle status into the Message. Any separately recorded
-response output keeps its own result, status and origins in either arrival order;
-an absent independent output gains no result from the native item.
-Known branches can remain readable; unknown active membership still refuses.
-
-A small source-owned keyed proof binds the supported unified constructor to its
-full native operation ID and exact status-record hash. The Operation alone has
-an unknown agent class and raw-origin hashes, but no source spelling; it cannot
-establish this predicate for a later call. Every replacement constructor removes
-the old proof before validation, and later association checks the currently
-retained operation's status origin. This preserves both arrival orders without
-turning the proof into a lasting permission. Existing admission limits apply.
-Codex parser 12 recomputes these normalization and correspondence results from retained inputs.
-No read qualification or active-path guard changes.
-
-Claude parser version 16 preserves a finite set of additional opaque result
-sidecar members in the existing `tool_result.data` bag: `canReadOutputFile`,
-`content`, `description`, `file`, `filePath`, `gitOperation`, `matches`, `message`,
-`newString`, `oldString`, `outputFile`, `pin`, `prompt`, `query`, `replaceAll`,
-`resolvedModel`, `resumedAgentId`, `staleReadFileStateHint`, `staleRecovered`,
-`success`, `total_deferred_tools`, `type`, and `userModified`. Supplied JSON is
-preserved exactly, including null, numeric spelling and UTF-16 strings. These
-members infer no outcome, billing, execution, model choice or file authority.
-A string root `toolUseResult` belongs to `data.toolUseResult` only when exactly
-one protocol result supplies its attribution. It never replaces inline output.
-Opaque sidecars replace as whole supplied units; omission retains the original
-donor. Existing typed status validation, unknown-member and literal-key collision
-refusals remain in force.
-
-A protocol result content array containing strictly shaped `tool_reference`
-objects (`type`, nonempty string `tool_name`) and text objects (`type`, string `text`) is
-retained whole and in order as `data.content_items`, with its original raw-array
-selector. It is distinct from sidecar `data.content`. Such structured content
-supplies no synthetic text output. Existing all-text output reduction is
-unchanged; unknown kinds, additional nested members and malformed names remain
-unsupported. JSON, export and bounded model metadata expose these named data
-leaves through the existing consumer policy.
-
-Canonical parent selection now follows retained recognized non-Message record
-relations on the pinned provider snapshot. Attachment, system, event and counted
-progress records are skipped to the nearest Message; a compaction boundary uses
-its supplied `logicalParentUuid`, including a summary record between that
-boundary and the next Message. The first contribution owns a folded Message's
-parent. Late records can discharge the retained obligation on a newer snapshot.
-Absent records, invalid relations, conflicting UUID identities, cross-Session
-edges, grouped self-references and cycles among skipped records remain typed
-unavailable outcomes, including at complete EOF.
-There is no separate graph or retry scheduler.
-
-Retained relation nodes keep field fingerprints for effective duplicate
-detection, supplied link values and exact donors. Corrections replace supplied
-links; omissions keep their donors. Materialization verifies each link and its record/classification identity against
-its original retained bytes before admitting the citation. Public selector
-proofs omit internal duplicate-detection fingerprints. Materialization cites every traversed
-relation's envelope and link/classification donors and frames ordered relation
-value evidence before selected metadata. These units exclude storage positions
-and unrelated event payloads. Direct parent histories retain the original
-`ParentReferenceV1` descriptor and evidence sequence; traversed relations use
-`ParentViaRecordsV1`. Existing encoded-state, point-read and metadata allowances
-admit nodes and temporary traversal/proof state. Traversal stops at the nearest
-Message without walking that Message's ancestry.
-Direct parent lookup therefore does not grow with conversation depth. Global
-Message-tree validation and active-path membership remain explicitly unresolved;
-a nearest-parent proof does not certify global acyclicity. This does not bound
-total history work, decoded allocation or worker duration, and raises no
-allowances.
-
-The combined parser replay identities are Claude 16 and Codex 11, and
-the retained upgrade fixture's baseline remains 8. Existing immutable selector,
-framing and model recipes keep their meanings. Older parser cells must replay
-through the existing version-upgrade/recovery path; source EOF alone still does
-not establish readable canonical content.
-
-Supported native Codex `AgentMessage` and `Reasoning` completion snapshots can
-precede their response items. A provider-owned pending claim keeps the exact
-constructor and full thread/turn/item scope until a matching response proves
-correspondence; missing or conflicting counterparts leave normalization
-incomplete. Agent text and phase must agree, and an empty native reasoning body
-never replaces independently recorded encrypted content. A redundant rendering
-adds no second Message or evidence unit. Typed `UserMessage` echoes use the
-first unpaired equal prompt in the same recorded turn and preserve its original
-Message identity. A duplicate echo cannot pair with another prompt, and later
-response corrections invalidate its proof. These pending obligations resolve
-separately from unrelated normalization failures, which remain unchanged.
-Unknown constructor members and unsupported raw reasoning content still refuse.
-A typed user echo recorded before its response remains pending even when their
-IDs match or the native item is emitted again later; this order does not satisfy
-the after-response echo rule. Agent and reasoning snapshots support both orders.
-Invalidated typed echoes retract only their own Human attribution and raw echo
-evidence. Independent source-mode or ordinary user-message-echo proof keeps its
-value and exact donor; reapplication uses the typed claim's original source span.
-Malformed explicit turn metadata never falls back to the current turn.
-
-### Whole-document string fields
-
-Whole Session JSON and directory export can stream a selected string-valued
-`ToolCall.input`, `Thinking.data` or `Other.data` beyond the 64 KiB leaf
-admission. Source parsing and canonical selection remain unchanged. Malformed
-JSON-in-string tool arguments remain the supplied string, including escapes and
-control characters; they do not become an invented object or empty input.
-
-The renderer reads bounded ranges from the same pinned field. It assesses the
-logical string against the existing credential masker and compares the result
-with a second bounded logical read before emitting the value. Scalar strings
-are masked through the existing escaped-output sink. Native non-scalar UTF-16
-strings replay their exact normalized bytes only when the assessment is
-unchanged; uncertain reconstruction still refuses. A third range pass emits the
-value, so this bounds retained buffers rather than promising one-pass work.
-Every range keeps the existing live visibility checks, deadline and cancellation.
-No value tree, authority answer or whole field is cached. Oversized objects and
-arrays, source descriptors and model-page metadata retain their existing
-admission and explicit refusal. Failed output may remain partial; non-success
-is never a completed document or successful export.
+Whole Session JSON and directory export can stream a string-valued
+`ToolCall.input`, `Thinking.data` or `Other.data` larger than the 64 KiB leaf
+limit. Malformed JSON-in-string tool arguments stay the supplied string. The
+renderer reads the field in bounded ranges, checks it with the credential
+masker, rereads it to confirm the result is unchanged and then writes it, so it
+keeps small buffers but makes three passes. Range reads keep the visibility,
+deadline and cancellation checks. Oversized objects and arrays keep their
+limits. A failed write may leave partial output but is never reported as a
+complete document or export.
