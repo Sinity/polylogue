@@ -1,5 +1,5 @@
-//! Ordinary query transport. Binding precedes reader acquisition, and both CLI
-//! renderings consume this one daemon result without a second filter engine.
+//! Session queries over the daemon socket. The query is parsed before the
+//! reader is locked, and the CLI's JSON and terminal output render this result.
 use crate::reference_read::{FRAME, frame, text_frames};
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::ReadHandle;
@@ -12,6 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 const TIME: Duration = Duration::from_secs(30);
+const MAX_RESPONSE: usize = 4 * 1024 * 1024;
 fn failed(kind: ErrorKind, message: impl ToString) -> Value {
     json!({"type":"end","outcome":"error","error":Failure::new(kind,message.to_string())})
 }
@@ -54,19 +55,16 @@ pub(crate) fn serve(
         } else {
             let plan = polylogue_query::bind(request["query"].as_str().unwrap())
                 .map_err(|e| json!({"type":"end","outcome":"error","error":e}))?;
-            let deadline = Instant::now() + TIME;
             let catalog = reader
                 .lock()
                 .map_err(|_| failed(ErrorKind::Io, "reader lock poisoned"))?
                 .session_catalog(65536)
                 .map_err(store_failure)?;
             let cancellation = stream.try_clone().map_err(|e| failed(ErrorKind::Io, e))?;
-            let result =
-                polylogue_engine::session_query::execute(&catalog, &plan, deadline, &mut || {
-                    crate::session_read::peer_gone(&cancellation)
-                })
-                .map_err(store_failure)?;
-            result
+            polylogue_engine::session_query::execute(&catalog, &plan, deadline, &mut || {
+                crate::session_read::peer_gone(&cancellation)
+            })
+            .map_err(store_failure)?
         };
         let guard = reader
             .lock()
@@ -109,15 +107,15 @@ pub(crate) fn serve(
                 }
             }
         }
-        // Encode before publishing a start frame. Credential refusal must not
-        // leak a partial result, and output admission fails the whole answer.
+        // Encode the whole result before the first frame, so a masking failure
+        // or the size limit fails the answer without sending part of it.
         let mut bytes = Vec::new();
         let mut encoder = crate::output_json::Encoder::new(&mut bytes, deadline);
         encoder
             .value(&result)
             .and_then(|_| encoder.finish())
             .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
-        if bytes.len() > 4 * 1024 * 1024 && result.get("pending_references").is_some() {
+        if bytes.len() > MAX_RESPONSE && result.get("pending_references").is_some() {
             crate::summarize_pending_references(&mut result);
             bytes.clear();
             let mut encoder = crate::output_json::Encoder::new(&mut bytes, deadline);
@@ -126,10 +124,10 @@ pub(crate) fn serve(
                 .and_then(|_| encoder.finish())
                 .map_err(|e| failed(ErrorKind::NotYetAvailable, e))?;
         }
-        if bytes.len() > 4 * 1024 * 1024 {
+        if bytes.len() > MAX_RESPONSE {
             return Err(failed(
                 ErrorKind::NotYetAvailable,
-                "query response exceeds 4 MiB admission; narrow the query or use | limit",
+                "query response exceeds 4 MiB; narrow the query or use | limit N",
             ));
         }
         frame(
@@ -190,10 +188,10 @@ fn request_inner(
                     io::Error::new(io::ErrorKind::InvalidData, "invalid query text")
                 })?;
                 bytes.extend_from_slice(text.as_bytes());
-                if bytes.len() > 4 * 1024 * 1024 {
+                if bytes.len() > MAX_RESPONSE {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "query response exceeds admission",
+                        "query response exceeds 4 MiB",
                     ));
                 }
             }
