@@ -19,10 +19,53 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Check the actual Rust foundation
+          name: Skip Rust work for prose-only changes
+          command: |
+            git fetch --no-tags origin master
+            base=$(git merge-base HEAD FETCH_HEAD)
+            if git diff --quiet "$base" HEAD -- Cargo.toml Cargo.lock flake.nix flake.lock rust-toolchain rust-toolchain.toml .cargo build.rs crates xtask scripts examples .circleci .githooks; then
+              echo "Foundation and CI unchanged; no Rust build needed."
+              circleci-agent step halt
+            fi
+      - restore_cache:
+          keys:
+            - cargo-v1-{{ arch }}-{{ checksum "flake.lock" }}-{{ checksum "Cargo.lock" }}-{{ .Revision }}
+            - cargo-v1-{{ arch }}-{{ checksum "flake.lock" }}-{{ checksum "Cargo.lock" }}-
+      - run:
+          name: Incremental Rust tests, formatting and crate boundaries
+          command: nix develop --command cargo run --locked -p xtask -- check
+      - save_cache:
+          key: cargo-v1-{{ arch }}-{{ checksum "flake.lock" }}-{{ checksum "Cargo.lock" }}-{{ .Revision }}
+          paths:
+            - target
+            - /root/.cargo/registry
+  package:
+    docker:
+      - image: nixos/nix@sha256:62c506c32c75395163676006f0c00d75c31578fffaac1167d600289f72477b78
+        environment:
+          PATH: /usr/local/bin:/usr/bin:/bin:/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/nix/var/nix/profiles/default/sbin
+    resource_class: medium
+    shell: /nix/var/nix/profiles/default/bin/bash -eo pipefail
+    environment:
+      NIX_CONFIG: |
+        experimental-features = nix-command flakes
+        sandbox = false
+        max-jobs = 1
+        cores = 2
+    steps:
+      - checkout
+      - run:
+          name: Qualify the clean Nix package after integration
           command: nix flake check --print-build-logs
 
 workflows:
   foundation:
     jobs:
-      - quick-gate
+      - quick-gate:
+          filters:
+            branches:
+              ignore: master
+      - package:
+          filters:
+            branches:
+              only: master
