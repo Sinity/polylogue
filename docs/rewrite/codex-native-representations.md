@@ -146,13 +146,6 @@ migration owner. Live history SQLite collection, general catalog reconciliation,
 replacement, page-patch scheduling, other item schemas and complete Codex
 Session/export support remain outside this path.
 
-`scripts/check-codex-native.py --binary PATH --output NEW_DIR` exercises the
-ordinary packaged CLI and actual SDK MCP process against synthetic fixtures.
-The declared `native_representation_demo` operation runs it and retains command
-arguments, replies, daemon logs and its report outside Git. It covers both
-arrival orders, wrapper ambiguity, turn/legacy/classification controls,
-provisional references, restart, same-request retry and unavailable bytes.
-
 [Configured startup discovery](codex-configured-discovery.md) independently enumerates a bounded explicit Codex home and preserves prompt-history uncertainty through this same retained operation path.
 
 The finite `--operation-growth` profile admits at most 242 synthetic snapshots

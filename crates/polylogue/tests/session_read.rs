@@ -2426,3 +2426,6 @@ mod codex_active;
 
 #[path = "session_read/prose_search_transaction.rs"]
 mod prose_search_transaction;
+
+#[path = "session_read/mcp_client.rs"]
+mod mcp_client;

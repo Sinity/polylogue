@@ -1,214 +1,46 @@
 schema = 1
 [project]
 id = "polylogue"
-display_name = "Polylogue Rust foundation"
+display_name = "Polylogue"
 root_markers = ["Cargo.toml", "crates"]
 [environment]
 kind = "direct"
 command = ["env"]
 inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR"]
 unset = ["PYTHONPATH", "PYTHONHOME"]
-[operations.foundation_check]
-description = "Build and test the exact isolated foundation candidate"
-exec = ["nix", "flake", "check", "--print-build-logs", "--max-jobs", "1"]
-arguments = "required"
+
+[operations.check]
+description = "Formatting, crate boundaries and the full workspace test suite"
+exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
-[operations.foundation_build]
-description = "Build explicit isolated foundation outputs"
-exec = ["nix", "build", "--no-link", "--print-build-logs", "--max-jobs", "1"]
-arguments = "required"
+
+[operations.scenarios]
+description = "End-to-end runs of the real daemon, CLI and MCP server over synthetic archives"
+exec = ["nix", "develop", "--command", "cargo", "test", "--locked", "-p", "polylogue", "--test", "*"]
 pool = "bulk"
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
 cache = "none"
-[operations.foundation_exec]
-description = "Run explicit Nix development-shell command in isolated foundation"
+
+[operations.package]
+description = "Clean Nix build of the polylogue package (nix flake check)"
+exec = ["nix", "flake", "check", "--print-build-logs"]
+pool = "bulk"
+result = "exit"
+timeout_seconds = 1800
+scratch = "nvme"
+cache = "none"
+
+[operations.exec]
+description = "Run a command in the Nix development shell"
 exec = ["nix", "develop", "--command"]
 arguments = "required"
 pool = "bulk"
-result = "exit"
-timeout_seconds = 1800
-scratch = "nvme"
-cache = "none"
-[operations.foundation_store_tests]
-description = "Run the bounded focused foundation store suite"
-exec = ["nix", "develop", "--command", "cargo", "test", "--locked", "-p", "polylogue-store"]
-pool = "normal"
-result = "exit"
-timeout_seconds = 180
-scratch = "nvme"
-cache = "none"
-
-[operations.shared_file_layer_check]
-description = "Package and test the standalone shared crate and disposable tag consumer"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-shared-file-layer.py"]
-pool = "normal"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.shared_credential_output_check]
-description = "Package and test the standalone credential crate and disposable tag consumer"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-shared-file-layer.py", "--package", "credential-output"]
-pool = "normal"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.morrow_demo]
-description = "Exercise packaged Morrow CLI/export or official MCP fact clients with a pinned specification oracle and retained failed-run evidence"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-morrow.py"]
-arguments = "required"
-pool = "bulk"
-result = "exit"
-timeout_seconds = 1800
-
-scratch = "nvme"
-cache = "none"
-
-[operations.bounded_read_demo]
-description = "Exercise one explicit binary through independent retained CLI bounded-read controls"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-bounded-read.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 300
-scratch = "nvme"
-cache = "none"
-
-
-[operations.mcp_read_demo]
-description = "Exercise the actual SDK stdio reader with independent native fixtures and downstream cancellation controls"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-mcp-read.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 300
-scratch = "nvme"
-cache = "none"
-
-[operations.observed_source_demo]
-description = "Exercise a packaged single-location Claude append and retained-byte client path"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-observed-source.py"]
-arguments = "required"
-pool = "bulk"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.dialogue_read_demo]
-description = "Exercise explicit native CLI and MCP dialogue against mixed masking controls and unchanged pinned Morrow inputs"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-dialogue-read.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 300
-scratch = "nvme"
-cache = "none"
-
-[operations.native_representation_demo]
-description = "Exercise one explicit binary through synthetic Codex rollout/history CLI and SDK MCP acceptance"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-codex-native.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.configured_codex_demo]
-description = "Exercise configured synthetic Codex home discovery, pending provenance and retained CLI/SDK MCP lifecycle"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-codex-discovery.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.claude_body_tests]
-description = "Check the connected retained Claude tool-result body path"
-exec = ["nix", "develop", "--command", "cargo", "test", "--locked", "-p", "polylogue-store", "-p", "polylogue-sources", "-p", "polylogue-engine", "-p", "polylogue"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.claude_body_demo]
-description = "Exercise packaged configured Claude required bodies through CLI and the official MCP SDK"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-claude-required-body.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.storage_proofs_demo]
-description = "Exercise synthetic retained CLI and SDK MCP citations, malformed seek maps and custody retry"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-storage-proofs.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 300
-scratch = "nvme"
-cache = "none"
-
-[operations.configured_codex_continuation_demo]
-description = "Exercise bounded configured Codex continuation through actual CLI and official SDK MCP clients"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-codex-continuation.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.configured_history_demo]
-description = "Exercise configured physical Codex snapshots through CLI and official MCP with WAL and retained recovery controls"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-configured-history.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.local_cold_restore_demo]
-description = "Exercise stopped synthetic custody restore through packaged CLI and official SDK MCP with interruption and missing-object controls"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-local-cold-restore.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.configured_claude_continuation_demo]
-description = "Exercise one configured Claude main and required bodies through CLI and official SDK MCP without restart"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-claude-continuation.py"]
-arguments = "required"
-pool = "normal"
-result = "exit"
-timeout_seconds = 600
-scratch = "nvme"
-cache = "none"
-
-[operations.configured_claude_projects_demo]
-description = "Exercise explicit synthetic Claude projects discovery, continuation, retained context and preserving upgrade through CLI and official SDK"
-exec = ["nix", "develop", "--command", "python3", "scripts/check-claude-projects.py"]
-arguments = "required"
-pool = "normal"
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"

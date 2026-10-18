@@ -15,7 +15,7 @@ operator switches over.
   results to the store.
 - `crates/polylogue`: configuration, the daemon and the CLI. Clients get typed
   store handles, never raw connections.
-- `xtask`: developer checks (`boundaries`, `check`).
+- `xtask`: developer checks (`fast`, `check`, `boundaries`).
 
 Reading a source file to its end does not mean its messages are parsed and
 queryable; the two are tracked separately.
@@ -25,11 +25,11 @@ queryable; the two are tracked separately.
 Optimize for fast integration. See `docs/development.md`.
 
 - Run focused tests for the change while editing.
-- The pre-push hook runs `scripts/check-fast.sh` (seconds). There is no hosted
-  CI and no required check; open a PR and merge it when it is ready.
-- Run the full suite (`cargo run --locked -p xtask -- check`) or `nix flake
-  check` as an AgentCTL job on batches of merged work, not before every merge.
-  Fix what it finds afterwards.
+- The pre-push hook runs the fast check, `cargo run -p xtask -- fast`
+  (seconds). There is no hosted CI and no required check; open a PR and merge
+  it when it is ready.
+- Run the full suite (AgentCTL operation `check`) on batches of merged work,
+  not before every merge. Fix what it finds afterwards.
 - Merge small PRs often. Rebase before pushing; do not keep long-lived
   branches.
 - Report what you ran and what you did not. A merge is not evidence of testing.
