@@ -537,6 +537,33 @@ fn opaque_value<W: Write>(
     }
 }
 
+fn opaque_field<W: Write>(
+    field: &FieldView<'_>,
+    e: &mut Encoder<W>,
+    deadline: Instant,
+    model_page: bool,
+    cancelled: &mut dyn FnMut() -> bool,
+) -> io::Result<()> {
+    if !model_page {
+        let first = stored(field.range(0, LEAF))?;
+        if !first.eof && first.bytes.first() == Some(&b'"') {
+            return e.retained_string_ranges(
+                |offset| {
+                    let part = stored(field.range(offset, PIECE))?;
+                    if part.next_offset != offset.saturating_add(part.bytes.len() as u64) {
+                        return Err(invalid("normalized string range made invalid progress"));
+                    }
+                    Ok((part.bytes, part.eof))
+                },
+                cancelled,
+            );
+        }
+    }
+    let value =
+        retained_field(field, false)?.ok_or_else(|| invalid("missing opaque block field"))?;
+    opaque_value(e, &value, deadline, model_page)
+}
+
 fn write_block<W: Write>(
     m: &MessageView,
     b: &BlockView<'_>,
@@ -655,11 +682,9 @@ fn write_block_fields<W: Write>(
                         kind,
                         BlockField::Input | BlockField::ThinkingData | BlockField::OtherData
                     ) {
-                        let value = retained_field(&field, false)?
-                            .ok_or_else(|| invalid("missing opaque block field"))?;
                         e.syntax(b",")?;
                         e.key(block_name(kind))?;
-                        opaque_value(e, &value, deadline, model_page)?;
+                        opaque_field(&field, e, deadline, model_page, cancelled)?;
                         cursor = Some(entry.cursor);
                         continue;
                     }

@@ -3,6 +3,7 @@
 //! and keeps settled UTF-8 output bounded independently of masking expansion.
 use credential_output::Masker;
 mod native_identity;
+mod string_ranges;
 use serde_json::Value;
 use std::io::{self, Write};
 use std::time::Instant;
@@ -16,6 +17,17 @@ pub(crate) struct Encoder<W> {
     failed: bool,
 }
 impl<W: Write> Encoder<W> {
+    /// A normalized JSON string from the same pinned field. Each read remains
+    /// bounded; objects/arrays and model metadata retain their own admission.
+    pub(crate) fn retained_string_ranges(
+        &mut self,
+        range: impl Fn(u64) -> io::Result<(Vec<u8>, bool)>,
+        cancelled: &mut dyn FnMut() -> bool,
+    ) -> io::Result<()> {
+        self.check()?;
+        let result = string_ranges::write(&mut self.out, self.deadline, &range, cancelled);
+        self.result(result)
+    }
     pub(crate) fn new(out: W, deadline: Instant) -> Self {
         Self {
             out,
