@@ -160,7 +160,7 @@ its successful client run does not replace the normal checked-package gate.
 
 ## Delivery boundary
 
-[Replacement disposition](docs/REPLACEMENT.md) records predecessor removal and preserved legal/history material. [Contract snapshot](docs/rewrite/README.md) links current semantic owners; canonical DDL provenance lives beside `crates/store/schema`.
+[docs/REPLACEMENT.md](docs/REPLACEMENT.md) records what was removed from the Python version. [docs/rewrite/](docs/rewrite/README.md) has implementation notes; the schema is in `crates/store/schema`.
 
 The foundation source and standalone `hashed-blobs-v0.1.0` release are published. Consumer pins, runtime activation and archive migration require their own qualification. Checksum failures on main-database page reads report the actual file and page. Cold durable WAL startup uses a cancellable bounded-memory integrity guard under archive ownership; ambiguous, partial and stale-generation tails require controlled recovery without changing retained bytes. This can refuse legitimate crashes and does not prove an external expected history head. The explicit copy path below handles one measured reused-tail shape; general WAL recovery remains open. Index rebuild/swap, cross-file read views and the first canonical source-to-query product path require further work. Canonical M1 and deployment acceptance remain open.
 

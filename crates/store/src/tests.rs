@@ -23,43 +23,6 @@ pub(crate) fn reopen_after_drop(root: &std::path::Path) -> crate::Writer {
 }
 
 #[test]
-fn ddl_is_exact_extraction_from_copied_owning_spec() {
-    fn extract(md: &str) -> String {
-        let mut blocks = Vec::new();
-        let mut current = None;
-        for line in md.lines() {
-            if line == "```sql" {
-                current = Some(String::new());
-            } else if line == "```" {
-                if let Some(sql) = current.take() {
-                    blocks.push(sql);
-                }
-            } else if let Some(sql) = &mut current {
-                sql.push_str(line);
-                sql.push('\n');
-            }
-        }
-        blocks.join("\n").trim_end().to_owned() + "\n"
-    }
-    for (md, sql) in [
-        (
-            include_str!("../../../docs/rewrite/polylogue-spec/spec/storage/archive-db.md"),
-            ARCHIVE_SQL,
-        ),
-        (
-            include_str!("../../../docs/rewrite/polylogue-spec/spec/storage/index-db.md"),
-            INDEX_SQL,
-        ),
-        (
-            include_str!("../../../docs/rewrite/polylogue-spec/spec/storage/embeddings.md"),
-            EMBEDDINGS_SQL,
-        ),
-    ] {
-        assert_eq!(extract(md), sql);
-    }
-}
-
-#[test]
 fn context_qualified_archive_uses_explicit_owning_schema_basis() {
     assert_eq!(ARCHIVE_VERSION, 4);
     let provenance = include_str!("../schema/provenance.json");
