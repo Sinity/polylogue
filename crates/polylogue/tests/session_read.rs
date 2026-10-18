@@ -1994,8 +1994,8 @@ fn model_branches_reads_known_messages_when_the_active_path_is_unknown() {
         for row in page["shown"].as_array().unwrap() {
             match shown.last_mut() {
                 Some(last) if last["block"] == row["block"] => {
-                    let text = last["text"].as_str().unwrap().to_owned()
-                        + row["text"].as_str().unwrap();
+                    let text =
+                        last["text"].as_str().unwrap().to_owned() + row["text"].as_str().unwrap();
                     last["text"] = json!(text);
                 }
                 _ => shown.push(row.clone()),
