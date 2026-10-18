@@ -1,5 +1,6 @@
-//! The declared role belongs to retained source authority, independently of
-//! disposable parser state and the provider's present directory layout.
+//! The stored context (role and name) of an observed Claude input. It lives in
+//! the archive, so it does not depend on parser state or the provider's
+//! current directory layout.
 use crate::{Error, InputFormat, Result, db};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
@@ -16,11 +17,11 @@ pub(crate) fn read(conn: &Connection, file: &Path, input: &str) -> Result<Vec<St
     })?;
     let Some((1, Some(text))) = row else {
         return Err(Error::ObservedSourceRefused(
-            "retained observed context is missing or unsupported".into(),
+            "observed context is missing or has an unknown version".into(),
         ));
     };
     let context: Vec<String> = serde_json::from_str(&text)
-        .map_err(|_| Error::ObservedSourceRefused("invalid retained observed context".into()))?;
+        .map_err(|_| Error::ObservedSourceRefused("invalid observed context".into()))?;
     validate(&context)?;
     Ok(context)
 }
@@ -40,8 +41,8 @@ pub(crate) fn insert(
     })?;
     Ok(())
 }
-/// Used only by preserving upgrade: this is the exact predecessor derivation,
-/// including its validation/refusal, not a fallback for lost new authority.
+/// Archive upgrade only: derive each context from the input's first observed
+/// path, as older versions did. Never a fallback for a missing context.
 pub(crate) fn migrate(conn: &Connection, file: &Path) -> Result<()> {
     let mut q = db(file, || {
         conn.prepare("SELECT i.id,(SELECT path FROM observation o WHERE o.input=i.id AND o.class='first' ORDER BY o.rowid LIMIT 1) FROM input i WHERE i.original_hash IS NULL AND i.format='claude-code-jsonl' ORDER BY i.id")
@@ -59,8 +60,7 @@ pub(crate) fn migrate(conn: &Connection, file: &Path) -> Result<()> {
         else {
             continue;
         };
-        // A previously unsupported retained row stays unsupported and preserved.
-        // No filename from today's provider substitutes for missing history.
+        // An input whose context cannot be derived keeps none.
         if validate(&context).is_ok() {
             insert(conn, file, &id, &context)?;
         }

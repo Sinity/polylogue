@@ -688,7 +688,7 @@ impl Actor {
                         .map_err(Error::Store);
                 }
                 PreparedCapture::Claude(prepared) => {
-                    let before = self.writer.claude_predecessor(
+                    let before = self.writer.claude_input_at(
                         std::path::Path::new(&job.observation.path),
                         &job.observation.machine,
                     )?;
