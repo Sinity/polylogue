@@ -1,4 +1,5 @@
-//! Golden cases: `examples/sources/<origin>/<case>/` holds an input file,
+//! Golden cases: `examples/sources/<origin>/<case>/` holds an input file
+//! (`input.jsonl`, `input.json`),
 //! the path it would have under the home directory (`path`), and the
 //! expected rows and accounting (`expected.json`). A parser bug is fixed by
 //! adding its input as a case. `POLYLOGUE_BLESS=1` rewrites the expected
@@ -16,7 +17,13 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
     let spec = by_name(origin).ok_or_else(|| format!("unknown origin {origin}"))?;
     let path = fs::read_to_string(dir.join("path")).map_err(|e| format!("path: {e}"))?;
     let path = Path::new(path.trim());
-    let input = fs::read(dir.join("input.jsonl")).map_err(|e| format!("input: {e}"))?;
+    let input_file = fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.file_stem().is_some_and(|s| s == "input"))
+        .ok_or("no input.* file")?;
+    let input = fs::read(&input_file).map_err(|e| format!("input: {e}"))?;
     let head = &input[..input.len().min(64)];
     if !(spec.recognize)(path, head) {
         return Err(format!("{} does not recognize {}", origin, path.display()));

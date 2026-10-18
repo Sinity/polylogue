@@ -1,0 +1,56 @@
+{
+  "accounting": {
+    "framed": 2,
+    "materialized": {
+      "conversation": 1,
+      "human": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "2026-08-01T10:00:02Z",
+        "data": {
+          "created_at": "2026-08-01T10:00:00Z",
+          "title": "Origin capability matrix",
+          "updated_at": "2026-08-01T10:00:02Z",
+          "uuid": "origin-matrix-claude-ai"
+        },
+        "kind": "conversation_settings",
+        "session": "claude-ai:origin-matrix-claude-ai"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2026-08-01T10:00:01Z",
+          "blocks": [
+            {
+              "text": "Prove the parser claim.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-ai:message-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-ai:origin-matrix-claude-ai"
+        },
+        "offset": 0
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-ai:origin-matrix-claude-ai",
+        "kind": "main",
+        "started": "2026-08-01T10:00:00Z"
+      }
+    ]
+  }
+}

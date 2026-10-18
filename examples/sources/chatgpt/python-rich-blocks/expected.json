@@ -1,0 +1,176 @@
+{
+  "accounting": {
+    "framed": 7,
+    "materialized": {
+      "code": 1,
+      "conversation": 1,
+      "execution_output": 1,
+      "multimodal_text": 1,
+      "text": 2,
+      "thoughts": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": {
+          "current_node": "files",
+          "id": "native-rich-chatgpt",
+          "title": "Synthetic canonical blocks"
+        },
+        "kind": "conversation_settings",
+        "session": "chatgpt:native-rich-chatgpt"
+      },
+      {
+        "after": "chatgpt:files",
+        "data": null,
+        "kind": "active_leaf",
+        "session": "chatgpt:native-rich-chatgpt"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "1970-01-01T00:00:01Z",
+          "blocks": [
+            {
+              "text": "compute 6 * 7",
+              "type": "text"
+            }
+          ],
+          "id": "chatgpt:user",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "chatgpt:native-rich-chatgpt"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "1970-01-01T00:00:02Z",
+          "blocks": [
+            {
+              "call_id": "call",
+              "command": "6 * 7",
+              "input": "6 * 7",
+              "tool": "python",
+              "type": "tool_call"
+            }
+          ],
+          "id": "chatgpt:call",
+          "parent": "chatgpt:user",
+          "role": "assistant",
+          "session": "chatgpt:native-rich-chatgpt"
+        },
+        "offset": 1
+      },
+      {
+        "end": 3,
+        "message": {
+          "at": "1970-01-01T00:00:03Z",
+          "blocks": [
+            {
+              "call_id": "call",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "42",
+              "type": "tool_result"
+            }
+          ],
+          "id": "chatgpt:result",
+          "parent": "chatgpt:call",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "chatgpt:native-rich-chatgpt"
+        },
+        "offset": 2
+      },
+      {
+        "end": 4,
+        "message": {
+          "at": "1970-01-01T00:00:04Z",
+          "blocks": [
+            {
+              "text": "Weighing options\n\nFirst I considered X, then Y.",
+              "type": "thinking"
+            }
+          ],
+          "id": "chatgpt:reasoning",
+          "parent": "chatgpt:result",
+          "role": "assistant",
+          "session": "chatgpt:native-rich-chatgpt"
+        },
+        "offset": 3
+      },
+      {
+        "end": 5,
+        "message": {
+          "at": "1970-01-01T00:00:05Z",
+          "blocks": [
+            {
+              "call_id": "search",
+              "input": "{\"search_query\": \"synthetic\"}",
+              "tool": "web",
+              "type": "tool_call"
+            }
+          ],
+          "id": "chatgpt:search",
+          "parent": "chatgpt:reasoning",
+          "role": "assistant",
+          "session": "chatgpt:native-rich-chatgpt"
+        },
+        "offset": 4
+      },
+      {
+        "end": 6,
+        "message": {
+          "at": "1970-01-01T00:00:06Z",
+          "blocks": [
+            {
+              "text": "Files sandbox:/mnt/data/a.md. and sandbox:/mnt/data/a.md,",
+              "type": "text"
+            },
+            {
+              "direction": "output",
+              "source_id": "file-AUDIO",
+              "type": "file",
+              "url": "file-service://file-AUDIO"
+            },
+            {
+              "data": {
+                "asset_pointer": "file-service://file-TRANSCRIPTION",
+                "content_type": "audio_transcription"
+              },
+              "type": "other",
+              "type_name": "audio_transcription"
+            }
+          ],
+          "id": "chatgpt:files",
+          "parent": "chatgpt:search",
+          "role": "assistant",
+          "session": "chatgpt:native-rich-chatgpt"
+        },
+        "offset": 5
+      }
+    ],
+    "sessions": [
+      {
+        "id": "chatgpt:native-rich-chatgpt",
+        "kind": "main",
+        "title": {
+          "source": "generated",
+          "text": "Synthetic canonical blocks"
+        }
+      }
+    ]
+  }
+}

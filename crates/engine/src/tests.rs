@@ -227,3 +227,75 @@ fn importing_the_same_bytes_twice_stores_them_once() {
     let second = e.import(std::slice::from_ref(&outside)).unwrap();
     assert_eq!(second.already_stored, [outside]);
 }
+
+fn messages_of(root: &Path, session: &str) -> Vec<Message> {
+    let pool = ReadPool::open(&Archive::at(root)).unwrap();
+    let id = SessionId::parse(session).unwrap();
+    pool.reader().unwrap().messages(&id, false).unwrap()
+}
+
+fn chatgpt_conversation(id: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "conversation_id": id, "title": "T", "create_time": 1700000000.0,
+        "current_node": "n1",
+        "mapping": {
+            "n1": {"id": "n1", "parent": null, "children": [], "message": {
+                "id": format!("{id}-m1"), "author": {"role": "user"}, "create_time": 1700000000.0,
+                "content": {"content_type": "multimodal_text", "parts": [
+                    {"content_type": "image_asset_pointer", "asset_pointer": "file-service://file-Img"},
+                    text
+                ]},
+                "status": "finished_successfully", "recipient": "all", "metadata": {}
+            }}
+        }
+    })
+}
+
+#[test]
+fn a_zip_export_imports_its_conversations_and_keeps_its_other_files() {
+    use std::io::Write as _;
+    let w = World::new();
+    let zip_path = w.dir.path().join("chatgpt-data.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
+    let opts = zip::write::SimpleFileOptions::default();
+    zip.start_file("conversations-000.json", opts).unwrap();
+    let convs = serde_json::json!([chatgpt_conversation("c1", "look at this")]);
+    zip.write_all(&serde_json::to_vec(&convs).unwrap()).unwrap();
+    zip.start_file("file-Img-photo.png", opts).unwrap();
+    zip.write_all(b"\x89PNG not really").unwrap();
+    zip.finish().unwrap();
+
+    let (mut e, _lock) = w.engine(64 << 20);
+    let report = e.import(std::slice::from_ref(&zip_path)).unwrap();
+    assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+    assert_eq!(report.imported.len(), 2, "{:?}", report.imported);
+    let msgs = messages_of(&w.root, "chatgpt:c1");
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].text(), "look at this");
+    assert_eq!(
+        w.count("SELECT COUNT(*) AS n FROM a.input WHERE format = 'export-file'"),
+        1,
+        "the image is kept as bytes"
+    );
+    let again = e.import(std::slice::from_ref(&zip_path)).unwrap();
+    assert_eq!(again.already_stored.len(), 2);
+    assert!(again.imported.is_empty());
+}
+
+#[test]
+fn a_document_export_is_parsed_whole_however_small_the_chunk() {
+    let w = World::new();
+    let path = w.dir.path().join("conversations.json");
+    let convs = serde_json::json!([
+        chatgpt_conversation("c1", "one"),
+        chatgpt_conversation("c2", "two")
+    ]);
+    fs::write(&path, serde_json::to_vec_pretty(&convs).unwrap()).unwrap();
+    // A chunk far smaller than the document: a line-framed origin would
+    // read it in steps; a document is read whole in one.
+    let (mut e, _lock) = w.engine(64);
+    let report = e.import(std::slice::from_ref(&path)).unwrap();
+    assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+    assert_eq!(messages_of(&w.root, "chatgpt:c1")[0].text(), "one");
+    assert_eq!(messages_of(&w.root, "chatgpt:c2")[0].text(), "two");
+}

@@ -39,6 +39,9 @@ pub struct Job {
     pub length: u64,
     pub carry: Option<Json>,
     pub priority: Priority,
+    /// The input's bytes when they are not a file of their own (a member
+    /// of an imported zip); `None` reads `path`.
+    pub source: Option<Arc<Vec<u8>>>,
 }
 
 impl Job {
@@ -260,7 +263,11 @@ fn run(job: Job, blobs: &mut hashed_blobs::Batch<'_>) -> (Option<Batch>, Done) {
         stored: 0,
         error: None,
     };
-    let bytes = match stage::read_range(&job.path, job.start, job.end) {
+    let read = match &job.source {
+        Some(all) => Ok(all[job.start as usize..job.end as usize].to_vec()),
+        None => stage::read_range(&job.path, job.start, job.end),
+    };
+    let bytes = match read {
         Ok(b) => b,
         Err(e) => {
             out.error = Some(format!("read {}: {e}", job.path.display()));

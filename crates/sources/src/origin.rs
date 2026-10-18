@@ -11,6 +11,20 @@ pub enum Support {
     /// Declared and collected (bytes are stored), not parsed yet. Shown as
     /// such in `status`, never as empty.
     Reserved,
+    /// Bytes kept with no records in them: the images, audio and HTML an
+    /// export carries beside its conversations. Messages refer to them.
+    Kept,
+}
+
+/// How an input's bytes divide into records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    /// One record per line; appends are parsed from where the last step
+    /// stopped.
+    Lines,
+    /// One JSON document (or archive) read whole: an export, a capture the
+    /// extension rewrites. Any change parses the whole input again.
+    Document,
 }
 
 /// How an input reaches Polylogue.
@@ -51,6 +65,7 @@ pub struct OriginSpec {
     pub parser_version: u32,
     pub support: Support,
     pub route: Route,
+    pub framing: Framing,
     pub root: Root,
     /// Glob patterns relative to `root`, exactly the layout the tool
     /// writes. Empty for imports.
@@ -81,6 +96,7 @@ macro_rules! reserved {
             parser_version: 0,
             support: Support::Reserved,
             route: Route::$route,
+            framing: Framing::Lines,
             root: $root,
             locations: &[$($loc),*],
             recognize: never,
@@ -100,6 +116,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 2,
         support: Support::Parsed,
         route: Route::Live,
+        framing: Framing::Lines,
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::LOCATIONS,
         recognize: crate::claude_code::recognize,
@@ -126,9 +143,50 @@ pub static ORIGINS: &[OriginSpec] = &[
         Spool,
         [".local/state/polylogue/browser-capture/**"]
     ),
-    reserved!("chatgpt", Import, []),
-    reserved!("claude-ai", Import, []),
-    reserved!("claude-design", Import, []),
+    OriginSpec {
+        name: "export-file",
+        parser_version: 0,
+        support: Support::Kept,
+        route: Route::Import,
+        framing: Framing::Document,
+        root: Root::HOME,
+        locations: &[],
+        recognize: never,
+        open: none,
+    },
+    OriginSpec {
+        name: "chatgpt",
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Import,
+        framing: Framing::Document,
+        root: Root::HOME,
+        locations: &[],
+        recognize: crate::chatgpt::recognize,
+        open: crate::chatgpt::open,
+    },
+    OriginSpec {
+        name: "claude-ai",
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Import,
+        framing: Framing::Document,
+        root: Root::HOME,
+        locations: &[],
+        recognize: crate::claude_ai::recognize,
+        open: crate::claude_ai::open,
+    },
+    OriginSpec {
+        name: "claude-design",
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Import,
+        framing: Framing::Document,
+        root: Root::HOME,
+        locations: &[],
+        recognize: crate::claude_ai::recognize_design,
+        open: crate::claude_ai::open_design,
+    },
     reserved!("ai-studio", Import, []),
     reserved!("gemini-app", Import, []),
     reserved!("grok", Import, []),

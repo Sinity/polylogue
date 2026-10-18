@@ -1,0 +1,139 @@
+{
+  "accounting": {
+    "framed": 5,
+    "materialized": {
+      "assistant": 2,
+      "conversation": 1,
+      "human": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": {
+          "name": "Synthetic canonical blocks",
+          "uuid": "native-rich-blocks"
+        },
+        "kind": "conversation_settings",
+        "session": "claude-ai:native-rich-blocks"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2026-01-01T00:00:01Z",
+          "blocks": [
+            {
+              "text": "Let me search.",
+              "type": "text"
+            },
+            {
+              "signature": "synthetic-signature",
+              "text": "considering options",
+              "type": "thinking"
+            },
+            {
+              "call_id": "toolu-1",
+              "input": {
+                "query": "synthetic"
+              },
+              "tool": "web_search",
+              "type": "tool_call"
+            }
+          ],
+          "id": "claude-ai:assistant-1",
+          "role": "assistant",
+          "session": "claude-ai:native-rich-blocks"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2026-01-01T00:00:02Z",
+          "blocks": [
+            {
+              "attachments": [
+                {
+                  "direction": "input",
+                  "media_type": "image/png"
+                }
+              ],
+              "call_id": "toolu-1",
+              "outcome": {
+                "kind": "error"
+              },
+              "output": "first line\nsecond line",
+              "type": "tool_result"
+            }
+          ],
+          "id": "claude-ai:result-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-ai:native-rich-blocks"
+        },
+        "offset": 1
+      },
+      {
+        "end": 3,
+        "message": {
+          "at": "2026-01-01T00:00:03Z",
+          "blocks": [
+            {
+              "attachments": [
+                {
+                  "direction": "input",
+                  "media_type": "image/png"
+                }
+              ],
+              "call_id": "toolu-2",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": null,
+              "type": "tool_result"
+            }
+          ],
+          "id": "claude-ai:result-2",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-ai:native-rich-blocks"
+        },
+        "offset": 2
+      },
+      {
+        "end": 4,
+        "message": {
+          "at": "2026-01-01T00:00:04Z",
+          "blocks": [
+            {
+              "text": "Complete.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-ai:assistant-2",
+          "role": "assistant",
+          "session": "claude-ai:native-rich-blocks"
+        },
+        "offset": 3
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-ai:native-rich-blocks",
+        "kind": "main",
+        "title": {
+          "source": "generated",
+          "text": "Synthetic canonical blocks"
+        }
+      }
+    ]
+  }
+}
