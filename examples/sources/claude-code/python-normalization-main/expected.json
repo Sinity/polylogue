@@ -1,0 +1,347 @@
+{
+  "accounting": {
+    "framed": 13,
+    "materialized": {
+      "assistant": 4,
+      "queue-operation": 1,
+      "user": 8
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [
+      {
+        "call_id": "tool-bg",
+        "outcome": {
+          "kind": "error",
+          "reason": {
+            "detail": 7,
+            "kind": "exit_code"
+          }
+        },
+        "output_file": "/tmp/task-bg.output",
+        "session": "claude-code:claude-normalization-main",
+        "task_id": "task-bg"
+      }
+    ],
+    "blobs": [],
+    "events": [
+      {
+        "after": "claude-code:main-fg-result",
+        "at": "2026-07-01T10:00:09Z",
+        "data": {
+          "content": "<task-notification>\n<task-id>task-bg</task-id>\n<tool-use-id>tool-bg</tool-use-id>\n<output-file>/tmp/task-bg.output</output-file>\n<status>failed</status>\n<summary>Background command \"python -m pytest -q tests/unit/sources\" failed with exit code 7</summary>\n</task-notification>",
+          "sessionId": "claude-normalization-main",
+          "timestamp": "2026-07-01T10:00:09Z",
+          "type": "queue-operation",
+          "uuid": "main-bg-notification"
+        },
+        "kind": "queue",
+        "session": "claude-code:claude-normalization-main"
+      }
+    ],
+    "links": [
+      {
+        "child": "claude-code:claude-normalization-main",
+        "evidence": "sessionId",
+        "kind": "copy",
+        "parent": "claude-code:claude-normalization-other"
+      },
+      {
+        "child": "claude-code:claude-normalization-main/sidechain",
+        "evidence": "isSidechain",
+        "kind": "spawn",
+        "parent": "claude-code:claude-normalization-main"
+      }
+    ],
+    "messages": [
+      {
+        "message": {
+          "at": "2026-07-01T10:00:00Z",
+          "blocks": [
+            {
+              "text": "Review the parser.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:main-u1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:claude-normalization-main"
+        },
+        "offset": 0
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:01Z",
+          "blocks": [
+            {
+              "text": "I should inspect the production route before editing.",
+              "type": "thinking"
+            },
+            {
+              "text": "Running the focused checks.",
+              "type": "text"
+            },
+            {
+              "call_id": "tool-bg",
+              "command": "python -m pytest -q tests/unit/sources",
+              "input": {
+                "command": "python -m pytest -q tests/unit/sources"
+              },
+              "tool": "Bash",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "tool-missing",
+              "input": {
+                "file_path": "/workspace/polylogue/missing.py"
+              },
+              "path": "/workspace/polylogue/missing.py",
+              "tool": "Read",
+              "type": "tool_call"
+            }
+          ],
+          "duration_ms": 1500,
+          "id": "claude-code:main-a1",
+          "model": "claude-sonnet-4-5-20250929",
+          "parent": "claude-code:main-u1",
+          "reported_cost_usd": 0.125,
+          "role": "assistant",
+          "session": "claude-code:claude-normalization-main",
+          "usage": {
+            "cache_write": 300,
+            "cached_input": 900,
+            "input": 120,
+            "output": 40,
+            "reasoning": null
+          }
+        },
+        "offset": 191
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:02Z",
+          "blocks": [
+            {
+              "call_id": "tool-bg",
+              "data": {
+                "backgroundTaskId": "task-bg"
+              },
+              "outcome": {
+                "kind": "unknown",
+                "reason": "running_in_background"
+              },
+              "output": "Command running in background with ID: task-bg.",
+              "type": "tool_result"
+            }
+          ],
+          "id": "claude-code:main-bg-start",
+          "parent": "claude-code:main-a1",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:claude-normalization-main"
+        },
+        "offset": 942
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:03Z",
+          "blocks": [
+            {
+              "text": "<command-name>/status</command-name>\n<command-message>status</command-message>\n<command-args></command-args>",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:main-command",
+          "parent": "claude-code:main-bg-start",
+          "prompt_kind": "command",
+          "role": "user",
+          "session": "claude-code:claude-normalization-main"
+        },
+        "offset": 1288
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:03.5Z",
+          "blocks": [
+            {
+              "text": "An independent session.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:other-u1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:claude-normalization-other"
+        },
+        "offset": 1579
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:04Z",
+          "blocks": [
+            {
+              "text": "Conflicting duplicate that must not survive.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:main-u1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:claude-normalization-main"
+        },
+        "offset": 1755
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:05Z",
+          "blocks": [
+            {
+              "text": "<environment_context>runtime-only workspace facts</environment_context>",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:main-context",
+          "parent": "claude-code:main-command",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:claude-normalization-main"
+        },
+        "offset": 1946
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:06Z",
+          "blocks": [
+            {
+              "text": "[Request interrupted by user]",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:claude-normalization-main@2211",
+          "parent": "claude-code:main-context",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:claude-normalization-main"
+        },
+        "offset": 2211
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:07Z",
+          "blocks": [
+            {
+              "text": "Checking a foreground failure.",
+              "type": "text"
+            },
+            {
+              "call_id": "tool-fg",
+              "command": "false",
+              "input": {
+                "command": "false"
+              },
+              "tool": "Bash",
+              "type": "tool_call"
+            }
+          ],
+          "id": "claude-code:main-a2",
+          "model": "claude-sonnet-4-5-20250929",
+          "parent": "claude-code:main-context",
+          "role": "assistant",
+          "session": "claude-code:claude-normalization-main"
+        },
+        "offset": 2398
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:08Z",
+          "blocks": [
+            {
+              "call_id": "tool-fg",
+              "outcome": {
+                "kind": "error"
+              },
+              "output": "command failed",
+              "type": "tool_result"
+            }
+          ],
+          "id": "claude-code:main-fg-result",
+          "parent": "claude-code:main-a2",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:claude-normalization-main"
+        },
+        "offset": 2752
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:09.5Z",
+          "blocks": [
+            {
+              "text": "Other reply.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:other-a1",
+          "model": "claude-haiku-4-5-20251001",
+          "parent": "claude-code:other-u1",
+          "role": "assistant",
+          "session": "claude-code:claude-normalization-other"
+        },
+        "offset": 3447
+      },
+      {
+        "message": {
+          "at": "2026-07-01T10:00:10Z",
+          "blocks": [
+            {
+              "text": "Normalization complete.",
+              "type": "text"
+            }
+          ],
+          "duration_ms": 250,
+          "id": "claude-code:claude-normalization-main@3682",
+          "model": "claude-opus-4-6",
+          "parent": "claude-code:main-fg-result",
+          "reported_cost_usd": 0.025,
+          "role": "assistant",
+          "session": "claude-code:claude-normalization-main/sidechain",
+          "usage": {
+            "cache_write": 5,
+            "cached_input": 75,
+            "input": 25,
+            "output": 8,
+            "reasoning": null
+          }
+        },
+        "offset": 3682
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/workspace/polylogue"
+        ],
+        "id": "claude-code:claude-normalization-main",
+        "kind": "main",
+        "started": "2026-07-01T10:00:00Z"
+      },
+      {
+        "cwd": [
+          "/workspace/polylogue"
+        ],
+        "id": "claude-code:claude-normalization-main/sidechain",
+        "kind": "sidechain",
+        "started": "2026-07-01T10:00:10Z"
+      },
+      {
+        "id": "claude-code:claude-normalization-other",
+        "kind": "main",
+        "started": "2026-07-01T10:00:03.5Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,387 @@
+{
+  "accounting": {
+    "framed": 13,
+    "materialized": {
+      "ai-title": 1,
+      "assistant": 6,
+      "user": 6
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "message": {
+          "at": "2026-10-01T07:00:00Z",
+          "blocks": [
+            {
+              "text": "Set up a new Rust library crate called morrow for parsing human-written dates.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000001",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+        },
+        "offset": 0
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:03:49Z",
+          "blocks": [
+            {
+              "signature": "sig-placeholder",
+              "text": "Initialize the crate, then add a minimal lib.rs and manifest.",
+              "type": "thinking"
+            },
+            {
+              "call_id": "toolu_0101",
+              "command": "cargo init --lib",
+              "input": {
+                "command": "cargo init --lib",
+                "description": "Create the crate"
+              },
+              "tool": "Bash",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "toolu_0102",
+              "input": {
+                "content": "[package]\nname = \"morrow\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+                "file_path": "/home/op/morrow/Cargo.toml"
+              },
+              "path": "/home/op/morrow/Cargo.toml",
+              "tool": "Write",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "toolu_0103",
+              "input": {
+                "content": "//! Parse human-written dates.\n\npub mod parse;\n",
+                "file_path": "/home/op/morrow/src/lib.rs"
+              },
+              "path": "/home/op/morrow/src/lib.rs",
+              "tool": "Write",
+              "type": "tool_call"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000002",
+          "model": "claude-fable-5-1",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000001",
+          "role": "assistant",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "stop_reason": "tool_use",
+          "usage": {
+            "cache_write": 6666,
+            "cached_input": 50000,
+            "input": 200,
+            "output": 1500,
+            "reasoning": null,
+            "service_tier": "standard"
+          }
+        },
+        "offset": 619
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:07:38Z",
+          "blocks": [
+            {
+              "call_id": "toolu_0101",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "    Creating library `morrow` package",
+              "type": "tool_result"
+            },
+            {
+              "call_id": "toolu_0102",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "File created successfully at: /home/op/morrow/Cargo.toml",
+              "type": "tool_result"
+            },
+            {
+              "call_id": "toolu_0103",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "File created successfully at: /home/op/morrow/src/lib.rs",
+              "type": "tool_result"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000003",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000002",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+        },
+        "offset": 1974
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:11:27Z",
+          "blocks": [
+            {
+              "call_id": "toolu_0104",
+              "command": "cargo build",
+              "input": {
+                "command": "cargo build",
+                "description": "Build the crate"
+              },
+              "tool": "Bash",
+              "type": "tool_call"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000004",
+          "model": "claude-fable-5-1",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000003",
+          "role": "assistant",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "stop_reason": "tool_use",
+          "usage": {
+            "cache_write": 6666,
+            "cached_input": 50000,
+            "input": 200,
+            "output": 1500,
+            "reasoning": null,
+            "service_tier": "standard"
+          }
+        },
+        "offset": 2778
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:15:16Z",
+          "blocks": [
+            {
+              "call_id": "toolu_0104",
+              "data": {
+                "interrupted": false,
+                "stderr": "",
+                "stdout": "   Compiling morrow v0.1.0\n    Finished `dev` profile in 1.84s"
+              },
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "   Compiling morrow v0.1.0\n    Finished `dev` profile in 1.84s",
+              "type": "tool_result"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000005",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000004",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+        },
+        "offset": 3619
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:19:05Z",
+          "blocks": [
+            {
+              "text": "The crate builds. lib.rs declares a parse module that we will fill in next.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000006",
+          "model": "claude-fable-5-1",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000005",
+          "role": "assistant",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cache_write": 6666,
+            "cached_input": 50000,
+            "input": 200,
+            "output": 1500,
+            "reasoning": null,
+            "service_tier": "standard"
+          }
+        },
+        "offset": 4293
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:22:55Z",
+          "blocks": [
+            {
+              "text": "Show me what lib.rs looks like and list the files.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000007",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000006",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+        },
+        "offset": 5110
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:26:44Z",
+          "blocks": [
+            {
+              "call_id": "toolu_0105",
+              "input": {
+                "file_path": "/home/op/morrow/src/lib.rs"
+              },
+              "path": "/home/op/morrow/src/lib.rs",
+              "tool": "Read",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "toolu_0106",
+              "command": "ls -R src",
+              "input": {
+                "command": "ls -R src",
+                "description": "List source files"
+              },
+              "tool": "Bash",
+              "type": "tool_call"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000008",
+          "model": "claude-fable-5-1",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000007",
+          "role": "assistant",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "stop_reason": "tool_use",
+          "usage": {
+            "cache_write": 6666,
+            "cached_input": 50000,
+            "input": 200,
+            "output": 1500,
+            "reasoning": null,
+            "service_tier": "standard"
+          }
+        },
+        "offset": 5630
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:30:33Z",
+          "blocks": [
+            {
+              "call_id": "toolu_0105",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "1\t//! Parse human-written dates.\n2\t\n3\tpub mod parse;",
+              "type": "tool_result"
+            },
+            {
+              "call_id": "toolu_0106",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "src:\nlib.rs\nparse.rs",
+              "type": "tool_result"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000009",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000008",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+        },
+        "offset": 6583
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:34:22Z",
+          "blocks": [
+            {
+              "text": "lib.rs has a doc comment and declares `parse`; src/ holds lib.rs and an empty parse.rs.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000010",
+          "model": "claude-fable-5-1",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000009",
+          "role": "assistant",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cache_write": 6666,
+            "cached_input": 50000,
+            "input": 200,
+            "output": 1500,
+            "reasoning": null,
+            "service_tier": "standard"
+          }
+        },
+        "offset": 7229
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:38:11Z",
+          "blocks": [
+            {
+              "text": "Good, that's enough for today.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000011",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000010",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001"
+        },
+        "offset": 8058
+      },
+      {
+        "message": {
+          "at": "2026-10-01T07:42:00Z",
+          "blocks": [
+            {
+              "text": "Done. Next step: implement relative dates in parse.rs.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:c1000000-0000-4000-8000-000000000012",
+          "model": "claude-fable-5-1",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000011",
+          "role": "assistant",
+          "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cache_write": 6670,
+            "cached_input": 50000,
+            "input": 200,
+            "output": 1500,
+            "reasoning": null,
+            "service_tier": "standard"
+          }
+        },
+        "offset": 8558
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/home/op/morrow"
+        ],
+        "git_branch": "main",
+        "id": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+        "kind": "main",
+        "started": "2026-10-01T07:00:00Z",
+        "title": {
+          "source": "generated",
+          "text": "Project skeleton"
+        },
+        "tool_version": "2.1.220"
+      }
+    ]
+  }
+}

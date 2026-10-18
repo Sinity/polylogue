@@ -1,0 +1,15 @@
+[package]
+name = "polylogue-render"
+description = "Views and formats, reading for models, masking on output"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+polylogue-model.workspace = true
+credential-masking.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

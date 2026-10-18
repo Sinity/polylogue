@@ -1,0 +1,4 @@
+{"type":"user","uuid":"old-1","sessionId":"s1","timestamp":"2026-03-01T09:00:00Z","message":{"role":"user","content":"First question"}}
+{"type":"assistant","uuid":"old-2","parentUuid":"old-1","sessionId":"s1","timestamp":"2026-03-01T09:00:02Z","message":{"id":"msg_old","role":"assistant","content":[{"type":"text","text":"First answer"}]}}
+{"type":"user","uuid":"new-1","parentUuid":"old-2","sessionId":"s2","timestamp":"2026-03-02T09:00:00Z","message":{"role":"user","content":"Continue from there"}}
+{"type":"continued-in","continuedInSessionId":"s3","sessionId":"s2"}

@@ -9,10 +9,11 @@ use std::{
 /// Packages rustfmt checks.
 const FORMATTED: &[&str] = &[
     "polylogue-model",
-    "polylogue-query",
     "polylogue-sources",
-    "polylogue-engine",
     "polylogue-store",
+    "polylogue-engine",
+    "polylogue-query",
+    "polylogue-render",
     "polylogue",
     "xtask",
 ];
@@ -42,24 +43,22 @@ enum Cli {
     Shared(devkit::cli::Command),
 }
 
-/// Internal dependencies each workspace package may use. Only the store may
-/// depend on rusqlite.
+/// Internal dependencies each workspace package may use (architecture 3).
+/// Only the store may depend on rusqlite.
 fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
     Some(match package {
         "polylogue-model" | "xtask" => &[],
-        "polylogue-sources" | "polylogue-query" | "polylogue-store" => &["polylogue-model"],
-        "polylogue-engine" => &[
-            "polylogue-model",
-            "polylogue-sources",
-            "polylogue-query",
-            "polylogue-store",
-        ],
+        "polylogue-sources" | "polylogue-query" | "polylogue-store" | "polylogue-render" => {
+            &["polylogue-model"]
+        }
+        "polylogue-engine" => &["polylogue-model", "polylogue-sources", "polylogue-store"],
         "polylogue" => &[
             "polylogue-model",
-            "polylogue-store",
             "polylogue-sources",
-            "polylogue-query",
+            "polylogue-store",
             "polylogue-engine",
+            "polylogue-query",
+            "polylogue-render",
         ],
         _ => return None,
     })
