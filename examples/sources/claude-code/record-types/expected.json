@@ -1,0 +1,148 @@
+{
+  "accounting": {
+    "framed": 17,
+    "materialized": {
+      "ai-title": 1,
+      "custom-title": 1,
+      "permission-mode": 1,
+      "progress/agent_progress": 1,
+      "progress/hook_progress": 1,
+      "queue-operation": 1,
+      "relocated": 1,
+      "system/compact_boundary": 1,
+      "system/turn_duration": 1,
+      "user": 1
+    },
+    "refused": {
+      "?: malformed JSON: key must be a string at line 1 column 18": 1
+    },
+    "unknown": {
+      "agent-color: terminal colour only; names no agent": 1,
+      "atis-latch: always empty in observed data": 1,
+      "brand-new-record: unrecognized record type": 1,
+      "mode: always \"normal\" in observed data": 1,
+      "progress/bash_progress: progress tick; the tool's own result supersedes it": 1,
+      "system: system record without a subtype": 1
+    },
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [
+      {
+        "outcome": {
+          "kind": "ok"
+        },
+        "session": "claude-code:s1",
+        "task_id": "bg1"
+      }
+    ],
+    "blobs": [],
+    "events": [
+      {
+        "data": {
+          "permissionMode": "acceptEdits",
+          "sessionId": "s1",
+          "type": "permission-mode"
+        },
+        "kind": "permission_mode",
+        "session": "claude-code:s1"
+      },
+      {
+        "at": "2026-03-01T12:00:00Z",
+        "data": {
+          "compactMetadata": {
+            "preTokens": 160000,
+            "trigger": "auto"
+          },
+          "sessionId": "s1",
+          "subtype": "compact_boundary",
+          "timestamp": "2026-03-01T12:00:00Z",
+          "type": "system"
+        },
+        "kind": "compaction",
+        "session": "claude-code:s1"
+      },
+      {
+        "at": "2026-03-01T12:00:01Z",
+        "data": {
+          "isCompactSummary": true,
+          "message": {
+            "content": "Summary of the earlier conversation.",
+            "role": "user"
+          },
+          "sessionId": "s1",
+          "timestamp": "2026-03-01T12:00:01Z",
+          "type": "user",
+          "uuid": "cs"
+        },
+        "kind": "compaction_summary",
+        "session": "claude-code:s1"
+      },
+      {
+        "data": {
+          "durationMs": 5000,
+          "sessionId": "s1",
+          "subtype": "turn_duration",
+          "type": "system"
+        },
+        "kind": "turn_duration",
+        "session": "claude-code:s1"
+      },
+      {
+        "data": {
+          "relocatedCwd": "/repo/sub",
+          "sessionId": "s1",
+          "type": "relocated"
+        },
+        "kind": "relocated",
+        "session": "claude-code:s1"
+      },
+      {
+        "data": {
+          "data": {
+            "hookName": "PreToolUse",
+            "type": "hook_progress"
+          },
+          "sessionId": "s1",
+          "type": "progress"
+        },
+        "kind": "hook_run",
+        "session": "claude-code:s1"
+      },
+      {
+        "data": {
+          "content": "<task-notification><task-id>bg1</task-id><status>completed</status></task-notification>",
+          "operation": "enqueue",
+          "sessionId": "s1",
+          "type": "queue-operation"
+        },
+        "kind": "queue",
+        "session": "claude-code:s1"
+      }
+    ],
+    "links": [
+      {
+        "call_id": "toolu_9",
+        "child": "claude-code:agent-ab12",
+        "evidence": "agent_progress",
+        "kind": "spawn",
+        "parent": "claude-code:s1"
+      }
+    ],
+    "messages": [],
+    "sessions": [
+      {
+        "cwd": [
+          "/repo/sub"
+        ],
+        "id": "claude-code:s1",
+        "kind": "main",
+        "started": "2026-03-01T12:00:00Z",
+        "title": {
+          "source": "custom",
+          "text": "Build fix"
+        }
+      }
+    ]
+  }
+}

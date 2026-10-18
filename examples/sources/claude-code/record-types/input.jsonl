@@ -1,0 +1,17 @@
+{"type":"custom-title","customTitle":"Build fix","sessionId":"s1"}
+{"type":"ai-title","aiTitle":"Fixing the build","sessionId":"s1"}
+{"type":"permission-mode","permissionMode":"acceptEdits","sessionId":"s1"}
+{"type":"system","subtype":"compact_boundary","sessionId":"s1","timestamp":"2026-03-01T12:00:00Z","compactMetadata":{"trigger":"auto","preTokens":160000}}
+{"type":"user","isCompactSummary":true,"uuid":"cs","sessionId":"s1","timestamp":"2026-03-01T12:00:01Z","message":{"role":"user","content":"Summary of the earlier conversation."}}
+{"type":"system","subtype":"turn_duration","durationMs":5000,"sessionId":"s1"}
+{"type":"system","sessionId":"s1"}
+{"type":"relocated","relocatedCwd":"/repo/sub","sessionId":"s1"}
+{"type":"progress","sessionId":"s1","parentToolUseID":"toolu_9","data":{"type":"agent_progress","agentId":"ab12"}}
+{"type":"progress","sessionId":"s1","data":{"type":"bash_progress","output":"..."}}
+{"type":"progress","sessionId":"s1","data":{"type":"hook_progress","hookName":"PreToolUse"}}
+{"type":"queue-operation","operation":"enqueue","sessionId":"s1","content":"<task-notification><task-id>bg1</task-id><status>completed</status></task-notification>"}
+{"type":"mode","mode":"normal","sessionId":"s1"}
+{"type":"atis-latch","atis":"","sessionId":"s1"}
+{"type":"agent-color","color":"cyan","sessionId":"s1"}
+{"type":"brand-new-record","sessionId":"s1"}
+{"type": "user", truncated

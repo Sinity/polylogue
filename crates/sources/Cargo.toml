@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-sources"
-description = "Fallible framing and provider-owned keyed source interpretation"
+description = "One declaration and one parser per origin, on a shared parsing framework"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,9 +9,12 @@ publish.workspace = true
 [dependencies]
 polylogue-model.workspace = true
 serde.workspace = true
-serde_json = { workspace = true, features = ["raw_value"] }
-blake3.workspace = true
-jiff = { version = "0.2", default-features = false, features = ["std"] }
+serde_json.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

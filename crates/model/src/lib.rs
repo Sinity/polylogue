@@ -1,32 +1,27 @@
-//! Identity, value and outcome types. No I/O.
-pub mod authored;
-pub mod content;
-pub mod declared_operation;
-pub mod identity;
-pub mod measures;
-pub mod merge;
-pub mod source_leaf;
-pub mod time;
-pub mod tool_item;
-pub mod types;
-pub mod version_evidence;
+//! Types every Polylogue crate shares. No IO and no storage: values, their
+//! rules, and the export format's codec.
 
-pub use content::*;
-pub use declared_operation::DeclaredOperationId;
-pub use identity::{BlobHash, BlockId, BlockSlot, IdError, InputId, MessageId, Origin, SessionId};
-pub use measures::{ErrorReason, ToolOutcome, UnknownReason};
-pub use time::{Precision, ProviderTime, TimeQuality, Timestamp};
-pub use types::{Credits, ErrorKind, Failure, Ratio, RecordOutcome, ResultOutcome, Usd};
+mod block;
+mod event;
+pub mod export;
+mod id;
+mod message;
+mod note;
+mod session;
+mod time;
+mod usage;
+mod work;
 
-pub mod source_rows;
+pub use block::{Attachment, AttachmentDirection, Block, ErrorReason, ToolOutcome, UnknownReason};
+pub use event::{Event, Link, LinkKind};
+pub use id::{BlobHash, IdError, MessageId, NativeId, Origin, SessionId};
+pub use message::{Message, PromptKind, Role};
+pub use note::{Author, Note, NoteKind, Target};
+pub use session::{Session, SessionKind, Title, TitleSource};
+pub use time::Timestamp;
+pub use usage::Usage;
+pub use work::{WorkEdge, WorkEdgeKind, WorkNode, WorkNodeKind};
 
-pub mod query;
-pub mod recovery;
-pub use recovery::{DurableTier, HeadCoverage, RecoveredWal, RecoveryReason, RecoveryRecord};
-
-pub mod native_id;
-pub mod raw_json;
-pub use native_id::{NativeId, NativeIdError};
-pub use raw_json::{
-    JSON_DEPTH_LIMIT, RawJson, RawJsonError, RawNumber, RawString, TextRepair, TextRepairs,
-};
+/// Opaque JSON kept exactly as the source wrote it. Numbers are lossless
+/// (`serde_json` with `arbitrary_precision`).
+pub type Json = serde_json::Value;

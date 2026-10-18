@@ -1,0 +1,95 @@
+{
+  "accounting": {
+    "framed": 4,
+    "materialized": {
+      "assistant": 1,
+      "continued-in": 1,
+      "user": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [
+      {
+        "child": "claude-code:s2",
+        "evidence": "sessionId",
+        "kind": "copy",
+        "parent": "claude-code:s1"
+      },
+      {
+        "child": "claude-code:s3",
+        "evidence": "continuedInSessionId",
+        "kind": "continuation",
+        "parent": "claude-code:s2"
+      }
+    ],
+    "messages": [
+      {
+        "message": {
+          "at": "2026-03-01T09:00:00Z",
+          "blocks": [
+            {
+              "text": "First question",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:old-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:s1"
+        },
+        "offset": 0
+      },
+      {
+        "message": {
+          "at": "2026-03-01T09:00:02Z",
+          "blocks": [
+            {
+              "text": "First answer",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:old-2",
+          "parent": "claude-code:old-1",
+          "role": "assistant",
+          "session": "claude-code:s1"
+        },
+        "offset": 136
+      },
+      {
+        "message": {
+          "at": "2026-03-02T09:00:00Z",
+          "blocks": [
+            {
+              "text": "Continue from there",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:new-1",
+          "parent": "claude-code:old-2",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:s2"
+        },
+        "offset": 341
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-code:s1",
+        "kind": "main",
+        "started": "2026-03-01T09:00:00Z"
+      },
+      {
+        "id": "claude-code:s2",
+        "kind": "main",
+        "started": "2026-03-02T09:00:00Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,67 @@
+// The Polylogue query language, ported from the Python grammar (Lark) to
+// pest. Two entry shapes in one grammar:
+//
+//   repo:polylogue since:7d "json envelope" -tag:stale
+//   messages where role:assistant AND text:timeout | group by role | count
+//
+// Field names are checked against the field table after parsing, so the
+// grammar accepts any identifier as a field.
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+
+query = { SOI ~ pipeline? ~ EOI }
+
+pipeline = { source ~ ("|" ~ stage)* }
+
+source = { unit_where | predicate }
+
+unit_where = { unit ~ ^"where" ~ predicate }
+unit = @{
+    ^"sessions" | ^"messages" | ^"blocks" | ^"actions" | ^"files" | ^"links"
+  | ^"notes" | ^"assertions" | ^"work" | ^"deliveries" | ^"processes" | ^"runs"
+  | ^"events"
+}
+
+// Explicit Boolean predicates.
+predicate = { disjunction }
+disjunction = { conjunction ~ (^"OR" ~ conjunction)* }
+conjunction = { negation ~ (^"AND"? ~ negation)* }
+negation = { (^"NOT" ~ negation) | atom }
+atom = { "(" ~ predicate ~ ")" | negated | exists | comparison | range | clause | phrase | word }
+
+exists = { ^"exists" ~ unit_name ~ "(" ~ predicate ~ ")" }
+unit_name = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+
+// The compact form (`repo:x since:7d "phrase"`) is a predicate whose terms
+// are joined by an implied AND.
+negated = { "-" ~ (clause | phrase) }
+
+clause = { field ~ ":" ~ (alternatives | compare_value | value) }
+alternatives = { "(" ~ value ~ ("|" ~ value)* ~ ")" }
+compare_value = { cmp_op ~ value }
+
+// Readable comparisons: `messages >= 10`, `date between A and B`.
+comparison = { field ~ cmp_op ~ value }
+range = { field ~ ^"between" ~ value ~ ^"and" ~ value }
+cmp_op = @{ ">=" | "<=" | "!=" | ">" | "<" | "=" }
+
+field = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_" | "-" | ".")* }
+value = { quoted | bare }
+phrase = { quoted }
+quoted = ${ "\"" ~ inner ~ "\"" }
+inner = @{ (!("\"" | "\\") ~ ANY | "\\" ~ ANY)* }
+bare = @{ (!(WHITESPACE | "(" | ")" | "|" | "\"") ~ ANY)+ }
+word = @{ !(keyword ~ (WHITESPACE | EOI)) ~ (!(WHITESPACE | "(" | ")" | "|" | "\"" | ":" | "-") ~ ANY) ~ (!(WHITESPACE | "(" | ")" | "|" | "\"" | ":") ~ ANY)* }
+keyword = { ^"AND" | ^"OR" | ^"NOT" | ^"where" | ^"between" }
+
+// Pipeline stages after the source.
+stage = { group_by | count | sort_by | limit | offset | project | fuse | unit_where }
+group_by = { ^"group" ~ ^"by" ~ field ~ ("," ~ field)* }
+count = { ^"count" }
+sort_by = { ^"sort" ~ ^"by" ~ field ~ direction? }
+direction = { ^"asc" | ^"desc" }
+limit = { ^"limit" ~ number }
+offset = { ^"offset" ~ number }
+project = { ^"select" ~ field ~ ("," ~ field)* }
+fuse = { ^"fuse" ~ field }
+number = @{ ASCII_DIGIT+ }

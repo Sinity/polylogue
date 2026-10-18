@@ -1,0 +1,222 @@
+{
+  "accounting": {
+    "framed": 9,
+    "materialized": {
+      "assistant": 4,
+      "user": 5
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "message": {
+          "at": "2026-03-01T10:00:00Z",
+          "blocks": [
+            {
+              "text": "Why does the build fail?",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:u1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:s1"
+        },
+        "offset": 0
+      },
+      {
+        "message": {
+          "at": "2026-03-01T10:00:01Z",
+          "blocks": [
+            {
+              "signature": "sig",
+              "text": "Check the compiler output.",
+              "type": "thinking"
+            },
+            {
+              "call_id": "toolu_1",
+              "command": "cargo build",
+              "input": {
+                "command": "cargo build"
+              },
+              "tool": "Bash",
+              "type": "tool_call"
+            }
+          ],
+          "id": "claude-code:a1",
+          "model": "claude-opus-5-5",
+          "role": "assistant",
+          "session": "claude-code:s1",
+          "usage": {
+            "cache_write": null,
+            "cached_input": 4000,
+            "input": 12,
+            "output": 40,
+            "reasoning": null
+          }
+        },
+        "offset": 196
+      },
+      {
+        "message": {
+          "at": "2026-03-01T10:00:05Z",
+          "blocks": [
+            {
+              "call_id": "toolu_1",
+              "data": {
+                "interrupted": false,
+                "stderr": "error[E0425]",
+                "stdout": ""
+              },
+              "outcome": {
+                "kind": "error",
+                "reason": {
+                  "detail": 101,
+                  "kind": "exit_code"
+                }
+              },
+              "output": "error[E0425]: cannot find value\nExit code 101",
+              "type": "tool_result"
+            }
+          ],
+          "id": "claude-code:u2",
+          "parent": "claude-code:a2",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:s1"
+        },
+        "offset": 847
+      },
+      {
+        "message": {
+          "at": "2026-03-01T10:00:01Z",
+          "blocks": [
+            {
+              "call_id": "toolu_2",
+              "input": {
+                "file_path": "/repo/src/lib.rs",
+                "new_string": "y",
+                "old_string": "x"
+              },
+              "path": "/repo/src/lib.rs",
+              "tool": "Edit",
+              "type": "tool_call"
+            }
+          ],
+          "id": "claude-code:a3",
+          "model": "claude-opus-5-5",
+          "role": "assistant",
+          "session": "claude-code:s1",
+          "usage": {
+            "cache_write": null,
+            "cached_input": 4000,
+            "input": 12,
+            "output": 40,
+            "reasoning": null
+          }
+        },
+        "offset": 1179
+      },
+      {
+        "message": {
+          "at": "2026-03-01T10:00:09Z",
+          "blocks": [
+            {
+              "call_id": "toolu_2",
+              "outcome": {
+                "kind": "error",
+                "reason": {
+                  "detail": "permission_rule",
+                  "kind": "denied"
+                }
+              },
+              "output": "The user doesn't want to proceed with this tool use.",
+              "type": "tool_result"
+            }
+          ],
+          "id": "claude-code:u3",
+          "parent": "claude-code:a3",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:s1"
+        },
+        "offset": 1548
+      },
+      {
+        "message": {
+          "at": "2026-03-01T10:00:10Z",
+          "blocks": [
+            {
+              "text": "[Request interrupted by user for tool use]",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:u4",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:s1"
+        },
+        "offset": 1847
+      },
+      {
+        "message": {
+          "at": "2026-03-01T10:00:11Z",
+          "blocks": [
+            {
+              "text": "<command-name>/model</command-name>",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:u5",
+          "prompt_kind": "command",
+          "role": "user",
+          "session": "claude-code:s1"
+        },
+        "offset": 2008
+      },
+      {
+        "message": {
+          "at": "2026-03-01T10:00:01Z",
+          "blocks": [
+            {
+              "text": "The build fails because a value is missing.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:a4",
+          "model": "claude-opus-5-5",
+          "role": "assistant",
+          "session": "claude-code:s1",
+          "stop_reason": "end_turn",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": 20,
+            "output": 15,
+            "reasoning": null
+          }
+        },
+        "offset": 2162
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/repo"
+        ],
+        "git_branch": "main",
+        "id": "claude-code:s1",
+        "kind": "main",
+        "started": "2026-03-01T10:00:00Z",
+        "tool_version": "2.1.200"
+      }
+    ]
+  }
+}

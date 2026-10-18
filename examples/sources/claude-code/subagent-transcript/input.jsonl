@@ -1,0 +1,3 @@
+{"type":"fork-context-ref","parentSessionId":"s1","parentLastUuid":"a9","sessionId":"s1","agentId":"ab12","timestamp":"2026-03-01T11:00:00Z"}
+{"type":"user","uuid":"t1","sessionId":"s1","agentId":"ab12","isSidechain":true,"timestamp":"2026-03-01T11:00:00Z","message":{"role":"user","content":"Find every caller of parse()."}}
+{"type":"assistant","uuid":"t2","parentUuid":"t1","sessionId":"s1","agentId":"ab12","isSidechain":true,"timestamp":"2026-03-01T11:00:03Z","message":{"id":"msg_t","role":"assistant","content":[{"type":"text","text":"Three callers."}]}}

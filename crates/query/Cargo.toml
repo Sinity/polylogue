@@ -1,5 +1,6 @@
 [package]
 name = "polylogue-query"
+description = "The query language: parse, check against the field table, compile to SQL"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,6 +8,9 @@ publish.workspace = true
 
 [dependencies]
 polylogue-model.workspace = true
+pest.workspace = true
+pest_derive.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

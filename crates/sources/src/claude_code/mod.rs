@@ -1,1913 +1,637 @@
-//! Claude Code JSONL parser. It reads stored state through a `ReadView` and
-//! returns changed cells: one contribution per record, grouped into responses.
-//! The engine assembles, hashes and publishes the Messages.
-use crate::frame::{IgnoredKind, Record, RecordOutcome, RecordParser};
-use polylogue_model::RawJson as Value;
-use polylogue_model::*;
-use std::collections::{BTreeMap, HashMap, HashSet};
-mod background;
-pub mod keyed;
-pub mod origins;
-pub mod parent;
-pub mod projection;
-mod raw;
-pub mod selection;
-mod tool_result;
-use keyed::*;
-pub const PARSER_VERSION: u32 = 19;
+//! Claude Code session files: `~/.claude/projects/<project>/<session>.jsonl`
+//! and subagent transcripts in `<project>/<session>/subagents/`.
+//!
+//! One line is one record. An assistant response arrives as several
+//! records sharing `message.id`, one per content block; they become one
+//! message. A message copied from another session (a resume replays the
+//! earlier history) keeps its ID and its original session, so it is stored
+//! once, and the copying session gets a `copy` link.
 
-#[derive(Clone, Debug)]
-pub enum FileCtx {
-    Main {
-        stem: String,
-    },
-    Subagent {
-        folder_owner: String,
-        agent: String,
-        meta: Option<Value>,
-    },
-}
-impl FileCtx {
-    pub fn main(stem: &str) -> Self {
-        Self::Main { stem: stem.into() }
-    }
-    /// A main file's Session is known from its name alone. A subagent file's
-    /// owner comes from its records, never from the folder.
-    pub fn direct_main_session(&self) -> Option<SessionId> {
-        match self {
-            Self::Main { stem } => sid(stem),
-            Self::Subagent { .. } => None,
-        }
-    }
-}
-fn origin() -> Origin {
-    Origin::new("claude-code").unwrap_or_else(|_| unreachable!("constant valid origin"))
-}
-fn sid(native: &str) -> Option<SessionId> {
-    SessionId::new(&origin(), native).ok()
-}
-/// Cell keys are NativeId JSON, so string IDs and encoded IDs (even a literal
-/// `~u:` string) never collide.
-fn native_key(native: &NativeId) -> Result<String, String> {
-    serde_json::to_string(native).map_err(|e| e.to_string())
-}
-fn key_native(key: &str) -> Result<NativeId, String> {
-    serde_json::from_str(key).map_err(|e| e.to_string())
-}
+mod blocks;
+mod fields;
 
-/// Record kinds with nothing to index; their bytes stay stored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ignored {
-    /// Progress of a running tool or query.
-    ProgressCountedOnly,
-}
+use crate::account::{Accounting, Disposition};
+use crate::fields::unaccounted;
+use crate::frame::Record;
+use crate::parse::{BackgroundUpdate, MessageRow, Output, Parser, StepParser};
+use crate::time;
+use polylogue_model::{
+    ErrorReason, Event, Json, Link, LinkKind, Message, MessageId, NativeId, Origin, Role, Session,
+    SessionId, SessionKind, TitleSource, ToolOutcome, Usage,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::Path;
 
-impl IgnoredKind for Ignored {
-    fn name(self) -> &'static str {
-        match self {
-            Self::ProgressCountedOnly => "progress (counted only)",
-        }
-    }
-}
-
-/// The cells one step changed. Messages here are not complete; the engine
-/// builds them from `pending_messages`.
-#[derive(Clone, Debug)]
-pub struct StepOutput {
-    pub header: Header,
-    pub delta: Delta,
-    pub events: Vec<(SessionId, Event)>,
-    pub links: Vec<Link>,
-}
-
-/// A record's Session index, and the (Session, UUID) it was copied from.
-type Route = (usize, Option<(String, String)>);
-
-/// The response a message record joins. Assistant records group by
-/// `requestId` and `message.id`; user records, and assistant records with
-/// neither ID nor a UUID, stand alone.
-fn response_key(
-    ty: &str,
-    v: &Value,
-    msg: &Value,
-    provisional: bool,
-    uuid: &str,
-    uuid_native: &NativeId,
-) -> Result<ResponseKey, String> {
-    let empty = NativeId::unicode("");
-    let request = v.get("requestId").and_then(Value::native);
-    let response = msg.get("id").and_then(Value::native);
-    let standalone = ty != "assistant"
-        || (provisional && response.is_none() && request.is_none_or(|id| id.as_str().is_empty()));
-    if standalone {
-        return Ok(ResponseKey {
-            role: if ty == "assistant" {
-                Role::Assistant
-            } else {
-                Role::User
-            },
-            response: uuid.into(),
-            request: native_key(&empty)?,
-        });
-    }
-    let request = request.unwrap_or(&empty);
-    let response = response.unwrap_or(if request.as_str().is_empty() {
-        uuid_native
-    } else {
-        &empty
-    });
-    Ok(ResponseKey {
-        role: Role::Assistant,
-        response: native_key(response)?,
-        request: native_key(request)?,
-    })
-}
-
-/// Record extras this record supplied replace the response's earlier ones.
-/// The last record to supply a key wins, in parse order.
-fn select_record_extras(
-    response: &mut ResponseCell,
-    contribution: &Contribution,
-    incoming: &Value,
-    item: u64,
-    revision: u64,
-) -> Result<(), String> {
-    // The last record to supply a field wins, in parse order. An
-    // identical repeated record changes nothing (`old_same`).
-    for fact in &contribution.projection.facts {
-        let projection::Field::Extra { local: None, path } = &fact.field else {
-            continue;
-        };
-        let [key] = path.as_slice() else {
-            continue;
-        };
-        if fact.supplied_revision != revision || incoming.get(key).is_none() {
-            continue;
-        }
-        let raw = contribution.record_extra_raw(key)?.to_vec();
-        response.record_extras.insert(
-            key.clone(),
-            keyed::SelectedRecordExtra {
-                item,
-                fact: fact.clone(),
-                raw,
-            },
-        );
-    }
-    Ok(())
-}
-
-/// `message.stop_sequence` and `message.stop_details`, when this record
-/// supplied them, become response attrs. Supplied null is a value.
-fn select_stop_fields(
-    response: &mut ResponseCell,
-    contribution: &Contribution,
-    rec: &Record<'_>,
-    v: &Value,
-) -> Result<(), String> {
-    let incoming = &rec.value;
-    for key in ["stop_sequence", "stop_details"] {
-        if incoming
-            .get("message")
-            .and_then(|message| message.get(key))
-            .is_none()
-        {
-            continue;
-        }
-        let fact = contribution.projection.facts.iter().find(|fact|
-            matches!(&fact.field, projection::Field::SelectedExtra { key: found } if found == key)
-        ).cloned().ok_or("Claude selected extra supplier lost its source fact")?;
-        let value = v
-            .get("message")
-            .and_then(|message| message.get(key))
-            .cloned()
-            .ok_or("Claude selected extra normalized value unavailable")?;
-        let raw = Some(raw::canonical(
-            crate::raw::field(rec.bytes, &["message", key])?
-                .ok_or("Claude selected extra raw supplier unavailable")?,
-        )?);
-        match key {
-            "stop_sequence" => {
-                response.stop_sequence_raw = raw;
-                response.stop_sequence = Some(fact);
-            }
-            "stop_details" => {
-                response.stop_details_raw = raw;
-                response.stop_details = Some(fact);
-            }
-            _ => unreachable!("fixed selected extra keys"),
-        }
-        let attrs = response
-            .message
-            .attrs
-            .get_or_insert_with(|| Value::Object(Default::default()))
-            .as_object_mut()
-            .ok_or("Claude normalized extras carrier is not an object")?;
-        attrs.insert(key.into(), value);
-    }
-    Ok(())
-}
-
-/// Usage, stop reason, model and completion time this record supplied, with
-/// their raw values and origins.
-fn select_metadata(
-    response: &mut ResponseCell,
-    rec: &Record<'_>,
-    v: &Value,
-    item: u64,
-    revision: u64,
-) -> Result<(), String> {
-    let source_range = crate::selection::RecordRange {
-        start: rec.start,
-        end: rec.end,
-    };
-    for (index, path) in METADATA_PATHS.iter().enumerate() {
-        if let Some(value) = crate::raw::field(rec.bytes, path)? {
-            response.selected[index] = Some(raw::canonical(value)?);
-            response.selected_from[index] = Some(item);
-            let semantic = path
-                .iter()
-                .try_fold(v, |node, key| node.get(key))
-                .ok_or("Claude supplied metadata missing from its record")?;
-            // Decode from the original record so text repairs keep their
-            // byte offsets.
-            if index == 0 {
-                let _ = semantic.get("service_tier").and_then(Value::text);
-            } else {
-                let _ = semantic.text();
-            }
-            response.selected_facts[index] = projection::selected(index, semantic, revision);
-            let selected = crate::selection::SelectedRaw {
-                record: source_range,
-                path: path
-                    .iter()
-                    .map(|key| crate::selection::PathPart::Key((*key).into()))
-                    .collect(),
-            };
-            response.selected_origins[index] = Some(selected.clone());
-            for fact in &mut response.selected_facts[index] {
-                fact.selection = selection::for_selected(fact, index, semantic, &selected);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The record's UUID and parent link, for parent lookups that skip records.
-fn record_relation(
-    v: &Value,
-    contribution: &Contribution,
-) -> Result<Option<keyed::RecordRelation>, String> {
-    v.get("uuid")
-        .and_then(Value::native)
-        .map(|uuid| {
-            let parent = v
-                .get("parentUuid")
-                .map(|value| {
-                    let origin = contribution
-                        .origins
-                        .select(&[crate::selection::PathPart::Key("parentUuid".into())])
-                        .ok_or("Claude record parent origin unavailable")?;
-                    Ok::<_, String>(parent::Link {
-                        value: value.opaque(),
-                        origin,
-                    })
-                })
-                .transpose()?;
-            Ok::<_, String>(keyed::RecordRelation {
-                uuid: uuid.clone(),
-                record: contribution
-                    .origins
-                    .envelope
-                    .ok_or("Claude record envelope unavailable")?,
-                parent,
-            })
-        })
-        .transpose()
-}
-
-/// Whether a same-UUID update changes what the author fields were read from.
-fn author_changed(
-    previous: &Contribution,
-    v: &Value,
-    response: &ResponseCell,
-) -> Result<bool, String> {
-    let old_raw: Value = serde_json::from_slice(&previous.raw).map_err(|e| e.to_string())?;
-    if previous
-        .projection
-        .unresolved
-        .contains(&projection::Unresolved::FirstAuthorUpdate)
-    {
-        return Ok(true);
-    }
-    let content = v
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .unwrap_or(&Value::Null);
-    if response.author_selection.as_ref().is_some_and(|selection| {
-        selection::classify_author(v, content, selection.context)
-            != (
-                response.message.written_by,
-                response.message.prompt_kind,
-                response.message.from_name.clone(),
-            )
-    }) {
-        return Ok(true);
-    }
-    Ok([
-        "origin",
-        "promptSource",
-        "isMeta",
-        "isVisibleInTranscriptOnly",
-        "isApiErrorMessage",
-    ]
-    .iter()
-    .any(|key| old_raw.get(key) != v.get(key)))
-}
-
-/// Copy the first supplied `cwd`, `gitBranch` and `version` to the Session.
-fn fill_session_metadata(session: &mut Session, v: &Value) {
-    let text = |key: &str| v.get(key).and_then(Value::as_str).map(str::to_owned);
-    if session.cwd.is_none() {
-        session.cwd = text("cwd");
-    }
-    if session.branch.is_none() {
-        session.branch = text("gitBranch");
-    }
-    if session.harness_version.is_none() {
-        session.harness_version = text("version");
-    }
-}
-
-pub struct KeyedRecords<R: ReadView> {
-    ctx: FileCtx,
-    view: R,
-    header: Header,
-    sessions: Vec<SessionCell>,
-    by_id: HashMap<String, usize>,
-    responses: HashMap<(String, ResponseKey), ResponseCell>,
-    addresses: HashMap<(String, String), RecordAddress>,
-    parent_nodes: HashMap<(String, String), parent::Node>,
-    occurrences: HashMap<String, u64>,
-    backgrounds: HashMap<String, BackgroundAddress>,
-    contributions: HashMap<(MessageId, u64), Contribution>,
-    sides: HashMap<String, String>,
-    emitted_links: HashSet<LinkKey>,
-    link_order: Vec<LinkKey>,
-    links: Vec<Link>,
-    events: Vec<(SessionId, Event)>,
-    pending: BTreeMap<(String, u64), PendingMessage>,
-}
-impl<R: ReadView> KeyedRecords<R> {
-    pub fn new(ctx: FileCtx, view: R) -> Result<Self, String> {
-        if let FileCtx::Subagent {
-            meta: Some(meta), ..
-        } = &ctx
-            && meta
-                .get("parentAgentId")
-                .and_then(Value::native)
-                .is_some_and(|n| n.encoding().is_some())
-        {
-            return Err("non-scalar subagent parent Session routing is unsupported".into());
-        }
-        let header = view.header().map_err(|e| e.to_string())?;
-        Ok(Self {
-            ctx,
-            view,
-            header,
-            sessions: Vec::new(),
-            by_id: HashMap::new(),
-            responses: HashMap::new(),
-            addresses: HashMap::new(),
-            parent_nodes: HashMap::new(),
-            occurrences: HashMap::new(),
-            backgrounds: HashMap::new(),
-            contributions: HashMap::new(),
-            sides: HashMap::new(),
-            emitted_links: HashSet::new(),
-            link_order: Vec::new(),
-            links: Vec::new(),
-            events: Vec::new(),
-            pending: BTreeMap::new(),
-        })
-    }
-    /// The subagent file's owner Session. The first `sessionId` seen claims it;
-    /// records before that, and records naming another owner, get none.
-    fn subagent_owner(&mut self, claimed: &str) -> Option<String> {
-        match &self.header.owner {
-            Some(owner) if claimed.is_empty() || owner == claimed => Some(owner.clone()),
-            Some(_) => None,
-            None if claimed.is_empty() => None,
-            None => {
-                self.header.owner = Some(claimed.into());
-                Some(claimed.into())
-            }
-        }
-    }
-    fn session_index(&mut self, native: &str, kind: SessionKind) -> Result<Option<usize>, String> {
-        if let Some(&i) = self.by_id.get(native) {
-            return Ok(Some(i));
-        }
-        let cell = match self.view.session(native).map_err(|e| e.to_string())? {
-            Some(cell) => cell,
-            None => {
-                let Some(id) = sid(native) else {
-                    return Ok(None);
-                };
-                let mut session =
-                    Session::new(id, origin(), native, kind).map_err(|e| e.to_string())?;
-                session.harness = Some("claude-code".into());
-                let ordinal = self.header.next_session_ordinal;
-                self.header.next_session_ordinal = ordinal
-                    .checked_add(1)
-                    .ok_or("Claude session ordinal overflow")?;
-                SessionCell {
-                    session,
-                    ordinal,
-                    seen_own_user: false,
-                    next_message_ordinal: 0,
-                    last_message: None,
-                    facts_pending: false,
-                    active_leaf: None,
-                }
-            }
-        };
-        if cell.session.native_id != native || cell.session.origin != origin() {
-            return Err("Claude session cell disagrees with its lookup identity".into());
-        }
-        let i = self.sessions.len();
-        self.sessions.push(cell);
-        self.by_id.insert(native.into(), i);
-        Ok(Some(i))
-    }
-    fn response(&self, native: &str, key: &ResponseKey) -> Result<Option<ResponseCell>, String> {
-        match self.responses.get(&(native.into(), key.clone())) {
-            Some(cell) => Ok(Some(cell.clone())),
-            None => self.view.response(native, key).map_err(|e| e.to_string()),
-        }
-    }
-    fn address(&self, native: &str, uuid: &str) -> Result<Option<RecordAddress>, String> {
-        match self.addresses.get(&(native.into(), uuid.into())) {
-            Some(cell) => Ok(Some(cell.clone())),
-            None => self.view.record(native, uuid).map_err(|e| e.to_string()),
-        }
-    }
-    fn parent_node(&self, native: &str, uuid: &str) -> Result<Option<parent::Node>, String> {
-        match self.parent_nodes.get(&(native.into(), uuid.into())) {
-            Some(n) => Ok(Some(n.clone())),
-            None => self
-                .view
-                .parent_node(native, uuid)
-                .map_err(|e| e.to_string()),
-        }
-    }
-    fn remember_parent_node(&mut self, rec: &Record<'_>, allow_new: bool) -> Result<(), String> {
-        let Some(uuid) = rec.value.get("uuid").and_then(Value::native) else {
-            return Ok(());
-        };
-        let key = native_key(uuid)?;
-        let Some((si, copy)) = self.route(&rec.value, &key)? else {
-            return Ok(());
-        };
-        if copy.is_some() {
-            return Ok(());
-        }
-        let native = self.sessions[si].session.native_id.clone();
-        if self.address(&native, &key)?.is_some() {
-            return Err("Claude UUID names both a Message and a non-Message record".into());
-        }
-        let range = crate::selection::RecordRange::new(rec.start, rec.end)?;
-        let old = self.parent_node(&native, &key)?;
-        if !allow_new && old.is_none() {
-            return Ok(());
-        }
-        let mut node = parent::Node::overlay(old, &rec.value, range)?;
-        if !allow_new {
-            node.conflicted = true;
-        }
-        self.parent_nodes.insert((native, key), node);
-        Ok(())
-    }
-    fn contribution(&self, message: &MessageId, slot: u64) -> Result<Option<Contribution>, String> {
-        match self.contributions.get(&(message.clone(), slot)) {
-            Some(cell) => Ok(Some(cell.clone())),
-            None => self
-                .view
-                .contribution(message, slot)
-                .map_err(|e| e.to_string()),
-        }
-    }
-    fn add_link(
-        &mut self,
-        kind: LinkKind,
-        how: LinkHow,
-        parent: &str,
-        child: &str,
-        evidence: &str,
-        attrs: Option<Value>,
-    ) -> Result<(), String> {
-        let (Some(parent_id), Some(child_id)) = (sid(parent), sid(child)) else {
-            return Ok(());
-        };
-        if parent_id == child_id {
-            return Ok(());
-        }
-        let key = LinkKey {
-            parent: parent.into(),
-            child: child.into(),
-            kind,
-            how,
-        };
-        if self.emitted_links.contains(&key)
-            || self.view.has_link(&key).map_err(|e| e.to_string())?
-        {
-            return Ok(());
-        }
-        self.emitted_links.insert(key.clone());
-        self.link_order.push(key);
-        let mut link =
-            Link::new(kind, how, parent_id, child_id, evidence).map_err(|e| e.to_string())?;
-        link.attrs = attrs;
-        self.links.push(link);
-        Ok(())
-    }
-    /// The session this message record belongs to, and the message it copies, if any.
-    fn route(&mut self, v: &Value, uuid: &str) -> Result<Option<Route>, String> {
-        let sid_field = v
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-        Ok(match self.ctx.clone() {
-            FileCtx::Main { stem } => {
-                // A later record for a known UUID may omit the sidechain fields;
-                // the UUID keeps the Session it first got.
-                let established = match self.sides.get(uuid) {
-                    Some(side) => Some(side.clone()),
-                    None => self.view.side(uuid).map_err(|e| e.to_string())?,
-                };
-                if let Some(side) = established {
-                    if v.get("isSidechain").and_then(Value::as_bool) == Some(false) {
-                        return Ok(None);
-                    }
-                    let i = match self.session_index(&side, SessionKind::Subagent)? {
-                        Some(i) => i,
-                        None => return Ok(None),
-                    };
-                    return Ok(Some((i, None)));
-                }
-                let parent = v
-                    .get("parentUuid")
-                    .and_then(Value::native)
-                    .map(native_key)
-                    .transpose()?
-                    .unwrap_or_default();
-                if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
-                    // A sidechain in a main file is its own Session, named by its root.
-                    let known = match self.sides.get(&parent) {
-                        Some(side) => Some(side.clone()),
-                        None => self.view.side(&parent).map_err(|e| e.to_string())?,
-                    };
-                    let side = if let Some(s) = known {
-                        s
-                    } else {
-                        let side = match v.get("agentId").and_then(Value::as_str) {
-                            Some(agent) => format!("{stem}/{agent}"),
-                            None => {
-                                let original = if uuid.starts_with("fallback:") {
-                                    NativeId::unicode(uuid)
-                                } else {
-                                    key_native(uuid)?
-                                };
-                                let scalar = original.unicode_str().ok_or("non-scalar sidechain root needs scoped native Session identity")?;
-                                format!("{stem}~side-{scalar}")
-                            }
-                        };
-                        self.add_link(
-                            LinkKind::Subagent,
-                            LinkHow::Fresh,
-                            &stem,
-                            &side,
-                            "isSidechain",
-                            None,
-                        )?;
-                        side
-                    };
-                    self.sides.insert(uuid.to_owned(), side.clone());
-                    let i = match self.session_index(&side, SessionKind::Subagent)? {
-                        Some(i) => i,
-                        None => return Ok(None),
-                    };
-                    return Ok(Some((i, None)));
-                }
-                let i = match self.session_index(&stem, SessionKind::Main)? {
-                    Some(i) => i,
-                    None => return Ok(None),
-                };
-                if let Some(ff) = v.get("forkedFrom") {
-                    let Some(src) = ff.get("sessionId").and_then(Value::as_str) else {
-                        return Ok(None);
-                    };
-                    let Some(msg) = ff.get("messageUuid").and_then(Value::native) else {
-                        return Ok(None);
-                    };
-                    self.add_link(
-                        LinkKind::Continuation,
-                        LinkHow::Fork,
-                        src,
-                        &stem,
-                        "forkedFrom",
-                        None,
-                    )?;
-                    return Ok(Some((i, Some((src.into(), native_key(msg)?)))));
-                }
-                if !sid_field.is_empty() && sid_field != stem {
-                    self.add_link(
-                        LinkKind::Continuation,
-                        LinkHow::Resume,
-                        &sid_field,
-                        &stem,
-                        "copied-sessionId",
-                        None,
-                    )?;
-                    return Ok(Some((i, Some((sid_field.clone(), uuid.into())))));
-                }
-                Some((i, None))
-            }
-            FileCtx::Subagent {
-                folder_owner,
-                agent,
-                meta,
-            } => {
-                let Some(owner) = self.subagent_owner(&sid_field) else {
-                    return Ok(None);
-                };
-                let own = format!("{owner}/{agent}");
-                if !self.by_id.contains_key(&own)
-                    && self
-                        .view
-                        .session(&own)
-                        .map_err(|e| e.to_string())?
-                        .is_none()
-                {
-                    let parent = match meta
-                        .as_ref()
-                        .and_then(|m| m.get("parentAgentId"))
-                        .and_then(Value::as_str)
-                    {
-                        Some(p) => format!("{owner}/{p}"),
-                        None => folder_owner.clone(),
-                    };
-                    let evidence = if parent == folder_owner {
-                        "folder"
-                    } else {
-                        "meta.parentAgentId"
-                    };
-                    let how = if meta
-                        .as_ref()
-                        .and_then(|m| m.get("isFork"))
-                        .and_then(Value::as_bool)
-                        == Some(true)
-                    {
-                        LinkHow::Copied
-                    } else {
-                        LinkHow::Fresh
-                    };
-                    self.add_link(
-                        LinkKind::Subagent,
-                        how,
-                        &parent,
-                        &own,
-                        evidence,
-                        meta.clone(),
-                    )?;
-                }
-                let i = match self.session_index(&own, SessionKind::Subagent)? {
-                    Some(i) => i,
-                    None => return Ok(None),
-                };
-                if let Some(m) = &meta {
-                    let s = &mut self.sessions[i].session;
-                    s.team = m.get("teamName").and_then(Value::as_str).map(str::to_owned);
-                    s.agent_name = m.get("name").and_then(Value::as_str).map(str::to_owned);
-                }
-                let rec_agent = v
-                    .get("agentId")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&agent)
-                    .to_owned();
-                if rec_agent != agent {
-                    let src = format!("{owner}/{rec_agent}");
-                    self.add_link(
-                        LinkKind::Continuation,
-                        LinkHow::Resume,
-                        &src,
-                        &own,
-                        "copied-agentId",
-                        None,
-                    )?;
-                    return Ok(Some((i, Some((src, uuid.into())))));
-                }
-                Some((i, None))
-            }
-        })
-    }
-
-    fn message_record(
-        &mut self,
-        rec: &Record<'_>,
-        ty: &str,
-    ) -> Result<RecordOutcome<Ignored>, String> {
-        if !rec.table.is_empty()
-            || rec.end.checked_sub(rec.start) != u64::try_from(rec.bytes.len()).ok()
-        {
-            return Err("Claude original record does not have an exact JSONL byte range".into());
-        }
-        let source_range = crate::selection::RecordRange {
-            start: rec.start,
-            end: rec.end,
-        };
-        let incoming = &rec.value;
-        validate_structural_keys(incoming)?;
-        let supplied_uuid = incoming
-            .get("uuid")
-            .and_then(Value::native)
-            .filter(|s| !s.as_str().is_empty());
-        let fallback_hash = supplied_uuid
-            .is_none()
-            .then(|| {
-                polylogue_model::identity::fallback_hash(rec.bytes, &["timestamp", "ordinal"])
-                    .map_err(|e| e.to_string())
-            })
-            .transpose()?;
-        let fallback_occurrence = match &fallback_hash {
-            Some(hash) => self.next_occurrence(hash)?,
-            None => 0,
-        };
-        let empty_uuid = NativeId::unicode("");
-        let uuid_native = supplied_uuid.unwrap_or(&empty_uuid);
-        let uuid_key = match &fallback_hash {
-            Some(hash) => format!("fallback:{hash}:{fallback_occurrence}"),
-            None => native_key(uuid_native)?,
-        };
-        let uuid = uuid_key.as_str();
-        let Some((si, copy)) = self.route(incoming, uuid)? else {
-            return Ok(RecordOutcome::Unrecognized("unroutable record"));
-        };
-        let native = self.sessions[si].session.native_id.clone();
-        if self.parent_node(&native, uuid)?.is_some() {
-            return Err("Claude UUID names both a Message and a non-Message record".into());
-        }
-        let address = self.address(&native, uuid)?;
-        let old = match &address {
-            Some(a) => Some(
-                self.contribution(&a.message, a.item)?
-                    .ok_or("missing committed Claude contribution")?,
-            ),
-            None => None,
-        };
-        if old.as_ref().is_some_and(|cell| cell.uuid != uuid) {
-            return Err("committed Claude contribution UUID disagrees with its address".into());
-        }
-        let raw = raw::overlay(old.as_ref().map(|c| c.raw.as_slice()), rec.bytes)?;
-        let v = raw::decode_effective(&raw, incoming)?;
-        if v.get("type").and_then(Value::as_str) != Some(ty) {
-            return Ok(RecordOutcome::Unrecognized("UUID record type conflict"));
-        }
-        let Some(msg) = v.get("message").filter(|m| m.is_object()) else {
-            return Ok(RecordOutcome::Unrecognized(
-                "message record without typed message",
-            ));
-        };
-        let key = response_key(ty, &v, msg, fallback_hash.is_some(), uuid, uuid_native)?;
-        if address
-            .as_ref()
-            .is_some_and(|a| a.response != key || a.role != ty)
-        {
-            return Ok(RecordOutcome::Unrecognized(
-                "UUID response membership conflict",
-            ));
-        }
-        let record_origins = origins::RecordOrigins::overlay(
-            old.as_ref().map(|c| &c.origins),
-            incoming,
-            &v,
-            Some(source_range),
-        );
-        let (mut blocks, bodies) = self.blocks_and_bodies(&v, &raw)?;
-        let old_same = old
-            .as_ref()
-            .is_some_and(|c| c.raw == raw && c.bodies == bodies);
-        let mut response = match self.response(&native, &key)? {
-            Some(cell) => cell,
-            None => {
-                if address.is_some() {
-                    return Err(
-                        "missing committed Claude response referenced by UUID address".into(),
-                    );
-                }
-                let session = self.sessions[si].session.id.clone();
-                let id = if fallback_hash.is_some() {
-                    polylogue_model::identity::provisional_message_id(
-                        session,
-                        rec.bytes,
-                        &["timestamp", "ordinal"],
-                        fallback_occurrence,
-                    )
-                    .map_err(|e| e.to_string())?
-                } else {
-                    MessageId::from_native(session, uuid_native).map_err(|e| e.to_string())?
-                };
-                let id_kind = if supplied_uuid.is_some() {
-                    IdKind::Provider
-                } else {
-                    IdKind::Provisional
-                };
-                let has_tool_result = blocks
-                    .iter()
-                    .any(|b| matches!(b, BlockContent::ToolResult(_)));
-                self.new_response(
-                    si,
-                    ty,
-                    &v,
-                    has_tool_result,
-                    copy.as_ref(),
-                    (id, id_kind),
-                    source_range,
-                )?
-            }
-        };
-        if response.ordinal >= self.sessions[si].next_message_ordinal {
-            return Err("Claude response ordinal exceeds its session counter".into());
-        }
-        if address
-            .as_ref()
-            .is_some_and(|a| a.message != response.message.id || a.item >= response.items)
-        {
-            return Err("committed Claude UUID address disagrees with its response".into());
-        }
-        if response.message.id.session() != &self.sessions[si].session.id {
-            return Err("committed Claude response belongs to a different session".into());
-        }
-        if old_same {
-            return Ok(RecordOutcome::Used);
-        }
-        let item = match &address {
-            Some(a) => a.item,
-            None => {
-                let item = response.items;
-                response.items = item
-                    .checked_add(1)
-                    .ok_or("Claude contribution ordinal overflow")?;
-                item
-            }
-        };
-        let revision = response
-            .revision
-            .checked_add(1)
-            .ok_or("Claude evidence revision overflow")?;
-        let raw_changed = old.as_ref().is_none_or(|previous| previous.raw != raw);
-        let mut projected = projection::record(
-            &v,
-            if raw_changed {
-                &rec.value
-            } else {
-                &Value::Null
-            },
-            &blocks,
-            revision,
-            old.as_ref().map(|c| &c.projection),
-        )?;
-        for fact in projected.facts.iter_mut().chain(&mut projected.derived) {
-            fact.selection = selection::for_fact(fact, &v, &record_origins);
-        }
-        if item == 0 {
-            response.message.parent = None;
-            self.resolve_parent(
-                &native,
-                &v,
-                &mut response,
-                &mut projected,
-                &record_origins,
-                revision,
-            )?;
-            if old
-                .as_ref()
-                .map(|previous| author_changed(previous, &v, &response))
-                .transpose()?
-                == Some(true)
-            {
-                projected
-                    .unresolved
-                    .push(projection::Unresolved::FirstAuthorUpdate);
-            }
-        }
-        // Blocks keep per-contribution positions; the engine assigns BlockIds
-        // when it builds the body.
-        let mut contribution = Contribution {
-            uuid: uuid.into(),
-            raw,
-            origins: record_origins,
-            blocks: std::mem::take(&mut blocks),
-            bodies,
-            completion: None,
-            projection: projected,
-        };
-        if let Some(previous) = &old
-            && crate::raw::field(&previous.raw, &["message", "content"])?
-                == crate::raw::field(&contribution.raw, &["message", "content"])?
-            && crate::raw::field(&previous.raw, &["toolUseResult"])?
-                == crate::raw::field(&contribution.raw, &["toolUseResult"])?
-        {
-            background::carry(Some(previous), &mut contribution);
-        }
-        let old_missing = old.as_ref().map_or(0, |c| {
-            c.bodies.iter().filter(|b| b.payload.is_none()).count() as u64
-        });
-        let missing = contribution
-            .bodies
-            .iter()
-            .filter(|b| b.payload.is_none())
-            .count() as u64;
-        response.incomplete_bodies = response
-            .incomplete_bodies
-            .checked_sub(old_missing)
-            .and_then(|n| n.checked_add(missing))
-            .ok_or("Claude required-body counter mismatch")?;
-        response.revision = revision;
-        // Only fields this record supplies update the response selection;
-        // fields inherited through a same-UUID overlay do not.
-        if old
-            .as_ref()
-            .is_none_or(|previous| previous.raw != contribution.raw)
-        {
-            select_record_extras(&mut response, &contribution, incoming, item, revision)?;
-            select_stop_fields(&mut response, &contribution, rec, &v)?;
-            select_metadata(&mut response, rec, &v, item, revision)?;
-        }
-        if item == 0 {
-            response.message.at = crate::time::intrinsic_field(v.get("timestamp"));
-        }
-        apply_selected(&mut response)?;
-        if v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true) {
-            response.message.stop_reason = Some("aborted".into());
-            response.message.in_progress = Some(false);
-        }
-        response.message.version_hash = None;
-        let pending = PendingMessage {
-            session_native: native.clone(),
-            response: key.clone(),
-            ordinal: response.ordinal,
-            message: response.message.id.clone(),
-            revision: response.revision,
-            items: response.items,
-            incomplete: response.incomplete_bodies != 0,
-        };
-        self.pending.insert(
-            (
-                response.message.id.session().as_str().into(),
-                response.ordinal,
-            ),
-            pending,
-        );
-        let relation = record_relation(&v, &contribution)?;
-        self.addresses.insert(
-            (native.clone(), uuid.into()),
-            RecordAddress {
-                relation,
-                response: key.clone(),
-                message: response.message.id.clone(),
-                item,
-                role: ty.into(),
-            },
-        );
-        self.remember_launches(&v, &contribution, &native, &key, &response.message.id, item)?;
-        self.contributions
-            .insert((response.message.id.clone(), item), contribution);
-        self.sessions[si].last_message = Some(response.message.id.clone());
-        self.sessions[si].facts_pending = true;
-        fill_session_metadata(&mut self.sessions[si].session, &v);
-        self.responses.insert((native, key), response);
-        Ok(RecordOutcome::Used)
-    }
-    /// How many earlier records without a UUID had this content hash; counts
-    /// this one.
-    fn next_occurrence(&mut self, hash: &str) -> Result<u64, String> {
-        let count = match self.occurrences.get(hash) {
-            Some(count) => *count,
-            None => self.view.occurrence(hash).map_err(|e| e.to_string())?,
-        };
-        let next = count
-            .checked_add(1)
-            .ok_or("Claude fallback occurrence overflow")?;
-        self.occurrences.insert(hash.to_owned(), next);
-        Ok(count)
-    }
-    /// Remember where each result of a background launch lives, so the task's
-    /// completion notification can find it.
-    fn remember_launches(
-        &mut self,
-        v: &Value,
-        contribution: &Contribution,
-        native: &str,
-        key: &ResponseKey,
-        message: &MessageId,
-        item: u64,
-    ) -> Result<(), String> {
-        if let Some(task) = tool_result::metadata(v)
-            .and_then(|m| m.get("backgroundTaskId"))
-            .and_then(Value::as_str)
-        {
-            for (local, block) in contribution.blocks.iter().enumerate() {
-                if let BlockContent::ToolResult(result) = block
-                    && let Some(call) = &result.call_id
-                {
-                    self.remember_background(
-                        task,
-                        BackgroundAddress {
-                            session: native.into(),
-                            response: key.clone(),
-                            message: message.clone(),
-                            item,
-                            local: local
-                                .try_into()
-                                .map_err(|_| "background block index overflow")?,
-                            call: call.as_str().into(),
-                            ambiguous: false,
-                        },
-                    )?;
-                }
-            }
-        }
-        Ok(())
-    }
-    /// Set the Message parent from the first record's `parentUuid`, when it
-    /// names a record of another Message in this Session. A sidechain root's
-    /// main-chain parent is kept as a record extra instead.
-    fn resolve_parent(
-        &self,
-        native: &str,
-        v: &Value,
-        response: &mut ResponseCell,
-        projected: &mut projection::RecordFacts,
-        record_origins: &origins::RecordOrigins,
-        revision: u64,
-    ) -> Result<(), String> {
-        if let Some(parent_uuid) = v
-            .get("parentUuid")
-            .and_then(Value::native)
-            .filter(|p| !p.as_str().is_empty())
-        {
-            let resolved = self
-                .address(native, &native_key(parent_uuid)?)?
-                .filter(|parent| {
-                    // Every contribution UUID maps to its Message, including
-                    // later fragments of a response.
-                    parent.message != response.message.id
-                        && parent.message.session() == response.message.id.session()
-                });
-            let parent_fact = projected.facts.iter_mut().find(|fact| {
-                matches!(
-                    fact.field,
-                    projection::Field::FirstMessage(polylogue_model::merge::MessageField::Parent)
-                )
-            });
-            if let (Some(parent), Some(fact)) = (resolved, parent_fact) {
-                fact.selection =
-                    selection::parent(parent_uuid, parent.message.clone(), record_origins);
-                if fact.selection.is_some() {
-                    response.message.parent = Some(parent.message);
-                } else {
-                    projected
-                        .unresolved
-                        .push(projection::Unresolved::ParentResolution);
-                }
-            } else {
-                let sidechain_root = if let FileCtx::Main { stem } = &self.ctx {
-                    v.get("isSidechain").and_then(Value::as_bool) == Some(true)
-                        && native != stem
-                        && self.address(stem, &native_key(parent_uuid)?)?.is_some()
-                } else {
-                    false
-                };
-                if sidechain_root {
-                    // A sidechain's main-chain parent is link evidence, not a
-                    // parent Message (it is in another Session).
-                    projected.facts.retain(|f| {
-                        !matches!(
-                            f.field,
-                            projection::Field::FirstMessage(
-                                polylogue_model::merge::MessageField::Parent
-                            )
-                        )
-                    });
-                    let field = projection::Field::Extra {
-                        local: None,
-                        path: vec!["parentUuid".into()],
-                    };
-                    let mut fact = projection::Fact {
-                        field,
-                        source_path: vec!["parentUuid".into()],
-                        supplied_revision: revision,
-                        selection: None,
-                    };
-                    fact.selection = selection::for_fact(&fact, v, record_origins);
-                    // Kept as a record extra, not as a Message parent.
-                    projected.facts.push(fact);
-                } else {
-                    projected
-                        .unresolved
-                        .push(projection::Unresolved::ParentResolution);
-                }
-            }
-        }
-        Ok(())
-    }
-    /// The response cell for a response's first record: a new Message with
-    /// its author, time and copy origin, and the next ordinal in the Session.
-    #[allow(clippy::too_many_arguments)]
-    fn new_response(
-        &mut self,
-        si: usize,
-        ty: &str,
-        v: &Value,
-        has_tool_result: bool,
-        copy: Option<&(String, String)>,
-        (id, id_kind): (MessageId, IdKind),
-        range: crate::selection::RecordRange,
-    ) -> Result<ResponseCell, String> {
-        let role = if ty == "assistant" {
-            Role::Assistant
-        } else {
-            Role::User
-        };
-        let own_user_prompt = ty == "user" && !has_tool_result && copy.is_none();
-        let cell = &mut self.sessions[si];
-        let context = selection::AuthorContext {
-            role,
-            first_subagent_instruction: own_user_prompt
-                && !cell.seen_own_user
-                && cell.session.kind == SessionKind::Subagent,
-            copied: copy.is_some(),
-        };
-        let content = v
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .unwrap_or(&Value::Null);
-        let (written_by, prompt_kind, from_name) = selection::classify_author(v, content, context);
-        if own_user_prompt {
-            cell.seen_own_user = true;
-        }
-        let ordinal = cell.next_message_ordinal;
-        cell.next_message_ordinal = ordinal
-            .checked_add(1)
-            .ok_or("Claude message ordinal overflow")?;
-        let mut message = Message::new(id, id_kind, role, written_by);
-        message.prompt_kind = prompt_kind;
-        message.from_name = from_name;
-        message.at = crate::time::intrinsic_field(v.get("timestamp"));
-        if let Some((source, msg)) = copy {
-            message.inherited_from = sid(source).and_then(|s| {
-                key_native(msg)
-                    .ok()
-                    .and_then(|n| MessageId::from_native(s, &n).ok())
-            });
-            message.copy_origin = Some(CopyOrigin::Known);
-        }
-        Ok(ResponseCell {
-            message,
-            ordinal,
-            author_selection: Some(selection::AuthorSelection::new(range, context)),
-            items: 0,
-            revision: 0,
-            selected: Default::default(),
-            incomplete_bodies: 0,
-            selected_from: Default::default(),
-            selected_facts: Default::default(),
-            selected_origins: Default::default(),
-            stop_sequence: None,
-            stop_sequence_raw: None,
-            stop_details: None,
-            stop_details_raw: None,
-            record_extras: Default::default(),
-        })
-    }
-    /// The session a non-message record of this file belongs to.
-    fn file_session(&mut self, v: &Value) -> Result<Option<usize>, String> {
-        match self.ctx.clone() {
-            FileCtx::Main { stem } => self.session_index(&stem, SessionKind::Main),
-            FileCtx::Subagent { agent, .. } => {
-                let sid_field = v
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
-                let Some(owner) = self.subagent_owner(&sid_field) else {
-                    return Ok(None);
-                };
-                self.session_index(&format!("{owner}/{agent}"), SessionKind::Subagent)
-            }
-        }
-    }
-
-    fn active_leaf(&mut self, rec: &Record<'_>, kind: &str) -> Result<(), String> {
-        let Some(si) = self.file_session(&rec.value)? else {
-            return Ok(());
-        };
-        // Metadata in a main file belongs to the file's Session. A conflicting
-        // or malformed `sessionId` drops the marker, not the owner.
-        let scoped = match &self.ctx {
-            FileCtx::Main { stem } => rec
-                .value
-                .get("sessionId")
-                .is_none_or(|v| v.as_str() == Some(stem.as_str())),
-            FileCtx::Subagent { .. } => false,
-        };
-        self.sessions[si].active_leaf = Some(keyed::ActiveLeaf {
-            record: crate::selection::RecordRange::new(rec.start, rec.end)?,
-            kind: kind.into(),
-            value: rec
-                .value
-                .get("leafUuid")
-                .cloned()
-                .unwrap_or(Value::Null)
-                .opaque(),
-            scoped,
-        });
-        Ok(())
-    }
-
-    fn event(&mut self, rec: &Record<'_>, kind: &str) -> Result<RecordOutcome<Ignored>, String> {
-        let Some(si) = self.file_session(&rec.value)? else {
-            return Ok(RecordOutcome::Unrecognized("bad session id"));
-        };
-        let at = crate::time::intrinsic_field(rec.value.get("timestamp"));
-        let after_message = self.sessions[si].last_message.clone();
-        self.events.push((
-            self.sessions[si].session.id.clone(),
-            Event {
-                kind: kind.into(),
-                at,
-                after_message,
-                model_saw: None,
-                data: rec.value.opaque(),
-            },
-        ));
-        Ok(RecordOutcome::Used)
-    }
-}
-
-/// The first Claude Code version that writes `promptSource`
-/// (spec/sources/claude-code.md).
-const PROMPT_SOURCE_SINCE: [u32; 3] = [2, 1, 161];
-
-fn predates_prompt_source(version: &str) -> bool {
-    let parts: Vec<u32> = version.split('.').map(|p| p.parse().unwrap_or(0)).collect();
-    let mut v = [0u32; 3];
-    for (i, p) in parts.iter().take(3).enumerate() {
-        v[i] = *p;
-    }
-    v < PROMPT_SOURCE_SINCE
-}
-
-fn prompt_kind_of(content: &Value) -> PromptKind {
-    let text = match content {
-        Value::String(s) => s.as_str(),
-        Value::Array(a) => a
-            .iter()
-            .find_map(|b| b.get("text").and_then(Value::as_str))
-            .unwrap_or(""),
-        _ => "",
-    };
-    let t = text.trim_start();
-    // A slash command typed as plain text (`/compact`, `/model opus`) without
-    // the `<command-name>` wrapper: one line whose first word is `/name`.
-    let slash = t.starts_with('/')
-        && !t.trim_end().contains('\n')
-        && t[1..].split_whitespace().next().is_some_and(|w| {
-            !w.is_empty()
-                && w.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':')
-        });
-    if slash
-        || t.starts_with("<command-name>")
-        || t.starts_with("<bash-input>")
-        || t.starts_with('!')
-        || t.starts_with('#')
-    {
-        PromptKind::Command
-    } else {
-        PromptKind::Prose
-    }
-}
-
-fn usage_of(u: &Value) -> Usage {
-    let g = |k: &str| u.get(k).and_then(Value::as_u64);
-    Usage {
-        input: g("input_tokens"),
-        output: g("output_tokens"),
-        cache_read: g("cache_read_input_tokens"),
-        cache_write: g("cache_creation_input_tokens"),
-        cache_write_5m: u
-            .get("cache_creation")
-            .and_then(|m| m.get("ephemeral_5m_input_tokens"))
-            .and_then(Value::as_u64),
-        cache_write_1h: u
-            .get("cache_creation")
-            .and_then(|m| m.get("ephemeral_1h_input_tokens"))
-            .and_then(Value::as_u64),
-        service_tier: u
-            .get("service_tier")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        reasoning: u
-            .get("output_tokens_details")
-            .and_then(|m| m.get("thinking_tokens"))
-            .and_then(Value::as_u64),
-        ..Usage::default()
-    }
-}
-
-fn text_of(v: &Value) -> Option<String> {
-    match v {
-        Value::String(s) => Some(s.text().to_owned()),
-        Value::Array(a) => {
-            let parts: Vec<&str> = a
-                .iter()
-                .filter_map(|x| x.get("text").and_then(Value::as_str))
-                .collect();
-            if parts.is_empty() && !a.is_empty() {
-                None
-            } else {
-                Some(parts.join("\n"))
-            }
-        }
-        _ => None,
-    }
-}
-
-fn blocks_of(record: &Value, content: &Value) -> Vec<BlockContent> {
-    match content {
-        Value::String(s) => vec![BlockContent::Text {
-            text: s.text().to_owned(),
-        }],
-        Value::Array(items) => items
-            .iter()
-            .enumerate()
-            .map(
-                |(index, it)| match it.get("type").and_then(Value::as_str).unwrap_or("") {
-                    "text" => BlockContent::Text {
-                        text: it
-                            .get("text")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_owned(),
-                    },
-                    "thinking" => BlockContent::Thinking(Thinking {
-                        text: it
-                            .get("thinking")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        signature: it
-                            .get("signature")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        encrypted: it.get("encrypted").and_then(Value::as_bool),
-                        data: it.get("data").and_then(Value::as_str).map(str::to_owned),
-                    }),
-                    "tool_use" => {
-                        let input = it.get("input").map(Value::opaque);
-                        BlockContent::ToolCall(ToolCall {
-                            tool: it.get("name").and_then(Value::as_str).map(str::to_owned),
-                            call_id: it.get("id").and_then(Value::native).cloned(),
-                            command: input
-                                .as_ref()
-                                .and_then(|v| v.get("command"))
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            input,
-                        })
-                    }
-                    "tool_result" => {
-                        BlockContent::ToolResult(tool_result::decide(record, index, it).result)
-                    }
-                    "image" => BlockContent::Image(Attachment {
-                        blob: None,
-                        name: None,
-                        media_type: it
-                            .get("source")
-                            .and_then(|s| s.get("media_type"))
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        size: None,
-                        url: None,
-                        direction: AttachmentDirection::Input,
-                        ..Attachment::default()
-                    }),
-                    other => BlockContent::Other {
-                        type_name: other.to_owned(),
-                        data: it.opaque(),
-                    },
-                },
-            )
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// The exit code a shell result prints (`Exit code N`, `exit code: N`); the last
-/// such line wins.
-fn exit_code_in(text: &str) -> Option<i64> {
-    text.lines().rev().find_map(|line| {
-        let l = line.trim().to_ascii_lowercase();
-        let rest = l
-            .strip_prefix("exit code:")
-            .or_else(|| l.strip_prefix("exit code"))?;
-        rest.trim().parse().ok()
-    })
-}
-
-impl<R: ReadView> RecordParser for KeyedRecords<R> {
-    type Error = String;
-    type Ignored = Ignored;
-    type Output = StepOutput;
-    fn record(
-        &mut self,
-        rec: &Record<'_>,
-    ) -> std::result::Result<RecordOutcome<Self::Ignored>, Self::Error> {
-        for field in ["sessionId", "agentId", "continuedInSessionId"] {
-            if rec
-                .value
-                .get(field)
-                .and_then(Value::native)
-                .is_some_and(|n| n.encoding().is_some())
-            {
-                return Err("non-scalar source-derived Session routing is unsupported".into());
-            }
-        }
-        if rec
-            .value
-            .get("forkedFrom")
-            .and_then(|f| f.get("sessionId"))
-            .and_then(Value::native)
-            .is_some_and(|n| n.encoding().is_some())
-        {
-            return Err("non-scalar fork Session routing is unsupported".into());
-        }
-        let ty = rec.value.get("type").and_then(Value::as_str).unwrap_or("");
-        let prior_node = if (ty == "system" && rec.value.get("subtype").is_none())
-            || (ty == "user" && rec.value.get("isCompactSummary").is_none())
-            || (ty == "progress" && rec.value.get("data").is_none())
-        {
-            if let Some(uuid) = rec.value.get("uuid").and_then(Value::native) {
-                let key = native_key(uuid)?;
-                if let Some((si, _)) = self.route(&rec.value, &key)? {
-                    self.parent_node(&self.sessions[si].session.native_id, &key)?
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let compact_summary = ty == "user"
-            && (rec.value.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
-                || (rec.value.get("isCompactSummary").is_none()
-                    && prior_node.as_ref().is_some_and(|n| n.kind == "user")));
-        let subtype = rec
-            .value
-            .get("subtype")
-            .and_then(Value::as_str)
-            .or_else(|| prior_node.as_ref().and_then(|n| n.subtype.as_deref()));
-        let outcome = {
-            match ty {
-                "user" if compact_summary => self.event(rec, "compaction_summary")?,
-                "user" | "assistant" => self.message_record(rec, ty)?,
-                "system" => match subtype {
-                    Some("compact_boundary") => self.event(rec, "compaction")?,
-                    Some("microcompact_boundary") => self.event(rec, "microcompaction")?,
-                    Some("model_refusal_no_fallback" | "model_refusal_fallback") => {
-                        self.event(rec, "model_refusal")?
-                    }
-                    // Other system subtypes (turn_duration, api_error, local_command,
-                    // ...) become an event of the same name.
-                    Some(sub) => {
-                        let sub = sub.to_owned();
-                        self.event(rec, &sub)?
-                    }
-                    None => RecordOutcome::Unrecognized("system without subtype"),
-                },
-                "attachment" => self.event(rec, "attachment")?,
-                "pr-link" => self.event(rec, "pr_link")?,
-                "permission-mode" => self.event(rec, "permission_mode")?,
-                "mode" => self.event(rec, "mode")?,
-                "queue-operation" => {
-                    self.complete_background(rec)?;
-                    self.event(rec, "queue")?
-                }
-                "last-prompt" => {
-                    self.active_leaf(rec, "last-prompt")?;
-                    self.event(rec, "last_prompt")?
-                }
-                "file-history-snapshot" | "file-history-delta" => {
-                    self.event(rec, "file_history")?
-                }
-                "cost-state" => self.event(rec, "provider_cost")?,
-                "bridge-session" | "frame-link" | "worktree-state" | "agent-name"
-                | "agent-color" | "relocated" => {
-                    let kind = ty.replace('-', "_");
-                    self.event(rec, &kind)?
-                }
-                "started" => self.event(rec, "workflow_started")?,
-                "result" => self.event(rec, "workflow_result")?,
-                "continued-in" => {
-                    if let (FileCtx::Main { stem }, Some(next)) = (
-                        self.ctx.clone(),
-                        rec.value
-                            .get("continuedInSessionId")
-                            .and_then(Value::as_str),
-                    ) {
-                        let next = next.to_owned();
-                        self.add_link(
-                            LinkKind::Continuation,
-                            LinkHow::AfterCompaction,
-                            &stem,
-                            &next,
-                            "continued-in",
-                            None,
-                        )?;
-                        RecordOutcome::Used
-                    } else {
-                        RecordOutcome::Unrecognized("continued-in without a target")
-                    }
-                }
-                // Evidence for the subagent link; the copied records themselves carry the lineage.
-                "fork-context-ref" => {
-                    RecordOutcome::Unrecognized("fork context lineage not yet derived")
-                }
-                "custom-title" | "ai-title" | "summary" => {
-                    if ty == "summary" {
-                        self.active_leaf(rec, "summary")?;
-                    }
-                    let (rank, field) = match ty {
-                        "custom-title" => (3, "customTitle"),
-                        "ai-title" => (2, "aiTitle"),
-                        _ => (1, "summary"),
-                    };
-                    if let Some(t) = rec.value.get(field).and_then(Value::as_str)
-                        && self.header.title.as_ref().is_none_or(|(r, _)| rank >= *r)
-                    {
-                        self.header.title = Some((rank, t.to_owned()));
-                        // A metadata-only file still names its Session's owner.
-                        if let FileCtx::Main { stem } = self.ctx.clone() {
-                            self.session_index(&stem, SessionKind::Main)?;
-                        }
-                    }
-                    RecordOutcome::Used
-                }
-                "progress" => match rec
-                    .value
-                    .get("data")
-                    .and_then(|d| d.get("type"))
-                    .and_then(Value::as_str)
-                    .or_else(|| {
-                        if rec.value.get("data").is_none() {
-                            prior_node
-                                .as_ref()
-                                .and_then(|n| n.progress_kind.as_ref())
-                                .and_then(|l| l.value.as_str())
-                        } else {
-                            None
-                        }
-                    }) {
-                    // Subagent evidence and hook runs become events.
-                    Some("agent_progress") => {
-                        RecordOutcome::Unrecognized("agent progress linkage not yet derived")
-                    }
-                    Some("hook_progress") => self.event(rec, "hook_run")?,
-                    // Counted only; the payload stays in the stored bytes.
-                    Some(
-                        "bash_progress"
-                        | "waiting_for_task"
-                        | "query_update"
-                        | "search_results_received"
-                        | "mcp_progress",
-                    ) => RecordOutcome::Ignored(Ignored::ProgressCountedOnly),
-                    _ => RecordOutcome::Unrecognized("progress kind"),
-                },
-                // Anything else is counted as unrecognized.
-                "atis-latch" => RecordOutcome::Unrecognized("atis-latch"),
-                _ => RecordOutcome::Unrecognized("record type"),
-            }
-        };
-        let ty = rec.value.get("type").and_then(Value::as_str).unwrap_or("");
-        let message = matches!(ty, "user" | "assistant") && !compact_summary;
-        if !message {
-            self.remember_parent_node(
-                rec,
-                matches!(outcome, RecordOutcome::Used | RecordOutcome::Ignored(_)),
-            )?;
-        }
-        Ok(outcome)
-    }
-    fn finish(self) -> Result<Self::Output, Self::Error> {
-        self.finish_output()
-    }
-}
-
-impl<R: ReadView> KeyedRecords<R> {
-    fn finish_output(mut self) -> Result<StepOutput, String> {
-        if let (FileCtx::Main { stem }, Some((_, title))) = (&self.ctx, &self.header.title)
-            && let Some(&i) = self.by_id.get(stem)
-        {
-            self.sessions[i].session.title = Some(title.clone());
-        }
-        self.sessions.sort_by_key(|c| c.ordinal);
-        let mut responses: Vec<_> = self
-            .responses
-            .into_iter()
-            .map(|((s, k), c)| (s, k, c))
-            .collect();
-        responses.sort_by(|a, b| (&a.0, a.2.ordinal).cmp(&(&b.0, b.2.ordinal)));
-        let mut addresses: Vec<_> = self
-            .addresses
-            .into_iter()
-            .map(|((s, u), c)| (s, u, c))
-            .collect();
-        addresses.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
-        let mut parent_nodes: Vec<_> = self
-            .parent_nodes
-            .into_iter()
-            .map(|((s, u), node)| (s, u, node))
-            .collect();
-        parent_nodes.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
-        let mut contributions: Vec<_> = self
-            .contributions
-            .into_iter()
-            .map(|((m, i), c)| (m, i, c))
-            .collect();
-        contributions.sort_by(|a, b| {
-            (a.0.session().as_str(), a.0.as_str(), a.1).cmp(&(
-                b.0.session().as_str(),
-                b.0.as_str(),
-                b.1,
-            ))
-        });
-        let mut sides: Vec<_> = self.sides.into_iter().collect();
-        sides.sort();
-        Ok(StepOutput {
-            header: self.header,
-            delta: Delta {
-                sessions: self.sessions,
-                responses,
-                addresses,
-                parent_nodes,
-                occurrences: self.occurrences.into_iter().collect(),
-                backgrounds: self.backgrounds.into_iter().collect(),
-                contributions,
-                sides,
-                links: self.link_order,
-                pending_messages: self.pending.into_values().collect(),
-            },
-            events: self.events,
-            links: self.links,
-        })
-    }
-}
-
-fn usd_nanos(value: &Value) -> Option<i64> {
-    crate::decimal::scaled_integer(value, 9)
-}
-
-const METADATA_PATHS: [&[&str]; 6] = [
-    &["message", "usage"],
-    &["message", "stop_reason"],
-    &["message", "model"],
-    &["timestamp"],
-    &["costUSD"],
-    &["durationMs"],
+pub const LOCATIONS: &[&str] = &[
+    ".claude/projects/*/*.jsonl",
+    ".claude/projects/*/*/subagents/agent-*.jsonl",
 ];
-fn apply_selected(response: &mut ResponseCell) -> Result<(), String> {
-    let values: Vec<Option<Value>> = response
-        .selected
-        .iter()
-        .map(|v| {
-            v.as_ref()
-                .map(|b| serde_json::from_slice(b).map_err(|e| e.to_string()))
-                .transpose()
-        })
-        .collect::<Result<_, _>>()?;
-    response.message.usage = values[0].as_ref().filter(|v| v.is_object()).map(usage_of);
-    // `provider_usage` is present exactly when the selected usage record
-    // supplied one of its members.
-    if response.selected_facts[0].iter().any(|fact| {
-        matches!(&fact.field,
-        projection::Field::SelectedExtra { key } if key == "provider_usage")
-    }) {
-        let raw = values[0]
-            .as_ref()
-            .ok_or("Claude provider usage lost its selected raw object")?;
-        let attrs = response
-            .message
-            .attrs
-            .get_or_insert_with(|| Value::Object(Default::default()))
-            .as_object_mut()
-            .ok_or("Claude normalized extras carrier is not an object")?;
-        attrs.insert("provider_usage".into(), raw.clone().into_opaque());
-    } else if let Some(attrs) = response
-        .message
-        .attrs
-        .as_mut()
-        .and_then(Value::as_object_mut)
-    {
-        attrs.remove(&NativeId::unicode("provider_usage"));
-    }
-    if let Some(cost) = values[4].as_ref().and_then(usd_nanos) {
-        response
-            .message
-            .usage
-            .get_or_insert_with(Usage::default)
-            .provider_cost_nusd = Some(Usd(cost));
-    }
-    response.message.duration_ms = values[5].as_ref().and_then(Value::as_u64);
-    response.message.stop_reason = values[1]
-        .as_ref()
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    if response.message.written_by == WrittenBy::Model {
-        response.message.model = values[2]
-            .as_ref()
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-    }
-    response.message.completed_at = crate::time::intrinsic_field(values[3].as_ref());
-    Ok(())
+
+/// How many closed responses stay reopenable. A continuation record can
+/// arrive after another message (3,117 of 1.2M continuations on the real
+/// archive); a few slots cover them without an unbounded ID set.
+const REOPEN_WINDOW: usize = 4;
+
+pub fn recognize(path: &Path, head: &[u8]) -> bool {
+    File::from_path(path).is_some()
+        && head
+            .iter()
+            .find(|b| !b.is_ascii_whitespace())
+            .is_none_or(|&b| b == b'{')
 }
 
-impl<R: ReadView> KeyedRecords<R> {
-    fn blocks_and_bodies(
-        &self,
-        record: &Value,
-        _raw: &[u8],
-    ) -> Result<(Vec<BlockContent>, Vec<RequiredBody>), String> {
-        let content = record
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .unwrap_or(&Value::Null);
-        let mut blocks = blocks_of(record, content);
-        let mut bodies = Vec::new();
-        let Some(items) = content.as_array() else {
-            return Ok((blocks, bodies));
-        };
-        let result_count = items
-            .iter()
-            .filter(|it| it.get("type").and_then(Value::as_str) == Some("tool_result"))
-            .count();
-        for (index, item) in items.iter().enumerate() {
-            if item.get("type").and_then(Value::as_str) != Some("tool_result") {
-                continue;
-            }
-            let text = item.get("content").and_then(text_of).unwrap_or_default();
-            let path = body_path(record, item, result_count, &text);
-            if let Some(path) = path {
-                let payload = match self.view.body(path).map_err(|e| e.to_string())? {
-                    Some(body) => Some(body),
-                    None => match path.rsplit('/').next().filter(|name| *name != path) {
-                        Some(name) => self.view.body(name).map_err(|e| e.to_string())?,
-                        None => None,
-                    },
-                };
-                if payload.as_ref().is_some_and(|body| {
-                    body.length == text.len() as u64
-                        && body.blob == polylogue_model::BlobHash::of(text.as_bytes())
-                }) {
-                    continue;
-                }
-                let content_item =
-                    u32::try_from(index).map_err(|_| "Claude content-item overflow")?;
-                if let Some(BlockContent::ToolResult(result)) = blocks.get_mut(index) {
-                    match &payload {
-                        Some(body) => result.output = Some(ToolOutput::Blob(body.blob)),
-                        None => {
-                            result.outcome = ToolOutcome::Unknown {
-                                reason: UnknownReason::OutputNotRecorded,
-                            }
-                        }
+pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
+    File::from_path(path).map(|file| Box::new(ClaudeCode { file }) as Box<dyn StepParser>)
+}
+
+/// Which kind of file is being read, from its place in the directory tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum File {
+    Main { stem: String },
+    Subagent { stem: String },
+}
+
+impl File {
+    pub fn from_path(path: &Path) -> Option<Self> {
+        if path.extension()? != "jsonl" {
+            return None;
+        }
+        let stem = path.file_stem()?.to_str()?.to_owned();
+        let dir = path.parent()?.file_name()?.to_str()?;
+        Some(if dir == "subagents" {
+            Self::Subagent { stem }
+        } else {
+            Self::Main { stem }
+        })
+    }
+
+    fn stem(&self) -> &str {
+        match self {
+            Self::Main { stem } | Self::Subagent { stem } => stem,
+        }
+    }
+}
+
+pub struct ClaudeCode {
+    pub file: File,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Carry {
+    /// Session facts gathered so far, by native ID. A file touches a few
+    /// sessions: its own, the ones it copies from, its sidechain.
+    sessions: BTreeMap<String, Session>,
+    /// The assistant response still being assembled.
+    open: Option<Response>,
+    /// Recently closed responses that a late continuation may reopen.
+    recent: VecDeque<Response>,
+    /// Links already sent, as `kind parent child`.
+    links: BTreeSet<String>,
+    /// The latest message, for placing events on the timeline.
+    last: Option<MessageId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Response {
+    key: String,
+    /// Where the response's first record starts.
+    offset: u64,
+    message: Message,
+}
+
+fn origin() -> Origin {
+    Origin::new("claude-code").expect("constant origin")
+}
+
+fn str_field<'a>(v: &'a Json, key: &str) -> Option<&'a str> {
+    v.get(key).and_then(Json::as_str).filter(|s| !s.is_empty())
+}
+
+fn session_id(native: &str) -> Option<SessionId> {
+    Some(SessionId::new(origin(), NativeId::new(native).ok()?))
+}
+
+fn message_id(native: &str) -> Option<MessageId> {
+    Some(MessageId::new(origin(), NativeId::new(native).ok()?))
+}
+
+/// The session a record belongs to and its kind.
+struct Route {
+    native: String,
+    kind: SessionKind,
+}
+
+impl ClaudeCode {
+    fn route(&self, v: &Json) -> Route {
+        match &self.file {
+            File::Subagent { stem } => Route {
+                native: str_field(v, "agentId")
+                    .map(|a| format!("agent-{a}"))
+                    .unwrap_or_else(|| stem.clone()),
+                kind: SessionKind::Subagent,
+            },
+            File::Main { stem } => {
+                let base = str_field(v, "sessionId").unwrap_or(stem).to_owned();
+                if v.get("isSidechain").and_then(Json::as_bool) == Some(true) {
+                    Route {
+                        native: format!("{base}/sidechain"),
+                        kind: SessionKind::Sidechain,
+                    }
+                } else {
+                    Route {
+                        native: base,
+                        kind: SessionKind::Main,
                     }
                 }
-                bodies.push(RequiredBody {
-                    content_item,
-                    payload,
-                });
             }
         }
-        Ok((blocks, bodies))
     }
-}
 
-fn body_path<'a>(
-    record: &'a Value,
-    item: &'a Value,
-    result_count: usize,
-    text: &'a str,
-) -> Option<&'a str> {
-    item.get("persistedOutputPath")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            if result_count == 1 {
-                record
-                    .get("toolUseResult")
-                    .and_then(|r| r.get("persistedOutputPath"))
-                    .and_then(Value::as_str)
-            } else {
-                None
+    /// The session's facts entry, created on first sight, with the
+    /// record's envelope facts offered to it. Also sends the link that
+    /// explains why a record belongs to a session other than the file's
+    /// own.
+    fn session<'c>(
+        &self,
+        carry: &'c mut Carry,
+        v: &Json,
+        out: &mut Output,
+    ) -> Option<&'c mut Session> {
+        let route = self.route(v);
+        let id = session_id(&route.native)?;
+        let parent = str_field(v, "sessionId").and_then(session_id);
+        match (&self.file, route.kind) {
+            (File::Main { stem }, SessionKind::Main) if route.native != *stem => {
+                if let Some(child) = session_id(stem) {
+                    link(carry, out, LinkKind::Copy, id.clone(), child, "sessionId");
+                }
             }
-        })
-        .or_else(|| {
-            text.lines().find_map(|line| {
-                line.strip_prefix("Full output saved to: ")
-                    .or_else(|| line.strip_prefix("Output has been saved to "))
-            })
-        })
-}
-
-/// The tool-result body file a record's content item `index` refers to. Used by
-/// acquisition and by origin checks.
-pub fn required_body_path(record: &Value, index: usize) -> Option<String> {
-    let items = record.get("message")?.get("content")?.as_array()?;
-    let item = items.get(index)?;
-    if item.get("type").and_then(Value::as_str) != Some("tool_result") {
-        return None;
+            (_, SessionKind::Sidechain) | (File::Subagent { .. }, SessionKind::Subagent) => {
+                if let Some(parent) = parent.filter(|p| *p != id) {
+                    let evidence = if route.kind == SessionKind::Sidechain {
+                        "isSidechain"
+                    } else {
+                        "agentId"
+                    };
+                    link(carry, out, LinkKind::Spawn, parent, id.clone(), evidence);
+                }
+            }
+            _ => {}
+        }
+        let s = carry
+            .sessions
+            .entry(route.native)
+            .or_insert_with(|| Session::new(id, route.kind));
+        if let Some(cwd) = str_field(v, "cwd") {
+            s.offer_cwd(cwd);
+        }
+        if let Some(branch) = str_field(v, "gitBranch") {
+            s.git_branch = Some(branch.to_owned());
+        }
+        if let Some(version) = str_field(v, "version") {
+            s.tool_version = Some(version.to_owned());
+        }
+        if let Some(at) = v.get("timestamp").and_then(time::rfc3339) {
+            s.offer_start(at);
+        }
+        Some(s)
     }
-    let count = items
-        .iter()
-        .filter(|i| i.get("type").and_then(Value::as_str) == Some("tool_result"))
-        .count();
-    let text = item.get("content").and_then(text_of).unwrap_or_default();
-    body_path(record, item, count, &text).map(str::to_owned)
+
+    /// The file's own session, for records that name none.
+    fn own_session(&self, carry: &mut Carry) -> Option<SessionId> {
+        let stem = self.file.stem();
+        let kind = match self.file {
+            File::Main { .. } => SessionKind::Main,
+            File::Subagent { .. } => SessionKind::Subagent,
+        };
+        let id = session_id(stem)?;
+        carry
+            .sessions
+            .entry(stem.to_owned())
+            .or_insert_with(|| Session::new(id.clone(), kind));
+        Some(id)
+    }
+
+    fn event(&self, carry: &mut Carry, v: &Json, kind: &str, out: &mut Output) -> Disposition {
+        let session = match v.get("sessionId").or(v.get("agentId")) {
+            Some(_) => self.session(carry, v, out).map(|s| s.id.clone()),
+            None => self.own_session(carry),
+        };
+        let Some(session) = session else {
+            return Disposition::refused("session ID is empty");
+        };
+        out.events.push(Event {
+            session,
+            kind: kind.to_owned(),
+            at: v.get("timestamp").and_then(time::rfc3339),
+            after: carry.last.clone(),
+            data: v.clone(),
+        });
+        Disposition::Materialized
+    }
+
+    fn message(
+        &self,
+        carry: &mut Carry,
+        record: Record<'_>,
+        v: &Json,
+        role: Role,
+        out: &mut Output,
+        acc: &mut Accounting,
+    ) -> Disposition {
+        let kind = self.kind(v);
+        for path in unaccounted(v, fields::MESSAGE_FIELDS) {
+            acc.unread(&kind, &path);
+        }
+        let Some(session) = self.session(carry, v, out).map(|s| s.id.clone()) else {
+            return Disposition::refused("session ID is empty");
+        };
+        let native = str_field(v, "uuid")
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("{}@{}", self.file.stem(), record.offset));
+        let Some(id) = message_id(&native) else {
+            return Disposition::refused("message ID is empty");
+        };
+        let msg = v.get("message").unwrap_or(&Json::Null);
+        let content = msg.get("content").unwrap_or(&Json::Null);
+        let blocks = blocks::blocks(v, content, &mut out.blobs);
+        let usage = msg.get("usage").map(usage).unwrap_or_default();
+        let stop_reason = str_field(msg, "stop_reason").map(str::to_owned);
+        let model = str_field(msg, "model").map(str::to_owned);
+        let cost = v.get("costUSD").and_then(Json::as_number).cloned();
+        let duration = v.get("durationMs").and_then(Json::as_u64);
+
+        if role == Role::Assistant {
+            let key = str_field(msg, "id")
+                .or_else(|| str_field(v, "requestId"))
+                .unwrap_or(&native)
+                .to_owned();
+            let same = |r: &Response| r.key == key && r.message.session == session;
+            if !carry.open.as_ref().is_some_and(same) {
+                let reopened = carry
+                    .recent
+                    .iter()
+                    .position(same)
+                    .and_then(|i| carry.recent.remove(i));
+                close(carry, out);
+                carry.open = reopened;
+            }
+            match &mut carry.open {
+                Some(open) => {
+                    let m = &mut open.message;
+                    m.blocks.extend(blocks);
+                    if !usage.is_empty() {
+                        m.usage = usage;
+                    }
+                    m.stop_reason = stop_reason.or(m.stop_reason.take());
+                    m.model = m.model.take().or(model);
+                    m.reported_cost_usd = cost.or(m.reported_cost_usd.take());
+                    m.duration_ms = duration.or(m.duration_ms);
+                }
+                None => {
+                    carry.open = Some(Response {
+                        key,
+                        offset: record.offset,
+                        message: Message {
+                            id: id.clone(),
+                            session,
+                            parent: str_field(v, "parentUuid").and_then(message_id),
+                            role,
+                            at: v.get("timestamp").and_then(time::rfc3339),
+                            model,
+                            prompt_kind: None,
+                            blocks,
+                            usage,
+                            stop_reason,
+                            reported_cost_usd: cost,
+                            duration_ms: duration,
+                        },
+                    });
+                    carry.last = Some(id);
+                }
+            }
+        } else {
+            let message = Message {
+                id: id.clone(),
+                session,
+                parent: str_field(v, "parentUuid").and_then(message_id),
+                role,
+                at: v.get("timestamp").and_then(time::rfc3339),
+                model,
+                prompt_kind: Some(blocks::prompt_kind(v, content)),
+                blocks,
+                usage,
+                stop_reason,
+                reported_cost_usd: cost,
+                duration_ms: duration,
+            };
+            out.messages.push(MessageRow {
+                offset: record.offset,
+                message,
+            });
+            carry.last = Some(id);
+        }
+        Disposition::Materialized
+    }
+
+    fn title(&self, carry: &mut Carry, v: &Json, field: &str, source: TitleSource) -> Disposition {
+        let Some(text) = str_field(v, field) else {
+            return Disposition::unknown(format!("no {field}"));
+        };
+        let Some(id) = self.own_session(carry) else {
+            return Disposition::refused("session ID is empty");
+        };
+        if let Some(s) = carry.sessions.get_mut(id.native().as_str()) {
+            s.offer_title(text, source);
+        }
+        Disposition::Materialized
+    }
 }
 
-/// Each referenced body path with the hash and length of the inline text, used
-/// to recognize a body file that only repeats the inline copy.
-pub fn body_references(record: &Value) -> Vec<(String, polylogue_model::BlobHash, u64)> {
-    let Some(items) = record
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(Value::as_array)
-    else {
-        return vec![];
+fn link(
+    carry: &mut Carry,
+    out: &mut Output,
+    kind: LinkKind,
+    parent: SessionId,
+    child: SessionId,
+    evidence: &str,
+) {
+    link_at(carry, out, kind, parent, child, None, None, evidence);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn link_at(
+    carry: &mut Carry,
+    out: &mut Output,
+    kind: LinkKind,
+    parent: SessionId,
+    child: SessionId,
+    at: Option<MessageId>,
+    call_id: Option<String>,
+    evidence: &str,
+) {
+    let key = format!("{kind:?} {parent} {child}");
+    if carry.links.insert(key) {
+        out.links.push(Link {
+            kind,
+            parent,
+            child,
+            at,
+            call_id,
+            evidence: evidence.to_owned(),
+        });
+    }
+}
+
+/// Moves the open response to the output and keeps it reopenable.
+fn close(carry: &mut Carry, out: &mut Output) {
+    if let Some(open) = carry.open.take() {
+        out.messages.push(MessageRow {
+            offset: open.offset,
+            message: open.message.clone(),
+        });
+        carry.recent.push_back(open);
+        while carry.recent.len() > REOPEN_WINDOW {
+            carry.recent.pop_front();
+        }
+    }
+}
+
+fn usage(u: &Json) -> Usage {
+    let n = |k: &str| u.get(k).and_then(Json::as_u64);
+    Usage {
+        input: n("input_tokens"),
+        cached_input: n("cache_read_input_tokens"),
+        cache_write: n("cache_creation_input_tokens"),
+        output: n("output_tokens"),
+        reasoning: None,
+        service_tier: str_field(u, "service_tier").map(str::to_owned),
+    }
+}
+
+/// A background task's completion, from the notification the harness
+/// queues for the model.
+fn background_update(v: &Json) -> Option<(String, ToolOutcome, Option<String>, Option<String>)> {
+    let content = v.get("content").and_then(Json::as_str)?;
+    let tag = |name: &str| {
+        let open = format!("<{name}>");
+        let start = content.find(&open)? + open.len();
+        let end = content[start..].find(&format!("</{name}>"))?;
+        Some(content[start..start + end].trim().to_owned())
     };
-    items
-        .iter()
-        .enumerate()
-        .filter_map(|(index, item)| {
-            let path = required_body_path(record, index)?;
-            let text = item.get("content").and_then(text_of).unwrap_or_default();
-            Some((
-                path,
-                polylogue_model::BlobHash::of(text.as_bytes()),
-                text.len() as u64,
-            ))
-        })
-        .collect()
+    let task = tag("task-id")?;
+    let exit = tag("summary").and_then(|s| {
+        let at = s.find("exit code")? + "exit code".len();
+        s[at..]
+            .trim()
+            .split(|c: char| !c.is_ascii_digit() && c != '-')
+            .next()?
+            .parse()
+            .ok()
+    });
+    let outcome = match tag("status")?.as_str() {
+        "completed" => ToolOutcome::Ok,
+        "failed" => ToolOutcome::Error {
+            reason: exit.map(ErrorReason::ExitCode),
+        },
+        "killed" | "stopped" => ToolOutcome::Error {
+            reason: Some(ErrorReason::Interrupted),
+        },
+        _ => return None,
+    };
+    Some((task, outcome, tag("tool-use-id"), tag("output-file")))
 }
 
-fn validate_structural_keys(incoming: &Value) -> Result<(), String> {
-    for object in [
-        incoming.as_object(),
-        incoming.get("message").and_then(Value::as_object),
-        incoming.get("toolUseResult").and_then(Value::as_object),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if object.keys().any(|key| key.encoding().is_some()) {
-            return Err("non-scalar Claude structural field names need an encoded selector".into());
+impl Parser for ClaudeCode {
+    type Carry = Carry;
+
+    fn kind(&self, v: &Json) -> String {
+        let ty = str_field(v, "type").unwrap_or("?");
+        let sub = match ty {
+            "system" => str_field(v, "subtype"),
+            "progress" => v.get("data").and_then(|d| str_field(d, "type")),
+            _ => None,
+        };
+        match sub {
+            Some(sub) => format!("{ty}/{sub}"),
+            None => ty.to_owned(),
         }
     }
-    let message = incoming.get("message");
-    let usage = message.and_then(|m| m.get("usage"));
-    let mut structural = vec![
-        incoming.get("origin"),
-        usage,
-        usage.and_then(|u| u.get("cache_creation")),
-        usage.and_then(|u| u.get("output_tokens_details")),
-    ];
-    if let Some(content) = message
-        .and_then(|m| m.get("content"))
-        .and_then(Value::as_array)
-    {
-        structural.extend(content.iter().map(Some));
+
+    fn record(
+        &self,
+        carry: &mut Carry,
+        record: Record<'_>,
+        v: &Json,
+        out: &mut Output,
+        acc: &mut Accounting,
+    ) -> Disposition {
+        if !v.is_object() {
+            return Disposition::refused("record is not a JSON object");
+        }
+        let Some(ty) = str_field(v, "type") else {
+            return Disposition::unknown("no type field");
+        };
+        match ty {
+            "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {
+                self.event(carry, v, "compaction_summary", out)
+            }
+            "user" => self.message(carry, record, v, Role::User, out, acc),
+            "assistant" => self.message(carry, record, v, Role::Assistant, out, acc),
+            "system" => match str_field(v, "subtype") {
+                Some("compact_boundary") => self.event(carry, v, "compaction", out),
+                Some("microcompact_boundary") => self.event(carry, v, "microcompaction", out),
+                Some(sub) => self.event(carry, v, &sub.replace('-', "_"), out),
+                None => Disposition::unknown("system record without a subtype"),
+            },
+            "attachment" => self.event(carry, v, "attachment", out),
+            "pr-link"
+            | "permission-mode"
+            | "last-prompt"
+            | "bridge-session"
+            | "frame-link"
+            | "worktree-state"
+            | "artifact-comment-monitor"
+            | "artifact-autoreact-ledger" => self.event(carry, v, &ty.replace('-', "_"), out),
+            "file-history-snapshot" | "file-history-delta" => {
+                self.event(carry, v, "file_history", out)
+            }
+            "cost-state" => self.event(carry, v, "tool_cost", out),
+            "started" => self.event(carry, v, "subagent_started", out),
+            "result" => self.event(carry, v, "subagent_result", out),
+            "queue-operation" => {
+                if let Some((task_id, outcome, call_id, output_file)) = background_update(v)
+                    && let Some(session) = match v.get("sessionId") {
+                        Some(_) => self.session(carry, v, out).map(|s| s.id.clone()),
+                        None => self.own_session(carry),
+                    }
+                {
+                    out.background.push(BackgroundUpdate {
+                        session,
+                        task_id,
+                        call_id,
+                        outcome,
+                        output_file,
+                    });
+                }
+                self.event(carry, v, "queue", out)
+            }
+            "relocated" => {
+                if let Some(dir) = str_field(v, "relocatedCwd")
+                    && let Some(id) = self.own_session(carry)
+                    && let Some(s) = carry.sessions.get_mut(id.native().as_str())
+                {
+                    s.offer_cwd(dir);
+                }
+                self.event(carry, v, "relocated", out)
+            }
+            "agent-name" => {
+                let d = self.title(carry, v, "agentName", TitleSource::AgentName);
+                if d != Disposition::Materialized {
+                    return d;
+                }
+                self.event(carry, v, "agent_name", out)
+            }
+            "custom-title" => self.title(carry, v, "customTitle", TitleSource::Custom),
+            "ai-title" => self.title(carry, v, "aiTitle", TitleSource::Generated),
+            "summary" => self.title(carry, v, "summary", TitleSource::Summary),
+            "continued-in" => {
+                let (Some(parent), Some(child)) = (
+                    self.own_session(carry),
+                    str_field(v, "continuedInSessionId").and_then(session_id),
+                ) else {
+                    return Disposition::unknown("continued-in without a target");
+                };
+                link(
+                    carry,
+                    out,
+                    LinkKind::Continuation,
+                    parent,
+                    child,
+                    "continuedInSessionId",
+                );
+                Disposition::Materialized
+            }
+            "fork-context-ref" => {
+                let child = self.session(carry, v, out).map(|s| s.id.clone());
+                let (Some(parent), Some(child)) =
+                    (str_field(v, "parentSessionId").and_then(session_id), child)
+                else {
+                    return Disposition::unknown("fork-context-ref without a parent");
+                };
+                let at = str_field(v, "parentLastUuid").and_then(message_id);
+                link_at(
+                    carry,
+                    out,
+                    LinkKind::Fork,
+                    parent,
+                    child,
+                    at,
+                    None,
+                    "fork-context-ref",
+                );
+                self.event(carry, v, "fork_context", out)
+            }
+            "progress" => {
+                let data = v.get("data").unwrap_or(&Json::Null);
+                match str_field(data, "type") {
+                    Some("agent_progress") => {
+                        let parent = self.session(carry, v, out).map(|s| s.id.clone());
+                        let child = str_field(data, "agentId")
+                            .and_then(|a| session_id(&format!("agent-{a}")));
+                        let (Some(parent), Some(child)) = (parent, child) else {
+                            return Disposition::unknown("agent progress without an agent ID");
+                        };
+                        let call = str_field(v, "parentToolUseID").map(str::to_owned);
+                        link_at(
+                            carry,
+                            out,
+                            LinkKind::Spawn,
+                            parent,
+                            child,
+                            None,
+                            call,
+                            "agent_progress",
+                        );
+                        Disposition::Materialized
+                    }
+                    Some("hook_progress") => self.event(carry, v, "hook_run", out),
+                    Some(_) => {
+                        Disposition::unknown("progress tick; the tool's own result supersedes it")
+                    }
+                    None => Disposition::unknown("progress without data"),
+                }
+            }
+            "mode" => Disposition::unknown("always \"normal\" in observed data"),
+            "atis-latch" => Disposition::unknown("always empty in observed data"),
+            "agent-color" => Disposition::unknown("terminal colour only; names no agent"),
+            "init" => Disposition::unknown("empty start marker"),
+            _ => Disposition::unknown("unrecognized record type"),
+        }
     }
-    if structural
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_object)
-        .any(|o| o.keys().any(|k| k.encoding().is_some()))
-    {
-        return Err("non-scalar Claude structural field names need an encoded selector".into());
+
+    fn flush(&self, carry: &mut Carry, out: &mut Output) {
+        if let Some(open) = &carry.open {
+            out.messages.push(MessageRow {
+                offset: open.offset,
+                message: open.message.clone(),
+            });
+        }
+        // A response reopened within one step was sent more than once; keep
+        // the last, which is the longest. Rows go out in file order.
+        let mut seen = BTreeSet::new();
+        let mut kept: Vec<MessageRow> = Vec::with_capacity(out.messages.len());
+        for row in out.messages.drain(..).rev() {
+            if seen.insert((row.message.id.clone(), row.offset)) {
+                kept.push(row);
+            }
+        }
+        kept.sort_by_key(|row| row.offset);
+        out.messages = kept;
+        out.sessions = carry.sessions.values().cloned().collect();
     }
-    Ok(())
 }
+
+#[cfg(test)]
+mod tests;
