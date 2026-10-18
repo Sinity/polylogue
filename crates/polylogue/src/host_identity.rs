@@ -19,7 +19,7 @@ fn read_machine(path: &Path) -> Result<String, Failure> {
     let mut bytes = Vec::new();
     File::open(path)
         .and_then(|file| file.take(129).read_to_end(&mut bytes))
-        .map_err(|e| Failure::new(ErrorKind::Io, format!("machine identity file: {e}; configure POLYLOGUE_MACHINE_ID_FILE when /etc/machine-id is unavailable")))?;
+        .map_err(|e| Failure::new(ErrorKind::Io, format!("machine-id file: {e}; set POLYLOGUE_MACHINE_ID_FILE if /etc/machine-id is missing")))?;
     let value = std::str::from_utf8(&bytes).ok().map(str::trim);
     let value = value.filter(|value| {
         bytes.len() <= 128
@@ -32,7 +32,7 @@ fn read_machine(path: &Path) -> Result<String, Failure> {
     value.map(str::to_owned).ok_or_else(|| {
         Failure::new(
             ErrorKind::InvalidQuery,
-            "machine identity requires a nonzero 32-character lowercase hexadecimal machine-id; no fallback identity was invented",
+            "machine-id must be 32 lowercase hex characters, not all zero",
         )
     })
 }

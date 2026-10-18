@@ -211,7 +211,7 @@ impl World {
                 assert!(
                     String::from_utf8(out.stderr)
                         .unwrap()
-                        .contains("Read coverage is incomplete")
+                        .contains("Read is incomplete")
                 );
                 assert_eq!(progress["source_rows"]["scope"], "imported_source_rows");
                 assert_eq!(

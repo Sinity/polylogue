@@ -71,7 +71,7 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
             "--dry-run" => {
                 return Err(Failure::new(
                     ErrorKind::NotYetAvailable,
-                    "dry-run is unavailable; no source bytes were acquired",
+                    "--dry-run is not supported",
                 ));
             }
             flag if flag.starts_with('-') => {
@@ -79,7 +79,7 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
             }
             value => {
                 if path.replace(PathBuf::from(value)).is_some() {
-                    return Err(invalid("this stage accepts one regular file per request"));
+                    return Err(invalid("import takes one file"));
                 }
             }
         }
@@ -99,7 +99,7 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
     if wait_seconds > 86400 {
         return Err(invalid("--wait-timeout maximum is 86400 seconds"));
     }
-    let path = path.ok_or_else(|| invalid("import requires a regular file path"))?;
+    let path = path.ok_or_else(|| invalid("usage: import PATH --format FORMAT"))?;
     let format = match format.as_deref() {
         Some("codex-rollout") => polylogue_store::InputFormat::CodexRollout,
         Some("codex-history-sqlite") => polylogue_store::InputFormat::CodexHistorySqlite,
@@ -107,7 +107,7 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
         _ => {
             return Err(Failure::new(
                 ErrorKind::NotYetAvailable,
-                "pass an explicit supported --format; automatic source recognition is not registered",
+                "--format is required: claude-code-jsonl, codex-rollout or codex-history-sqlite",
             ));
         }
     };
@@ -121,7 +121,7 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
         .map_err(|e| invalid(e.to_string()))?;
     if id.is_some() != seen_at.is_some() {
         return Err(invalid(
-            "a retry requires both --request-id and --seen-at from the original response",
+            "a retry needs both --request-id and --seen-at from the first attempt",
         ));
     }
     let now = SystemTime::now()
@@ -162,14 +162,12 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
         (None, None) => (
             crate::host_identity::machine()?,
             fs::read_to_string("/proc/sys/kernel/hostname")
-                .map_err(|e| Failure::new(ErrorKind::Io, format!("collector host identity: {e}")))?
+                .map_err(|e| Failure::new(ErrorKind::Io, format!("host name: {e}")))?
                 .trim()
                 .to_owned(),
         ),
         _ => {
-            return Err(invalid(
-                "observation identity requires both --machine and --host",
-            ));
+            return Err(invalid("--machine and --host go together"));
         }
     };
     Ok(
@@ -185,7 +183,7 @@ fn read_context(path: &str) -> Result<Vec<String>, Failure> {
         .read_to_end(&mut bytes)
         .map_err(|e| Failure::new(ErrorKind::Io, e.to_string()))?;
     if bytes.len() > 65536 {
-        return Err(invalid("context declaration exceeds 64 KiB admission"));
+        return Err(invalid("--context file is larger than 64 KiB"));
     }
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -195,7 +193,7 @@ fn read_context(path: &str) -> Result<Vec<String>, Failure> {
     }
     let value: Declaration = serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
     if value.version != 1 {
-        return Err(invalid("context declaration version must be 1"));
+        return Err(invalid("--context file version must be 1"));
     }
     Ok(value.context)
 }

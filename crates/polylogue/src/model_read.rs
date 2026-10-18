@@ -151,9 +151,8 @@ fn timed_out(stage: &str) -> Value {
         "reader_cancelled_or_deadline",
     );
     value["error"]["hint"] = json!(stage);
-    value["error"]["suggestion"] = json!(
-        "Use a narrower Message/block reference or a smaller display budget before retrying."
-    );
+    value["error"]["suggestion"] =
+        json!("Read a single message or block, or use a smaller budget.");
     value["error"]["retryable"] = json!(false);
     value
 }

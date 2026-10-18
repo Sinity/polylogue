@@ -128,7 +128,7 @@ impl WriteNote {
                 .map(|r| r.kind.len() + r.other.len() + 64)
                 .sum::<usize>();
         if required > REQUEST_BYTES {
-            return Err(invalid("authored request metadata exceeds65536 bytes"));
+            return Err(invalid("note request is larger than 65536 bytes"));
         }
         if self
             .targets

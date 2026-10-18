@@ -1,4 +1,4 @@
-//! Explicit configured-source acquisition and bounded continuation.
+//! `daemon --config`: run the daemon and collect from one configured source.
 use crate::{error, import_cli, io_error};
 use polylogue_model::types::{ErrorKind, Failure};
 use serde::Deserialize;
@@ -53,13 +53,18 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
             _ => {
                 return Err(error(
                     ErrorKind::InvalidQuery,
-                    "supported daemon options: --config FILE [--until-idle] [--json]",
+                    "usage: daemon --config FILE [--until-idle] [--json]",
                 ));
             }
         }
         i += 1;
     }
-    let config=config.ok_or_else(||error(ErrorKind::NotYetAvailable,"--until-idle requires one explicit --config source; general source collection is unavailable"))?;
+    let config = config.ok_or_else(|| {
+        error(
+            ErrorKind::NotYetAvailable,
+            "usage: daemon --config FILE [--until-idle] [--json]",
+        )
+    })?;
     let mut bytes = Vec::new();
     fs::File::open(config)
         .map_err(io_error)?
@@ -69,15 +74,11 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
     if bytes.len() > 65536 {
         return Err(error(
             ErrorKind::InvalidQuery,
-            "source configuration exceeds 65536 bytes",
+            "configuration file is larger than 65536 bytes",
         ));
     }
-    let config: Config = serde_json::from_slice(&bytes).map_err(|e| {
-        error(
-            ErrorKind::InvalidQuery,
-            format!("source configuration: {e}"),
-        )
-    })?;
+    let config: Config = serde_json::from_slice(&bytes)
+        .map_err(|e| error(ErrorKind::InvalidQuery, format!("configuration file: {e}")))?;
     if usize::from(config.claude_main.is_some())
         + usize::from(config.codex_home.is_some())
         + usize::from(config.claude_projects.is_some())
@@ -93,14 +94,19 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
         if until_idle {
             return Err(error(
                 ErrorKind::NotYetAvailable,
-                "finite projects-directory settlement is not available; use the continuing configured daemon and qualified reads",
+                "--until-idle is not supported for claude_projects; run the daemon without it",
             ));
         }
     }
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .ok_or_else(|| error(ErrorKind::InvalidQuery, "absolute XDG_RUNTIME_DIR required"))?;
+        .ok_or_else(|| {
+            error(
+                ErrorKind::InvalidQuery,
+                "XDG_RUNTIME_DIR must be set to an absolute path",
+            )
+        })?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(io_error)?;
@@ -110,15 +116,13 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
         .read_exact(&mut random)
         .map_err(io_error)?;
     let id = import_cli::uuid_v7(u64::try_from(now.as_millis()).map_err(io_error)?, random)?;
-    let stop = Arc::new(AtomicBool::new(false));
-    let signalled = Arc::clone(&stop);
-    ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
+    let stop = crate::stop_on_ctrl_c()?;
     if let Some(projects) = config.claude_projects {
         let mut running =
             polylogue::Running::start_claude_projects(archive, &runtime, &projects, &id, &stop)
                 .map_err(io_error)?;
         eprintln!(
-            "listening: {} (configured Claude projects; bounded discovery and acquisition)",
+            "listening: {} (Claude projects directory)",
             running.socket().display()
         );
         if json_output {
@@ -198,7 +202,7 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
         other => io_error(other),
     })?;
     eprintln!(
-        "listening: {} (one configured Claude main; bounded polling unless --until-idle)",
+        "listening: {} (Claude session file)",
         running.socket().display()
     );
     if json_output && !until_idle {
@@ -232,7 +236,7 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
                 running.stop();
                 return Err(error(
                     ErrorKind::Timeout,
-                    "observed source did not reach idle within 120 seconds",
+                    "source was not parsed within 120 seconds",
                 ));
             }
         }
@@ -253,9 +257,9 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
     if until_idle {
         return Err(error(
             ErrorKind::Refused {
-                reason: "interrupted before target settlement".into(),
+                reason: "interrupted".into(),
             },
-            "observed source interrupted before target settlement",
+            "interrupted before the source was fully parsed",
         ));
     }
     Ok(0)
@@ -275,10 +279,7 @@ fn run_codex(
     let (mut running, acquisition) =
         polylogue::Running::start_codex(archive, runtime, config, id, seen_at, stop, !until_idle)
             .map_err(io_error)?;
-    eprintln!(
-        "listening: {} (bounded configured Codex polling; startup-only with --until-idle)",
-        running.socket().display()
-    );
+    eprintln!("listening: {} (Codex home)", running.socket().display());
     if !until_idle {
         if json_output {
             serde_json::to_writer(&mut *out,&json!({"outcome":"degraded","acquisition":acquisition,"scope":"retention_only","missing":["general_session_coverage"]})).map_err(io_error)?;
@@ -301,7 +302,7 @@ fn run_codex(
                     ErrorKind::Refused {
                         reason: "startup interrupted".into(),
                     },
-                    "physical startup interrupted before complete retention",
+                    "interrupted before the paginated history was stored",
                 ));
             }
             let status = polylogue::request_value_until(
@@ -323,7 +324,7 @@ fn run_codex(
                 running.stop();
                 return Err(error(
                     ErrorKind::Timeout,
-                    "physical startup acquisition remains pending; no complete prefix was selected",
+                    "paginated history was not stored within 120 seconds",
                 ));
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -341,7 +342,7 @@ fn run_codex(
                     ErrorKind::Refused {
                         reason: "startup interrupted".into(),
                     },
-                    "startup interrupted before settlement",
+                    "interrupted before the startup snapshot was parsed",
                 ));
             }
             let value = polylogue::request_value_until(
@@ -350,7 +351,7 @@ fn run_codex(
                 deadline,
             )
             .map_err(io_error)?;
-            // Prompt snapshots are retained pending references, not parser jobs.
+            // Prompt-history snapshots have no parser job to wait for.
             if value["source_rows"]["state"] == "settled"
                 || value["source_rows"]["state"] == "unavailable"
                 || !value["failure"].is_null()
@@ -364,7 +365,7 @@ fn run_codex(
                 running.stop();
                 return Err(error(
                     ErrorKind::Timeout,
-                    "configured Codex inputs did not reach idle within 120 seconds",
+                    "Codex files were not parsed within 120 seconds",
                 ));
             }
             std::thread::sleep(Duration::from_millis(10));

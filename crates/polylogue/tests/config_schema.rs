@@ -76,7 +76,7 @@ fn config_schema_matches_projects_selection_and_configured_cli_rejections() {
         assert!(!output.status.success());
         assert!(
             String::from_utf8_lossy(&output.stderr)
-                .contains("finite projects-directory settlement is not available"),
+                .contains("--until-idle is not supported for claude_projects"),
             "{output:?}"
         );
     }
@@ -115,7 +115,7 @@ fn config_schema_matches_projects_selection_and_configured_cli_rejections() {
             assert!(
                 error.contains("acquisition quantum")
                     || error.contains("acquisition_quantum_bytes")
-                    || error.contains("source configuration"),
+                    || error.contains("configuration file"),
                 "{output:?}"
             );
         }
