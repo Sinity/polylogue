@@ -986,7 +986,7 @@ fn run(
                             if metadata_bytes > 4 * MAX_BUDGET as usize {
                                 return Err(unavailable("origin_witness_metadata_admission"));
                             }
-                            let descriptor = polylogue_model::RetainedJson::parse(&range.bytes)
+                            let descriptor = polylogue_model::RawJson::parse(&range.bytes)
                                 .map_err(|_| unavailable("invalid_origin_witness"))?;
                             crate::output_json::check_source_origin(&descriptor, until)
                                 .map_err(|_| unavailable("origin_witness_requires_masking"))?;
@@ -1004,9 +1004,9 @@ fn run(
                                     )
                                 }
                             };
-                            let value = polylogue_model::RetainedJson::Object(
+                            let value = polylogue_model::RawJson::Object(
                                 [
-                                    ("field".into(), polylogue_model::RetainedJson::from(name)),
+                                    ("field".into(), polylogue_model::RawJson::from(name)),
                                     ("origin".into(), descriptor),
                                 ]
                                 .into_iter()

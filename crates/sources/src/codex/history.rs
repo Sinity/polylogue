@@ -1,6 +1,6 @@
 //! Pure mapping for the pinned native CommandExecution conversion. SQL and
 //! snapshot acquisition belong to store; unsupported item schemas stay visible.
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use polylogue_model::{
     SessionId,
     tool_item::{Command, HistoryRow, Operation, ToolOrigin},

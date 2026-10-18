@@ -3,7 +3,7 @@
 //! Response reconstruction, ordinary-index reflow, digest work and publication
 //! remain explicit obligations over addressable contribution cells.
 use crate::frame::{IgnoredKind, Record, RecordOutcome, RecordParser};
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use polylogue_model::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 mod background;

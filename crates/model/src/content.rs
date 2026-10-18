@@ -3,7 +3,7 @@ use crate::identity::{BlobHash, BlockId, BlockSlot, IdError, MessageId, Origin, 
 use crate::measures::{ErrorReason, ToolOutcome, UnknownReason};
 use crate::time::ProviderTime;
 use crate::types::Usd;
-use crate::{NativeId, RetainedJson};
+use crate::{NativeId, RawJson};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
@@ -35,8 +35,8 @@ fn nonempty<'de, D: Deserializer<'de>>(de: D) -> Result<String, D::Error> {
     }
     Ok(value)
 }
-fn present_json<'de, D: Deserializer<'de>>(de: D) -> Result<Option<RetainedJson>, D::Error> {
-    RetainedJson::deserialize(de).map(Some)
+fn present_json<'de, D: Deserializer<'de>>(de: D) -> Result<Option<RawJson>, D::Error> {
+    RawJson::deserialize(de).map(Some)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -272,7 +272,7 @@ pub struct Message {
     /// Provider fields kept as given that have no field of their own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "present_json")]
-    pub attrs: Option<RetainedJson>,
+    pub attrs: Option<RawJson>,
     #[serde(default)]
     pub blocks: Vec<Block>,
 }
@@ -371,7 +371,7 @@ pub enum BlockContent {
     Other {
         #[serde(rename = "type")]
         type_name: String,
-        data: RetainedJson,
+        data: RawJson,
     },
 }
 
@@ -397,7 +397,7 @@ pub struct ToolCall {
     /// Arguments exactly as given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "present_json")]
-    pub input: Option<RetainedJson>,
+    pub input: Option<RawJson>,
     /// For shell-like tools, the command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -420,7 +420,7 @@ pub struct ToolResult {
     pub output: Option<ToolOutput>,
     /// Named structured result channels and provider metadata. These do not
     /// replace or concatenate the separately presented output.
-    pub data: Option<RetainedJson>,
+    pub data: Option<RawJson>,
 }
 
 /// The export shape of a tool result: `outcome` plus `outcome_reason`, and
@@ -442,7 +442,7 @@ struct ToolResultWire {
     blob: Option<BlobHash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "present_json")]
-    data: Option<RetainedJson>,
+    data: Option<RawJson>,
 }
 
 impl From<ToolResult> for ToolResultWire {
@@ -525,7 +525,7 @@ pub struct Attachment {
     pub produced_by: Option<BlockId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "present_json")]
-    pub attrs: Option<RetainedJson>,
+    pub attrs: Option<RawJson>,
     /// Bytes in the blob store; absent when they were never obtained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob: Option<BlobHash>,
@@ -590,7 +590,7 @@ pub struct Link {
     /// Provider facts about the relationship as given (agent type, role, depth, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(deserialize_with = "present_json")]
-    pub attrs: Option<RetainedJson>,
+    pub attrs: Option<RawJson>,
 }
 
 /// Something in the timeline that is not a message.
@@ -606,7 +606,7 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_saw: Option<bool>,
     /// The provider's payload as given.
-    pub data: RetainedJson,
+    pub data: RawJson,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -797,7 +797,7 @@ impl<'de> Deserialize<'de> for BlockContent {
                 struct Other {
                     #[serde(rename = "type")]
                     type_name: String,
-                    data: RetainedJson,
+                    data: RawJson,
                 }
                 serde_json::from_str::<Other>(text).map(|v| Self::Other {
                     type_name: v.type_name,

@@ -1,6 +1,6 @@
 //! Exact supplied sidecar and protocol references survive every public consumer.
 use super::*;
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 #[test]
 fn sidecar_and_reference_content_have_distinct_exact_public_data_leaves_and_origins() {
     let w = World::new();
@@ -25,18 +25,18 @@ fn sidecar_and_reference_content_have_distinct_exact_public_data_leaves_and_orig
     let reference = reference();
     let out = w.cli(&[&reference, "read", "--format", "json"]);
     assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
-    let doc = RetainedJson::parse(&out.stdout).unwrap();
+    let doc = RawJson::parse(&out.stdout).unwrap();
     let block = &doc["messages"][0]["blocks"][0];
-    let mut expected = RetainedJson::parse(meta.as_bytes()).unwrap();
+    let mut expected = RawJson::parse(meta.as_bytes()).unwrap();
     expected.as_object_mut().unwrap().insert(
         polylogue_model::NativeId::unicode("content_items"),
-        RetainedJson::parse(content.as_bytes()).unwrap(),
+        RawJson::parse(content.as_bytes()).unwrap(),
     );
     assert_eq!(block["data"], expected);
     assert!(block.get("output").is_none());
     assert!(block.get("text").is_none());
     assert_eq!(block["outcome"].as_str(), Some("ok"));
-    let carrier = RetainedJson::parse(br#""supplied carrier\ud800""#).unwrap();
+    let carrier = RawJson::parse(br#""supplied carrier\ud800""#).unwrap();
     assert_eq!(
         doc["messages"][1]["blocks"][0]["data"]["toolUseResult"],
         carrier
@@ -62,7 +62,7 @@ fn sidecar_and_reference_content_have_distinct_exact_public_data_leaves_and_orig
             .unwrap();
         assert_eq!(
             origin["origin"]["selection"]["inputs"][0]["path"],
-            RetainedJson::parse(path.as_bytes()).unwrap()
+            RawJson::parse(path.as_bytes()).unwrap()
         );
         assert_eq!(
             origin["origin"]["binding"]["input"].as_str(),
@@ -95,14 +95,14 @@ fn sidecar_and_reference_content_have_distinct_exact_public_data_leaves_and_orig
     }
     assert_eq!(docs.len(), 1);
     assert_eq!(
-        RetainedJson::parse(&docs[0]).unwrap()["messages"],
+        RawJson::parse(&docs[0]).unwrap()["messages"],
         doc["messages"]
     );
     let page = model_call(&w, &known_catalog_call(&reference), Some(24000));
     assert_ne!(page["outcome"], "error", "{page}");
     assert_eq!(page["primary_content_complete"], true);
     let shown = &page["shown"][0];
-    let bag = RetainedJson::parse(
+    let bag = RawJson::parse(
         shown["block_fields"]["data"]["json"]
             .as_str()
             .unwrap()
@@ -110,7 +110,7 @@ fn sidecar_and_reference_content_have_distinct_exact_public_data_leaves_and_orig
     )
     .unwrap();
     assert_eq!(bag, expected);
-    let carrier_bag = RetainedJson::parse(
+    let carrier_bag = RawJson::parse(
         page["shown"][1]["block_fields"]["data"]["json"]
             .as_str()
             .unwrap()

@@ -1,9 +1,9 @@
 use super::*;
-use polylogue_model::{NativeId, RetainedJson};
+use polylogue_model::{NativeId, RawJson};
 
 fn tool_input(call: &NativeId) -> Vec<u8> {
     let mut raw = titled("privacy-root");
-    let call = String::from_utf8(RetainedJson::from(call).canonical()).unwrap();
+    let call = String::from_utf8(RawJson::from(call).canonical()).unwrap();
     raw.extend(format!(r#"{{"type":"assistant","uuid":"privacy-tool","parentUuid":"privacy-root","sessionId":"{SID}","timestamp":"2026-10-01T08:01:00Z","requestId":"privacy-request","message":{{"id":"privacy-response","role":"assistant","model":"synthetic-model","content":[{{"type":"tool_use","id":{call},"name":"Synthetic","input":{{}}}}],"stop_reason":"end_turn"}}}}
 "#).as_bytes());
     raw

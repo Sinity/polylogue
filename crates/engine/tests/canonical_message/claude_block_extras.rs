@@ -1,6 +1,6 @@
 //! Immediate block members keep opaque values and exact original selectors.
 use super::*;
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 
 #[test]
 fn caller_and_text_metadata_are_opaque_source_backed_block_leaves() {
@@ -34,8 +34,8 @@ fn caller_and_text_metadata_are_opaque_source_backed_block_leaves() {
         };
         assert!(field.supplied);
         assert_eq!(
-            RetainedJson::parse(&field.range(0, 65536).unwrap().bytes).unwrap(),
-            RetainedJson::parse(expected).unwrap()
+            RawJson::parse(&field.range(0, 65536).unwrap().bytes).unwrap(),
+            RawJson::parse(expected).unwrap()
         );
         let origin: Value =
             serde_json::from_slice(&field.origin_range(0, 65536).unwrap().unwrap().bytes).unwrap();

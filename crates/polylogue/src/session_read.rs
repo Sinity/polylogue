@@ -182,20 +182,17 @@ pub fn request_terminal(socket: &Path, reference: &str, out: &mut impl Write) ->
     if end["outcome"] == "error" {
         return Ok(end);
     }
-    let document = polylogue_model::RetainedJson::parse(&bytes.0).map_err(io::Error::other)?;
+    let document = polylogue_model::RawJson::parse(&bytes.0).map_err(io::Error::other)?;
     render_terminal(&document, out)?;
     Ok(end)
 }
-fn render_terminal(
-    document: &polylogue_model::RetainedJson,
-    out: &mut impl Write,
-) -> io::Result<()> {
+fn render_terminal(document: &polylogue_model::RawJson, out: &mut impl Write) -> io::Result<()> {
     use crate::reference_read::terminal_text;
-    use polylogue_model::RetainedJson;
-    fn text<'a>(value: &'a RetainedJson, key: &str) -> io::Result<Option<&'a str>> {
+    use polylogue_model::RawJson;
+    fn text<'a>(value: &'a RawJson, key: &str) -> io::Result<Option<&'a str>> {
         // Typed display fields are scalar strings. Refuse a non-scalar value
         // rather than activating the retained decoder's text-repair projection.
-        let Some(raw) = value.get(key).and_then(RetainedJson::native) else {
+        let Some(raw) = value.get(key).and_then(RawJson::native) else {
             return Ok(None);
         };
         if raw.encoding().is_some() {
@@ -216,7 +213,7 @@ fn render_terminal(
     }
     for message in document
         .get("messages")
-        .and_then(RetainedJson::as_array)
+        .and_then(RawJson::as_array)
         .into_iter()
         .flatten()
     {
@@ -230,7 +227,7 @@ fn render_terminal(
         out.write_all(b"\n")?;
         for block in message
             .get("blocks")
-            .and_then(RetainedJson::as_array)
+            .and_then(RawJson::as_array)
             .into_iter()
             .flatten()
         {

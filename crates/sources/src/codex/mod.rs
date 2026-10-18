@@ -1,7 +1,7 @@
 //! Codex rollout interpretation. SQLite metadata and paginated-history adapters
 //! are not registered here. Unknown native kinds remain explicitly unrecognized.
 use crate::frame::{IgnoredKind, Record, RecordOutcome, RecordParser};
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use polylogue_model::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

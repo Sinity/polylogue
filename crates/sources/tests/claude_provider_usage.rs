@@ -1,5 +1,5 @@
 //! One existing selected usage owner supplies raw provider evidence and counters.
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 use polylogue_sources::{
     claude_code::{
         self, FileCtx, KeyedRecords,
@@ -31,7 +31,7 @@ fn parse(raw: &str) -> (MemoryReadView, claude_code::keyed::ResponseCell) {
         .unwrap();
     (memory, r)
 }
-fn selected(r: &claude_code::keyed::ResponseCell, raw: &str) -> RetainedJson {
+fn selected(r: &claude_code::keyed::ResponseCell, raw: &str) -> RawJson {
     let unit = r.selected_unit(0).unwrap();
     let facts = unit
         .facts
@@ -63,7 +63,7 @@ fn selected(r: &claude_code::keyed::ResponseCell, raw: &str) -> RetainedJson {
         &mut out,
     )
     .unwrap();
-    RetainedJson::parse(&out).unwrap()
+    RawJson::parse(&out).unwrap()
 }
 #[test]
 fn four_named_members_preserve_each_supplied_shape_and_absence_without_counter_inference() {
@@ -88,7 +88,7 @@ fn four_named_members_preserve_each_supplied_shape_and_absence_without_counter_i
             let usage = format!(r#"{{"input_tokens":0,"{name}":{value}}}"#);
             let raw = row("a", "a", Some(&usage));
             let (_, r) = parse(&raw);
-            let expected = RetainedJson::parse(usage.as_bytes()).unwrap();
+            let expected = RawJson::parse(usage.as_bytes()).unwrap();
             assert_eq!(selected(&r, &raw), expected);
             assert_eq!(
                 r.message.attrs.as_ref().unwrap()["provider_usage"],
@@ -111,7 +111,7 @@ fn usage_supplier_order_omission_and_replacement_reuse_existing_raw_correction_e
     let (_, r) = parse(&raw);
     assert_eq!(
         selected(&r, &raw),
-        RetainedJson::parse(br#"{"input_tokens":2,"speed":"later"}"#).unwrap()
+        RawJson::parse(br#"{"input_tokens":2,"speed":"later"}"#).unwrap()
     );
     assert_eq!(
         r.selected_origins[0].as_ref().unwrap().record.start,
@@ -126,7 +126,7 @@ fn usage_supplier_order_omission_and_replacement_reuse_existing_raw_correction_e
     let (memory, r) = parse(&raw);
     assert_eq!(
         selected(&r, &raw),
-        RetainedJson::parse(br#"{"input_tokens":3,"server_tool_use":null}"#).unwrap()
+        RawJson::parse(br#"{"input_tokens":3,"server_tool_use":null}"#).unwrap()
     );
     assert_eq!(
         r.selected_origins[0].as_ref().unwrap().record.start,

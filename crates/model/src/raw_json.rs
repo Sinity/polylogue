@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum RetainedError {
+pub enum RawJsonError {
     #[error("{context}: {message}")]
     Malformed {
         context: &'static str,
@@ -14,19 +14,19 @@ pub enum RetainedError {
     #[error("{kind} exceeds admitted depth {limit}")]
     Capacity { kind: &'static str, limit: usize },
 }
-fn malformed(context: &'static str, _field: &str, message: &'static str) -> RetainedError {
-    RetainedError::Malformed { context, message }
+fn malformed(context: &'static str, _field: &str, message: &'static str) -> RawJsonError {
+    RawJsonError::Malformed { context, message }
 }
 /// A lossless JSON record or authorized opaque payload. Text projection is
 /// explicit; identifiers and object keys retain their decoded UTF-16 value.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RetainedJson {
+pub enum RawJson {
     Null,
     Bool(bool),
     Number(RawNumber),
     String(RawString),
-    Array(Vec<RetainedJson>),
-    Object(BTreeMap<NativeId, RetainedJson>),
+    Array(Vec<RawJson>),
+    Object(BTreeMap<NativeId, RawJson>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,13 +92,13 @@ impl RawString {
     /// Decode a provider-declared JSON-in-string field using the same retained
     /// decoder. Source positions compose through escapes; only later text
     /// projections count repairs, while native/opaque inner fields remain exact.
-    pub fn json(&self) -> Result<RetainedJson, RetainedError> {
+    pub fn json(&self) -> Result<RawJson, RawJsonError> {
         self.decode_json(self.text.as_bytes(), 0)
     }
     /// Frame a leading JSON value after a provider-declared prefix. The
     /// returned end is relative to that prefix's end; trailing harness text
     /// stays available to the source mapper. RawValue only frames the span.
-    pub fn json_prefix(&self, skip: usize) -> Result<(RetainedJson, usize), RetainedError> {
+    pub fn json_prefix(&self, skip: usize) -> Result<(RawJson, usize), RawJsonError> {
         let body = self
             .text
             .get(skip..)
@@ -116,7 +116,7 @@ impl RawString {
             stream.byte_offset(),
         ))
     }
-    fn decode_json(&self, raw: &[u8], start: usize) -> Result<RetainedJson, RetainedError> {
+    fn decode_json(&self, raw: &[u8], start: usize) -> Result<RawJson, RawJsonError> {
         if self.native.encoding().is_some() {
             return Err(malformed(
                 "record",
@@ -124,11 +124,10 @@ impl RawString {
                 "embedded JSON string contains an unpaired code unit",
             ));
         }
-        let mut value =
-            RetainedJson::parse_with_repairs(raw, start as u64, &TextRepairs::default())?;
-        fn rebase(value: &mut RetainedJson, parent: &StringSource) {
+        let mut value = RawJson::parse_with_repairs(raw, start as u64, &TextRepairs::default())?;
+        fn rebase(value: &mut RawJson, parent: &StringSource) {
             match value {
-                RetainedJson::String(s) => {
+                RawJson::String(s) => {
                     if let Some((_, _, at, count)) = &s.repair {
                         s.repair = Some((
                             parent.repairs.clone(),
@@ -145,8 +144,8 @@ impl RawString {
                         }
                     }
                 }
-                RetainedJson::Array(a) => a.iter_mut().for_each(|v| rebase(v, parent)),
-                RetainedJson::Object(o) => o.values_mut().for_each(|v| rebase(v, parent)),
+                RawJson::Array(a) => a.iter_mut().for_each(|v| rebase(v, parent)),
+                RawJson::Object(o) => o.values_mut().for_each(|v| rebase(v, parent)),
                 _ => {}
             }
         }
@@ -226,7 +225,7 @@ pub struct TextRepair {
 /// Physical admission bound of this retained decoder. Valid deeper input is
 /// still owed and requires a decoder with a larger qualified admission scope.
 pub const JSON_DEPTH_LIMIT: usize = 64;
-fn admit_depth(raw: &[u8]) -> Result<(), RetainedError> {
+fn admit_depth(raw: &[u8]) -> Result<(), RawJsonError> {
     let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
     for &byte in raw {
         if quoted {
@@ -243,7 +242,7 @@ fn admit_depth(raw: &[u8]) -> Result<(), RetainedError> {
                 b'[' | b'{' => {
                     depth += 1;
                     if depth > JSON_DEPTH_LIMIT {
-                        return Err(RetainedError::Capacity {
+                        return Err(RawJsonError::Capacity {
                             kind: "retained JSON nesting",
                             limit: JSON_DEPTH_LIMIT,
                         });
@@ -256,15 +255,15 @@ fn admit_depth(raw: &[u8]) -> Result<(), RetainedError> {
     }
     Ok(())
 }
-impl RetainedJson {
-    pub fn parse(raw: &[u8]) -> Result<Self, RetainedError> {
+impl RawJson {
+    pub fn parse(raw: &[u8]) -> Result<Self, RawJsonError> {
         Self::parse_with_repairs(raw, 0, &TextRepairs::default())
     }
     pub fn parse_with_repairs(
         raw: &[u8],
         start: u64,
         repairs: &TextRepairs,
-    ) -> Result<Self, RetainedError> {
+    ) -> Result<Self, RawJsonError> {
         let text =
             std::str::from_utf8(raw).map_err(|_| malformed("record", "", "invalid raw UTF-8"))?;
         admit_depth(raw)?;
@@ -415,14 +414,14 @@ impl RetainedJson {
         self.clone().into_opaque()
     }
     pub fn into_opaque(mut self) -> Self {
-        fn detach(value: &mut RetainedJson) {
+        fn detach(value: &mut RawJson) {
             match value {
-                RetainedJson::String(s) => {
+                RawJson::String(s) => {
                     s.repair = None;
                     s.source = None;
                 }
-                RetainedJson::Array(a) => a.iter_mut().for_each(detach),
-                RetainedJson::Object(o) => o.values_mut().for_each(detach),
+                RawJson::Array(a) => a.iter_mut().for_each(detach),
+                RawJson::Object(o) => o.values_mut().for_each(detach),
                 _ => {}
             }
         }
@@ -434,7 +433,7 @@ impl RetainedJson {
         self.write(&mut bytes);
         bytes
     }
-    pub fn remove(&mut self, path: &str) -> Result<(), RetainedError> {
+    pub fn remove(&mut self, path: &str) -> Result<(), RawJsonError> {
         if !path.starts_with('/') {
             return Err(malformed(
                 "fallback",
@@ -497,7 +496,7 @@ impl RetainedJson {
         }
     }
 }
-impl From<serde_json::Value> for RetainedJson {
+impl From<serde_json::Value> for RawJson {
     fn from(v: serde_json::Value) -> Self {
         use serde_json::Value as V;
         match v {
@@ -514,51 +513,51 @@ impl From<serde_json::Value> for RetainedJson {
         }
     }
 }
-impl From<&RetainedJson> for RetainedJson {
-    fn from(v: &RetainedJson) -> Self {
+impl From<&RawJson> for RawJson {
+    fn from(v: &RawJson) -> Self {
         v.clone()
     }
 }
-impl From<&str> for RetainedJson {
+impl From<&str> for RawJson {
     fn from(v: &str) -> Self {
         Self::String(v.into())
     }
 }
-impl From<String> for RetainedJson {
+impl From<String> for RawJson {
     fn from(v: String) -> Self {
         Self::String(v.into())
     }
 }
-impl From<&String> for RetainedJson {
+impl From<&String> for RawJson {
     fn from(v: &String) -> Self {
         Self::String(v.as_str().into())
     }
 }
-impl From<NativeId> for RetainedJson {
+impl From<NativeId> for RawJson {
     fn from(v: NativeId) -> Self {
         Self::String(v.into())
     }
 }
-impl From<&NativeId> for RetainedJson {
+impl From<&NativeId> for RawJson {
     fn from(v: &NativeId) -> Self {
         Self::String(v.clone().into())
     }
 }
-impl From<bool> for RetainedJson {
+impl From<bool> for RawJson {
     fn from(v: bool) -> Self {
         Self::Bool(v)
     }
 }
-impl<T: Into<RetainedJson>> From<Option<T>> for RetainedJson {
+impl<T: Into<RawJson>> From<Option<T>> for RawJson {
     fn from(v: Option<T>) -> Self {
         v.map(Into::into).unwrap_or(Self::Null)
     }
 }
-macro_rules! number_from { ($($t:ty),*) => { $(impl From<$t> for RetainedJson {
+macro_rules! number_from { ($($t:ty),*) => { $(impl From<$t> for RawJson {
     fn from(v: $t) -> Self { Self::Number(RawNumber(v.to_string())) }
 })* }; }
 number_from!(i32, i64, u32, u64, usize);
-impl Serialize for RetainedJson {
+impl Serialize for RawJson {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let text = String::from_utf8(self.canonical()).map_err(serde::ser::Error::custom)?;
         let raw =
@@ -566,7 +565,7 @@ impl Serialize for RetainedJson {
         raw.serialize(serializer)
     }
 }
-impl<'de> Deserialize<'de> for RetainedJson {
+impl<'de> Deserialize<'de> for RawJson {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = Box::<serde_json::value::RawValue>::deserialize(d)?;
         Self::parse(raw.get().as_bytes())
@@ -574,23 +573,23 @@ impl<'de> Deserialize<'de> for RetainedJson {
             .map_err(serde::de::Error::custom)
     }
 }
-impl std::fmt::Display for RetainedJson {
+impl std::fmt::Display for RawJson {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&String::from_utf8_lossy(&self.canonical()))
     }
 }
-impl PartialEq<serde_json::Value> for RetainedJson {
+impl PartialEq<serde_json::Value> for RawJson {
     fn eq(&self, other: &serde_json::Value) -> bool {
         self == &Self::from(other.clone())
     }
 }
-impl std::ops::Index<&str> for RetainedJson {
+impl std::ops::Index<&str> for RawJson {
     type Output = Self;
     fn index(&self, key: &str) -> &Self {
         self.get(key).unwrap_or(&Self::Null)
     }
 }
-impl std::ops::Index<usize> for RetainedJson {
+impl std::ops::Index<usize> for RawJson {
     type Output = Self;
     fn index(&self, key: usize) -> &Self {
         self.as_array()
@@ -633,7 +632,7 @@ impl Parser<'_> {
             self.at += 1;
         }
     }
-    fn value(&mut self) -> Result<RetainedJson, RetainedError> {
+    fn value(&mut self) -> Result<RawJson, RawJsonError> {
         self.ws();
         let b = *self
             .text
@@ -652,7 +651,7 @@ impl Parser<'_> {
                     record: self.start,
                     positions,
                 });
-                Ok(RetainedJson::String(string))
+                Ok(RawJson::String(string))
             }
             b'[' => {
                 self.at += 1;
@@ -660,7 +659,7 @@ impl Parser<'_> {
                 let mut a = Vec::new();
                 if self.text.as_bytes().get(self.at) == Some(&b']') {
                     self.at += 1;
-                    return Ok(RetainedJson::Array(a));
+                    return Ok(RawJson::Array(a));
                 }
                 loop {
                     a.push(self.value()?);
@@ -671,7 +670,7 @@ impl Parser<'_> {
                         break;
                     }
                 }
-                Ok(RetainedJson::Array(a))
+                Ok(RawJson::Array(a))
             }
             b'{' => {
                 self.at += 1;
@@ -679,7 +678,7 @@ impl Parser<'_> {
                 let mut m = BTreeMap::new();
                 if self.text.as_bytes().get(self.at) == Some(&b'}') {
                     self.at += 1;
-                    return Ok(RetainedJson::Object(m));
+                    return Ok(RawJson::Object(m));
                 }
                 loop {
                     self.ws();
@@ -697,7 +696,7 @@ impl Parser<'_> {
                         break;
                     }
                 }
-                Ok(RetainedJson::Object(m))
+                Ok(RawJson::Object(m))
             }
             _ => {
                 let start = self.at;
@@ -710,15 +709,15 @@ impl Parser<'_> {
                     self.at += 1;
                 }
                 Ok(match &self.text[start..self.at] {
-                    "null" => RetainedJson::Null,
-                    "true" => RetainedJson::Bool(true),
-                    "false" => RetainedJson::Bool(false),
-                    number => RetainedJson::Number(RawNumber(number.to_owned())),
+                    "null" => RawJson::Null,
+                    "true" => RawJson::Bool(true),
+                    "false" => RawJson::Bool(false),
+                    number => RawJson::Number(RawNumber(number.to_owned())),
                 })
             }
         }
     }
-    fn string(&mut self) -> Result<(NativeId, Option<u64>, Vec<(usize, u64)>), RetainedError> {
+    fn string(&mut self) -> Result<(NativeId, Option<u64>, Vec<(usize, u64)>), RawJsonError> {
         self.at += 1;
         let mut units = Vec::new();
         let mut surrogates = Vec::new();
@@ -811,5 +810,5 @@ impl Parser<'_> {
 }
 
 #[cfg(test)]
-#[path = "retained_tests.rs"]
+#[path = "raw_json_tests.rs"]
 mod tests;

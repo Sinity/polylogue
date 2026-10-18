@@ -1,6 +1,6 @@
 //! One normalized donor leaf, selected by a mapper-proved slot. This module
 //! neither discovers suppliedness nor scans a Message's blocks or ranks it.
-use crate::RetainedJson;
+use crate::RawJson;
 use crate::merge::{BlockField, MessageField, Slot, UsageField};
 use crate::{BlockContent, BlockSlot, ErrorReason, Message, ProviderTime, ToolOutcome};
 use serde::{Serialize, Serializer, ser::SerializeMap};
@@ -20,7 +20,7 @@ pub enum Subject<'a> {
     /// Immediate provider extras only; values stay opaque, including null.
     Extras {
         block: Option<&'a BlockSlot>,
-        values: &'a RetainedJson,
+        values: &'a RawJson,
     },
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -293,13 +293,13 @@ pub fn write(
     }
 }
 fn extra(
-    values: Option<&RetainedJson>,
+    values: Option<&RawJson>,
     key: &str,
     sink: &mut impl Write,
 ) -> Result<PresenceStatus, Error> {
     match values {
         None => Ok(PresenceStatus::Missing),
-        Some(RetainedJson::Object(map)) => optional(map.get(&crate::NativeId::unicode(key)), sink),
+        Some(RawJson::Object(map)) => optional(map.get(&crate::NativeId::unicode(key)), sink),
         Some(_) => Ok(PresenceStatus::Unsupported),
     }
 }
@@ -472,7 +472,7 @@ mod tests {
         let c = BlockContent::ToolCall(ToolCall {
             tool: Some(String::new()),
             call_id: None,
-            input: Some(RetainedJson::Null),
+            input: Some(RawJson::Null),
             command: None,
         });
         assert_eq!(bytes(block(&c, BlockField::Input, 4).unwrap()), b"null");
@@ -520,7 +520,7 @@ mod tests {
     }
     #[test]
     fn extras_are_one_immediate_opaque_value_including_empty_keys() {
-        let values = RetainedJson::from(json!({"":null,"nested":{"z":false,"a":[]}}));
+        let values = RawJson::from(json!({"":null,"nested":{"z":false,"a":[]}}));
         assert_eq!(
             bytes(
                 encode(
@@ -787,7 +787,7 @@ mod tests {
             BlockContent::ToolCall(ToolCall {
                 tool: Some(String::new()),
                 call_id: Some("opaque:call".into()),
-                input: Some(RetainedJson::Null),
+                input: Some(RawJson::Null),
                 command: Some("command".into()),
             }),
             BlockContent::ToolResult(ToolResult {
@@ -854,7 +854,7 @@ mod tests {
                 );
             }
         }
-        let extras = RetainedJson::from(json!({"":null,"opaque":{"z":1,"a":[]}}));
+        let extras = RawJson::from(json!({"":null,"opaque":{"z":1,"a":[]}}));
         for key in ["", "opaque", "absent"] {
             equivalent(
                 Subject::Extras {

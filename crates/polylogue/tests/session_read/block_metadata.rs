@@ -1,6 +1,6 @@
 //! Actual CLI JSON/export and bounded metadata share one block-extra policy.
 use super::*;
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 
 fn wait_selected(world: &World, input: &str) {
     let until = Instant::now() + WAIT;
@@ -58,27 +58,26 @@ fn claude_block_metadata_keeps_tool_data_and_other_attrs_in_cli_export_and_bound
     let reference = reference();
     let out = world.cli(&[&reference, "read", "--format", "json"]);
     assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
-    let doc = RetainedJson::parse(&out.stdout).unwrap();
+    let doc = RawJson::parse(&out.stdout).unwrap();
     let blocks = &doc["messages"][0]["blocks"];
     assert_eq!(
         blocks[0]["data"]["caller"],
-        RetainedJson::parse(br#"{"type":"direct","n":1.2300,"s":"\ud800","nullable":null}"#)
-            .unwrap()
+        RawJson::parse(br#"{"type":"direct","n":1.2300,"s":"\ud800","nullable":null}"#).unwrap()
     );
     assert!(blocks[0].get("attrs").is_none());
     assert!(blocks[1]["attrs"]["metadata"].is_null());
     assert_eq!(
         blocks[2]["attrs"]["metadata"],
-        RetainedJson::parse(br#"{"count":9007199254740993}"#).unwrap()
+        RawJson::parse(br#"{"count":9007199254740993}"#).unwrap()
     );
-    let export = RetainedJson::parse(&exported(&world, &reference)).unwrap();
+    let export = RawJson::parse(&exported(&world, &reference)).unwrap();
     assert_eq!(doc["messages"], export["messages"]);
     let page = model_call(&world, &known_catalog_call(&reference), Some(16000));
     assert_ne!(page["outcome"], "error", "{page}");
     assert_eq!(page["primary_content_complete"], true);
     for (index, container) in [(0, "data"), (1, "attrs"), (2, "attrs")] {
         let shown = &page["shown"][index];
-        let bag = RetainedJson::parse(
+        let bag = RawJson::parse(
             shown["block_fields"][container]["json"]
                 .as_str()
                 .unwrap()

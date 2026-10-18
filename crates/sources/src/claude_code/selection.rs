@@ -8,7 +8,7 @@ use super::{
     projection::{Fact, Field},
 };
 use crate::selection::{self, Operation, Recipe, RecordRange, ScalarError, SelectedRaw};
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use polylogue_model::{
     MessageId, PromptKind, Role, ToolOutput, WrittenBy,
     merge::{BlockField, MessageField},

@@ -9,7 +9,7 @@ fn event(kind: &str, saw: bool, data: serde_json::Value) -> Event {
         at: None,
         after_message: None,
         model_saw: Some(saw),
-        data: RetainedJson::parse(data.to_string().as_bytes()).unwrap(),
+        data: RawJson::parse(data.to_string().as_bytes()).unwrap(),
     }
 }
 #[test]

@@ -63,7 +63,7 @@ use super::{
     selection,
 };
 use crate::{frame::Record, selection::RecordRange};
-use polylogue_model::{BlockContent, RetainedJson as Value, SessionKind};
+use polylogue_model::{BlockContent, RawJson as Value, SessionKind};
 impl<R: ReadView> KeyedRecords<R> {
     pub(super) fn remember_background(
         &mut self,

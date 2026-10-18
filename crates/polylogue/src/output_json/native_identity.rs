@@ -1,13 +1,13 @@
 //! Privacy examines declared logical identities, never their reversible wire
 //! spelling. Provider payloads and literal marker strings are not decoded here.
 use super::{retained, unchanged_key};
-use polylogue_model::{NativeId, RetainedJson};
+use polylogue_model::{NativeId, RawJson};
 use std::{io, time::Instant};
 
 pub(super) fn check_native(value: &NativeId, until: Instant) -> io::Result<()> {
     // Reuse the retained UTF-16 assessment. Replacement scalars are assessment
     // delimiters only: neither a repaired value nor a transformed ID is emitted.
-    retained::present(&RetainedJson::from(value), until, true).map(|_| ())
+    retained::present(&RawJson::from(value), until, true).map(|_| ())
 }
 
 pub(super) fn check_public(value: &str, until: Instant) -> io::Result<()> {
@@ -29,8 +29,8 @@ pub(super) fn check_public(value: &str, until: Instant) -> io::Result<()> {
 
 /// Only this source-owned descriptor position contains a NativeId wire value.
 /// Never infer encoding from an arbitrary provider object with similar keys.
-pub(super) fn check_origin(value: &RetainedJson, until: Instant) -> io::Result<()> {
-    if value.get("format").and_then(RetainedJson::as_str) != Some("claude-code-field-origin") {
+pub(super) fn check_origin(value: &RawJson, until: Instant) -> io::Result<()> {
+    if value.get("format").and_then(RawJson::as_str) != Some("claude-code-field-origin") {
         return Ok(());
     }
     if let Some(parent) = value.pointer("/selection/transform/ParentReferenceV1") {
@@ -42,7 +42,7 @@ pub(super) fn check_origin(value: &RetainedJson, until: Instant) -> io::Result<(
         for key in ["id", "session"] {
             let id = resolved
                 .get(key)
-                .and_then(RetainedJson::as_str)
+                .and_then(RawJson::as_str)
                 .ok_or_else(invalid_origin)?;
             check_public(id, until)?;
         }

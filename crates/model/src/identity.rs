@@ -1,4 +1,4 @@
-use crate::{NativeId, RetainedJson};
+use crate::{NativeId, RawJson};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -377,8 +377,7 @@ impl fmt::Display for InputId {
 /// Canonicalize a raw provider record, omitting only adapter-declared top-level volatile fields.
 /// RawValue preserves exponent spelling, which arbitrary_precision alone normalizes.
 pub fn canonical_record(raw: &[u8], volatile: &[&str]) -> Result<Vec<u8>, serde_json::Error> {
-    let mut value =
-        RetainedJson::parse(raw).map_err(<serde_json::Error as serde::de::Error>::custom)?;
+    let mut value = RawJson::parse(raw).map_err(<serde_json::Error as serde::de::Error>::custom)?;
     if let Some(fields) = value.as_object_mut() {
         for field in volatile {
             fields.remove(&NativeId::unicode(field));

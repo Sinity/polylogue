@@ -1,6 +1,6 @@
 //! One source-owned result reduction used by body mapping and presence recipes.
 //! Inline content is the presented output; named channels remain separate data.
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use polylogue_model::{ErrorReason, ToolOutcome, ToolOutput, ToolResult, UnknownReason};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StatusKind {

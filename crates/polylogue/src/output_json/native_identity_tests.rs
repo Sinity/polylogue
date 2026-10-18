@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::{BlockId, MessageId, NativeId, Origin, RetainedJson, SessionId};
+use polylogue_model::{BlockId, MessageId, NativeId, Origin, RawJson, SessionId};
 use std::time::Duration;
 
 fn until() -> Instant {
@@ -16,8 +16,8 @@ fn native(text: &str, suffix: &[u16]) -> NativeId {
 fn secret() -> String {
     format!("ghp_{}", "A".repeat(36))
 }
-fn origin(id: &NativeId, resolved: &str) -> RetainedJson {
-    RetainedJson::parse(format!(r#"{{"format":"claude-code-field-origin","selection":{{"transform":{{"ParentReferenceV1":{{"native_uuid":{},"resolved":{{"id":{},"session":"claude:ordinary"}}}}}}}}}}"#,
+fn origin(id: &NativeId, resolved: &str) -> RawJson {
+    RawJson::parse(format!(r#"{{"format":"claude-code-field-origin","selection":{{"transform":{{"ParentReferenceV1":{{"native_uuid":{},"resolved":{{"id":{},"session":"claude:ordinary"}}}}}}}}}}"#,
         serde_json::to_string(id).unwrap(), serde_json::to_string(resolved).unwrap()).as_bytes()).unwrap()
 }
 
@@ -114,25 +114,25 @@ fn native_identity_only_declared_parent_origin_decodes_native_wire_not_provider_
         )
         .is_err()
     );
-    let malformed = RetainedJson::parse(br#"{"format":"claude-code-field-origin","selection":{"transform":{"ParentReferenceV1":{"native_uuid":{"value":"~u:00","encoding":"unknown"},"resolved":{"id":"safe","session":"safe"}}}}}"#).unwrap();
+    let malformed = RawJson::parse(br#"{"format":"claude-code-field-origin","selection":{"transform":{"ParentReferenceV1":{"native_uuid":{"value":"~u:00","encoding":"unknown"},"resolved":{"id":"safe","session":"safe"}}}}}"#).unwrap();
     assert!(check_source_origin(&malformed, until()).is_err());
     let clean = origin(&native("safe", &[0xd800]), "claude:ordinary:message");
     let mut bytes = Vec::new();
     Encoder::new(&mut bytes, until()).origin(&clean).unwrap();
-    assert_eq!(RetainedJson::parse(&bytes).unwrap(), clean);
-    let lookalike = RetainedJson::parse(&serde_json::to_vec(&private).unwrap()).unwrap();
+    assert_eq!(RawJson::parse(&bytes).unwrap(), clean);
+    let lookalike = RawJson::parse(&serde_json::to_vec(&private).unwrap()).unwrap();
     let mut bytes = Vec::new();
     Encoder::new(&mut bytes, until())
         .retained(&lookalike, true)
         .unwrap();
-    assert_eq!(RetainedJson::parse(&bytes).unwrap(), lookalike);
+    assert_eq!(RawJson::parse(&bytes).unwrap(), lookalike);
     let mut bytes = Vec::new();
     Encoder::new(&mut bytes, until())
         .opaque(&lookalike)
         .unwrap();
     let envelope: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
-        RetainedJson::parse(envelope["json"].as_str().unwrap().as_bytes()).unwrap(),
+        RawJson::parse(envelope["json"].as_str().unwrap().as_bytes()).unwrap(),
         lookalike
     );
 }

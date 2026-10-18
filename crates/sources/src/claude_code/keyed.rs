@@ -47,7 +47,7 @@ pub struct ActiveLeaf {
     /// not an inferred last Message and never grants membership by itself.
     pub record: crate::selection::RecordRange,
     pub kind: String,
-    pub value: polylogue_model::RetainedJson,
+    pub value: polylogue_model::RawJson,
     pub scoped: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

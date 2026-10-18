@@ -214,7 +214,7 @@ fn relation_value_or_donor_must_match_original_retained_record_before_certificat
             let node = &mut out.delta.parent_nodes[0].2;
             if tamper == 0 {
                 node.parent.as_mut().unwrap().value =
-                    polylogue_model::RetainedJson::parse(br#""c""#).unwrap();
+                    polylogue_model::RawJson::parse(br#""c""#).unwrap();
             } else if tamper == 1 {
                 node.parent.as_mut().unwrap().donor.path =
                     vec![polylogue_sources::selection::PathPart::Key("wrong".into())];

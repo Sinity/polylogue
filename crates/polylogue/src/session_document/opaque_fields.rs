@@ -1,6 +1,6 @@
 //! Direct documents stream canonically ordered installed leaves; model pages admit the complete
 //! opaque object before retaining it for canonical key ordering and framing.
-use super::{Encoder, METADATA, RetainedJson, invalid};
+use super::{Encoder, METADATA, RawJson, invalid};
 use polylogue_model::NativeId;
 use std::{
     collections::BTreeMap,
@@ -11,7 +11,7 @@ pub(super) struct OpaqueFields {
     name: &'static str,
     started: bool,
     last: Option<String>,
-    page: Option<(BTreeMap<NativeId, RetainedJson>, usize)>,
+    page: Option<(BTreeMap<NativeId, RawJson>, usize)>,
 }
 impl OpaqueFields {
     pub fn new(name: &'static str, model_page: bool) -> Self {
@@ -33,7 +33,7 @@ impl OpaqueFields {
                 .and_then(|n| n.checked_add(raw.len()))
                 .filter(|n| *n <= METADATA)
                 .ok_or_else(|| invalid("selected opaque metadata exceeds admission"))?;
-            let value = RetainedJson::parse(raw).map_err(io::Error::other)?;
+            let value = RawJson::parse(raw).map_err(io::Error::other)?;
             fields.insert(key.into(), value);
             *bytes = next;
         } else {
@@ -41,7 +41,7 @@ impl OpaqueFields {
                 return Err(invalid("opaque field keys are not in canonical order"));
             }
             self.last = Some(key.to_owned());
-            let value = RetainedJson::parse(raw).map_err(io::Error::other)?;
+            let value = RawJson::parse(raw).map_err(io::Error::other)?;
             if !self.started {
                 e.syntax(b",")?;
                 e.key(self.name)?;
@@ -60,7 +60,7 @@ impl OpaqueFields {
             if !fields.is_empty() {
                 e.syntax(b",")?;
                 e.key(self.name)?;
-                e.opaque(&RetainedJson::Object(fields))?;
+                e.opaque(&RawJson::Object(fields))?;
             }
         } else if self.started {
             e.syntax(b"}")?;

@@ -853,7 +853,7 @@ fn same_session_inputs_share_one_membership_admission() {
 
 #[test]
 fn model_metadata_wraps_whole_opaque_values_after_privacy() {
-    let original = polylogue_model::RetainedJson::parse(br#"{"n":1e+02,"s":"\ud800"}"#).unwrap();
+    let original = polylogue_model::RawJson::parse(br#"{"n":1e+02,"s":"\ud800"}"#).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     let result = metadata(
         |e| {
@@ -867,7 +867,7 @@ fn model_metadata_wraps_whole_opaque_values_after_privacy() {
     assert_eq!(result["attrs"]["masked"], false);
     assert_eq!(result["attrs"]["encoding"], "canonical-json-v1");
     assert_eq!(
-        polylogue_model::RetainedJson::parse(result["attrs"]["json"].as_str().unwrap().as_bytes())
+        polylogue_model::RawJson::parse(result["attrs"]["json"].as_str().unwrap().as_bytes())
             .unwrap(),
         original
     );

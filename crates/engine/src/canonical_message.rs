@@ -1551,10 +1551,10 @@ fn compute_one(
             // Extras are opaque mapper-owned values, not semantic Block leaves.
             // The field turn still verifies this value against its exact raw selector.
             let extras = match &w.slot {
-                Slot::Extra { key, .. } => Some(RetainedJson::Object(
+                Slot::Extra { key, .. } => Some(RawJson::Object(
                     [(
                         key.as_str().into(),
-                        RetainedJson::parse(&w.canonical)
+                        RawJson::parse(&w.canonical)
                             .map_err(|e| Error::Source(e.to_string()))?
                             .into_opaque(),
                     )]
@@ -1610,7 +1610,7 @@ enum ValueSource<'a> {
         binding: Binding<'a>,
     },
     Text(&'a str),
-    Opaque(RetainedJson),
+    Opaque(RawJson),
     Leaf {
         subject: Subject<'a>,
         slot: &'a Slot,

@@ -1,5 +1,5 @@
 //! Named opaque result sidecars preserve supplied evidence without tool semantics.
-use polylogue_model::{BlockContent, RetainedJson};
+use polylogue_model::{BlockContent, RawJson};
 use polylogue_sources::{
     claude_code::{
         self, FileCtx, KeyedRecords,
@@ -61,7 +61,7 @@ fn parse(raw: &str) -> Contribution {
         .unwrap()
         .unwrap()
 }
-fn data(c: &Contribution) -> &RetainedJson {
+fn data(c: &Contribution) -> &RawJson {
     let BlockContent::ToolResult(r) = &c.blocks[0] else {
         panic!("result")
     };
@@ -72,7 +72,7 @@ fn data(c: &Contribution) -> &RetainedJson {
     assert_eq!(r.outcome, polylogue_model::ToolOutcome::Ok);
     r.data.as_ref().unwrap()
 }
-fn evaluate(c: &Contribution, key: &str, raw: &str) -> (RetainedJson, u64) {
+fn evaluate(c: &Contribution, key: &str, raw: &str) -> (RawJson, u64) {
     let f = c
         .projection
         .facts
@@ -94,10 +94,7 @@ fn evaluate(c: &Contribution, key: &str, raw: &str) -> (RetainedJson, u64) {
             &mut out,
         )
         .unwrap();
-    (
-        RetainedJson::parse(&out).unwrap(),
-        recipe.inputs[0].record.start,
-    )
+    (RawJson::parse(&out).unwrap(), recipe.inputs[0].record.start)
 }
 #[test]
 fn finite_named_members_preserve_all_supplied_shapes_exactly_with_no_output_or_status_inference() {
@@ -121,7 +118,7 @@ fn finite_named_members_preserve_all_supplied_shapes_exactly_with_no_output_or_s
                 "{key}: {:?}",
                 c.projection.obligations
             );
-            let expected = RetainedJson::parse(value.as_bytes()).unwrap();
+            let expected = RawJson::parse(value.as_bytes()).unwrap();
             assert_eq!(data(&c).get(key), Some(&expected));
             assert_eq!(evaluate(&c, key, &raw), (expected, 0));
         }
@@ -148,7 +145,7 @@ fn whole_sidecar_replacement_and_omission_keep_separate_exact_suppliers() {
     let raw = a.clone() + &b + &omitted;
     let c = parse(&raw);
     assert!(c.projection.obligations.is_empty());
-    assert_eq!(data(&c).get("content"), Some(&RetainedJson::Null));
+    assert_eq!(data(&c).get("content"), Some(&RawJson::Null));
     assert!(data(&c).get("gitOperation").is_none());
     assert!(data(&c).get("success").is_none());
     assert_eq!(evaluate(&c, "content", &raw).1, a.len() as u64);
@@ -163,7 +160,7 @@ fn whole_sidecar_replacement_and_omission_keep_separate_exact_suppliers() {
     assert_eq!(data(&changed).as_object().unwrap().len(), 1);
     assert_eq!(
         evaluate(&changed, "toolUseResult", &raw).0,
-        RetainedJson::parse(br#""raw sidecar\ud800""#).unwrap()
+        RawJson::parse(br#""raw sidecar\ud800""#).unwrap()
     );
     assert_ne!(changed.record_unit(0), c.record_unit(0));
 }
@@ -192,7 +189,7 @@ fn string_carrier_requires_exactly_one_result_and_unknown_status_and_sidecar_con
     let c = parse(&raw);
     assert_eq!(
         evaluate(&c, "toolUseResult", &raw).0,
-        RetainedJson::parse(br#""sidecar""#).unwrap()
+        RawJson::parse(br#""sidecar""#).unwrap()
     );
     for content in [
         "[]",

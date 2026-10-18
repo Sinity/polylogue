@@ -1,5 +1,5 @@
 //! The common decoder has no provider attribution policy or descriptor wire.
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use polylogue_sources::{
     codex,
     selection::{
