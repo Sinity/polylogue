@@ -2,7 +2,7 @@ use polylogue_model::identity::{framed_identity_components, provisional_message_
 use polylogue_model::{BlockId, MessageId, NativeId, Origin, SessionId};
 
 #[test]
-fn native_identity_canonical_frames_expose_only_their_fixed_logical_components() {
+fn framed_references_expose_their_origin_session_and_message_parts() {
     let origin = Origin::new("open-product").unwrap();
     let local = NativeId::from_utf16(&[b'x' as u16, 0xd800]);
     let session = SessionId::from_native(&origin, &local).unwrap();

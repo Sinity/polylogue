@@ -1,4 +1,4 @@
-//! Typed supported Session query plans. Binding belongs to polylogue-query.
+//! Parsed session queries. `polylogue-query` builds them from text.
 use crate::SessionKind;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextTerm {

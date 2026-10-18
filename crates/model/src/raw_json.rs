@@ -1,4 +1,5 @@
-//! Lossless provider values; semantic text projection is explicit.
+//! Provider JSON kept exactly: number spelling, lone UTF-16 surrogates and key
+//! order survive. Reading a value as text is a separate, explicit step.
 use crate::NativeId;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
@@ -17,8 +18,8 @@ pub enum RawJsonError {
 fn malformed(context: &'static str, _field: &str, message: &'static str) -> RawJsonError {
     RawJsonError::Malformed { context, message }
 }
-/// A lossless JSON record or authorized opaque payload. Text projection is
-/// explicit; identifiers and object keys retain their decoded UTF-16 value.
+/// A JSON value kept exactly as the provider wrote it. Strings and object keys
+/// keep their decoded UTF-16 units.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RawJson {
     Null,
@@ -89,15 +90,13 @@ impl RawString {
             source: None,
         }
     }
-    /// Decode a provider-declared JSON-in-string field using the same retained
-    /// decoder. Source positions compose through escapes; only later text
-    /// projections count repairs, while native/opaque inner fields remain exact.
+    /// Decode a string field that holds JSON. Source positions map through the
+    /// escapes; text repairs are counted only when the result is read as text.
     pub fn json(&self) -> Result<RawJson, RawJsonError> {
         self.decode_json(self.text.as_bytes(), 0)
     }
-    /// Frame a leading JSON value after a provider-declared prefix. The
-    /// returned end is relative to that prefix's end; trailing harness text
-    /// stays available to the source mapper. RawValue only frames the span.
+    /// Decode a JSON value that starts `skip` bytes into the string. Returns the
+    /// value and its end, relative to `skip`; any trailing text is left alone.
     pub fn json_prefix(&self, skip: usize) -> Result<(RawJson, usize), RawJsonError> {
         let body = self
             .text
@@ -188,8 +187,8 @@ impl From<&str> for RawString {
     }
 }
 
-/// Additional interpretation diagnostics, separate from exclusive record counts.
-/// A token is counted once even when grouping reads it more than once.
+/// Counts of repaired lone surrogates, separate from record counts. A token is
+/// counted once even if it is read more than once.
 #[derive(Clone, Debug, Default)]
 pub struct TextRepairs(Arc<Mutex<BTreeMap<(u64, u64), u64>>>);
 impl TextRepairs {
@@ -222,8 +221,8 @@ pub struct TextRepair {
     pub count: u64,
 }
 
-/// Physical admission bound of this retained decoder. Valid deeper input is
-/// still owed and requires a decoder with a larger qualified admission scope.
+/// Maximum nesting depth. Deeper valid input is refused; supporting it needs a
+/// non-recursive decoder.
 pub const JSON_DEPTH_LIMIT: usize = 64;
 fn admit_depth(raw: &[u8]) -> Result<(), RawJsonError> {
     let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
@@ -407,9 +406,9 @@ impl RawJson {
             None
         }
     }
-    /// An authorized uninterpreted payload has no source text-repair effects.
-    /// Detaching the log also prevents persisted keyed cells from retaining a
-    /// whole parser step's diagnostics through one opaque field.
+    /// An opaque payload is never read as text, so it has no repair log. Dropping
+    /// the shared log also keeps a stored opaque field from carrying a whole
+    /// parser step's diagnostics.
     pub fn opaque(&self) -> Self {
         self.clone().into_opaque()
     }
@@ -704,7 +703,7 @@ impl Parser<'_> {
                     .text
                     .as_bytes()
                     .get(self.at)
-                    .is_some_and(|b| !b.is_ascii_whitespace() && ![b',', b']', b'}'].contains(b))
+                    .is_some_and(|b| !b.is_ascii_whitespace() && !b",]}".contains(b))
                 {
                     self.at += 1;
                 }

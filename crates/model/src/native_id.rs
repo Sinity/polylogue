@@ -1,4 +1,5 @@
-//! Exact native UTF-16 identity values with explicit transport encoding.
+//! Provider IDs as exact UTF-16, including lone surrogates, with an escaped
+//! spelling for transport when needed.
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -19,7 +20,7 @@ fn hex(bytes: &[u8]) -> String {
         })
 }
 fn unhex(s: &str) -> Result<Vec<u8>, NativeIdError> {
-    if s.len() % 2 != 0
+    if !s.len().is_multiple_of(2)
         || !s
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -38,8 +39,8 @@ fn unhex(s: &str) -> Result<Vec<u8>, NativeIdError> {
         })
         .collect()
 }
-/// Exact decoded native string. Canonical WTF-8 includes lone surrogates,
-/// while valid surrogate pairs have the ordinary scalar UTF-8 encoding.
+/// A provider string as UTF-16 units. Stored as WTF-8: lone surrogates are
+/// kept, valid pairs are ordinary UTF-8.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NativeId {
     bytes: Vec<u8>,
@@ -74,7 +75,7 @@ impl NativeId {
     pub fn as_str(&self) -> &str {
         &self.text
     }
-    /// Strict scalar Unicode, without escaped transport spelling.
+    /// The string as UTF-8, if it has no lone surrogates.
     pub fn unicode_str(&self) -> Option<&str> {
         std::str::from_utf8(&self.bytes).ok()
     }
@@ -146,8 +147,9 @@ impl NativeId {
         }
         Ok(value)
     }
-    /// Native fields use escaped transport spelling only when needed. Literal
-    /// tilde strings cannot impersonate a surrogate escape.
+    /// The transport spelling: `~u:` plus hex when `encoding()` is `wtf8`,
+    /// otherwise the plain text. A plain string that starts with `~u:` stays
+    /// plain, because the escape applies only with the `wtf8` encoding.
     pub fn wire(&self) -> String {
         self.text.clone()
     }

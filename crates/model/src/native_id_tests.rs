@@ -28,7 +28,7 @@ fn exact_utf16_and_explicit_wire_are_injective() {
 }
 
 #[test]
-fn malformed_noncanonical_and_wrong_discriminants_refuse() {
+fn malformed_or_noncanonical_escapes_are_refused() {
     for bytes in [
         &[0xc0, 0x80][..],
         &[0xf4, 0x90, 0x80, 0x80],

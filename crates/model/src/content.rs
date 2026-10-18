@@ -1,4 +1,4 @@
-//! Source body values. Presence/rank facts are supplied separately by source mappers.
+//! The normalized session, message and block types parsers produce.
 use crate::identity::{BlobHash, BlockId, BlockSlot, IdError, MessageId, Origin, SessionId};
 use crate::measures::{ErrorReason, ToolOutcome, UnknownReason};
 use crate::time::ProviderTime;
@@ -110,7 +110,7 @@ pub struct Collection {
 }
 
 impl Session {
-    /// Required source identity is supplied explicitly, never decoded from `id`.
+    /// The origin is passed in, never parsed out of `id`.
     pub fn new(
         id: SessionId,
         origin: Origin,
@@ -231,7 +231,7 @@ pub enum CopyOrigin {
 pub struct Message {
     pub id: MessageId,
     pub id_kind: IdKind,
-    /// Filled only from complete source evidence, never normalized content.
+    /// Hash of the raw source records, never of the normalized message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_hash: Option<BlobHash>,
     pub role: Role,
@@ -278,7 +278,7 @@ pub struct Message {
 }
 
 impl Message {
-    /// Defaults here are unknown body values, not source-presence evidence.
+    /// Every optional field starts unknown.
     pub fn new(id: MessageId, id_kind: IdKind, role: Role, written_by: WrittenBy) -> Self {
         Self {
             id,
@@ -305,7 +305,7 @@ impl Message {
             blocks: Vec::new(),
         }
     }
-    /// The source mapper owns the separate ordinary and reasoning counters.
+    /// The caller numbers ordinary and reasoning blocks separately.
     pub fn push(&mut self, slot: BlockSlot, content: BlockContent) -> Result<&BlockId, ModelError> {
         let id = match slot {
             BlockSlot::Item(n) => BlockId::new(self.id.clone(), n),

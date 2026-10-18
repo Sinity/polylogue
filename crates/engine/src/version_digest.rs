@@ -228,7 +228,7 @@ impl<'a> Driver<'a> {
                             self.credit = allowance.saturating_sub(used);
                             self.framer = Some(f);
                         }
-                        Err(FramingError::Admission) => {
+                        Err(FramingError::TooLarge) => {
                             return Ok(progress(
                                 reads,
                                 self.hashed_bytes() - before,

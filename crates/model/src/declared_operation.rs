@@ -1,6 +1,5 @@
-//! A declared legacy call identity. This is not a modern native turn-scoped key
-//! or a correspondence proof. The source mapper must establish the original
-//! Session scope and supplied invocation ID before invoking this constructor.
+//! ID for a tool call in older formats that have only a session and a call ID,
+//! not a turn-scoped key. The caller must already know both.
 use crate::{IdError, NativeId, SessionId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

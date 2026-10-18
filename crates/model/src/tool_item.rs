@@ -1,11 +1,13 @@
-//! Session-owned provider operations. Native coordinates are never Message IDs.
+//! Tool calls recorded by a provider (Codex command executions), keyed within
+//! their session. Their IDs are never message IDs.
 use crate::{IdError, SessionId};
 use serde::{Deserialize, Serialize};
 
 pub const CODEX_REVISION: &str = "092d3acd6bec3e3a14bdc7e7a2810ab628ab759d";
 pub const CODEX_CONSTRUCTOR: &str = "codex-rust-v0.162.1/CommandExecution";
 
-/// A scoped invocation key. Length framing preserves arbitrary opaque IDs.
+/// The `operation:` ID of one turn item. Each part is length-framed, so any
+/// ID text is safe.
 pub fn native_id(session: &SessionId, turn: &str, item: &str) -> Result<String, IdError> {
     if turn.is_empty() || item.is_empty() {
         return Err(IdError::Empty);
@@ -19,8 +21,8 @@ pub fn native_id(session: &SessionId, turn: &str, item: &str) -> Result<String, 
     Ok(format!("operation:{}", h.finalize().to_hex()))
 }
 
-/// SQLite coordinates name a row in an immutable physical snapshot. The
-/// row's native key is independent of physical page offsets and SQLite rowid.
+/// A row in a stored snapshot of Codex's history database, named by its thread,
+/// turn and item IDs rather than by page offset or rowid.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryRow {
     pub thread_id: String,
@@ -49,14 +51,14 @@ pub enum ToolOrigin {
         thread: String,
         turn: String,
         item: String,
-        /// Canonical item JSON, separately inspectable from its row envelope.
+        /// Hash of the canonical item JSON alone.
         raw_hash: [u8; 32],
-        /// Constructor-bound typed row, including qualification timestamps.
+        /// Hash of the whole typed row, including its timestamps.
         row_hash: [u8; 32],
     },
 }
-/// Preserve core argv separately from recorded shell/UI display text. The
-/// provider's CommandExecutionPresentation is not a space-joining constructor.
+/// The command's argv, kept apart from the display text the provider recorded;
+/// the display text is not argv joined with spaces.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Command {

@@ -1,4 +1,5 @@
-//! Immutable authored intent and revision graph semantics. No target lookup occurs here.
+//! Notes and corrections: the request a user writes and the revision and
+//! withdrawal graph. Targets are not looked up here.
 use crate::{BlobHash, BlockSlot, ErrorKind, Failure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -190,13 +191,14 @@ impl WriteNote {
         }
         Ok(())
     }
-    /// Hash submitted intent, before inheritance/current-head lookup or clock resolution.
+    /// Hash of the request as submitted, before targets are inherited or the
+    /// time is filled in.
     pub fn intent(&self) -> Result<serde_json::Value, Failure> {
         self.validate()?;
         let mut v = serde_json::to_value(self).map_err(|e| invalid(e.to_string()))?;
         v.as_object_mut().unwrap().remove("request_id");
         v["command"] = serde_json::json!("note");
-        // Targets/relations are sets in durable storage, so order is not intent.
+        // Targets and relations are stored as sets, so their order is ignored.
         if let Some(a) = v
             .get_mut("targets")
             .and_then(serde_json::Value::as_array_mut)
@@ -272,8 +274,8 @@ pub fn validate_controls(graph: &BTreeMap<String, GraphNode>) -> Result<(), Fail
     }
     Ok(())
 }
-/// All dependencies must be present. New local writes only point backwards;
-/// malformed/cyclic imported graphs refuse rather than choose by a timestamp.
+/// Every referenced revision must be present. A cycle or malformed graph is an
+/// error; timestamps never pick a winner.
 fn withdrawal_states(
     graph: &BTreeMap<String, GraphNode>,
 ) -> Result<BTreeMap<String, bool>, Failure> {

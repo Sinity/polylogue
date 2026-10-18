@@ -33,7 +33,7 @@ fn duplicate_decoded_keys_refuse_instead_of_overwriting() {
 }
 
 #[test]
-fn repair_diagnostics_are_explicit_once_and_have_original_offsets() {
+fn surrogate_repairs_are_counted_once_at_original_offsets() {
     let log = TextRepairs::default();
     let raw = br#"{"key":"a\ud800b\udfffc","opaque":"\ud800"}"#;
     let value = RawJson::parse_with_repairs(raw, 100, &log).unwrap();
@@ -80,7 +80,7 @@ fn embedded_json_repairs_rebase_to_outer_original_bytes() {
 }
 
 #[test]
-fn depth_is_admitted_before_recursive_decode() {
+fn depth_limit_is_checked_before_recursing() {
     for depth in [JSON_DEPTH_LIMIT, JSON_DEPTH_LIMIT + 1, 10000] {
         let raw = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
         let result = RawJson::parse(raw.as_bytes());
