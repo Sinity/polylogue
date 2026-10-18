@@ -725,7 +725,7 @@ fn run(
         qualification["notes"]
             .as_array_mut()
             .expect("notes")
-            .push(json!(polylogue_model::RecoveryQualification::NOTE));
+            .push(json!(polylogue_model::RecoveryRecord::NOTE));
     }
     let authored_basis = if let Some(m) = &selection.exact {
         Some(stored(polylogue_engine::authored::selected_basis(

@@ -5,7 +5,7 @@ fn fixture() -> (tempfile::TempDir, PathBuf, u64) {
     crate::tests::killed_wal_fixture("stale-generation")
 }
 #[test]
-fn native_copy_preserves_source_inodes_content_and_persistent_qualification() {
+fn recovered_copy_preserves_source_inodes_content_and_keeps_its_recovery_record() {
     let (tmp, source, expected) = fixture();
     let cancel = AtomicBool::new(false);
     let original = inventory(&source, &cancel).unwrap();
@@ -135,7 +135,7 @@ fn publication_is_atomic_and_cancellation_never_removes_a_published_copy() {
     let (tmp, source, _) = fixture();
     for point in [
         Boundary::Copied,
-        Boundary::Qualified,
+        Boundary::Verified,
         Boundary::BeforePublish,
         Boundary::Published,
     ] {
@@ -179,7 +179,7 @@ fn publication_is_atomic_and_cancellation_never_removes_a_published_copy() {
     );
 }
 #[test]
-fn healthy_v1_migration_preserves_siblings_and_never_creates_recovery_qualification() {
+fn healthy_v1_migration_preserves_siblings_and_never_creates_a_recovery_record() {
     let (_tmp, source, expected) = crate::tests::killed_wal_fixture("legacy-normal");
     let cancel = AtomicBool::new(false);
     let before = inventory(&source, &cancel).unwrap();
@@ -226,13 +226,13 @@ fn crash_child() {
 }
 
 #[test]
-fn actual_kills_before_publication_leave_no_destination_and_after_publication_keep_qualification() {
+fn kill_before_publication_leaves_no_destination_and_after_publication_keeps_the_record() {
     let (tmp, source, _) = fixture();
     let cancel = AtomicBool::new(false);
     let before = inventory(&source, &cancel).unwrap();
     for point in [
         Boundary::Copied,
-        Boundary::Qualified,
+        Boundary::Verified,
         Boundary::BeforePublish,
         Boundary::Published,
     ] {

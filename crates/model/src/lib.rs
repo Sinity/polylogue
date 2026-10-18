@@ -22,9 +22,7 @@ pub mod settlement;
 
 pub mod query;
 pub mod recovery;
-pub use recovery::{
-    DurableTier, HeadCoverage, RecoveredWal, RecoveryQualification, RecoveryReason,
-};
+pub use recovery::{DurableTier, HeadCoverage, RecoveredWal, RecoveryReason, RecoveryRecord};
 
 pub mod native_id;
 pub mod retained;

@@ -27,7 +27,7 @@ struct PinnedRead {
     visibility: Connection,
     archive: Option<Connection>,
     archive_visibility: Option<Connection>,
-    recovery: Option<polylogue_model::RecoveryQualification>,
+    recovery: Option<polylogue_model::RecoveryRecord>,
     extra_orders: u64,
     _lock: Arc<File>,
 }
@@ -115,7 +115,7 @@ impl ReadHandle {
         let archive = crate::open(&archive_path, true, true)?;
         db(&archive_path, || archive.execute_batch("BEGIN DEFERRED"))?;
         let archive_counter = crate::counter(&archive, &archive_path)?;
-        let recovery = crate::recovery::qualification(&archive, &archive_path)?;
+        let recovery = crate::recovery::record(&archive, &archive_path)?;
         let path = self.root.join("index.db");
         let connection = crate::open(&path, true, false)?;
         ordered_extras::configure(&connection, &path)?;
@@ -174,7 +174,7 @@ impl MessageView {
                 .map_err(|_| Error::Invariant("ready Message version unavailable".into()))?,
         ))
     }
-    pub fn recovery(&self) -> Result<Option<polylogue_model::RecoveryQualification>> {
+    pub fn recovery(&self) -> Result<Option<polylogue_model::RecoveryRecord>> {
         Ok(locked(&self.read)?.recovery.clone())
     }
     pub fn provider_time(&self) -> Result<Option<i64>> {
@@ -765,7 +765,7 @@ pub struct SessionCatalogCursor {
     after: String,
 }
 impl SessionCatalog {
-    pub fn recovery(&self) -> Result<Option<polylogue_model::RecoveryQualification>> {
+    pub fn recovery(&self) -> Result<Option<polylogue_model::RecoveryRecord>> {
         Ok(locked(&self.read)?.recovery.clone())
     }
     fn visible(&self) -> Result<()> {
@@ -914,7 +914,7 @@ impl ReadHandle {
         let archive = crate::open(&archive_path, true, true)?;
         db(&archive_path, || archive.execute_batch("BEGIN DEFERRED"))?;
         let archive_counter = crate::counter(&archive, &archive_path)?;
-        let recovery = crate::recovery::qualification(&archive, &archive_path)?;
+        let recovery = crate::recovery::record(&archive, &archive_path)?;
         let path = self.root.join("index.db");
         let connection = crate::open(&path, true, false)?;
         ordered_extras::configure(&connection, &path)?;
@@ -1092,7 +1092,7 @@ impl SessionCatalog {
     }
 }
 impl SessionView {
-    pub fn recovery(&self) -> Result<Option<polylogue_model::RecoveryQualification>> {
+    pub fn recovery(&self) -> Result<Option<polylogue_model::RecoveryRecord>> {
         Ok(locked(&self.read)?.recovery.clone())
     }
     pub fn catalog(&self) -> SessionCatalog {

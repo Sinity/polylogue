@@ -277,8 +277,8 @@ fn association_population(
 impl Writer {
     /// Archive qualification is independent of derived-tier availability. Read
     /// it before the action; a later status failure cannot relabel a commit.
-    pub fn authored_recovery(&self) -> Result<Option<polylogue_model::RecoveryQualification>> {
-        crate::recovery::qualification(&self.archive, &self.root.join("archive.db"))
+    pub fn authored_recovery(&self) -> Result<Option<polylogue_model::RecoveryRecord>> {
+        crate::recovery::record(&self.archive, &self.root.join("archive.db"))
     }
     pub fn write_note(&mut self, request: &WriteNote) -> Result<Revision> {
         self.write_note_until(request, default_until())
@@ -479,7 +479,7 @@ pub struct Snapshot {
     pub archive_counter: u64,
     /// Indexed authored-only watermark, separate from general archive bookkeeping.
     pub authored_sequence: u64,
-    pub recovery: Option<polylogue_model::RecoveryQualification>,
+    pub recovery: Option<polylogue_model::RecoveryRecord>,
     _lock: Arc<File>,
 }
 impl ReadHandle {
@@ -497,7 +497,7 @@ impl ReadHandle {
             .optional()
         })?
         .unwrap_or(0);
-        let recovery = crate::recovery::qualification(&conn, &path)?;
+        let recovery = crate::recovery::record(&conn, &path)?;
         Ok(Snapshot {
             conn,
             path,

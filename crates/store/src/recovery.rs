@@ -1,18 +1,18 @@
-//! The one-shot owner recovers a verified, separately owned copy only.
+//! Recovers a damaged archive into a new, verified copy; the source is never modified.
 use crate::{Error, ReadHandle, Result, db, native, open, owned_metadata, sibling, wal};
 use polylogue_model::{
-    BlobHash, DurableTier, HeadCoverage, RecoveredWal, RecoveryQualification, RecoveryReason,
+    BlobHash, DurableTier, HeadCoverage, RecoveredWal, RecoveryReason, RecoveryRecord,
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
-// A replay under a changed identity recipe can invalidate durable authored
-// references even when the old index schema itself is known. Refuse before
-// migration, replacement or fresh initialization; retained markers also block
-// admitting a partially replaced or missing index as an unrelated fresh one.
+// Old index versions computed IDs differently, so rebuilding them could break
+// references stored in notes. Refuse them before any migration or fresh
+// initialization. A leftover rebuild marker also refuses, so a partially
+// replaced or missing index is never treated as a fresh one.
 pub(crate) fn check_index_compatibility(root: &Path) -> Result<()> {
     if owned_metadata(&root.join("index-rebuild.json"))?.is_some() {
         return Err(refused(
-            "interrupted predecessor index replacement requires a reference-preserving transition; no replacement was attempted",
+            "an interrupted index rebuild from an older version cannot be resumed; nothing was changed",
         ));
     }
     let index = root.join("index.db");
@@ -21,9 +21,9 @@ pub(crate) fn check_index_compatibility(root: &Path) -> Result<()> {
             return Err(Error::Schema(index));
         }
         if metadata.len() > 0 {
-            // A read-only SQLite WAL connection can still change shared-memory
-            // read marks. Refuse the predecessor from the immutable main header
-            // before opening SQLite, even if a WAL could claim a newer version.
+            // Even a read-only SQLite WAL connection can change shared-memory
+            // read marks, so check the version in the main file header before
+            // opening SQLite.
             let mut header = [0; 100];
             regular(&index)?.read_exact(&mut header)?;
             if &header[..16] != b"SQLite format 3\0" {
@@ -234,22 +234,19 @@ fn sync_tree(root: &Path) -> Result<()> {
     File::open(root)?.sync_all()?;
     Ok(())
 }
-pub(crate) fn qualification(
-    conn: &Connection,
-    path: &Path,
-) -> Result<Option<RecoveryQualification>> {
+pub(crate) fn record(conn: &Connection, path: &Path) -> Result<Option<RecoveryRecord>> {
     let value: Option<Option<String>> = db(path, || {
         conn.query_row("SELECT CASE WHEN length(CAST(value AS BLOB))<=65536 THEN value END FROM meta WHERE key='recovery_qualification'",[],|r|r.get(0)).optional()
     })?;
     value
         .map(|value| {
             let value = value.ok_or_else(|| Error::Schema(path.into()))?;
-            let qualification: RecoveryQualification =
+            let record: RecoveryRecord =
                 serde_json::from_str(&value).map_err(|_| Error::Schema(path.into()))?;
-            if !qualification.valid() {
+            if !record.valid() {
                 return Err(Error::Schema(path.into()));
             }
-            Ok(qualification)
+            Ok(record)
         })
         .transpose()
 }
@@ -328,11 +325,7 @@ pub(crate) fn migrate(root: &Path, cancelled: &AtomicBool) -> Result<()> {
     set_format(&mut conn, &path, None)?;
     Ok(())
 }
-fn set_format(
-    conn: &mut Connection,
-    path: &Path,
-    recovery: Option<&RecoveryQualification>,
-) -> Result<()> {
+fn set_format(conn: &mut Connection, path: &Path, recovery: Option<&RecoveryRecord>) -> Result<()> {
     let next = crate::counter(conn, path)?
         .checked_add(1)
         .filter(|n| *n <= i64::MAX as u64)
@@ -514,7 +507,7 @@ pub struct RecoveryReport {
     pub format: &'static str,
     pub version: u32,
     pub destination: PathBuf,
-    pub recovery: RecoveryQualification,
+    pub recovery: RecoveryRecord,
     pub receipt: PathBuf,
     pub checked_blobs: u64,
     pub checked_blob_bytes: u64,
@@ -531,7 +524,7 @@ pub fn recover_copy(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Boundary {
     Copied,
-    Qualified,
+    Verified,
     BeforePublish,
     Published,
 }
@@ -632,7 +625,7 @@ fn recover_inner(
         crate::initialize_sqlite()?;
         crate::preflight_inner(&stage_path, true)?;
         let manifest = json_bytes(&entries)?;
-        let recovery = RecoveryQualification {
+        let recovery = RecoveryRecord {
             version: 1,
             latest_acknowledged_head: HeadCoverage::Unknown,
             reason: RecoveryReason::UncertainGenerationTail,
@@ -671,10 +664,10 @@ fn recover_inner(
         let (checked_blobs, checked_blob_bytes) = blobs(&stage_path, &reader.archive, cancelled)?;
         let status = reader.status()?;
         if status.recovery.as_ref() != Some(&recovery) {
-            return Err(refused("reopened qualification mismatch"));
+            return Err(refused("reopened recovery record mismatch"));
         }
         drop(reader);
-        boundary(Boundary::Qualified)?;
+        boundary(Boundary::Verified)?;
         let report = RecoveryReport {
             format: "polylogue-recovery",
             version: 1,
@@ -704,7 +697,7 @@ fn recover_inner(
         wal::check_cancel(cancelled)?;
         native::publish(&stage_path, &destination)?;
         // The rename is the commit point. Cancellation afterwards reports the
-        // completed qualified destination; it never deletes a published copy.
+        // completed, verified destination; it never deletes a published copy.
         File::open(&parent)?.sync_all()?;
         boundary(Boundary::Published)?;
         Ok(report)

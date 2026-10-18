@@ -205,7 +205,7 @@ pub(crate) fn serve(
     match run() {
         Ok(()) => frame(
             stream,
-            json!({"type":"end","outcome":"degraded","missing":["canonical_history_coverage","source_provenance"],"notes":if recovery.is_some(){vec![polylogue_model::RecoveryQualification::NOTE]}else{vec![]},"recovery":recovery,"canonical_complete":false}),
+            json!({"type":"end","outcome":"degraded","missing":["canonical_history_coverage","source_provenance"],"notes":if recovery.is_some(){vec![polylogue_model::RecoveryRecord::NOTE]}else{vec![]},"recovery":recovery,"canonical_complete":false}),
         ),
         Err(error) => frame(stream, error),
     }
@@ -307,7 +307,7 @@ pub fn request(socket: &Path, reference: &str, out: &mut impl Write) -> io::Resu
                     writeln!(out)?;
                 }
                 if item.get("recovery").is_some_and(|v| !v.is_null()) {
-                    writeln!(out, "{}", polylogue_model::RecoveryQualification::NOTE)?;
+                    writeln!(out, "{}", polylogue_model::RecoveryRecord::NOTE)?;
                 }
                 return Ok(item);
             }

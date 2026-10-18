@@ -1,4 +1,4 @@
-//! Archive integrity scope. Local progress cannot establish a missing historical head.
+//! The record a recovered archive copy carries permanently.
 use crate::BlobHash;
 use serde::{Deserialize, Serialize};
 
@@ -36,15 +36,15 @@ pub struct RecoveredWal {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecoveryQualification {
+pub struct RecoveryRecord {
     pub version: u32,
     pub latest_acknowledged_head: HeadCoverage,
     pub reason: RecoveryReason,
     pub affected: Vec<RecoveredWal>,
     pub source_manifest_blake3: BlobHash,
 }
-impl RecoveryQualification {
-    pub const NOTE: &'static str = "Recovered copy: the latest historically acknowledged head is unknown. Retain and compare independent acknowledgements with the recovery receipt; local processing cannot clear this qualification.";
+impl RecoveryRecord {
+    pub const NOTE: &'static str = "Recovered copy: the last state committed before the damage is unknown. Keep the recovery receipt to compare with other copies; this note never clears.";
     pub fn valid(&self) -> bool {
         self.version == 1
             && self.affected.len() == 1

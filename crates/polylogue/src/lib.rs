@@ -511,7 +511,7 @@ fn serve(
             }) {
                 Ok((status, pending)) => {
                     let mut notes = if status.recovery.is_some() {
-                        vec![polylogue_model::RecoveryQualification::NOTE]
+                        vec![polylogue_model::RecoveryRecord::NOTE]
                     } else {
                         vec![]
                     };

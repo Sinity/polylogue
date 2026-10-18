@@ -118,7 +118,7 @@ fn run() -> Result<i32, Failure> {
         ctrlc::set_handler(move || signalled.store(true, Ordering::Release)).map_err(io_error)?;
         let report = polylogue::Running::recover_copy(&archive, &PathBuf::from(&args[2]), &stop)
             .map_err(io_error)?;
-        serde_json::to_writer(&mut out,&json!({"outcome":"degraded","destination":report.destination,"recovery":report.recovery,"receipt":report.receipt,"notes":[polylogue_model::RecoveryQualification::NOTE],"missing":[polylogue_model::RecoveryQualification::NOTE]})).map_err(io_error)?;
+        serde_json::to_writer(&mut out,&json!({"outcome":"degraded","destination":report.destination,"recovery":report.recovery,"receipt":report.receipt,"notes":[polylogue_model::RecoveryRecord::NOTE],"missing":[polylogue_model::RecoveryRecord::NOTE]})).map_err(io_error)?;
         writeln!(out).map_err(io_error)?;
         return Ok(5);
     }

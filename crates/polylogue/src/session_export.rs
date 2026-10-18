@@ -75,7 +75,7 @@ fn existing_export(destination: &Path) -> io::Result<Option<(u64, u64)>> {
 #[derive(serde::Deserialize)]
 struct DocumentQualification {
     result: Value,
-    recovery: Option<polylogue_model::RecoveryQualification>,
+    recovery: Option<polylogue_model::RecoveryRecord>,
 }
 
 /// Publish one detached document and its same-read manifest. Existing recognized

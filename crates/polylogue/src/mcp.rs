@@ -93,7 +93,7 @@ fn tools() -> Vec<Tool> {
             "error":{"type":"object","description":"Typed CLI failure, with reason and capacity retry metadata when applicable."},
             "notes":{"type":"array"}, "missing":{"type":"array"},
             "up_to_date":{"type":"boolean"}, "settlement":{"type":"object"},
-            "recovery":{"description":"Persistent recovery qualification, or null."}
+            "recovery":{"description":"Recovery record of a recovered copy, or null."}
         });
         if name == "read" {
             properties["shown"] = json!({"type":"array","description":"Bounded retained text, author, display positions, source spans and field origins."});

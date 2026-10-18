@@ -153,7 +153,7 @@ pub struct Report {
     pub request_id: String,
     pub acquisition_lineage: String,
     pub latest_acknowledged_head: &'static str,
-    pub recovery: Option<polylogue_model::RecoveryQualification>,
+    pub recovery: Option<polylogue_model::RecoveryRecord>,
 }
 /// Owns the normal archive lock for both admission and checked completion.
 /// Exposes admission so the process owner can report durable pending progress.
@@ -313,7 +313,7 @@ impl Preparation {
             acquisition_lineage: lineage(&self.archive, &path)?
                 .ok_or_else(|| refused("missing lineage"))?,
             latest_acknowledged_head: "unknown",
-            recovery: recovery::qualification(&self.archive, &path)?,
+            recovery: recovery::record(&self.archive, &path)?,
         })
     }
 }

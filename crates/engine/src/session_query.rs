@@ -181,7 +181,7 @@ pub fn execute(
     let recovery = catalog.recovery()?;
     let mut notes = qualification.notes();
     if recovery.is_some() {
-        notes.push(polylogue_model::RecoveryQualification::NOTE.to_owned());
+        notes.push(polylogue_model::RecoveryRecord::NOTE.to_owned());
     }
     if (plan.id.is_none() || !plan.text.is_empty())
         && (sessions > 0 || known_messages > 0 || qualification.interpreted_nonempty_inputs > 0)
