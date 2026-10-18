@@ -1,4 +1,4 @@
-//! Private SQLite ownership and typed retained-source storage. Source discovery is not registered.
+//! The archive's SQLite databases and stored inputs, behind typed handles.
 //!
 //! A read handle cannot acquire mutation capability:
 //! ```compile_fail
@@ -11,7 +11,7 @@
 //! fn escape(writer: &polylogue_store::Writer) { let _ = &writer.archive; }
 //! ```
 use polylogue_model::BlobHash;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::{
     fs::{self, DirBuilder, File, OpenOptions},
     io::{self, Read, Write},
@@ -41,6 +41,7 @@ pub use imports::{ImmutableImport, ImportObservation, InputFormat, StoredInput};
 pub use observed::{SourceIdentity, StoredSource};
 pub mod copy_preparation;
 pub mod parser_state;
+pub mod prose_search;
 pub mod recovery;
 pub mod values;
 mod wal;
@@ -49,7 +50,7 @@ pub const ARCHIVE_VERSION: u32 = 4;
 pub const ARCHIVE_SPEC_COMMIT: &str = "8c4e2210692282420d7a5ca91dc005b409a668f1";
 pub const EMBEDDINGS_VERSION: u32 = 0;
 pub const INDEX_VERSION: u32 = 20;
-/// Exact native forward schema, with upstream basis and local overlay in provenance.json.
+/// Hash of `schema/index.sql`; a schema edit without a version bump fails a test.
 pub const INDEX_SQL_BLAKE3: &str =
     "8d44aa6bed43153b9870660655885d2743ac01ca7a17d9ea0a4d64729cf86adf";
 pub const INDEX_SPEC_COMMIT: &str = "5551b6e3796f968011323e436f0c72f5339832b4";
@@ -68,17 +69,15 @@ pub enum Error {
     CopyPreparationRefused(String),
     #[error("observed source refused: {0}")]
     ObservedSourceRefused(String),
-    #[error("controlled copy recovery refused: {0}")]
+    #[error("recovery refused: {0}")]
     RecoveryRefused(String),
-    #[error("recovery failed; owned staging retained at {path}: {error}")]
+    #[error("recovery failed; the partial copy was kept at {path}: {error}")]
     RecoveryStaging {
         path: PathBuf,
         #[source]
         error: Box<Error>,
     },
-    #[error(
-        "immutable interpretation context needs {required} framed bytes; maximum declaration is {maximum}"
-    )]
+    #[error("input context needs {required} bytes; the maximum is {maximum}")]
     ImportContextTooLarge { required: usize, maximum: usize },
     #[error("client request {id} was reused with different content")]
     ClientRequestConflict { id: String },
@@ -96,7 +95,7 @@ pub enum Error {
     StaleValue,
     #[error("normalized value is not integrity sealed")]
     ValueNotReady,
-    #[error("retaining another input requires the excision-aware collector")]
+    #[error("cannot store another input while the archive has excisions")]
     ExcisionCheckRequired,
     #[error("parser state changed since it was read; discard the attempted step")]
     StaleParserState,
@@ -104,7 +103,7 @@ pub enum Error {
     SnapshotFragmented,
     #[error("provider state has unfinished prepared work; resume it before admitting a new parse")]
     ParserWorkPending,
-    #[error("{resource} requires a larger admission ({required})")]
+    #[error("{resource} needs a larger limit ({required})")]
     ParserAdmission {
         resource: &'static str,
         required: u64,
@@ -130,9 +129,7 @@ pub enum Error {
         #[source]
         source: rusqlite::Error,
     },
-    #[error(
-        "controlled recovery required at {file}: {reason} (frame {frame:?}); retained bytes were not changed"
-    )]
+    #[error("recovery required at {file}: {reason} (frame {frame:?}); no file was changed")]
     RecoveryRequired {
         file: PathBuf,
         reason: &'static str,
@@ -151,7 +148,7 @@ pub enum Error {
         supported: u32,
     },
     #[error(
-        "unsupported index at {file}: found version {found}, expected {expected}; preserving existing references requires a qualified transition; files were not replaced"
+        "index at {file} is version {found}, expected {expected}; it cannot be upgraded in place yet; no file was changed"
     )]
     IndexRebuildRequired {
         file: PathBuf,
@@ -164,11 +161,11 @@ pub enum Error {
     Initialization(String),
     #[error("blob: {0}")]
     Blob(#[from] hashed_blobs::Error),
-    #[error("archive is missing while retained store content exists at {0}")]
+    #[error("archive.db is missing but other archive files exist at {0}")]
     MissingArchive(PathBuf),
     #[error("blob is not recorded in this archive")]
     UnknownBlob,
-    #[error("blob range is outside retained bytes")]
+    #[error("blob range is outside the stored bytes")]
     Range,
 }
 
@@ -182,11 +179,10 @@ pub struct Status {
     pub acquisition_lineage: Option<String>,
     pub copy_preparation: Option<copy_preparation::Pending>,
     pub unavailable_blob_files: u64,
-    pub latest_acknowledged_head: &'static str,
 }
 
-/// Acquired only by the daemon's startup path. Its lock lives as long as its connections.
-/// File::try_lock uses the opened lock inode, so aliases of an archive compete.
+/// The single writer, opened by the daemon at startup. It holds the lock on
+/// `writer.lock` (an inode lock, so paths aliasing one archive compete) until dropped.
 pub struct Writer {
     root: PathBuf,
     archive: Connection,
@@ -195,17 +191,17 @@ pub struct Writer {
     _lock: Arc<File>,
 }
 
-/// Read-only SQLite handles and typed queries; never a raw connection or SQL surface.
+/// Read-only connections with typed queries.
 pub struct ReadHandle {
     root: PathBuf,
-    // One general expected-object reader plus two object-affine retained-source
-    // slots per capability; fork starts with all three empty.
+    // One general blob reader plus two per-source reader slots; fork starts
+    // with all three empty.
     blob_reader: hashed_blobs::Reader,
     source_readers: source_readers::SourceReaders,
     archive: Connection,
     index: Connection,
     embeddings: Connection,
-    // Fields drop in declaration order: connections close before authority releases.
+    // Fields drop in declaration order: connections close before the lock is released.
     _lock: Arc<File>,
 }
 
@@ -252,8 +248,8 @@ fn open(file: &Path, readonly: bool, durable: bool) -> Result<Connection> {
     })
 }
 fn inspect_immutable(file: &Path, durable: bool) -> Result<Connection> {
-    // Without a WAL, immutable mode prevents SQLite creating shared-memory/journal siblings.
-    // Never use this mode when retained WAL bytes may contain newer schema or content.
+    // Immutable mode stops SQLite creating -shm/-journal files. Use it only
+    // when there is no WAL, which could hold newer schema or content.
     let mut uri = String::from("file:");
     for byte in file.as_os_str().as_bytes() {
         if byte.is_ascii_alphanumeric() || b"/._-~".contains(byte) {
@@ -309,11 +305,11 @@ fn validate_version(
     name: &str,
     expected: u32,
     durable: bool,
-    legacy: bool,
+    allow_old_archive: bool,
 ) -> Result<()> {
     let file = root.join(name);
-    // Inspect retained siblings even when the main file is missing or empty.
-    // A WAL may hold the only committed schema/content and must never be overwritten as fresh.
+    // A WAL may hold the only committed schema or content, so a missing or
+    // empty main file with a WAL is never treated as fresh.
     let main = owned_metadata(&file)?;
     let wal = sibling(&file, "-wal");
     let shm = sibling(&file, "-shm");
@@ -324,17 +320,16 @@ fn validate_version(
         if has_wal || shm_meta.as_ref().is_some_and(|m| m.len() != 0) {
             return Err(wal::required(
                 &file,
-                "missing or empty main with retained WAL/shared-memory bytes",
+                "main database is missing or empty but its WAL or shared-memory file is not",
                 None,
             ));
         }
         return Ok(());
     }
-    // No journal mode, schema, counters, chmod, or blob mutations precede this check.
     if has_wal && shm_meta.is_none() {
         return Err(wal::required(
             &wal,
-            "orphan WAL requires controlled recovery",
+            "WAL without its shared-memory file",
             None,
         ));
     }
@@ -360,7 +355,7 @@ fn validate_version(
     }
     if durable
         && found != expected
-        && !(legacy && name == "archive.db" && matches!(found, 1 | 2 | 3))
+        && !(allow_old_archive && name == "archive.db" && matches!(found, 1 | 2 | 3))
     {
         return Err(Error::Schema(file));
     }
@@ -379,8 +374,7 @@ fn validate_version(
         counter(&conn, &file)?;
     }
     if name == "archive.db" {
-        let qualification = recovery::record(&conn, &file)?;
-        if found == 1 && qualification.is_some() {
+        if found == 1 && recovery::record(&conn, &file)?.is_some() {
             return Err(Error::Schema(file));
         }
     }
@@ -408,8 +402,8 @@ fn validate_version(
 fn preflight(root: &Path) -> Result<()> {
     preflight_inner(root, false)
 }
-fn preflight_inner(root: &Path, legacy: bool) -> Result<()> {
-    validate_version(root, "archive.db", ARCHIVE_VERSION, true, legacy)?;
+fn preflight_inner(root: &Path, allow_old_archive: bool) -> Result<()> {
+    validate_version(root, "archive.db", ARCHIVE_VERSION, true, allow_old_archive)?;
     validate_version(root, "embeddings.db", EMBEDDINGS_VERSION, true, false)?;
     validate_version(root, "index.db", INDEX_VERSION, false, false)?;
     if root.try_exists()? && owned_metadata(&root.join("archive.db"))?.is_none() {
@@ -498,7 +492,7 @@ fn initialize_db(
         db(&path, || conn.pragma_update(None, "user_version", expected))?;
         db(&path, || conn.execute_batch("COMMIT"))?;
     } else {
-        // Version zero is not a license to adopt an unrelated database as an archive.
+        // A non-fresh file must match the schema exactly, even at user_version 0.
         validate_schema(&conn, &path, sql)?;
     }
     db(&path, || conn.pragma_update(None, "journal_mode", "WAL"))?;
@@ -551,8 +545,8 @@ fn private_files(root: &Path) -> Result<()> {
     }
     Ok(())
 }
-// A retained archive must already have its coordination inode. Missing-lock
-// inspection may explain a refusal using raw headers, but never opens SQLite.
+// An existing archive must already have `writer.lock`. Without it, raw file
+// headers may explain the refusal, but SQLite is never opened.
 fn startup_lock(root: &Path, create: bool, writable: bool) -> Result<File> {
     let path = root.join("writer.lock");
     let lock = OpenOptions::new()
@@ -599,11 +593,7 @@ fn startup_lock(root: &Path, create: bool, writable: bool) -> Result<File> {
             if owned_metadata(&root.join("archive.db"))?.is_none() && !sidecar {
                 return Err(Error::MissingArchive(root.into()));
             }
-            return Err(wal::required(
-                &path,
-                "missing archive coordination lock",
-                None,
-            ));
+            return Err(wal::required(&path, "writer.lock is missing", None));
         }
         Err(e) => return Err(Error::Io(e)),
     };
@@ -676,7 +666,7 @@ impl Writer {
     pub fn status(&self) -> Result<Status> {
         self.read_handle()?.status()
     }
-    /// Foundation byte storage, not provider ingestion or a revision protocol.
+    /// Stores bytes as a blob; used by tests and diagnostics.
     pub fn put_file_blob(&mut self, bytes: &[u8]) -> Result<BlobHash> {
         let proof = self
             .blob_capture()?
@@ -698,7 +688,7 @@ impl ReadHandle {
         if matches!(recovery::raw_versions(&root)?, Some(1 | 2 | 3)) {
             return Err(wal::required(
                 &root.join("archive.db"),
-                "format migration requires the daemon owner",
+                "the archive format needs an upgrade, which only the writer performs",
                 None,
             ));
         }
@@ -732,7 +722,6 @@ impl ReadHandle {
             unavailable_blob_files: copy_preparation::unavailable_blobs(
                 &snapshot, &file, &self.root,
             )?,
-            latest_acknowledged_head: "unknown",
         })
     }
     pub fn fork(&self) -> Result<Self> {
@@ -803,8 +792,5 @@ impl ReadHandle {
         result
     }
 }
-use rusqlite::OptionalExtension;
 #[cfg(test)]
 mod tests;
-
-pub mod prose_search;

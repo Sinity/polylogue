@@ -2,10 +2,9 @@ use super::*;
 use rusqlite::params;
 use std::os::unix::fs::{MetadataExt, symlink};
 
-// A concurrent subprocess test may briefly inherit CLOEXEC file descriptions
-// between fork and exec. This harness expects eventual reopen after its own
-// writer drop, not zero contention time. A leaked read authority still fails
-// at the deadline; product startup keeps its immediate WriterHeld contract.
+// A concurrent subprocess test can briefly inherit the lock descriptor between
+// fork and exec, so reopening retries for up to a second. A lock leaked by
+// this process still fails at the deadline.
 pub(crate) fn reopen_after_drop(root: &std::path::Path) -> crate::Writer {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     loop {
@@ -23,7 +22,7 @@ pub(crate) fn reopen_after_drop(root: &std::path::Path) -> crate::Writer {
 }
 
 #[test]
-fn context_qualified_archive_uses_explicit_owning_schema_basis() {
+fn archive_schema_requires_input_hash_and_context() {
     assert_eq!(ARCHIVE_VERSION, 4);
     let provenance = include_str!("../schema/provenance.json");
     assert!(provenance.contains(&format!("\"spec_commit\": \"{ARCHIVE_SPEC_COMMIT}\"")));
@@ -48,7 +47,7 @@ fn context_qualified_archive_uses_explicit_owning_schema_basis() {
 }
 
 #[test]
-fn forward_index_is_pinned_and_applies_without_predecessor_columns() {
+fn index_schema_matches_its_hash_and_has_message_body_tables() {
     assert_eq!(
         BlobHash::of(INDEX_SQL.as_bytes()).to_string(),
         INDEX_SQL_BLAKE3
@@ -159,7 +158,7 @@ fn snapshot(path: &Path) -> Vec<(PathBuf, Vec<u8>, u32)> {
     files
 }
 #[test]
-fn newer_durable_version_refused_before_creating_siblings_or_chmod() {
+fn newer_archive_version_is_refused_without_touching_files() {
     for name in ["archive.db", "embeddings.db"] {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path();
@@ -177,11 +176,11 @@ fn newer_durable_version_refused_before_creating_siblings_or_chmod() {
             Writer::open(path),
             Err(Error::NewerSchema { found: 99, .. })
         ));
-        assert!(snapshot(path) == before, "refusal changed retained files");
+        assert!(snapshot(path) == before, "refusal changed files");
     }
 }
 #[test]
-fn index_version_mismatch_requires_rebuild_without_destroying_it() {
+fn index_version_mismatch_is_refused_and_index_kept() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     drop(Writer::open(root).unwrap());
@@ -193,7 +192,7 @@ fn index_version_mismatch_requires_rebuild_without_destroying_it() {
         Writer::open(root),
         Err(Error::IndexRebuildRequired { found: 99, .. })
     ));
-    assert!(snapshot(root) == before, "refusal changed retained files");
+    assert!(snapshot(root) == before, "refusal changed files");
 }
 #[test]
 fn unrelated_version_zero_schema_is_not_adopted() {
@@ -208,10 +207,10 @@ fn unrelated_version_zero_schema_is_not_adopted() {
         Writer::open(root),
         Err(Error::RecoveryRequired { .. })
     ));
-    assert!(snapshot(root) == before, "refusal changed retained files");
+    assert!(snapshot(root) == before, "refusal changed files");
 }
 #[test]
-fn retained_bytes_without_archive_are_refused() {
+fn archive_files_without_archive_db_are_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     fs::create_dir(root.join("blobs")).unwrap();
@@ -303,7 +302,7 @@ fn durable_page_corruption_is_rejected_by_checksum_vfs() {
     }
 }
 #[test]
-fn readonly_byte_access_does_not_recreate_writer_scratch() {
+fn reading_blobs_does_not_recreate_writer_temp_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     let mut writer = Writer::open(root).unwrap();
@@ -315,11 +314,11 @@ fn readonly_byte_access_does_not_recreate_writer_scratch() {
 }
 
 #[test]
-fn orphan_wal_is_refused_without_recovery_side_effects() {
+fn wal_without_shm_is_refused_without_side_effects() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     drop(Writer::open(root).unwrap());
-    fs::write(root.join("archive.db-wal"), b"retained orphan WAL marker").unwrap();
+    fs::write(root.join("archive.db-wal"), b"orphan WAL marker").unwrap();
     let before = snapshot(root);
     assert!(matches!(
         Writer::open(root),
@@ -327,7 +326,7 @@ fn orphan_wal_is_refused_without_recovery_side_effects() {
     ));
     assert!(
         snapshot(root) == before,
-        "inspection must preserve all retained files"
+        "inspection must leave all files unchanged"
     );
 }
 
@@ -365,7 +364,7 @@ fn malformed_archive_counter_is_refused_before_mutation() {
 }
 
 #[test]
-fn non_utf8_path_reads_retained_wal_version_before_mutation() {
+fn non_utf8_path_reads_version_from_wal_before_writing() {
     use std::os::unix::ffi::OsStringExt;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp
@@ -382,17 +381,14 @@ fn non_utf8_path_reads_retained_wal_version_before_mutation() {
         Err(Error::NewerSchema { found: 99, .. })
     ));
     let after = snapshot(&root);
-    // SQLite read marks in the existing SHM are coordination state, not durable conversation bytes.
+    // SQLite may update read marks in the SHM; that is not archive content.
     let durable = |entries: Vec<(PathBuf, Vec<u8>, u32)>| {
         entries
             .into_iter()
             .filter(|(p, _, _)| !p.as_os_str().as_bytes().ends_with(b"-shm"))
             .collect::<Vec<_>>()
     };
-    assert!(
-        durable(before) == durable(after),
-        "refusal changed retained files"
-    );
+    assert!(durable(before) == durable(after), "refusal changed files");
     drop(conn);
 }
 #[test]
@@ -407,7 +403,7 @@ fn inaccessible_wal_metadata_is_not_treated_as_no_wal() {
 }
 
 #[test]
-fn missing_or_empty_main_never_overwrites_retained_wal_or_shm() {
+fn missing_or_empty_main_never_overwrites_wal_or_shm() {
     for create_main in [false, true] {
         for sidecar in ["archive.db-wal", "archive.db-shm"] {
             let tmp = tempfile::tempdir().unwrap();
@@ -415,16 +411,13 @@ fn missing_or_empty_main_never_overwrites_retained_wal_or_shm() {
             if create_main {
                 File::create(root.join("archive.db")).unwrap();
             }
-            fs::write(root.join(sidecar), b"retained recovery bytes").unwrap();
+            fs::write(root.join(sidecar), b"WAL or SHM bytes").unwrap();
             let before = snapshot(root);
             assert!(matches!(
                 Writer::open(root),
                 Err(Error::RecoveryRequired { .. })
             ));
-            assert!(
-                snapshot(root) == before,
-                "recovery refusal changed retained files"
-            );
+            assert!(snapshot(root) == before, "recovery refusal changed files");
         }
     }
 }
@@ -465,12 +458,12 @@ fn corrupt_table(name: &str, table: &str) -> (tempfile::TempDir, PathBuf, u64, u
 }
 
 #[test]
-fn checksum_failure_names_non_header_page_and_actual_file() {
+fn checksum_failure_names_the_page_and_file() {
     for (name, table) in [("archive.db", "meta"), ("embeddings.db", "embedded")] {
         let (_tmp, file, page, page_size) = corrupt_table(name, table);
         let conn = open(&file, true, true).unwrap();
         // Deliberately different context: the VFS filename, not the caller hint,
-        // is the authority for which physical file failed.
+        // decides which file is reported.
         let err = db(Path::new("caller-context"), || {
             conn.query_row(
                 &format!("SELECT count(*) FROM {table} NOT INDEXED"),
@@ -580,8 +573,8 @@ fn publish_wal_ack(path: &Path, value: &[u8]) {
 }
 
 #[test]
-#[ignore = "owned subprocess helper for retained WAL probe"]
-fn retained_wal_probe_child() {
+#[ignore = "subprocess helper for killed_writer_wal_reopens_or_refuses"]
+fn killed_writer_wal_child() {
     let Some(root) = std::env::var_os("POLYLOGUE_WAL_CHILD_ROOT") else {
         return;
     };
@@ -690,7 +683,7 @@ impl Drop for WalProbeChild {
 }
 
 #[test]
-fn retained_wal_cold_reopen_gate() {
+fn killed_writer_wal_reopens_or_refuses() {
     for tier in ["archive.db", "embeddings.db"] {
         let (tmp, root, _) = killed_wal_fixture(if tier == "archive.db" {
             "normal"
@@ -780,10 +773,10 @@ fn retained_wal_cold_reopen_gate() {
                         assert_eq!(result, format!("counter={expected_counter}"));
                     } else {
                         assert!(
-                            result.starts_with("error=controlled recovery required"),
+                            result.starts_with("error=recovery required"),
                             "{name}: {result}"
                         );
-                        assert!(snapshot(&case) == before, "refusal changed retained bytes");
+                        assert!(snapshot(&case) == before, "refusal changed files");
                     }
                     if shm == "absent" {
                         assert!(result.starts_with("error="));
@@ -815,7 +808,7 @@ pub(crate) fn killed_wal_fixture(mode: &str) -> (tempfile::TempDir, PathBuf, u64
         command
             .args([
                 "--exact",
-                "tests::retained_wal_probe_child",
+                "tests::killed_writer_wal_child",
                 "--ignored",
                 "--nocapture",
             ])
@@ -844,7 +837,7 @@ pub(crate) fn killed_wal_fixture(mode: &str) -> (tempfile::TempDir, PathBuf, u64
 }
 
 #[test]
-fn retained_wal_legitimate_tails_gate() {
+fn valid_uncommitted_wal_tails_are_accepted() {
     for mode in ["stale-generation", "uncommitted"] {
         let (tmp, root, expected) = killed_wal_fixture(mode);
         let original = fs::read(root.join("archive.db-wal")).unwrap();
@@ -918,7 +911,7 @@ fn startup_cancellation_and_mid_wal_scan_preserve_bytes() {
 }
 
 #[test]
-fn owned_reader_keeps_archive_coordination_after_writer_drop() {
+fn writer_read_handle_keeps_lock_after_writer_drop() {
     let tmp = tempfile::tempdir().unwrap();
     let writer = Writer::open(tmp.path()).unwrap();
     let reader = writer.read_handle().unwrap();
@@ -958,7 +951,7 @@ fn active_owned_readers_see_commits_without_cold_start_scans() {
 }
 
 #[test]
-fn missing_lock_refuses_without_creating_coordination_files() {
+fn missing_lock_file_is_refused_without_creating_files() {
     let tmp = tempfile::tempdir().unwrap();
     drop(Writer::open(tmp.path()).unwrap());
     fs::remove_file(tmp.path().join("writer.lock")).unwrap();
@@ -975,7 +968,7 @@ fn missing_lock_refuses_without_creating_coordination_files() {
 }
 
 #[test]
-fn aligned_prior_commit_is_an_explicit_expected_head_limit() {
+fn wal_truncated_at_an_earlier_commit_opens_at_that_commit() {
     let (tmp, root, _) = killed_wal_fixture("normal");
     let wal = fs::read(root.join("archive.db-wal")).unwrap();
     let size = u32::from_be_bytes(wal[8..12].try_into().unwrap()) as usize;
@@ -995,23 +988,23 @@ fn aligned_prior_commit_is_an_explicit_expected_head_limit() {
         } else {
             Writer::open(&case).and_then(|w| w.status())
         };
-        // The externally acknowledged head was3, but this earlier prefix is
-        // internally valid. No checksum-only guard can infer the missing head.
+        // The last commit had counter 3, but this shorter WAL is valid on its
+        // own; checksums alone cannot detect the missing commit.
         assert_eq!(status.unwrap().write_counter, 2);
     }
 }
 
 #[test]
-fn duplicated_file_description_retains_actual_writer_lock_after_owner_drop() {
+fn duplicated_lock_descriptor_keeps_writer_lock_after_drop() {
     let tmp = tempfile::tempdir().unwrap();
     let writer = Writer::open(tmp.path()).unwrap();
-    // A duplicated descriptor has the same kernel custody as an inherited one.
-    // This distinguishes custody lifetime without depending on spawn timing.
+    // A duplicated descriptor holds the lock like one inherited by a child,
+    // without depending on spawn timing.
     let inherited = writer._lock.try_clone().unwrap();
     drop(writer);
     let error = Writer::open(tmp.path())
         .err()
-        .expect("duplicated custody must exclude a new writer");
+        .expect("the duplicated descriptor must exclude a new writer");
     assert!(
         matches!(error, Error::WriterHeld { ref holder, .. }
         if holder == &format!("pid={}", std::process::id())),
