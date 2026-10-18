@@ -129,7 +129,7 @@ impl parser_state::Snapshot {
     /// lookup alone does not certify a caller-supplied hash or descriptor.
     pub fn message_source_input_id(&self, build: &Build, allowance: usize) -> Result<String> {
         if self.head.token != *build.predecessor() {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         writer::check_completed(&self.db, &self.path, build)?;
         let allowance = writer::integer(u64::try_from(allowance).map_err(|_| Error::Range)?)?;
@@ -147,7 +147,7 @@ impl parser_state::Snapshot {
     /// derived from this historical view.
     pub fn has_message_source(&self, build: &Build, range: SourceRange) -> Result<bool> {
         if self.head.token != *build.predecessor() {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         writer::check(&self.db, &self.path, build)?;
         let (start, end) = checked(range, self.head.parsed_upto)?;
@@ -336,7 +336,7 @@ mod tests {
     fn stale_cursor_and_late_native_failure_roll_back_locator_and_cursor() {
         let mut f = Fixture::new();
         let a = SourceRange { start: 1, end: 9 };
-        assert!(matches!(f.add(a, 1), Err(Error::MessagePredecessorChanged)));
+        assert!(matches!(f.add(a, 1), Err(Error::StaleMessage)));
         assert_eq!(f.count(), 0);
         f.writer._index.execute_batch("CREATE TRIGGER refuse_source_cursor BEFORE INSERT ON parser_cell WHEN NEW.namespace='message.projection.v1' BEGIN SELECT RAISE(ABORT,'synthetic late cursor failure'); END;").unwrap();
         assert!(matches!(f.add(a, 0), Err(Error::Sqlite { .. })));
@@ -353,7 +353,7 @@ mod tests {
             .execute_batch("DROP TRIGGER refuse_source_cursor")
             .unwrap();
         f.add(a, 0).unwrap();
-        assert!(matches!(f.add(a, 0), Err(Error::MessagePredecessorChanged)));
+        assert!(matches!(f.add(a, 0), Err(Error::StaleMessage)));
         assert_eq!(f.count(), 1);
         assert!(matches!(
             f.writer.add_message_source(
@@ -491,12 +491,12 @@ mod tests {
         assert!(old.has_message_source(&f.build, range).unwrap());
         assert!(matches!(
             f.add(SourceRange { start: 30, end: 40 }, 1),
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         ));
         let new = f.writer.parser_snapshot(&next.token).unwrap();
         assert!(matches!(
             new.has_message_source(&f.build, range),
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         ));
         assert_eq!(f.count(), 1);
     }
@@ -518,7 +518,7 @@ mod tests {
         wrong.source.basis = [9; 32];
         assert!(matches!(
             view.message_source_input_id(&wrong, 4096),
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         ));
         // Deliberately corrupt only this disposable fixture's index identity:
         // the old view stays coherent; lookup does not claim raw-ID validation.

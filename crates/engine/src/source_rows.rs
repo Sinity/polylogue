@@ -36,7 +36,7 @@ impl Receipt {
                 }
             || matches!(self.rows.state, SourceRowState::Pending { .. })
         {
-            return Err(Error::ParserPredecessorChanged.into());
+            return Err(Error::StaleParserState.into());
         }
         Ok(())
     }
@@ -177,7 +177,7 @@ impl Audit {
             || head.acquired_upto != input.input.length
             || head.token.basis != owner::parser_basis(input)
         {
-            return Err(Error::ParserPredecessorChanged.into());
+            return Err(Error::StaleParserState.into());
         }
         if self.step <= head.token.step {
             match input.format {
@@ -319,7 +319,7 @@ impl Audit {
                 )
                 .map_err(owner::Error::Canonical)?;
                 if action.operation() != "existing" {
-                    return Err(Error::MessagePredecessorChanged.into());
+                    return Err(Error::StaleMessage.into());
                 }
                 self.usable = true;
                 self.position = Some(CanonicalPosition::ClaudeAfter(Some(cursor)));
@@ -354,7 +354,7 @@ impl Audit {
                     )
                     .map_err(owner::Error::Canonical)?;
                     if action.operation() != "existing" {
-                        return Err(Error::MessagePredecessorChanged.into());
+                        return Err(Error::StaleMessage.into());
                     }
                     self.usable = true;
                     self.position = Some(CanonicalPosition::Codex(ordinal + 1));

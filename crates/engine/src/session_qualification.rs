@@ -816,7 +816,7 @@ fn selected_current_projection(
     allowance: usize,
 ) -> Result<Option<polylogue_store::contributions::SourceProjection>, Error> {
     match catalog.dependency_selected_projection(dependency, logical, allowance) {
-        Err(Error::MessagePredecessorChanged) => Ok(None),
+        Err(Error::StaleMessage) => Ok(None),
         result => result,
     }
 }

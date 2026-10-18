@@ -148,19 +148,10 @@ fn warm_visibility_statements_observe_post_pin_revocation() {
             ));
             assert!(matches!(view.visible(), Err(Error::ExcisionCheckRequired)));
         } else {
-            assert!(matches!(
-                message.visible(),
-                Err(Error::MessagePredecessorChanged)
-            ));
+            assert!(matches!(message.visible(), Err(Error::StaleMessage)));
             if change == "generation" {
-                assert!(matches!(
-                    catalog.visible(),
-                    Err(Error::MessagePredecessorChanged)
-                ));
-                assert!(matches!(
-                    view.visible(),
-                    Err(Error::MessagePredecessorChanged)
-                ));
+                assert!(matches!(catalog.visible(), Err(Error::StaleMessage)));
+                assert!(matches!(view.visible(), Err(Error::StaleMessage)));
             }
         }
     }

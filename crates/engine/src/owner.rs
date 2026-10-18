@@ -1234,9 +1234,9 @@ impl Actor {
                     Err(e) => {
                         let changed = matches!(
                             &e,
-                            Error::Store(StoreError::ParserPredecessorChanged)
+                            Error::Store(StoreError::StaleParserState)
                                 | Error::Canonical(canonical_message::Error::Store(
-                                    StoreError::ParserPredecessorChanged
+                                    StoreError::StaleParserState
                                 ))
                         );
                         if !changed || !self.reselect_obsolete_canonical(&job.input, &job.head)? {

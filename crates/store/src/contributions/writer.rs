@@ -99,9 +99,9 @@ pub(crate) fn source_head(
     source: &parser_state::Token,
 ) -> Result<parser_state::Head> {
     let head = parser_state::head(conn, path, source.input_pk, source.chain)?
-        .ok_or(Error::MessagePredecessorChanged)?;
+        .ok_or(Error::StaleMessage)?;
     if head.token != *source || head.status == "retired" {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     let pending: bool = db(path, || {
         conn.query_row(
@@ -122,7 +122,7 @@ pub(crate) fn source_head(
         .optional()
     })?;
     if excised != Some(false) {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     Ok(head)
 }
@@ -134,17 +134,17 @@ pub(super) fn check_completed(conn: &Connection, path: &Path, build: &Build) -> 
 }
 fn check_at(conn: &Connection, path: &Path, build: &Build, mutating: bool) -> Result<()> {
     if path != build.path {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     source_head(conn, path, &build.source)?;
-    let row=db(path,||conn.query_row("SELECT b.phase,m.hidden,m.contributor_revision,m.removal_epoch FROM message_build b JOIN message m ON m.pk=b.message_pk JOIN message_body body ON body.pk=b.body_pk JOIN message_candidate c ON c.pk=body.preferred_candidate_pk WHERE body.ready=0 AND c.ready=0 AND c.eligible=0 AND b.pk=?1 AND b.body_pk=?2 AND b.message_pk=?3 AND b.session_pk=?4 AND b.basis_digest=?5 AND b.contributor_revision=?6 AND b.removal_epoch=?7",params![build.pk,build.body,build.message,build.session,build.digest.as_slice(),build.contributor_revision,build.removal_epoch],|r|Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).optional())?.ok_or(Error::MessagePredecessorChanged)?;
+    let row=db(path,||conn.query_row("SELECT b.phase,m.hidden,m.contributor_revision,m.removal_epoch FROM message_build b JOIN message m ON m.pk=b.message_pk JOIN message_body body ON body.pk=b.body_pk JOIN message_candidate c ON c.pk=body.preferred_candidate_pk WHERE body.ready=0 AND c.ready=0 AND c.eligible=0 AND b.pk=?1 AND b.body_pk=?2 AND b.message_pk=?3 AND b.session_pk=?4 AND b.basis_digest=?5 AND b.contributor_revision=?6 AND b.removal_epoch=?7",params![build.pk,build.body,build.message,build.session,build.digest.as_slice(),build.contributor_revision,build.removal_epoch],|r|Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).optional())?.ok_or(Error::StaleMessage)?;
     if row.1
         || row.2 != build.contributor_revision
         || row.3 != build.removal_epoch
         || !matches!(row.0.as_str(), "project" | "rank")
         || (mutating && row.0 != "project")
     {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     Ok(())
 }
@@ -177,9 +177,9 @@ pub(super) fn admitted_source(
             )
             .optional()
     })?;
-    let length = length.ok_or(Error::MessagePredecessorChanged)?;
+    let length = length.ok_or(Error::StaleMessage)?;
     if head.acquired_upto > length {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     Ok((head, length))
 }
@@ -235,7 +235,7 @@ fn load_preparation(
             source.evidence_revision,
         ) != build.digest
     {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     let kind = match identity.session_kind {
         SessionKind::Main => "main",
@@ -258,7 +258,7 @@ fn load_preparation(
         )
     })?;
     if !message_ok {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     let compatible: bool = db(path, || {
         conn.query_row("SELECT b.role=?2 AND b.written_by=?3 AND c.route=?4 AND c.pk=?5 FROM message_body b JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE b.pk=?1",params![build.body,match identity.role {Role::User=>"user",Role::Assistant=>"assistant",Role::System=>"system",Role::Tool=>"tool"},match identity.written_by {WrittenBy::Human=>"human",WrittenBy::Model=>"model",WrittenBy::Harness=>"harness",WrittenBy::Unknown=>"unknown"},match source.route {RouteKind::PageDom=>0,RouteKind::AccountExport=>1,RouteKind::Native=>2},build.candidate],|r|r.get(0))
@@ -382,7 +382,7 @@ impl Writer {
             },
         )?;
         if owner != session || hidden {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let existing: Option<(i64, i64, Vec<u8>, String)> = db(&path, || {
             tx.query_row(
@@ -560,7 +560,7 @@ impl Writer {
             )
         })?;
         if active != Some(proof.value().pk()) {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let sealed = values::seal_in(&tx, &path, proof, |tx, ready| {
             if purpose == ValuePurpose::Origin && ready.codec != values::Codec::Json {
@@ -580,7 +580,7 @@ impl Writer {
                     )
                 })? != 1
                 {
-                    return Err(Error::MessagePredecessorChanged);
+                    return Err(Error::StaleMessage);
                 }
                 db(&path, || {
                     tx.execute(
@@ -691,7 +691,7 @@ impl Writer {
     pub fn retire_message_preparation(&mut self, build: &Build) -> Result<()> {
         let path = self.root.join("index.db");
         if path != build.path {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let tx = db(&path, || self._index.transaction())?;
         let generation: String = db(&path, || {
@@ -700,12 +700,12 @@ impl Writer {
             })
         })?;
         if generation != build.source.index_generation {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let active: Option<(Option<i64>, Option<i64>, Option<i64>)> = db(&path, || {
             tx.query_row("SELECT w.active_value_pk,w.active_origin_value_pk,w.active_block_pk FROM message_build w JOIN message_body b ON b.pk=w.body_pk JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE w.pk=?1 AND w.body_pk=?2 AND w.basis_digest=?3 AND b.ready=0 AND c.ready=0 AND c.eligible=0",params![build.pk,build.body,build.digest.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()
         })?;
-        let (active, origin, block) = active.ok_or(Error::MessagePredecessorChanged)?;
+        let (active, origin, block) = active.ok_or(Error::StaleMessage)?;
         db(&path, || {
             tx.execute(
                 "UPDATE message_build SET phase='retiring',active_value_pk=NULL,active_origin_value_pk=NULL,active_block_pk=NULL WHERE pk=?1",

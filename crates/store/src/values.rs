@@ -138,7 +138,7 @@ impl Validation {
             || h.appended != h.length
             || h.hash.is_some()
         {
-            return Err(Error::ValuePredecessorChanged);
+            return Err(Error::StaleValue);
         }
         if self.offset == self.length {
             return Ok(self.progress());
@@ -234,7 +234,7 @@ fn generation(db: &Connection, path: &Path) -> Result<String> {
 }
 pub(crate) fn head(db: &Connection, path: &Path, id: &ValueId) -> Result<Head> {
     if path != id.index_path || generation(db, path)? != id.index_generation {
-        return Err(Error::ValuePredecessorChanged);
+        return Err(Error::StaleValue);
     }
     let row = crate::db(path, || {
         db.query_row(
@@ -252,7 +252,7 @@ pub(crate) fn head(db: &Connection, path: &Path, id: &ValueId) -> Result<Head> {
         )
         .optional()
     })?
-    .ok_or(Error::ValuePredecessorChanged)?;
+    .ok_or(Error::StaleValue)?;
     let codec = Codec::parse(&row.0)?;
     let length = u64::try_from(row.1).map_err(|_| Error::Range)?;
     let state = match row.3.as_str() {
@@ -373,7 +373,7 @@ impl Writer {
         let tx = crate::db(&path, || self._index.transaction())?;
         let h = head(&tx, &path, id)?;
         if h.state != State::Building || h.hash.is_some() || h.appended != offset {
-            return Err(Error::ValuePredecessorChanged);
+            return Err(Error::StaleValue);
         }
         if end > h.length {
             return Err(Error::Range);
@@ -451,7 +451,7 @@ where
     }
     let digest = proof.digest.ok_or(Error::ValueNotReady)?;
     if path != proof.id.index_path || generation(tx, path)? != proof.id.index_generation {
-        return Err(Error::ValuePredecessorChanged);
+        return Err(Error::StaleValue);
     }
     let row = crate::db(path, || {
         tx.query_row(
@@ -468,13 +468,13 @@ where
         )
         .optional()
     })?
-    .ok_or(Error::ValuePredecessorChanged)?;
+    .ok_or(Error::StaleValue)?;
     if row.0 != proof.codec.as_str()
         || row.1 != integer(proof.length)?
         || row.2 != "building"
         || row.3.is_some()
     {
-        return Err(Error::ValuePredecessorChanged);
+        return Err(Error::StaleValue);
     }
     let existing = crate::db(path, || {
         tx.query_row(
@@ -501,7 +501,7 @@ where
             tx.execute("UPDATE body_value SET state='ready',hash=?2 WHERE pk=?1 AND state='building' AND hash IS NULL",params![proof.id.pk,digest.as_slice()])
         })?;
         if changed != 1 {
-            return Err(Error::ValuePredecessorChanged);
+            return Err(Error::StaleValue);
         }
         (proof.id.clone(), None)
     };
@@ -518,7 +518,7 @@ where
             tx.execute("UPDATE body_value SET state='retiring' WHERE pk=?1 AND state='building' AND incoming=0",[proof.id.pk])
         })?;
         if changed != 1 {
-            return Err(Error::ValuePredecessorChanged);
+            return Err(Error::StaleValue);
         }
     }
     Ok(Seal {
@@ -530,7 +530,7 @@ where
 fn validation(db: &Connection, path: &Path, id: &ValueId) -> Result<Validation> {
     let h = head(db, path, id)?;
     if h.state != State::Building || h.hash.is_some() {
-        return Err(Error::ValuePredecessorChanged);
+        return Err(Error::StaleValue);
     }
     if h.appended != h.length {
         return Err(Error::ValueNotReady);
@@ -744,11 +744,11 @@ mod tests {
             .unwrap();
         assert!(matches!(
             writer.append_value_chunk(&h.id, 0, b"x", 1),
-            Err(Error::ValuePredecessorChanged)
+            Err(Error::StaleValue)
         ));
         assert!(matches!(
             writer.append_value_chunk(&h.id, (MAX_CHUNK + 1) as u64, b"x", 1),
-            Err(Error::ValuePredecessorChanged)
+            Err(Error::StaleValue)
         ));
         writer
             .append_value_chunk(
@@ -859,10 +859,7 @@ mod tests {
         .unwrap();
         let replacement = writer.begin_value(Codec::Bytes, 0).unwrap();
         assert_ne!(empty.id.pk, replacement.id.pk);
-        assert!(matches!(
-            writer.seal_value(&proof),
-            Err(Error::ValuePredecessorChanged)
-        ));
+        assert!(matches!(writer.seal_value(&proof), Err(Error::StaleValue)));
         let proof = writer.validate_value(&replacement.id).unwrap();
         crate::db(&path, || {
             writer._index.execute(
@@ -871,10 +868,7 @@ mod tests {
             )
         })
         .unwrap();
-        assert!(matches!(
-            writer.seal_value(&proof),
-            Err(Error::ValuePredecessorChanged)
-        ));
+        assert!(matches!(writer.seal_value(&proof), Err(Error::StaleValue)));
         let (_dir2, _root2, mut writer2) = world();
         let h = append(&mut writer2, Codec::Bytes, b"x", 1);
         let mut proof = writer2.validate_value(&h.id).unwrap();
@@ -917,13 +911,10 @@ mod archive_identity_tests {
         // Simulates a copied index incarnation without filesystem mutation.
         let reader = second.read_handle().unwrap();
         let mut proof = first.validate_value(&first_value.id).unwrap();
-        assert!(matches!(
-            proof.advance(&reader, 1),
-            Err(Error::ValuePredecessorChanged)
-        ));
+        assert!(matches!(proof.advance(&reader, 1), Err(Error::StaleValue)));
         assert!(matches!(
             reader.value_head(&first_value.id),
-            Err(Error::ValuePredecessorChanged)
+            Err(Error::StaleValue)
         ));
         assert_eq!(proof.progress().hashed_upto, 0);
     }
@@ -1007,7 +998,7 @@ mod transaction_helper_tests {
             let tx = crate::db(&path, || writer._index.transaction()).unwrap();
             assert!(matches!(
                 seal_in(&tx, &path, &proof, |_, _| Ok(())),
-                Err(Error::ValuePredecessorChanged)
+                Err(Error::StaleValue)
             ));
             crate::db(&path, || tx.rollback()).unwrap();
         }
@@ -1019,7 +1010,7 @@ mod transaction_helper_tests {
                 )
             })?;
             if changed != 1 {
-                return Err(Error::ValuePredecessorChanged);
+                return Err(Error::StaleValue);
             }
             let changed = crate::db(&path, || {
                 tx.execute(
@@ -1028,7 +1019,7 @@ mod transaction_helper_tests {
                 )
             })?;
             if changed != 1 {
-                return Err(Error::ValuePredecessorChanged);
+                return Err(Error::StaleValue);
             }
             crate::db(&path, || {
                 tx.execute(

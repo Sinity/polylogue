@@ -339,7 +339,7 @@ fn stale_install_drops_checkpoint_and_replays_from_committed_predecessor() {
                 stale.progress,
                 stale.changes
             ),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
         drop(guard);
         world.restart();
@@ -362,7 +362,7 @@ fn wrong_publication_receipt_or_window_never_releases_uncommitted_framing() {
     let (_, guard) = pending.into_install();
     assert!(matches!(
         guard.published(&world.head),
-        Err(Error::Store(StoreError::ParserPredecessorChanged))
+        Err(Error::Store(StoreError::StaleParserState))
     ));
     let snapshot = world.writer().parser_snapshot(&world.head.token).unwrap();
     assert!(matches!(

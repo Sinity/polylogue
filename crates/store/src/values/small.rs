@@ -67,7 +67,7 @@ impl Prepared {
                     )
                 })? != 1
                 {
-                    return Err(Error::ValuePredecessorChanged);
+                    return Err(Error::StaleValue);
                 }
             }
             Ok(())

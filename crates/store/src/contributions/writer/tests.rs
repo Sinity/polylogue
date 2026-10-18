@@ -263,7 +263,7 @@ fn text_block_checkpoint_rolls_back_and_resumes_without_publication() {
     assert_eq!(f.scalar("SELECT ready FROM message_body"), 0);
     assert!(matches!(
         f.writer.advance_message_projection(&build, &step, 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(f.writer.message_projection(&build, 4096).unwrap(), state);
     f.writer.retire_message_preparation(&build).unwrap();
@@ -463,13 +463,10 @@ fn selected_read_pins_sparse_ordinals_payload_and_archive_authority() {
             [],
         )
         .unwrap();
-    assert!(matches!(
-        first.text_range(0, 100),
-        Err(Error::MessagePredecessorChanged)
-    ));
+    assert!(matches!(first.text_range(0, 100), Err(Error::StaleMessage)));
     assert!(matches!(
         view.block(BlockSlot::Item(0)),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     f.writer
         ._index
@@ -477,13 +474,13 @@ fn selected_read_pins_sparse_ordinals_payload_and_archive_authority() {
         .unwrap();
     assert!(matches!(
         second.text_range(0, 100),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     drop(reader);
     drop(f.writer);
     assert!(matches!(
         second.text_range(0, 100),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert!(matches!(
         crate::ReadHandle::open(&f.root),
@@ -539,7 +536,7 @@ fn completed_projection_is_atomic_unready_restartable_and_abortable() {
     assert_eq!(f.scalar("SELECT selected_body_pk IS NULL FROM message"), 1);
     assert!(matches!(
         f.writer.advance_message_projection(&build, &step, 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     let mut f = f.reopen();
     assert_eq!(
@@ -786,11 +783,11 @@ fn ready_source_retirement_preserves_shared_canonical_and_frontier_leases() {
     let mut other = Fixture::new();
     assert!(matches!(
         other.writer.retire_message_body(&canonical),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert!(matches!(
         other.writer.collect_message_candidate(&candidate),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     let generation: String = f
         .writer
@@ -808,11 +805,11 @@ fn ready_source_retirement_preserves_shared_canonical_and_frontier_leases() {
         .unwrap();
     assert!(matches!(
         f.writer.retire_message_body(&source),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert!(matches!(
         f.writer.collect_message_candidate(&candidate),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     f.writer
         ._index
@@ -937,7 +934,7 @@ fn owned_deduplication_transfers_only_its_own_lease_and_abort_releases_it() {
     );
     assert!(matches!(
         f.writer.begin_message_value(&build, values::Codec::Utf8, 1),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     // Retrying invalidation releases no second lease.
     f.writer.retire_message_preparation(&build).unwrap();
@@ -960,9 +957,9 @@ fn changed_source_removal_epoch_and_index_identity_reject_mutation_but_allow_cle
         .unwrap();
     assert!(matches!(
         f.writer.begin_message_value(&build, values::Codec::Utf8, 0),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
-    assert!(matches!(f.prepare(), Err(Error::MessagePredecessorChanged)));
+    assert!(matches!(f.prepare(), Err(Error::StaleMessage)));
     f.writer
         .begin_parser(&parser_state::Basis {
             input_pk: f.head.token.input_pk,
@@ -983,7 +980,7 @@ fn changed_source_removal_epoch_and_index_identity_reject_mutation_but_allow_cle
     let mut other = Fixture::new();
     assert!(matches!(
         other.writer.retire_message_preparation(&build),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
 }
 #[test]
@@ -1129,7 +1126,7 @@ fn same_prefix_growth_preserves_preparation_but_changed_source_cannot_seal_it() 
         .unwrap();
     assert!(matches!(
         f.writer.seal_message_value(&build, &proof),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(
         f.writer.value_head(&value.id).unwrap().state,
@@ -1315,10 +1312,7 @@ fn retired_value_collection_deletes_one_chunk_and_keeps_unclaimed_generic_values
         f.writer.value_head(&generic.id).unwrap().state,
         values::State::Building
     );
-    assert!(matches!(
-        f.writer.value_head(&h.id),
-        Err(Error::ValuePredecessorChanged)
-    ));
+    assert!(matches!(f.writer.value_head(&h.id), Err(Error::StaleValue)));
 }
 #[test]
 fn staged_thinking_restart_fields_install_and_source_counts() {
@@ -1368,7 +1362,7 @@ fn staged_thinking_restart_fields_install_and_source_counts() {
             },
             4096
         ),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 0);
     assert!(f.prepare().unwrap().active_value.is_some());
@@ -1774,7 +1768,7 @@ fn dirty_field_set_remove_reuses_roots_and_preserves_pinned_old_value() {
             },
             4096
         ),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 1);
     f.writer
@@ -1874,7 +1868,7 @@ fn dirty_field_set_remove_reuses_roots_and_preserves_pinned_old_value() {
             },
             4096
         ),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(
         f.writer.message_projection(&build, 4096).unwrap().sequence,
@@ -2156,7 +2150,7 @@ fn actual_source_certificate_reopens_inherits_and_replaces_only_current_cut_atom
     assert!(matches!(
         f.writer
             .publish_source_projection(&completed, Some(&old), b"replay", 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     let reader = f.writer.read_handle().unwrap();
     assert_eq!(
@@ -2183,7 +2177,7 @@ fn actual_source_certificate_reopens_inherits_and_replaces_only_current_cut_atom
     assert!(matches!(
         f.writer
             .publish_source_projection(&completed, Some(&old), b"stale previous", 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(
         f.writer
@@ -2212,19 +2206,19 @@ fn current_source_reference_corruption_admission_and_wrong_handles_are_explicit(
     wrong.basis[0] ^= 1;
     assert!(matches!(
         f.writer.current_source_projection(&wrong, &[3; 32], 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     wrong = f.head.token.clone();
     wrong.generation += 1;
     assert!(matches!(
         f.writer.current_source_projection(&wrong, &[3; 32], 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     wrong = f.head.token.clone();
     wrong.index_generation.push('x');
     assert!(matches!(
         f.writer.current_source_projection(&wrong, &[3; 32], 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     advance_source_fixture(&mut f);
     f.message = MessageId::new(f.session.clone(), "other message").unwrap();
@@ -2233,7 +2227,7 @@ fn current_source_reference_corruption_admission_and_wrong_handles_are_explicit(
     assert!(matches!(
         f.writer
             .publish_source_projection(&completed, Some(&prior), b"wrong identity", 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(
         f.scalar(&format!(
@@ -2709,7 +2703,7 @@ fn normalized_and_origin_producers_resume_and_transfer_with_one_cursor_commit() 
             },
             4096
         ),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 0);
     f.writer
@@ -3198,7 +3192,7 @@ fn reparse_refuses_missing_same_generation_receipt_and_inconsistent_certificates
             matches!(
                 f.writer
                     .publish_source_projection(&done, None, b"new", 4096),
-                Err(Error::MessagePredecessorChanged)
+                Err(Error::StaleMessage)
             ),
             "{damage}"
         );
@@ -3270,7 +3264,7 @@ fn reparse_withdrawal_never_crosses_logical_candidate_or_archive_revision() {
         if other_revision {
             // This input has only its retained immutable revision1. An
             // unproved revision must refuse before allocating a candidate.
-            assert!(matches!(preparation, Err(Error::MessagePredecessorChanged)));
+            assert!(matches!(preparation, Err(Error::StaleMessage)));
             assert_eq!(
                 f.scalar("SELECT count(*) FROM message_candidate WHERE eligible=1"),
                 1
@@ -3683,7 +3677,7 @@ fn compatibility_selection_fences_membership_aba_removal_admission_and_cancellat
         .unwrap();
     assert!(matches!(
         f.writer.install_compatible_source_selection(proof, 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     let proof = compatible_ready(&mut f, &source).unwrap().unwrap();
     f.writer

@@ -87,14 +87,14 @@ fn typed_runs_late_member_failure_rolls_back_values_descriptors_fields_ranges_an
             entries[2].expected_sequence = 1;
             assert!(matches!(
                 f.writer.add_message_source_run(&build, &entries, 65536),
-                Err(Error::MessagePredecessorChanged)
+                Err(Error::StaleMessage)
             ));
         } else {
             let mut entries = fields();
             entries[2].expected_sequence = 1;
             assert!(matches!(
                 f.writer.write_small_field_run(&build, &entries, 65536),
-                Err(Error::MessagePredecessorChanged)
+                Err(Error::StaleMessage)
             ));
         }
         let f = f.reopen();
@@ -265,7 +265,7 @@ fn every_member_rechecks_live_authority_and_rolls_back_triggered_removal() {
     f.writer._index.execute_batch("CREATE TRIGGER synthetic_hide AFTER INSERT ON message_field_fact BEGIN UPDATE message SET hidden=1; END;").unwrap();
     assert!(matches!(
         f.writer.write_small_field_run(&build, &fields(), 65536),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(f.scalar("SELECT hidden FROM message"), 0);
     assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 0);

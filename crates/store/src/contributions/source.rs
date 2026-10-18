@@ -185,7 +185,7 @@ pub(super) fn read_current(
         || predecessor.basis != token.basis
         || predecessor.step != step
     {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     let message_id = MessageId::from_stored(
         id,
@@ -226,7 +226,7 @@ fn certified_predecessor(
     preparation_basis: &[u8],
 ) -> Result<Token> {
     if generation <= 0 || step < 0 {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     let mut predecessor = scope.clone();
     predecessor.generation = generation;
@@ -235,7 +235,7 @@ fn certified_predecessor(
         .try_into()
         .map_err(|_| invalid("source certificate basis length"))?;
     if preparation_basis != writer::basis(&predecessor, revision, logical, evidence).as_slice() {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     Ok(predecessor)
 }
@@ -273,7 +273,7 @@ pub(super) fn read_selected(
         connection.query_row("SELECT EXISTS(SELECT 1 FROM message m JOIN message_body selected ON selected.pk=m.selected_body_pk JOIN message_candidate c ON c.pk=selected.preferred_candidate_pk JOIN message_body carrier ON carrier.pk=c.body_pk WHERE m.pk=?1 AND m.session_pk=?2 AND m.hidden=0 AND selected.ready=1 AND carrier.ready=1 AND c.eligible=1 AND selected.removal_epoch=m.removal_epoch AND carrier.removal_epoch=m.removal_epoch AND selected.block_root_pk IS carrier.block_root_pk AND selected.field_root_pk IS carrier.field_root_pk AND selected.basis_digest=carrier.basis_digest AND selected.version_hash=carrier.version_hash AND (carrier.pk=?3 OR EXISTS(SELECT 1 FROM message_body_compatibility own JOIN message_body_compatibility chosen ON chosen.digest=own.digest WHERE own.body_pk=?3 AND chosen.body_pk=carrier.pk)))",params![source.body.message,source.body.session,source.body.pk],|r|r.get(0))
     })?;
     if !selected {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     Ok(Some(source))
 }
@@ -332,7 +332,7 @@ impl Writer {
                 || previous.predecessor.basis != build.source.basis
                 || previous.predecessor.step > build.source.step
             {
-                return Err(Error::MessagePredecessorChanged);
+                return Err(Error::StaleMessage);
             }
         }
         // A verified append can move the same logical candidate to its newer
@@ -350,7 +350,7 @@ impl Writer {
             })?;
             let source =
                 crate::observed::decode(&self.archive, &self.root.join("archive.db"), &id)?
-                    .ok_or(Error::MessagePredecessorChanged)?;
+                    .ok_or(Error::StaleMessage)?;
             source.observed() && source.input.chain == build.source.chain
         };
         let observed_append = observed_source && previous.is_some();
@@ -404,7 +404,7 @@ impl Writer {
             || preparation_basis != build.digest
             || input != build.source.input_pk
         {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         type Existing = (i64, u64, u64, i64, i64, Vec<u8>, Vec<u8>);
         let existing: Option<Existing> = db(&path, || {
@@ -427,12 +427,12 @@ impl Writer {
                         if previous.candidate == candidate
                             && previous.predecessor == predecessor => {}
                     None if predecessor.generation < build.source.generation => {}
-                    _ => return Err(Error::MessagePredecessorChanged),
+                    _ => return Err(Error::StaleMessage),
                 }
                 Some((candidate, predecessor, preparation))
             }
             None if previous.is_none() => None,
-            None => return Err(Error::MessagePredecessorChanged),
+            None => return Err(Error::StaleMessage),
         };
         let changed = if let Some(previous) = previous {
             db(&path, || {
@@ -444,14 +444,14 @@ impl Writer {
             })?
         };
         if changed != 1 {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         if let Some((candidate, predecessor, preparation)) = withdrawal {
             if db(&path, || {
                 tx.execute("UPDATE message_candidate SET eligible=0 WHERE pk=?1 AND eligible=1 AND source_state_generation=?2 AND source_state_step=?3 AND source_basis_digest=?4 AND basis_digest=?5",params![candidate,predecessor.generation,predecessor.step,predecessor.basis.as_slice(),preparation])
             })? != 1
             {
-                return Err(Error::MessagePredecessorChanged);
+                return Err(Error::StaleMessage);
             }
         }
         if db(&path, || {
@@ -461,20 +461,20 @@ impl Writer {
             )
         })? != 1
         {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         if db(&path, || {
             tx.execute("UPDATE message_candidate SET body_ready=1,ready=1,eligible=1 WHERE pk=?1 AND ready=0 AND eligible=0",[build.candidate])
         })? != 1
         {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         blocks::discard_cursor(&tx, &path, build)?;
         if db(&path, || {
             tx.execute("DELETE FROM message_build WHERE pk=?1", [build.pk])
         })? != 1
         {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let output = read_current(&tx, &path, &build.source, &logical, allowance)?
             .ok_or_else(|| invalid("published source projection missing"))?;

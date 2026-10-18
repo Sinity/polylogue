@@ -112,12 +112,12 @@ pub fn current_basis(
             let basis = selected_basis(&m, slot.as_ref(), reference, until, cancel)?;
             let current = match reader.message_reference(id.as_ref(), 65536)? {
                 MessageLookup::Ready(m) => m,
-                _ => return Err(Error::MessagePredecessorChanged),
+                _ => return Err(Error::StaleMessage),
             };
             if current.read_certificate_with_cancel(&mut || Instant::now() >= until || cancel())?
                 != m.read_certificate_with_cancel(&mut || Instant::now() >= until || cancel())?
             {
-                return Err(Error::MessagePredecessorChanged);
+                return Err(Error::StaleMessage);
             }
             Ok(basis)
         }

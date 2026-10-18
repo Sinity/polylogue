@@ -88,18 +88,18 @@ pub enum Error {
         "normalized value chunk of {required} bytes must be split into chunks of at most {maximum} bytes"
     )]
     ValueChunkSplitRequired { required: usize, maximum: usize },
-    #[error("message preparation predecessor changed")]
-    MessagePredecessorChanged,
+    #[error("message preparation changed since it was read")]
+    StaleMessage,
     #[error("message has an unfinished preparation; resume or retire it first")]
     MessagePreparationPending,
-    #[error("normalized value predecessor changed")]
-    ValuePredecessorChanged,
+    #[error("normalized value changed since it was read")]
+    StaleValue,
     #[error("normalized value is not integrity sealed")]
     ValueNotReady,
     #[error("retaining another input requires the excision-aware collector")]
     ExcisionCheckRequired,
-    #[error("parser predecessor changed; discard the attempted step")]
-    ParserPredecessorChanged,
+    #[error("parser state changed since it was read; discard the attempted step")]
+    StaleParserState,
     #[error("snapshot extent fragmentation requires a fresh base")]
     SnapshotFragmented,
     #[error("provider state has unfinished prepared work; resume it before admitting a new parse")]

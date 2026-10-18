@@ -113,7 +113,7 @@ fn load(db: &Connection, path: &Path, token: &Token) -> Result<Option<Work>> {
             counts,
         )| {
             if generation != token.generation || step != token.step || basis != token.basis {
-                return Err(StoreError::ParserPredecessorChanged);
+                return Err(StoreError::StaleParserState);
             }
             let discarding = phase == "discarding";
             let phase = match phase.as_str() {
@@ -158,7 +158,7 @@ fn load(db: &Connection, path: &Path, token: &Token) -> Result<Option<Work>> {
 fn expected(db: &Connection, path: &Path, token: &WorkToken) -> Result<Work> {
     load(db, path, &token.predecessor)?
         .filter(|w| w.token == *token)
-        .ok_or(StoreError::ParserPredecessorChanged)
+        .ok_or(StoreError::StaleParserState)
 }
 fn encode(change: &CellChange) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(
@@ -223,7 +223,7 @@ pub(crate) fn admit(
     validate_expected_head(head, &now)?;
     ensure_idle(&tx, path, &head.token)?;
     if now.status == "retired" {
-        return Err(StoreError::ParserPredecessorChanged);
+        return Err(StoreError::StaleParserState);
     }
     validate_progress(head, &progress)?;
     let id = allocate_generation(&tx, path)?;
@@ -245,7 +245,7 @@ pub(crate) fn admit(
         VALUES(?1,?2,?3,?4,?5,?6,?7,'staging',?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         params![head.token.input_pk,head.token.chain,id,head.token.generation,head.token.step,head.token.basis.as_slice(),acquired,
         values[0],values[1],progress.phase.name(),progress.finalization_pending,values[2],values[3],values[4],values[5],values[6]]))?;
-    let work = load(&tx, path, &head.token)?.ok_or(StoreError::ParserPredecessorChanged)?;
+    let work = load(&tx, path, &head.token)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(work)
 }
@@ -292,8 +292,7 @@ pub(crate) fn stage(
             params![token.predecessor.input_pk, token.predecessor.chain, end]
         )
     )?;
-    let result =
-        load(&tx, path, &token.predecessor)?.ok_or(StoreError::ParserPredecessorChanged)?;
+    let result = load(&tx, path, &token.predecessor)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
@@ -312,8 +311,7 @@ pub(crate) fn seal(db: &mut Connection, path: &Path, token: &WorkToken) -> Resul
             params![token.predecessor.input_pk, token.predecessor.chain]
         )
     )?;
-    let result =
-        load(&tx, path, &token.predecessor)?.ok_or(StoreError::ParserPredecessorChanged)?;
+    let result = load(&tx, path, &token.predecessor)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
@@ -375,8 +373,7 @@ pub(crate) fn apply(
             params![token.predecessor.input_pk, token.predecessor.chain, cursor]
         )
     )?;
-    let result =
-        load(&tx, path, &token.predecessor)?.ok_or(StoreError::ParserPredecessorChanged)?;
+    let result = load(&tx, path, &token.predecessor)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
@@ -621,7 +618,7 @@ mod tests {
         assert_eq!(work.token.applied, 1);
         assert!(matches!(
             writer.apply_parser(&stale, budget()),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
         assert_eq!(old.cell("provider", b"a", 100).unwrap(), None);
         assert_eq!(
@@ -652,7 +649,7 @@ mod tests {
         assert_eq!(published.counts.framed, 1);
         assert!(matches!(
             writer.publish_parser(&work.token),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
         let new = writer.parser_snapshot(&published.token).unwrap();
         assert_eq!(new.cell("provider", b"a", 100).unwrap().unwrap(), b"one");
@@ -721,7 +718,7 @@ mod tests {
         let next = writer.begin_parser(&new_basis).unwrap();
         assert!(matches!(
             writer.publish_parser(&work.token),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
         assert_eq!(
             writer
@@ -744,7 +741,7 @@ mod tests {
         assert_ne!(new_work.token.work_id, work.token.work_id);
         assert!(matches!(
             writer.seal_parser(&work.token),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
     }
     #[test]
@@ -861,7 +858,7 @@ mod tests {
         assert_ne!(replacement.token.work_id, work.token.work_id);
         assert!(matches!(
             writer.seal_parser(&work.token),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
     }
 

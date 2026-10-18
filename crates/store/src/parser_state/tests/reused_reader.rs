@@ -44,7 +44,7 @@ fn reuse_releases_the_old_view_and_checks_a_fresh_predecessor() {
     let reader = snapshot.into_reader().unwrap();
     assert!(matches!(
         reader.snapshot(&first.token),
-        Err(StoreError::ParserPredecessorChanged)
+        Err(StoreError::StaleParserState)
     ));
 }
 
