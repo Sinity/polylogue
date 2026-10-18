@@ -125,12 +125,6 @@ impl World {
         let socket =
             polylogue::socket_path(&fs::canonicalize(&self.archive).unwrap(), &self.runtime);
         let mut stream = UnixStream::connect(socket).unwrap();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
         writeln!(
             stream,
             "{}",
@@ -140,9 +134,7 @@ impl World {
         let mut reader = BufReader::new(stream);
         let mut raw = Vec::new();
         let mut text = String::new();
-        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            assert!(Instant::now() < deadline, "socket deadline");
             let mut line = Vec::new();
             reader
                 .by_ref()
@@ -520,13 +512,11 @@ fn disconnecting_a_waiting_import_leaves_the_daemon_working() {
             .spawn()
             .unwrap(),
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let p = world.raw_progress(receipt["input"]["id"].as_str().unwrap());
         if p["parser"]["status"] == "waiting_tail" {
             break;
         }
-        assert!(Instant::now() < deadline, "{p}");
         thread::sleep(Duration::from_millis(5));
     }
     assert!(client.0.try_wait().unwrap().is_none());

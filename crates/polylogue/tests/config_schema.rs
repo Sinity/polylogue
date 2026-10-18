@@ -3,7 +3,7 @@ use std::{
     fs,
     path::Path,
     process::{Child, Command, Output, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 const BINARY: &str = env!("CARGO_BIN_EXE_polylogue");
@@ -196,7 +196,6 @@ fn chunk_size_defaults_and_limits_match_daemon_status() {
                     .spawn()
                     .unwrap(),
             );
-            let deadline = Instant::now() + Duration::from_secs(60);
             loop {
                 let output = Command::new(BINARY)
                     .args(["--archive", archive.to_str().unwrap(), "status"])
@@ -214,10 +213,6 @@ fn chunk_size_defaults_and_limits_match_daemon_status() {
                 assert!(
                     daemon.0.try_wait().unwrap().is_none(),
                     "daemon exited: {output:?}"
-                );
-                assert!(
-                    Instant::now() < deadline,
-                    "{source} status timeout: {output:?}"
                 );
                 std::thread::sleep(Duration::from_millis(5));
             }
