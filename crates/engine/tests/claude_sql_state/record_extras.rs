@@ -1,4 +1,4 @@
-//! Map admission uses the existing encoder and never advances a failed barrier.
+//! Map size limits use the normal encoder; a failed write advances nothing.
 use super::*;
 #[test]
 fn selected_extra_map_encoding_refuses_small_allowance_and_restarts_after_atomic_commit() {

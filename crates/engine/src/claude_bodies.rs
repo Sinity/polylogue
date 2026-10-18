@@ -1,5 +1,5 @@
-//! The configured main may acquire explicitly referenced tool-result files in
-//! its own provider directory. No directory discovery or attachment traversal.
+//! Collects tool-result files that a configured Claude main names, from its
+//! own provider directory. No directory scan.
 use polylogue_store::{Error, ImportObservation, StoredSource, Writer};
 use std::{
     collections::BTreeMap,
@@ -93,7 +93,7 @@ pub fn acquire(
 mod tests {
     use super::*;
     #[test]
-    fn cancelled_companion_scan_refuses_even_an_empty_retained_main() {
+    fn cancelled_companion_scan_fails_even_for_an_empty_main() {
         let root = tempfile::tempdir().unwrap();
         let main = root.path().join("session.jsonl");
         std::fs::write(&main, b"").unwrap();

@@ -18,8 +18,7 @@ fn configured_claude_separate_agent_has_provider_owned_membership() {
     let id = SessionId::new(&Origin::new("claude-code").unwrap(), native).unwrap();
     let view = world.reader.selected_session(&id, 65536).unwrap().unwrap();
     let qualification =
-        polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 8000)
-            .unwrap();
+        polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 8000).unwrap();
     assert!(qualification.known_rows_readable(), "{qualification:?}");
     assert!(
         !qualification.complete(),
@@ -27,7 +26,7 @@ fn configured_claude_separate_agent_has_provider_owned_membership() {
     );
     assert_eq!(qualification.expected.len(), 1);
     assert_eq!(qualification.inputs.len(), 1);
-    assert_eq!(qualification.basis[0].input, input.id);
+    assert_eq!(qualification.contributors[0].input, input.id);
     let mut bytes = vec![];
     write(&view, &mut bytes, Instant::now() + WAIT).unwrap();
     let document: Value = serde_json::from_slice(&bytes).unwrap();
@@ -70,11 +69,10 @@ fn configured_claude_exact_read_does_not_charge_streamed_foreign_population_as_l
         .unwrap()
         .unwrap();
     let qualification =
-        polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 8000)
-            .unwrap();
+        polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 8000).unwrap();
     assert!(qualification.known_rows_readable(), "{qualification:?}");
-    assert_eq!(qualification.basis.len(), 1);
-    assert_eq!(qualification.basis[0].input, own.id);
+    assert_eq!(qualification.contributors.len(), 1);
+    assert_eq!(qualification.contributors[0].input, own.id);
 }
 
 #[test]
@@ -104,8 +102,7 @@ fn configured_claude_foreign_partial_main_does_not_make_requested_membership_pen
         .unwrap()
         .unwrap();
     let qualification =
-        polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 8000)
-            .unwrap();
+        polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 8000).unwrap();
     assert!(qualification.known_rows_readable(), "{qualification:?}");
     assert!(!qualification.complete());
     let result = qualification.result(&view.catalog());
@@ -157,12 +154,7 @@ fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() 
         vec!["claude-subagent".into(), "a".into(), SID.into()],
     );
     world.wait_rows(&agent, true);
-    fn qualify(
-        world: &World,
-    ) -> (
-        polylogue_engine::session_qualification::Qualification,
-        Value,
-    ) {
+    fn qualify(world: &World) -> (polylogue_engine::session_status::SessionStatus, Value) {
         let view = world
             .reader
             .selected_session(&world.session(), 65536)
@@ -173,7 +165,7 @@ fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() 
         else {
             panic!("expected selected main message")
         };
-        let q = polylogue_engine::session_qualification::qualify_member_with_cancel(
+        let q = polylogue_engine::session_status::check_member_with_cancel(
             &view,
             &message,
             Instant::now() + WAIT,
@@ -185,7 +177,7 @@ fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() 
         (q, result)
     }
     let (q, result) = qualify(&world);
-    assert_eq!(result["settlement"]["target_basis"]["inputs_total"], 2);
+    assert_eq!(result["settlement"]["settled_through"]["inputs_total"], 2);
     assert!(
         !q.complete(),
         "incoming relationship and partial suffix remain qualified"
@@ -198,8 +190,8 @@ fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() 
     let second = world.import(&second, "second-main");
     world.wait_rows(&second, false);
     let (mut q, result) = qualify(&world);
-    assert_eq!(result["settlement"]["target_basis"]["inputs_total"], 3);
-    q.basis.truncate(1);
+    assert_eq!(result["settlement"]["settled_through"]["inputs_total"], 3);
+    q.contributors.truncate(1);
     assert!(
         !q.member_rows_readable(),
         "a display sample must not grant membership permission: {q:?}"

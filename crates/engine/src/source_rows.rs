@@ -1,5 +1,5 @@
-//! Read-side audit of existing provider receipts and selected source certificates.
-//! Restart replays this scalar audit; no second work queue or archive ledger.
+//! Checks that an input's parsed rows are complete: provider receipts and
+//! selected source certificates. A restart reruns the check from the start.
 use super::owner::Result;
 use crate::{
     canonical_message as m,
@@ -78,14 +78,14 @@ impl Receipt {
             || head.acquired_upto != basis.length
         {
             return Err(Error::Invariant(
-                "source row receipt disagrees with its retained completion authority".into(),
+                "source row receipt disagrees with the stored completion state".into(),
             )
             .into());
         }
         Ok(())
     }
 }
-pub fn basis(input: &StoredSource) -> SourceRowBasis {
+pub fn computed_from(input: &StoredSource) -> SourceRowBasis {
     SourceRowBasis {
         input: input.input.id.clone(),
         original_hash: input.original_hash(),
@@ -93,7 +93,7 @@ pub fn basis(input: &StoredSource) -> SourceRowBasis {
         revision: input.revision,
         length: input.input.length,
         parser_version: owner::parser_version(input.format),
-        interpretation: BlobHash::from_bytes(owner::parser_basis(input)),
+        interpretation: BlobHash::from_bytes(owner::parser_identity(input)),
     }
 }
 pub fn pending(input: &StoredSource, obligation: &str) -> SourceRows {
@@ -103,7 +103,7 @@ pub fn pending(input: &StoredSource, obligation: &str) -> SourceRows {
         } else {
             SourceRowScope::ImportedSourceRows
         },
-        basis: basis(input),
+        basis: computed_from(input),
         state: SourceRowState::Pending {
             obligations: vec![obligation.into()],
         },
@@ -118,7 +118,7 @@ pub fn read(snapshot: &Snapshot, input: &StoredSource) -> Result<Option<Receipt>
     let Some(value) = value else {
         if snapshot.head.status == "done" {
             return Err(
-                Error::Invariant("done source lost its row settlement authority".into()).into(),
+                Error::Invariant("done source lost its source-row receipt".into()).into(),
             );
         }
         return Ok(None);
@@ -132,7 +132,7 @@ pub(crate) fn decode(
 ) -> Result<Receipt> {
     let receipt: Receipt = serde_json::from_slice(value)
         .map_err(|_| Error::Invariant("invalid source row settlement receipt".into()))?;
-    receipt.validate_published(head, &basis(input))?;
+    receipt.validate_published(head, &computed_from(input))?;
     Ok(receipt)
 }
 
@@ -175,7 +175,7 @@ impl Audit {
             || !head.finalization_pending
             || head.parsed_upto != input.input.length
             || head.acquired_upto != input.input.length
-            || head.token.basis != owner::parser_basis(input)
+            || head.token.basis != owner::parser_identity(input)
         {
             return Err(Error::StaleParserState.into());
         }
@@ -183,7 +183,7 @@ impl Audit {
             match input.format {
                 InputFormat::CodexPromptHistory => {
                     return Err(Error::Invariant(
-                        "prompt references cannot certify conversation row settlement".into(),
+                        "prompt references cannot complete conversation source rows".into(),
                     )
                     .into());
                 }
@@ -219,8 +219,8 @@ impl Audit {
                         .undecodable
                         .checked_add(effects.undecodable.len() as u64)
                         .ok_or(Error::Range)?;
-                    // Historical scheduling cuts must name an extant effective
-                    // candidate, not resurrect their obsolete intermediate body.
+                    // Old scheduling cuts must name a current candidate, not an
+                    // obsolete intermediate body.
                     for pending in &effects.pending_messages {
                         if view.pending(&pending.message)?.is_none() {
                             return Err(Error::Invariant(
@@ -275,8 +275,8 @@ impl Audit {
             }
             return Ok(Turn::Progress(self));
         }
-        // A ready Session-owned operation is usable without any Message. This
-        // reads the actual publication in the same pinned source snapshot.
+        // A ready Session operation counts without any Message; read its
+        // publication from the same snapshot.
         self.usable |= snapshot.source_has_tool_items()?;
         let position = self
             .position
@@ -381,11 +381,11 @@ impl Audit {
         }
         if head.counts.unrecognized > 0 {
             notes.push(
-                "retained source has unrecognized records with unresolved required effects".into(),
+                "source has unrecognized records with unresolved required effects".into(),
             );
         }
         if head.counts.undecodable > 0 {
-            notes.push("retained source has undecodable complete records".into());
+            notes.push("source has undecodable complete records".into());
         }
         let state = if notes.is_empty() {
             SourceRowState::Settled
@@ -412,7 +412,7 @@ impl Audit {
                 } else {
                     SourceRowScope::ImportedSourceRows
                 },
-                basis: basis(input),
+                basis: computed_from(input),
                 state,
             },
         }))
@@ -466,7 +466,7 @@ mod tests {
         )
     }
     #[test]
-    fn receipt_binds_every_predecessor_coordinate_and_source_basis() {
+    fn receipt_rejects_any_changed_parser_state_or_input_version() {
         let (receipt, head) = fixture();
         receipt
             .validate_published(&head, &receipt.rows.basis)
@@ -495,7 +495,7 @@ mod tests {
         assert!(receipt.validate_published(&head, &wrong).is_err());
     }
     #[test]
-    fn same_generation_damaged_status_counts_and_missing_effects_do_not_become_settled() {
+    fn damaged_status_counts_and_missing_effects_stay_unfinished() {
         let (receipt, head) = fixture();
         let mut wrong = head.clone();
         wrong.finalization_pending = true;

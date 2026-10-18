@@ -29,7 +29,7 @@ fn fixture() -> (tempfile::TempDir, Actor, StoredSource, Head) {
             input_pk: source.input.input_pk,
             chain: source.input.chain,
             parser_version: parser_version(source.format),
-            digest: parser_basis(&source),
+            digest: parser_identity(&source),
             acquired_upto: source.input.length,
             companions_json: Some(&context),
             excisions_seen: 0,
@@ -57,8 +57,8 @@ fn stop_between_loop_observation_and_completion_does_not_poison_restart() {
     let (temp, mut actor, input, head) = fixture();
     let before = actor.writer.status().unwrap().write_counter;
     source_job(&mut actor, input.clone(), head.clone());
-    // Exactly the recv_timeout window: the loop observed no stop, then the
-    // worker observed cancellation and queued its completion before dispatch.
+    // The recv_timeout window: the loop saw no stop, then the worker saw
+    // cancellation and queued its completion before dispatch.
     actor.observe_stop();
     assert!(!actor.stopping);
     actor.inner.cancelled.store(true, Ordering::Release);
@@ -72,7 +72,7 @@ fn stop_between_loop_observation_and_completion_does_not_poison_restart() {
     drop(actor);
 
     let service = owner(&temp.path().join("archive"));
-    let resumed = until_settled(&service.handle(), &input.input.id);
+    let resumed = until_caught_up(&service.handle(), &input.input.id);
     assert!(resumed.failure.is_none());
     assert_eq!(resumed.parser.unwrap().parsed_upto, input.input.length);
     service.shutdown().unwrap();
@@ -202,8 +202,8 @@ fn genuine_worker_failure_still_records_a_parser_defect() {
 fn prepared_physical_history_is_not_selected_after_owner_stop_and_restart_can_retry() {
     let (temp, mut actor, _input, _head) = fixture();
     let path = temp.path().join("archive/archive.db");
-    // A synthetic owner database is a valid physical SQLite input; its schema
-    // is deliberately unsupported by the conversation decoder. No engine SQL.
+    // A valid SQLite file whose schema the conversation decoder does not
+    // support.
     let prepared = actor
         .writer
         .blob_capture()

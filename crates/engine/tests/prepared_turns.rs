@@ -64,7 +64,7 @@ fn changes() -> Vec<CellChange> {
 }
 
 #[test]
-fn provider_turns_preserve_peer_reads_writes_and_never_certify_eof_completion() {
+fn provider_turns_allow_peer_reads_and_writes_and_eof_is_not_completion() {
     let (_dir, mut writer, head) = fixture();
     let pinned = writer.parser_snapshot(&head.token).unwrap();
     let reader = writer.read_handle().unwrap();
@@ -73,7 +73,7 @@ fn provider_turns_preserve_peer_reads_writes_and_never_certify_eof_completion() 
     let published = loop {
         let result = pending.turn(&mut writer, budget()).unwrap();
         turns += 1;
-        // Actual store peer operations, not daemon/public-client acceptance.
+        // Store peer operations.
         let blob = writer.put_file_blob(&[turns]).unwrap();
         assert_eq!(reader.read_blob_range(blob, 0, 1).unwrap(), [turns]);
         assert!(
@@ -173,8 +173,8 @@ fn crash_child() {
     let mut writer = Writer::open(std::path::Path::new(&path)).unwrap();
     let head = writer.parser_head(1, 1).unwrap().unwrap();
     let mut pending = PendingInstall::begin(&mut writer, &head, progress(), changes()).unwrap();
-    // Complete the staged delta, seal, apply only its first member, then exit
-    // without destructors. No reinterpretation may observe that partial state.
+    // Stage, seal, apply only the first member, then exit without destructors.
+    // Parsing must never see that partial state.
     for _ in 0..6 {
         assert!(matches!(
             pending.turn(&mut writer, budget()).unwrap(),
@@ -185,7 +185,7 @@ fn crash_child() {
 }
 
 #[test]
-fn process_exit_during_apply_recovers_durable_members_without_replay_or_false_done() {
+fn process_exit_during_apply_finishes_stored_members_without_reparse() {
     let (dir, writer, head) = fixture();
     drop(writer);
     let output = std::process::Command::new(std::env::current_exe().unwrap())

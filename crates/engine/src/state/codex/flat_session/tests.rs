@@ -13,7 +13,7 @@ fn event(kind: &str, saw: bool, data: serde_json::Value) -> Event {
     }
 }
 #[test]
-fn finite_source_event_shapes_preserve_paths_without_settling_events() {
+fn source_event_shapes_keep_their_paths() {
     let sid = session();
     let mut proof = FlatSessionEvents::new(&sid);
     for e in [
@@ -53,7 +53,7 @@ fn finite_source_event_shapes_preserve_paths_without_settling_events() {
     }
 }
 #[test]
-fn same_kind_malformed_or_wrong_scope_events_never_borrow_authority() {
+fn malformed_or_wrong_scope_events_of_the_same_kind_are_not_members() {
     let sid = session();
     for bad in [
         event("base_instructions", true, json!({"text":null})),
@@ -134,7 +134,7 @@ fn same_kind_malformed_or_wrong_scope_events_never_borrow_authority() {
     assert!(!proof.accepts(&foreign));
 }
 #[test]
-fn owned_header_and_unit_codec_require_exact_declared_event_family() {
+fn header_and_unit_codec_require_the_declared_event_family() {
     let bytes = serde_json::to_vec(&EffectsHeader {
         version: STATE_LAYOUT_VERSION,
         step: 3,

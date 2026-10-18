@@ -1,4 +1,4 @@
-//! Finite rollout membership from provider state and exact selected source proofs.
+//! Codex rollout membership from provider state and the selected sources.
 use super::*;
 use crate::state::codex::RESUME_NAMESPACE;
 use polylogue_sources::codex::keyed::{Cell, Key, Resume};
@@ -90,8 +90,8 @@ fn flat_effects(
         let Some(proof) = FlatSessionStep::decode(&bytes, step)? else {
             return Ok(false);
         };
-        // Preserve the no-event fast path. Eventful steps additionally prove
-        // their complete declared family, including its absence boundary.
+        // Steps without events are fast. Steps with events read every event
+        // plus the probe past the last one.
         if proof.events() == 0 {
             continue;
         }
@@ -106,14 +106,14 @@ fn flat_effects(
     }
     Ok(true)
 }
-pub(super) fn qualify(
+pub(super) fn check(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
     plan: &polylogue_model::query::SessionQuery,
     exact: Option<&str>,
     until: Instant,
     allowance: usize,
-    result: &mut Qualification,
+    result: &mut SessionStatus,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<(), Error> {
     let Some(input) = dependency.registered() else {
@@ -141,14 +141,14 @@ pub(super) fn qualify(
     {
         return Ok(());
     }
-    result.include_basis(source_rows::basis(&input), true, allowance)?;
+    result.add_contributor(source_rows::computed_from(&input), true, allowance)?;
     let mut entry = json!({"id":dependency.id(),"format":dependency.format().name(),"parser_version":head.parser_version});
     if let Some(path) = catalog.dependency_first_path(dependency, allowance)? {
         entry["path"] = json!(path);
     }
     result.include_input(entry, allowance)?;
     if head.acquired_upto != input.input.length
-        || head.token.basis != owner::parser_basis(&input)
+        || head.token.basis != owner::parser_identity(&input)
         || head.parser_version != owner::parser_version(input.format)
         || resume.parsed_upto != head.parsed_upto
     {
@@ -217,9 +217,9 @@ pub(super) fn qualify(
         None => result.metadata = Some(source_session.clone()),
         _ => {}
     }
-    // A complete flat log without topology-changing evidence is entirely on
-    // the path. Unknown controls, lineage and conflicting items cannot acquire
-    // active membership merely because the surviving Messages look linear.
+    // A complete flat log with no topology-changing events is entirely on the
+    // path. Unknown controls, lineage and conflicts are not, even when the
+    // remaining Messages look linear.
     let mut flat = head.counts.unrecognized == 0
         && head.counts.undecodable == 0
         && !resume.normalization_incomplete()
@@ -250,7 +250,7 @@ pub(super) fn qualify(
         };
         if message.id.session() != &source_session.id {
             return Err(Error::Invariant(
-                "Codex retained Message/Session mismatch".into(),
+                "Codex stored Message/Session mismatch".into(),
             ));
         }
         let selected = selected_current_projection(

@@ -1,5 +1,5 @@
-//! Worker-side configured acquisition. Parsing discovers only explicitly named
-//! companions; the store prepares opaque proofs and the owner installs them.
+//! Captures a configured Claude main on the worker. Only companions the file
+//! names are collected; the store prepares them and the owner installs them.
 use polylogue_model::BlobHash;
 use polylogue_store::{BlobCapture, Error, StoredSource, observed::PreparedClaude};
 use std::{collections::BTreeMap, sync::atomic::AtomicBool};

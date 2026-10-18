@@ -113,7 +113,7 @@ def controls(run):
         selection = run.client(archive, sid, "--json", expected=(0,) if kind in ["foreign_pending", "foreign_link"] else (5,))
         after = run.client(archive, sid, "read", "--format", "json", expected=(5,))
         morrow.require(after["result"]["outcome"] == "degraded", kind + " lost its qualification")
-        morrow.require(after["result"]["settlement"]["target_basis"]["archive_counter"] > before["result"]["settlement"]["target_basis"]["archive_counter"], "later admission did not move the new basis")
+        morrow.require(after["result"]["settlement"]["settled_through"]["archive_counter"] > before["result"]["settlement"]["settled_through"]["archive_counter"], "later admission did not move the new basis")
         if kind == "malformed_only":
             morrow.require(after["result"]["unknown"].get("record_errors") == 1, "malformed-only input vanished from coverage")
         if kind == "foreign_pending":

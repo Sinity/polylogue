@@ -1,5 +1,5 @@
-//! Homogeneous runs of already verified fields or citations. Structural and
-//! streaming actions remain one ordinary turn. No mutations occur on this worker.
+//! Batches runs of already checked fields or citations into one action.
+//! Structural and streaming actions stay single. Runs on the worker; no writes.
 use super::*;
 enum Run {
     Fields(Vec<SmallFieldEntry>),
@@ -52,7 +52,7 @@ impl Run {
                 expected_sequence: sequence,
                 next_cursor: next,
             }]),
-            _ => unreachable!("admitted homogeneous run"),
+            _ => unreachable!("field run"),
         }
     }
     fn compatible(&self, change: &Change) -> bool {
@@ -191,8 +191,8 @@ fn first_cost(state: &State) -> usize {
         .saturating_mul(3)
         .saturating_add(std::mem::size_of::<Guard>() + std::mem::size_of::<State>())
 }
-// Only cursor replacement is virtual. There is no virtual field/value/block or
-// source membership overlay. Producers and verified proof checkpoints never enter.
+// Only the cursor is carried forward unwritten. Producers and Verified
+// checkpoints are never batched.
 fn seek(
     snapshot: &Snapshot,
     reader: &ReadHandle,
@@ -225,8 +225,8 @@ fn seek(
             break;
         }
         virtual_state.projection.cursor = Some(next.clone());
-        // No durable cursor was committed. Its sequence and active producer
-        // heads remain EXACTLY those inspected at entry throughout this seek.
+        // Nothing was committed, so the sequence and producer heads are still
+        // those read at entry.
         let candidate = match compute_one(snapshot, reader, &virtual_state, left, flag) {
             Ok(a) => a,
             Err(e) if admission(&e) => break,
@@ -245,8 +245,8 @@ fn seek(
                     inner: ActionKind::Turn { guard, change },
                 });
             }
-            // Persist the chosen cursor BEFORE an action which does not carry
-            // it (BeginValue/BeginOrigin), or before structural/live effects.
+            // Store the cursor before an action that does not carry it
+            // (BeginValue, BeginOrigin) and before structural effects.
             _ => break,
         }
     }
@@ -265,10 +265,8 @@ pub(super) fn compute(
     b: Budgets,
     flag: &AtomicBool,
 ) -> Result<Action> {
-    // One scope for every adapter and raw-selector record in this worker. A
-    // later admission failure yields the already verified prefix, never resets it.
-    // Streaming leases and their Verified cursor retain every existing
-    // checkpoint, including the verification before an origin producer starts.
+    // One limit scope for the whole run. Hitting a limit later returns the
+    // prefix already checked. Streaming leases keep their own checkpoints.
     if state.preparation.active_value.is_some() || state.preparation.active_origin_value.is_some() {
         return compute_one(snapshot, reader, state, b, flag);
     }
@@ -333,8 +331,8 @@ pub(super) fn compute(
             sequence: sequence.checked_add(1).ok_or(StoreError::Range)?,
             cursor: Some(next.to_vec()),
         };
-        // Lookahead has no writes. Both its reads and temporary serialization
-        // use the remaining original allowance, even when it ends this run.
+        // Lookahead writes nothing; its reads and serialization use what is
+        // left of the original allowance.
         let mut remaining = b;
         remaining.metadata = b
             .metadata

@@ -37,7 +37,7 @@ fn short_native_word_in_foreign_prose_is_not_a_full_session_reference() {
     let clean = document();
     assert_eq!(clean["result"]["outcome"], "ok");
     assert_eq!(
-        clean["result"]["settlement"]["target_basis"]["inputs"]
+        clean["result"]["settlement"]["settled_through"]["inputs"]
             .as_array()
             .unwrap()
             .len(),
@@ -55,7 +55,7 @@ fn short_native_word_in_foreign_prose_is_not_a_full_session_reference() {
     world.wait_rows(&mention, false);
     let affected = document();
     assert_eq!(affected["result"]["outcome"], "degraded");
-    let basis = affected["result"]["settlement"]["target_basis"]["inputs"]
+    let basis = affected["result"]["settlement"]["settled_through"]["inputs"]
         .as_array()
         .unwrap();
     assert!(

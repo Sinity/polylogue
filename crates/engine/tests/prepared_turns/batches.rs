@@ -16,7 +16,7 @@ fn many() -> Vec<CellChange> {
         .collect()
 }
 #[test]
-fn bounded_batches_reduce_turns_and_install_every_exact_cell_without_early_progress() {
+fn batches_reduce_turns_and_install_every_cell_without_early_progress() {
     let (_dir, mut writer, head) = fixture();
     let pinned = writer.parser_snapshot(&head.token).unwrap();
     let changes = many();
@@ -26,7 +26,7 @@ fn bounded_batches_reduce_turns_and_install_every_exact_cell_without_early_progr
         let prior = writer.parser_work(&head.token).unwrap().unwrap();
         let result = pending.turn(&mut writer, batch_budget()).unwrap();
         turns += 1;
-        // Peer writes/readback remain possible between every admitted transaction.
+        // Peer writes and reads still work between transactions.
         let blob = writer.put_file_blob(&[turns as u8]).unwrap();
         assert_eq!(
             writer
@@ -57,8 +57,8 @@ fn bounded_batches_reduce_turns_and_install_every_exact_cell_without_early_progr
             0
         );
     };
-    // 5 bounded staging + seal + 5 bounded application + publication, rather
-    // than 257 staging + seal + 129 two-cell applications + publication.
+    // 5 staging + seal + 5 apply + publish, instead of 257 staging + seal +
+    // 129 two-cell applies + publish.
     assert_eq!(turns, 12);
     assert_eq!(published.parsed_upto, 100);
     assert!(published.finalization_pending);
@@ -172,7 +172,7 @@ fn interrupted_batches_discard_unsealed_and_finish_sealed_without_replay() {
         let work = writer.parser_work(&head.token).unwrap().unwrap();
         assert_eq!(work.phase == WorkPhase::Applying, sealed);
         assert_eq!(work.token.applied, if sealed { 64 } else { 0 });
-        drop(pending); // Cancellation loses the in-memory delta, not durable obligations.
+        drop(pending); // Cancellation loses the in-memory delta, not stored work.
         let mut turns = 0usize;
         loop {
             turns += 1;
@@ -215,7 +215,7 @@ fn interrupted_batches_discard_unsealed_and_finish_sealed_without_replay() {
 }
 
 #[test]
-fn staging_prefix_accounts_for_exact_encoded_framing_before_mutation() {
+fn staging_prefix_counts_encoded_framing_before_mutation() {
     let (_dir, mut writer, head) = fixture();
     let work = writer.prepare_parser(&head, progress()).unwrap();
     let changes = changes();

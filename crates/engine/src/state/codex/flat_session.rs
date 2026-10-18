@@ -1,5 +1,5 @@
-//! Finite path-preserving events, decoded through the owning immutable codec.
-//! This proves membership only; it never settles Event products or outcomes.
+//! Codex events that keep a flat session on one path. Used for membership
+//! only, not for Event products or outcomes.
 use super::*;
 use polylogue_model::{RawJson, SessionId};
 

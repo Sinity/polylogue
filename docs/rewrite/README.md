@@ -10,8 +10,8 @@ The full design is in the spec repository (`/realm/inbox/spec/polylogue-spec/`).
 | [codex-native-representations.md](codex-native-representations.md) | importing Codex rollouts and thread-history databases |
 | [donor-core-restoration.md](donor-core-restoration.md) | Claude and Codex conversation features ported from the Python version |
 | [provider-installation.md](provider-installation.md) | how parsed provider state is written in batches |
-| [canonical-bookkeeping.md](canonical-bookkeeping.md) | building messages from parsed records |
-| [authority-reads.md](authority-reads.md) | read connections and prepared statements |
+| [message-preparation.md](message-preparation.md) | building messages from parsed records |
+| [read-connections.md](read-connections.md) | read connections and prepared statements |
 | [prose-search-scratch.md](prose-search-scratch.md) | per-query full-text search tables |
 | [credential-masking.md](credential-masking.md) | masking credentials in output |
 

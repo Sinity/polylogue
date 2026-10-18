@@ -1,5 +1,5 @@
-//! Comparable authored text uses the existing selected, decoded body reader.
-//! Digests are raw UTF-8 body evidence, never display text or continuation hashes.
+//! Hashes the current text of an authored-note target through the selected
+//! body reader. The digest covers the decoded UTF-8 body, not display text.
 use polylogue_model::{BlobHash, BlockSlot, authored};
 use polylogue_store::{
     Error, ReadHandle,
@@ -8,7 +8,7 @@ use polylogue_store::{
 use serde::Serialize;
 use std::time::Instant;
 #[derive(Clone, Debug, Serialize)]
-pub struct TextBasis {
+pub struct TargetText {
     #[serde(rename = "ref")]
     pub reference: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -19,7 +19,7 @@ pub struct TextBasis {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
 }
-impl TextBasis {
+impl TargetText {
     fn unknown(reference: &str, status: &'static str, reason: &'static str) -> Self {
         Self {
             reference: reference.into(),
@@ -31,18 +31,18 @@ impl TextBasis {
         }
     }
 }
-pub fn selected_basis(
+pub fn selected_text(
     m: &MessageView,
     slot: Option<&BlockSlot>,
     reference: &str,
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
-) -> Result<TextBasis, Error> {
+) -> Result<TargetText, Error> {
     let block = match slot {
         Some(slot) => m.block(slot.clone())?,
         None => {
             if m.block_at(1)?.is_some() {
-                return Ok(TextBasis::unknown(
+                return Ok(TargetText::unknown(
                     reference,
                     "unknown",
                     "composite_message_text_projection_unsupported",
@@ -52,14 +52,14 @@ pub fn selected_basis(
         }
     };
     let Some(block) = block else {
-        return Ok(TextBasis::unknown(
+        return Ok(TargetText::unknown(
             reference,
             "waiting",
             "target_body_absent",
         ));
     };
     if !matches!(block.kind.as_str(), "text" | "thinking") || block.encrypted == Some(true) {
-        return Ok(TextBasis::unknown(
+        return Ok(TargetText::unknown(
             reference,
             "unknown",
             "structured_or_encrypted_text_projection_unsupported",
@@ -72,7 +72,7 @@ pub fn selected_basis(
             return Err(Error::Cancelled);
         }
         let Some(range) = block.text_range(offset, 4096)? else {
-            return Ok(TextBasis::unknown(
+            return Ok(TargetText::unknown(
                 reference,
                 "unknown",
                 "decoded_text_unavailable",
@@ -89,9 +89,9 @@ pub fn selected_basis(
             break;
         }
     }
-    // Check current visibility after hashing; a removal is never a hash witness.
+    // Check visibility after hashing so a removed body is never reported.
     m.header()?;
-    Ok(TextBasis {
+    Ok(TargetText {
         reference: reference.into(),
         seen_hash: Some(BlobHash::from_bytes(*hash.finalize().as_bytes())),
         projection: "decoded-utf8-text-v1",
@@ -100,16 +100,16 @@ pub fn selected_basis(
         reason: None,
     })
 }
-pub fn current_basis(
+pub fn current_text(
     reader: &ReadHandle,
     reference: &str,
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
-) -> Result<TextBasis, Error> {
+) -> Result<TargetText, Error> {
     let (id, slot) = authored::target_address(reference).map_err(Error::Authored)?;
     match reader.message_reference(id.as_ref(), 65536)? {
         MessageLookup::Ready(m) => {
-            let basis = selected_basis(&m, slot.as_ref(), reference, until, cancel)?;
+            let basis = selected_text(&m, slot.as_ref(), reference, until, cancel)?;
             let current = match reader.message_reference(id.as_ref(), 65536)? {
                 MessageLookup::Ready(m) => m,
                 _ => return Err(Error::StaleMessage),
@@ -121,12 +121,12 @@ pub fn current_basis(
             }
             Ok(basis)
         }
-        MessageLookup::Pending => Ok(TextBasis::unknown(
+        MessageLookup::Pending => Ok(TargetText::unknown(
             reference,
             "unavailable",
             "selected_message_pending",
         )),
-        MessageLookup::Absent => Ok(TextBasis::unknown(
+        MessageLookup::Absent => Ok(TargetText::unknown(
             reference,
             "waiting",
             "target_not_collected",

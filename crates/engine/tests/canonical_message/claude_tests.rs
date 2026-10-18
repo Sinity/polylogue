@@ -1,4 +1,4 @@
-//! Claude uses the same durable Action/State/value/origin core as Codex.
+//! Claude Messages through the same action/state/value/origin code as Codex.
 use super::*;
 use polylogue_engine::state::claude as ca;
 use polylogue_sources::claude_code::{self as cc, FileCtx, KeyedRecords, keyed::PendingMessage};
@@ -148,7 +148,7 @@ fn value(view: &MessageView, slot: &Slot) -> (Value, bool, Value) {
     (data, field.supplied, origin)
 }
 #[test]
-fn background_completion_uses_its_exact_retained_record_in_the_candidate_source_set() {
+fn background_completion_cites_its_own_record_in_the_source_set() {
     let bytes =
         include_bytes!("../../../sources/tests/fixtures/donor/claude-normalization-main.jsonl");
     let (mut world, pending) = make_world(bytes, bytes);
@@ -158,7 +158,7 @@ fn background_completion_uses_its_exact_retained_record_in_the_candidate_source_
         .unwrap();
     let request = request(&world, pending);
     let handle = begin(&mut world, &request);
-    // Independent exact coordinates in the frozen synthetic fixture, excluding LF.
+    // Byte ranges in the fixed synthetic fixture, excluding LF.
     let ranges = [(942, 1287), (3018, 3446)];
     for _ in 0..4000 {
         let action = world
@@ -382,7 +382,7 @@ fn a_native_parent_uuid_from_a_later_response_fragment_resolves_its_owning_messa
             assert!(matches!(
                 world.compute_with(&handle, work_budget()),
                 Err(m::Error::Unsupported(
-                    "Claude retained parent record unavailable"
+                    "Claude parent record unavailable"
                 ))
             ));
             continue;
@@ -463,7 +463,7 @@ fn claude_reopens_partial_normalized_and_origin_values_and_finish_before_publica
     assert!(world.head.finalization_pending);
 }
 #[test]
-fn claude_wrong_original_hash_and_raw_typed_selector_mismatch_refuse_source_certificate() {
+fn claude_wrong_original_hash_or_selector_type_mismatch_gets_no_source_certificate() {
     let raw = input("original");
     let (mut world, pending) = make_world(&raw, &raw);
     let mut req = request(&world, &pending[0]);
@@ -614,7 +614,7 @@ fn claude_immediate_opaque_extra_retains_utf16_numbers_null_and_own_origin() {
 }
 
 #[test]
-fn claude_nested_extra_and_selected_key_collision_refuse_without_source_certificate() {
+fn claude_nested_extra_and_selected_key_collision_get_no_source_certificate() {
     let cases = [
         r#"{"type":"user","uuid":"u","message":{"role":"user","content":"text","x":1},"message.x":2}"#,
         r#"{"type":"assistant","uuid":"u","requestId":"r","stop_sequence":1,"message":{"id":"a","role":"assistant","content":[{"type":"text","text":"text"}],"stop_sequence":null}}"#,

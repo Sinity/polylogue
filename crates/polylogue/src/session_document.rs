@@ -182,7 +182,7 @@ pub(crate) fn write_with_cancel(
     deadline: Instant,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> io::Result<Coverage> {
-    let source_qualification = polylogue_engine::session_qualification::qualify_with_cancel(
+    let source_qualification = polylogue_engine::session_status::check_with_cancel(
         session,
         deadline,
         16 * 1024 * 1024,

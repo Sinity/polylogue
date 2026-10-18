@@ -1,3 +1,3 @@
-//! Provider-specific codecs over the store-owned pinned parser state.
+//! Provider state codecs over pinned parser-state snapshots.
 pub mod claude;
 pub mod codex;

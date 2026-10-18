@@ -1,5 +1,5 @@
-//! One parked acquisition worker shares capacity with ordinary imports.
-//! Physical history and a configured Claude main use the same grant loop.
+//! A long capture (Codex history database or configured Claude main) runs in
+//! slices that share the capture worker with ordinary imports.
 use super::*;
 pub(super) struct TurnCaptureJob {
     pub job: CaptureJob,
@@ -128,8 +128,8 @@ impl Actor {
         }
         Ok(())
     }
-    /// Called only after the bounded command mailbox has drained. A regular
-    /// request arriving during an active quantum owns the next capture slot.
+    /// Called after the mailbox has drained. A regular import that arrives
+    /// during a slice gets the next capture turn.
     pub(super) fn advance_capture_turn(&mut self) -> Result<()> {
         if self.capture.is_some() {
             return Ok(());

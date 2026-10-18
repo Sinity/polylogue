@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn configured_hash_change_refuses_before_retained_source_effects() {
+fn configured_hash_change_fails_before_any_source_effects() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     std::fs::create_dir(&home).unwrap();

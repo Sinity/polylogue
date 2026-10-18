@@ -1,7 +1,6 @@
-//! Single Writer actor for retained sources and provider-state progress
-//! plus compatible source Message materialization through one shared core.
-//! Capture, provider interpretation and canonical encoding run outside the actor.
-//! Search, contested merges and complete history coverage remain pending.
+//! The single writer actor: imports inputs, advances their parser state and
+//! builds their Messages. Capture, parsing and Message encoding run on worker
+//! threads; the actor only applies their results.
 use crate::{
     canonical_message,
     converge::{self, PendingInstall, Recovery, Turn},
@@ -26,9 +25,8 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-// These are admission limits, not format limits or a hard RSS bound. A rejected
-// record/cell remains owed and its required capacity is kept in the diagnostic.
-// Configurable larger admissions and full canonical convergence remain open.
+// Work limits, not format limits. A record or cell over the limit stays
+// pending and the diagnostic records the size it needs.
 mod history_capture;
 use history_capture::TurnCaptureJob;
 const COMMANDS: usize = 16;
@@ -416,15 +414,15 @@ struct ComputeJob {
     head: Head,
     join: JoinHandle<()>,
 }
-// Keyset order schedules obligations only; source ordinals remain in the
-// provider's PendingMessage and do not derive from this traversal.
+// Keyset order only schedules work; Message order comes from the source
+// ordinals in the provider's PendingMessage.
 #[derive(Clone)]
 pub(crate) enum CanonicalPosition {
     Audit(Box<crate::source_rows::Audit>),
     Codex(usize),
     ToolsAfter(Option<String>),
-    // Publish independently proved Session operations before preserving a
-    // contested Message diagnostic; this never certifies the source complete.
+    // Publish Session operations before recording a contested Message
+    // diagnostic. The input stays unfinished either way.
     ToolsBeforeFailure(Option<String>, String),
     ClaudeAfter(Option<crate::state::claude::PendingCursor>),
     ClaudeMessage(
@@ -517,13 +515,13 @@ struct Actor {
     history_budget: polylogue_store::history_pages::turns::Budget,
     compute: Option<ComputeJob>,
     canonical: Option<CanonicalJob>,
-    // One worker owns this reader at a time. Returning the idle connections
-    // avoids reparsing the SQLite schema on every field turn. Individual store
-    // operations still establish fresh views; no transaction spans actor turns.
+    // One worker holds this reader at a time. Reusing the idle connections
+    // avoids reparsing the SQLite schema on every turn; each store operation
+    // still opens a fresh view and no transaction spans actor turns.
     canonical_reader: Option<CanonicalReaders>,
     active: Option<Active>,
-    // A bounded hint for fresh acquisition/retry. The durable catalog remains
-    // authoritative when intermediate hints coalesce or the process restarts.
+    // A hint for new or retried inputs. The stored catalog scan still finds
+    // them if hints are merged or the process restarts.
     changed_input: Option<String>,
     background_due: bool,
     after: String,
@@ -580,8 +578,8 @@ impl Actor {
     }
     fn stop_for_completion<T>(&mut self, result: &Result<T>) -> bool {
         self.observe_stop();
-        // A worker's typed cancellation is lifecycle evidence even if shutdown
-        // arrived after dispatch. Never turn it into a durable parser defect.
+        // A worker cancelled by shutdown is not a parser defect, even if the
+        // shutdown arrived after dispatch.
         if matches!(
             result,
             Err(Error::Stopped
@@ -655,8 +653,8 @@ impl Actor {
                 && self.compute.is_none()
                 && self.canonical.is_none()
             {
-                // Closing accepting under its mutex precedes this drain; no
-                // request accepted before shutdown can lose its explicit reply.
+                // Accepting closed under its mutex before this drain, so every
+                // accepted request gets a reply.
                 while let Ok(message) = rx.try_recv() {
                     let _ = self.message(message);
                 }
@@ -699,7 +697,7 @@ impl Actor {
                         &job.observation.id,
                         job.observation.seen_at,
                     )?;
-                    // A later companion refusal cannot hide already retained main work.
+                    // A later companion failure must not hide the stored main file.
                     claude_installation_started = true;
                     for (index, (path, body)) in prepared.bodies.into_iter().enumerate() {
                         let mut observation = job.observation.clone();
@@ -773,7 +771,7 @@ impl Actor {
         }
     }
     fn message(&mut self, message: Message) -> Result<()> {
-        // recv_timeout may have blocked since the loop's stop observation.
+        // recv_timeout may have blocked since the loop last checked for stop.
         self.observe_stop();
         match message {
             Message::Note(request, deadline, reply) => {
@@ -1218,8 +1216,10 @@ impl Actor {
                         ));
                     }
                     Ok(CanonicalTurn::Audited(crate::source_rows::Turn::Complete(receipt))) => {
-                        receipt
-                            .validate(&job.head.token, &crate::source_rows::basis(&job.input))?;
+                        receipt.validate(
+                            &job.head.token,
+                            &crate::source_rows::computed_from(&job.input),
+                        )?;
                         let bytes = serde_json::to_vec(&receipt)
                             .map_err(|e| Error::InvalidEvidence(e.to_string()))?;
                         self.writer.publish_source_rows(
@@ -1270,14 +1270,14 @@ impl Actor {
         let mut source_rows = crate::source_rows::pending(&input, obligation);
         if let Some(head) = &parser {
             if head.acquired_upto != input.input.length
-                || head.token.basis != parser_basis(&input)
+                || head.token.basis != parser_identity(&input)
                 || head.parser_version != parser_version(input.format)
             {
                 source_rows =
                     crate::source_rows::pending(&input, "current_interpretation_admission");
             } else if let Some(reason) = &failure {
-                // A failed admitted install may still own unsealed work. Its
-                // retained diagnostic is unavailability, never a waiting tail.
+                // A failed install may still hold unsealed work. Report it as
+                // unavailable, never as a waiting tail.
                 source_rows.state = polylogue_model::settlement::SourceRowState::Unavailable {
                     usable_result: self.writer.source_has_tool_items(&input.input)?,
                     notes: vec![reason.clone()],
@@ -1341,10 +1341,10 @@ impl Actor {
             .record_parser_failure(&head.token, Some(&details), DETAIL_BYTES)?;
         Ok(())
     }
-    // An observed append can replace the source while its old audit is in
-    // flight. Only a typed predecessor rejection plus independently changed
-    // durable evidence authorizes discarding that attempt, never its current
-    // invariant failures. Begin reselects the current basis through normal work.
+    // An append can replace the source while its old audit is running. Discard
+    // that attempt only when the parser state was rejected as stale and the
+    // stored source really changed; other invariant failures still fail. The
+    // next turn picks up the current parser state.
     fn reselect_obsolete_canonical(
         &mut self,
         previous: &StoredSource,
@@ -1359,7 +1359,7 @@ impl Actor {
         let source_changed = input.revision != previous.revision
             || input.input.chain != previous.input.chain
             || input.input.length != previous.input.length
-            || parser_basis(&input) != parser_basis(&previous);
+            || parser_identity(&input) != parser_identity(&previous);
         let predecessor_changed = head.as_ref().is_some_and(|head| {
             head.token != predecessor.token
                 || head.acquired_upto != predecessor.acquired_upto
@@ -1391,9 +1391,9 @@ impl Actor {
                 if !self.scanning {
                     return Ok(());
                 }
-                // Alternate a recent-change hint with the existing keyset scan.
-                // Finish the current input first so its in-memory continuation
-                // is preserved; fresh work need not wait for the whole catalog.
+                // Alternate recent-change hints with the catalog scan. The
+                // current input finishes first so its in-memory continuation
+                // survives; new work need not wait for the whole catalog.
                 let changed = if self.background_due {
                     None
                 } else {
@@ -1412,7 +1412,7 @@ impl Actor {
                 };
                 match next {
                     Ok(Some(input)) => {
-                        // Prompt references remain pending outside conversation interpretation.
+                        // Prompt references are not parsed as conversations.
                         if input.format == InputFormat::CodexPromptHistory {
                             return Ok(());
                         }
@@ -1435,7 +1435,7 @@ impl Actor {
         };
         match active {
             Active::Begin(input) => {
-                let digest = parser_basis(&input);
+                let digest = parser_identity(&input);
                 let context_json = parser_context_json(&input)?;
                 match self.writer.begin_parser(&Basis {
                     input_pk: input.input.input_pk,
@@ -1461,7 +1461,7 @@ impl Actor {
                 match converge::recover_turn(&mut self.writer, &head.token, install_budget()) {
                     Ok(Recovery::Yielded) => self.active = Some(Active::Recover(input, head)),
                     Ok(Recovery::Reparse) => {
-                        if !settled(&head) {
+                        if !caught_up(&head) {
                             self.active = Some(Active::Compute(input, head, None));
                         } else if can_finalize(&input, &head)
                             && crate::source_rows::read(
@@ -1479,7 +1479,7 @@ impl Actor {
                         }
                     }
                     Ok(Recovery::Published(head)) => {
-                        if !settled(&head) {
+                        if !caught_up(&head) {
                             self.active = Some(Active::Compute(input, head, None));
                         } else if can_finalize(&input, &head)
                             && crate::source_rows::read(
@@ -1795,8 +1795,8 @@ impl Actor {
                         ))
                         .map_err(|_| Error::WorkerPanicked)
                         .and_then(|r| r);
-                        // Release the snapshot before the actor can apply its
-                        // result. Reuse preserves connections, never a read view.
+                        // Release the snapshot before the actor applies the
+                        // result. Reuse keeps connections, not a read view.
                         let (result, readers) = match snapshot.into_reader() {
                             Ok(parser) => (
                                 result,
@@ -1846,7 +1846,7 @@ impl Actor {
                     }
                     Ok(Turn::Published(published)) => match guard.published(&published) {
                         Ok(continuation) => {
-                            if !settled(&published) {
+                            if !caught_up(&published) {
                                 self.active =
                                     Some(Active::Compute(input, published, Some(continuation)));
                             } else if can_finalize(&input, &published) {
@@ -1993,7 +1993,7 @@ fn can_finalize(input: &StoredSource, head: &Head) -> bool {
             && input.format == InputFormat::ClaudeCodeJsonl
             && head.status == "waiting_tail")
 }
-fn settled(head: &Head) -> bool {
+fn caught_up(head: &Head) -> bool {
     matches!(head.status.as_str(), "waiting_tail" | "done")
         || (head.status == "finalizing" && head.parsed_upto == head.acquired_upto)
 }
@@ -2028,7 +2028,7 @@ pub(crate) fn parser_context(input: &StoredSource) -> Result<SourceContext> {
                 meta: None,
             }))
         }
-        _ => Err(Error::InvalidRequest("unsupported retained source context")),
+        _ => Err(Error::InvalidRequest("unsupported source context")),
     }
 }
 fn parser_context_json(input: &StoredSource) -> Result<String> {
@@ -2048,7 +2048,7 @@ fn parser_context_json(input: &StoredSource) -> Result<String> {
     })
     .map_err(|_| Error::InvalidRequest("source context serialization failed"))
 }
-pub(crate) fn parser_basis(input: &StoredSource) -> [u8; 32] {
+pub(crate) fn parser_identity(input: &StoredSource) -> [u8; 32] {
     if input.format == InputFormat::CodexRollout {
         return basis(&input.binding);
     }
@@ -2057,7 +2057,7 @@ pub(crate) fn parser_basis(input: &StoredSource) -> [u8; 32] {
     hash.update(&parser_version(input.format).to_be_bytes());
     hash.update(&crate::source_rows::RECIPE.to_be_bytes());
     hash.update(input.binding.bytes());
-    // The admitted portable context is source identity; frame each component.
+    // The context is part of the input's identity; length-prefix each part.
     hash.update(&(input.context.len() as u64).to_be_bytes());
     for item in &input.context {
         hash.update(&(item.len() as u64).to_be_bytes());
@@ -2083,9 +2083,8 @@ fn source_budgets() -> Budgets {
     Budgets {
         framing: StepBudget {
             bytes: WINDOW_BYTES as usize,
-            // Tiny ignored records should share the authenticated 64 KiB read
-            // rather than force a worker and durable install every 32 lines.
-            // Byte, retained-record, state and installation bounds still apply.
+            // Let tiny ignored records share one 64 KiB read instead of a
+            // worker turn and install every 32 lines.
             records: 1024,
             record_bytes: 1024 * 1024,
         },
@@ -2101,9 +2100,8 @@ fn source_budgets() -> Budgets {
 }
 fn install_budget() -> Budget {
     Budget {
-        // Small provider cells share a bounded durable transaction. The actor
-        // observes cancellation and serves its mailbox between transactions;
-        // only publication advances the visible source checkpoint.
+        // Small cells share a transaction. The actor checks cancellation and
+        // serves its mailbox between transactions.
         cells: 64,
         encoded_bytes: 2 * 1024 * 1024,
     }
@@ -2178,13 +2176,13 @@ mod tests {
             }
         }
     }
-    fn until_settled(handle: &Handle, id: &str) -> Progress {
+    fn until_caught_up(handle: &Handle, id: &str) -> Progress {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             let p = progress(handle, id);
             assert!(p.failure.is_none(), "{:?}", p.failure);
             assert!(p.recovery_error.is_none(), "{:?}", p.recovery_error);
-            if p.parser.as_ref().is_some_and(settled) {
+            if p.parser.as_ref().is_some_and(caught_up) {
                 return p;
             }
             assert!(
@@ -2204,8 +2202,7 @@ mod tests {
         let root = temp.path();
         let writer = Writer::open(root).unwrap();
         let reader = writer.read_handle().unwrap();
-        // Hold the real connections while making only a new derived-tier open
-        // fail. This is an isolated fixture, never a live archive operation.
+        // Keep the open connections and make only a new derived-tier open fail.
         std::fs::rename(root.join("embeddings.db"), root.join("held-embeddings.db")).unwrap();
         std::fs::create_dir(root.join("embeddings.db")).unwrap();
         assert!(writer.status().is_err());
@@ -2398,7 +2395,7 @@ mod tests {
         service.shutdown().unwrap();
     }
     #[test]
-    fn actor_selects_a_source_message_but_never_certifies_history_done() {
+    fn actor_selects_a_source_message_but_history_stays_unfinished() {
         use polylogue_sources::{
             codex::keyed::{KeyedRecords, MemoryReadView, Resume},
             frame::drive_jsonl,
@@ -2450,8 +2447,8 @@ mod tests {
             );
             thread::yield_now();
         }
-        // Receipt replay still works after provider loss while the actor serves
-        // selected-message readers; retention is independent of finalization.
+        // Receipt replay works after the provider file is gone, while the actor
+        // serves selected-Message readers.
         assert_eq!(
             import(
                 &service.handle(),
@@ -2464,7 +2461,7 @@ mod tests {
         assert!(reader.selected_message(&message).unwrap().is_some());
     }
     #[test]
-    fn retained_receipt_replays_before_missing_source_and_recovers_provider_state() {
+    fn stored_receipt_replays_before_missing_source_and_recovers_provider_state() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("archive");
         let path = dir.path().join("synthetic.jsonl");
@@ -2487,7 +2484,7 @@ mod tests {
         ));
         service.shutdown().unwrap();
         let service = owner(&root);
-        let p = until_settled(&service.handle(), &retained.id);
+        let p = until_caught_up(&service.handle(), &retained.id);
         let head = p.parser.unwrap();
         assert_eq!(head.counts.framed, 2);
         assert_eq!(head.parsed_upto, raw().len() as u64);
@@ -2503,7 +2500,7 @@ mod tests {
         service.shutdown().unwrap();
     }
     #[test]
-    fn partial_tail_is_stable_across_restart_and_explicit_retry() {
+    fn partial_tail_is_stable_across_restart_and_retry() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("archive");
         let path = dir.path().join("synthetic-tail.jsonl");
@@ -2512,7 +2509,7 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
         let service = owner(&root);
         let retained = import(&service.handle(), request(&path, "synthetic-tail-request"));
-        let before = until_settled(&service.handle(), &retained.id)
+        let before = until_caught_up(&service.handle(), &retained.id)
             .parser
             .unwrap();
         assert_eq!(before.status, "waiting_tail");
@@ -2577,7 +2574,7 @@ mod tests {
         service.shutdown().unwrap();
     }
     #[test]
-    fn queue_capacity_request_bytes_and_shutdown_are_explicit() {
+    fn queue_capacity_request_bytes_and_shutdown_return_typed_errors() {
         let (sender, _receiver) = mpsc::sync_channel(1);
         let inner = Arc::new(Inner {
             sender,

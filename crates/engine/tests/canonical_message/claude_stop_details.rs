@@ -1,4 +1,4 @@
-//! Named opaque response metadata through the actual canonical worker/store path.
+//! Named opaque response metadata through the Message worker and store.
 use super::*;
 use polylogue_sources::claude_code::selection::LeafSelection;
 
@@ -63,7 +63,7 @@ fn assert_value(view: &MessageView, raw: &str, expected: Value, start: usize, en
     );
 }
 #[test]
-fn supplied_null_and_opaque_object_have_exact_origins_without_default_or_finish_inference() {
+fn supplied_null_and_opaque_object_keep_origins_without_inferred_defaults() {
     let absent = row("a", "text", None);
     let (_world, absent_source, absent_view) = materialize(&absent);
     assert!(absent_view.field(&slot(), 65536).unwrap().is_none());
@@ -89,7 +89,7 @@ fn supplied_null_and_opaque_object_have_exact_origins_without_default_or_finish_
     assert_ne!(versions[1], versions[2]);
 }
 #[test]
-fn last_actual_supplier_and_same_uuid_omission_keep_the_original_donor() {
+fn last_supplier_and_same_uuid_omission_keep_the_original_supplier() {
     let a = row("a", "a", Some(Value::Null));
     let b = row("b", "b", Some(json!({"winner":"b"})));
     let omitted_a = row("a", "changed", None);
@@ -113,7 +113,7 @@ fn last_actual_supplier_and_same_uuid_omission_keep_the_original_donor() {
     assert_value(&view, &raw, Value::Null, 0, a.len() - 1);
 }
 #[test]
-fn replacement_of_earlier_contribution_changes_selected_metadata_and_exact_version() {
+fn replacement_of_earlier_contribution_changes_selected_metadata_and_version() {
     let a = row("a", "a", Some(Value::Null));
     let b = row("b", "b", Some(json!({"winner":"b"})));
     let replaced_a = row("a", "changed", Some(json!({"winner":"a"})));
@@ -126,8 +126,8 @@ fn replacement_of_earlier_contribution_changes_selected_metadata_and_exact_versi
         a.len() + b.len(),
         corrected.len() - 1,
     );
-    // Same effective contribution records/order, different actual last supplier.
-    // The response correction unit must enter version evidence.
+    // Same contribution records and order, different last supplier: the
+    // response correction must change the version evidence.
     let reordered = replaced_a.clone() + &b;
     let (_world, reordered_source, view) = materialize(&reordered);
     assert_value(
@@ -143,7 +143,7 @@ fn replacement_of_earlier_contribution_changes_selected_metadata_and_exact_versi
     );
 }
 #[test]
-fn unknown_nested_extra_and_literal_selected_key_collision_still_refuse_certification() {
+fn unknown_nested_extra_and_literal_selected_key_collision_get_no_certificate() {
     for raw in [
         json!({"type":"assistant","uuid":"a","requestId":"r","message":{"id":"response","content":[{"type":"text","text":"text"}],"unknown_details":null}}),
         json!({"type":"assistant","uuid":"a","requestId":"r","stop_details":1,"message":{"id":"response","content":[{"type":"text","text":"text"}],"stop_details":null}}),

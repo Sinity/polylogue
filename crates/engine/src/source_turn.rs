@@ -1,7 +1,6 @@
-//! One borrowed raw window interpreted over a pinned provider predecessor.
-//! Computation reads typed state only; no source-file IO or SQL mutation occurs.
-//! Encoded install buffers and the linear framing commit guard stay separate:
-//! only successful durable publication releases a reusable continuation.
+//! Parses one window of raw bytes against a pinned parser-state snapshot. No
+//! file IO and no SQL writes. The framing continuation is released for reuse
+//! only after the matching install has been published.
 use crate::state::{claude, codex};
 use polylogue_sources::frame::{
     Counts, JsonlContinuation, JsonlDriver, ParseFailure, PendingJsonlStep, RecordParser, Step,
@@ -47,8 +46,8 @@ pub enum Error {
         allocation_failed: bool,
     },
     EmptyFramingBudget,
-    /// Existing append policy refused reaching settled output. Reinterpret the
-    /// appropriate basis; do not silently apply a partial provider delta.
+    /// The append reaches output that is already finished. Parse the input
+    /// again instead of applying a partial delta.
     ReinterpretationRequired,
 }
 impl From<StoreError> for Error {
@@ -84,7 +83,7 @@ impl std::fmt::Display for Error {
                 f.write_str("source framing needs positive byte and record allowances")
             }
             Self::ReinterpretationRequired => {
-                f.write_str("source append reaches settled output; reinterpretation remains owed")
+                f.write_str("source append reaches finished output; the input must be parsed again")
             }
         }
     }
@@ -99,8 +98,8 @@ impl std::error::Error for Error {
 }
 type Result<T> = std::result::Result<T, Error>;
 
-/// This wrapper cannot be cloned or constructed from inspected offsets.
-/// Its token is the exact durable publication that released its framing state.
+/// Not cloneable and not constructible from inspected offsets: its token is
+/// the publication that released the framing state.
 pub struct CommittedContinuation {
     predecessor: Token,
     framing: JsonlContinuation,
@@ -143,9 +142,9 @@ pub struct PendingTurn {
     expected_counts: Accounting,
     step: Step,
 }
-/// Submit these fields to PendingInstall; retain its separate CommitGuard until
-/// Turn::Published. Admission/yield is not publication. A failed or abandoned
-/// install drops the guard and retries from the committed complete-record head.
+/// Submit these fields to `PendingInstall` and keep the `CommitGuard` until
+/// `Turn::Published`. A failed or abandoned install drops the guard and parsing
+/// restarts from the last committed complete record.
 pub struct Install {
     pub predecessor: Head,
     pub progress: Progress,
@@ -192,8 +191,8 @@ impl PendingTurn {
     }
 }
 impl CommitGuard {
-    /// Call only with the receipt of actual committed PendingInstall publication.
-    /// A stale/mismatched receipt consumes and discards the continuation.
+    /// Call only with the receipt of a published `PendingInstall`. A stale or
+    /// mismatched receipt discards the continuation.
     pub fn published(self, receipt: &Head) -> Result<CommittedContinuation> {
         let Self {
             predecessor,
@@ -238,8 +237,8 @@ fn phase_name(phase: Phase) -> &'static str {
         Phase::Done => "done",
     }
 }
-/// On process restart there is no continuation: reread from parsed_upto,
-/// including any durable inspected-but-unparsed tail. Never start at inspected.
+/// After a restart there is no continuation: reread from `parsed_upto`,
+/// including any inspected but unparsed tail. Never start at the inspected offset.
 pub fn read_offset(head: &Head, continuation: Option<&CommittedContinuation>) -> Result<u64> {
     match continuation {
         None => Ok(head.parsed_upto),
@@ -334,9 +333,8 @@ where
     })?;
     Ok((pending, step))
 }
-/// SourceContext is explicit acquisition interpretation input. Its exact value
-/// and companion manifest must already participate in the actor's parser basis.
-/// This function never selects a Claude pathname from competing observations.
+/// `SourceContext` and the companion manifest must already be part of the
+/// actor's parser identity. Never picks a Claude path from competing observations.
 pub fn compute(
     snapshot: &Snapshot,
     continuation: Option<CommittedContinuation>,
@@ -361,7 +359,7 @@ pub fn compute_with_bodies(
     };
     if head.parser_version != version {
         return Err(StoreError::Invariant(
-            "source context parser differs from pinned basis".into(),
+            "source context parser differs from the pinned parser identity".into(),
         )
         .into());
     }
@@ -379,7 +377,7 @@ pub fn compute_with_bodies(
     if end > head.acquired_upto {
         return Err(Error::WindowBeyondAcquisition);
     }
-    // Stable durable tail knowledge suppresses reread/spin after restart too.
+    // A stored stable tail also prevents rereading in a loop after restart.
     if head.status == "waiting_tail" && head.inspected_upto == head.acquired_upto {
         return Ok(Computation::Idle {
             reason: IdleReason::WaitingForAppend,

@@ -1,5 +1,5 @@
-//! Actual retained bytes, keyed sources and prepared provider installation.
-//! These tests do not certify canonical Message publication or public clients.
+//! Window parsing over stored bytes and keyed sources, then provider-state
+//! installation.
 use polylogue_engine::{
     converge::{PendingInstall, Turn},
     source_turn::{
@@ -322,7 +322,7 @@ fn partial_tail_waits_without_spin_and_resumes_or_replays_from_complete_record_h
     }
 }
 #[test]
-fn stale_install_drops_checkpoint_and_replays_from_committed_predecessor() {
+fn stale_install_drops_checkpoint_and_replays_from_committed_state() {
     for claude in [false, true] {
         let bytes = fixture(claude);
         let mut world = World::new(&bytes, claude, bytes.len() as u64);
@@ -355,7 +355,7 @@ fn stale_install_drops_checkpoint_and_replays_from_committed_predecessor() {
     }
 }
 #[test]
-fn wrong_publication_receipt_or_window_never_releases_uncommitted_framing() {
+fn wrong_publication_receipt_or_window_keeps_uncommitted_framing() {
     let bytes = fixture(false);
     let world = World::new(&bytes, false, bytes.len() as u64);
     let pending = pending(world.compute(None, bytes.len(), budgets()).unwrap());

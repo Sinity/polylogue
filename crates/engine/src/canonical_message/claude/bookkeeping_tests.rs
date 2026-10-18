@@ -26,7 +26,7 @@ fn response(extra: serde_json::Value) -> ResponseCell {
     .2
 }
 #[test]
-fn absent_slots_are_bounded_but_supplied_null_empty_and_later_facts_stop_skipping() {
+fn absent_slot_skip_is_limited_and_stops_at_supplied_null_empty_or_later_facts() {
     let empty = response(json!({}));
     let flag = AtomicBool::new(false);
     for old_index in 0..=8 {

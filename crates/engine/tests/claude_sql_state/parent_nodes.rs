@@ -1,7 +1,7 @@
-//! Point-state relation cells share the existing atomic parser barrier/admission.
+//! Relation cells are written atomically with the rest of the parser step.
 use super::*;
 #[test]
-fn retained_parent_nodes_are_admitted_atomically_and_survive_commit_and_restart() {
+fn parent_nodes_are_stored_atomically_and_survive_commit_and_restart() {
     let raw = line(
         json!({"type":"attachment","uuid":"x","sessionId":"s","parentUuid":"a","attachment":{"type":"synthetic","text":"x"}}),
     );

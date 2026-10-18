@@ -1,6 +1,6 @@
-//! Claude point-state adapter over an actual pinned SQLite predecessor. This
-//! module interprets no provider records and performs no writes. Its counters
-//! bound cumulative encoded cell work, not decoded allocation overhead or RSS.
+//! Claude parser state over a pinned SQLite snapshot: point reads and cell
+//! encoding. Parses no records and writes nothing. Counters limit encoded cell
+//! traffic, not decoded memory.
 use std::cell::{Cell, RefCell};
 use std::io::{self, Write};
 
@@ -34,12 +34,12 @@ pub(crate) const EFFECTS: &str = "claude.effects.v1";
 pub struct Usage {
     /// Point attempts, including absent cells and a rejected attempt.
     pub cells: usize,
-    /// Admitted namespace/key bytes and fetched value bytes over this attempt.
+    /// Namespace, key and value bytes read in this attempt.
     pub encoded_bytes: usize,
 }
 
-/// Opaque keyset position for scheduling retained obligations. Its byte order
-/// has no authority over source Message order or candidate selection.
+/// Opaque keyset position for scheduling pending Messages. It does not set
+/// Message order or candidate selection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingCursor(Vec<u8>);
 
@@ -69,8 +69,8 @@ impl<'a> View<'a> {
         self.bodies = Some(bodies);
         self
     }
-    /// Recover the original structured failure after the provider's existing
-    /// String callback boundary. The owner must inspect this before publishing.
+    /// The typed failure behind a provider callback's String error. Check it
+    /// before publishing.
     pub fn take_error(&self) -> Option<StoreError> {
         self.error.borrow_mut().take()
     }
@@ -87,9 +87,8 @@ impl<'a> View<'a> {
     pub fn pending(&self, message: &MessageId) -> Result<Option<PendingMessage>> {
         self.get(PENDING, &(message.session().as_str(), message.as_str()))
     }
-    /// Read at most one obligation without collecting a session's responses.
-    /// The returned cursor belongs to this pinned snapshot; callers restart at
-    /// the beginning after a new predecessor and use source receipts for replay.
+    /// Reads at most one pending Message. The cursor is valid only for this
+    /// snapshot; after a parser-state change, start again from the beginning.
     pub fn next_pending(
         &self,
         after: Option<&PendingCursor>,
@@ -280,9 +279,8 @@ impl ReadView for View<'_> {
     }
 }
 
-/// Disposable output receipt, scoped by parser token generation and step. The
-/// canonical owner acknowledges it only with the corresponding actual effects.
-/// This is not a public Event ID or proof of canonical Message completion.
+/// Output receipt for one parser step (token generation and step). Not a
+/// public Event ID.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Effects {
     pub events: Vec<(SessionId, Event)>,
@@ -312,9 +310,8 @@ fn admission(resource: &'static str, required: usize) -> StoreError {
     }
 }
 
-/// A logical encoded-length admission before each append/reservation. Allocation
-/// can fail and allocator rounding is not bounded by this interface. `required`
-/// on a refused serialization is a lower bound, since encoding stops immediately.
+/// Checks the encoded length before each append. On failure, `required` is a
+/// lower bound because encoding stops at once.
 struct Limited {
     bytes: Vec<u8>,
     limit: usize,
@@ -376,10 +373,9 @@ fn encode<T: Serialize + ?Sized>(value: &T, limit: usize, already: usize) -> Res
     Ok(writer.bytes)
 }
 
-/// Encode outside the writer transaction. The framer supplies the complete-record
-/// position. Mutating this attempt's header does not publish it. The caller drops
-/// its View/Snapshot and submits these cells with output to the existing CAS
-/// writer; this does not certify canonical row finalization or acquired EOF.
+/// Encodes outside the writer transaction. The framer supplies the
+/// complete-record position. The caller drops its View and Snapshot, then
+/// submits these cells to the writer.
 pub fn encode_step(
     output: &mut StepOutput,
     head: &Head,
@@ -480,9 +476,8 @@ pub fn encode_step(
     )?;
     Ok(encoder.changes)
 }
-/// Companion bytes are already retained by the source owner. The owner pins their
-/// availability manifest in Basis, then stages these cells with the same barrier.
-/// None removes availability; a failed companion read must never call this as None.
+/// Companion bytes are already stored. `None` marks the companion unavailable;
+/// never pass `None` for a failed read.
 pub fn encode_body(
     path: &str,
     payload: Option<&BodyPayload>,

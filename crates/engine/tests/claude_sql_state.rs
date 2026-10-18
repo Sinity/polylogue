@@ -1,5 +1,5 @@
-//! Actual retained synthetic inputs, SQLite snapshots and the public prepared
-//! barrier. No canonical Message writer or daemon completion is asserted.
+//! Claude parser state: synthetic inputs, SQLite snapshots and the prepared
+//! install path.
 use polylogue_engine::state::claude as adapter;
 use polylogue_model::BlobHash;
 use polylogue_sources::claude_code::keyed::{
@@ -244,7 +244,7 @@ fn reopen_each_line_preserves_effective_replacement_and_pending_evidence_cells()
 }
 
 #[test]
-fn pending_keyset_is_one_admitted_lookup_with_reopenable_cursor_and_identity_checks() {
+fn pending_keyset_is_one_lookup_with_reopenable_cursor_and_identity_checks() {
     let text: String = fixture().into_iter().map(line).collect();
     let mut world = World::new(text.as_bytes());
     world.parse(text.as_bytes());
@@ -329,9 +329,8 @@ fn prefix_cost(size: usize) -> (usize, usize, usize) {
         .map(|c| c.namespace.len() + c.key.len() + c.value.as_ref().map_or(0, Vec::len))
         .sum();
     assert!(usage.encoded_bytes < 8192 && size_bytes < 8192);
-    // Absolute byte positions and the one u64 ordinal counter have bounded
-    // decimal width. Remove ONLY that exact scalar encoding overhead; all
-    // names, keys, payloads, cell/cardinality and other metadata remain intact.
+    // Byte positions and the u64 ordinal counter have a fixed maximum decimal
+    // width. Subtract only that encoding overhead; everything else stays.
     fn width(value: u64) -> usize {
         let width = serde_json::to_vec(&value).unwrap().len();
         assert!((1..=20).contains(&width));
@@ -386,8 +385,8 @@ fn prefix_cost(size: usize) -> (usize, usize, usize) {
         normalized += change.namespace.len() + change.key.len() + count;
     }
     assert_eq!(size_bytes, normalized + scalar_overhead);
-    // The read predecessor differs only in Header.parsed_upto and the Session
-    // counter; the early response/contribution and all lookup keys are fixed.
+    // The earlier state differs only in Header.parsed_upto and the Session
+    // counter; the early response, contribution and lookup keys are fixed.
     let normalized_read = usage.encoded_bytes - width(base) - width(size as u64 + 1);
     (usage.cells, normalized_read, normalized)
 }
