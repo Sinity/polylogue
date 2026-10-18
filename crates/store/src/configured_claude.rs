@@ -126,35 +126,14 @@ impl Location {
         })
     }
     pub fn observation_id(&self, request: &str, seen_at: i64) -> Result<String> {
-        let mut h = blake3::Hasher::new();
-        for value in [
-            "polylogue.claude-project-observation.v1",
-            request,
-            self.path
-                .to_str()
-                .ok_or_else(|| refused("UTF8 location required"))?,
-        ] {
-            h.update(&(value.len() as u64).to_be_bytes());
-            h.update(value.as_bytes());
-        }
-        let millis = u64::try_from(seen_at).map_err(|_| Error::Range)? / 1000;
-        if millis >= 1u64 << 48 {
-            return Err(Error::Range);
-        }
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&h.finalize().as_bytes()[..16]);
-        bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
-        bytes[6] = (bytes[6] & 15) | 0x70;
-        bytes[8] = (bytes[8] & 63) | 0x80;
-        let hex = bytes.iter().map(|v| format!("{v:02x}")).collect::<String>();
-        Ok(format!(
-            "{}-{}-{}-{}-{}",
-            &hex[..8],
-            &hex[8..12],
-            &hex[12..16],
-            &hex[16..20],
-            &hex[20..]
-        ))
+        let path = self
+            .path
+            .to_str()
+            .ok_or_else(|| refused("UTF8 location required"))?;
+        crate::imports::observation_id(
+            &["polylogue.claude-project-observation.v1", request, path],
+            seen_at,
+        )
     }
     pub fn path(&self) -> &Path {
         &self.path
