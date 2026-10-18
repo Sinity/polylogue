@@ -323,6 +323,7 @@ pub struct Snapshot {
     pub(crate) db: Connection,
     pub(crate) path: std::path::PathBuf,
     pub head: Head,
+    reads: std::cell::Cell<Option<ReadWork>>,
     // Drop the SQLite snapshot before releasing its retained archive authority.
     _lock: std::sync::Arc<std::fs::File>,
 }
@@ -354,10 +355,106 @@ impl ParserReader {
             path,
             head,
             _lock: lock,
+            reads: std::cell::Cell::new(None),
         })
     }
 }
+/// Temporary worker admission shared by all point adapters using this snapshot.
+/// It retains no query results or authority. Drop restores ordinary single-step use.
+#[derive(Clone, Copy)]
+struct ReadWork {
+    left: Budget,
+    exceeded: bool,
+    enforced: bool,
+}
+pub struct ReadScope<'a>(&'a Snapshot);
+impl ReadScope<'_> {
+    /// A first ordinary action keeps its existing admission. Only an aggregate
+    /// fitting the original allowance can be extended into a run.
+    pub fn enforce(&self) -> bool {
+        let mut work = self.0.reads.get().expect("live read scope");
+        if work.exceeded {
+            return false;
+        }
+        work.enforced = true;
+        self.0.reads.set(Some(work));
+        true
+    }
+}
+impl Drop for ReadScope<'_> {
+    fn drop(&mut self) {
+        self.0.reads.set(None);
+    }
+}
 impl Snapshot {
+    pub fn bounded_reads(&self, budget: Budget) -> Result<ReadScope<'_>> {
+        if self.reads.get().is_some() {
+            return Err(StoreError::Invariant(
+                "nested snapshot read allowance".into(),
+            ));
+        }
+        self.reads.set(Some(ReadWork {
+            left: budget,
+            exceeded: false,
+            enforced: false,
+        }));
+        Ok(ReadScope(self))
+    }
+    /// Charge raw selector records through the same worker byte allowance,
+    /// before allocation. Ordinary single-step users retain their own meter.
+    pub fn charge_read_bytes(&self, bytes: usize) -> Result<()> {
+        if let Some(mut left) = self.reads.get() {
+            if bytes > left.left.encoded_bytes {
+                left.exceeded = true;
+                self.reads.set(Some(left));
+                if left.enforced {
+                    return Err(StoreError::ParserAdmission {
+                        resource: "worker read bytes",
+                        required: bytes as u64,
+                    });
+                }
+            }
+            left.left.encoded_bytes = left.left.encoded_bytes.saturating_sub(bytes);
+            self.reads.set(Some(left));
+        }
+        Ok(())
+    }
+    pub fn cumulative_reads_enforced(&self) -> bool {
+        self.reads.get().is_some_and(|work| work.enforced)
+    }
+    pub fn charge_selector_record(&self, bytes: usize) -> Result<()> {
+        self.read_allowance("", &[], usize::MAX)?;
+        self.charge_read_bytes(bytes)
+    }
+    fn read_allowance(&self, namespace: &str, key: &[u8], allowance: usize) -> Result<usize> {
+        if let Some(mut left) = self.reads.get() {
+            if left.left.cells == 0 {
+                left.exceeded = true;
+                self.reads.set(Some(left));
+                if left.enforced {
+                    return Err(StoreError::ParserAdmission {
+                        resource: "worker read cells",
+                        required: 1,
+                    });
+                }
+            }
+            left.left.cells = left.left.cells.saturating_sub(1);
+            self.reads.set(Some(left));
+            self.charge_read_bytes(
+                namespace
+                    .len()
+                    .checked_add(key.len())
+                    .ok_or(StoreError::Range)?,
+            )?;
+            let work = self.reads.get().unwrap();
+            return Ok(if work.enforced {
+                allowance.min(work.left.encoded_bytes)
+            } else {
+                allowance
+            });
+        }
+        Ok(allowance)
+    }
     fn open(path: &Path, expected: &Token, lock: std::sync::Arc<std::fs::File>) -> Result<Self> {
         ParserReader::open(path, lock)?.snapshot(expected)
     }
@@ -373,7 +470,7 @@ impl Snapshot {
     }
     pub fn cell(&self, namespace: &str, key: &[u8], allowance: usize) -> Result<Option<Vec<u8>>> {
         let path = &self.path;
-        let allowance = integer(allowance as u64)?;
+        let allowance = integer(self.read_allowance(namespace, key, allowance)? as u64)?;
         let row = sql!(path, self.db.query_row(
             "SELECT length(value),CASE WHEN length(value)<=?6 THEN value ELSE NULL END FROM parser_cell
              WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",
@@ -382,10 +479,13 @@ impl Snapshot {
         ).optional())?;
         match row {
             None => Ok(None),
-            Some((required, value)) => value.map(Some).ok_or(StoreError::ParserAdmission {
-                resource: "parser cell bytes",
-                required,
-            }),
+            Some((required, value)) => {
+                self.charge_read_bytes(usize::try_from(required).map_err(|_| StoreError::Range)?)?;
+                value.map(Some).ok_or(StoreError::ParserAdmission {
+                    resource: "parser cell bytes",
+                    required,
+                })
+            }
         }
     }
     /// Keyset neighbor within one provider-owned family/namespace. The key codec
@@ -398,7 +498,7 @@ impl Snapshot {
         allowance: usize,
     ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
         let path = &self.path;
-        let allowance = integer(allowance as u64)?;
+        let allowance = integer(self.read_allowance(namespace, key, allowance)? as u64)?;
         let sql = if after {
             "SELECT length(key)+length(value),CASE WHEN length(key)+length(value)<=?6 THEN key ELSE NULL END,
                     CASE WHEN length(key)+length(value)<=?6 THEN value ELSE NULL END FROM parser_cell
@@ -433,7 +533,10 @@ impl Snapshot {
         )?;
         match row {
             None => Ok(None),
-            Some((_, Some(key), Some(value))) => Ok(Some((key, value))),
+            Some((required, Some(key), Some(value))) => {
+                self.charge_read_bytes(usize::try_from(required).map_err(|_| StoreError::Range)?)?;
+                Ok(Some((key, value)))
+            }
             Some((required, _, _)) => Err(StoreError::ParserAdmission {
                 resource: "parser neighbor bytes",
                 required,

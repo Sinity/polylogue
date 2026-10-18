@@ -24,7 +24,8 @@ use polylogue_store::{
     Error as StoreError, ReadHandle, Writer,
     contributions::{
         BlockKind, BlockPresence, Build, Identity, MessageLayout, Preparation, PreparedProjection,
-        ProjectionState, ProjectionStep, SmallField, Source, SourceProjection, SourceRange,
+        ProjectionState, ProjectionStep, SmallField, SmallFieldEntry, Source, SourceProjection,
+        SourceRange, SourceRangeEntry,
     },
     parser_state::{Budget, Snapshot, Token},
     values,
@@ -235,6 +236,7 @@ impl Handle {
         &self.request
     }
 }
+#[derive(Clone)]
 pub struct State {
     handle: Handle,
     preparation: Preparation,
@@ -260,6 +262,8 @@ impl Action {
             ActionKind::Prepare { .. } => "prepare",
             ActionKind::Existing { .. } => "existing",
             ActionKind::Turn { change, .. } => match change {
+                Change::SmallFieldRun(_) => "small_field_run",
+                Change::SourceRangeRun(_) => "source_range_run",
                 Change::Advance(_) => "advance",
                 Change::SourceRange { .. } => "source_range",
                 Change::BeginOrigin { .. } => "origin_begin",
@@ -360,6 +364,8 @@ enum ActionKind {
     },
 }
 enum Change {
+    SmallFieldRun(Vec<SmallFieldEntry>),
+    SourceRangeRun(Vec<SourceRangeEntry>),
     SourceRange {
         range: SourceRange,
         next: Vec<u8>,
@@ -883,6 +889,8 @@ struct DigestSink<'a> {
     hasher: blake3::Hasher,
     length: u64,
     flag: &'a AtomicBool,
+    maximum: Option<u64>,
+    exceeded: bool,
 }
 impl<'a> DigestSink<'a> {
     fn new(flag: &'a AtomicBool) -> Self {
@@ -890,6 +898,8 @@ impl<'a> DigestSink<'a> {
             hasher: blake3::Hasher::new(),
             length: 0,
             flag,
+            maximum: None,
+            exceeded: false,
         }
     }
     fn digest(&self) -> BlobHash {
@@ -907,6 +917,10 @@ impl Write for DigestSink<'_> {
             .length
             .checked_add(count)
             .ok_or_else(|| io::Error::other("field byte count overflow"))?;
+        if self.maximum.is_some_and(|maximum| self.length > maximum) {
+            self.exceeded = true;
+            return Err(io::Error::other("selected value exceeds normalized length"));
+        }
         self.hasher.update(bytes);
         Ok(bytes.len())
     }
@@ -991,7 +1005,14 @@ fn verify_selected_field(
     b: Budgets,
     flag: &AtomicBool,
 ) -> Result<()> {
+    if let FieldSelector::ClaudeBody(body) = selection {
+        snapshot
+            .charge_selector_record(usize::try_from(body.length).map_err(|_| StoreError::Range)?)?;
+    }
     let mut value = DigestSink::new(flag);
+    if snapshot.cumulative_reads_enforced() {
+        value.maximum = Some(expected_length);
+    }
     let evaluated = selection.write_value(
         reader,
         |range| {
@@ -1008,6 +1029,9 @@ fn verify_selected_field(
                 .end
                 .checked_sub(range.start)
                 .ok_or(ResolveError::Unbound)?;
+            snapshot
+                .charge_selector_record(usize::try_from(length).map_err(|_| ResolveError::Unbound)?)
+                .map_err(ResolveError::Store)?;
             reader
                 .read_source_range_checked(
                     &snapshot
@@ -1031,6 +1055,11 @@ fn verify_selected_field(
         &mut value,
     );
     cancelled(flag)?;
+    if value.exceeded {
+        return Err(Error::Invariant(
+            "source selector output differs from normalized field value",
+        ));
+    }
     evaluated?;
     if value.length != expected_length || value.digest() != expected_hash {
         return Err(Error::Invariant(
@@ -1072,7 +1101,10 @@ fn field_turn(
                 };
                 let descriptor = ValueSource::Descriptor { selection, binding };
                 let (origin_length, origin) = encode_window(&descriptor, 0, limit, flag)?;
-                if origin_length == origin.len() as u64 {
+                if origin_length == origin.len() as u64
+                    && (!snapshot.cumulative_reads_enforced()
+                        || length.saturating_mul(2).saturating_add(origin_length) <= b.hash_bytes)
+                {
                     cancelled(flag)?;
                     let field = SmallField::prepare(bytes, origin, limit)?;
                     let next_cursor = Cursor {
@@ -1217,7 +1249,17 @@ fn field_turn(
 
 /// Hash/validation currently completes the selected Message/value on the worker
 /// with cooperative piece checks. This is not a bounded resumed hash turn.
+mod runs;
 pub fn compute(
+    snapshot: &Snapshot,
+    reader: &ReadHandle,
+    state: &State,
+    b: Budgets,
+    flag: &AtomicBool,
+) -> Result<Action> {
+    runs::compute(snapshot, reader, state, b, flag)
+}
+fn compute_one(
     snapshot: &Snapshot,
     reader: &ReadHandle,
     state: &State,
@@ -1659,6 +1701,12 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
             }
             let build = &guard.handle.build;
             match change {
+                Change::SmallFieldRun(entries) => {
+                    writer.write_small_field_run(build, &entries, guard.metadata)?
+                }
+                Change::SourceRangeRun(entries) => {
+                    writer.add_message_source_run(build, &entries, guard.metadata)?
+                }
                 Change::SourceRange { range, next } => writer.add_message_source(
                     build,
                     range,

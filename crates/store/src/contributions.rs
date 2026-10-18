@@ -14,7 +14,7 @@ mod directory;
 mod inheritance;
 pub use inheritance::InheritedProjection;
 mod origins;
-pub use origins::SourceRange;
+pub use origins::{SourceRange, SourceRangeEntry};
 pub(crate) mod reads;
 pub use reads::{
     BlockFieldAddress, BlockFieldEntry, BlockView, ExtraFieldEntry, FieldCursor, FieldRead,
@@ -26,7 +26,7 @@ pub use reads::{
 mod retirement;
 mod small_field;
 mod source;
-pub use small_field::SmallField;
+pub use small_field::{SmallField, SmallFieldEntry};
 mod superseded;
 pub use source::{SourceProjection, SourceSelection};
 pub(crate) mod writer;

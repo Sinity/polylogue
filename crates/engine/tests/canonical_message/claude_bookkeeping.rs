@@ -76,6 +76,9 @@ fn complete(
         }
         let mut b = work_budget();
         b.value_chunk = chunk;
+        // Keep this old-checkpoint comparison at single-action read admission;
+        // separate run tests exercise the larger shared allowance.
+        b.read.cells = 3;
         let a = w.compute_with(h, b).unwrap();
         if let m::Applied::Source(s) = m::apply(&mut w.writer, a).unwrap() {
             return (s, steps, projection.sequence);
@@ -202,8 +205,10 @@ fn old_absent_cursor_resume_keeps_cancellation_budget_stale_cas_and_restart() {
         let projection = w.writer.message_projection(h.build(), 65536).unwrap();
         if let Some(bytes) = projection.cursor {
             let mut cursor: Value = serde_json::from_slice(&bytes).unwrap();
-            if cursor["stage"]["Claude"]["SelectedCitations"]["index"] == 0 {
-                cursor["stage"]["Claude"]["SelectedCitations"]["index"] = json!(2);
+            if cursor["stage"]["Claude"]["Citations"]["item"] == 1
+                && cursor["stage"]["Claude"]["Citations"]["envelope"] == true
+            {
+                cursor["stage"]["Claude"] = json!({"SelectedCitations":{"index":2}});
                 w.writer
                     .advance_message_projection(
                         h.build(),

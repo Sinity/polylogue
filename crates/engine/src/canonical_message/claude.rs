@@ -1022,6 +1022,9 @@ pub(super) fn compute(
                     .ok_or(Error::Unsupported(
                         "Claude body differs from pinned manifest",
                     ))?;
+                snapshot.charge_selector_record(
+                    usize::try_from(body.length).map_err(|_| StoreError::Range)?,
+                )?;
                 let text = String::from_utf8(reader.claude_body(body)?)
                     .map_err(|_| Error::Unsupported("Claude body is not UTF-8"))?;
                 if let BlockContent::ToolResult(result) = &mut content {

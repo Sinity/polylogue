@@ -171,3 +171,5 @@ fn small_field_stale_source_cannot_allocate_values() {
     ));
     assert_eq!(f.scalar("SELECT count(*) FROM body_value"), 0);
 }
+
+mod runs;
