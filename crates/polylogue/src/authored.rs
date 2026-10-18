@@ -68,11 +68,11 @@ pub fn bind_write_reply(request: &Value, mut reply: Value) -> Value {
 /// identity with degraded qualification instead of losing the commit outcome.
 pub(crate) fn write_reply(
     revision: polylogue_model::authored::Revision,
-    recovery: Option<polylogue_model::RecoveryQualification>,
+    recovery: Option<polylogue_model::RecoveryRecord>,
     until: Instant,
 ) -> Value {
     let mut notes = if recovery.is_some() {
-        vec![polylogue_model::RecoveryQualification::NOTE]
+        vec![polylogue_model::RecoveryRecord::NOTE]
     } else {
         vec![]
     };
@@ -458,7 +458,7 @@ pub(crate) fn read(
         };
         let mut notes = vec![];
         if snapshot.recovery.is_some() {
-            notes.push(polylogue_model::RecoveryQualification::NOTE);
+            notes.push(polylogue_model::RecoveryRecord::NOTE);
         }
         if cutoff < snapshot.archive_counter {
             notes.push("effective status is evaluated at the retained page basis, not current now");

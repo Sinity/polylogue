@@ -178,7 +178,7 @@ pub struct Status {
     pub index_version: u32,
     pub embeddings_version: u32,
     pub write_counter: u64,
-    pub recovery: Option<polylogue_model::RecoveryQualification>,
+    pub recovery: Option<polylogue_model::RecoveryRecord>,
     pub acquisition_lineage: Option<String>,
     pub copy_preparation: Option<copy_preparation::Pending>,
     pub unavailable_blob_files: u64,
@@ -379,7 +379,7 @@ fn validate_version(
         counter(&conn, &file)?;
     }
     if name == "archive.db" {
-        let qualification = recovery::qualification(&conn, &file)?;
+        let qualification = recovery::record(&conn, &file)?;
         if found == 1 && qualification.is_some() {
             return Err(Error::Schema(file));
         }
@@ -726,7 +726,7 @@ impl ReadHandle {
             index_version: version(&self.index, &self.root.join("index.db"))?,
             embeddings_version: version(&self.embeddings, &self.root.join("embeddings.db"))?,
             write_counter,
-            recovery: recovery::qualification(&snapshot, &file)?,
+            recovery: recovery::record(&snapshot, &file)?,
             acquisition_lineage: copy_preparation::lineage(&snapshot, &file)?,
             copy_preparation: copy_preparation::pending(&snapshot, &file)?,
             unavailable_blob_files: copy_preparation::unavailable_blobs(

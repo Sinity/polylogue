@@ -112,7 +112,7 @@ pub struct ImportRequest {
 #[derive(Debug)]
 pub struct AuthoredReply {
     pub revision: polylogue_model::authored::Revision,
-    pub recovery: Option<polylogue_model::RecoveryQualification>,
+    pub recovery: Option<polylogue_model::RecoveryRecord>,
 }
 #[derive(Debug)]
 pub struct Progress {
