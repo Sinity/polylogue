@@ -657,7 +657,7 @@ fn block(attempt: &Attempt<'_>, message: usize, index: usize) -> Result<(Block, 
     Ok((value, group))
 }
 
-fn message_witness(attempt: &Attempt<'_>, before: &SourceCursor) -> Result<SlotValue> {
+fn message_slot(attempt: &Attempt<'_>, before: &SourceCursor) -> Result<SlotValue> {
     let mut source = before.clone();
     let step = source.advance(attempt);
     if let Some(e) = attempt.take_failure() {
@@ -808,7 +808,7 @@ fn citation_turn(
             after,
             mut origins,
         } => {
-            let w = message_witness(attempt, &before)?;
+            let w = message_slot(attempt, &before)?;
             let range = one_origin(&w.origins, &mut origins)?;
             let next = if range.is_some() {
                 Citations::Message {
@@ -1421,7 +1421,7 @@ fn compute_one(
             }
         }
         Stage::MessageField { witness } => {
-            let w = message_witness(&attempt, &witness)?;
+            let w = message_slot(&attempt, &witness)?;
             let h = header(&attempt, message)?;
             field_turn(
                 snapshot,

@@ -875,7 +875,7 @@ fn message_impacts_cover_version_body_presence_result_and_deletions() {
         collect_impacts(&reader),
         vec![
             adapter::Impact::Block { block: 4 },
-            adapter::Impact::MessageWitness {
+            adapter::Impact::MessageSlot {
                 key: "at".into(),
                 slot: Slot::Message(MessageField::At)
             }
@@ -936,7 +936,7 @@ fn timestamp_only_delta_emits_work_without_manufacturing_a_version_change() {
     assert!(
         collect_impacts(&attempt.message_impacts(2, 0).unwrap())
             .iter()
-            .any(|v| matches!(v,adapter::Impact::MessageWitness {key,..} if key=="at"))
+            .any(|v| matches!(v,adapter::Impact::MessageSlot {key,..} if key=="at"))
     );
 }
 #[test]
@@ -1047,7 +1047,7 @@ fn impact_count_payload_and_cumulative_admission_fail_without_cursor_advance() {
                 })
                 .unwrap();
             unit.value = Some(
-                serde_json::to_vec(&adapter::Impact::MessageWitness {
+                serde_json::to_vec(&adapter::Impact::MessageSlot {
                     key: "model".into(),
                     slot: polylogue_model::merge::Slot::Message(
                         polylogue_model::merge::MessageField::Model,

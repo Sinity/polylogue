@@ -229,7 +229,7 @@ fn limited<E: std::fmt::Display>(
     })
 }
 /// Version of this cell layout. Part of the parser identity.
-pub const STATE_LAYOUT_VERSION: u32 = 3;
+pub const STATE_LAYOUT_VERSION: u32 = 4;
 pub const EFFECTS_NAMESPACE: &str = "codex.effects.v3";
 const EFFECT_KINDS: usize = 8;
 const EFFECT_KEY_BYTES: usize = 17;
@@ -674,7 +674,7 @@ pub fn encode_delta(delta: &Delta, next_step: u64, budget: Budget) -> Result<Enc
             step: next_step,
             message: *message,
             header_dirty: impact.header_dirty,
-            counts: [impact.blocks.len() as u64, impact.witnesses.len() as u64],
+            counts: [impact.blocks.len() as u64, impact.slots.len() as u64],
         };
         push_impact(
             &mut changes,
@@ -698,7 +698,7 @@ pub fn encode_delta(delta: &Delta, next_step: u64, budget: Budget) -> Result<Enc
                 budget,
             )?;
         }
-        for (ordinal, (key, slot)) in impact.witnesses.iter().enumerate() {
+        for (ordinal, (key, slot)) in impact.slots.iter().enumerate() {
             push_impact(
                 &mut changes,
                 &mut bytes,
@@ -706,7 +706,7 @@ pub fn encode_delta(delta: &Delta, next_step: u64, budget: Budget) -> Result<Enc
                 *message,
                 2,
                 ordinal as u64,
-                &ImpactRef::MessageWitness { key, slot },
+                &ImpactRef::MessageSlot { key, slot },
                 budget,
             )?;
         }
@@ -813,12 +813,12 @@ const IMPACT_KEY_BYTES: usize = 26;
 #[serde(deny_unknown_fields)]
 pub enum Impact {
     Block { block: usize },
-    MessageWitness { key: String, slot: Slot },
+    MessageSlot { key: String, slot: Slot },
 }
 #[derive(Serialize)]
 enum ImpactRef<'a> {
     Block { block: usize },
-    MessageWitness { key: &'a str, slot: &'a Slot },
+    MessageSlot { key: &'a str, slot: &'a Slot },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -976,13 +976,13 @@ impl ImpactsReader<'_, '_> {
                 serde_json::from_slice(&bytes).map_err(|e| invalid("impact unit", e))?;
             match &unit {
                 Impact::Block { .. } if cursor.kind == 1 => {}
-                Impact::MessageWitness { key, slot }
+                Impact::MessageSlot { key, slot }
                     if cursor.kind == 2
                         && codex::presence::message_slot(key).as_ref() == Some(slot) => {}
                 _ => {
                     return Err(invalid(
                         "impact unit",
-                        "kind or source-owned witness slot differs",
+                        "impact kind or Message slot differs",
                     ));
                 }
             }
@@ -995,7 +995,7 @@ impl ImpactsReader<'_, '_> {
 struct MessageImpacts {
     header_dirty: bool,
     blocks: BTreeSet<usize>,
-    witnesses: BTreeMap<String, Slot>,
+    slots: BTreeMap<String, Slot>,
 }
 struct Impacts {
     messages: BTreeMap<usize, MessageImpacts>,
@@ -1044,21 +1044,20 @@ impl Impacts {
         }
         Ok(())
     }
-    fn witness(&mut self, message: usize, key: &str) -> Result<()> {
-        if !self.message(message)?.witnesses.contains_key(key) {
+    fn slot_impact(&mut self, message: usize, key: &str) -> Result<()> {
+        if !self.message(message)?.slots.contains_key(key) {
             self.charge(
                 1,
                 (EFFECTS_NAMESPACE.len() + IMPACT_KEY_BYTES)
                     .saturating_add(key.len().saturating_mul(2)),
             )?;
-            let slot = codex::presence::message_slot(key).ok_or_else(|| {
-                invalid("impact witness", "unknown source-owned message witness key")
-            })?;
+            let slot = codex::presence::message_slot(key)
+                .ok_or_else(|| invalid("impact slot", "unknown Message slot key"))?;
             self.local_cells += 1;
             self.messages
                 .get_mut(&message)
                 .ok_or_else(|| invalid("impact message", "admitted message is missing"))?
-                .witnesses
+                .slots
                 .insert(key.into(), slot);
         }
         Ok(())
@@ -1131,7 +1130,7 @@ fn impacts(delta: &Delta, budget: Budget) -> Result<Impacts> {
             | Key::PendingResult(message, block)
             | Key::OutputChunk(message, block, _)
             | Key::CallBlock(_, message, block) => out.block(*message, *block)?,
-            Key::Presence(message, key) => out.witness(*message, key)?,
+            Key::Presence(message, key) => out.slot_impact(*message, key)?,
             Key::Continuation(call) | Key::ChildCount(call) | Key::Child(call, _) => {
                 out.call(call)?
             }
