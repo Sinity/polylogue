@@ -56,7 +56,10 @@ jobs:
       - checkout
       - run:
           name: Qualify the clean Nix package after integration
-          command: nix flake check --print-build-logs
+          command: bash scripts/check-integrated-package.sh /tmp/package-qualification.txt
+      - store_artifacts:
+          path: /tmp/package-qualification.txt
+          destination: package-qualification.txt
 
 workflows:
   foundation:
@@ -66,6 +69,7 @@ workflows:
             branches:
               ignore: master
       - package:
+          serial-group: << pipeline.project.slug >>/integrated-package
           filters:
             branches:
               only: master
