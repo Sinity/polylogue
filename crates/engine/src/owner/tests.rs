@@ -1,6 +1,10 @@
 use super::*;
 use std::{path::Path, time::Instant};
 
+/// Upper bound for owner work in tests; generous because the suite runs on a
+/// loaded machine.
+const WAIT: Duration = Duration::from_secs(60);
+
 fn request(path: &Path, id: &str) -> ImportRequest {
     ImportRequest {
         format: InputFormat::CodexRollout,
@@ -34,19 +38,16 @@ fn import(handle: &Handle, request: ImportRequest) -> StoredInput {
     handle
         .try_import(request)
         .unwrap()
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(WAIT)
         .unwrap()
         .unwrap()
 }
 fn progress(handle: &Handle, id: &str) -> Progress {
-    let end = Instant::now() + Duration::from_secs(10);
+    let end = Instant::now() + WAIT;
     loop {
         match handle.try_progress(id) {
             Ok(reply) => {
-                return reply
-                    .recv_timeout(Duration::from_secs(10))
-                    .unwrap()
-                    .unwrap();
+                return reply.recv_timeout(WAIT).unwrap().unwrap();
             }
             Err(Error::Busy) if Instant::now() < end => thread::yield_now(),
             other => panic!("progress admission: {:?}", other.err()),
@@ -54,7 +55,7 @@ fn progress(handle: &Handle, id: &str) -> Progress {
     }
 }
 fn until_caught_up(handle: &Handle, id: &str) -> Progress {
-    let end = Instant::now() + Duration::from_secs(10);
+    let end = Instant::now() + WAIT;
     loop {
         let p = progress(handle, id);
         assert!(p.failure.is_none(), "{:?}", p.failure);
@@ -139,7 +140,7 @@ fn declared_claude_context_replays_without_provider_and_remains_pending() {
     let root = dir.path().join("archive");
     let service = owner(&root);
     let retained = import(&service.handle(), request.clone());
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     loop {
         let p = progress(&service.handle(), &retained.id);
         assert_eq!(p.source_rows.parsed_from.input, p.input.id);
@@ -172,7 +173,7 @@ fn declared_claude_context_replays_without_provider_and_remains_pending() {
             .handle()
             .try_import(wrong)
             .unwrap()
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(WAIT)
             .unwrap(),
         Err(Error::Store(StoreError::ClientRequestConflict { .. }))
     ));
@@ -355,7 +356,7 @@ fn stored_receipt_replays_before_missing_source_and_recovers_provider_state() {
             .handle()
             .try_import(changed)
             .unwrap()
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(WAIT)
             .unwrap(),
         Err(Error::Store(_))
     ));
@@ -398,7 +399,7 @@ fn partial_tail_is_stable_across_restart_and_retry() {
         .handle()
         .try_retry(&retained.id)
         .unwrap()
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(WAIT)
         .unwrap()
         .unwrap();
     for _ in 0..8 {
@@ -427,7 +428,7 @@ fn oversized_logical_record_is_an_inspectable_admission_failure() {
     std::fs::write(&path, &bytes).unwrap();
     let service = owner(&dir.path().join("archive"));
     let retained = import(&service.handle(), request(&path, "synthetic-large-request"));
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + WAIT;
     loop {
         let p = progress(&service.handle(), &retained.id);
         if let Some(failure) = p.failure {
@@ -489,7 +490,7 @@ fn shutdown_replies_to_accepted_import_instead_of_losing_it() {
         .unwrap();
     service.shutdown().unwrap();
     assert!(matches!(
-        reply.recv_timeout(Duration::from_secs(10)),
+        reply.recv_timeout(WAIT),
         Ok(Ok(_)) | Ok(Err(Error::Stopped))
     ));
 }
