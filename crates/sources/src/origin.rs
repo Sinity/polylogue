@@ -175,11 +175,17 @@ pub static ORIGINS: &[OriginSpec] = &[
         Spool,
         [".local/state/polylogue/hooks/*.ndjson"]
     ),
-    reserved!(
-        "browser-capture",
-        Spool,
-        [".local/state/polylogue/browser-capture/**"]
-    ),
+    OriginSpec {
+        name: "browser-capture",
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Spool,
+        framing: Framing::Document,
+        root: crate::browser_capture::ROOT,
+        locations: crate::browser_capture::LOCATIONS,
+        recognize: crate::browser_capture::recognize,
+        open: crate::browser_capture::open,
+    },
     OriginSpec {
         name: "export-file",
         parser_version: 0,

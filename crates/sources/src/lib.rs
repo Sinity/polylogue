@@ -5,6 +5,7 @@
 //! with a reason.
 
 pub mod account;
+pub mod browser_capture;
 pub mod chatgpt;
 pub mod claude_ai;
 pub mod claude_code;
