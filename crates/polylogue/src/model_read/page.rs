@@ -1,4 +1,5 @@
-//! A page owns consecutive display fragments, independently of semantic blocks.
+//! Fits consecutive display fragments into one page under the token budget.
+//! A fragment is part or all of one block's display text.
 use super::{MAX_BUDGET, MINIMUM, Position, Window, refusal, request::Request, unavailable};
 use serde_json::{Value, json};
 
@@ -17,7 +18,7 @@ impl Fragment {
 pub(super) struct Assembler<'a, 'r> {
     envelope: Value,
     request: &'r Request<'a>,
-    basis: [u8; 32],
+    fingerprint: [u8; 32],
     count: u64,
     start: Position,
     fragments: Vec<Fragment>,
@@ -27,14 +28,14 @@ impl<'a, 'r> Assembler<'a, 'r> {
     pub fn new(
         envelope: Value,
         request: &'r Request<'a>,
-        basis: [u8; 32],
+        fingerprint: [u8; 32],
         count: u64,
         start: Position,
     ) -> Self {
         Self {
             envelope,
             request,
-            basis,
+            fingerprint,
             count,
             start,
             fragments: Vec::new(),
@@ -42,9 +43,9 @@ impl<'a, 'r> Assembler<'a, 'r> {
         }
     }
 
-    /// Keep one admitted page and at most one candidate window. A null-next
-    /// envelope is the lower bound, since a complete final page can be smaller
-    /// than a nonfinal prefix. Never stop solely on that larger prefix cost.
+    /// Adds a fragment and returns whether to keep reading: stop at a partial
+    /// window or once the fragments, priced as a final page with next:null,
+    /// exceed the budget. `finish` then cuts the page back to fit.
     pub fn push(&mut self, identity: Value, window: Window, block: u64) -> bool {
         let complete = !window.full;
         let fragment = Fragment {
@@ -90,7 +91,7 @@ impl<'a, 'r> Assembler<'a, 'r> {
         let next = if provisional_final || position.block >= self.count {
             Value::Null
         } else {
-            self.request.follow_up(&self.basis, &position)
+            self.request.follow_up(&self.fingerprint, &position)
         };
         let mut page = self.envelope.clone();
         page["primary_content_complete"] = json!(next.is_null());
@@ -102,8 +103,8 @@ impl<'a, 'r> Assembler<'a, 'r> {
     pub fn finish(self) -> Result<Value, Value> {
         let budget = self.request.budget;
         let all = self.candidate(self.units, false);
-        // Check the whole candidate first: final next:null breaks monotonicity
-        // at the last atom. All proper prefixes have ordinary continuation.
+        // Try the whole page first: a final page has next:null and can be
+        // smaller than a shorter page that carries a next call.
         if budget >= MINIMUM && self.request.cost(&all) <= budget {
             return Ok(all);
         }

@@ -60,7 +60,7 @@ fn invalid_wire_shapes_keep_specific_refusals_and_order() {
 }
 
 #[test]
-fn default_and_authenticated_inherited_budgets_remain_distinct() {
+fn continuation_inherits_its_budget_unless_one_is_given() {
     let value = json!({"reference":"claude-code:opaque"});
     let first = Request::decode(&value).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(first.budget, 4000);

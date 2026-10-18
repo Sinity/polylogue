@@ -183,7 +183,7 @@ fn codex_thinking_payload_and_extra_named_data_coexist_and_unknown_path_hint_is_
     );
     assert_eq!(refusal["outcome"], "error");
     assert_eq!(
-        refusal["error"]["reason"], "current_selected_basis_unavailable",
+        refusal["error"]["reason"], "selected_rows_unavailable",
         "{refusal}"
     );
     assert!(refusal["error"]["hint"].as_str().is_none(), "{refusal}");

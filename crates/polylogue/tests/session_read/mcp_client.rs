@@ -99,7 +99,17 @@ fn mcp_client_searches_pages_a_dialogue_read_and_writes_a_note() {
         let page = client.tool("read", call.clone());
         assert_ne!(page["outcome"], "error", "{page}");
         let cli = model_call(&world, &call, Some(1000));
-        assert_eq!(page["shown"], cli["shown"]);
+        // MCP also charges its text companion to the budget, so its page may
+        // end earlier than the CLI page; otherwise the rows match.
+        let rows = page["shown"].as_array().unwrap();
+        let cli_rows = cli["shown"].as_array().unwrap();
+        assert!(!rows.is_empty() && rows.len() <= cli_rows.len());
+        for (row, cli_row) in rows.iter().zip(cli_rows) {
+            assert_eq!(row["block"], cli_row["block"]);
+            assert_eq!(row["display_start"], cli_row["display_start"]);
+            let text = row["text"].as_str().unwrap();
+            assert!(cli_row["text"].as_str().unwrap().starts_with(text));
+        }
         for span in page["shown"].as_array().unwrap() {
             texts.push(span["text"].as_str().unwrap().to_owned());
         }
