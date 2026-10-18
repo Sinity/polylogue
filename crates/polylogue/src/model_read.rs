@@ -160,7 +160,7 @@ fn timed_out(stage: &str) -> Value {
 fn stored<T>(value: Result<T, polylogue_store::Error>) -> Result<T, Value> {
     value.map_err(|e| match e {
         polylogue_store::Error::Cancelled => timed_out("retained selection or qualification"),
-        polylogue_store::Error::MessagePredecessorChanged => unavailable("stale_read"),
+        polylogue_store::Error::StaleMessage => unavailable("stale_read"),
         _ => unavailable(&e.to_string()),
     })
 }

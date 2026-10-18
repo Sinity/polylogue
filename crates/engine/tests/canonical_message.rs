@@ -363,9 +363,7 @@ fn stale_turn_rolls_back_and_layout_cannot_change_after_install() {
     m::apply(&mut world.writer, first).unwrap();
     assert!(matches!(
         m::apply(&mut world.writer, stale),
-        Err(m::Error::Store(
-            polylogue_store::Error::MessagePredecessorChanged
-        ))
+        Err(m::Error::Store(polylogue_store::Error::StaleMessage))
     ));
     for _ in 0..200 {
         let action = world.compute(&handle);
@@ -379,9 +377,7 @@ fn stale_turn_rolls_back_and_layout_cannot_change_after_install() {
         if let Some(stale) = duplicate {
             assert!(matches!(
                 m::apply(&mut world.writer, stale),
-                Err(m::Error::Store(
-                    polylogue_store::Error::MessagePredecessorChanged
-                ))
+                Err(m::Error::Store(polylogue_store::Error::StaleMessage))
             ));
         }
         if installed {
@@ -566,9 +562,7 @@ fn an_unhandled_origin_producer_cannot_ride_a_computed_field_or_restart() {
         .unwrap();
     assert!(matches!(
         m::apply(&mut world.writer, action),
-        Err(m::Error::Store(
-            polylogue_store::Error::MessagePredecessorChanged
-        ))
+        Err(m::Error::Store(polylogue_store::Error::StaleMessage))
     ));
     assert_eq!(
         m::inspect(&mut world.writer, &handle, 65536)

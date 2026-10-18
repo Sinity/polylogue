@@ -13,7 +13,7 @@ use std::{
 };
 
 fn changed() -> Error {
-    Error::MessagePredecessorChanged
+    Error::StaleMessage
 }
 fn invalid(s: &str) -> Error {
     Error::Invariant(s.into())

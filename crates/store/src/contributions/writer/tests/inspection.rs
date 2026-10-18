@@ -151,10 +151,7 @@ fn exact_preparation_inspection_refuses_hidden_removal_contributor_and_source_ch
         let build = f.prepare().unwrap().build;
         f.writer._index.execute_batch(sql).unwrap();
         let before = wal(&f);
-        assert!(matches!(
-            inspect(&mut f, &build),
-            Err(Error::MessagePredecessorChanged)
-        ));
+        assert!(matches!(inspect(&mut f, &build), Err(Error::StaleMessage)));
         assert_eq!(before, wal(&f));
     }
     let mut f = Fixture::new();
@@ -170,10 +167,7 @@ fn exact_preparation_inspection_refuses_hidden_removal_contributor_and_source_ch
             excisions_seen: 0,
         })
         .unwrap();
-    assert!(matches!(
-        inspect(&mut f, &build),
-        Err(Error::MessagePredecessorChanged)
-    ));
+    assert!(matches!(inspect(&mut f, &build), Err(Error::StaleMessage)));
 }
 #[test]
 fn exact_preparation_inspection_keeps_identity_route_revision_and_admission_guards() {

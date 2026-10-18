@@ -143,7 +143,7 @@ fn malformed_batch_and_stale_token_never_install_a_partial_transaction() {
         .unwrap();
     assert!(matches!(
         writer.stage_parser(&original, &c[64..128], batch_budget()),
-        Err(Error::ParserPredecessorChanged)
+        Err(Error::StaleParserState)
     ));
     assert_eq!(
         writer

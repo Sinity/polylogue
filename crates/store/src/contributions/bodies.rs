@@ -62,7 +62,7 @@ pub enum BodyRetirement {
 }
 fn check(connection: &rusqlite::Connection, path: &Path, id: &BodyId) -> Result<()> {
     if path != id.path {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     let generation: String = db(path, || {
         connection.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
@@ -70,7 +70,7 @@ fn check(connection: &rusqlite::Connection, path: &Path, id: &BodyId) -> Result<
         })
     })?;
     if generation != id.generation {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     Ok(())
 }
@@ -82,7 +82,7 @@ impl Writer {
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
         if path != id.path {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let generation: String = db(&path, || {
             tx.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
@@ -90,7 +90,7 @@ impl Writer {
             })
         })?;
         if generation != id.generation {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let row: Option<(bool, Option<i64>, Vec<u8>)> = db(&path, || {
             tx.query_row("SELECT eligible,body_pk,basis_digest FROM message_candidate WHERE pk=?1 AND message_pk=?2 AND session_pk=?3",params![id.pk,id.message,id.session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()
@@ -99,7 +99,7 @@ impl Writer {
             return Ok(CandidateCollection::Missing);
         };
         if basis != id.basis {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         if eligible || body.is_some() {
             return Ok(CandidateCollection::Retained);
@@ -121,7 +121,7 @@ impl Writer {
                 )
             })? != 1
             {
-                return Err(Error::MessagePredecessorChanged);
+                return Err(Error::StaleMessage);
             }
             db(&path, || tx.commit())?;
             return Ok(CandidateCollection::Source);
@@ -133,7 +133,7 @@ impl Writer {
             )
         })? != 1
         {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         db(&path, || tx.commit())?;
         Ok(CandidateCollection::Candidate)
@@ -197,7 +197,7 @@ impl Writer {
                 tx.execute("UPDATE message_candidate SET body_pk=NULL,body_ready=NULL WHERE pk=?1 AND body_pk=?2 AND ready=1 AND eligible=0",params![candidate,id.pk])
             })? != 1
             {
-                return Err(Error::MessagePredecessorChanged);
+                return Err(Error::StaleMessage);
             }
             db(&path, || tx.commit())?;
             return Ok(BodyRetirement::DetachedCandidate);
@@ -206,7 +206,7 @@ impl Writer {
             tx.execute("DELETE FROM message_body WHERE pk=?1 AND message_pk=?2 AND session_pk=?3 AND ready=1",params![id.pk,id.message,id.session])
         })? != 1
         {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         for root in [blocks, fields, operations].into_iter().flatten() {
             d::release(

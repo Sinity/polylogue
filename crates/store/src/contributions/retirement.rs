@@ -198,7 +198,7 @@ impl Writer {
     pub fn retire_message_turn(&mut self, build: &Build) -> Result<Retirement> {
         let path = self.root.join("index.db");
         if path != build.path {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let tx = db(&path, || self._index.transaction())?;
         let generation: String = db(&path, || {
@@ -207,7 +207,7 @@ impl Writer {
             })
         })?;
         if generation != build.source.index_generation {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let row: Option<(
             String,
@@ -330,7 +330,7 @@ impl Writer {
                 )
             })? != 1
             {
-                return Err(Error::MessagePredecessorChanged);
+                return Err(Error::StaleMessage);
             }
             db(&path, || tx.commit())?;
             return Ok(Retirement::Source);

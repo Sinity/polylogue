@@ -85,7 +85,7 @@ impl Writer {
             )
         })? != 1
         {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let source_fields = facts
             .source_fields
@@ -95,7 +95,7 @@ impl Writer {
             tx.execute("UPDATE message_candidate SET facts_ready=1,source_blocks=?2,source_text_blocks=?3,source_fields=?4,version_hash=?5,finish=?6 WHERE pk=?1 AND ready=0 AND eligible=0",params![build.candidate,counts.source_blocks,counts.source_text_blocks,source_fields,version_hash.bytes().as_slice(),completion])
         })? != 1
         {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         db(&path, || {
             tx.execute(

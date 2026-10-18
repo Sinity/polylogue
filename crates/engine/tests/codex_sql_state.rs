@@ -449,11 +449,11 @@ fn sealed_partial_application_restarts_without_reinterpreting_and_rejects_stale_
     let published = writer.publish_parser(&work.token).unwrap();
     assert!(matches!(
         writer.parser_snapshot(&head.token),
-        Err(Error::ParserPredecessorChanged)
+        Err(Error::StaleParserState)
     ));
     assert!(matches!(
         writer.publish_parser(&work.token),
-        Err(Error::ParserPredecessorChanged)
+        Err(Error::StaleParserState)
     ));
     let snapshot = writer.parser_snapshot(&published.token).unwrap();
     let attempt = adapter::Attempt::new(&snapshot, budget());

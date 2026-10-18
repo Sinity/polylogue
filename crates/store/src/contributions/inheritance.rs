@@ -45,7 +45,7 @@ impl Writer {
             || previous_source.basis != build.source.basis
             || previous_source.step > build.source.step
         {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let tx = db(&path, || self._index.transaction())?;
         writer::check(&tx, &path, build)?;
@@ -55,7 +55,7 @@ impl Writer {
             [build.pk], |r|r.get(0))
         })?;
         if !empty || step.expected_sequence != 0 {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         type Roots = (
             Option<i64>,
@@ -74,12 +74,12 @@ impl Writer {
             |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,crate::parser_state::unsigned(r,3)?,r.get(4)?,r.get(5)?,r.get(6)?,crate::parser_state::unsigned(r,7)?))).optional()
         })?;
         let (blocks, fields, operations, evidence_revision, hash, old_basis, logical, revision) =
-            roots.ok_or(Error::MessagePredecessorChanged)?;
+            roots.ok_or(Error::StaleMessage)?;
         let logical: [u8; 32] = logical
             .try_into()
             .map_err(|_| Error::Invariant("source candidate logical key length".into()))?;
         if old_basis != writer::basis(previous_source, revision, &logical, evidence_revision) {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let hash: [u8; 32] = hash
             .try_into()
@@ -259,7 +259,7 @@ mod tests {
         };
         assert!(matches!(
             w.inherit_message_projection(&new, &old.body_id(), &wrong, &step, 4096),
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         ));
         w._index.execute_batch("CREATE TRIGGER fail_cursor BEFORE UPDATE OF source_cursor ON message_build BEGIN SELECT RAISE(ABORT,'synthetic cursor failure'); END;").unwrap();
         assert!(

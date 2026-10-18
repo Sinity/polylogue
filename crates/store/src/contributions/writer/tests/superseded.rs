@@ -43,14 +43,14 @@ fn identical_preparation_resumes_but_changed_parser_drains_private_work_across_r
     assert!(matches!(
         f.writer
             .retire_superseded_message_turn(&f.message, &source(&old), 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     let mut invalid = source(&f.head.token);
     invalid.revision = 999;
     assert!(matches!(
         f.writer
             .retire_superseded_message_turn(&f.message, &invalid, 4096),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(
         f.scalar("SELECT count(*) FROM message_build WHERE phase='project'"),

@@ -101,7 +101,7 @@ fn provider_turns_preserve_peer_reads_writes_and_never_certify_eof_completion() 
     );
     assert!(matches!(
         pending.turn(&mut writer, budget()),
-        Err(Error::ParserPredecessorChanged)
+        Err(Error::StaleParserState)
     ));
     assert!(matches!(
         PendingInstall::begin(

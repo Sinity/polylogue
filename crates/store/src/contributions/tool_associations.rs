@@ -126,7 +126,7 @@ fn attach(
         tx.execute("UPDATE message SET selected_body_pk=?2 WHERE pk=?1 AND selected_body_pk=?3 AND session_pk=?4 AND hidden=0",params![message,selected,body,session])
     })? != 1
     {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     Ok(true)
 }
@@ -162,7 +162,7 @@ fn clone_with_root(
         "INSERT INTO message_body({columns}) SELECT {values} FROM message_body WHERE pk=?1 AND ready=1"
     );
     if db(p, || tx.execute(&sql, params![body, root]))? != 1 {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     Ok(tx.last_insert_rowid())
 }

@@ -220,7 +220,7 @@ impl CommitGuard {
                 || receipt.acquired_upto < predecessor.acquired_upto
                 || receipt.status != expected_status
             {
-                return Err(Error::Store(StoreError::ParserPredecessorChanged));
+                return Err(Error::Store(StoreError::StaleParserState));
             }
             Ok(receipt.token.clone())
         })?;
@@ -250,7 +250,7 @@ pub fn read_offset(head: &Head, continuation: Option<&CommittedContinuation>) ->
         {
             Ok(c.scanned_upto())
         }
-        Some(_) => Err(StoreError::ParserPredecessorChanged.into()),
+        Some(_) => Err(StoreError::StaleParserState.into()),
     }
 }
 fn accounting(c: &Counts) -> Result<Accounting> {

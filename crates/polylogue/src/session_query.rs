@@ -22,7 +22,7 @@ fn store_failure(error: polylogue_store::Error) -> Value {
         polylogue_store::Error::ExcisionCheckRequired => ErrorKind::Refused {
             reason: "excision-aware query reader is not registered".into(),
         },
-        polylogue_store::Error::MessagePredecessorChanged => ErrorKind::Conflict,
+        polylogue_store::Error::StaleMessage => ErrorKind::Conflict,
         _ => ErrorKind::Io,
     };
     failed(kind, error)

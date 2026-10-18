@@ -61,7 +61,7 @@ fn small_field_same_value_origin_dedup_and_cursor_commit_survive_reopen() {
             &step(0),
             4096
         ),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(f.scalar("SELECT count(*) FROM body_value"), before);
     assert_eq!(f.scalar("SELECT count(*) FROM message_field_fact"), 1);
@@ -168,7 +168,7 @@ fn small_field_stale_source_cannot_allocate_values() {
             &step(0),
             4096
         ),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(f.scalar("SELECT count(*) FROM body_value"), 0);
 }

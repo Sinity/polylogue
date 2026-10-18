@@ -1651,7 +1651,7 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
             let current =
                 writer.current_source_projection(&token, &request.logical_key, allowance)?;
             if !same_reference(current.as_ref(), previous.as_ref()) {
-                return Err(StoreError::MessagePredecessorChanged.into());
+                return Err(StoreError::StaleMessage.into());
             }
             let source = Source {
                 predecessor: &token,
@@ -1686,7 +1686,7 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
             let current =
                 writer.current_source_projection(&token, &request.logical_key, allowance)?;
             if !same_reference(current.as_ref(), Some(&source)) {
-                return Err(StoreError::MessagePredecessorChanged.into());
+                return Err(StoreError::StaleMessage.into());
             }
             Ok(Applied::Existing(source))
         }
@@ -1697,7 +1697,7 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                 || now.preparation.active_value != guard.active
                 || now.preparation.active_origin_value != guard.active_origin
             {
-                return Err(StoreError::MessagePredecessorChanged.into());
+                return Err(StoreError::StaleMessage.into());
             }
             let build = &guard.handle.build;
             match change {

@@ -256,7 +256,7 @@ pub(crate) fn head(
 fn current(db: &Connection, path: &Path, token: &Token) -> Result<Head> {
     match head(db, path, token.input_pk, token.chain)? {
         Some(h) if h.token == *token => Ok(h),
-        _ => Err(StoreError::ParserPredecessorChanged),
+        _ => Err(StoreError::StaleParserState),
     }
 }
 /// Admission/namespace changes are metadata transactions, not provider work.
@@ -308,8 +308,8 @@ pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Resu
             params![basis.input_pk,basis.chain,basis.parser_version,acquired,basis.digest.as_slice(),generation,
                 reference(generation,0),basis.companions_json,excisions]))?;
     }
-    let result = head(&tx, path, basis.input_pk, basis.chain)?
-        .ok_or(StoreError::ParserPredecessorChanged)?;
+    let result =
+        head(&tx, path, basis.input_pk, basis.chain)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
@@ -348,7 +348,7 @@ impl ParserReader {
         let head = current(&db, &path, expected)?;
         prepared::ensure_idle(&db, &path, expected)?;
         if head.status == "retired" {
-            return Err(StoreError::ParserPredecessorChanged);
+            return Err(StoreError::StaleParserState);
         }
         Ok(Snapshot {
             db,
@@ -579,7 +579,7 @@ fn validate_expected_head(expected: &Head, now: &Head) -> Result<()> {
         || expected.finalization_pending != now.finalization_pending
         || expected.acquired_upto > now.acquired_upto
     {
-        return Err(StoreError::ParserPredecessorChanged);
+        return Err(StoreError::StaleParserState);
     }
     Ok(())
 }
@@ -661,7 +661,7 @@ where
         prepared::ensure_idle(&tx, path, &expected.token)?;
     }
     if now.status == "retired" {
-        return Err(StoreError::ParserPredecessorChanged);
+        return Err(StoreError::StaleParserState);
     }
     let counts = now.counts.add(progress.counts)?;
     for c in changes {
@@ -706,7 +706,7 @@ where
         params![expected.token.input_pk,expected.token.chain,inspected,parsed,status,
             progress.finalization_pending,next,reference(expected.token.generation,next),record_counts[0],record_counts[1],record_counts[2],record_counts[3],record_counts[4]]))?;
     let result = head(&tx, path, expected.token.input_pk, expected.token.chain)?
-        .ok_or(StoreError::ParserPredecessorChanged)?;
+        .ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
@@ -734,8 +734,8 @@ pub(crate) fn retire(db: &mut Connection, path: &Path, expected: &Token) -> Resu
             ],
         )
     )?;
-    let result = head(&tx, path, expected.input_pk, expected.chain)?
-        .ok_or(StoreError::ParserPredecessorChanged)?;
+    let result =
+        head(&tx, path, expected.input_pk, expected.chain)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
@@ -980,7 +980,7 @@ mod tests {
         let initial = writer.begin_parser(&basis(input, 10)).unwrap();
         assert!(matches!(
             writer.publish_source_rows(&initial, b"synthetic producer proof", true),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
         // Synthetic producer evidence qualifies storage/CAS, not source semantics.
         let finalizing = write_step(
@@ -1004,7 +1004,7 @@ mod tests {
         wrong.token.generation += 1;
         assert!(matches!(
             writer.publish_source_rows(&wrong, b"synthetic producer proof", true),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
         writer._index.execute_batch("CREATE TRIGGER refuse_row_settlement BEFORE UPDATE ON parse_state WHEN NEW.status='done' BEGIN SELECT RAISE(ABORT,'late settlement failure'); END;").unwrap();
         assert!(matches!(
@@ -1053,7 +1053,7 @@ mod tests {
         );
         assert!(matches!(
             writer.publish_source_rows(&finalizing, b"replay", true),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
     }
     #[test]
@@ -1087,7 +1087,7 @@ mod tests {
             }
             assert!(matches!(
                 writer.publish_source_rows(&finalizing, b"old frontier", true),
-                Err(StoreError::ParserPredecessorChanged)
+                Err(StoreError::StaleParserState)
             ));
             assert!(
                 writer
@@ -1140,7 +1140,7 @@ mod tests {
         assert_ne!(newer.token, head.token);
         assert!(matches!(
             writer.record_parser_failure(&head.token, Some("stale"), 4096),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
         assert!(writer.parser_failure(&newer.token).unwrap().is_none());
     }
@@ -1211,7 +1211,7 @@ mod tests {
         assert_eq!(old.cell("test", b"a", 10).unwrap().unwrap(), b"old");
         assert!(matches!(
             writer.parser_snapshot(&head.token),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
         assert!(matches!(
             write_step(
@@ -1223,7 +1223,7 @@ mod tests {
                 budget(),
                 |_| panic!("stale output")
             ),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
         let fresh = writer.parser_snapshot(&next.token).unwrap();
         assert_eq!(fresh.cell("test", b"a", 10).unwrap().unwrap(), b"new");
@@ -1252,7 +1252,7 @@ mod tests {
         assert_ne!(next.token, old.token);
         assert!(matches!(
             writer.parser_snapshot(&old.token),
-            Err(StoreError::ParserPredecessorChanged)
+            Err(StoreError::StaleParserState)
         ));
     }
     #[test]
@@ -1412,7 +1412,7 @@ impl crate::Writer {
             || !now.finalization_pending
             || now.parsed_upto != now.acquired_upto
         {
-            return Err(StoreError::ParserPredecessorChanged);
+            return Err(StoreError::StaleParserState);
         }
         if settled && (now.counts.unrecognized > 0 || now.counts.undecodable > 0) {
             return Err(StoreError::Invariant(
@@ -1428,17 +1428,17 @@ impl crate::Writer {
             )
         )?;
         if excised {
-            return Err(StoreError::ParserPredecessorChanged);
+            return Err(StoreError::StaleParserState);
         }
         sql!(&path,tx.execute("INSERT INTO parser_cell(input_pk,chain,state_generation,namespace,key,value) VALUES(?1,?2,?3,?4,x'',?5) ON CONFLICT DO NOTHING",rusqlite::params![now.token.input_pk,now.token.chain,now.token.generation,SOURCE_ROWS_NAMESPACE,receipt]))?;
         if tx.changes() != 1 {
-            return Err(StoreError::ParserPredecessorChanged);
+            return Err(StoreError::StaleParserState);
         }
         if settled {
             sql!(&path,tx.execute("UPDATE parse_state SET status='done',finalization_pending=0 WHERE input_pk=?1 AND chain=?2",rusqlite::params![now.token.input_pk,now.token.chain]))?;
         }
         let result = head(&tx, &path, now.token.input_pk, now.token.chain)?
-            .ok_or(StoreError::ParserPredecessorChanged)?;
+            .ok_or(StoreError::StaleParserState)?;
         sql!(&path, tx.commit())?;
         Ok(result)
     }

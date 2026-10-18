@@ -106,7 +106,7 @@ pub(super) fn commit_cursor(
         tx.execute("UPDATE message_build SET source_cursor=source_cursor+1 WHERE pk=?1 AND source_cursor=?2",params![build.pk,expected])
     })?;
     if changed != 1 {
-        return Err(Error::MessagePredecessorChanged);
+        return Err(Error::StaleMessage);
     }
     db(path, || {
         tx.execute("INSERT INTO parser_cell(input_pk,chain,state_generation,namespace,key,value) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(input_pk,chain,state_generation,namespace,key) DO UPDATE SET value=excluded.value",params![build.source.input_pk,build.source.chain,build.source.generation,NAMESPACE,build.pk.to_be_bytes().as_slice(),step.next_cursor])
@@ -276,7 +276,7 @@ impl Writer {
             )
         })? != 1
         {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         commit_cursor(&tx, &path, build, step)?;
         db(&path, || tx.commit())?;
@@ -1200,7 +1200,7 @@ mod tests {
         f.writer.write_tool_command(&build, &step(2), 4096).unwrap();
         assert!(matches!(
             f.writer.install_block(&build, &step(2), 4096),
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         ));
         assert_eq!(
             f.scalar("SELECT active_block_pk IS NOT NULL FROM message_build"),

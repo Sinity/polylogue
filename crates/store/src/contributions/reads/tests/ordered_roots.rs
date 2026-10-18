@@ -255,7 +255,7 @@ fn ordered_extras_current_removal_epoch_revokes_and_cleans_cursor() {
         .unwrap();
     assert!(matches!(
         order.next(until(), &mut || false),
-        Err(Error::MessagePredecessorChanged)
+        Err(Error::StaleMessage)
     ));
     assert_eq!(temp_count(&view), 0);
 }

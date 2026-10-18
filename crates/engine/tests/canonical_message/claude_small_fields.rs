@@ -224,9 +224,7 @@ fn cancelled_small_field_computation_and_stale_atomic_action_publish_nothing() {
     m::apply(&mut w.writer, peer).unwrap();
     assert!(matches!(
         m::apply(&mut w.writer, prepared),
-        Err(m::Error::Store(
-            polylogue_store::Error::MessagePredecessorChanged
-        ))
+        Err(m::Error::Store(polylogue_store::Error::StaleMessage))
     ));
     let source = w.complete(&h);
     assert_eq!(
@@ -313,9 +311,7 @@ fn run_hash_allowance_yields_original_single_field_and_cancelled_or_stale_run_ne
             m::apply(&mut w.writer, action).unwrap();
             assert!(matches!(
                 m::apply(&mut w.writer, single),
-                Err(m::Error::Store(
-                    polylogue_store::Error::MessagePredecessorChanged
-                ))
+                Err(m::Error::Store(polylogue_store::Error::StaleMessage))
             ));
             w = w.reopen();
             let h = begin(&mut w, &r);

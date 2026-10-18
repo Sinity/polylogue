@@ -108,7 +108,7 @@ fn append_during_finalization_discards_only_obsolete_audit_and_restarts_cleanly(
     let event = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(matches!(
         &event,
-        Message::CanonicalComputed(Err(Error::Store(StoreError::ParserPredecessorChanged)))
+        Message::CanonicalComputed(Err(Error::Store(StoreError::StaleParserState)))
     ));
     actor.message(event).unwrap();
     assert!(matches!(&actor.active, Some(Active::Begin(v)) if v.revision == current.revision));
@@ -142,7 +142,7 @@ fn current_predecessor_rejection_and_changed_source_corruption_are_not_discarded
         let error = if changed {
             StoreError::Invariant("synthetic canonical corruption".into())
         } else {
-            StoreError::ParserPredecessorChanged
+            StoreError::StaleParserState
         };
         actor
             .message(Message::CanonicalComputed(Err(error.into())))

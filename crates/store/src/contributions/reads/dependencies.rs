@@ -42,7 +42,7 @@ impl SessionCatalog {
     pub fn verify_dependency_bodies(&self, dependency: &SessionInputDependency) -> Result<()> {
         self.visible()?;
         if !Arc::ptr_eq(&self.read, &dependency.read) {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let read = locked(&self.read)?;
         let archive = read
@@ -74,7 +74,7 @@ impl SessionCatalog {
         let key = match after {
             None => "",
             Some(cursor) if Arc::ptr_eq(&self.read, &cursor.read) => &cursor.after,
-            Some(_) => return Err(Error::MessagePredecessorChanged),
+            Some(_) => return Err(Error::StaleMessage),
         };
         let read = locked(&self.read)?;
         let archive = read
@@ -166,7 +166,7 @@ impl SessionCatalog {
     ) -> Result<Option<String>> {
         self.visible()?;
         if !Arc::ptr_eq(&self.read, &dependency.read) {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let read = locked(&self.read)?;
         let archive = read
@@ -193,7 +193,7 @@ impl SessionCatalog {
     ) -> Result<Option<crate::contributions::SourceProjection>> {
         self.visible()?;
         if !Arc::ptr_eq(&self.read, &dependency.read) {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let Some(head) = dependency.head() else {
             return Ok(None);
@@ -218,7 +218,7 @@ impl SessionCatalog {
     ) -> Result<Option<Vec<u8>>> {
         self.visible()?;
         if !Arc::ptr_eq(&self.read, &dependency.read) {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         let Some(head) = dependency.head.as_ref() else {
             return Ok(None);

@@ -108,7 +108,7 @@ impl ReadHandle {
             MessageId::from_stored(id, session).map_err(|e| Error::Invariant(e.to_string()))?;
         self.selected_message(&id)?
             .map(MessageLookup::Ready)
-            .ok_or(Error::MessagePredecessorChanged)
+            .ok_or(Error::StaleMessage)
     }
     pub fn selected_message(&self, id: &MessageId) -> Result<Option<MessageView>> {
         let archive_path = self.root.join("archive.db");
@@ -135,7 +135,7 @@ impl ReadHandle {
             return Ok(None);
         };
         if crate::counter(&self.archive, &archive_path)? != archive_counter {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         Ok(Some(MessageView {
             read: Arc::new(Mutex::new(PinnedRead {
@@ -190,7 +190,7 @@ impl MessageView {
             params![self.owner.message,self.owner.session,self.id.as_str(),self.removal_epoch,self.generation],|r|r.get(0))
         })?;
         if !visible {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         Ok(())
     }
@@ -787,7 +787,7 @@ impl SessionCatalog {
                 )?
                 .query_row([&self.generation], |r| r.get::<_, bool>(0))
         })? {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         Ok(())
     }
@@ -810,7 +810,7 @@ impl SessionCatalog {
         let key = match after {
             None => "",
             Some(c) if Arc::ptr_eq(&c.read, &self.read) => &c.after,
-            Some(_) => return Err(Error::MessagePredecessorChanged),
+            Some(_) => return Err(Error::StaleMessage),
         };
         let read = locked(&self.read)?;
         let row: Option<(u64, Option<String>)> = db(&self.path, || {
@@ -828,9 +828,7 @@ impl SessionCatalog {
             after: id.clone(),
         };
         let id = SessionId::from_stored(id).map_err(|e| Error::Invariant(e.to_string()))?;
-        let session = self
-            .session(&id, allowance)?
-            .ok_or(Error::MessagePredecessorChanged)?;
+        let session = self.session(&id, allowance)?.ok_or(Error::StaleMessage)?;
         Ok(Some((cursor, session)))
     }
 }
@@ -926,7 +924,7 @@ impl ReadHandle {
             .ok_or_else(|| metadata_admission("session read generation", generation_length))?;
         let counter = crate::counter(&connection, &path)?;
         if crate::counter(&self.archive, &archive_path)? != archive_counter {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         Ok(SessionCatalog {
             read: Arc::new(Mutex::new(PinnedRead {
@@ -1124,7 +1122,7 @@ impl SessionView {
         if visible {
             Ok(())
         } else {
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         }
     }
     pub fn header(&self) -> Result<&SessionHeader> {
@@ -1144,7 +1142,7 @@ impl SessionView {
             Some(cursor) if Arc::ptr_eq(&self.read, &cursor.read) && cursor.session == self.pk => {
                 (cursor.sequence, cursor.message)
             }
-            Some(_) => return Err(Error::MessagePredecessorChanged),
+            Some(_) => return Err(Error::StaleMessage),
         };
         let remaining = allowance
             .checked_sub(self.header.id.as_str().len())
@@ -1205,7 +1203,7 @@ impl SessionView {
             read.visibility.query_row("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND session_pk=?2 AND id=?3 AND hidden=0 AND removal_epoch=?4) AND EXISTS(SELECT 1 FROM meta WHERE key='generation' AND value=?5)",params![message,self.pk,id.as_str(),removal_epoch,self.generation],|r|r.get(0))
         })?;
         if !visible {
-            return Err(Error::MessagePredecessorChanged);
+            return Err(Error::StaleMessage);
         }
         if selected.is_some() && body.is_none() {
             return Err(Error::Invariant(
@@ -1316,7 +1314,7 @@ impl MessageView {
             Some(cursor) if Arc::ptr_eq(&self.read, &cursor.read) && cursor.body == self.body => {
                 cursor.position.clone()
             }
-            Some(_) => return Err(Error::MessagePredecessorChanged),
+            Some(_) => return Err(Error::StaleMessage),
         };
         let read = locked(&self.read)?;
         let preferred: i64 = db(&self.path, || {
@@ -1579,7 +1577,7 @@ impl MessageView {
             {
                 Some(cursor.after)
             }
-            Some(_) => return Err(Error::MessagePredecessorChanged),
+            Some(_) => return Err(Error::StaleMessage),
         };
         let Some((key, edge)) = d::next(
             connection,
@@ -2020,7 +2018,7 @@ mod tests {
         assert!(fresh.source_archive_counter() > old_archive_counter);
         assert!(matches!(
             fresh.next_dependency(Some(&old_cursor), 65536),
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         ));
         let mut after = None;
         let mut found = false;
@@ -2147,7 +2145,7 @@ mod tests {
         let other = f.session();
         assert!(matches!(
             other.next(Some(&cursor), 65536),
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         ));
     }
     #[test]
@@ -2204,18 +2202,12 @@ mod tests {
                 [source.message().as_str()],
             )
             .unwrap();
-        assert!(matches!(
-            message.header(),
-            Err(Error::MessagePredecessorChanged)
-        ));
+        assert!(matches!(message.header(), Err(Error::StaleMessage)));
         assert!(matches!(
             message.read_certificate(),
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         ));
-        assert!(matches!(
-            view.next(None, 65536),
-            Err(Error::MessagePredecessorChanged)
-        ));
+        assert!(matches!(view.next(None, 65536), Err(Error::StaleMessage)));
         f.writer
             ._index
             .execute("UPDATE session SET title=?1", ["large".repeat(1000)])
@@ -2285,7 +2277,7 @@ mod tests {
         );
         assert!(matches!(
             new.next_field(Some(&cursor), 65536),
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         ));
         assert_eq!(model(&old), "old");
         assert_eq!(model(&new), "new");
@@ -2359,7 +2351,7 @@ mod tests {
         };
         assert!(matches!(
             new.next_source(Some(&cursor), 65536),
-            Err(Error::MessagePredecessorChanged)
+            Err(Error::StaleMessage)
         ));
     }
     #[test]

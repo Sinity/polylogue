@@ -253,9 +253,7 @@ fn old_absent_cursor_resume_keeps_cancellation_budget_stale_cas_and_restart() {
     m::apply(&mut w.writer, action).unwrap();
     assert!(matches!(
         m::apply(&mut w.writer, stale),
-        Err(m::Error::Store(
-            polylogue_store::Error::MessagePredecessorChanged
-        ))
+        Err(m::Error::Store(polylogue_store::Error::StaleMessage))
     ));
     w = w.reopen();
     h = begin(&mut w, &req);
