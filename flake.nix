@@ -11,7 +11,9 @@
         pname = "polylogue";
         version = "0.1.0";
         src = self;
-        cargoLock.lockFile = ./Cargo.lock;
+        # The shared crates are Git dependencies; Nix fetches them at the
+        # locked commit.
+        cargoLock = { lockFile = ./Cargo.lock; allowBuiltinFetchGit = true; };
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = [ pkgs.zstd ];
         cargoBuildFlags = [ "-p" "polylogue" ];

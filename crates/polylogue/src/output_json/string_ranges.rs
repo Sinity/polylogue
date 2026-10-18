@@ -2,7 +2,7 @@
 //! Masking output is compared with a second decoding pass; a string with lone
 //! surrogates is copied as stored only when masking would not change it.
 use super::{Escaped, PIECE, deadline};
-use credential_output::Masker;
+use credential_masking::Masker;
 use std::io::{self, Read, Write};
 use std::time::Instant;
 

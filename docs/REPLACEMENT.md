@@ -34,9 +34,9 @@ The Python package is still deployed. Its known consumers pin it by source
 revision: [Sinnix e9bdd3a75](https://github.com/Sinity/sinnix/commit/e9bdd3a750227d02baf8df851c95945b6a25b282)
 and [Lynchpin 0383336](https://github.com/Sinity/sinity-lynchpin/commit/03833361456999be6c84536fb6e0936b62d27ccb).
 
-The shared file layer is released as the annotated tag `hashed-blobs-v0.1.0`
-on the same commit, and Sinex depends on it from this repository
-([release process](shared-file-layer-release.md)).
+The content-addressed file store and credential masking now live in
+[polylogue-sinex-common](https://github.com/Sinity/polylogue-sinex-common), which both Polylogue and Sinex
+pin by tag.
 
 Switching the deployment to the Rust version, migrating the existing archive
 and its data, and removing the Python package are separate operator decisions.

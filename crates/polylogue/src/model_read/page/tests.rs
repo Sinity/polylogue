@@ -105,7 +105,7 @@ fn partial_window_never_splits_a_replacement_or_control_escape_and_retries_same_
         let args = json!({"reference":"claude-code:neutral","budget_tokens":budget});
         let request = Request::decode(&args).unwrap();
         let mut w = window("🙂\u{1b}");
-        let mut masker = credential_output::Masker::new();
+        let mut masker = credential_masking::Masker::new();
         masker
             .push(&format!("ghp_{}", "A".repeat(36)), &mut w)
             .unwrap();

@@ -139,7 +139,7 @@ pub(crate) fn serve(
         let header = message.header().map_err(|e| failed(ErrorKind::Io, e))?;
         recovery = message.recovery().map_err(|e| failed(ErrorKind::Io, e))?;
         frame(stream,json!({"type":"message","id":message.id().as_str(),"session":message.id().session().as_str(),"role":header.role,"written_by":header.written_by})).map_err(|e|failed(ErrorKind::Io,e))?;
-        let mut masker = credential_output::Masker::new();
+        let mut masker = credential_masking::Masker::new();
         let mut index = 0u64;
         while let Some(block) = message
             .block_at(index)

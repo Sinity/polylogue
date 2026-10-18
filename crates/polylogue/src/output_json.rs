@@ -1,7 +1,7 @@
 //! JSON encoder for read and export responses. It masks credentials in string
 //! values, refuses keys and identities that would need masking, and writes in
 //! fixed-size pieces however much masking expands the text.
-use credential_output::Masker;
+use credential_masking::Masker;
 mod native_identity;
 pub(crate) mod raw_value;
 mod string_ranges;

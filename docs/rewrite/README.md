@@ -13,7 +13,6 @@ The full design is in the spec repository (`/realm/inbox/spec/polylogue-spec/`).
 | [message-preparation.md](message-preparation.md) | building messages from parsed records |
 | [read-connections.md](read-connections.md) | read connections and prepared statements |
 | [prose-search-scratch.md](prose-search-scratch.md) | per-query full-text search tables |
-| [credential-masking.md](credential-masking.md) | masking credentials in output |
 
 The SQL schema is in `crates/store/schema/`; `provenance.json` records which
 spec revision each file was taken from.

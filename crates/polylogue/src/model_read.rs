@@ -465,7 +465,7 @@ fn window(
         }
     };
     // Masking depends on earlier blocks of the message, so replay them first.
-    let mut masker = credential_output::Masker::new();
+    let mut masker = credential_masking::Masker::new();
     mask_earlier_blocks(message, index, &mut masker, work, until, cancel)?;
     let written = match &output {
         Some(text) => mask_text(
@@ -499,7 +499,7 @@ fn window(
 fn mask_earlier_blocks(
     message: &MessageView,
     index: u64,
-    masker: &mut credential_output::Masker,
+    masker: &mut credential_masking::Masker,
     work: &mut Work,
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
@@ -574,7 +574,7 @@ fn range_chunk(
 /// error is a read failure; the inner one is a write refused by `out`.
 fn mask_text(
     mut next: impl FnMut(u64) -> Result<Option<Chunk>, Value>,
-    masker: &mut credential_output::Masker,
+    masker: &mut credential_masking::Masker,
     out: &mut impl Write,
     work: &mut Work,
     until: Instant,
@@ -985,7 +985,7 @@ fn envelope(
 }
 fn masked_title(title: &str) -> Result<String, Value> {
     let mut masked = Vec::new();
-    let mut masker = credential_output::Masker::new();
+    let mut masker = credential_masking::Masker::new();
     masker
         .push(title, &mut masked)
         .and_then(|_| masker.finish(&mut masked))
