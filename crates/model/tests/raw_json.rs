@@ -1,9 +1,9 @@
 use polylogue_model::*;
 
 #[test]
-fn references_match_independent_synthetic_corpus_goldens() {
-    // Golden strings come from the specification's native-identity input corpus,
-    // not from this product's framing helper.
+fn references_match_the_spec_corpus() {
+    // Expected strings come from the spec's native-identity corpus, not from
+    // the framing code under test.
     let cases: serde_json::Value =
         serde_json::from_str(include_str!("native_identity_goldens.json")).unwrap();
     for case in cases.as_array().unwrap() {
@@ -69,7 +69,7 @@ fn block_content_direct_decode_preserves_opaque_null_and_token_spelling() {
 }
 
 #[test]
-fn declared_operations_preserve_lone_units_and_literal_escape_distinction() {
+fn declared_operation_ids_keep_lone_surrogates_apart_from_literal_escapes() {
     let session = SessionId::new(&Origin::new("claude-code").unwrap(), "calls").unwrap();
     let lone = NativeId::from_utf16(&[0xd800]);
     let literal = NativeId::unicode("~u:eda080");
@@ -149,7 +149,7 @@ fn fallback_blocks_resolve_the_full_digest_message_reference() {
 }
 
 #[test]
-fn damaging_block_encodings_refuse_without_fallback_to_colon_splitting() {
+fn malformed_block_references_are_refused_not_split_on_colons() {
     let session = SessionId::new(&Origin::new("claude-code").unwrap(), "a:b").unwrap();
     let message = MessageId::new(session, "c").unwrap();
     let block = BlockId::new(message.clone(), 0);
@@ -176,7 +176,7 @@ fn damaging_block_encodings_refuse_without_fallback_to_colon_splitting() {
         assert!(BlockId::address(bad).is_none(), "accepted {bad}");
         assert!(authored::target_address(&format!("block:{bad}")).is_err());
     }
-    // No new extended reasoning/attachment codec is claimed by this delivery.
+    // Reasoning and attachment block references are not supported.
     assert!(BlockId::address(BlockId::reasoning(message.clone(), 1).as_str()).is_none());
     assert!(BlockId::address(BlockId::attachment(message, "asset").unwrap().as_str()).is_none());
 }

@@ -1,5 +1,5 @@
-//! One normalized donor leaf, selected by a mapper-proved slot. This module
-//! neither discovers suppliedness nor scans a Message's blocks or ranks it.
+//! Encode one field of a message, block or extras as normalized JSON. The
+//! caller picks the field; nothing here ranks versions or scans blocks.
 use crate::RawJson;
 use crate::merge::{BlockField, MessageField, Slot, UsageField};
 use crate::{BlockContent, BlockSlot, ErrorReason, Message, ProviderTime, ToolOutcome};
@@ -12,12 +12,12 @@ use std::{
 #[derive(Clone, Copy)]
 pub enum Subject<'a> {
     Message(&'a Message),
-    /// The caller establishes semantic correspondence; no ordinal search.
+    /// The caller has already matched the block; no search by position.
     Block {
         slot: &'a BlockSlot,
         content: &'a BlockContent,
     },
-    /// Immediate provider extras only; values stay opaque, including null.
+    /// Top-level provider extras; values stay opaque, including null.
     Extras {
         block: Option<&'a BlockSlot>,
         values: &'a RawJson,
@@ -32,7 +32,7 @@ pub enum Projection {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("normalized leaf exceeds {maximum} encoded bytes")]
-    Admission { maximum: usize },
+    TooLarge { maximum: usize },
     #[error("normalized leaf encoding failed: {0}")]
     Encoding(String),
     #[error("normalized leaf sink failed: {0}")]
@@ -63,8 +63,8 @@ impl Write for Capped {
         Ok(())
     }
 }
-// serde_json does not need to expose or reconstruct an original writer error.
-// Keep that exact object here and fuse all subsequent access to the sink.
+// serde_json wraps writer errors; keep the original here and refuse further
+// writes after the first failure.
 struct Sink<'a, W: Write> {
     inner: &'a mut W,
     failure: Option<io::Error>,
@@ -123,9 +123,8 @@ fn optional<T: Serialize>(
         None => Ok(PresenceStatus::Missing),
     }
 }
-/// Convenience collector over the same sink encoder. Logical encoded length is
-/// admitted before Vec growth; allocator capacity and source decoding are not
-/// RSS guarantees. Sink failure never returns a partial successful leaf.
+/// `write` into a Vec, refusing before it grows past `maximum` bytes. A failure
+/// never returns a partial leaf.
 pub fn encode(subject: Subject<'_>, proved: &Slot, maximum: usize) -> Result<Projection, Error> {
     let mut writer = Capped {
         bytes: Vec::new(),
@@ -134,7 +133,7 @@ pub fn encode(subject: Subject<'_>, proved: &Slot, maximum: usize) -> Result<Pro
     };
     let result = write(subject, proved, &mut writer);
     if writer.denied {
-        return Err(Error::Admission { maximum });
+        return Err(Error::TooLarge { maximum });
     }
     Ok(match result? {
         PresenceStatus::Written => Projection::Encoded(writer.bytes),
@@ -142,8 +141,8 @@ pub fn encode(subject: Subject<'_>, proved: &Slot, maximum: usize) -> Result<Pro
         PresenceStatus::Unsupported => Projection::Unsupported,
     })
 }
-// Fixed typed keys are emitted lexically. JSON Value maps use serde_json's
-// default sorted map representation (this workspace does not enable preserve_order).
+// Typed keys are written in sorted order. serde_json maps are sorted too,
+// because this workspace does not enable `preserve_order`.
 #[derive(Serialize)]
 struct MessageRef<'a> {
     id: &'a str,
@@ -196,16 +195,14 @@ impl Serialize for Time<'_> {
         map.end()
     }
 }
-/// The same borrowed identity-relation wire used by normalized Parent leaves.
-/// Source recipes must independently prove the relation before calling this.
+/// Encode a message reference the same way normalized Parent fields are.
 pub fn write_message_reference(
     value: &crate::MessageId,
     sink: &mut impl Write,
 ) -> Result<PresenceStatus, Error> {
     encoded(&MessageRef::from(value), sink)
 }
-/// Encode a provider time through the same normalized leaf representation used
-/// by Message fields. A source selector must still prove where it came from.
+/// Encode a provider time the same way message time fields are.
 pub fn write_time(value: &ProviderTime, sink: &mut impl Write) -> Result<PresenceStatus, Error> {
     time(Some(value), sink)
 }
@@ -233,11 +230,9 @@ impl Serialize for Reason<'_> {
         serializer.collect_str(self)
     }
 }
-/// Write exactly one requested, caller-proved normalized donor leaf. This does
-/// not discover suppliedness, rank or raw version evidence. Missing/Unsupported
-/// write no bytes. Written means all JSON bytes were accepted, never that the
-/// sink flushed, sealed or committed. A failed call is not resumable; callers
-/// own rollback/replay and any counting or encoded-prefix work.
+/// Write one field as normalized JSON. Missing and Unsupported write nothing.
+/// Written means the sink accepted every byte, not that it flushed. A failed
+/// call cannot resume; the caller discards what was written.
 pub fn write(
     subject: Subject<'_>,
     proved: &Slot,
@@ -615,7 +610,7 @@ mod tests {
                 BlockField::OutcomeReason,
                 8
             ),
-            Err(Error::Admission { maximum: 8 })
+            Err(Error::TooLarge { maximum: 8 })
         ));
     }
     #[test]
@@ -654,7 +649,7 @@ mod tests {
                 &Slot::Message(MessageField::Parent),
                 1
             ),
-            Err(Error::Admission { maximum: 1 })
+            Err(Error::TooLarge { maximum: 1 })
         ));
     }
     #[test]
@@ -666,7 +661,7 @@ mod tests {
         let slot = Slot::Message(MessageField::Model);
         let expected = serde_json::to_vec("a\"b").unwrap();
         assert!(
-            matches!(encode(Subject::Message(&m),&slot,expected.len()-1),Err(Error::Admission {maximum}) if maximum==expected.len()-1)
+            matches!(encode(Subject::Message(&m),&slot,expected.len()-1),Err(Error::TooLarge {maximum}) if maximum==expected.len()-1)
         );
         assert_eq!(
             bytes(encode(Subject::Message(&m), &slot, expected.len()).unwrap()),
@@ -674,7 +669,7 @@ mod tests {
         );
         assert!(matches!(
             encode(Subject::Message(&m), &slot, 0),
-            Err(Error::Admission { maximum: 0 })
+            Err(Error::TooLarge { maximum: 0 })
         ));
     }
     fn equivalent(subject: Subject<'_>, slot: &Slot) {
@@ -782,7 +777,6 @@ mod tests {
                 signature: Some("opaque replay signature".into()),
                 encrypted: Some(false),
                 data: Some("opaque encrypted bytes".into()),
-                ..Thinking::default()
             }),
             BlockContent::ToolCall(ToolCall {
                 tool: Some(String::new()),
@@ -894,8 +888,7 @@ mod tests {
         let text = "x".repeat(1024 * 1024);
         let content = BlockContent::Text { text };
         let block = BlockSlot::Item(0);
-        // Independent fixture oracle only; the production direct sink has no
-        // whole encoded leaf buffer, and no resumable-serde/CPU/RSS claim.
+        // Expected bytes, built independently of the encoder under test.
         let expected = match &content {
             BlockContent::Text { text } => serde_json::to_vec(text).unwrap(),
             _ => unreachable!(),
@@ -929,7 +922,6 @@ mod tests {
             PresenceStatus::Written
         );
         assert_eq!(sink.flushes, 0);
-        drop(sink);
         assert!(calls > 16);
         assert_eq!(accepted, expected.len());
         assert_eq!(hash.finalize(), blake3::hash(&expected));
@@ -980,7 +972,6 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(sink.flushes, 0);
-            drop(sink);
             match error {
                 Error::Io(error) => {
                     assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
@@ -1031,7 +1022,6 @@ mod tests {
             PresenceStatus::Unsupported
         );
         assert_eq!(sink.flushes, 0);
-        drop(sink);
         assert_eq!(calls, 0);
     }
     #[test]

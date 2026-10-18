@@ -1,15 +1,14 @@
-//! Message-version evidence framing only. Providers supply canonical raw bytes,
-//! membership, tags and order. This never verifies payload content integrity.
-//! Keep the hasher outside writer transactions. Restart replays from unit zero;
-//! no persisted cursor or serialized private BLAKE3 state is provided here.
+//! The version hash of a message: a framed BLAKE3 over the raw bytes the
+//! provider adapter supplies, in its order. Hash outside writer transactions;
+//! after a restart, hashing starts again from the first unit.
 use crate::BlobHash;
 
 const PREFIX: &[u8] = b"\0polylogue-message-version\0v1\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
-    #[error("evidence byte-work allowance exhausted")]
-    Admission,
+    #[error("version hash byte allowance used up")]
+    TooLarge,
     #[error("evidence length or allowance overflow")]
     Overflow,
     #[error("operation does not match the evidence phase")]
@@ -28,9 +27,8 @@ enum State {
     Json { left: u64 },
     Body,
 }
-/// Logical hashed-byte admission, including framing. It does not bound allocator
-/// capacity, producer canonicalization, selected-evidence enumeration, or RSS.
-/// No tag or payload chunk is retained after its call.
+/// Incremental hasher with a byte allowance that counts framing too. Nothing
+/// is buffered between calls.
 pub struct Framer {
     hash: blake3::Hasher,
     state: State,
@@ -39,13 +37,13 @@ pub struct Framer {
     used: u64,
 }
 impl Framer {
-    /// Fixed compound prefix and unit-count work before the first unit.
+    /// Bytes `compound` hashes before the first unit.
     pub const fn compound_minimum_bytes() -> u64 {
         PREFIX.len() as u64 + 8
     }
 
-    /// The sole whole-record/no-required-body exception has no prefix or tag.
-    /// This constructor is a producer assertion of that exact source recipe.
+    /// A message that is one whole record with no separate body: no prefix and
+    /// no tag, just the record bytes.
     pub fn single_whole_record(payload_length: u64, allowance: u64) -> Self {
         Self {
             hash: blake3::Hasher::new(),
@@ -61,8 +59,7 @@ impl Framer {
             used: 0,
         }
     }
-    /// Includes zero units if the provider explicitly selected that sequence.
-    /// The caller, not this byte framer, decides whether it is a valid candidate.
+    /// A message made of `units` tagged parts. Zero units is allowed.
     pub fn compound(units: u64, allowance: u64) -> Result<Self, Error> {
         let mut value = Self {
             hash: blake3::Hasher::new(),
@@ -84,8 +81,8 @@ impl Framer {
     pub fn used_bytes(&self) -> u64 {
         self.used
     }
-    /// A denied operation leaves hash, phase, count and usage unchanged. A caller
-    /// may grant more work and retry that exact operation without replay.
+    /// Raise the allowance. A call refused with TooLarge changed nothing, so it
+    /// can be retried after a grant.
     pub fn grant(&mut self, bytes: u64) -> Result<(), Error> {
         self.allowance = self.allowance.checked_add(bytes).ok_or(Error::Overflow)?;
         Ok(())
@@ -93,7 +90,7 @@ impl Framer {
     fn admit(&mut self, bytes: u64) -> Result<(), Error> {
         let used = self.used.checked_add(bytes).ok_or(Error::Overflow)?;
         if used > self.allowance {
-            return Err(Error::Admission);
+            return Err(Error::TooLarge);
         }
         self.used = used;
         Ok(())
@@ -101,8 +98,7 @@ impl Framer {
     pub fn begin_json(&mut self, tag_length: u64, payload_length: u64) -> Result<(), Error> {
         self.begin(false, tag_length, payload_length)
     }
-    /// Required body payloads always have exactly 40 framing bytes; omission
-    /// cannot finish and has no sentinel representation.
+    /// A body unit's payload is always 40 bytes.
     pub fn begin_body(&mut self, tag_length: u64) -> Result<(), Error> {
         self.begin(true, tag_length, 40)
     }
@@ -128,8 +124,7 @@ impl Framer {
         }
         Ok(())
     }
-    /// Chunks end at UTF-8 character boundaries. Byte lengths are explicit;
-    /// partial code-point buffering and tag allocation are unnecessary.
+    /// Chunks end at UTF-8 character boundaries.
     pub fn tag(&mut self, chunk: &str) -> Result<(), Error> {
         let State::Tag {
             body,
@@ -197,7 +192,7 @@ impl Framer {
         Ok(())
     }
     fn complete(&mut self) {
-        // Only an admitted, unfinished declared unit can reach this function.
+        // Only reached for a started, unfinished unit.
         self.remaining -= 1;
         self.state = State::Ready;
     }
@@ -212,8 +207,8 @@ impl Framer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Independent small-fixture byte oracle; intentionally not shared framing
-    // helpers. Production never allocates this concatenated preimage.
+    // Expected bytes built by hand, deliberately not with the framing code
+    // under test.
     fn oracle(units: &[(u8, &str, &[u8])]) -> BlobHash {
         let mut bytes = b"\0polylogue-message-version\0v1\0".to_vec();
         bytes.extend_from_slice(&(units.len() as u64).to_be_bytes());
@@ -346,23 +341,23 @@ mod tests {
         let prefix = PREFIX.len() as u64 + 8;
         assert!(matches!(
             Framer::compound(1, prefix - 1),
-            Err(Error::Admission)
+            Err(Error::TooLarge)
         ));
         let mut f = Framer::compound(2, prefix).unwrap();
-        assert_eq!(f.begin_json(1, 2), Err(Error::Admission));
+        assert_eq!(f.begin_json(1, 2), Err(Error::TooLarge));
         assert_eq!(f.used_bytes(), prefix);
         f.grant(9).unwrap();
         f.begin_json(1, 2).unwrap();
-        assert_eq!(f.tag("r"), Err(Error::Admission));
+        assert_eq!(f.tag("r"), Err(Error::TooLarge));
         assert_eq!(f.used_bytes(), prefix + 9);
         f.grant(9).unwrap();
         f.tag("r").unwrap();
-        assert_eq!(f.json(b"{}"), Err(Error::Admission));
+        assert_eq!(f.json(b"{}"), Err(Error::TooLarge));
         f.grant(2).unwrap();
         f.json(b"{}").unwrap();
         f.grant(17).unwrap();
         f.begin_body(0).unwrap();
-        assert_eq!(f.body(4, BlobHash::of(b"body")), Err(Error::Admission));
+        assert_eq!(f.body(4, BlobHash::of(b"body")), Err(Error::TooLarge));
         assert_eq!(f.finish(), Err(Error::Incomplete));
         f.grant(40).unwrap();
         f.body(4, BlobHash::of(b"body")).unwrap();

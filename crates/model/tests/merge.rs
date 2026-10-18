@@ -16,7 +16,7 @@ fn candidate(reference: u64, digest: u8) -> Candidate {
     }
 }
 #[test]
-fn thinking_signature_is_retained_payload_without_source_rank_or_fill_authority() {
+fn thinking_signature_is_stored_but_does_not_affect_rank_or_fill() {
     let signed = with_slot(
         candidate(1, 7),
         Slot::Block {
@@ -118,7 +118,7 @@ fn source_rank_is_finished_then_route_then_three_mapper_counts_then_digest() {
 }
 
 #[test]
-fn current_lower_hash_replaces_old_input_candidate_and_reelects_other_input() {
+fn current_revision_with_lower_hash_replaces_old_one_and_reselects_across_inputs() {
     let old_a = candidate(1, 240);
     let current_a = candidate(2, 16);
     let b = candidate(3, 128);
@@ -272,7 +272,7 @@ fn current_chain_preference_is_only_after_rank_prefix_and_before_digest() {
 }
 
 #[test]
-fn edit_eligibility_precedes_rank_and_excludes_deleted_message_or_field() {
+fn edit_policy_uses_only_the_latest_snapshot_including_deletions() {
     let old = with_slot(candidate(1, 240), slot(MessageField::Model), 100);
     let current = candidate(2, 16);
     let revisions = [
@@ -348,7 +348,7 @@ fn edit_eligibility_precedes_rank_and_excludes_deleted_message_or_field() {
 }
 
 #[test]
-fn fill_uses_retained_input_facts_without_rescoring_or_filling_parent() {
+fn fill_uses_other_versions_fields_without_rescoring_or_filling_parent() {
     let winner = candidate(1, 240);
     let mut donor = with_slot(
         with_slot(candidate(2, 16), slot(MessageField::Model), 20),
@@ -449,7 +449,7 @@ fn damaged_times_take_earliest_supplied_older_chain_value_without_rescoring() {
 }
 
 #[test]
-fn equal_evidence_keeps_all_provenance_and_unresolved_facts_never_default() {
+fn equal_versions_keep_all_candidates_and_unresolved_hashes_never_default() {
     let a = candidate(1, 128);
     let b = candidate(2, 128);
     let merged = select_effective(&[singleton(&a), singleton(&b)])
@@ -474,7 +474,7 @@ fn equal_evidence_keeps_all_provenance_and_unresolved_facts_never_default() {
 }
 
 #[test]
-fn unknown_completion_is_eligible_between_positive_finished_and_in_progress() {
+fn unknown_completion_ranks_between_in_progress_and_finished() {
     let mut finished = candidate(1, 1);
     finished.route = RouteKind::PageDom;
     let mut unknown = candidate(2, 255);
@@ -534,7 +534,7 @@ fn typed_slot_facts_roundtrip_and_duplicate_slots_are_rejected() {
 }
 
 #[test]
-fn archival_edit_ambiguity_retains_other_inputs_until_head_resolves() {
+fn edit_input_without_current_chain_is_an_error_until_one_is_named() {
     let a = candidate(1, 240);
     let b = candidate(2, 16);
     let ar = [Revision {
@@ -562,7 +562,7 @@ fn archival_edit_ambiguity_retains_other_inputs_until_head_resolves() {
     assert_eq!(
         fold_input(&archives[..1], RewritePolicy::Edit),
         Err(MergeError::UnresolvedEditHead),
-        "one unproved archive is not immutable-head authority"
+        "an archive input without a current chain cannot be selected"
     );
     let imported = fold_input(
         &[Chain {
@@ -574,7 +574,7 @@ fn archival_edit_ambiguity_retains_other_inputs_until_head_resolves() {
     .unwrap()
     .unwrap();
     assert_eq!(refs(&imported), BTreeSet::from([1]));
-    // Other already-effective inputs can still be elected independently.
+    // The other inputs can still be selected.
     assert_eq!(
         refs(&select_effective(&[singleton(&b)]).unwrap().unwrap()),
         BTreeSet::from([2])
@@ -595,7 +595,7 @@ fn archival_edit_ambiguity_retains_other_inputs_until_head_resolves() {
 }
 
 #[test]
-fn an_unchanged_candidate_reference_can_be_retained_at_several_revisions() {
+fn one_candidate_reference_can_appear_at_several_revisions() {
     let a = candidate(1, 128);
     let revisions = [
         Revision {
@@ -641,9 +641,9 @@ fn empty_extra_json_key_is_a_supplied_fact_not_a_schema_error() {
 }
 
 #[test]
-fn detached_immutable_copy_can_witness_content_that_a_proved_true_edit_removed() {
-    // M/F/N: A1 has a richer message M, field F, and another message N.
-    // A2 is a proved true edit, reducing M, removing F and deleting N.
+fn separate_import_can_keep_content_that_an_edit_removed() {
+    // A1 has a richer message M, field F, and another message N. A2 is an edit
+    // that shortens M, removes F and deletes N.
     let mut a1_m = with_slot(candidate(1, 240), slot(MessageField::Model), 10);
     a1_m.presence.nonempty_blocks = 2;
     let a2_m = candidate(2, 16);
@@ -664,8 +664,8 @@ fn detached_immutable_copy_can_witness_content_that_a_proved_true_edit_removed()
         length: 50,
         candidate: None,
     }];
-    // Grouping is explicit input/chain authority. Byte length across chains is
-    // not chronology, and retained old A is not independently eligible.
+    // Chains group revisions; byte length across chains says nothing about
+    // order, and old A is not a candidate on its own.
     let a_m = fold_input(
         &[
             Chain {
@@ -700,8 +700,7 @@ fn detached_immutable_copy_can_witness_content_that_a_proved_true_edit_removed()
         .unwrap(),
         None
     );
-    // Detached B is explicitly a separate immutable input holding A1, not an
-    // archival revision of A. Its own current marker asserts no live freshness.
+    // B is a separate import holding A1, not a revision of A.
     let mut b_m = a1_m.clone();
     b_m.reference = 3;
     let mut b_n = a1_n.clone();
@@ -734,7 +733,7 @@ fn detached_immutable_copy_can_witness_content_that_a_proved_true_edit_removed()
         refs(&select_effective(&[b_n]).unwrap().unwrap()),
         BTreeSet::from([5])
     );
-    // Rebuilding solely A's proved revision group cannot revive F or N.
+    // Reducing A's revisions alone cannot bring back F or N.
     let rebuilt = fold_input(
         &[
             Chain {
@@ -908,7 +907,7 @@ fn typed_agreement_includes_time_quality_precision_and_known_empty_values() {
 }
 
 #[test]
-fn field_agreement_resumes_one_witness_at_a_time_and_failure_does_not_invent_conflict() {
+fn field_agreement_adds_one_value_at_a_time_and_errors_do_not_create_conflict() {
     let a = FactRef {
         candidate: 1,
         value: 10,
@@ -924,7 +923,7 @@ fn field_agreement_resumes_one_witness_at_a_time_and_failure_does_not_invent_con
     let values = BTreeMap::from([(a, 5), (b, 5), (c, 6)]);
     let mut state = FieldResolution::Missing;
     state
-        .observe::<()>(a, |_, _| panic!("first witness needs no comparison"))
+        .observe::<()>(a, |_, _| panic!("first value needs no comparison"))
         .unwrap();
     let old = state;
     assert_eq!(
@@ -939,8 +938,7 @@ fn field_agreement_resumes_one_witness_at_a_time_and_failure_does_not_invent_con
             .unwrap();
     }
     assert_eq!(state, FieldResolution::Conflict);
-    // Further witnesses remain retained by SlotChoice/root ownership; their
-    // payload need not be read just to preserve an already known conflict.
+    // Once in conflict, further values need not be read.
     state
         .observe::<()>(a, |_, _| panic!("conflict already established"))
         .unwrap();

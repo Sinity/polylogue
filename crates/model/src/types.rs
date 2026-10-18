@@ -126,7 +126,7 @@ impl ResultOutcome {
     }
 }
 
-/// A parser accounts for each record independently of query or tool outcomes.
+/// What a parser did with one record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordOutcome<I> {
     Used,

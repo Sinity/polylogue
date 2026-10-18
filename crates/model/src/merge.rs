@@ -1,7 +1,6 @@
-//! Pure per-message selection. Source mappers supply facts before fill/enrichment.
-//! The caller retains revisions and calls this again when their eligibility changes.
-//! No function reads a normalized Message or hashes a body. Reference integers are
-//! opaque handles; their values never break content/rank ties.
+//! Choosing one version of a message when several inputs or revisions carry it.
+//! Callers supply ranked candidates and per-field facts; nothing here reads a
+//! message body. Reference integers are opaque handles and never break ties.
 use crate::{BlobHash, BlockSlot, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,8 +13,8 @@ pub enum RouteKind {
     Native,
 }
 
-/// Ranking keeps unknown completion between positive finished/in-progress
-/// evidence; it never turns absent lifecycle evidence into a Finished claim.
+/// Unknown ranks between in-progress and finished; a missing lifecycle field is
+/// Unknown, never Finished.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishState {
@@ -24,8 +23,8 @@ pub enum FinishState {
     Unknown,
 }
 
-/// Only source-supplied semantic fields may name slots. Own identity, derived
-/// values, structural tags and acquisition state have no slots here.
+/// Fields a provider supplies. Identity, derived values and acquisition state
+/// are not slots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageField {
@@ -59,7 +58,7 @@ pub enum BlockField {
     ThinkingText,
     Encrypted,
     ThinkingData,
-    /// Retained payload only. Never admitted as a source completeness/fill fact.
+    /// Stored with the body but never counted for completeness or used to fill.
     ThinkingSignature,
     Tool,
     CallId,
@@ -83,13 +82,13 @@ pub enum BlockField {
 pub enum Slot {
     Message(MessageField),
     Usage(UsageField),
-    /// The caller establishes semantic correspondence before using a donor:
-    /// coincident ordinal positions in incompatible block shapes are insufficient.
+    /// The caller must match blocks by meaning before filling from another
+    /// version; equal positions in differently shaped messages are not enough.
     Block {
         block: BlockSlot,
         field: BlockField,
     },
-    /// Each immediate nonvolatile extra key counts once; its payload is opaque.
+    /// One slot per top-level extra key that is not volatile; the value is opaque.
     Extra {
         block: Option<BlockSlot>,
         key: String,
@@ -107,7 +106,7 @@ impl Slot {
     }
 }
 
-/// The canonical writer resolves these handles; the model never loads payloads.
+/// A handle the writer resolves to a stored value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FactRef {
     pub candidate: u64,
@@ -116,14 +115,13 @@ pub struct FactRef {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuppliedValue {
     pub reference: u64,
-    /// Only source times use this, for the declared Codex damaged-time exception.
+    /// Set only for source times, for Codex's damaged-time rule.
     pub source_time: Option<Timestamp>,
 }
 
-/// The mapper excludes empty text blocks AND their fields, semantic unknowns,
-/// decoder defaults, derived facts, acquisition facts and declared volatile keys.
-/// False, zero and known-empty payloads remain supplied facts. Arbitrary payloads
-/// occupy one slot; typed usage leaves and immediate extras occupy separate slots.
+/// Counts of what a version supplies. Empty text blocks and their fields,
+/// decoder defaults, derived values and volatile keys do not count; false, zero
+/// and known-empty values do. Each usage field and each extra key is its own slot.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PresenceFacts {
     pub nonempty_blocks: u64,
@@ -165,7 +163,7 @@ pub struct Candidate {
     pub reference: u64,
     pub finish: FinishState,
     pub route: RouteKind,
-    /// None means required source evidence is unresolved, never a synthetic hash.
+    /// None until the version hash can be computed.
     pub version_hash: Option<BlobHash>,
     pub presence: PresenceFacts,
 }
@@ -189,8 +187,8 @@ impl Candidate {
     }
 }
 impl RankSummary {
-    /// Only cross-input or already-reduced rank comparison, never historical
-    /// same-input revision selection.
+    /// For comparing inputs, or chains already reduced to one version. Revisions
+    /// within a chain are compared in `fold_chain`.
     pub fn compare(&self, other: &Self) -> Result<std::cmp::Ordering, MergeError> {
         Ok(self.key()?.cmp(&other.key()?))
     }
@@ -210,7 +208,7 @@ impl RankSummary {
     }
 }
 
-/// An absent candidate is an explicit edit-snapshot omission of this MessageID.
+/// `candidate: None` means an edit snapshot deleted this message.
 #[derive(Clone, Copy, Debug)]
 pub struct Revision<'a> {
     pub length: u64,
@@ -218,9 +216,8 @@ pub struct Revision<'a> {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Chain<'a> {
-    /// Caller-supplied head authority, never inferred from snapshot count, IDs,
-    /// times or arrival. The sole chain of a proved complete immutable import
-    /// may be current for its own input without asserting provider freshness.
+    /// Whether this chain is the input's current one. The caller decides; it is
+    /// never inferred from counts, IDs, times or arrival order.
     pub current: bool,
     pub revisions: &'a [Revision<'a>],
 }
@@ -230,7 +227,8 @@ pub enum RewritePolicy {
     Edit,
 }
 
-/// Equal-rank/equal-digest versions are one content choice with all provenance.
+/// The chosen body. Versions with equal rank and hash are one choice that keeps
+/// every candidate.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BodyChoice {
     pub rank: RankSummary,
@@ -241,8 +239,8 @@ pub struct SlotChoice {
     pub sources: BTreeSet<FactRef>,
 }
 
-/// Occupied conflict is distinct from absence. References retain no ordering
-/// authority over unequal values. The owner retains every witness separately.
+/// Whether the versions that supply a field agree. Conflict is not the same as
+/// missing, and no reference wins over another with a different value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FieldResolution {
@@ -251,20 +249,17 @@ pub enum FieldResolution {
     Conflict,
 }
 impl FieldResolution {
-    /// One witness per call; the callback compares canonical TYPED values,
-    /// including time quality/precision, never reference IDs or raw provenance.
-    /// A failed comparison leaves this state unchanged. Persist this scalar
-    /// only with the owner's exact source basis and witness-traversal cursor.
-    /// Conflict does not discard the separately retained alternative witnesses.
+    /// Add one supplying version. `equal` compares typed values, including time
+    /// precision, never references. An error leaves the state unchanged.
     pub fn observe<E>(
         &mut self,
-        witness: FactRef,
+        value: FactRef,
         equal: impl FnOnce(FactRef, FactRef) -> Result<bool, E>,
     ) -> Result<(), E> {
         match *self {
-            Self::Missing => *self = Self::Agreed(witness),
+            Self::Missing => *self = Self::Agreed(value),
             Self::Agreed(first) => {
-                if !equal(first, witness)? {
+                if !equal(first, value)? {
                     *self = Self::Conflict;
                 }
             }
@@ -274,15 +269,14 @@ impl FieldResolution {
     }
 }
 impl SlotChoice {
-    /// Pure batch convenience over the same one-witness policy. This does not
-    /// qualify callback decoding, witness enumeration or a whole payload bound.
+    /// `observe` every source in order.
     pub fn resolve<E>(
         &self,
         mut equal: impl FnMut(FactRef, FactRef) -> Result<bool, E>,
     ) -> Result<FieldResolution, E> {
         let mut result = FieldResolution::Missing;
-        for &witness in &self.sources {
-            result.observe(witness, &mut equal)?;
+        for &value in &self.sources {
+            result.observe(value, &mut equal)?;
         }
         Ok(result)
     }
@@ -290,7 +284,7 @@ impl SlotChoice {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectiveInput {
     pub body: BodyChoice,
-    /// Selected/fill facts retained per input; they never rescore `body.rank`.
+    /// Field sources per slot; they never change `body.rank`.
     #[serde(with = "slot_map")]
     pub slots: BTreeMap<Slot, SlotChoice>,
 }
@@ -302,9 +296,8 @@ pub enum MergeError {
     UnresolvedEvidence,
     #[error("an input has more than one current chain")]
     MultipleCurrentChains,
-    /// History remains retained and another input may still contribute. A later
-    /// authoritative head resolves this; it is not permanent source refusal.
-    #[error("edit snapshots have no authoritative current head yet")]
+    /// Temporary: a later snapshot that names the current chain resolves it.
+    #[error("edit snapshots have no current chain yet")]
     UnresolvedEditHead,
     #[error("duplicate chain revision length")]
     DuplicateRevision,
@@ -343,7 +336,7 @@ fn fold_chain(chain: &Chain<'_>, edit: bool) -> Result<Option<FoldedChain>, Merg
             return Err(MergeError::DuplicateRevision);
         }
     }
-    let eligible: Vec<_> = if edit {
+    let considered: Vec<_> = if edit {
         chain
             .revisions
             .iter()
@@ -354,10 +347,10 @@ fn fold_chain(chain: &Chain<'_>, edit: bool) -> Result<Option<FoldedChain>, Merg
         chain.revisions.iter().collect()
     };
     let mut best = None;
-    for revision in &eligible {
+    for revision in &considered {
         if let Some(candidate) = revision.candidate {
             let rank = candidate.rank()?;
-            // Same-chain later revision wins a rank-prefix tie BEFORE the digest.
+            // On equal rank prefix, the later revision wins before the hash decides.
             let key = (rank.prefix()?, revision.length, *rank.version_hash.bytes());
             if best.as_ref().is_none_or(|(old, _)| key > *old) {
                 best = Some((key, candidate));
@@ -369,7 +362,7 @@ fn fold_chain(chain: &Chain<'_>, edit: bool) -> Result<Option<FoldedChain>, Merg
     };
     let body = body_from(selected)?;
     let mut slots = BTreeMap::new();
-    for revision in &eligible {
+    for revision in &considered {
         let Some(candidate) = revision.candidate else {
             continue;
         };
@@ -399,11 +392,9 @@ fn fold_chain(chain: &Chain<'_>, edit: bool) -> Result<Option<FoldedChain>, Merg
     }))
 }
 
-/// First reduce within each chain, then between chain representatives. For edits,
-/// only the latest authoritative snapshot is eligible, including its absent-message
-/// tombstone; older edit fields cannot fill a deliberate deletion.
-/// This batch helper allocates in proportion to supplied candidate/slot metadata.
-/// It is not a bounded durable scheduler or a whole-archive retained state.
+/// Reduce one input: first within each chain, then across chains. Under the edit
+/// policy only the latest snapshot counts, including a deletion; older edits
+/// cannot refill a deleted message.
 pub fn fold_input(
     chains: &[Chain<'_>],
     policy: RewritePolicy,
@@ -417,10 +408,10 @@ pub fn fold_input(
         .flat_map(|c| c.revisions)
         .filter_map(|r| r.candidate)
     {
-        if let Some(previous) = refs.insert(candidate.reference, candidate) {
-            if previous != candidate {
-                return Err(MergeError::DuplicateCandidate);
-            }
+        if let Some(previous) = refs.insert(candidate.reference, candidate)
+            && previous != candidate
+        {
+            return Err(MergeError::DuplicateCandidate);
         }
     }
     if policy == RewritePolicy::Edit {
@@ -528,9 +519,9 @@ pub fn fold_input(
     Ok(Some(EffectiveInput { body, slots }))
 }
 
-/// Compare ONLY one already-folded representative per input. Historical versions
-/// never compete here. Removing/replacing an effective input requires re-election,
-/// not a monotonic merge against the previous global winner.
+/// Choose between inputs, each already reduced by `fold_input`. When an input
+/// is removed or replaced, call this again on the new set; the previous winner
+/// has no special standing.
 pub fn select_effective(inputs: &[EffectiveInput]) -> Result<Option<EffectiveInput>, MergeError> {
     let mut best = None;
     let mut indices = Vec::new();

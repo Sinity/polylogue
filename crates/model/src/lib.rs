@@ -1,4 +1,4 @@
-//! Pure identities, measurements and outcomes. No filesystem or storage access.
+//! Identity, value and outcome types. No I/O.
 pub mod authored;
 pub mod content;
 pub mod declared_operation;

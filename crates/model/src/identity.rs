@@ -182,8 +182,8 @@ struct BlockIdWire {
     slot: BlockSlot,
 }
 impl BlockId {
-    /// Resolve only this codec's supported exact block references. Extended
-    /// reasoning and attachment forms are outside the admitted address scope.
+    /// Parse a block reference this codec produced. Reasoning and attachment
+    /// block references are not supported yet.
     pub fn address(reference: &str) -> Option<(std::borrow::Cow<'_, str>, BlockSlot)> {
         if reference.starts_with("~i1:") {
             let bytes = decoded_frame(reference)?;
@@ -344,8 +344,8 @@ impl TryFrom<String> for BlobHash {
     }
 }
 
-/// Immutable imports are named by exact bytes and canonical interpretation
-/// context. Provider validation/admission precedes this pure framing primitive.
+/// An imported file's ID: a hash of its bytes, format and context. The caller
+/// validates the file first.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InputId(String);
 impl InputId {
@@ -374,8 +374,8 @@ impl fmt::Display for InputId {
     }
 }
 
-/// Canonicalize a raw provider record, omitting only adapter-declared top-level volatile fields.
-/// RawValue preserves exponent spelling, which arbitrary_precision alone normalizes.
+/// Canonical bytes of a raw record, without the given top-level volatile fields.
+/// Number spelling, including exponents, is kept.
 pub fn canonical_record(raw: &[u8], volatile: &[&str]) -> Result<Vec<u8>, serde_json::Error> {
     let mut value = RawJson::parse(raw).map_err(<serde_json::Error as serde::de::Error>::custom)?;
     if let Some(fields) = value.as_object_mut() {
@@ -386,7 +386,8 @@ pub fn canonical_record(raw: &[u8], volatile: &[&str]) -> Result<Vec<u8>, serde_
     Ok(value.canonical())
 }
 
-/// The caller counts preceding records with this same hash in this input revision.
+/// Hash of the canonical record. The caller numbers repeats of the same hash
+/// within one input revision.
 pub fn fallback_hash(raw: &[u8], volatile: &[&str]) -> Result<String, serde_json::Error> {
     Ok(BlobHash::of(&canonical_record(raw, volatile)?).to_string())
 }
@@ -525,9 +526,8 @@ fn message_from_binary(bytes: &[u8]) -> Option<MessageId> {
         _ => None,
     }
 }
-/// Inspect only canonical reversible frames emitted by this codec. This does
-/// not resolve opaque stored IDs or establish any source/ownership relation.
-/// The fixed shapes contain the Origin, Session native value and Message local.
+/// The provider IDs inside a reference this codec framed: origin, session and,
+/// for messages, the message's own part. Other references return None.
 pub fn framed_identity_components(reference: &str) -> Option<Vec<NativeId>> {
     fn session_components(bytes: &[u8]) -> Option<Vec<NativeId>> {
         session_from_binary(bytes)?;
