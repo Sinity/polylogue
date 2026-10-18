@@ -1,6 +1,6 @@
 //! One admitted provider-state installation transaction per owner turn.
 //! Canonical output/finalization remains separate; EOF never earns Done here.
-use polylogue_store::parser_state::prepared::Work;
+use polylogue_store::parser_state::prepared::{Work, WorkPhase};
 use polylogue_store::parser_state::{Budget, CellChange, Head, Phase, Progress, Token};
 use polylogue_store::{Error, Writer};
 
@@ -36,13 +36,13 @@ impl PendingInstall {
         Ok(Self { work, changes })
     }
     pub fn predecessor(&self) -> &Token {
-        &self.work.token.predecessor
+        &self.work.token.head
     }
     /// Each call performs at most one staging/application/control transaction.
     /// Staging and application honor the supplied cell/byte budget. A later
     /// unfit member stays owed; an unfit first member fails without mutation.
     pub fn turn(&mut self, writer: &mut Writer, budget: Budget) -> Result<Turn> {
-        if !self.work.applying {
+        if self.work.phase != WorkPhase::Applying {
             let staged = usize::try_from(self.work.token.staged).map_err(|_| Error::Range)?;
             if staged < self.changes.len() {
                 let count = self
@@ -88,7 +88,7 @@ pub fn recover_turn(writer: &mut Writer, predecessor: &Token, budget: Budget) ->
             "provider recovery cannot certify finalization".into(),
         ));
     }
-    if !work.applying {
+    if work.phase != WorkPhase::Applying {
         return Ok(
             match writer.discard_parser_preparation(&work.token, budget)? {
                 Some(_) => Recovery::Yielded,

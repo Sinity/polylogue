@@ -1,12 +1,12 @@
-//! Addressable disposable parser state, owned by index.db. Interpretation uses a
-//! real read-only SQLite snapshot; only its bounded touched delta enters the
-//! output transaction. This module checks predecessor identity, not whether the
-//! canonical message/index finalizer has actually earned completion.
+//! Per-input parser state in index.db: a `parse_state` head row plus
+//! key/value cells in `parser_cell`, scoped to a state generation. Workers read
+//! a pinned read-only snapshot; each step writes its cell changes and progress
+//! in one transaction and fails with `StaleParserState` if the head moved.
 use crate::{Error as StoreError, Result};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::path::Path;
 
-// Every actual SQLite operation uses the owning path/checksum error boundary.
+// Runs a SQLite call so its errors carry the database path.
 macro_rules! sql {
     ($path:expr, $operation:expr) => {
         crate::db($path, || $operation)
@@ -41,7 +41,7 @@ impl Accounting {
             .and_then(|n| n.checked_add(self.undecodable));
         if total != Some(self.framed) {
             return Err(StoreError::Invariant(
-                "unbalanced parser record accounting".into(),
+                "parser record counts do not add up".into(),
             ));
         }
         for n in [
@@ -58,7 +58,7 @@ impl Accounting {
     fn add(self, other: Self) -> Result<Self> {
         fn sum(a: u64, b: u64) -> Result<u64> {
             a.checked_add(b)
-                .ok_or_else(|| StoreError::Invariant("parser accounting overflow".into()))
+                .ok_or_else(|| StoreError::Invariant("parser record count overflow".into()))
         }
         Self {
             framed: sum(self.framed, other.framed)?,
@@ -81,6 +81,8 @@ pub struct Head {
     pub finalization_pending: bool,
     pub counts: Accounting,
 }
+/// What a parse is computed from: the input's acquired bytes (by digest and
+/// length), the parser version, companion files and excisions seen.
 pub struct Basis<'a> {
     pub input_pk: i64,
     pub chain: i64,
@@ -110,8 +112,8 @@ impl Phase {
 pub struct Progress {
     pub inspected_upto: u64,
     pub parsed_upto: u64,
-    /// Supplied by the owning finalizer after checking its actual obligations.
-    /// A provider reaching byte EOF is not evidence for Done.
+    /// Set by the finalizer. Reaching the end of the bytes alone does not make
+    /// a state `Done`.
     pub phase: Phase,
     pub finalization_pending: bool,
     pub counts: Accounting,
@@ -149,8 +151,8 @@ fn index_generation(db: &Connection, path: &Path) -> Result<String> {
         })
     )?)
 }
-// Called only within the owning write transaction. The allocator survives head
-// and input_ref removal, so reusing either key cannot recreate an old token.
+// The counter lives in meta and survives head and input_ref deletion, so a
+// reused key never recreates an old token.
 fn allocate_generation(tx: &Transaction<'_>, path: &Path) -> Result<i64> {
     let stored: String = sql!(
         path,
@@ -166,7 +168,7 @@ fn allocate_generation(tx: &Transaction<'_>, path: &Path) -> Result<i64> {
         .filter(|n| *n >= 0)
         .and_then(|n| n.checked_add(1))
         .ok_or_else(|| {
-            StoreError::Invariant("parser generation allocator invalid or exhausted".into())
+            StoreError::Invariant("parser generation counter is invalid or exhausted".into())
         })?;
     sql!(
         path,
@@ -177,7 +179,7 @@ fn allocate_generation(tx: &Transaction<'_>, path: &Path) -> Result<i64> {
     )?;
     Ok(generation)
 }
-fn reference(generation: i64, step: i64) -> Vec<u8> {
+fn carry(generation: i64, step: i64) -> Vec<u8> {
     [generation.to_be_bytes(), step.to_be_bytes()].concat()
 }
 pub(crate) fn head(
@@ -224,14 +226,14 @@ pub(crate) fn head(
             counts,
             carry,
         )| {
-            if carry != reference(generation, step) {
+            if carry != self::carry(generation, step) {
                 return Err(StoreError::Invariant(
-                    "parser state resume reference differs from its head".into(),
+                    "parser state carry does not match its generation and step".into(),
                 ));
             }
             let basis = digest
                 .try_into()
-                .map_err(|_| StoreError::Invariant("parser basis digest is not 32 bytes".into()))?;
+                .map_err(|_| StoreError::Invariant("parser input digest is not 32 bytes".into()))?;
             Ok(Head {
                 token: Token {
                     index_generation,
@@ -259,8 +261,9 @@ fn current(db: &Connection, path: &Path, token: &Token) -> Result<Head> {
         _ => Err(StoreError::StaleParserState),
     }
 }
-/// Admission/namespace changes are metadata transactions, not provider work.
-/// The caller proves same-digest growth is a verified contiguous acquisition.
+/// Starts or extends the parser state for one input chain. The same digest with
+/// a longer acquired length keeps the generation (the caller guarantees the new
+/// bytes extend the old ones); a different digest starts a new generation.
 pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Result<Head> {
     let acquired = integer(basis.acquired_upto)?;
     let excisions = integer(basis.excisions_seen)?;
@@ -278,12 +281,12 @@ pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Resu
             || identity.1 != basis.excisions_seen
         {
             return Err(StoreError::Invariant(
-                "unchanged parser basis changed its interpretation identity".into(),
+                "same input digest arrived with a different parser version, companions or excisions".into(),
             ));
         }
         if basis.acquired_upto < old.acquired_upto {
             return Err(StoreError::Invariant(
-                "same parser basis cannot shrink its acquired prefix".into(),
+                "acquired length shrank for the same input digest".into(),
             ));
         }
         if basis.acquired_upto > old.acquired_upto {
@@ -306,7 +309,7 @@ pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Resu
                 excisions_seen=excluded.excisions_seen,finalization_pending=0,detail=NULL,
                 framed=0,used=0,ignored=0,unrecognized_n=0,undecodable=0",
             params![basis.input_pk,basis.chain,basis.parser_version,acquired,basis.digest.as_slice(),generation,
-                reference(generation,0),basis.companions_json,excisions]))?;
+                carry(generation,0),basis.companions_json,excisions]))?;
     }
     let result =
         head(&tx, path, basis.input_pk, basis.chain)?.ok_or(StoreError::StaleParserState)?;
@@ -314,21 +317,20 @@ pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Resu
     Ok(result)
 }
 
-/// A live read-only snapshot, not merely a mutable generation/key lookup.
-/// Its lifetime pins WAL pages and must stay charged/admitted by the owner.
-/// Drop it before applying the result. An old snapshot stays internally coherent;
-/// the output writer subsequently rejects its stale predecessor.
+/// A read-only transaction pinned at one parser state. It holds WAL pages while
+/// open, so release it before writing the step's result. A stale snapshot stays
+/// readable; the writer rejects results built from it.
 pub struct Snapshot {
-    // Store-only source membership reads share this already pinned view.
+    // Other store readers share this pinned view.
     pub(crate) db: Connection,
     pub(crate) path: std::path::PathBuf,
     pub head: Head,
-    reads: std::cell::Cell<Option<ReadWork>>,
-    // Drop the SQLite snapshot before releasing its retained archive authority.
-    _lock: std::sync::Arc<std::fs::File>,
+    reads: std::cell::Cell<Option<ReadBudget>>,
+    // Declared after `db` so the connection closes before the archive lock.
+    lock: std::sync::Arc<std::fs::File>,
 }
-/// Idle parser connection. It retains schema/page caches but no read transaction.
-/// Each snapshot must establish and check its own current source predecessor.
+/// An idle connection reused across snapshots. It keeps SQLite caches but no
+/// read transaction; each snapshot checks its token again.
 pub struct ParserReader {
     db: Connection,
     path: std::path::PathBuf,
@@ -354,25 +356,27 @@ impl ParserReader {
             db,
             path,
             head,
-            _lock: lock,
+            lock,
             reads: std::cell::Cell::new(None),
         })
     }
 }
-/// Temporary worker admission shared by all point adapters using this snapshot.
-/// It retains no query results or authority. Drop restores ordinary single-step use.
+/// Read budget shared by every reader of one snapshot while a `ReadScope` is
+/// open.
 #[derive(Clone, Copy)]
-struct ReadWork {
-    left: Budget,
+struct ReadBudget {
+    remaining: Budget,
     exceeded: bool,
     enforced: bool,
 }
+/// Meters snapshot reads against a budget until dropped. Overruns are only
+/// recorded until `enforce` is called; after that they fail.
 pub struct ReadScope<'a>(&'a Snapshot);
 impl ReadScope<'_> {
-    /// A first ordinary action keeps its existing admission. Only an aggregate
-    /// fitting the original allowance can be extended into a run.
+    /// Makes further overruns fail. Returns false, and changes nothing, when
+    /// the budget was already exceeded.
     pub fn enforce(&self) -> bool {
-        let mut work = self.0.reads.get().expect("live read scope");
+        let mut work = self.0.reads.get().expect("open read scope");
         if work.exceeded {
             return false;
         }
@@ -390,21 +394,21 @@ impl Snapshot {
     pub fn bounded_reads(&self, budget: Budget) -> Result<ReadScope<'_>> {
         if self.reads.get().is_some() {
             return Err(StoreError::Invariant(
-                "nested snapshot read allowance".into(),
+                "snapshot read budget is already open".into(),
             ));
         }
-        self.reads.set(Some(ReadWork {
-            left: budget,
+        self.reads.set(Some(ReadBudget {
+            remaining: budget,
             exceeded: false,
             enforced: false,
         }));
         Ok(ReadScope(self))
     }
-    /// Charge raw selector records through the same worker byte allowance,
-    /// before allocation. Ordinary single-step users retain their own meter.
+    /// Charges bytes read outside this snapshot (before allocating them) to the
+    /// open read budget. Does nothing without an open `ReadScope`.
     pub fn charge_read_bytes(&self, bytes: usize) -> Result<()> {
         if let Some(mut left) = self.reads.get() {
-            if bytes > left.left.encoded_bytes {
+            if bytes > left.remaining.encoded_bytes {
                 left.exceeded = true;
                 self.reads.set(Some(left));
                 if left.enforced {
@@ -414,7 +418,7 @@ impl Snapshot {
                     });
                 }
             }
-            left.left.encoded_bytes = left.left.encoded_bytes.saturating_sub(bytes);
+            left.remaining.encoded_bytes = left.remaining.encoded_bytes.saturating_sub(bytes);
             self.reads.set(Some(left));
         }
         Ok(())
@@ -423,12 +427,14 @@ impl Snapshot {
         self.reads.get().is_some_and(|work| work.enforced)
     }
     pub fn charge_selector_record(&self, bytes: usize) -> Result<()> {
-        self.read_allowance("", &[], usize::MAX)?;
+        self.charge_read("", &[], usize::MAX)?;
         self.charge_read_bytes(bytes)
     }
-    fn read_allowance(&self, namespace: &str, key: &[u8], allowance: usize) -> Result<usize> {
+    /// Charges one cell lookup to the open budget and returns the byte
+    /// allowance left for its result.
+    fn charge_read(&self, namespace: &str, key: &[u8], allowance: usize) -> Result<usize> {
         if let Some(mut left) = self.reads.get() {
-            if left.left.cells == 0 {
+            if left.remaining.cells == 0 {
                 left.exceeded = true;
                 self.reads.set(Some(left));
                 if left.enforced {
@@ -438,7 +444,7 @@ impl Snapshot {
                     });
                 }
             }
-            left.left.cells = left.left.cells.saturating_sub(1);
+            left.remaining.cells = left.remaining.cells.saturating_sub(1);
             self.reads.set(Some(left));
             self.charge_read_bytes(
                 namespace
@@ -448,7 +454,7 @@ impl Snapshot {
             )?;
             let work = self.reads.get().unwrap();
             return Ok(if work.enforced {
-                allowance.min(work.left.encoded_bytes)
+                allowance.min(work.remaining.encoded_bytes)
             } else {
                 allowance
             });
@@ -458,19 +464,18 @@ impl Snapshot {
     fn open(path: &Path, expected: &Token, lock: std::sync::Arc<std::fs::File>) -> Result<Self> {
         ParserReader::open(path, lock)?.snapshot(expected)
     }
-    /// Release the pinned view before applying worker output. Only the idle
-    /// connection is reusable; a later snapshot never resumes this read view.
+    /// Ends the read transaction and returns the connection for reuse.
     pub fn into_reader(self) -> Result<ParserReader> {
         sql!(&self.path, self.db.execute_batch("ROLLBACK"))?;
         Ok(ParserReader {
             db: self.db,
             path: self.path,
-            lock: self._lock,
+            lock: self.lock,
         })
     }
     pub fn cell(&self, namespace: &str, key: &[u8], allowance: usize) -> Result<Option<Vec<u8>>> {
         let path = &self.path;
-        let allowance = integer(self.read_allowance(namespace, key, allowance)? as u64)?;
+        let allowance = integer(self.charge_read(namespace, key, allowance)? as u64)?;
         let row = sql!(path, self.db.query_row(
             "SELECT length(value),CASE WHEN length(value)<=?6 THEN value ELSE NULL END FROM parser_cell
              WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",
@@ -488,8 +493,8 @@ impl Snapshot {
             }
         }
     }
-    /// Keyset neighbor within one provider-owned family/namespace. The key codec
-    /// must preserve that provider's order; JSON lexical order is not a substitute.
+    /// The next (`after`) or previous key in one namespace, in byte order.
+    /// Providers must encode keys so byte order matches their logical order.
     pub fn neighbor(
         &self,
         namespace: &str,
@@ -498,7 +503,7 @@ impl Snapshot {
         allowance: usize,
     ) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
         let path = &self.path;
-        let allowance = integer(self.read_allowance(namespace, key, allowance)? as u64)?;
+        let allowance = integer(self.charge_read(namespace, key, allowance)? as u64)?;
         let sql = if after {
             "SELECT length(key)+length(value),CASE WHEN length(key)+length(value)<=?6 THEN key ELSE NULL END,
                     CASE WHEN length(key)+length(value)<=?6 THEN value ELSE NULL END FROM parser_cell
@@ -544,7 +549,7 @@ impl Snapshot {
         }
     }
 }
-fn validate(changes: &[CellChange], budget: Budget) -> Result<()> {
+fn check_changes(changes: &[CellChange], budget: Budget) -> Result<()> {
     if changes.len() > budget.cells {
         return Err(StoreError::ParserAdmission {
             resource: "parser delta cells",
@@ -571,7 +576,7 @@ fn validate(changes: &[CellChange], budget: Budget) -> Result<()> {
     }
     Ok(())
 }
-fn validate_expected_head(expected: &Head, now: &Head) -> Result<()> {
+fn check_unchanged(expected: &Head, now: &Head) -> Result<()> {
     if expected.parsed_upto != now.parsed_upto
         || expected.inspected_upto != now.inspected_upto
         || expected.counts != now.counts
@@ -583,7 +588,7 @@ fn validate_expected_head(expected: &Head, now: &Head) -> Result<()> {
     }
     Ok(())
 }
-fn validate_progress(expected: &Head, progress: &Progress) -> Result<()> {
+fn check_progress(expected: &Head, progress: &Progress) -> Result<()> {
     progress.counts.checked()?;
     if progress.inspected_upto < expected.inspected_upto
         || progress.parsed_upto < expected.parsed_upto
@@ -591,14 +596,14 @@ fn validate_progress(expected: &Head, progress: &Progress) -> Result<()> {
         || progress.inspected_upto > expected.acquired_upto
     {
         return Err(StoreError::Invariant(
-            "parser step exceeds or reverses its acquired basis".into(),
+            "parser progress moved backwards or past the acquired length".into(),
         ));
     }
     if matches!(progress.phase, Phase::Done)
         && (progress.parsed_upto != expected.acquired_upto || progress.finalization_pending)
     {
         return Err(StoreError::Invariant(
-            "byte EOF or pending finalization cannot certify done".into(),
+            "done requires everything parsed and nothing left to finalize".into(),
         ));
     }
     if matches!(progress.phase, Phase::WaitingTail)
@@ -606,20 +611,20 @@ fn validate_progress(expected: &Head, progress: &Progress) -> Result<()> {
             || progress.parsed_upto == progress.inspected_upto)
     {
         return Err(StoreError::Invariant(
-            "waiting tail requires a fully inspected incomplete record".into(),
+            "waiting_tail requires all bytes inspected and an incomplete record".into(),
         ));
     }
     if matches!(progress.phase, Phase::Finalizing) && !progress.finalization_pending {
         return Err(StoreError::Invariant(
-            "finalizing requires an actual remaining obligation".into(),
+            "finalizing requires pending finalization".into(),
         ));
     }
     Ok(())
 }
-/// Cells must already be encoded/admitted outside the write transaction. The
-/// output closure is the existing writer's bounded row step, never interpretation
-/// or file IO. A successful receipt is returned only after the transaction commits.
-/// This primitive does not certify the semantic completeness of the closure.
+/// Applies one parser step in a single transaction: the cell changes, `output`
+/// (the caller's row writes, no parsing or file IO), then the new progress.
+/// Production steps go through `prepared`; tests use this shortcut.
+#[cfg(test)]
 pub(crate) fn write_step<F>(
     db: &mut Connection,
     path: &Path,
@@ -632,23 +637,26 @@ pub(crate) fn write_step<F>(
 where
     F: FnOnce(&Transaction<'_>) -> Result<()>,
 {
-    write_step_inner(db, path, expected, progress, changes, budget, false, output)
+    step(db, path, expected, progress, changes, budget, false, output)
 }
-fn write_step_inner<F>(
+/// Fails with `StaleParserState` when the head moved since `expected` was read.
+/// `from_prepared` skips the pending-work check for `prepared::publish`.
+#[allow(clippy::too_many_arguments)]
+fn step<F>(
     db: &mut Connection,
     path: &Path,
     expected: &Head,
     progress: Progress,
     changes: &[CellChange],
     budget: Budget,
-    prepared: bool,
+    from_prepared: bool,
     output: F,
 ) -> Result<Head>
 where
     F: FnOnce(&Transaction<'_>) -> Result<()>,
 {
-    validate(changes, budget)?;
-    validate_progress(expected, &progress)?;
+    check_changes(changes, budget)?;
+    check_progress(expected, &progress)?;
     let next = expected
         .token
         .step
@@ -656,8 +664,8 @@ where
         .ok_or_else(|| StoreError::Invariant("parser state step exhausted".into()))?;
     let tx = sql!(path, db.transaction())?;
     let now = current(&tx, path, &expected.token)?;
-    validate_expected_head(expected, &now)?;
-    if !prepared {
+    check_unchanged(expected, &now)?;
+    if !from_prepared {
         prepared::ensure_idle(&tx, path, &expected.token)?;
     }
     if now.status == "retired" {
@@ -704,16 +712,15 @@ where
                     framed=?9,used=?10,ignored=?11,unrecognized_n=?12,undecodable=?13
                 WHERE input_pk=?1 AND chain=?2",
         params![expected.token.input_pk,expected.token.chain,inspected,parsed,status,
-            progress.finalization_pending,next,reference(expected.token.generation,next),record_counts[0],record_counts[1],record_counts[2],record_counts[3],record_counts[4]]))?;
+            progress.finalization_pending,next,carry(expected.token.generation,next),record_counts[0],record_counts[1],record_counts[2],record_counts[3],record_counts[4]]))?;
     let result = head(&tx, path, expected.token.input_pk, expected.token.chain)?
         .ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
 
-/// Invalidate the current working state before draining it. The new empty
-/// generation rejects every in-flight result; canonical rows are not removed by
-/// this operation and remain the excision/reconciliation owner's responsibility.
+/// Moves the state to a new empty generation with status `retired`, so every
+/// in-flight result becomes stale. Message rows are left to their owner.
 pub(crate) fn retire(db: &mut Connection, path: &Path, expected: &Token) -> Result<Head> {
     let tx = sql!(path, db.transaction())?;
     current(&tx, path, expected)?;
@@ -730,7 +737,7 @@ pub(crate) fn retire(db: &mut Connection, path: &Path, expected: &Token) -> Resu
                 expected.input_pk,
                 expected.chain,
                 generation,
-                reference(generation, 0)
+                carry(generation, 0)
             ],
         )
     )?;
@@ -745,9 +752,9 @@ pub struct Collection {
     pub encoded_bytes: usize,
     pub remaining: bool,
 }
-/// Drain retired generations by indexed keysets, without reading their values
-/// into memory. A cell exceeding the admitted work allowance remains owed and
-/// requires a larger explicit allowance. This is not a bound on SQLite page IO.
+/// Deletes cells of generations older than `expected`, within the budget and
+/// without loading their values. A first cell larger than the byte budget fails
+/// with `ParserAdmission`.
 pub(crate) fn collect_retired(
     db: &mut Connection,
     path: &Path,
@@ -798,9 +805,9 @@ pub(crate) fn collect_retired(
                 break;
             }
             let namespace = sql!(path, row.get::<_, Option<String>>(2))?
-                .ok_or_else(|| StoreError::Invariant("missing admitted parser namespace".into()))?;
+                .ok_or_else(|| StoreError::Invariant("parser cell namespace missing".into()))?;
             let key = sql!(path, row.get::<_, Option<Vec<u8>>>(3))?
-                .ok_or_else(|| StoreError::Invariant("missing admitted parser key".into()))?;
+                .ok_or_else(|| StoreError::Invariant("parser cell key missing".into()))?;
             keys.push((sql!(path, row.get::<_, i64>(0))?, namespace, key));
             bytes += needed;
         }
@@ -819,8 +826,8 @@ pub(crate) fn collect_retired(
         remaining,
     })
 }
-/// Remove only an explicitly retired, fully drained head. Input-reference and
-/// canonical-contribution removal is the caller's separate existing lifecycle.
+/// Deletes a retired head once all its cells are gone. The input reference and
+/// message rows are removed separately by their owners.
 pub(crate) fn remove_retired(db: &mut Connection, path: &Path, expected: &Token) -> Result<()> {
     let tx = sql!(path, db.transaction())?;
     let head = current(&tx, path, expected)?;
@@ -839,7 +846,7 @@ pub(crate) fn remove_retired(db: &mut Connection, path: &Path, expected: &Token)
     )?;
     if remains {
         return Err(StoreError::Invariant(
-            "drain parser cells before removing their head/input reference".into(),
+            "parser cells must be deleted before their parser state".into(),
         ));
     }
     sql!(
@@ -854,18 +861,16 @@ pub(crate) fn remove_retired(db: &mut Connection, path: &Path, expected: &Token)
 }
 
 impl crate::Writer {
-    /// Inspect disposable state through the private index connection.
     pub fn parser_head(&self, input_pk: i64, chain: i64) -> Result<Option<Head>> {
         head(&self._index, &self.root.join("index.db"), input_pk, chain)
     }
-    /// A source failure remains diagnostic owed work, never a completion claim.
-    /// Reads are fixed-admitted; large diagnostics are refused before loading.
-    pub fn parser_failure(&self, predecessor: &Token) -> Result<Option<String>> {
+    /// The failure detail recorded for this state, if any (at most 4096 bytes).
+    pub fn parser_failure(&self, token: &Token) -> Result<Option<String>> {
         let path = self.root.join("index.db");
-        current(&self._index, &path, predecessor)?;
+        current(&self._index, &path, token)?;
         let (length,detail):(Option<i64>,Option<String>)=sql!(&path,self._index.query_row(
             "SELECT length(CAST(detail AS BLOB)), CASE WHEN length(CAST(detail AS BLOB))<=4096 THEN detail ELSE NULL END FROM parse_state WHERE input_pk=?1 AND chain=?2",
-            params![predecessor.input_pk,predecessor.chain],|r|Ok((r.get(0)?,r.get(1)?))))?;
+            params![token.input_pk,token.chain],|r|Ok((r.get(0)?,r.get(1)?))))?;
         if let Some(length) = length.filter(|n| *n > 4096) {
             return Err(StoreError::ParserAdmission {
                 resource: "parser diagnostic bytes",
@@ -874,11 +879,11 @@ impl crate::Writer {
         }
         Ok(detail)
     }
-    /// Bound diagnostic persistence to the exact predecessor. Clearing a failure
-    /// permits an explicit retry; neither operation clears pending finalization.
+    /// Records a failure detail, or clears it with `None` to allow a retry.
+    /// Progress and pending finalization are unchanged.
     pub fn record_parser_failure(
         &mut self,
-        predecessor: &Token,
+        token: &Token,
         detail: Option<&str>,
         allowance: usize,
     ) -> Result<()> {
@@ -891,26 +896,25 @@ impl crate::Writer {
         }
         let path = self.root.join("index.db");
         let tx = sql!(&path, self._index.transaction())?;
-        current(&tx, &path, predecessor)?;
+        current(&tx, &path, token)?;
         sql!(
             &path,
             tx.execute(
                 "UPDATE parse_state SET detail=?3 WHERE input_pk=?1 AND chain=?2",
-                params![predecessor.input_pk, predecessor.chain, detail]
+                params![token.input_pk, token.chain, detail]
             )
         )?;
         sql!(&path, tx.commit())?;
         Ok(())
     }
-    /// Admit a verified contiguous retained-source basis. This does not publish
-    /// messages and never certifies row finalization merely from byte EOF.
+    /// See [`begin`].
     pub fn begin_parser(&mut self, basis: &Basis<'_>) -> Result<Head> {
         begin(&mut self._index, &self.root.join("index.db"), basis)
     }
-    pub fn parser_snapshot(&self, predecessor: &Token) -> Result<Snapshot> {
+    pub fn parser_snapshot(&self, token: &Token) -> Result<Snapshot> {
         Snapshot::open(
             &self.root.join("index.db"),
-            predecessor,
+            token,
             std::sync::Arc::clone(&self._lock),
         )
     }
@@ -922,491 +926,37 @@ impl crate::Writer {
     }
 }
 impl crate::ReadHandle {
-    pub fn parser_snapshot(&self, predecessor: &Token) -> Result<Snapshot> {
+    pub fn parser_snapshot(&self, token: &Token) -> Result<Snapshot> {
         Snapshot::open(
             &self.root.join("index.db"),
-            predecessor,
+            token,
             std::sync::Arc::clone(&self._lock),
         )
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Writer;
-    mod reused_reader;
-    fn fixture() -> (tempfile::TempDir, std::path::PathBuf, Writer, i64) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("archive");
-        let writer = Writer::open(&root).unwrap();
-        writer
-            ._index
-            .execute("INSERT INTO input_ref(id) VALUES('synthetic-state')", [])
-            .unwrap();
-        let input = writer
-            ._index
-            .query_row("SELECT pk FROM input_ref", [], |r| r.get(0))
-            .unwrap();
-        (dir, root, writer, input)
-    }
-    fn basis(input_pk: i64, end: u64) -> Basis<'static> {
-        Basis {
-            input_pk,
-            chain: 1,
-            parser_version: 1,
-            digest: [31; 32],
-            acquired_upto: end,
-            companions_json: None,
-            excisions_seen: 0,
-        }
-    }
-    fn budget() -> Budget {
-        Budget {
-            cells: 16,
-            encoded_bytes: 4096,
-        }
-    }
-    fn change(key: &str, value: &str) -> CellChange {
-        CellChange {
-            namespace: "test".into(),
-            key: key.as_bytes().to_vec(),
-            value: Some(value.as_bytes().to_vec()),
-        }
-    }
-    #[test]
-    fn source_row_receipt_requires_exact_finished_frontier_and_rolls_back_late_failure() {
-        let (_dir, root, mut writer, input) = fixture();
-        let initial = writer.begin_parser(&basis(input, 10)).unwrap();
-        assert!(matches!(
-            writer.publish_source_rows(&initial, b"synthetic producer proof", true),
-            Err(StoreError::StaleParserState)
-        ));
-        // Synthetic producer evidence qualifies storage/CAS, not source semantics.
-        let finalizing = write_step(
-            &mut writer._index,
-            &root.join("index.db"),
-            &initial,
-            Progress {
-                inspected_upto: 10,
-                parsed_upto: 10,
-                phase: Phase::Finalizing,
-                finalization_pending: true,
-                counts: Accounting::default(),
-            },
-            &[],
-            budget(),
-            |_| Ok(()),
-        )
-        .unwrap();
-        let pinned = writer.parser_snapshot(&finalizing.token).unwrap();
-        let mut wrong = finalizing.clone();
-        wrong.token.generation += 1;
-        assert!(matches!(
-            writer.publish_source_rows(&wrong, b"synthetic producer proof", true),
-            Err(StoreError::StaleParserState)
-        ));
-        writer._index.execute_batch("CREATE TRIGGER refuse_row_settlement BEFORE UPDATE ON parse_state WHEN NEW.status='done' BEGIN SELECT RAISE(ABORT,'late settlement failure'); END;").unwrap();
-        assert!(matches!(
-            writer.publish_source_rows(&finalizing, b"synthetic producer proof", true),
-            Err(StoreError::Sqlite { .. })
-        ));
-        assert!(
-            writer
-                .parser_snapshot(&finalizing.token)
-                .unwrap()
-                .cell(SOURCE_ROWS_NAMESPACE, b"", 16384)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            writer
-                .parser_head(input, 1)
-                .unwrap()
-                .unwrap()
-                .finalization_pending
-        );
-        writer
-            ._index
-            .execute_batch("DROP TRIGGER refuse_row_settlement")
-            .unwrap();
-        let done = writer
-            .publish_source_rows(&finalizing, b"synthetic producer proof", true)
-            .unwrap();
-        assert_eq!(done.token, finalizing.token);
-        assert!(!done.finalization_pending);
-        assert_eq!(done.status, "done");
-        assert!(
-            pinned
-                .cell(SOURCE_ROWS_NAMESPACE, b"", 16384)
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            writer
-                .parser_snapshot(&done.token)
-                .unwrap()
-                .cell(SOURCE_ROWS_NAMESPACE, b"", 16384)
-                .unwrap()
-                .unwrap(),
-            b"synthetic producer proof"
-        );
-        assert!(matches!(
-            writer.publish_source_rows(&finalizing, b"replay", true),
-            Err(StoreError::StaleParserState)
-        ));
-    }
-    #[test]
-    fn source_row_receipt_cannot_certify_a_new_suffix_or_removed_input() {
-        for removed in [false, true] {
-            let (_dir, root, mut writer, input) = fixture();
-            let initial = writer.begin_parser(&basis(input, 10)).unwrap();
-            let finalizing = write_step(
-                &mut writer._index,
-                &root.join("index.db"),
-                &initial,
-                Progress {
-                    inspected_upto: 10,
-                    parsed_upto: 10,
-                    phase: Phase::Finalizing,
-                    finalization_pending: true,
-                    counts: Accounting::default(),
-                },
-                &[],
-                budget(),
-                |_| Ok(()),
-            )
-            .unwrap();
-            if removed {
-                writer
-                    ._index
-                    .execute("UPDATE input_ref SET excised=1 WHERE pk=?1", [input])
-                    .unwrap();
-            } else {
-                writer.begin_parser(&basis(input, 11)).unwrap();
-            }
-            assert!(matches!(
-                writer.publish_source_rows(&finalizing, b"old frontier", true),
-                Err(StoreError::StaleParserState)
-            ));
-            assert!(
-                writer
-                    .parser_snapshot(&writer.parser_head(input, 1).unwrap().unwrap().token)
-                    .unwrap()
-                    .cell(SOURCE_ROWS_NAMESPACE, b"", 16384)
-                    .unwrap()
-                    .is_none()
-            );
-        }
-    }
-    #[test]
-    fn parser_failure_is_bounded_predecessor_diagnostic_not_completion() {
-        let (_dir, _root, mut writer, input_pk) = fixture();
-        let basis = Basis {
-            input_pk,
-            chain: 1,
-            parser_version: 1,
-            digest: [9; 32],
-            acquired_upto: 20,
-            companions_json: None,
-            excisions_seen: 0,
-        };
-        let head = writer.begin_parser(&basis).unwrap();
-        writer
-            .record_parser_failure(&head.token, Some("retry required"), 4096)
-            .unwrap();
-        assert_eq!(
-            writer.parser_failure(&head.token).unwrap().as_deref(),
-            Some("retry required")
-        );
-        let after = writer.parser_head(input_pk, 1).unwrap().unwrap();
-        assert_eq!(after.token, head.token);
-        assert_eq!(after.parsed_upto, 0);
-        assert_eq!(after.status, "parsing");
-        assert!(matches!(
-            writer.record_parser_failure(&head.token, Some(&"x".repeat(4097)), usize::MAX),
-            Err(StoreError::ParserAdmission { .. })
-        ));
-        writer
-            .record_parser_failure(&head.token, None, 4096)
-            .unwrap();
-        assert_eq!(writer.parser_failure(&head.token).unwrap(), None);
-        let newer = writer
-            .begin_parser(&Basis {
-                digest: [8; 32],
-                ..basis
-            })
-            .unwrap();
-        assert_ne!(newer.token, head.token);
-        assert!(matches!(
-            writer.record_parser_failure(&head.token, Some("stale"), 4096),
-            Err(StoreError::StaleParserState)
-        ));
-        assert!(writer.parser_failure(&newer.token).unwrap().is_none());
-    }
-
-    #[test]
-    fn parser_snapshot_retains_archive_authority_after_its_factory_closes() {
-        let (_dir, root, mut writer, input) = fixture();
-        let head = writer.begin_parser(&basis(input, 100)).unwrap();
-        let reader = writer.read_handle().unwrap();
-        let snapshot = reader.parser_snapshot(&head.token).unwrap();
-        drop(reader);
-        drop(writer);
-        assert!(matches!(
-            Writer::open(&root),
-            Err(StoreError::WriterHeld { .. })
-        ));
-        assert!(matches!(
-            crate::ReadHandle::open(&root),
-            Err(StoreError::WriterHeld { .. })
-        ));
-        assert_eq!(snapshot.cell("test", b"absent", 100).unwrap(), None);
-        drop(snapshot);
-        assert!(Writer::open(&root).is_ok());
-    }
-    fn progress(parsed: u64, inspected: u64, phase: Phase, pending: bool) -> Progress {
-        Progress {
-            parsed_upto: parsed,
-            inspected_upto: inspected,
-            phase,
-            finalization_pending: pending,
-            counts: Accounting::default(),
-        }
-    }
-    #[test]
-    fn target_private_writer_snapshot_and_stale_step_preserve_newer_acquisition() {
-        let (_dir, root, mut writer, input) = fixture();
-        let file = root.join("index.db");
-        let head = writer.begin_parser(&basis(input, 10)).unwrap();
-        let head = write_step(
-            &mut writer._index,
-            &file,
-            &head,
-            progress(5, 5, Phase::Parsing, true),
-            &[change("a", "old")],
-            budget(),
-            |_| Ok(()),
-        )
-        .unwrap();
-        let old = writer
-            .read_handle()
-            .unwrap()
-            .parser_snapshot(&head.token)
-            .unwrap();
-        let extended = writer.begin_parser(&basis(input, 20)).unwrap();
-        assert_eq!(extended.token, head.token);
-        let next = write_step(
-            &mut writer._index,
-            &file,
-            &head,
-            progress(10, 10, Phase::Done, false),
-            &[change("a", "new")],
-            budget(),
-            |_| Ok(()),
-        )
-        .unwrap();
-        assert_eq!(next.acquired_upto, 20);
-        assert_eq!(next.status, "parsing");
-        assert_eq!(old.cell("test", b"a", 10).unwrap().unwrap(), b"old");
-        assert!(matches!(
-            writer.parser_snapshot(&head.token),
-            Err(StoreError::StaleParserState)
-        ));
-        assert!(matches!(
-            write_step(
-                &mut writer._index,
-                &file,
-                &head,
-                progress(10, 10, Phase::Done, false),
-                &[],
-                budget(),
-                |_| panic!("stale output")
-            ),
-            Err(StoreError::StaleParserState)
-        ));
-        let fresh = writer.parser_snapshot(&next.token).unwrap();
-        assert_eq!(fresh.cell("test", b"a", 10).unwrap().unwrap(), b"new");
-    }
-    #[test]
-    fn removed_head_and_reused_input_key_never_recreate_a_target_token() {
-        let (_dir, root, mut writer, input) = fixture();
-        let file = root.join("index.db");
-        let old = writer.begin_parser(&basis(input, 10)).unwrap();
-        let retired = retire(&mut writer._index, &file, &old.token).unwrap();
-        remove_retired(&mut writer._index, &file, &retired.token).unwrap();
-        writer
-            ._index
-            .execute("DELETE FROM input_ref WHERE pk=?1", [input])
-            .unwrap();
-        writer
-            ._index
-            .execute("INSERT INTO input_ref(id) VALUES('replacement')", [])
-            .unwrap();
-        let reused: i64 = writer
-            ._index
-            .query_row("SELECT pk FROM input_ref", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(input, reused);
-        let next = writer.begin_parser(&basis(reused, 10)).unwrap();
-        assert_ne!(next.token, old.token);
-        assert!(matches!(
-            writer.parser_snapshot(&old.token),
-            Err(StoreError::StaleParserState)
-        ));
-    }
-    #[test]
-    fn partial_tail_and_retirement_are_independent_admitted_work() {
-        let (_dir, root, mut writer, input) = fixture();
-        let file = root.join("index.db");
-        let head = writer.begin_parser(&basis(input, 10)).unwrap();
-        let head = write_step(
-            &mut writer._index,
-            &file,
-            &head,
-            progress(5, 10, Phase::WaitingTail, true),
-            &[change("a", &"x".repeat(100)), change("b", "second")],
-            budget(),
-            |_| Ok(()),
-        )
-        .unwrap();
-        let view = writer.parser_snapshot(&head.token).unwrap();
-        assert!(matches!(
-            view.cell("test", b"a", 10),
-            Err(StoreError::ParserAdmission { required: 100, .. })
-        ));
-        assert!(head.finalization_pending);
-        assert_eq!(head.status, "waiting_tail");
-        assert_eq!(
-            writer.begin_parser(&basis(input, 10)).unwrap().status,
-            "waiting_tail"
-        );
-        drop(view);
-        let retired = retire(&mut writer._index, &file, &head.token).unwrap();
-        assert!(remove_retired(&mut writer._index, &file, &retired.token).is_err());
-        let first = collect_retired(
-            &mut writer._index,
-            &file,
-            &retired.token,
-            Budget {
-                cells: 1,
-                encoded_bytes: 200,
-            },
-        )
-        .unwrap();
-        assert_eq!(first.deleted, 1);
-        assert!(first.remaining);
-        let second = collect_retired(
-            &mut writer._index,
-            &file,
-            &retired.token,
-            Budget {
-                cells: 1,
-                encoded_bytes: 200,
-            },
-        )
-        .unwrap();
-        assert_eq!(second.deleted, 1);
-        assert!(!second.remaining);
-        remove_retired(&mut writer._index, &file, &retired.token).unwrap();
-    }
-    #[test]
-    fn child_process_exit_releases_real_writer_lock_and_rolls_back_step() {
-        let (_dir, root, mut writer, input) = fixture();
-        let file = root.join("index.db");
-        let head = writer.begin_parser(&basis(input, 10)).unwrap();
-        drop(writer);
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "parser_state::tests::crash_child", "--nocapture"])
-            .env("PARSER_TARGET_CRASH_ROOT", &root)
-            .output()
-            .unwrap();
-        assert_eq!(child.status.code(), Some(71), "{child:?}");
-        let mut writer = Writer::open(&root).unwrap();
-        let restored = writer.parser_head(input, 1).unwrap().unwrap();
-        assert_eq!(restored.token, head.token);
-        assert!(
-            writer
-                .parser_snapshot(&head.token)
-                .unwrap()
-                .cell("test", b"a", 10)
-                .unwrap()
-                .is_none()
-        );
-        let count: i64 = writer
-            ._index
-            .query_row("SELECT count(*) FROM unrecognized", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 0);
-        let mut p = progress(10, 10, Phase::Finalizing, true);
-        p.counts = Accounting {
-            framed: 1,
-            unrecognized: 1,
-            ..Accounting::default()
-        };
-        let next=write_step(&mut writer._index,&file,&head,p,&[change("a","new")],budget(), |tx| {
-            crate::db(&file,||tx.execute("INSERT INTO unrecognized(input_pk,chain,format,what,count) VALUES(?1,1,'synthetic','record:test',1)",[input]))?; Ok(())
-        }).unwrap();
-        assert_eq!(next.token.step, 1);
-        assert_eq!(next.counts.framed, 1);
-        assert!(next.finalization_pending);
-        let count: i64 = writer
-            ._index
-            .query_row("SELECT count(*) FROM unrecognized", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
-    }
-    #[test]
-    fn crash_child() {
-        let Some(root) = std::env::var_os("PARSER_TARGET_CRASH_ROOT") else {
-            return;
-        };
-        let root = std::path::PathBuf::from(root);
-        let file = root.join("index.db");
-        let mut writer = Writer::open(&root).unwrap();
-        let input = writer
-            ._index
-            .query_row("SELECT pk FROM input_ref", [], |r| r.get(0))
-            .unwrap();
-        let head = writer.parser_head(input, 1).unwrap().unwrap();
-        let _ = write_step(
-            &mut writer._index,
-            &file,
-            &head,
-            progress(10, 10, Phase::Finalizing, true),
-            &[change("a", "new")],
-            budget(),
-            |tx| {
-                crate::db(&file, || {
-                    tx.execute("INSERT INTO unrecognized(input_pk,chain,format,what,count) VALUES(?1,1,'synthetic','record:test',1)",[input])
-                })?;
-                std::process::exit(71)
-            },
-        );
-        panic!("crash callback must exit before commit");
-    }
-}
-
-/// Existing parser state owns its source-row audit receipt. The source owner
-/// supplies disposition/effect proof; storage binds it to one exact predecessor.
+/// Cell namespace holding the source-row receipt of the current generation.
 pub const SOURCE_ROWS_NAMESPACE: &str = "source.rows.v1";
 impl crate::Writer {
+    /// Stores the source-row receipt for a finalizing state that has parsed all
+    /// acquired bytes. With `complete`, also marks the state done, which fails
+    /// if any records were unrecognized or undecodable.
     pub fn publish_source_rows(
         &mut self,
         expected: &Head,
         receipt: &[u8],
-        settled: bool,
+        complete: bool,
     ) -> Result<Head> {
         if receipt.is_empty() || receipt.len() > 16384 {
             return Err(StoreError::ParserAdmission {
-                resource: "source row settlement receipt",
+                resource: "source row receipt",
                 required: receipt.len() as u64,
             });
         }
         let path = self.root.join("index.db");
         let tx = sql!(&path, self._index.transaction())?;
         let now = current(&tx, &path, &expected.token)?;
-        validate_expected_head(expected, &now)?;
+        check_unchanged(expected, &now)?;
         prepared::ensure_idle(&tx, &path, &expected.token)?;
         if now.status != "finalizing"
             || !now.finalization_pending
@@ -1414,9 +964,9 @@ impl crate::Writer {
         {
             return Err(StoreError::StaleParserState);
         }
-        if settled && (now.counts.unrecognized > 0 || now.counts.undecodable > 0) {
+        if complete && (now.counts.unrecognized > 0 || now.counts.undecodable > 0) {
             return Err(StoreError::Invariant(
-                "known interpretation failures cannot certify settled source rows".into(),
+                "source rows cannot complete with unrecognized or undecodable records".into(),
             ));
         }
         let excised: bool = sql!(
@@ -1434,7 +984,7 @@ impl crate::Writer {
         if tx.changes() != 1 {
             return Err(StoreError::StaleParserState);
         }
-        if settled {
+        if complete {
             sql!(&path,tx.execute("UPDATE parse_state SET status='done',finalization_pending=0 WHERE input_pk=?1 AND chain=?2",rusqlite::params![now.token.input_pk,now.token.chain]))?;
         }
         let result = head(&tx, &path, now.token.input_pk, now.token.chain)?
@@ -1443,3 +993,6 @@ impl crate::Writer {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests;

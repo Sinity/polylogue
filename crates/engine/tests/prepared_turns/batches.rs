@@ -1,4 +1,5 @@
 use super::*;
+use polylogue_store::parser_state::prepared::WorkPhase;
 fn batch_budget() -> Budget {
     Budget {
         cells: 64,
@@ -169,7 +170,7 @@ fn interrupted_batches_discard_unsealed_and_finish_sealed_without_replay() {
             ));
         }
         let work = writer.parser_work(&head.token).unwrap().unwrap();
-        assert_eq!(work.applying, sealed);
+        assert_eq!(work.phase == WorkPhase::Applying, sealed);
         assert_eq!(work.token.applied, if sealed { 64 } else { 0 });
         drop(pending); // Cancellation loses the in-memory delta, not durable obligations.
         let mut turns = 0usize;
@@ -247,5 +248,5 @@ fn staging_prefix_accounts_for_exact_encoded_framing_before_mutation() {
         .unwrap();
     assert_eq!(staged.token.staged, 2);
     assert_eq!(staged.token.applied, 0);
-    assert_eq!(staged.token.predecessor, head.token);
+    assert_eq!(staged.token.head, head.token);
 }
