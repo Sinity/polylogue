@@ -2412,3 +2412,6 @@ mod result_metadata;
 
 #[path = "session_read/claude_active_leaf.rs"]
 mod claude_active_leaf;
+
+#[path = "session_read/codex_active.rs"]
+mod codex_active;

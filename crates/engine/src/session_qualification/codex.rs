@@ -26,29 +26,82 @@ fn provider_cell(
     }
     Ok(cell)
 }
+struct FlatReads<'a> {
+    catalog: &'a SessionCatalog,
+    dependency: &'a SessionInputDependency,
+    until: Instant,
+    cancelled: &'a mut dyn FnMut() -> bool,
+    allowance: usize,
+    used: usize,
+}
+impl FlatReads<'_> {
+    fn cell(&mut self, key: &[u8], maximum: usize) -> Result<Option<Vec<u8>>, Error> {
+        deadline(self.until)?;
+        if (self.cancelled)() {
+            return Err(Error::Cancelled);
+        }
+        let namespace = crate::state::codex::EFFECTS_NAMESPACE;
+        self.charge(namespace.len().saturating_add(key.len()))?;
+        let bytes = self.catalog.dependency_cell(
+            self.dependency,
+            namespace,
+            key,
+            (self.allowance - self.used).min(maximum),
+        )?;
+        if let Some(bytes) = &bytes {
+            self.charge(bytes.len())?;
+        }
+        Ok(bytes)
+    }
+    fn charge(&mut self, bytes: usize) -> Result<(), Error> {
+        self.used = self.used.saturating_add(bytes);
+        if self.used > self.allowance {
+            return Err(Error::ParserAdmission {
+                resource: "Codex active event proof",
+                required: self.used as u64,
+            });
+        }
+        Ok(())
+    }
+}
 fn flat_effects(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
+    session: &polylogue_model::SessionId,
     until: Instant,
+    allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<bool, Error> {
+    use crate::state::codex::{FlatSessionEvents, FlatSessionStep};
     let head = dependency.head().ok_or(Error::Range)?;
+    let mut reads = FlatReads {
+        catalog,
+        dependency,
+        until,
+        cancelled,
+        allowance,
+        used: 0,
+    };
+    let mut events = FlatSessionEvents::new(session);
     for step in 1..=u64::try_from(head.token.step).map_err(|_| Error::Range)? {
-        deadline(until)?;
-        if cancelled() {
-            return Err(Error::Cancelled);
-        }
-        let key = crate::state::codex::flat_session_header_key(step);
-        let bytes = catalog
-            .dependency_cell(
-                dependency,
-                crate::state::codex::EFFECTS_NAMESPACE,
-                &key,
-                256,
-            )?
+        let bytes = reads
+            .cell(&FlatSessionStep::header_key(step), 256)?
             .ok_or_else(|| Error::Invariant("missing Codex effects header".into()))?;
-        if !crate::state::codex::effects_preserve_flat_session(&bytes, step)? {
+        let Some(proof) = FlatSessionStep::decode(&bytes, step)? else {
             return Ok(false);
+        };
+        // Preserve the no-event fast path. Eventful steps additionally prove
+        // their complete declared family, including its absence boundary.
+        if proof.events() == 0 {
+            continue;
+        }
+        for ordinal in 0..=proof.events() {
+            let bytes = reads.cell(&proof.event_key(ordinal)?, allowance)?;
+            if let Some(event) = proof.event(ordinal, bytes.as_deref())? {
+                if !events.accepts(&event) {
+                    return Ok(false);
+                }
+            }
         }
     }
     Ok(true)
@@ -171,7 +224,14 @@ pub(super) fn qualify(
         && head.counts.undecodable == 0
         && !resume.normalization_incomplete()
         && dependency.failure().is_none()
-        && flat_effects(catalog, dependency, until, cancelled)?;
+        && flat_effects(
+            catalog,
+            dependency,
+            &source_session.id,
+            until,
+            allowance,
+            cancelled,
+        )?;
     let mut active = Vec::new();
     for ordinal in 0..resume.message_count() {
         deadline(until)?;
@@ -245,3 +305,7 @@ pub(super) fn qualify(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "codex/tests.rs"]
+mod tests;
