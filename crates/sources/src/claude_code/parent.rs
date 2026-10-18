@@ -1,4 +1,5 @@
-//! Retained record relations, not another Message tree or execution authority.
+//! Parent links of Claude records, including non-Message records, so a
+//! Message's parent can be found by skipping those records.
 use crate::selection::{PathPart, RecordRange, SelectedRaw};
 use polylogue_model::{NativeId, RawJson as Value};
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
     pub value: Value,
-    pub donor: SelectedRaw,
+    pub origin: SelectedRaw,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
@@ -19,7 +20,7 @@ pub struct Node {
     pub summary: Option<Link>,
     pub progress_kind: Option<Link>,
     pub envelope: RecordRange,
-    /// Effective record identity detects identical replay without retaining its payload.
+    /// Hash of the overlaid record, to detect an identical repeat.
     pub fingerprint: [u8; 32],
     pub field_fingerprints: BTreeMap<NativeId, [u8; 32]>,
     pub conflicted: bool,
@@ -75,7 +76,7 @@ impl Node {
                 .get(key)
                 .map(|v| Link {
                     value: v.opaque(),
-                    donor: SelectedRaw {
+                    origin: SelectedRaw {
                         record: range,
                         path: vec![PathPart::Key(key.into())],
                     },
@@ -103,7 +104,7 @@ impl Node {
                 .get("data")
                 .map(|data| Link {
                     value: data.get("type").cloned().unwrap_or(Value::Null),
-                    donor: SelectedRaw {
+                    origin: SelectedRaw {
                         record: range,
                         path: vec![PathPart::Key("data".into()), PathPart::Key("type".into())],
                     },
@@ -130,15 +131,16 @@ impl Node {
             conflicted,
         })
     }
-    /// Only a compaction boundary substitutes its explicit logical predecessor.
+    /// The record this one follows. A compaction boundary uses its
+    /// `logicalParentUuid`.
     pub fn predecessor(&self) -> Result<Option<&Link>, &'static str> {
         if self.conflicted {
-            return Err("Claude retained parent identity conflict");
+            return Err("Claude record UUID has conflicting parent records");
         }
         if self.kind == "user"
             && self.summary.as_ref().and_then(|l| l.value.as_bool()) != Some(true)
         {
-            return Err("Claude retained summary classification unavailable");
+            return Err("Claude user record is not a compact summary");
         }
         if self.kind == "system" && self.subtype.as_deref() == Some("compact_boundary") {
             return self
@@ -149,35 +151,34 @@ impl Node {
         }
         Ok(self.parent.as_ref())
     }
-    /// One small admitted raw-record verification per citation turn. The
-    /// canonical owner supplies only retained bytes on the pinned source basis.
-    pub fn citation(&self, donor: u8) -> Option<RecordRange> {
-        match donor {
+    /// The record range of origin `origin` (0 is the envelope).
+    pub fn citation(&self, origin: u8) -> Option<RecordRange> {
+        match origin {
             0 => Some(self.envelope),
-            1 => self.parent.as_ref().map(|l| l.donor.record),
-            2 => self.logical_parent.as_ref().map(|l| l.donor.record),
+            1 => self.parent.as_ref().map(|l| l.origin.record),
+            2 => self.logical_parent.as_ref().map(|l| l.origin.record),
             3 => self.subtype_origin.as_ref().map(|d| d.record),
-            4 => self.summary.as_ref().map(|l| l.donor.record),
-            5 => self.progress_kind.as_ref().map(|l| l.donor.record),
+            4 => self.summary.as_ref().map(|l| l.origin.record),
+            5 => self.progress_kind.as_ref().map(|l| l.origin.record),
             _ => None,
         }
     }
-    pub fn verify(&self, donor: u8, bytes: &[u8]) -> Result<bool, String> {
+    pub fn verify(&self, origin: u8, bytes: &[u8]) -> Result<bool, String> {
         let raw = Value::parse(bytes).map_err(|e| e.to_string())?;
         if raw.get("uuid").and_then(Value::native) != Some(&self.uuid)
             || raw.get("type").and_then(Value::as_str) != Some(self.kind.as_str())
         {
             return Ok(false);
         }
-        let selected = match donor {
-            1 => self.parent.as_ref().map(|l| &l.donor),
-            2 => self.logical_parent.as_ref().map(|l| &l.donor),
+        let selected = match origin {
+            1 => self.parent.as_ref().map(|l| &l.origin),
+            2 => self.logical_parent.as_ref().map(|l| &l.origin),
             3 => self.subtype_origin.as_ref(),
-            4 => self.summary.as_ref().map(|l| &l.donor),
-            5 => self.progress_kind.as_ref().map(|l| &l.donor),
+            4 => self.summary.as_ref().map(|l| &l.origin),
+            5 => self.progress_kind.as_ref().map(|l| &l.origin),
             _ => None,
         };
-        let path = match donor {
+        let path = match origin {
             1 => vec![PathPart::Key("parentUuid".into())],
             2 => vec![PathPart::Key("logicalParentUuid".into())],
             3 => vec![PathPart::Key("subtype".into())],
@@ -185,10 +186,10 @@ impl Node {
             5 => vec![PathPart::Key("data".into()), PathPart::Key("type".into())],
             _ => vec![],
         };
-        if donor != 0 && selected.is_none_or(|d| d.path != path) {
+        if origin != 0 && selected.is_none_or(|d| d.path != path) {
             return Ok(false);
         }
-        Ok(match donor {
+        Ok(match origin {
             0 => true,
             1 => self
                 .parent
@@ -210,7 +211,7 @@ impl Node {
             _ => false,
         })
     }
-    /// Relation evidence excludes storage positions, which are recorded by citations.
+    /// Version evidence for this relation; positions are recorded as citations.
     pub fn evidence(&self) -> Result<Vec<u8>, String> {
         serde_json::to_vec(&(
             &self.uuid,
@@ -225,7 +226,7 @@ impl Node {
     }
 }
 
-/// Public selector proof omits private parser duplicate-detection bookkeeping.
+/// A `Node` without its duplicate-detection hashes, as written into descriptors.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationProof {
     pub uuid: NativeId,

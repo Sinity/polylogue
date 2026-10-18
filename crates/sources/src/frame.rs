@@ -1,10 +1,8 @@
-//! The framework that owns iteration (`spec/sources/README.md`, "The framework
-//! owns iteration; a provider accounts for every record").
-//!
-//! The framework frames the input, decodes each record, keeps its byte range
-//! and counts every outcome. A provider sees one record at a time and must
-//! answer with an [`RecordOutcome`]; ignoring a record requires a kind from the
-//! provider's own closed `Ignored` type, so no record can disappear unseen.
+//! Record framing. This module splits input into records, decodes each, keeps
+//! its byte range and counts what the provider did with it. A provider sees
+//! one record at a time and answers with a [`RecordOutcome`]; ignoring a record
+//! needs a kind from the provider's own `Ignored` enum, so every record is
+//! accounted for.
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -29,15 +27,13 @@ pub use polylogue_model::types::RecordOutcome;
 /// A provider's closed list of record kinds it ignores.
 pub trait IgnoredKind: Copy + Debug {
     fn name(self) -> &'static str;
-    fn reason(self) -> &'static str;
 }
 
 /// The per-record interface every provider implements (rule R88).
 pub trait RecordParser {
     type Ignored: IgnoredKind;
     type Output;
-    /// Pure adapters use Infallible. A state lookup/write failure is an error,
-    /// never an unknown record or successful end of input.
+    /// A state lookup or write failure is an error, never an unknown record.
     type Error;
     fn record(&mut self, rec: &Record<'_>) -> Result<RecordOutcome<Self::Ignored>, Self::Error>;
     fn finish(self) -> Result<Self::Output, Self::Error>;
@@ -46,7 +42,7 @@ pub trait RecordParser {
 /// Every record framed, and what became of it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// Additional interpreted-text diagnostics, separate from exclusive outcomes.
+    /// Text repairs, counted separately from record outcomes.
     pub text_repairs: TextRepairs,
     pub framed: u64,
     pub used: u64,
@@ -58,7 +54,7 @@ pub struct Counts {
 }
 
 impl Counts {
-    /// The accounting identity law 120 checks.
+    /// Every framed record has exactly one outcome (law 120).
     pub fn balanced(&self) -> bool {
         let ignored: u64 = self.ignored.values().sum();
         self.used + ignored + self.unrecognized.len() as u64 + self.undecodable.len() as u64
@@ -103,25 +99,23 @@ impl<E: std::fmt::Display> std::fmt::Display for ParseFailure<E> {
     }
 }
 
-/// The attempt has failed. Its detailed error stays owned by the driver until
-/// finish returns it. Further advance calls cannot invoke the provider again.
+/// The attempt failed; `finish` returns the error. Later `advance` calls do
+/// nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FailedAttempt;
 
 pub struct Framed<O, E> {
     pub output: Result<O, ParseFailure<E>>,
-    /// Completed prefix accounting. On failure, the offending record remains
-    /// owed and is identified by output's error. These diagnostic counts and
-    /// position do not authorize committing a failed attempt's ephemeral state.
+    /// Counts for the records before any failure. The failed record is not
+    /// counted, and a failed attempt's state must not be committed.
     pub counts: Counts,
     /// Offset just past the last complete line; a partial last line waits.
     pub parsed_upto: u64,
 }
 
-/// A scheduling allowance, not a provider format limit. `record_bytes` is the
-/// caller's currently admitted assembled-record bytes and retained byte capacity. A record that
-/// needs more capacity remains owed; the caller must acquire a larger allowance
-/// or report an explicit admission failure, never skip or truncate that record.
+/// How much one `advance` call may do. `record_bytes` caps the buffer for one
+/// record. A larger record stays pending: the caller must raise the allowance
+/// or report a typed failure, never skip or cut the record.
 #[derive(Clone, Copy, Debug)]
 pub struct StepBudget {
     pub bytes: usize,
@@ -131,15 +125,13 @@ pub struct StepBudget {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepState {
-    /// Every supplied byte was scanned. This does not certify input EOF.
+    /// Every supplied byte was scanned (not necessarily the end of input).
     Exhausted,
-    /// The byte or record scheduling allowance was used.
+    /// The byte or record budget ran out.
     Yielded,
-    /// The next record exceeds its current admission. No part of that record
-    /// was interpreted; already retained bytes and accounting remain intact.
+    /// The next record needs a larger `record_bytes`. Nothing of it was parsed.
     NeedsCapacity { required: usize },
-    /// Allocation failed before interpreting the next record. The caller must
-    /// report or retry admission explicitly; progress never skips the record.
+    /// Allocating the record buffer failed. Nothing of the record was parsed.
     AllocationFailed { required: usize },
 }
 
@@ -152,10 +144,9 @@ pub struct Step {
     pub state: StepState,
 }
 
-/// Framing state moved between committed provider steps. This value is linear:
-/// it cannot be cloned, and the previous provider no longer owns its partial
-/// record. The caller must bind it to the writer's committed interpretation
-/// predecessor and charge its retained capacity for its entire lifetime.
+/// Framing state carried from one committed step to the next, including the
+/// buffered partial record. It cannot be cloned. The caller keeps it with the
+/// committed parser state it belongs to and counts its buffer capacity.
 pub struct JsonlContinuation {
     parsed_upto: u64,
     scanned_upto: u64,
@@ -173,11 +164,9 @@ impl JsonlContinuation {
     }
 }
 
-/// A provider's completed step, before its state/output/checkpoint transaction.
-/// Finishing provider interpretation alone does not release resumable framing
-/// state. A failed writer consumes and discards that state; retry reconstructs
-/// from the last committed predecessor instead of retaining uncommitted effects.
-/// This protocol does not establish that the writer's row finalization is done.
+/// A finished step waiting for the writer. The continuation is released only by
+/// `commit_with`; if the writer fails, the step is dropped and the next attempt
+/// starts again from the last committed state.
 pub struct PendingJsonlStep<O> {
     output: O,
     counts: Counts,
@@ -197,10 +186,8 @@ impl<O> PendingJsonlStep<O> {
         self.continuation.partial.capacity()
     }
 
-    /// Encode/transform the provider output without releasing its linear
-    /// framing continuation. A failed transform consumes the attempt; retry
-    /// reconstructs from the committed predecessor. Publication still belongs
-    /// to commit_with after every staged member has actually committed.
+    /// Transform the output and keep the continuation. A failed transform drops
+    /// the step.
     pub fn try_map_output<U, E>(
         self,
         transform: impl FnOnce(O, &Counts, u64, u64) -> Result<U, E>,
@@ -223,9 +210,9 @@ impl<O> PendingJsonlStep<O> {
         })
     }
 
-    /// The owning writer validates the pinned predecessor and atomically commits
-    /// state, output and progress inside this callback. A continuation is returned
-    /// only after success. The callback must not return success before committing.
+    /// `writer` must commit the parser state, output and progress in one
+    /// transaction before returning `Ok`; only then is the continuation
+    /// returned.
     pub fn commit_with<T, E>(
         self,
         writer: impl FnOnce(O, &Counts, u64, u64) -> Result<T, E>,
@@ -245,14 +232,9 @@ impl<O> PendingJsonlStep<O> {
     }
 }
 
-/// Retains the same provider parser across framing turns. Scheduling a turn does
-/// not call `RecordParser::finish`, clone its state, or encode a carry. Provider
-/// interpretation is unchanged: one decoded record enters `record` exactly once.
-///
-/// `advance` bounds bytes scanned and record callbacks. Buffer relocation,
-/// decoding one admitted record, provider state/output and finalization have their own costs;
-/// this driver alone does not establish a bounded owner turn. Its retained byte
-/// capacity is observable so the caller can keep charging it across yields.
+/// Feeds JSONL to one provider parser in budgeted steps. Each complete record
+/// reaches `RecordParser::record` exactly once; a partial last line is kept in
+/// a buffer whose capacity the caller can read and charge.
 pub struct JsonlDriver<P: RecordParser> {
     parser: P,
     counts: Counts,
@@ -274,9 +256,8 @@ impl<P: RecordParser> JsonlDriver<P> {
         }
     }
 
-    /// Resume only after the previous provider step committed successfully.
-    /// The fresh provider reads the matching pinned committed state. Accounting
-    /// starts empty for this step; retained partial bytes are moved, not copied.
+    /// Continue after a committed step, with a parser over the committed state.
+    /// Counts start at zero; the partial-record buffer is moved, not copied.
     pub fn resume(parser: P, continuation: JsonlContinuation) -> Self {
         let JsonlContinuation {
             parsed_upto,
@@ -340,8 +321,7 @@ impl<P: RecordParser> JsonlDriver<P> {
                     state: StepState::NeedsCapacity { required },
                 });
             }
-            // Vec::extend alone may geometrically grow past the admitted
-            // allowance. Plan exact growth, and keep the actual capacity visible.
+            // Vec::extend can double capacity past the allowance; reserve exactly.
             if (!self.partial.is_empty() || newline.is_none()) && required > self.partial.capacity()
             {
                 if self
@@ -413,17 +393,13 @@ impl<P: RecordParser> JsonlDriver<P> {
         })
     }
 
-    /// Explicit end of this parser run. An incomplete last line is not decoded
-    /// or counted, matching the provider append contract. EOF of a supplied
-    /// window is not sufficient reason to call this method.
+    /// End the run. An incomplete last line is not decoded or counted.
     pub fn finish(self) -> Framed<P::Output, P::Error> {
         self.finish_parts().0
     }
 
-    /// End this keyed provider step, retaining an incomplete line for the next
-    /// committed step. Unlike input EOF, this may happen at a scheduling yield.
-    /// The provider's finish must itself qualify touched-state/output costs.
-    /// Callback or provider-finalization errors drop the continuation entirely.
+    /// End this step and keep an incomplete last line for the next one. On a
+    /// parser error the continuation is dropped.
     pub fn checkpoint(self) -> Result<PendingJsonlStep<P::Output>, Framed<P::Output, P::Error>> {
         let (framed, continuation) = self.finish_parts();
         let Framed {
@@ -446,8 +422,7 @@ impl<P: RecordParser> JsonlDriver<P> {
     }
 
     fn finish_parts(self) -> (Framed<P::Output, P::Error>, JsonlContinuation) {
-        // A callback may have changed ephemeral state before failing. Drop it
-        // without finalization; reconstruct from committed state on failure.
+        // After a record error the parser state is unreliable: skip `finish`.
         let framed = match self.failure {
             Some(error) => Framed {
                 output: Err(error),
@@ -506,8 +481,7 @@ fn account_outcome<I: IgnoredKind>(counts: &mut Counts, outcome: RecordOutcome<I
     }
 }
 
-/// Whole-run wrapper over the same resumable framing route. Complete records
-/// and an unfinished tail stay borrowed from this one window.
+/// Parse a whole input with the same driver. An unfinished tail is ignored.
 pub fn drive_jsonl<P: RecordParser>(
     parser: P,
     bytes: &[u8],
@@ -518,9 +492,7 @@ pub fn drive_jsonl<P: RecordParser>(
 
 fn whole_jsonl_driver<P: RecordParser>(parser: P, bytes: &[u8], base: u64) -> JsonlDriver<P> {
     let mut driver = JsonlDriver::new(parser, base);
-    // A whole borrowed window will not resume its incomplete tail, so do not
-    // make an owned copy just to drop it at finish. Interpretation still runs
-    // through the same continuation driver over the complete-line prefix.
+    // Only pass the complete lines, so the unfinished tail is never copied.
     let complete = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |p| p + 1);
     let _step = driver.advance(
         &bytes[..complete],
@@ -533,10 +505,9 @@ fn whole_jsonl_driver<P: RecordParser>(parser: P, bytes: &[u8], base: u64) -> Js
     driver
 }
 
-/// Frames a JSON document that is an array of records (an account export's
-/// `conversations.json`): each element is one record, with its exact byte range
-/// in the input, taken from the borrowed raw value. A document that does not
-/// parse as an array is one undecodable record at offset 0.
+/// Frames a JSON array of records (an account export's `conversations.json`).
+/// Each element is one record with its byte range. A document that is not an
+/// array is one undecodable record at offset 0.
 pub fn drive_json_array<P: RecordParser>(parser: P, bytes: &[u8]) -> Framed<P::Output, P::Error> {
     match serde_json::from_slice::<Vec<&serde_json::value::RawValue>>(bytes) {
         Ok(items) => drive_raw_records(parser, bytes, &items),
@@ -544,10 +515,9 @@ pub fn drive_json_array<P: RecordParser>(parser: P, bytes: &[u8]) -> Framed<P::O
     }
 }
 
-/// Frames the records of a JSON document whose records sit in one member array
-/// (a Gemini CLI session's `messages`): the provider was given the document's
-/// other members when it was built; each array element is one record with its
-/// exact byte range. A document without that array is one undecodable record.
+/// Frames the elements of one member array of a JSON object (a Gemini CLI
+/// session's `messages`). The provider gets the other members when it is built.
+/// A document without that array is one undecodable record.
 pub fn drive_json_member_array<P: RecordParser>(
     parser: P,
     bytes: &[u8],
@@ -612,8 +582,7 @@ fn failed<O, E>(
     }
 }
 
-/// The shared loop over records borrowed from `bytes`: decodes each, keeps its
-/// byte range, and counts every outcome (law 120).
+/// Decode and count each raw record borrowed from `bytes`.
 fn drive_raw_records<P: RecordParser>(
     mut parser: P,
     bytes: &[u8],
@@ -656,8 +625,7 @@ fn drive_raw_records<P: RecordParser>(
     finish_framed(parser, counts, bytes.len() as u64)
 }
 
-/// One row of a provider database snapshot, its columns as a JSON object
-/// (`spec/sources/README.md`: the framework frames "SQLite rows" too).
+/// One row of a provider database snapshot, its columns as a JSON object.
 #[derive(Debug)]
 pub struct Row {
     pub table: &'static str,
@@ -665,9 +633,8 @@ pub struct Row {
     pub value: Value,
 }
 
-/// Frames the rows of a provider database snapshot, read by the engine from the
-/// stored snapshot table by table in rowid order. Each row is one record whose
-/// position is `(table, rowid)`; the counts are kept exactly as for bytes (law 120).
+/// Frames provider database rows, given table by table in rowid order. Each row
+/// is one record at position `(table, rowid)`.
 pub fn drive_rows<P: RecordParser>(
     mut parser: P,
     rows: impl IntoIterator<Item = Row>,
@@ -698,253 +665,4 @@ pub fn drive_rows<P: RecordParser>(
 }
 
 #[cfg(test)]
-mod continuation_memory_tests {
-    use super::*;
-
-    #[derive(Clone, Copy, Debug)]
-    enum Never {}
-    impl IgnoredKind for Never {
-        fn name(self) -> &'static str {
-            match self {}
-        }
-        fn reason(self) -> &'static str {
-            match self {}
-        }
-    }
-    struct Counter(u64);
-    impl RecordParser for Counter {
-        type Error = std::convert::Infallible;
-        type Ignored = Never;
-        type Output = u64;
-        fn record(
-            &mut self,
-            _: &Record<'_>,
-        ) -> std::result::Result<RecordOutcome<Self::Ignored>, Self::Error> {
-            Ok({
-                self.0 += 1;
-                RecordOutcome::Used
-            })
-        }
-        fn finish(self) -> std::result::Result<Self::Output, Self::Error> {
-            Ok(self.0)
-        }
-    }
-
-    #[test]
-    fn whole_window_does_not_copy_a_large_unfinished_tail() {
-        let mut input = b"{}\n".to_vec();
-        input.extend(std::iter::repeat_n(b'x', 1 << 20));
-        let driver = whole_jsonl_driver(Counter(0), &input, 10);
-        assert_eq!(
-            driver.buffer_capacity(),
-            0,
-            "whole-run partial tail must stay borrowed"
-        );
-        let result = driver.finish();
-        assert_eq!(result.output.unwrap(), 1);
-        assert_eq!(result.parsed_upto, 13);
-    }
-
-    #[test]
-    fn incremental_growth_does_not_hide_geometric_spare_capacity() {
-        let mut driver = JsonlDriver::new(Counter(0), 0);
-        for admitted in 10..=30 {
-            let bytes = if admitted == 10 {
-                &b"1234567890"[..]
-            } else {
-                &b"x"[..]
-            };
-            let step = driver
-                .advance(
-                    bytes,
-                    StepBudget {
-                        bytes: bytes.len(),
-                        records: 1,
-                        record_bytes: admitted,
-                    },
-                )
-                .unwrap();
-            assert_eq!(step.state, StepState::Exhausted);
-            assert!(
-                driver.buffer_capacity() <= admitted,
-                "{} retained for {admitted} admitted",
-                driver.buffer_capacity()
-            );
-        }
-        let step = driver
-            .advance(
-                b"\n",
-                StepBudget {
-                    bytes: 1,
-                    records: 1,
-                    record_bytes: 1,
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            step.state,
-            StepState::NeedsCapacity {
-                required: driver.buffer_capacity()
-            }
-        );
-        assert_eq!(
-            step.consumed, 0,
-            "retained capacity stays charged across a smaller allowance"
-        );
-    }
-}
-
-#[cfg(test)]
-mod checkpoint_tests {
-    use super::*;
-    #[derive(Clone, Copy, Debug)]
-    enum Never {}
-    impl IgnoredKind for Never {
-        fn name(self) -> &'static str {
-            match self {}
-        }
-        fn reason(self) -> &'static str {
-            match self {}
-        }
-    }
-    struct Counter {
-        n: usize,
-        fail_record: bool,
-        fail_finish: bool,
-    }
-    impl Counter {
-        fn new(n: usize) -> Self {
-            Self {
-                n,
-                fail_record: false,
-                fail_finish: false,
-            }
-        }
-    }
-    impl RecordParser for Counter {
-        type Error = &'static str;
-        type Ignored = Never;
-        type Output = usize;
-        fn record(&mut self, _: &Record<'_>) -> Result<RecordOutcome<Never>, Self::Error> {
-            self.n += 1;
-            if self.fail_record {
-                Err("record failed")
-            } else {
-                Ok(RecordOutcome::Used)
-            }
-        }
-        fn finish(self) -> Result<usize, Self::Error> {
-            if self.fail_finish {
-                Err("finish failed")
-            } else {
-                Ok(self.n)
-            }
-        }
-    }
-    fn budget(bytes: usize) -> StepBudget {
-        StepBudget {
-            bytes,
-            records: 100,
-            record_bytes: 1 << 20,
-        }
-    }
-    #[test]
-    fn committed_checkpoint_moves_partial_buffer_and_starts_fresh_accounting() {
-        let mut driver = JsonlDriver::new(Counter::new(0), 100);
-        driver.advance(b"{}\n{\"text\":\"", budget(100)).unwrap();
-        let address = driver.partial.as_ptr();
-        let pending = match driver.checkpoint() {
-            Ok(p) => p,
-            Err(_) => panic!("valid step"),
-        };
-        assert_eq!(pending.parsed_upto(), 103);
-        assert!(pending.scanned_upto() > pending.parsed_upto());
-        assert_eq!(pending.counts().used, 1);
-        let (committed, continuation) = pending
-            .commit_with(|output, counts, parsed, scanned| {
-                assert_eq!(counts.used, 1);
-                assert_eq!(parsed, 103);
-                assert!(scanned > parsed);
-                Ok::<_, ()>(output)
-            })
-            .unwrap();
-        assert_eq!(
-            continuation.partial.as_ptr(),
-            address,
-            "ownership transfer must not copy a partial line"
-        );
-        let mut driver = JsonlDriver::resume(Counter::new(committed), continuation);
-        assert_eq!(driver.partial.as_ptr(), address);
-        assert_eq!(
-            driver.counts().framed,
-            0,
-            "committed prefix is not counted twice"
-        );
-        driver.advance(b"x\"}\n", budget(100)).unwrap();
-        let ready = match driver.checkpoint() {
-            Ok(p) => p,
-            Err(_) => panic!("valid next step"),
-        };
-        let (committed, continuation) = ready
-            .commit_with(|output, counts, _, _| {
-                assert_eq!(counts.framed, 1);
-                Ok::<_, ()>(output)
-            })
-            .unwrap();
-        assert_eq!(committed, 2);
-        assert_eq!(continuation.parsed_upto(), continuation.scanned_upto());
-    }
-    #[test]
-    fn failed_writer_discards_continuation_and_replays_only_committed_state() {
-        let mut driver = JsonlDriver::new(Counter::new(7), 0);
-        driver.advance(b"{}\n{", budget(100)).unwrap();
-        let ready = match driver.checkpoint() {
-            Ok(p) => p,
-            Err(_) => panic!("valid step"),
-        };
-        let result = ready.commit_with(|output, _, _, _| {
-            assert_eq!(output, 8);
-            Err::<(), _>("CAS rejected")
-        });
-        assert!(
-            matches!(result, Err("CAS rejected")),
-            "failed writer must not release a continuation"
-        );
-        let mut replay = JsonlDriver::new(Counter::new(7), 0);
-        replay.advance(b"{}\n{}\n", budget(100)).unwrap();
-        assert_eq!(
-            replay.finish().output.unwrap(),
-            9,
-            "discarded uncommitted effects are not replayed twice"
-        );
-    }
-    #[test]
-    fn callback_and_finalization_failure_cannot_produce_checkpoint_continuations() {
-        for fail_record in [false, true] {
-            let mut driver = JsonlDriver::new(
-                Counter {
-                    n: 0,
-                    fail_record,
-                    fail_finish: !fail_record,
-                },
-                50,
-            );
-            let _ = driver.advance(b"{}\n{", budget(100));
-            match driver.checkpoint() {
-                Ok(_) => panic!("failed attempt must not expose resumable state"),
-                Err(framed) => {
-                    let error = framed.output.unwrap_err();
-                    assert_eq!(
-                        error.phase,
-                        if fail_record {
-                            FailurePhase::Record
-                        } else {
-                            FailurePhase::Finalization
-                        }
-                    );
-                    assert_eq!(error.offset, if fail_record { 50 } else { 53 });
-                }
-            }
-        }
-    }
-}
+mod tests;

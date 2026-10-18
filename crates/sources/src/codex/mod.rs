@@ -1,5 +1,5 @@
-//! Codex rollout interpretation. SQLite metadata and paginated-history adapters
-//! are not registered here. Unknown native kinds remain explicitly unrecognized.
+//! Codex rollout parser, plus the helpers shared by its state, presence and
+//! descriptor modules.
 use crate::frame::{IgnoredKind, Record, RecordOutcome, RecordParser};
 use polylogue_model::RawJson as Value;
 use polylogue_model::*;
@@ -16,10 +16,12 @@ mod raw;
 pub mod selection;
 pub const PARSER_VERSION: u32 = 13;
 
-/// Record kinds that carry nothing to keep in the index (their bytes stay stored).
+/// Record kinds with nothing to index; their bytes stay stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ignored {
+    /// A 2025 state marker with no content.
     LegacyStateMarker,
+    /// Opaque provider metadata.
     InternalPassthrough,
 }
 
@@ -28,12 +30,6 @@ impl IgnoredKind for Ignored {
         match self {
             Self::LegacyStateMarker => "record_type: state",
             Self::InternalPassthrough => "internal_chat_message_metadata_passthrough",
-        }
-    }
-    fn reason(self) -> &'static str {
-        match self {
-            Self::LegacyStateMarker => "a 2025 state marker with no content",
-            Self::InternalPassthrough => "opaque provider metadata; counted, not parsed",
         }
     }
 }
@@ -146,14 +142,19 @@ fn native_duration(item: &Value) -> Option<u64> {
         return Some(milliseconds);
     }
     if let Some(duration) = item.get("duration") {
-        let seconds = duration.get("secs")?.as_u64()?;
-        let nanos = duration.get("nanos")?.as_u64()?;
-        if nanos >= 1_000_000_000 {
-            return None;
-        }
-        return seconds.checked_mul(1000)?.checked_add(nanos / 1_000_000);
+        return duration_millis(duration);
     }
     output_duration(item.get("output")?)
+}
+
+/// A Rust `Duration` (`{"secs", "nanos"}`) in milliseconds.
+fn duration_millis(duration: &Value) -> Option<u64> {
+    let seconds = duration.get("secs")?.as_u64()?;
+    let nanos = duration.get("nanos")?.as_u64()?;
+    if nanos >= 1_000_000_000 {
+        return None;
+    }
+    seconds.checked_mul(1000)?.checked_add(nanos / 1_000_000)
 }
 
 fn unit_item(unit: &keyed::EvidenceUnit) -> Option<Value> {
@@ -212,8 +213,8 @@ fn wall_seconds(line: &str, prefix: &str) -> bool {
         })
 }
 
-/// Only provider-written headers carry verdicts. A command preamble occupies
-/// one line; its embedded newline cannot move the header's anchored position.
+/// The exit code from a header Codex wrote at the start of the output. An
+/// optional `Command:` line comes first and is always one line.
 fn result_header_exit(text: &str) -> Option<i64> {
     let mut lines = text.lines();
     let mut first = lines.next()?;
@@ -264,8 +265,8 @@ fn running_session(text: &str) -> Option<&str> {
     let session = status.strip_prefix("Process running with session ID ")?;
     (!session.is_empty() && session.bytes().all(|c| c.is_ascii_digit())).then_some(session)
 }
-/// For content-item output, Codex emits the status as a complete separate
-/// item. Text following its Output marker is user data, not that status item.
+/// In content-item output the status is its own first item, ending with
+/// `Output:`. Text after that marker is output, not status.
 fn complete_script_status(output: &Value) -> bool {
     let Some(items) = output.as_array() else {
         return true;
@@ -318,7 +319,8 @@ fn output_duration(output: &Value) -> Option<u64> {
     crate::decimal::scaled_integer(&value, 3)?.try_into().ok()
 }
 
-/// The outcome a tool output states (`spec/sources/codex.md`, tool calls and outcomes, sources 2 and 3).
+/// The outcome a tool output states (spec/sources/codex.md, outcome sources 2
+/// and 3).
 fn output_outcome(tool: &str, output: &Value, text: &str) -> (ToolOutcome, Option<i64>) {
     let mut candidates: Vec<Value> = Vec::new();
     match output {
@@ -397,8 +399,8 @@ fn output_outcome(tool: &str, output: &Value, text: &str) -> (ToolOutcome, Optio
             None,
         );
     }
-    // Fixed result lines the tools format themselves (spec/sources/codex.md, outcome source 5;
-    // `exec` status lines measured on real rollouts, evidence/codex-real-accounting.md).
+    // Fixed result lines the tools write themselves (spec/sources/codex.md,
+    // outcome source 5).
     if tool == "apply_patch" {
         if text.starts_with("Success.") {
             return (ToolOutcome::Ok, None);
@@ -426,7 +428,7 @@ fn output_outcome(tool: &str, output: &Value, text: &str) -> (ToolOutcome, Optio
             );
         }
         if first.starts_with("Script running with cell ID") {
-            // A launch acknowledgement, not a result; later `wait` calls on the cell report it.
+            // A launch acknowledgement; a later `wait` call reports the result.
             return (
                 ToolOutcome::Unknown {
                     reason: UnknownReason::NoResult,
@@ -455,8 +457,8 @@ fn item_id_kind(item: &Value) -> IdKind {
     }
 }
 
-/// Codex's current mapping remains scalar-only. Reject before keyed state or
-/// identity construction; lexical opaque numbers still use the retained tree.
+/// The Codex parser does not support non-scalar strings or keys yet; refuse
+/// them before touching state.
 fn require_scalar_json(value: &Value) -> Result<(), String> {
     match value {
         Value::String(value) if value.native().encoding().is_some() => {

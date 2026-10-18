@@ -1,6 +1,6 @@
-//! Provider-owned cell identity codec. The SQLite adapter orders these BLOBs
-//! without restating Codex key structure. Changing this codec requires a new
-//! disposable state version/basis; it is not an archive identity format.
+//! Byte encoding of Codex state keys. The store sorts cells by these bytes, so
+//! byte order must equal `Key` order. Changing the encoding needs a new state
+//! layout version.
 use super::keyed::Key;
 
 impl Key {
@@ -45,14 +45,12 @@ impl Key {
             Self::PresenceBlock(_, _) => "presence_block",
         }
     }
-    /// Exact size for the legacy in-memory convenience API. Admitted callers
-    /// use ordered_len_limited so oversized native strings are rejected first.
+    /// Encoded size, without a limit.
     pub fn ordered_len(&self) -> usize {
         self.ordered_len_limited(usize::MAX).unwrap_or(usize::MAX)
     }
-    /// Refuse from the fixed-width/string-length lower bound before scanning
-    /// NUL escapes. Any subsequent scan is bounded by the supplied allowance.
-    /// The error is the required size or a cheap lower bound on that size.
+    /// Encoded size, or `Err` with the needed size (or a lower bound) when it
+    /// exceeds `allowance`. Checks a cheap lower bound before scanning strings.
     pub fn ordered_len_limited(&self, allowance: usize) -> Result<usize, usize> {
         if let Self::NativeItem(scope, id) | Self::CompletedMessage(scope, id) = self {
             let lower = 5usize.saturating_add(scope.len()).saturating_add(id.len());
@@ -113,7 +111,7 @@ impl Key {
             Ok(required)
         }
     }
-    /// Writes the same codec through a caller's fallible/admitted writer.
+    /// Write the encoding to `w`.
     pub fn write_ordered(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
         fn number(out: &mut impl std::io::Write, n: usize) -> std::io::Result<()> {
             out.write_all(&(n as u64).to_be_bytes())
@@ -296,8 +294,7 @@ impl Key {
         }
         Ok(())
     }
-    /// Lexicographic byte order is exactly Key::Ord. Callers requiring fallible
-    /// allocation use write_ordered with their own admitted writer instead.
+    /// The encoding as a `Vec`; byte order equals `Key` order.
     pub fn ordered_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.ordered_len());
         self.write_ordered(&mut out)

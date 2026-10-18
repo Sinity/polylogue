@@ -1,5 +1,5 @@
-//! Pure mapping for the pinned native CommandExecution conversion. SQL and
-//! snapshot acquisition belong to store; unsupported item schemas stay visible.
+//! Maps thread-history `commandExecution` rows (Codex `rust-v0.162.1`) to
+//! operations. The store reads the SQLite rows.
 use polylogue_model::RawJson as Value;
 use polylogue_model::{
     SessionId,
@@ -120,9 +120,8 @@ pub fn command(
         origins: vec![origin],
     })
 }
-// Every consulted physical-row fact contributes to immutable version identity.
-// Keep the item JSON hash separate: equal item JSON alone does not imply equal
-// qualification when its started/completed timestamps differ.
+// Every row field read goes into the version, so equal item JSON with
+// different timestamps gets a different version.
 fn row_evidence(row: &HistoryRow) -> Result<[u8; 32], String> {
     let bytes = serde_json::to_vec(row).map_err(|e| e.to_string())?;
     let canonical =

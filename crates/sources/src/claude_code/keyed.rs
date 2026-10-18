@@ -1,5 +1,5 @@
-//! Point-read predecessor and touched cells. The caller pins input/chain/parser/
-//! companion basis; no historical enumeration is available to interpretation.
+//! Claude parser state: the cell types, the `ReadView` the parser reads stored
+//! cells through, and the evidence units the engine hashes into versions.
 use polylogue_model::{
     BlobHash, BlockContent, LinkHow, LinkKind, Message, MessageId, Role, Session,
 };
@@ -35,7 +35,7 @@ impl ResponseKey {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Header {
-    /// Assigned only by the owner after complete-record framing, not by this parser.
+    /// Set by the engine after framing, not by the parser.
     pub parsed_upto: u64,
     pub title: Option<(u8, String)>,
     pub owner: Option<String>,
@@ -43,8 +43,8 @@ pub struct Header {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveLeaf {
-    /// Last marker in source order, including an invalid later marker. This is
-    /// not an inferred last Message and never grants membership by itself.
+    /// The last leaf marker in the file, even if invalid. It does not by itself
+    /// make a Message a member.
     pub record: crate::selection::RecordRange,
     pub kind: String,
     pub value: polylogue_model::RawJson,
@@ -63,9 +63,9 @@ pub struct SessionCell {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponseCell {
-    /// Source metadata only. Blocks/version/time aggregates are not complete here.
+    /// Message metadata only; blocks, version and times are filled in later.
     pub message: Message,
-    /// First response occurrence in THIS session; UUID spelling/time have no ordering authority.
+    /// Order of the response's first record in this Session (not UUID or time).
     pub ordinal: u64,
     pub author_selection: Option<super::selection::AuthorSelection>,
     pub items: u64,
@@ -76,15 +76,14 @@ pub struct ResponseCell {
     pub selected_from: [Option<u64>; 6],
     pub selected_facts: [Vec<super::projection::Fact>; 6],
     pub selected_origins: [Option<crate::selection::SelectedRaw>; 6],
-    /// Fixed extra leaf selected by the provider, with its exact original donor.
+    /// `message.stop_sequence`, with the record that supplied it.
     pub stop_sequence: Option<super::projection::Fact>,
-    /// Canonical RAW selected subtree, independently of normalized attrs.
+    /// Canonical raw JSON of the selected value.
     pub stop_sequence_raw: Option<Vec<u8>>,
-    /// Opaque supplied response metadata, with no finish/status interpretation.
+    /// Opaque `message.stop_details`; it never sets finish state or status.
     pub stop_details: Option<super::projection::Fact>,
     pub stop_details_raw: Option<Vec<u8>>,
-    /// One last actually supplied immediate record extra per exact attrs key.
-    /// Encoded with this response under the existing parser-state admission.
+    /// For each record extra key, the last record that supplied it.
     pub record_extras: BTreeMap<String, SelectedRecordExtra>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +93,7 @@ pub struct SelectedRecordExtra {
     pub raw: Vec<u8>,
 }
 impl SelectedRecordExtra {
-    /// ASCII hex of exact UTF-8 key bytes keeps the existing framing tag policy.
+    /// Evidence tag: `response/record_extra/` plus the key's UTF-8 bytes in hex.
     pub fn correction_tag(key: &str) -> String {
         use std::fmt::Write;
         let mut tag = String::from("response/record_extra/");
@@ -112,7 +111,7 @@ pub struct RecordRelation {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordAddress {
-    /// Small current relation proof; ancestry never hydrates content blocks.
+    /// Parent link of this record, kept small so parent walks never load blocks.
     #[serde(default)]
     pub relation: Option<RecordRelation>,
     pub response: ResponseKey,
@@ -148,10 +147,10 @@ pub struct BackgroundCompletion {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contribution {
     pub uuid: String,
-    /// Effective raw field-presence overlay; exact numeric tokens survive.
+    /// Canonical raw JSON of the record after same-UUID overlays.
     pub raw: Vec<u8>,
     pub origins: super::origins::RecordOrigins,
-    /// Stable contribution-local positions, not final response BlockIds.
+    /// Blocks by position within this contribution, not final BlockIds.
     pub blocks: Vec<BlockContent>,
     pub bodies: Vec<RequiredBody>,
     pub completion: Option<BackgroundCompletion>,
@@ -212,8 +211,8 @@ pub trait ReadView {
     ) -> Result<Option<Contribution>, Self::Error>;
     fn side(&self, uuid: &str) -> Result<Option<String>, Self::Error>;
     fn has_link(&self, key: &LinkKey) -> Result<bool, Self::Error>;
-    /// Required body availability on the same pinned companion basis. A failed
-    /// lookup is an error, never a recorded absence or output-not-recorded.
+    /// The stored tool-result body at `path`, or `None` if it was never acquired.
+    /// A failed lookup is an error.
     fn body(&self, path: &str) -> Result<Option<BodyPayload>, Self::Error>;
 }
 impl<T: ReadView + ?Sized> ReadView for &T {
@@ -265,7 +264,7 @@ impl<T: ReadView + ?Sized> ReadView for &T {
     }
 }
 
-/// Legitimate test adapter, not an alternate parser or serialized legacy carry.
+/// In-memory state for tests and inspection.
 #[derive(Default)]
 pub struct MemoryReadView {
     header: Header,
@@ -367,9 +366,8 @@ impl ReadView for MemoryReadView {
     }
 }
 
-/// The owner pins `PendingMessage.revision` and its durable predecessor while
-/// preparing layout and version evidence. Each call addresses one contribution.
-/// Unit counting and hashing are scheduled owner work, not parser finalization.
+/// Position in a response's contributions while the engine prepares its
+/// version; each step names one contribution.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContributionCursor {
     pub item: u64,
@@ -383,8 +381,8 @@ impl ResponseCell {
         cursor.item += 1;
         Some((self.message.id.clone(), item))
     }
-    /// After the owner has reduced effective-record metadata in contribution
-    /// order, append ONLY the selected raw subtrees that differ, in this order.
+    /// Evidence units for selected metadata that differs from `baseline` (the
+    /// values reduced from the contributions in order), in this fixed order.
     pub fn metadata_units(&self, baseline: &[Option<Vec<u8>>; 8]) -> Vec<EvidenceUnit> {
         [
             "response/usage",
@@ -429,7 +427,7 @@ pub enum EvidenceUnit {
     },
 }
 impl Contribution {
-    /// Only an already-accounted immediate record extra can supply this value.
+    /// Raw value of record extra `key`; it must have a matching fact.
     pub fn record_extra_raw(&self, key: &str) -> Result<&[u8], String> {
         if !self.projection.facts.iter().any(|fact| {
             matches!(&fact.field, super::projection::Field::Extra { local: None, path }
@@ -437,8 +435,7 @@ impl Contribution {
         }) {
             return Err("Claude immediate extra baseline lost its source fact".into());
         }
-        // Effective records are already canonical raw JSON. Borrow its exact
-        // subtree rather than making another temporary value-sized allocation.
+        // `raw` is already canonical, so borrow the subtree.
         crate::raw::field(&self.raw, &[key])?
             .ok_or_else(|| "Claude immediate extra lost its raw value".to_owned())
     }
@@ -456,8 +453,8 @@ impl Contribution {
             whole_record: true,
         }
     }
-    /// One admitted effective record, not a historical response scan. The owner
-    /// reduces these fields while reading `next_contribution` slots in order.
+    /// This record's metadata fields, which the engine reduces across the
+    /// response's contributions in order.
     pub fn final_fields(&self) -> Result<[Option<Vec<u8>>; 8], String> {
         let mut fields: [Option<Vec<u8>>; 8] = Default::default();
         for (i, path) in super::METADATA_PATHS.iter().enumerate() {
@@ -473,9 +470,9 @@ impl Contribution {
             .transpose()?;
         Ok(fields)
     }
-    /// Body units follow all raw-record/final-field units, in (item,content-item)
-    /// order. A missing required payload is explicit unresolved work, not a hash
-    /// of a missing marker. Optional duplicated inline files create no entries.
+    /// Evidence for required body `body`, ordered by (item, content item) after
+    /// the record and metadata units. A missing required body is an error.
+    /// Bodies that only repeat inline text have no entry.
     pub fn body_unit(&self, item: u64, body: usize) -> Result<Option<EvidenceUnit>, String> {
         self.bodies
             .get(body)

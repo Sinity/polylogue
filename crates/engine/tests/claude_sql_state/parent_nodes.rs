@@ -60,7 +60,7 @@ fn parent_nodes_are_stored_atomically_and_survive_commit_and_restart() {
     let view = adapter::View::new(&snapshot, broad()).unwrap();
     let node = view.parent_node("s", "\"x\"").unwrap().unwrap();
     assert_eq!(node.parent.as_ref().unwrap().value.as_str(), Some("a"));
-    assert_eq!(node.parent.as_ref().unwrap().donor.record.start, 0);
+    assert_eq!(node.parent.as_ref().unwrap().origin.record.start, 0);
     let tiny = adapter::View::new(
         &snapshot,
         Budget {

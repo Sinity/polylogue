@@ -1,4 +1,4 @@
-//! Exact scale conversion shared by provider money and elapsed-time fields.
+//! Decimal-to-integer scaling for money and elapsed-time fields.
 use polylogue_model::RawJson as Value;
 
 pub(crate) fn scaled_integer(value: &Value, scale: i32) -> Option<i64> {

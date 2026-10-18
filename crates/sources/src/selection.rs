@@ -1,10 +1,10 @@
-//! Provider-neutral original-record selection, bounded record decoding and leaf
-//! streaming. Provider modules own attribution, descriptor versions and recipes.
+//! Field descriptors: where a normalized value came from (record range and JSON
+//! path) and how to recompute it. This module evaluates descriptors; provider
+//! modules define their recipes and versions.
 use polylogue_model::RawJson as Value;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
-/// Exact half-open original-record coordinates; the provider-owned envelope
-/// pins input/chain. These coordinates are never inferred payload extents.
+/// Byte range `[start, end)` of one original record in its input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct RecordRange {
     pub start: u64,
@@ -28,8 +28,7 @@ pub struct SelectedRaw {
     pub record: RecordRange,
     pub path: Vec<PathPart>,
 }
-/// These operations interpret a provider-proved selected value. They neither
-/// discover paths nor establish that a field was supplied by any provider.
+/// How a selected value is turned into the normalized value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
     JsonValue,
@@ -50,10 +49,8 @@ pub enum ScalarError<S> {
     Leaf(polylogue_model::source_leaf::Error),
     Io(io::Error),
 }
-/// One immutable provider-owned interpretation recipe. Implementations validate
-/// their own descriptor/recipe versions and suppliedness; this core never maps
-/// a target Slot back into a source path. `inputs` and `operation` stay fixed
-/// for the call. Optional scalar/time hooks must reuse that provider's mapper.
+/// A provider's descriptor. Implementations check their own versions;
+/// `write_scalar` must use the same mapping as the provider's parser.
 pub trait Recipe {
     type Error;
     fn provider(&self) -> &'static str;
@@ -92,8 +89,8 @@ pub fn validate_inputs(inputs: &[SelectedRaw], operation: Operation) -> Result<(
     }
     Ok(())
 }
-/// Evaluation keeps source storage failures distinct from unsupported paths and
-/// sink failures. No resolver error is converted into an empty/unknown value.
+/// Why evaluating a descriptor failed. Resolver errors are passed through
+/// unchanged.
 #[derive(Debug)]
 pub enum ValueError<E, S> {
     Selection(S),
@@ -155,7 +152,7 @@ pub struct Cursor {
     next: usize,
 }
 impl Cursor {
-    /// The caller pins one immutable descriptor before retaining this cursor.
+    /// The next input record, for a caller that reads them one at a time.
     pub fn advance(&mut self, inputs: &[SelectedRaw]) -> Result<Option<RecordRange>, &'static str> {
         if self.next > inputs.len() {
             return Err("cursor past end");
@@ -170,13 +167,11 @@ impl Cursor {
         Ok(Some(input.record))
     }
 }
-/// Evaluate one immutable source-owned recipe into the SAME normalized leaf
-/// JSON spelling. The caller binds/authorizes every range against its pinned
-/// candidate before resolving it. This is synchronous admitted-field work:
-/// `record_allowance` admits each raw record, not cumulative read work. One
-/// full raw record is parsed at a time, with no universal CPU/RSS bound.
-/// Adjacent inputs in the same record share one decoded record. Failed output
-/// is partial and not resumable; callers must discard its private producer.
+/// Recompute a descriptor's value from its original records and write it as the
+/// same JSON the parser produced. `resolver` returns one record's bytes; each
+/// record may be at most `record_allowance` bytes. One record is decoded at a
+/// time, shared by consecutive inputs from the same record. On error the output
+/// is partial and must be discarded.
 pub fn write_value<E, W: Write, R: Recipe>(
     recipe: &R,
     mut resolver: impl FnMut(RecordRange) -> Result<Vec<u8>, E>,
@@ -216,8 +211,7 @@ pub fn write_value<E, W: Write, R: Recipe>(
                 .as_ref()
                 .is_none_or(|(range, _)| *range != input.record)
             {
-                // Release the preceding decoded record BEFORE resolving the
-                // next. The raw Vec is dropped as soon as decoding completes.
+                // Drop the previous record before reading the next.
                 drop(cached.take());
                 let bytes = resolver(input.record).map_err(ValueError::Resolve)?;
                 if u64::try_from(bytes.len()).ok() != Some(required) {
@@ -354,9 +348,8 @@ pub fn write_bound<T: Serialize, W: Write>(
         writer,
     )
 }
-/// Streaming JSON encoding for provider-owned envelopes. The caller owns the
-/// producer/admission and discards partial output on error; this is not resumable
-/// serialization. The original first writer error is preserved.
+/// Stream JSON to `writer`, reporting the writer's first IO error unchanged.
+/// On error the output is partial and must be discarded.
 #[derive(Debug)]
 pub enum JsonWriteError {
     Encoding(serde_json::Error),
@@ -427,8 +420,8 @@ impl<W: Write> Write for Sink<'_, W> {
     }
 }
 
-/// Reuse serde_json's string escaping across ordered fragments. Only the outer
-/// field owns quotes; all fragment/control/Unicode handling stays library-owned.
+/// Writes strings without quotes, so several fragments can be escaped by
+/// serde_json and joined inside one pair of quotes.
 struct StringFragment;
 impl serde_json::ser::Formatter for StringFragment {
     fn begin_string<W: ?Sized + Write>(&mut self, _writer: &mut W) -> io::Result<()> {

@@ -1,5 +1,6 @@
-//! Exact duplicate native Message snapshots, including native-first arrival.
-//! Pending correspondence is separate from unrelated irreversible parse failures.
+//! Native `AgentMessage`, `Reasoning` and `UserMessage` completion snapshots
+//! that repeat a response item, in either arrival order. An unmatched
+//! snapshot waits, keyed by thread, turn and item.
 use super::*;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -98,7 +99,7 @@ fn claim(payload: &Value) -> Option<Claim> {
             }
         }
         "Reasoning" if only(item, &["id", "type", "summary_text", "raw_content"]) => {
-            // Empty native raw_content supplies no encrypted/plaintext replacement.
+            // Empty native raw_content replaces nothing.
             if !item.get("raw_content")?.as_array()?.is_empty() {
                 return None;
             }
@@ -135,8 +136,8 @@ impl CompletedMessageProof {
         })
     }
 }
-/// An explicitly supplied turn wins only when it agrees with recorded context.
-/// Missing/malformed explicit metadata never borrows a different current turn.
+/// The item's turn: its metadata turn if that agrees with `context`, else the
+/// context turn. Malformed metadata gives `None`, never the current turn.
 pub(super) fn response_turn(item: &Value, context: Option<&str>) -> Option<String> {
     let metadata = match item.get("internal_chat_message_metadata_passthrough") {
         None => return context.filter(|s| !s.is_empty()).map(str::to_owned),
@@ -225,7 +226,7 @@ impl<V: ReadView> KeyedRecords<V> {
             _ => Some(self.s.pending_completed_messages),
         };
         let Some(count) = count else {
-            self.missing("completed Message obligation count");
+            self.missing("pending completed Message count");
             return;
         };
         self.s.pending_completed_messages = count;
@@ -401,8 +402,8 @@ impl<V: ReadView> KeyedRecords<V> {
         let key = Key::CompletedMessage(turn.clone(), id.into());
         if let Some(Cell::CompletedMessage(mut proof)) = self.get(key.clone()) {
             if let Some(c) = proof.claim() {
-                // A typed user echo before its response is not the declared
-                // after-response first-unpaired echo, even when IDs happen to match.
+                // A typed user echo that arrives before its response never pairs,
+                // even when the IDs match.
                 proof.unresolved = matches!(c.body, Body::User { .. })
                     || c.turn != turn
                     || !corresponds(&c.body, &response);

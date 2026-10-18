@@ -457,7 +457,7 @@ fn append_cost(prefix: usize) -> (usize, usize) {
         if let Some(relation) = &mut address.relation {
             scalar_width += relative(&mut relation.record, base, record_length);
             if let Some(parent) = &mut relation.parent {
-                scalar_width += relative(&mut parent.donor.record, base, record_length);
+                scalar_width += relative(&mut parent.origin.record, base, record_length);
             }
         }
     }

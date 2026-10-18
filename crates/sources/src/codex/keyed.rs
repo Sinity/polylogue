@@ -1,9 +1,6 @@
-//! Disposable Codex state, independently addressable by provider-owned keys.
-//!
-//! A ReadView is pinned to one committed input/chain/parser basis by its caller.
-//! The overlay contains only touched keys; finish returns mutations, not a
-//! serialized prefix or materialized message suffix. Payload/fanout scheduling
-//! and atomic application with normalized rows belong to the caller.
+//! Codex parser state as keyed cells, and the parser that reads them through
+//! a `ReadView` and returns only the cells it changed. The engine stores the
+//! changes together with the normalized rows.
 use super::origins::{Origins, RecordRange};
 use super::*;
 use std::ops::Bound::{Excluded, Unbounded};
@@ -16,7 +13,7 @@ pub enum Key {
     Message(usize),
     Block(usize, usize),
     Call(String),
-    /// Reverse annotation ownership, preserving duplicate native call IDs.
+    /// Which blocks carry a call ID; a call ID can appear more than once.
     CallBlock(String, usize, usize),
     Reasoning(String),
     Running(String),
@@ -47,7 +44,7 @@ pub enum Key {
     PresenceBlock(usize, usize),
     Operation(String),
     OperationBlock(usize, usize),
-    /// Exact native constructor record, scoped by the full operation ID.
+    /// The native constructor record of a unified operation, by full operation ID.
     UnifiedOperation(String),
     CompletedMessage(String, String),
     PromptEcho(usize),
@@ -65,7 +62,8 @@ pub enum Cell {
         source: String,
     },
     Operation(polylogue_model::tool_item::Operation),
-    /// A Message with no blocks; blocks have separate keys. Public IDs can change.
+    /// A Message without its blocks, which have their own keys. Its public ID can
+    /// change when the request is reanchored.
     Header {
         message: Message,
         blocks: usize,
@@ -92,7 +90,7 @@ pub enum Cell {
         session_origins: Origins,
     },
 }
-/// Raw canonical JSON, tagged by provider membership, never normalized content.
+/// Canonical raw JSON of one piece of a Message's version evidence.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvidenceUnit {
     pub tag: String,
@@ -101,8 +99,8 @@ pub struct EvidenceUnit {
     #[serde(default)]
     pub origins: Origins,
 }
-// Provenance is separate from version membership. Moving an identical unit
-// never advances its revision or salts its digest with scheduling coordinates.
+// Origins are not part of equality: the same bytes from another record are
+// the same unit.
 impl PartialEq for EvidenceUnit {
     fn eq(&self, other: &Self) -> bool {
         self.tag == other.tag
@@ -112,8 +110,7 @@ impl PartialEq for EvidenceUnit {
 }
 impl Eq for EvidenceUnit {}
 impl EvidenceUnit {
-    /// Validate the provider-owned address/role and one admitted raw JSON unit.
-    /// This borrows the bytes; it neither recanonicalizes nor hashes a DTO.
+    /// Check that the unit's tag fits its key and its bytes are valid JSON.
     pub fn validate_at(&self, key: &Key) -> Result<(), String> {
         let (tag, whole_allowed, whole_required) = match key {
             Key::Evidence(_, 0, slot) => match slot % 3 {
@@ -141,8 +138,8 @@ impl EvidenceUnit {
         Ok(())
     }
 }
-/// Provider-local version guard. The owner additionally pins input chain,
-/// parser/schema and committed interpretation predecessor during digest work.
+/// Summary of a Message's evidence cells. `revision` changes whenever an
+/// evidence cell changes, so the engine can tell its digest is stale.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceHead {
     pub items: usize,
@@ -160,8 +157,7 @@ pub struct NativeConflict {
     pub message: usize,
     pub fields: Vec<String>,
 }
-/// Explicit cursor for the owner's scheduled version preparation. Each call
-/// supplies at most one cell key. No parser finish scans a Message's members.
+/// Position in `EvidenceHead::next_slot`; each step names one cell key.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceCursor {
     pub phase: usize,
@@ -187,8 +183,8 @@ impl EvidenceHead {
         }
         Ok(())
     }
-    /// Every effective item owns its primary unit; association/context slots
-    /// are optional and the selected-unit count is checked after enumeration.
+    /// Whether `key` must exist: every item has its primary unit, while
+    /// association and context slots are optional.
     pub fn required_slot(&self, key: &Key) -> bool {
         matches!(key, Key::Evidence(_, 0, slot) if slot % 3 == 0 && slot / 3 < self.items)
     }
@@ -211,11 +207,9 @@ impl EvidenceHead {
         None
     }
 }
-/// Point and ordered-neighbor reads within the same Key variant. For example,
-/// next(Mutable(...)) never returns a Prompt payload from the next family.
-/// Implementations must not scan/materialize all prior cells to answer these
-/// operations. Errors abort the attempted step. Namespace/basis pinning is the
-/// caller's responsibility; key order is the derived Rust Ord, not JSON order.
+/// Stored Codex state. `next` and `previous` stay within one `Key` variant
+/// (key order is the derived `Ord`) and must not scan all cells. An error
+/// aborts the step.
 pub trait ReadView {
     fn read(&self, key: &Key) -> Result<Option<Cell>, String>;
     fn next(&self, after: &Key) -> Result<Option<(Key, Cell)>, String>;
@@ -276,8 +270,8 @@ impl MemoryReadView {
         }
     }
 }
-/// Fixed logical continuation. Growing maps, message bodies and prompt text are
-/// cells, never embedded here. The session's models map is not accumulated here.
+/// The small fixed-size part of the parser state. Anything that grows lives in
+/// cells.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Resume {
     pub parsed_upto: u64,
@@ -314,9 +308,8 @@ pub struct Delta {
     pub conflicts: Vec<NativeConflict>,
     pub pending_results: Vec<(usize, usize)>,
 }
-/// The single provider interpretation core, over a pinned view and touched-key overlay.
-/// This stage does not bound a single record's wrapper fanout or public-ID
-/// reanchor projection; callers must not advertise a fully bounded owner yet.
+/// The Codex parser. Reads go to `changes` first, then the view. One record
+/// can touch many wrapper cells; `limits` caps the total change size.
 pub struct KeyedRecords<V> {
     view: V,
     changes: BTreeMap<Key, Option<Cell>>,
@@ -327,7 +320,7 @@ pub struct KeyedRecords<V> {
     current_raw: Vec<u8>,
     current_origins: Origins,
     effective_origins: Origins,
-    // Intrinsic field provenance is separate from volatile-free version bytes.
+    // The raw `timestamp`, which `current_raw` leaves out.
     current_time_raw: Option<Vec<u8>>,
     pending_versions: BTreeMap<usize, u64>,
     effective_item: Option<Value>,
@@ -340,9 +333,8 @@ pub struct KeyedRecords<V> {
     pub(crate) events: Vec<Event>,
     pub(crate) links: Vec<Link>,
 }
-/// Admission for touched-cell count and encoded cell/key size. This does not
-/// account for allocator capacity, scalar metadata, events or links; their
-/// physical lifetime remains charged by the integration owner.
+/// Caps on one step's changed cells and their encoded size. Events and links
+/// are not counted.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub changed_cells: usize,
@@ -371,7 +363,7 @@ impl Resume {
     }
 }
 impl Cell {
-    /// Whether this decoded cell has the shape owned by its provider key.
+    /// Whether this cell has the shape its key requires.
     pub fn valid_for(&self, key: &Key) -> bool {
         self.fits(key)
     }
@@ -460,20 +452,8 @@ fn valid_command_duration(item: &Value) -> bool {
     {
         return false;
     }
-    item.get("duration").is_none_or(|v| {
-        v.is_null() || {
-            v.get("secs")
-                .and_then(Value::as_u64)
-                .zip(v.get("nanos").and_then(Value::as_u64))
-                .is_some_and(|(seconds, nanos)| {
-                    nanos < 1_000_000_000
-                        && seconds
-                            .checked_mul(1000)
-                            .and_then(|n| n.checked_add(nanos / 1_000_000))
-                            .is_some()
-                })
-        }
-    })
+    item.get("duration")
+        .is_none_or(|v| v.is_null() || super::duration_millis(v).is_some())
 }
 impl<V: ReadView> KeyedRecords<V> {
     pub fn new(view: V, resume: Resume) -> Self {
@@ -537,7 +517,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 return;
             }
         }
-        // Count encoded payload without allocating another serialization buffer.
+        // Measure the encoded size without allocating a buffer.
         struct Count(usize);
         impl std::io::Write for Count {
             fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
@@ -564,7 +544,7 @@ impl<V: ReadView> KeyedRecords<V> {
             || (!self.changes.contains_key(&k) && self.changes.len() >= self.limits.changed_cells)
         {
             self.failure =
-                Some("Codex state overlay admission exceeded; attempted step remains owed".into());
+                Some("Codex step changed too many cells; the step is not committed".into());
             return;
         }
         self.changed_bytes = total;
@@ -916,9 +896,9 @@ impl<V: ReadView> KeyedRecords<V> {
         let last_model = self.last_model();
         if let Some(i) = last_model {
             lo = lo.min(i);
-            // A matching prompt echo may reclassify this model-written
-            // subagent prompt as Human. An unattached token_count must then
-            // still find its predecessor, just as a whole parse does.
+            // A prompt echo may still reclassify this subagent prompt as Human,
+            // and a token_count must then find the model message before it, so
+            // keep that one open too.
             if self.s.pending_prompt == Some(i) {
                 if let Some((Key::Model(previous), _)) = self.neighbor(Key::Model(i), false) {
                     lo = lo.min(previous);
@@ -971,7 +951,7 @@ impl<V: ReadView> RecordParser for KeyedRecords<V> {
             return Err(e.clone());
         }
         super::require_scalar_json(&rec.value)?;
-        // Capture exact provider bytes before decoded Value can normalize numbers.
+        // Keep the raw bytes; the decoded value may respell numbers.
         if !rec.table.is_empty() {
             return Err("Codex SQLite row origins are not implemented".into());
         }
@@ -1389,8 +1369,9 @@ impl<V: ReadView> KeyedRecords<V> {
         self.edit(i, |m| m.version_hash = None);
         self.pending_versions.insert(i, revision);
     }
-    /// Effective raw snapshots retain one slot and block position per native
-    /// item. Exact re-emission adds no unit; later fields replace in place.
+    /// Record `item` as evidence of Message `i`. Each native item keeps one slot
+    /// and block: an identical repeat adds nothing, a changed snapshot is
+    /// overlaid in place.
     fn own_evidence(&mut self, i: usize, item: &Value, primary: bool) -> bool {
         self.effective_item = Some(item.clone());
         self.replacement_block = None;
@@ -1652,7 +1633,7 @@ impl<V: ReadView> KeyedRecords<V> {
         match native.filter(|n| !n.is_empty()) {
             Some(n) => MessageId::new(sid, n).ok(),
             None => {
-                // Fallback ID over the provider's own record, timestamps and ordinal left out.
+                // Fallback ID: a hash of the record without timestamp and ordinal.
                 let hash = BlobHash::of(&self.current_raw).to_string();
                 let short = &hash[..12];
                 let n = self.number(Key::Occurrence(short.into()));
@@ -1742,8 +1723,8 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         s.started_at = at.map(crate::time::intrinsic);
         let forked = meta.get("forked_from_id").and_then(Value::as_str);
-        // This source core records the lineage link; cross-input replay-prefix
-        // correspondence has not been supplied, so inherited counts are open.
+        // A fork copies its parent's history; matching that copied prefix
+        // to the parent is not implemented, so normalization is incomplete.
         if forked.is_some() {
             self.s.normalization_incomplete = true;
         }
@@ -1786,7 +1767,7 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         self.s.session = Some(s);
         if let Some(bi) = meta.get("base_instructions") {
-            // What the model was told, as an event like `world_state` (spec fix, codex.md).
+            // What the model was told, as an event like `world_state` (codex.md).
             self.events.push(Event {
                 kind: "base_instructions".into(),
                 at: at.map(crate::time::intrinsic),
@@ -1853,8 +1834,8 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     /// A request's message takes its ID from its first item that is not
-    /// `reasoning`, the kind rewrites drop, so the ID survives a lossy rewrite
-    /// (spec fix, codex.md). Called when a non-reasoning item joins the request.
+    /// `reasoning` (rewrites drop reasoning, so the ID survives them; codex.md).
+    /// Called when a non-reasoning item joins the request.
     fn anchor_request(&mut self, i: usize, item: &Value) {
         if self.s.open_anchored || self.s.open_request != Some(i) {
             return;
@@ -1864,8 +1845,8 @@ impl<V: ReadView> KeyedRecords<V> {
         let Some(id) = self.message_id(native, item) else {
             return;
         };
-        // Blocks are internally addressed by ordinal. Reanchoring changes their public
-        // IDs on projection; no need to touch every preceding block here.
+        // Blocks are stored by ordinal; their public IDs follow the Message ID
+        // when read, so they need no update here.
         self.edit(i, |m| {
             m.id = id.clone();
             m.id_kind = item_id_kind(item);
@@ -2084,7 +2065,7 @@ impl<V: ReadView> KeyedRecords<V> {
                     Some(summary.join("\n"))
                 },
                 signature: None,
-                // No plaintext or ciphertext establishes no encryption fact.
+                // Without plaintext or ciphertext, encryption stays unknown.
                 encrypted: if encrypted.is_some() || !summary.is_empty() {
                     Some(encrypted.is_some() && summary.is_empty())
                 } else {
@@ -2389,9 +2370,9 @@ impl<V: ReadView> KeyedRecords<V> {
             _ => output_outcome(&tool, &output, &text),
         };
         self.wrapper_remove(&call_id);
-        // Running commands (spec/sources/codex.md, running commands): "Process running with
-        // session ID N" is not a result; a `write_stdin` on that session continues the command,
-        // and the one that reports the exit sets the command's outcome.
+        // "Process running with session ID N" is not a result: a later
+        // `write_stdin` on that session continues the command, and the one that
+        // reports the exit sets its outcome (spec/sources/codex.md).
         let running_id = super::running_session(&text).map(str::to_owned);
         let (outcome, exit_code) =
             if running_id.is_some() && (is_shell_tool(&tool) || tool == "write_stdin") {
@@ -2631,8 +2612,8 @@ impl<V: ReadView> KeyedRecords<V> {
             return;
         };
         let anchor = source_block.id.as_str().to_owned();
-        // An exec wrapper has a proved request block, not a native
-        // CommandExecution item ID. Keep that constructor distinction.
+        // An exec wrapper is identified by its request block, not by a native
+        // CommandExecution item ID.
         let native = tool != "exec" && self.s.turn.is_some();
         let mut operation = polylogue_model::tool_item::Operation {
             kind: if tool == "exec" {
@@ -2672,8 +2653,8 @@ impl<V: ReadView> KeyedRecords<V> {
             if let Some(Cell::Operation(mut previous)) = self.get(Key::Operation(format!("1:{id}")))
             {
                 if previous.native && previous.agent_class != "agent" {
-                    // A call supplies its own Message association, not a new
-                    // classification or result for an earlier native command.
+                    // The call gives the Message association only, not a classification
+                    // or result for the earlier native command.
                     if self.unified_operation_proved(&previous) {
                         previous.tool = operation.tool;
                         previous.message = operation.message;
@@ -2695,8 +2676,8 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn command_operation(&mut self, payload: &Value, item: &Value, _at: Option<Timestamp>) -> bool {
-        // Only the pinned core shape establishes native correspondence. Older
-        // adapter records retain their existing Message interpretation below.
+        // Only the `rust-v0.162.1` core shape is matched to native items;
+        // older records are handled below.
         if !item.get("command").is_some_and(Value::is_array) {
             self.s.normalization_incomplete = true;
             return false;
@@ -2718,7 +2699,7 @@ impl<V: ReadView> KeyedRecords<V> {
         let range = match self.current_origins.advance(&mut cursor) {
             Ok(Some(r)) => r,
             _ => {
-                self.failure = Some("native operation has no retained origin".into());
+                self.failure = Some("native operation has no stored origin".into());
                 return false;
             }
         };
@@ -2776,8 +2757,8 @@ impl<V: ReadView> KeyedRecords<V> {
                     && item.get("source").and_then(Value::as_str).is_some_and(unified_source)
                     && previous.origins.iter().any(|origin| matches!(origin,
                         polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "result")) {
-                    // Preserve only the separately recorded response output;
-                    // unknown native attribution supplies no result of its own.
+                    // Keep the separately recorded output; the native item adds no
+                    // result of its own.
                     operation.result_present = previous.result_present;
                     operation.output = previous.output.clone();
                     operation.outcome = previous.outcome.clone();
@@ -2823,8 +2804,8 @@ impl<V: ReadView> KeyedRecords<V> {
                 }
             }
         }
-        // CommandExecution has no parent-call field in this pinned schema.
-        // Temporal overlap supports suppression, never a Message/parent edge.
+        // CommandExecution has no parent-call field. Overlap with a wrapper
+        // only suppresses double counting; it never makes a parent.
         operation.wrapper = None;
         operation.wrapper_overlaps = wrappers.iter().map(|(_, id, _)| id.clone()).collect();
         for (raw, id, origins) in wrappers {
@@ -2880,8 +2861,8 @@ impl<V: ReadView> KeyedRecords<V> {
 
     fn item_completed(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
         let original = p.get("item").cloned().unwrap_or(Value::Null);
-        // Every replacement constructor for a claimed native scope removes
-        // the old proof before validation, including conflicting item kinds.
+        // A new constructor for this scope first removes the old record, even
+        // when the item kind differs.
         if let (Some(session), Some(turn), Some(id)) = (
             self.s.session.as_ref(),
             p.get("turn_id").and_then(Value::as_str),
@@ -2918,9 +2899,8 @@ impl<V: ReadView> KeyedRecords<V> {
                 && self
                     .completed_operation(p, &item)
                     .is_some_and(|operation| {
-                        // This completion must supply its own full scope and
-                        // status record; an unscoped correction cannot borrow
-                        // a previously retained native proof via current turn.
+                        // The completion must carry its own full scope and status
+                        // record; it cannot borrow the current turn.
                         p.get("turn_id").and_then(Value::as_str) == operation.turn.as_deref()
                             && p.get("turn_id").and_then(Value::as_str).is_some()
                             && p.get("thread_id").and_then(Value::as_str) == Some(operation.native_session.as_str())
@@ -2935,9 +2915,9 @@ impl<V: ReadView> KeyedRecords<V> {
                             })
                     })
             {
-                // Supported unified lifecycle evidence has uncertain operation
-                // attribution, not missing independently retained Message text.
-                // Do not project its native status into the call/output body.
+                // The operation's agent attribution is unknown, but the Message
+                // text is fine. Do not copy the native status into the call or
+                // output.
                 return self.event("unclassified_command_item", at, false, p);
             }
             let owned = self
@@ -3073,9 +3053,8 @@ impl<V: ReadView> KeyedRecords<V> {
                     }
                     return RecordOutcome::Used;
                 }
-                // A turn-scoped native operation does not prove a Message owner.
-                // Preserve ambiguous operations as session evidence until the target
-                // has a session-owned tool projection. Never attach to latest wrapper.
+                // A turn-scoped native operation has no known Message owner. Keep it
+                // as a session event; never attach it to the latest wrapper.
                 let named = item
                     .get("parent_call_id")
                     .or_else(|| item.get("call_id"))
@@ -3103,8 +3082,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 let Some(mi) = mi else {
                     self.s.normalization_incomplete = true;
                     let child_id = item.get("id").and_then(Value::as_str).unwrap_or("");
-                    // Counting suppression is not an asserted parent edge. This
-                    // affected-wrapper fanout still needs owner scheduling.
+                    // Marks the overlap for counting only; not a parent.
                     for (_, w) in self.wrappers() {
                         self.child(w, format!("~unowned:{child_id}"));
                     }
@@ -3228,7 +3206,8 @@ impl<V: ReadView> KeyedRecords<V> {
                 reasoning: g("reasoning_output_tokens"),
                 ..Usage::default()
             };
-            // The last model message is always unsettled (see `carry`), so the search covers it.
+            // The last model message is always still open (see `floor`), so it can
+            // be found here.
             let target = self.s.open_request.or_else(|| self.last_model());
             match target {
                 Some(i) => {
@@ -3410,7 +3389,7 @@ mod legacy_time_tests {
         assert_eq!(message.at, expected);
         let Some(Some(Cell::SlotValue(witness))) = delta.cells.get(&Key::Presence(0, "at".into()))
         else {
-            panic!("missing first time witness");
+            panic!("missing first time slot");
         };
         assert_eq!(witness.canonical, source_time);
         assert_eq!(

@@ -17,9 +17,6 @@ impl IgnoredKind for Ignored {
     fn name(self) -> &'static str {
         "metadata"
     }
-    fn reason(self) -> &'static str {
-        "synthetic metadata"
-    }
 }
 struct Recorder {
     rows: Vec<(u64, u64, String)>,

@@ -1,5 +1,4 @@
-//! Exact original JSONL record contributors. Coordinates are never digest
-//! bytes, normalized payload extents, input identities or historical versions.
+//! Which original rollout records an item's fields came from.
 use super::selection::{PathPart, SelectedRaw};
 pub use crate::selection::RecordRange;
 use serde::{Deserialize, Serialize};
@@ -9,10 +8,10 @@ pub enum Origins {
     #[default]
     Unknown,
     Record(RecordRange),
-    /// Exact original record and its original selected subtree, never an overlay root.
+    /// A path inside one original record.
     Located(SelectedRaw),
-    /// Current envelope plus direct original records for selected immediate
-    /// item fields. No chain of earlier overlays or per-Message history Vec.
+    /// An overlaid item: the current record, plus the original record of each
+    /// top-level item field.
     Overlay {
         envelope: RecordRange,
         fields: BTreeMap<String, SelectedRaw>,
@@ -81,8 +80,8 @@ impl Origins {
     pub fn cursor(&self) -> Cursor {
         Cursor::default()
     }
-    /// One original record per call. Duplicates are intentional: the owning
-    /// version-pinned SET deduplicates them without a growing in-memory set.
+    /// The next original record, one per call. A record can repeat; the caller
+    /// deduplicates.
     pub fn advance(&self, cursor: &mut Cursor) -> Result<Option<RecordRange>, String> {
         match self {
             Self::Unknown => Err("Codex original-record origins are unavailable".into()),
@@ -120,8 +119,7 @@ impl Origins {
         }
     }
 }
-/// Scalar/keyset position within one admitted current descriptor. Pin its
-/// owning source cell/revision before persisting; mutation invalidates it.
+/// Position in `Origins::advance`. Only valid for an unchanged `Origins`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Cursor {
     envelope: bool,

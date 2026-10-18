@@ -1,5 +1,5 @@
-//! Claude-owned recipes; decoding/path/admission/streaming belongs to the one
-//! shared selector evaluator. Original donors never name the effective overlay.
+//! Claude field descriptors. They always point at the original record that
+//! supplied a field, never at the overlaid record.
 pub use super::background::Leaf as BackgroundLeaf;
 pub use super::tool_result::StatusKind;
 use super::{
@@ -36,8 +36,8 @@ pub enum Transform {
         native_uuid: polylogue_model::NativeId,
         resolved: MessageId,
     },
-    /// Pinned interpretation proves each retained non-Message relation. The
-    /// original direct transform remains unchanged for single-hop histories.
+    /// A parent found by following non-Message records; each one is listed.
+    /// Direct parents keep `ParentReferenceV1`.
     ParentViaRecordsV1 {
         native_uuid: polylogue_model::NativeId,
         resolved: MessageId,
@@ -63,8 +63,8 @@ pub enum AuthorLeaf {
     PromptKind,
     FromName,
 }
-/// First original record, not a reconstructed record. Author-affecting UUID
-/// corrections remain FirstAuthorUpdate obligations until their owner resolves.
+/// Author fields, read from the response's first original record. A later
+/// record that changes them leaves `FirstAuthorUpdate` unresolved.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthorSelection {
     pub codec_version: u32,
@@ -345,8 +345,8 @@ fn transform(fact: &Fact) -> Option<Transform> {
             field: BlockField::Output,
             ..
         } => Transform::ToolOutputV1,
-        // Parent UUID resolution needs the record-address owner, not JSON string
-        // equality or parsing an opaque MessageId. Never invent that transform.
+        // Parents are resolved through record addresses, so there is no scalar
+        // transform for them.
         _ => return None,
     })
 }
@@ -385,9 +385,8 @@ pub(super) fn signature(record: &Contribution, local: u32) -> Option<LeafSelecti
     Some(LeafSelection::new(Transform::JsonStringV1, selected))
 }
 
-/// The existing source classifier, shared by interpretation and scalar recipe
-/// evaluation; context is recorded at first interpretation, never inferred from
-/// a replay order, UUID spelling or DTO defaults.
+/// Who wrote a record, shared by the parser and descriptor evaluation. The
+/// context is recorded when the record is first parsed.
 pub(super) fn classify_author(
     v: &Value,
     content: &Value,
@@ -548,8 +547,8 @@ impl AuthorSelection {
     }
 }
 
-/// The interpretation owner proved this session-scoped record relation. The
-/// recipe verifies its original UUID donor; no opaque ID is parsed or guessed.
+/// Descriptor for a parent the parser resolved within the Session. It checks
+/// the original `parentUuid`; no ID is parsed or guessed.
 pub(super) fn parent(
     native_uuid: &polylogue_model::NativeId,
     resolved: MessageId,
@@ -565,7 +564,7 @@ pub(super) fn parent(
     ))
 }
 
-/// Same original single-hop recipe for a relation resolved at finalization.
+/// The same descriptor, for a parent resolved later by the engine.
 pub fn parent_reference(
     native_uuid: polylogue_model::NativeId,
     resolved: MessageId,
@@ -579,7 +578,7 @@ pub fn parent_reference(
         input,
     )
 }
-/// New interpretation descriptor; never changes ParentReferenceV1 meaning.
+/// Descriptor for a parent reached through non-Message records.
 pub fn parent_via(
     native_uuid: polylogue_model::NativeId,
     resolved: MessageId,

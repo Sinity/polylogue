@@ -1,4 +1,4 @@
-//! Pure source framing and provider interpretation. Storage belongs to the caller.
+//! Provider file parsers. No IO: the caller supplies bytes and stored state.
 pub mod claude_code;
 pub mod codex;
 mod decimal;

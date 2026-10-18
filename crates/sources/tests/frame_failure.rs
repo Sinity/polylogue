@@ -16,9 +16,6 @@ impl IgnoredKind for Never {
     fn name(self) -> &'static str {
         match self {}
     }
-    fn reason(self) -> &'static str {
-        match self {}
-    }
 }
 struct StateReader {
     calls: Arc<AtomicUsize>,
