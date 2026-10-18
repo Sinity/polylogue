@@ -209,7 +209,7 @@ impl World {
                 let document: Value = serde_json::from_slice(&out.stdout).unwrap();
                 if out.status.code() == Some(5) {
                     assert!(
-                        String::from_utf8_lossy(&out.stderr).contains("coverage is incomplete"),
+                        String::from_utf8_lossy(&out.stderr).contains("Read is incomplete"),
                         "{out:?}"
                     );
                 } else {
