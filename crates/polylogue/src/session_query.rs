@@ -172,7 +172,7 @@ fn request_inner(
         let mut line = Vec::new();
         use std::io::Read;
         (&mut reader)
-            .take(FRAME as u64 + 1)
+            .take(FRAME + 1)
             .read_until(b'\n', &mut line)?;
         if line.is_empty() || line.len() > FRAME as usize || !line.ends_with(b"\n") {
             return Err(io::Error::new(

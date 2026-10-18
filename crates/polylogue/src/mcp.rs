@@ -395,14 +395,14 @@ impl ServerHandler for Server {
                 failure(ErrorKind::Timeout, "MCP input disconnected")
             }
         };
-        if value["outcome"] == "error" {
-            if let Some(id) = write_id {
-                value["request_id"] = id;
-                value["commit_state"] = json!("unknown");
-                value["error"]["hint"] = json!(
-                    "The note may have been saved. Retry with the same request_id; cancelling does not withdraw a note."
-                );
-            }
+        if value["outcome"] == "error"
+            && let Some(id) = write_id
+        {
+            value["request_id"] = id;
+            value["commit_state"] = json!("unknown");
+            value["error"]["hint"] = json!(
+                "The note may have been saved. Retry with the same request_id; cancelling does not withdraw a note."
+            );
         }
         Ok(result(value, companion))
     }
