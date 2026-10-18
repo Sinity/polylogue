@@ -5,10 +5,30 @@ use polylogue_model::{
 };
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
-// Old index versions computed IDs differently, so rebuilding them could break
-// references stored in notes. Refuse them before any migration or fresh
-// initialization. A leftover rebuild marker also refuses, so a partially
-// replaced or missing index is never treated as a fresh one.
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    path::{Component, Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
+};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+struct Entry {
+    path: String,
+    length: u64,
+    blake3: BlobHash,
+    device: u64,
+    inode: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+/// Refuses an index from an older version before any migration or fresh
+/// initialization: older versions computed IDs differently, so rebuilding them
+/// could break references stored in notes. A leftover rebuild marker also
+/// refuses, so a partially replaced or missing index is never treated as new.
 pub(crate) fn check_index_compatibility(root: &Path) -> Result<()> {
     if owned_metadata(&root.join("index-rebuild.json"))?.is_some() {
         return Err(refused(
@@ -42,29 +62,6 @@ pub(crate) fn check_index_compatibility(root: &Path) -> Result<()> {
     crate::validate_version(root, "index.db", crate::INDEX_VERSION, false, false)
 }
 
-#[cfg(test)]
-#[path = "recovery/index_compatibility_tests.rs"]
-mod index_compatibility_tests;
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::{Component, Path, PathBuf},
-    sync::{Arc, atomic::AtomicBool},
-};
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
-struct Entry {
-    path: String,
-    length: u64,
-    blake3: BlobHash,
-    device: u64,
-    inode: u64,
-    modified_seconds: i64,
-    modified_nanoseconds: i64,
-    changed_seconds: i64,
-    changed_nanoseconds: i64,
-}
 fn refused(reason: impl Into<String>) -> Error {
     Error::RecoveryRefused(reason.into())
 }
@@ -130,7 +127,7 @@ fn inventory(root: &Path, cancelled: &AtomicBool) -> Result<Vec<Entry>> {
         wal::check_cancel(cancelled)?;
         if depth > 32 {
             return Err(refused(
-                "archive directory nesting exceeds recovery admission",
+                "archive directories are nested more than 32 levels deep",
             ));
         }
         let mut children = fs::read_dir(dir)?.collect::<std::io::Result<Vec<_>>>()?;
@@ -146,7 +143,7 @@ fn inventory(root: &Path, cancelled: &AtomicBool) -> Result<Vec<Entry>> {
                     .strip_prefix(root)
                     .unwrap()
                     .to_str()
-                    .ok_or_else(|| refused("recovery requires UTF-8 relative paths"))?
+                    .ok_or_else(|| refused("archive file paths must be UTF-8"))?
                     .to_owned();
                 out.push(entry);
             } else {
@@ -194,13 +191,11 @@ fn copy_file(
     }
     output.sync_all()?;
     if length != expected.length || hash.finalize().as_bytes() != expected.blake3.bytes() {
-        return Err(refused(
-            "copy digest differs from the preserved source manifest",
-        ));
+        return Err(refused("copied bytes differ from the source"));
     }
     let actual = digest(destination, cancelled)?;
     if actual.blake3 != expected.blake3 || actual.length != expected.length {
-        return Err(refused("destination readback mismatch"));
+        return Err(refused("copied file reads back different bytes"));
     }
     Ok(())
 }
@@ -236,7 +231,13 @@ fn sync_tree(root: &Path) -> Result<()> {
 }
 pub(crate) fn record(conn: &Connection, path: &Path) -> Result<Option<RecoveryRecord>> {
     let value: Option<Option<String>> = db(path, || {
-        conn.query_row("SELECT CASE WHEN length(CAST(value AS BLOB))<=65536 THEN value END FROM meta WHERE key='recovery_qualification'",[],|r|r.get(0)).optional()
+        conn.query_row(
+            "SELECT CASE WHEN length(CAST(value AS BLOB)) <= 65536 THEN value END \
+             FROM meta WHERE key = 'recovery_qualification'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
     })?;
     value
         .map(|value| {
@@ -273,9 +274,9 @@ pub(crate) fn raw_versions(root: &Path) -> Result<Option<u32>> {
     Ok(archive)
 }
 
-/// Preserving v1/v2/v3 -> v4 format migration. Preserve the quiescent sibling set before
-/// even a read-only SQLite open can rebuild shared memory. Each attempt has its
-/// own completed backup; a failed previous attempt never substitutes older bytes.
+/// Migrates archive format 1, 2 or 3 to 4. Every database file and its WAL and
+/// shared-memory siblings are backed up first, because even a read-only SQLite
+/// open can rewrite shared memory. Each attempt gets its own backup directory.
 pub(crate) fn migrate(root: &Path, cancelled: &AtomicBool) -> Result<()> {
     let Some(old @ (1 | 2 | 3)) = raw_versions(root)? else {
         return Ok(());
@@ -307,7 +308,7 @@ pub(crate) fn migrate(root: &Path, cancelled: &AtomicBool) -> Result<()> {
         current.path = entry.path.clone();
         if current != *entry {
             return Err(refused(
-                "source changed while preserving migration siblings",
+                "database files changed during the migration backup",
             ));
         }
     }
@@ -316,8 +317,7 @@ pub(crate) fn migrate(root: &Path, cancelled: &AtomicBool) -> Result<()> {
     File::open(&backups)?.sync_all()?;
     File::open(root)?.sync_all()?;
     crate::preflight_inner(root, true)?;
-    // Preserve the complete sibling set before a read-only guard can touch
-    // shared-memory marks. A pending restore never gains migration writes.
+    // Refuse to migrate while a copy preparation is pending.
     crate::copy_preparation::migration_guard(root)?;
     wal::check_cancel(cancelled)?;
     let path = root.join("archive.db");
@@ -341,7 +341,11 @@ fn set_format(conn: &mut Connection, path: &Path, recovery: Option<&RecoveryReco
         }
         if let Some(recovery) = recovery {
             let text = serde_json::to_string(recovery).expect("typed recovery JSON");
-            tx.execute("INSERT INTO meta(key,value) VALUES('recovery_qualification',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[text])?;
+            tx.execute(
+                "INSERT INTO meta(key, value) VALUES('recovery_qualification', ?1) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [text],
+            )?;
         }
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='write_counter'",
@@ -374,21 +378,35 @@ pub(crate) fn integrity(conn: &Connection, path: &Path, cancelled: &AtomicBool) 
     wal::check_cancel(cancelled)?;
     result
 }
+/// Checks import identities, every stored blob and every revision's bytes.
+/// Returns the number of blobs and their total size.
 pub(crate) fn blobs(
     root: &Path,
     archive: &Connection,
     cancelled: &AtomicBool,
 ) -> Result<(u64, u64)> {
     let path = root.join("archive.db");
-    let mut count = 0;
-    let mut bytes = 0;
-    let mut imports = db(&path, || {
-        archive.prepare("SELECT i.id,i.format,r.length,r.blake3,i.original_hash,i.context_json FROM input i JOIN revision r ON r.input=i.id AND r.number=1 WHERE i.original_hash IS NOT NULL")
+    check_import_identities(archive, &path, cancelled)?;
+    let checked = check_blob_files(root, archive, &path, cancelled)?;
+    check_revision_bytes(root, archive, &path, cancelled)?;
+    Ok(checked)
+}
+fn check_import_identities(
+    archive: &Connection,
+    path: &Path,
+    cancelled: &AtomicBool,
+) -> Result<()> {
+    let mut imports = db(path, || {
+        archive.prepare(
+            "SELECT i.id, i.format, r.length, r.blake3, i.original_hash, i.context_json \
+             FROM input i JOIN revision r ON r.input = i.id AND r.number = 1 \
+             WHERE i.original_hash IS NOT NULL",
+        )
     })?;
-    let mut imported = db(&path, || imports.query([]))?;
-    while let Some(row) = db(&path, || imported.next())? {
+    let mut imported = db(path, || imports.query([]))?;
+    while let Some(row) = db(path, || imported.next())? {
         wal::check_cancel(cancelled)?;
-        let (id, format, length, hash, original, context) = db(&path, || {
+        let (id, format, length, hash, original, context) = db(path, || {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -400,14 +418,24 @@ pub(crate) fn blobs(
         })?;
         crate::imports::decode_import_identity(id, format, length, hash, original, context)?;
     }
-    let mut stmt = db(&path, || {
+    Ok(())
+}
+fn check_blob_files(
+    root: &Path,
+    archive: &Connection,
+    path: &Path,
+    cancelled: &AtomicBool,
+) -> Result<(u64, u64)> {
+    let mut count = 0;
+    let mut bytes = 0;
+    let mut stmt = db(path, || {
         archive.prepare("SELECT hash,size,place,encoding,state FROM blob ORDER BY hash")
     })?;
-    let mut rows = db(&path, || stmt.query([]))?;
-    while let Some(row) = db(&path, || rows.next())? {
+    let mut rows = db(path, || stmt.query([]))?;
+    while let Some(row) = db(path, || rows.next())? {
         wal::check_cancel(cancelled)?;
         let (hash, size, place, encoding, state): (Vec<u8>, i64, String, String, String) =
-            db(&path, || {
+            db(path, || {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -419,9 +447,9 @@ pub(crate) fn blobs(
         if place != "file" || encoding != "plain" || state != "present" {
             return Err(refused("recovery only supports present plain file blobs"));
         }
-        let hash = BlobHash::from_bytes(hash.try_into().map_err(|_| Error::Schema(path.clone()))?);
-        let size = u64::try_from(size).map_err(|_| Error::Schema(path.clone()))?;
-        hashed_blobs::Reader::new(&root, vec![]).verify_plain::<Error>(
+        let hash = BlobHash::from_bytes(hash.try_into().map_err(|_| Error::Schema(path.into()))?);
+        let size = u64::try_from(size).map_err(|_| Error::Schema(path.into()))?;
+        hashed_blobs::Reader::new(root, vec![]).verify_plain::<Error>(
             &hashed_blobs::Hash(*hash.bytes()),
             size,
             |_| wal::check_cancel(cancelled),
@@ -429,21 +457,34 @@ pub(crate) fn blobs(
         count += 1;
         bytes += size;
     }
-    // Retained revisions, not only physical blobs, own cited chain byte ranges.
-    let mut stmt = db(&path, || {
+    Ok((count, bytes))
+}
+/// Rehashes each revision from its extents: a blob can be intact while the
+/// extents that cite it are wrong.
+fn check_revision_bytes(
+    root: &Path,
+    archive: &Connection,
+    path: &Path,
+    cancelled: &AtomicBool,
+) -> Result<()> {
+    let mut stmt = db(path, || {
         archive.prepare("SELECT input,chain,length,blake3 FROM revision ORDER BY input,number")
     })?;
-    let mut rows = db(&path, || stmt.query([]))?;
-    while let Some(row) = db(&path, || rows.next())? {
+    let mut rows = db(path, || stmt.query([]))?;
+    while let Some(row) = db(path, || rows.next())? {
         let (input, chain, length, expected): (String, i64, i64, Option<Vec<u8>>) =
-            db(&path, || {
+            db(path, || {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?;
-        let length = u64::try_from(length).map_err(|_| Error::Schema(path.clone()))?;
-        let mut extents = db(&path, || {
-            archive.prepare("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size FROM extent e JOIN blob b ON b.hash=e.blob AND b.state='present' WHERE input=?1 AND chain=?2 AND offset<?3 ORDER BY offset")
+        let length = u64::try_from(length).map_err(|_| Error::Schema(path.into()))?;
+        let mut extents = db(path, || {
+            archive.prepare(
+                "SELECT e.offset, e.length, e.blob, e.blob_offset, b.size \
+                 FROM extent e JOIN blob b ON b.hash = e.blob AND b.state = 'present' \
+                 WHERE input = ?1 AND chain = ?2 AND offset < ?3 ORDER BY offset",
+            )
         })?;
-        let mut parts = db(&path, || {
+        let mut parts = db(path, || {
             extents.query(rusqlite::params![
                 input,
                 chain,
@@ -452,9 +493,9 @@ pub(crate) fn blobs(
         })?;
         let mut offset = 0;
         let mut hash = blake3::Hasher::new();
-        while let Some(part) = db(&path, || parts.next())? {
+        while let Some(part) = db(path, || parts.next())? {
             let (start, len, blob, blob_offset, blob_size): (i64, i64, Vec<u8>, i64, i64) =
-                db(&path, || {
+                db(path, || {
                     Ok((
                         part.get(0)?,
                         part.get(1)?,
@@ -467,7 +508,7 @@ pub(crate) fn blobs(
                 return Err(refused("inconsistent revision extents"));
             }
             let blob =
-                BlobHash::from_bytes(blob.try_into().map_err(|_| Error::Schema(path.clone()))?);
+                BlobHash::from_bytes(blob.try_into().map_err(|_| Error::Schema(path.into()))?);
             let end = length.min(offset.checked_add(len as u64).ok_or(Error::Range)?);
             let select_start = u64::try_from(blob_offset).map_err(|_| Error::Range)?;
             let select_end = select_start.checked_add(end - offset).ok_or(Error::Range)?;
@@ -476,7 +517,7 @@ pub(crate) fn blobs(
                 return Err(Error::Range);
             }
             let mut position = 0u64;
-            hashed_blobs::Reader::new(&root, vec![]).verify_plain::<Error>(
+            hashed_blobs::Reader::new(root, vec![]).verify_plain::<Error>(
                 &hashed_blobs::Hash(*blob.bytes()),
                 blob_size,
                 |data| {
@@ -496,10 +537,10 @@ pub(crate) fn blobs(
         if offset != length
             || expected.is_some_and(|expected| expected.as_slice() != hash.finalize().as_bytes())
         {
-            return Err(refused("retained revision content digest mismatch"));
+            return Err(refused("revision content does not match its digest"));
         }
     }
-    Ok((count, bytes))
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -513,7 +554,9 @@ pub struct RecoveryReport {
     pub checked_blob_bytes: u64,
     pub checks: Vec<&'static str>,
 }
-/// Called only by the one-shot process owner. No SQLite capability escapes.
+/// Copies the damaged archive at `source` into the new directory `destination`
+/// and marks the copy with a recovery record. Holds the source's writer lock;
+/// the caller must be the only process using the archive.
 pub fn recover_copy(
     source: &Path,
     destination: &Path,
@@ -568,18 +611,18 @@ fn recover_inner(
         .iter()
         .any(|e| e.path == "writer.lock" && e.device == locked.dev() && e.inode == locked.ino())
     {
-        return Err(refused("source coordination inode changed"));
+        return Err(refused("writer.lock changed during recovery"));
     }
     let mut affected: Vec<RecoveredWal> = vec![];
     for tier in [DurableTier::Archive, DurableTier::Embeddings] {
         let main = source.join(tier.file());
         if !owned_metadata(&main)?.is_some_and(|m| m.is_file() && m.len() > 0) {
-            return Err(refused("missing durable main database"));
+            return Err(refused("archive.db or embeddings.db is missing or empty"));
         }
         let path = sibling(&main, "-wal");
         if owned_metadata(&path)?.is_some_and(|m| m.len() > 0) {
             if owned_metadata(&sibling(&main, "-shm"))?.is_none() {
-                return Err(refused("orphan durable WAL"));
+                return Err(refused("a WAL file has no shared-memory file"));
             }
             if let Some(tail) = wal::recovery_tail(
                 &path,
@@ -592,7 +635,7 @@ fn recover_inner(
     }
     if affected.len() != 1 {
         return Err(refused(
-            "recovery requires exactly one complete previous-generation durable WAL tail",
+            "recovery needs exactly one complete WAL tail from the previous generation",
         ));
     }
     let version = raw_versions(&source)?.ok_or_else(|| refused("missing archive format"))?;
@@ -664,7 +707,7 @@ fn recover_inner(
         let (checked_blobs, checked_blob_bytes) = blobs(&stage_path, &reader.archive, cancelled)?;
         let status = reader.status()?;
         if status.recovery.as_ref() != Some(&recovery) {
-            return Err(refused("reopened recovery record mismatch"));
+            return Err(refused("recovery record differs after reopening"));
         }
         drop(reader);
         boundary(Boundary::Verified)?;
@@ -683,7 +726,7 @@ fn recover_inner(
                 "pinned_sqlite_production_checksum_vfs",
                 "database_integrity_and_foreign_keys",
                 "immutable_import_identities",
-                "blob_and_retained_revision_content_blake3",
+                "blob_and_revision_content_blake3",
                 "production_reader_reopen",
                 "persistent_unknown_historical_head",
             ],
@@ -718,5 +761,8 @@ fn recover_inner(
     }
 }
 
+#[cfg(test)]
+#[path = "recovery/index_compatibility_tests.rs"]
+mod index_compatibility_tests;
 #[cfg(test)]
 mod tests;

@@ -5,7 +5,7 @@ fn fixture() -> (tempfile::TempDir, PathBuf, u64) {
     crate::tests::killed_wal_fixture("stale-generation")
 }
 #[test]
-fn recovered_copy_preserves_source_inodes_content_and_keeps_its_recovery_record() {
+fn recovered_copy_leaves_source_intact_and_keeps_recovery_record() {
     let (tmp, source, expected) = fixture();
     let cancel = AtomicBool::new(false);
     let original = inventory(&source, &cancel).unwrap();
@@ -71,7 +71,7 @@ fn recovered_copy_preserves_source_inodes_content_and_keeps_its_recovery_record(
     assert_eq!(inventory(&source, &cancel).unwrap(), original);
 }
 #[test]
-fn native_copy_refuses_partial_mixed_current_damage_busy_overlap_and_unsafe_files() {
+fn recovery_refuses_damaged_wal_busy_overlap_and_symlinks() {
     let (tmp, source, _) = fixture();
     let cancel = AtomicBool::new(false);
     let wal = source.join("archive.db-wal");
@@ -131,7 +131,7 @@ fn native_copy_refuses_partial_mixed_current_damage_busy_overlap_and_unsafe_file
     assert!(recover_copy(&source, &tmp.path().join("unsafe"), &cancel).is_err());
 }
 #[test]
-fn publication_is_atomic_and_cancellation_never_removes_a_published_copy() {
+fn cancellation_before_publish_leaves_no_destination() {
     let (tmp, source, _) = fixture();
     for point in [
         Boundary::Copied,
@@ -179,7 +179,7 @@ fn publication_is_atomic_and_cancellation_never_removes_a_published_copy() {
     );
 }
 #[test]
-fn healthy_v1_migration_preserves_siblings_and_never_creates_a_recovery_record() {
+fn v1_migration_backs_up_files_without_recovery_record() {
     let (_tmp, source, expected) = crate::tests::killed_wal_fixture("legacy-normal");
     let cancel = AtomicBool::new(false);
     let before = inventory(&source, &cancel).unwrap();
@@ -207,7 +207,7 @@ fn healthy_v1_migration_preserves_siblings_and_never_creates_a_recovery_record()
 }
 
 #[test]
-#[ignore = "owned crash-boundary helper"]
+#[ignore = "child process for the kill test"]
 fn crash_child() {
     let source = PathBuf::from(std::env::var_os("POLYLOGUE_RECOVERY_SOURCE").unwrap());
     let destination = PathBuf::from(std::env::var_os("POLYLOGUE_RECOVERY_DEST").unwrap());
@@ -226,7 +226,7 @@ fn crash_child() {
 }
 
 #[test]
-fn kill_before_publication_leaves_no_destination_and_after_publication_keeps_the_record() {
+fn killed_recovery_publishes_all_or_nothing() {
     let (tmp, source, _) = fixture();
     let cancel = AtomicBool::new(false);
     let before = inventory(&source, &cancel).unwrap();
@@ -254,12 +254,12 @@ fn kill_before_publication_leaves_no_destination_and_after_publication_keeps_the
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         while !ack.exists() {
             if let Some(status) = child.try_wait().unwrap() {
-                panic!("crash helper exited before boundary: {status}");
+                panic!("child exited before the boundary: {status}");
             }
             if std::time::Instant::now() > deadline {
                 child.kill().unwrap();
                 child.wait().unwrap();
-                panic!("crash helper deadline");
+                panic!("child did not reach the boundary in time");
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -282,7 +282,7 @@ fn kill_before_publication_leaves_no_destination_and_after_publication_keeps_the
 }
 
 #[test]
-fn newer_format_and_missing_shm_refuse_without_source_changes() {
+fn newer_format_and_missing_shm_refuse_without_changes() {
     let (tmp, source, _) = crate::tests::killed_wal_fixture("stale-newer");
     let cancel = AtomicBool::new(false);
     let before = inventory(&source, &cancel).unwrap();
@@ -298,7 +298,7 @@ fn newer_format_and_missing_shm_refuse_without_source_changes() {
 }
 
 #[test]
-fn source_change_and_corrupt_blob_never_publish_and_do_not_repair_originals() {
+fn source_change_or_corrupt_blob_refuses_and_leaves_source() {
     let (tmp, source, _) = fixture();
     let cancel = AtomicBool::new(false);
     let destination = tmp.path().join("changing");
@@ -328,7 +328,7 @@ fn source_change_and_corrupt_blob_never_publish_and_do_not_repair_originals() {
 }
 
 #[test]
-fn present_empty_blob_requires_its_valid_physical_file() {
+fn empty_blob_still_needs_a_valid_file() {
     let (tmp, source, _) = crate::tests::killed_wal_fixture("stale-empty");
     let cancel = AtomicBool::new(false);
     let hash = BlobHash::of(b"");
@@ -340,7 +340,7 @@ fn present_empty_blob_requires_its_valid_physical_file() {
     let original = fs::read(&file).unwrap();
     assert!(
         !original.is_empty(),
-        "an empty blob still owns an encoded frame"
+        "an empty blob still has an encoded frame"
     );
     let report = recover_copy(&source, &tmp.path().join("valid-empty"), &cancel).unwrap();
     assert_eq!(report.checked_blobs, 4);
@@ -352,7 +352,7 @@ fn present_empty_blob_requires_its_valid_physical_file() {
             "truncated" => fs::write(&file, b"").unwrap(),
             "damaged-frame" => {
                 let mut damaged = original.clone();
-                damaged[0] ^= 1; // Preserve the seek table, invalidate the empty zstd frame.
+                damaged[0] ^= 1; // Keep the seek table, break the zstd frame.
                 fs::write(&file, damaged).unwrap();
             }
             _ => unreachable!(),
@@ -370,7 +370,7 @@ fn present_empty_blob_requires_its_valid_physical_file() {
 }
 
 #[test]
-fn fifo_coordination_refuses_instead_of_blocking() {
+fn fifo_writer_lock_refuses_instead_of_blocking() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("unsafe-source");
     fs::create_dir(&source).unwrap();
