@@ -42,3 +42,5 @@ checks ordinary peers during state work and exact accounting after interruption
 and restart; the full-size public regressions determine the measured cost.
 
 An observed append can obsolete an in-flight final source audit. A typed parser-predecessor rejection discards that attempt only when the writer independently finds a changed retained source or parser predecessor, then reselects ordinary current work. Same-basis acquisition growth beyond a finalizing parsed prefix resumes parsing. Unchanged predecessor failures and corruption still record failure; cancellation and admission limits remain unchanged.
+
+An off-ancestor pure tool result is omitted from the active set only after its current caller and exact prior call correspondence are established as inactive. Absent, null, missing or cyclic caller ancestry is unresolved authority, not evidence that the result belongs outside the active path.

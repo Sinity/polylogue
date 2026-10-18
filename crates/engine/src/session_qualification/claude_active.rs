@@ -226,7 +226,11 @@ pub(super) fn prove(
         } else {
             nearest(&mut reads, owner, peer.parent.clone())?
         };
-        let Some(address) = address else { continue };
+        let Some(address) = address else {
+            // No caller proof is not proof of an inactive caller. The result
+            // may still be a peer of a call on the active response path.
+            return Ok(None);
+        };
         let Some(p) = pending.get(address.message.as_str()) else {
             return Ok(None);
         };
@@ -238,9 +242,6 @@ pub(super) fn prove(
             || p.incomplete
         {
             return Ok(None);
-        }
-        if peer.caller.is_none() && !active.contains(address.message.as_str()) {
-            continue;
         }
         let Some(_) = call_evidence(
             &mut reads,

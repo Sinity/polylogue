@@ -366,3 +366,51 @@ fn direct_caller_and_tree_parent_may_name_different_fragments_of_same_response()
         vec!["root", "result1", "result2"]
     );
 }
+
+#[test]
+fn off_path_result_requires_established_caller_before_it_can_be_inactive() {
+    for mode in ["absent", "null", "known-inactive", "inactive-mismatch"] {
+        let world = World::new();
+        let mut active = assistant("active", "active-response", "root", "");
+        active["message"]["content"] = json!([call("one"), call("two")]);
+        let mut inactive = assistant("inactive", "inactive-response", "root", "");
+        inactive["message"]["content"] = json!([call("off")]);
+        let mut extra = result(
+            "extra",
+            "inactive",
+            if mode == "known-inactive" {
+                "off"
+            } else {
+                "one"
+            },
+        );
+        if mode == "absent" {
+            extra.as_object_mut().unwrap().remove("parentUuid");
+        } else if mode == "null" {
+            extra["parentUuid"] = Value::Null;
+        }
+        let (_, doc) = import(
+            &world,
+            vec![
+                user("root", None),
+                active,
+                inactive,
+                extra,
+                result("leaf", "active", "two"),
+                marker("last-prompt", json!("leaf")),
+            ],
+            5,
+        );
+        // Root results with absent/null tree parent are real selected Messages,
+        // so whole-row projection readiness cannot settle their caller scope.
+        assert_eq!(doc["messages"].as_array().unwrap().len(), 5);
+        assert_ne!(page(&world, true)["outcome"], "error", "{mode}");
+        let selected = page(&world, false);
+        if mode == "known-inactive" {
+            assert_ne!(selected["outcome"], "error", "{selected}");
+            assert_eq!(text(&selected), vec!["root", "leaf"]);
+        } else {
+            assert_eq!(selected["outcome"], "error", "{mode}: {selected}");
+        }
+    }
+}
