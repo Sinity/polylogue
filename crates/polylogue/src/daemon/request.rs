@@ -10,6 +10,12 @@ use std::path::PathBuf;
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Status,
+    /// Sessions by latest activity, newest first. `before` continues after
+    /// the previous page's last activity time (Unix ms).
+    List {
+        limit: u64,
+        before: Option<i64>,
+    },
     Query {
         text: String,
         cursor: Option<String>,

@@ -93,11 +93,71 @@ impl Session {
             self.started = Some(at);
         }
     }
+
+    /// Merges facts another input (or a later step of the same input) holds
+    /// about this session (architecture 5.5a). Idempotent: merging the same
+    /// facts twice changes nothing, because a parser resends a session's
+    /// facts in full after every step. The kind first recorded stays; the
+    /// title goes by precedence; working directories keep their order;
+    /// branch and tool version take the newer value; the earliest start wins.
+    pub fn merge(&mut self, other: &Session) {
+        if let Some(t) = &other.title {
+            self.offer_title(&t.text, t.source);
+        }
+        if other.cwd.starts_with(&self.cwd) {
+            self.cwd.clone_from(&other.cwd);
+        } else if !self.cwd.starts_with(&other.cwd) {
+            for dir in &other.cwd {
+                if !self.cwd.contains(dir) {
+                    self.cwd.push(dir.clone());
+                }
+            }
+        }
+        if other.git_branch.is_some() {
+            self.git_branch.clone_from(&other.git_branch);
+        }
+        if other.tool_version.is_some() {
+            self.tool_version.clone_from(&other.tool_version);
+        }
+        if let Some(at) = other.started {
+            self.offer_start(at);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_is_idempotent_and_keeps_the_earliest_start() {
+        let mut a = session();
+        a.offer_cwd("/a");
+        a.offer_start(Timestamp::from_unix_ms(50).unwrap());
+        let mut b = session();
+        b.offer_cwd("/a");
+        b.offer_cwd("/b");
+        b.offer_title("t", TitleSource::Generated);
+        b.offer_start(Timestamp::from_unix_ms(10).unwrap());
+        a.merge(&b);
+        let once = a.clone();
+        a.merge(&b);
+        assert_eq!(a, once);
+        assert_eq!(a.cwd, ["/a", "/b"]);
+        assert_eq!(a.started, Timestamp::from_unix_ms(10));
+        assert_eq!(a.title.unwrap().text, "t");
+    }
+
+    #[test]
+    fn merge_of_unrelated_directories_appends_new_ones() {
+        let mut a = session();
+        a.offer_cwd("/x");
+        let mut b = session();
+        b.offer_cwd("/y");
+        b.offer_cwd("/x");
+        a.merge(&b);
+        assert_eq!(a.cwd, ["/x", "/y"]);
+    }
 
     fn session() -> Session {
         Session::new(

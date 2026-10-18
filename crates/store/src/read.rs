@@ -1,46 +1,526 @@
 //! Read connections. The daemon keeps a pool; every read in one request
-//! sees one consistent snapshot of both databases.
+//! sees one consistent snapshot of `index.db` with `archive.db` attached.
 
+use crate::blobs::FileFacts;
+use crate::files::{Archive, open_read};
+use crate::writer::{restore_text, unpack_text};
 use crate::Result;
-use polylogue_model::{Message, Session, SessionId};
+use polylogue_model::{
+    Block, Message, MessageId, PromptKind, Role, Session, SessionId, SessionKind, Timestamp,
+    TitleSource, Usage,
+};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::Serialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Mutex;
 
+/// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {
-    _size: usize,
+    archive: Archive,
+    idle: Mutex<Vec<Connection>>,
 }
 
-/// One consistent read: a transaction on `index.db` with `archive.db`
-/// attached.
+/// One consistent read: a read transaction on `index.db` with `archive.db`
+/// attached as `a`. Returned to the pool when dropped.
 pub struct Reader<'a> {
-    _pool: &'a ReadPool,
+    pool: &'a ReadPool,
+    conn: Option<Connection>,
+}
+
+/// What the loop knows about a path from its last look, for comparing
+/// with the file now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownInput {
+    pub path: String,
+    pub input_id: String,
+    pub format: String,
+    /// The file's facts at the last observation; `None` once it was seen
+    /// gone.
+    pub facts: Option<FileFacts>,
+    /// The current revision chain and how many of its bytes are stored.
+    pub chain: Option<i64>,
+    pub stored: u64,
+    /// Offset after the last complete record parsed in that chain, and the
+    /// parser version that parsed it.
+    pub parsed_upto: u64,
+    pub parser_version: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionSummary {
+    pub id: SessionId,
+    pub kind: SessionKind,
+    pub title: Option<String>,
+    pub started: Option<Timestamp>,
+    pub last_activity: Option<Timestamp>,
+    pub messages: u64,
+    pub cwd: Option<String>,
+}
+
+/// Totals for `status`. Unknown is never shown as zero: a count that could
+/// not be read is an error, not a 0.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Status {
+    pub sessions: u64,
+    pub messages: u64,
+    pub tool_calls: u64,
+    pub inputs: u64,
+    pub revisions: u64,
+    /// Bytes of input content stored (uncompressed).
+    pub stored_bytes: u64,
+    /// Input chains by parse status (`done`, `parsing`).
+    pub parse_states: BTreeMap<String, u64>,
+    /// The most frequent record kinds and fields parsers did not read.
+    pub unrecognized: Vec<(String, u64)>,
 }
 
 impl ReadPool {
+    pub fn open(archive: &Archive) -> Result<Self> {
+        Ok(Self {
+            archive: archive.clone(),
+            idle: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn connect(&self) -> Result<Connection> {
+        let conn = open_read(&self.archive.index_db())?;
+        let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
+        conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+        Ok(conn)
+    }
+
     pub fn reader(&self) -> Result<Reader<'_>> {
-        // Architecture 6: pool of read connections.
-        todo!()
+        let conn = match self.idle.lock().map(|mut v| v.pop()) {
+            Ok(Some(c)) => c,
+            _ => self.connect()?,
+        };
+        conn.execute_batch("BEGIN")?;
+        Ok(Reader {
+            pool: self,
+            conn: Some(conn),
+        })
     }
 }
 
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take()
+            && conn.execute_batch("COMMIT").is_ok()
+            && let Ok(mut idle) = self.pool.idle.lock()
+        {
+            idle.push(conn);
+        }
+    }
+}
+
+fn parse_name<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
+}
+
+fn ts(ms: Option<i64>) -> Option<Timestamp> {
+    ms.and_then(Timestamp::from_unix_ms)
+}
+
 impl Reader<'_> {
-    pub fn session(&self, _id: &SessionId) -> Result<Option<Session>> {
-        // Architecture 4.4: session row.
-        todo!()
+    fn conn(&self) -> &Connection {
+        self.conn.as_ref().expect("reader holds a connection until dropped")
     }
 
-    /// The session's messages in order, the preferred version of each,
-    /// with inherited ones when `logical` is set.
-    pub fn messages(&self, _id: &SessionId, _logical: bool) -> Result<Vec<Message>> {
-        // Architecture 5.4, 5.5: lineage and preferred version.
-        todo!()
+    pub fn session(&self, id: &SessionId) -> Result<Option<Session>> {
+        let row = self
+            .conn()
+            .prepare_cached(
+                "SELECT kind, title, title_source, cwd_json, branch, harness_version, started_at
+                 FROM session WHERE id = ?1",
+            )?
+            .query_row([id.to_string()], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<i64>>(6)?,
+                ))
+            })
+            .optional()?;
+        Ok(row.map(|(kind, title, source, cwd, branch, version, started)| {
+            let mut s = Session::new(id.clone(), parse_name(&kind).unwrap_or(SessionKind::Main));
+            if let (Some(text), Some(source)) =
+                (title, source.as_deref().and_then(parse_name::<TitleSource>))
+            {
+                s.offer_title(&text, source);
+            }
+            s.cwd = cwd.and_then(|c| serde_json::from_str(&c).ok()).unwrap_or_default();
+            s.git_branch = branch;
+            s.tool_version = version;
+            s.started = ts(started);
+            s
+        }))
     }
 
-    /// Runs a compiled query's SQL.
+    /// Sessions by latest activity, newest first. `before` continues a page
+    /// after the last activity time (Unix ms) the previous page ended at.
+    pub fn list(&self, limit: u64, before: Option<i64>) -> Result<Vec<SessionSummary>> {
+        let mut stmt = self.conn().prepare_cached(
+            "SELECT s.id, s.kind, s.title, s.started_at, s.last_activity_at, s.cwd,
+                    (SELECT COUNT(*) FROM message m WHERE m.session_pk = s.pk)
+             FROM session s
+             WHERE ?2 IS NULL OR s.last_activity_at < ?2
+             ORDER BY s.last_activity_at IS NULL, s.last_activity_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64, before], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, i64>(6)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, kind, title, started, last, cwd, n) = row?;
+            let Ok(id) = SessionId::parse(&id) else {
+                continue;
+            };
+            out.push(SessionSummary {
+                id,
+                kind: parse_name(&kind).unwrap_or(SessionKind::Main),
+                title,
+                started: ts(started),
+                last_activity: ts(last),
+                messages: n as u64,
+                cwd,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The session's messages in order, the preferred version of each. With
+    /// `logical`, messages it inherited come first: a fork's parent prefix up
+    /// to the branch point, and messages its file copied from another
+    /// session, which are stored once, in the session they came from.
+    pub fn messages(&self, id: &SessionId, logical: bool) -> Result<Vec<Message>> {
+        let Some(pk) = self.session_pk(id)? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        if logical {
+            let mut seen = HashSet::new();
+            self.inherited(pk, id, &mut out, &mut seen, 0)?;
+        }
+        out.extend(self.own_messages(pk, id)?);
+        Ok(out)
+    }
+
+    fn session_pk(&self, id: &SessionId) -> Result<Option<i64>> {
+        Ok(self
+            .conn()
+            .prepare_cached("SELECT pk FROM session WHERE id = ?1")?
+            .query_row([id.to_string()], |r| r.get(0))
+            .optional()?)
+    }
+
+    fn inherited(
+        &self,
+        child_pk: i64,
+        child: &SessionId,
+        out: &mut Vec<Message>,
+        seen: &mut HashSet<String>,
+        depth: usize,
+    ) -> Result<()> {
+        if depth > 64 {
+            return Ok(());
+        }
+        let links: Vec<(String, String, Option<String>)> = self
+            .conn()
+            .prepare_cached(
+                "SELECT parent_id, kind, branch_point FROM link
+                 WHERE child_id = ?1 AND kind IN ('fork', 'copy') ORDER BY pk",
+            )?
+            .query_map([child.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (parent, kind, at) in links {
+            let Ok(parent) = SessionId::parse(&parent) else {
+                continue;
+            };
+            let Some(parent_pk) = self.session_pk(&parent)? else {
+                continue;
+            };
+            let msgs = if kind == "fork" {
+                self.inherited(parent_pk, &parent, out, seen, depth + 1)?;
+                let mut own = self.own_messages(parent_pk, &parent)?;
+                if let Some(at) = at
+                    && let Some(i) = own.iter().position(|m| m.id.to_string() == at)
+                {
+                    own.truncate(i + 1);
+                }
+                own
+            } else {
+                let copied: HashSet<i64> = self
+                    .conn()
+                    .prepare_cached(
+                        "SELECT DISTINCT m.pk FROM message m
+                         JOIN message_source s ON s.message_pk = m.pk
+                         JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
+                         WHERE m.session_pk = ?1",
+                    )?
+                    .query_map(params![parent_pk, child_pk], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                self.messages_where(parent_pk, &parent, |pk| copied.contains(&pk))?
+            };
+            for m in msgs {
+                if seen.insert(m.id.to_string()) {
+                    out.push(m);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn own_messages(&self, session_pk: i64, session: &SessionId) -> Result<Vec<Message>> {
+        self.messages_where(session_pk, session, |_| true)
+    }
+
+    fn messages_where(
+        &self,
+        session_pk: i64,
+        session: &SessionId,
+        keep: impl Fn(i64) -> bool,
+    ) -> Result<Vec<Message>> {
+        let mut blocks: HashMap<i64, Vec<Block>> = HashMap::new();
+        {
+            let mut stmt = self.conn().prepare_cached(
+                "SELECT b.message_pk, b.body_json, t.body FROM block b
+                 LEFT JOIN text t ON t.id = b.text_id
+                 WHERE b.session_pk = ?1 ORDER BY b.message_pk, b.idx",
+            )?;
+            let rows = stmt.query_map([session_pk], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<Vec<u8>>>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (pk, body, text) = row?;
+                let mut block: Block = serde_json::from_str(&body)?;
+                if let Some(packed) = text {
+                    restore_text(&mut block, unpack_text(&packed)?);
+                }
+                blocks.entry(pk).or_default().push(block);
+            }
+        }
+        let mut stmt = self.conn().prepare_cached(
+            "SELECT pk, id, role, prompt_kind, model, at, parent_id, input_tokens, cache_read_tokens,
+                    cache_write_tokens, output_tokens, reasoning_tokens, service_tier, stop_reason,
+                    duration_ms, attrs_json
+             FROM message WHERE session_pk = ?1 ORDER BY order_input_pk, seq",
+        )?;
+        let rows = stmt.query_map([session_pk], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                [
+                    r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, Option<i64>>(8)?,
+                    r.get::<_, Option<i64>>(9)?,
+                    r.get::<_, Option<i64>>(10)?,
+                    r.get::<_, Option<i64>>(11)?,
+                ],
+                r.get::<_, Option<String>>(12)?,
+                r.get::<_, Option<String>>(13)?,
+                r.get::<_, Option<i64>>(14)?,
+                r.get::<_, Option<String>>(15)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (pk, id, role, kind, model, at, parent, lanes, tier, stop, duration, attrs) = row?;
+            if !keep(pk) {
+                continue;
+            }
+            let Ok(id) = MessageId::parse(&id) else {
+                continue;
+            };
+            let n = |x: Option<i64>| x.map(|x| x as u64);
+            let attrs: Option<serde_json::Value> =
+                attrs.and_then(|a| serde_json::from_str(&a).ok());
+            out.push(Message {
+                id,
+                session: session.clone(),
+                parent: parent.and_then(|p| MessageId::parse(&p).ok()),
+                role: parse_name(&role).unwrap_or(Role::User),
+                at: ts(at),
+                model,
+                prompt_kind: kind.as_deref().and_then(parse_name::<PromptKind>),
+                blocks: blocks.remove(&pk).unwrap_or_default(),
+                usage: Usage {
+                    input: n(lanes[0]),
+                    cached_input: n(lanes[1]),
+                    cache_write: n(lanes[2]),
+                    output: n(lanes[3]),
+                    reasoning: n(lanes[4]),
+                    service_tier: tier,
+                },
+                stop_reason: stop,
+                reported_cost_usd: attrs
+                    .as_ref()
+                    .and_then(|a| a.get("reported_cost_usd"))
+                    .and_then(serde_json::Value::as_number)
+                    .cloned(),
+                duration_ms: n(duration),
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn status(&self) -> Result<Status> {
+        let c = self.conn();
+        let count = |sql: &str| -> Result<u64> {
+            Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64)
+        };
+        let mut parse_states = BTreeMap::new();
+        let mut stmt = c.prepare_cached("SELECT status, COUNT(*) FROM parse_state GROUP BY status")?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+            let (s, n) = row?;
+            parse_states.insert(s, n as u64);
+        }
+        let mut unrecognized = Vec::new();
+        let mut stmt = c.prepare_cached(
+            "SELECT what, SUM(count) AS n FROM unrecognized GROUP BY what ORDER BY n DESC LIMIT 20",
+        )?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+            let (w, n) = row?;
+            unrecognized.push((w, n as u64));
+        }
+        Ok(Status {
+            sessions: count("SELECT COUNT(*) FROM session")?,
+            messages: count("SELECT COUNT(*) FROM message")?,
+            tool_calls: count("SELECT COUNT(*) FROM tool_call")?,
+            inputs: count("SELECT COUNT(*) FROM a.input")?,
+            revisions: count("SELECT COUNT(*) FROM a.revision")?,
+            stored_bytes: count("SELECT COALESCE(SUM(size), 0) FROM a.blob")?,
+            parse_states,
+            unrecognized,
+        })
+    }
+
+    /// Every path this machine observed, with its last facts and how far
+    /// its current chain is stored and parsed. The loop compares these with
+    /// the files now.
+    pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
+        let mut stmt = self.conn().prepare_cached(
+            "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
+                    o.ctime_ns,
+                    (SELECT chain FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
+                    (SELECT length FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1)
+             FROM a.observation o JOIN a.input i ON i.id = o.input
+             WHERE o.machine = ?1 AND o.rowid = (
+                 SELECT MAX(rowid) FROM a.observation x WHERE x.machine = o.machine AND x.path = o.path)",
+        )?;
+        let rows = stmt.query_map([machine], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                [
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
+                    r.get::<_, Option<i64>>(6)?,
+                    r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, Option<i64>>(8)?,
+                ],
+                r.get::<_, Option<i64>>(9)?,
+                r.get::<_, Option<i64>>(10)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (path, input_id, format, class, f, chain, length) = row?;
+            let facts = match (class.as_str(), f) {
+                ("deleted", _) => None,
+                (_, [Some(d), Some(i), Some(s), Some(m), Some(c)]) => Some(FileFacts {
+                    device: d as u64,
+                    inode: i as u64,
+                    size: s as u64,
+                    mtime_ns: i128::from(m),
+                    ctime_ns: i128::from(c),
+                }),
+                _ => None,
+            };
+            out.push(KnownInput {
+                path,
+                input_id,
+                format,
+                facts,
+                chain,
+                stored: length.unwrap_or(0) as u64,
+                parsed_upto: 0,
+                parser_version: None,
+            });
+        }
+        let mut stmt = self.conn().prepare_cached(
+            "SELECT p.parsed_upto, p.parser_version FROM parse_state p
+             JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1 AND p.chain = ?2",
+        )?;
+        for k in &mut out {
+            if let Some(chain) = k.chain
+                && let Some((upto, version)) = stmt
+                    .query_row(params![k.input_id, chain], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                    })
+                    .optional()?
+            {
+                k.parsed_upto = upto as u64;
+                k.parser_version = Some(version as u32);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether `archive.db` holds an input with this id.
+    pub fn has_input(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .conn()
+            .prepare_cached("SELECT 1 FROM a.input WHERE id = ?1")?
+            .exists([id])?)
+    }
+
+    /// Runs read-only SQL and returns each row as a JSON object.
     pub fn query(
         &self,
-        _sql: &str,
-        _params: &[rusqlite::types::Value],
+        sql: &str,
+        params: &[rusqlite::types::Value],
     ) -> Result<Vec<serde_json::Value>> {
-        // Architecture 7: query execution with pages bound to this read.
-        todo!()
+        let mut stmt = self.conn().prepare(sql)?;
+        let names: Vec<String> = stmt.column_names().iter().map(|s| (*s).to_owned()).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
+            let mut obj = serde_json::Map::new();
+            for (i, name) in names.iter().enumerate() {
+                use rusqlite::types::ValueRef;
+                let v = match r.get_ref(i)? {
+                    ValueRef::Null => serde_json::Value::Null,
+                    ValueRef::Integer(n) => n.into(),
+                    ValueRef::Real(f) => serde_json::json!(f),
+                    ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned().into(),
+                    ValueRef::Blob(b) => b.iter().map(|x| format!("{x:02x}")).collect::<String>().into(),
+                };
+                obj.insert(name.clone(), v);
+            }
+            Ok(serde_json::Value::Object(obj))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 }

@@ -4,57 +4,9 @@
 
 use crate::account::{Accounting, CountMismatch, Disposition};
 use crate::frame::{self, Record};
-use polylogue_model::{BlobHash, Event, Json, Link, Message, Session, SessionId, ToolOutcome};
+use polylogue_model::Json;
+pub use polylogue_model::{BackgroundUpdate, InlineBlob, MessageRow, Output};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-
-/// Rows one parse step produced. Sessions and messages are upserts keyed by
-/// their IDs: a later step may send a longer version of the same message
-/// (one still being written), and writing it again is harmless.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Output {
-    pub sessions: Vec<Session>,
-    pub messages: Vec<MessageRow>,
-    pub events: Vec<Event>,
-    pub links: Vec<Link>,
-    /// Outcomes learned after the result was written, for tool calls that
-    /// ran in the background.
-    pub background: Vec<BackgroundUpdate>,
-    /// Bytes the input carried inline (base64 images), for the blob store.
-    /// Blocks refer to them by hash.
-    pub blobs: Vec<InlineBlob>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InlineBlob {
-    pub hash: BlobHash,
-    pub size: u64,
-    #[serde(skip)]
-    pub bytes: Vec<u8>,
-}
-
-/// A message as one input holds it. `offset` is where its first record
-/// starts. The same message at the same offset may be sent again, longer
-/// (a response still being written); the writer replaces it. The same
-/// message at another offset or in another input is another version; the
-/// writer keeps every version and prefers one.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MessageRow {
-    pub offset: u64,
-    pub message: Message,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackgroundUpdate {
-    pub session: SessionId,
-    pub task_id: String,
-    /// The tool call that started the task, when the notice names it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub call_id: Option<String>,
-    pub outcome: ToolOutcome,
-    /// Where the task's full output was written, when the notice says.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_file: Option<String>,
-}
 
 pub trait Parser {
     /// State carried between records and between appends. Small by design

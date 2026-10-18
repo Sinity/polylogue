@@ -27,6 +27,10 @@ pub enum Route {
 
 pub struct OriginSpec {
     pub name: &'static str,
+    /// Bumped when the parser's output for the same bytes changes; the
+    /// loop then parses the origin's inputs again. Kept apart from the
+    /// input's format so a parser change never looks like a format change.
+    pub parser_version: u32,
     pub support: Support,
     pub route: Route,
     /// Glob patterns relative to the home directory, exactly the layout
@@ -52,6 +56,7 @@ macro_rules! reserved {
     ($name:literal, $route:ident, [$($loc:literal),*]) => {
         OriginSpec {
             name: $name,
+            parser_version: 0,
             support: Support::Reserved,
             route: Route::$route,
             locations: &[$($loc),*],
@@ -64,6 +69,7 @@ macro_rules! reserved {
 pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code",
+        parser_version: 1,
         support: Support::Parsed,
         route: Route::Live,
         locations: crate::claude_code::LOCATIONS,

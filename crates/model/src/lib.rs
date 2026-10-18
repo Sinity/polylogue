@@ -1,6 +1,7 @@
 //! Types every Polylogue crate shares. No IO and no storage: values, their
 //! rules, and the export format's codec.
 
+pub mod batch;
 mod block;
 mod event;
 pub mod export;
@@ -12,6 +13,10 @@ mod time;
 mod usage;
 mod work;
 
+pub use batch::{
+    Accounting, BackgroundUpdate, CountMismatch, Disposition, InlineBlob, MessageRow, OrderKey,
+    Output,
+};
 pub use block::{Attachment, AttachmentDirection, Block, ErrorReason, ToolOutcome, UnknownReason};
 pub use event::{Event, Link, LinkKind};
 pub use id::{BlobHash, IdError, MessageId, NativeId, Origin, SessionId};

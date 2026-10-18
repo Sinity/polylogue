@@ -49,3 +49,49 @@ pub struct Link {
     /// The source field that states the link, for display and audit.
     pub evidence: String,
 }
+
+impl Link {
+    /// One link per kind, parent and child, whichever files state it.
+    pub fn key(&self) -> (LinkKind, &SessionId, &SessionId) {
+        (self.kind, &self.parent, &self.child)
+    }
+
+    /// Fills the parts this statement of the link lacks from another
+    /// statement of the same link (architecture 5.5a): a subagent's own file
+    /// names its parent, the parent's progress record names the tool call.
+    pub fn merge(&mut self, other: &Link) {
+        debug_assert_eq!(self.key(), other.key());
+        if self.at.is_none() {
+            self.at.clone_from(&other.at);
+        }
+        if self.call_id.is_none() {
+            self.call_id.clone_from(&other.call_id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn link_parts_merge_from_either_side() {
+        let s = |n: &str| SessionId::parse(n).unwrap();
+        let mut from_child = Link {
+            kind: LinkKind::Spawn,
+            parent: s("claude-code:p"),
+            child: s("claude-code:agent-1"),
+            at: None,
+            call_id: None,
+            evidence: "agentId".into(),
+        };
+        let from_parent = Link {
+            call_id: Some("toolu_1".into()),
+            evidence: "agent_progress".into(),
+            ..from_child.clone()
+        };
+        from_child.merge(&from_parent);
+        assert_eq!(from_child.call_id.as_deref(), Some("toolu_1"));
+        assert_eq!(from_child.evidence, "agentId");
+    }
+}

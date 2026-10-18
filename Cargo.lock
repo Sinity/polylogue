@@ -758,6 +758,7 @@ dependencies = [
  "polylogue-store",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
@@ -765,11 +766,15 @@ dependencies = [
 name = "polylogue-engine"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "hashed-blobs",
  "notify",
  "polylogue-model",
  "polylogue-sources",
  "polylogue-store",
+ "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
@@ -819,6 +824,7 @@ dependencies = [
 name = "polylogue-store"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "hashed-blobs",
  "polylogue-model",
  "rusqlite",
@@ -826,6 +832,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "zstd",
 ]
 
 [[package]]

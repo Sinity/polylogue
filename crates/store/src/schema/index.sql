@@ -19,11 +19,13 @@ CREATE TABLE session (
   id                TEXT NOT NULL UNIQUE,   -- '<origin>:<native id>'
   origin            TEXT NOT NULL,
   native_id         TEXT NOT NULL,
-  kind              TEXT NOT NULL,          -- main | subagent | chat (continuations are links, not a kind)
+  kind              TEXT NOT NULL,          -- main | subagent | sidechain (continuations are links, not a kind)
   stub              INTEGER NOT NULL DEFAULT 0,  -- 1: created by a hook or process line naming a session that has no
                                             --   transcript yet, so its live state exists; cleared when its messages arrive
   title             TEXT,                   -- provider title only
+  title_source      TEXT,                   -- custom | generated | summary | agent_name (precedence, model Session)
   title_at          INTEGER,                -- the provider time of the title (model.md, Session, rule 6 input)
+  cwd_json          TEXT,                   -- every working directory in order (model Session.cwd); `cwd` is the last
   attrs_json        TEXT,                   -- provider fields with no column (account IDs, job facts: name, intent,
                                             --   state); never exported where the spec says so
   started_at        INTEGER,                -- from the messages and events the session counts as its own (model.md,
@@ -72,7 +74,9 @@ CREATE TABLE message (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- model.md Identity; inherited marking matches on it
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  seq               INTEGER NOT NULL,       -- display position (convergence.md, ordering key)
+  order_input_pk    INTEGER NOT NULL,       -- order key (architecture 5.5a, model OrderKey): the input and
+  seq               INTEGER NOT NULL,       --   byte offset of the record that opened the earliest-seen version
+  route_rank        INTEGER NOT NULL DEFAULT 0, -- the preferred version's route: 0 live, 1 spool, 2 import
   role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
   written_by        TEXT NOT NULL,          -- human | model | harness | unknown
   prompt_kind       TEXT,                   -- written_by human: prose | command (model.md, Message)
@@ -132,7 +136,7 @@ CREATE TABLE message (
                                             --   old version of the bumped format (convergence.md)
   UNIQUE (pk, session_pk)                   -- lets children state their owner once (R73)
 ) STRICT;
-CREATE INDEX message_session ON message(session_pk, seq);     -- reading; [last:N]; open at a position
+CREATE INDEX message_session ON message(session_pk, order_input_pk, seq);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_unseen  ON message(input_pk) WHERE first_seen IS NULL;   -- parse work: first_seen to fill
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
@@ -150,8 +154,10 @@ CREATE TABLE message_source (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,       -- archive.db revision.chain
   source_start      INTEGER NOT NULL,
-  source_end        INTEGER NOT NULL,
+  source_end        INTEGER NOT NULL,       -- equal to source_start until parsers report record ends
   preferred         INTEGER NOT NULL,       -- 1 for the version the message shows (model.md, preferred version)
+  complete          INTEGER NOT NULL DEFAULT 1, -- 0 while the source marks it in progress (no stop reason yet)
+  version_hash      BLOB,                   -- BLAKE3 of the version's canonical JSON: the last tie-break
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
@@ -160,7 +166,9 @@ CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- forei
 CREATE TABLE text (
   id                INTEGER PRIMARY KEY,
   hash              BLOB NOT NULL UNIQUE,   -- BLAKE3 of the UTF-8 text; embeddings are keyed by it
-  body              TEXT NOT NULL
+  body              BLOB NOT NULL,          -- the UTF-8 text, zstd-compressed (the search indexes are
+                                            --   contentless, so this is the only copy in the index)
+  indexed           INTEGER NOT NULL DEFAULT 0  -- bit 1: in text_fts (prose); bit 2: in output_fts (tool output)
 ) STRICT;
 
 -- What the provider wrote, one row per content item. Facts derived about a tool
@@ -176,6 +184,8 @@ CREATE TABLE block (
                                             --   (model.md Identity); exactly one of idx, reasoning_idx and attach_key is set
   kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
   text_id           INTEGER REFERENCES text(id),
+  body_json         TEXT NOT NULL,          -- the model Block as JSON, with its prose or output text moved to
+                                            --   `text` (text_id): reading a block back is lossless
   input_pk          INTEGER REFERENCES input_ref(pk),  -- only when a field came from another input than the message's
   source_chain      INTEGER,                -- with input_pk: the revision chain the range is in (as message.source_chain)
   source_start      INTEGER,                -- with input_pk: where the block's bytes are in that chain, for a
@@ -223,6 +233,7 @@ CREATE TABLE tool_call (
   pk                INTEGER PRIMARY KEY,
   session_pk        INTEGER NOT NULL,       -- kept for index speed; the composite keys make it agree with its blocks
   call_block_pk     INTEGER NOT NULL UNIQUE,
+  call_id           TEXT,                   -- the provider's call id: how a later result finds its call
   result_block_pk   INTEGER,                -- NULL until the result is seen
   at                INTEGER,
   tool              TEXT NOT NULL,
@@ -241,6 +252,8 @@ CREATE TABLE tool_call (
   FOREIGN KEY (result_block_pk, session_pk) REFERENCES block(pk, session_pk)
 ) STRICT;
 CREATE INDEX tool_call_session ON tool_call(session_pk, at);   -- exists, seq(...), the changes view
+CREATE INDEX tool_call_pairing ON tool_call(session_pk, call_id) WHERE call_id IS NOT NULL;   -- result -> call
+CREATE INDEX block_call ON block(session_pk, call_id) WHERE call_id IS NOT NULL;   -- call -> earlier result
 CREATE INDEX tool_call_tool    ON tool_call(tool);
 CREATE INDEX tool_call_action  ON tool_call(action, outcome);
 CREATE INDEX tool_call_failed  ON tool_call(session_pk) WHERE outcome <> 'ok';
