@@ -12,7 +12,7 @@ fn config(home: &Path) -> Config {
     }
 }
 #[test]
-fn unavailable_catalog_does_not_gate_rollout_and_cancel_does_not_mutate() {
+fn unreadable_catalog_does_not_block_rollouts_and_cancel_writes_nothing() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
     fs::create_dir(&home).unwrap();
@@ -46,7 +46,7 @@ fn unavailable_catalog_does_not_gate_rollout_and_cancel_does_not_mutate() {
     );
 }
 #[test]
-fn discovery_and_fingerprints_do_not_mutate_and_respect_remaining_bytes() {
+fn discovery_and_fingerprints_write_nothing_and_respect_byte_budget() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
     fs::create_dir(&home).unwrap();
@@ -80,7 +80,7 @@ fn discovery_and_fingerprints_do_not_mutate_and_respect_remaining_bytes() {
     assert_eq!(writer.status().unwrap().write_counter, before);
 }
 #[test]
-fn reusable_cursor_advances_past_prefix_and_revisits_changed_paths() {
+fn cursor_resumes_and_revisits_changed_paths() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path();
     fs::create_dir(home.join("sessions")).unwrap();
@@ -170,7 +170,7 @@ fn cursor_keeps_catalog_candidates_beside_a_full_filesystem_turn() {
     assert_eq!(startup.deferred_rollout_paths, 1);
 }
 #[test]
-fn unchanged_content_uses_existing_origin_without_new_source_effects() {
+fn unchanged_file_reuses_its_stored_input() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
     fs::create_dir(&home).unwrap();
@@ -240,7 +240,7 @@ fn relative_resolution_refuses_parent_escape_and_symlinks() {
 }
 
 #[test]
-fn missing_prompt_and_physical_sources_count_as_failed_capture_attempts() {
+fn missing_prompt_and_history_files_count_as_failures() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
     fs::create_dir_all(home.join("sessions")).unwrap();

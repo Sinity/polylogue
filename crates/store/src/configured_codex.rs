@@ -1,5 +1,6 @@
-//! Bounded configured-home discovery and acquisition. SQLite access and mutation stay
-//! in store. Catalog membership never gates independent rollout enumeration.
+//! Discovery and capture of Codex rollouts, prompt history and the
+//! thread-history database under the configured home. Catalog rows add rollout
+//! paths; they never hide rollouts found on disk.
 use crate::{Error, ImportObservation, InputFormat, ReadHandle, StoredSource, Writer};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
@@ -57,7 +58,7 @@ pub struct Availability {
     pub path_key: String,
     pub count_unit: &'static str,
     pub state: &'static str,
-    /// Exact admitted total only after complete traversal; unavailable is unknown.
+    /// Set only after a complete traversal; `None` while unknown.
     pub entries: Option<usize>,
     pub reason: Option<String>,
     pub reason_truncated: bool,
@@ -69,12 +70,12 @@ pub struct Acquisition {
     pub catalog: Availability,
     pub rollouts: Availability,
     pub history: Availability,
-    /// A bounded presentation sample, independently of completed acquisition.
+    /// Up to 32 stored input IDs for display; `retained_count` has the total.
     pub retained: Vec<String>,
     pub retained_count: usize,
     pub retained_omitted: usize,
     pub retained_count_unit: &'static str,
-    /// Known union-prefix paths deferred by the finite startup admission.
+    /// Rollout paths found but left for later, beyond the first 512.
     pub deferred_rollout_paths: usize,
     #[serde(skip)]
     pub admitted: Vec<String>,
@@ -85,7 +86,7 @@ pub struct Acquisition {
     pub conversation_coverage: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paginated_history: Option<Availability>,
-    /// Exact acquired physical input, independent of the bounded retained sample.
+    /// The stored thread-history input, if captured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paginated_input: Option<String>,
 }
@@ -111,7 +112,7 @@ fn resolve(home: &Path, path: &Path) -> crate::Result<PathBuf> {
     if !resolved.starts_with(home) {
         return Err(refused("Codex source path is outside configured home"));
     }
-    // Refuse symlinks in every source component below the configured home.
+    // Refuse a symlink in any component below the home.
     let mut current = home.to_path_buf();
     for part in resolved.strip_prefix(home).map_err(refused)?.components() {
         current.push(part);
@@ -200,8 +201,8 @@ fn enumerate(
     }
     Ok(())
 }
-/// One bounded discovery pass. SQLite catalog reads stay in store; callers may
-/// run this outside the single writer. Membership never gates independent paths.
+/// One discovery pass over the rollout tree and the thread catalog. Needs no
+/// writer.
 pub struct Discovery {
     pub catalog: Availability,
     pub rollouts: Availability,
@@ -220,34 +221,15 @@ impl Candidate {
             .path
             .to_str()
             .ok_or_else(|| refused("Codex path must be UTF-8"))?;
-        let mut digest = blake3::Hasher::new();
-        for value in [
-            "polylogue.configured-codex-observation.v1",
-            request,
-            self.format.name(),
-            path_text,
-        ] {
-            digest.update(&(value.len() as u64).to_be_bytes());
-            digest.update(value.as_bytes());
-        }
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
-        let millis = u64::try_from(seen_at).map_err(|_| Error::Range)? / 1000;
-        if millis > 0xffffffffffff {
-            return Err(Error::Range);
-        }
-        bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
-        bytes[6] = (bytes[6] & 0x0f) | 0x70;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        Ok(format!(
-            "{}-{}-{}-{}-{}",
-            &hex[..8],
-            &hex[8..12],
-            &hex[12..16],
-            &hex[16..20],
-            &hex[20..]
-        ))
+        crate::imports::observation_id(
+            &[
+                "polylogue.configured-codex-observation.v1",
+                request,
+                self.format.name(),
+                path_text,
+            ],
+            seen_at,
+        )
     }
     pub fn path(&self) -> &Path {
         &self.path
@@ -267,19 +249,26 @@ impl Candidate {
             format: InputFormat::CodexPromptHistory,
         }
     }
-    pub fn declared_length(&self) -> crate::Result<u64> {
-        let m = fs::symlink_metadata(&self.path)?;
-        let limit = if self.format == InputFormat::CodexPromptHistory {
+    fn byte_limit(&self) -> u64 {
+        if self.format == InputFormat::CodexPromptHistory {
             1024 * 1024
         } else {
             FILE_BYTES
-        };
-        if !m.is_file() || m.len() > limit {
+        }
+    }
+    /// The file's current length; refuses a non-regular file or one over the
+    /// format's size limit.
+    pub fn declared_length(&self) -> crate::Result<u64> {
+        Ok(self.regular_metadata()?.len())
+    }
+    fn regular_metadata(&self) -> crate::Result<fs::Metadata> {
+        let m = fs::symlink_metadata(&self.path)?;
+        if !m.is_file() || m.len() > self.byte_limit() {
             return Err(refused(
-                "Codex source requires a regular file within its finite byte admission",
+                "Codex source must be a regular file within its size limit",
             ));
         }
-        Ok(m.len())
+        Ok(m)
     }
     pub fn fingerprint(
         &self,
@@ -290,7 +279,7 @@ impl Candidate {
             let length = file.metadata()?.len();
             let limit = limit.min(remaining);
             if length > limit {
-                return Err(refused("Codex scan exceeds remaining byte admission"));
+                return Err(refused("Codex file exceeds the remaining byte budget"));
             }
             let mut file = file.take(length + 1);
             let mut digest = blake3::Hasher::new();
@@ -304,7 +293,7 @@ impl Candidate {
                 }
                 total += count as u64;
                 if total > limit {
-                    return Err(refused("Codex source changed beyond admission"));
+                    return Err(refused("Codex file grew past its size limit"));
                 }
                 digest.update(&chunk[..count]);
             }
@@ -321,17 +310,8 @@ impl Candidate {
     ) -> crate::Result<T> {
         use std::os::unix::fs::MetadataExt;
         check(cancel)?;
-        let metadata = fs::symlink_metadata(&self.path)?;
-        let limit = if self.format == InputFormat::CodexPromptHistory {
-            1024 * 1024
-        } else {
-            FILE_BYTES
-        };
-        if !metadata.is_file() || metadata.len() > limit {
-            return Err(refused(
-                "Codex source requires a regular file within its finite byte admission",
-            ));
-        }
+        let metadata = self.regular_metadata()?;
+        let limit = self.byte_limit();
         let mut file = fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
@@ -359,7 +339,7 @@ impl Candidate {
     }
 }
 impl crate::BlobCapture {
-    /// The same bounded stable-descriptor capture for startup and continuation.
+    /// Capture a candidate file, refusing it if it changes while being read.
     pub fn capture_codex_candidate(
         &self,
         candidate: &Candidate,
@@ -369,11 +349,11 @@ impl crate::BlobCapture {
         candidate.with_file(cancel, |file, limit| {
             let length = file.metadata()?.len();
             if length != expected_length {
-                return Err(refused("Codex source length changed after byte admission"));
+                return Err(refused("Codex file length changed since it was measured"));
             }
             let proof = self.capture(file.take(length + 1), cancel)?;
             if proof.length() != length || proof.length() > limit {
-                return Err(refused("Codex source changed beyond admission"));
+                return Err(refused("Codex file grew past its size limit"));
             }
             Ok(proof)
         })
@@ -416,7 +396,7 @@ fn read_catalog(
             }
             let path: String = row.get(0).map_err(refused)?;
             if path.len() > 65536 {
-                return Err(refused("Codex catalog path exceeds admission"));
+                return Err(refused("Codex catalog path exceeds 64 KiB"));
             }
             paths.insert(resolve(&home, Path::new(&path))?);
         }
@@ -429,20 +409,39 @@ fn read_catalog(
     };
     Ok(state)
 }
+struct Paths {
+    home: PathBuf,
+    rollouts: PathBuf,
+    history: PathBuf,
+    catalog: PathBuf,
+}
+impl Paths {
+    fn resolve(config: &Config) -> crate::Result<Self> {
+        if !config.home.is_absolute() || config.machine.is_empty() || config.host.is_empty() {
+            return Err(refused(
+                "absolute Codex home and nonempty machine/host required",
+            ));
+        }
+        let home = fs::canonicalize(&config.home)?;
+        if !home.is_dir() {
+            return Err(refused("Codex home must be a directory"));
+        }
+        Ok(Self {
+            rollouts: resolve(&home, &config.rollouts)?,
+            history: resolve(&home, &config.history)?,
+            catalog: resolve(&home, &config.catalog)?,
+            home,
+        })
+    }
+}
 pub fn discover(config: &Config, cancel: &AtomicBool) -> crate::Result<Discovery> {
     check(cancel)?;
-    if !config.home.is_absolute() || config.machine.is_empty() || config.host.is_empty() {
-        return Err(refused(
-            "absolute Codex home and nonempty machine/host required",
-        ));
-    }
-    let home = fs::canonicalize(&config.home)?;
-    if !home.is_dir() {
-        return Err(refused("Codex home must be a directory"));
-    }
-    let rollout_path = resolve(&home, &config.rollouts)?;
-    let history_path = resolve(&home, &config.history)?;
-    let catalog_path = resolve(&home, &config.catalog)?;
+    let Paths {
+        home,
+        rollouts: rollout_path,
+        history: history_path,
+        catalog: catalog_path,
+    } = Paths::resolve(config)?;
     let mut paths = BTreeSet::new();
     let mut visited = 0;
     let rollout_state = match enumerate(&rollout_path, 0, &mut visited, &mut paths, cancel) {
@@ -468,8 +467,8 @@ pub fn discover(config: &Config, cancel: &AtomicBool) -> crate::Result<Discovery
         deferred_rollout_paths,
     })
 }
-/// A single configured rollout-tree traversal retains at most nine directory
-/// iterators. A bounded turn advances them; exhaustion never restarts a prefix.
+/// Walks the rollout tree a few entries per turn, holding at most nine open
+/// directories. A finished cycle starts again from the top.
 #[derive(Default)]
 pub struct RolloutCursor {
     root: Option<PathBuf>,
@@ -496,18 +495,12 @@ impl RolloutCursor {
         if entry_budget == 0 || entry_budget > ENTRIES {
             return Err(refused("Codex enumeration turn requires 1..512 entries"));
         }
-        if !config.home.is_absolute() || config.machine.is_empty() || config.host.is_empty() {
-            return Err(refused(
-                "absolute Codex home and nonempty machine/host required",
-            ));
-        }
-        let home = fs::canonicalize(&config.home)?;
-        if !home.is_dir() {
-            return Err(refused("Codex home must be a directory"));
-        }
-        let rollout_path = resolve(&home, &config.rollouts)?;
-        let history_path = resolve(&home, &config.history)?;
-        let catalog_path = resolve(&home, &config.catalog)?;
+        let Paths {
+            home,
+            rollouts: rollout_path,
+            history: history_path,
+            catalog: catalog_path,
+        } = Paths::resolve(config)?;
         use std::os::unix::fs::MetadataExt;
         let identity = fs::symlink_metadata(&rollout_path)
             .ok()
@@ -615,7 +608,7 @@ impl RolloutCursor {
         } else if self.cycle_failed {
             unavailable(
                 rollout_path,
-                "current enumeration cycle encountered an unavailable/refused entry",
+                "some entries in this enumeration cycle could not be read",
             )
         } else if complete {
             available(rollout_path, self.cycle_paths, "rollout_paths")
@@ -623,14 +616,12 @@ impl RolloutCursor {
             let mut state = available(rollout_path, 0, "rollout_paths");
             state.state = "partial";
             state.entries = None;
-            state.reason =
-                Some("bounded enumeration cycle unfinished; later turns continue".into());
+            state.reason = Some("enumeration cycle unfinished; later turns continue".into());
             state
         };
         let mut catalog_paths = BTreeSet::new();
         let catalog = read_catalog(&home, catalog_path, &mut catalog_paths, cancel)?;
-        // Both independently admitted prefixes remain owed. The candidate batch
-        // is bounded by their union (1024 paths), then drains in 512-request turns.
+        // Rollouts from this turn plus every catalog path: at most 1024.
         paths.extend(catalog_paths);
         let candidates = paths
             .into_iter()
@@ -688,7 +679,7 @@ impl Writer {
         let rollout_state = plan.rollouts;
         let history_path = plan.history_path;
         let paths = plan.candidates.into_iter().map(|c| c.path);
-        let mut retained = Vec::new();
+        let mut stored = Vec::new();
         let mut failures = Vec::new();
         let mut total = 0;
         for path in paths {
@@ -703,7 +694,7 @@ impl Writer {
                 cancel,
             ) {
                 Ok(source) => {
-                    retained.push(source.input.id);
+                    stored.push(source.input.id);
                 }
                 Err(Error::Cancelled) => return Err(Error::Cancelled),
                 Err(e) => failures.push(unavailable(path, e)),
@@ -722,7 +713,7 @@ impl Writer {
             Ok(source) => {
                 let empty = source.input.length == 0;
                 prompt_input = Some(source.input.id.clone());
-                retained.push(source.input.id);
+                stored.push(source.input.id);
                 let mut state = available(history_path, 1, "retained_inputs");
                 if empty {
                     state.state = "accessible_empty";
@@ -736,8 +727,8 @@ impl Writer {
                 state
             }
         };
-        // Physical capture must run after the actor/socket exists, so regular
-        // acquisition and reads can be served between its reusable quanta.
+        // The thread-history database is captured later, in turns, once the
+        // owner is serving requests.
         let paginated_input = None;
         let paginated_history = if let Some(path) = paginated_path(config)? {
             Some(match fs::symlink_metadata(&path) {
@@ -745,13 +736,13 @@ impl Writer {
                     let mut state = available(path, 0, "retained_snapshots");
                     state.state = "pending";
                     state.entries = None;
-                    state.reason = Some("physical acquisition awaits bounded owner turns".into());
+                    state.reason = Some("captured later in owner turns".into());
                     state
                 }
                 Ok(_) => {
                     let state = unavailable(
                         path,
-                        "physical history requires a regular non-symlink database",
+                        "thread history must be a regular non-symlink database",
                     );
                     failures.push(state.clone());
                     state
@@ -765,10 +756,10 @@ impl Writer {
         } else {
             None
         };
-        let retained_count = retained.len();
+        let retained_count = stored.len();
         let refused_count = failures.len();
-        let admitted = retained.clone();
-        retained.truncate(32);
+        let admitted = stored.clone();
+        stored.truncate(32);
         failures.truncate(4);
         let mut report = Acquisition {
             paginated_history,
@@ -778,12 +769,12 @@ impl Writer {
             catalog: catalog_state,
             rollouts: rollout_state,
             history: history_state,
-            retained_omitted: retained_count - retained.len(),
+            retained_omitted: retained_count - stored.len(),
             retained_count,
             retained_count_unit: "successful_source_attempts",
             deferred_rollout_paths,
             admitted,
-            retained,
+            retained: stored,
             prompt_input,
             refused_omitted: refused_count - failures.len(),
             refused_count,
@@ -842,7 +833,7 @@ impl Writer {
             131072,
         )?;
         self.stored_source(&input.id)?
-            .ok_or_else(|| refused("retained Codex source missing"))
+            .ok_or_else(|| refused("stored Codex source is missing"))
     }
 }
 #[derive(Debug, Serialize)]
@@ -860,8 +851,7 @@ impl ReadHandle {
         })
     }
 
-    /// Durable finite prompt snapshots. Bytes are verified through the ordinary
-    /// retained source reader; no provider filesystem or SQLite leaves store.
+    /// Every stored prompt-history input, at most 513.
     pub fn codex_prompt_sources(&self) -> crate::Result<Vec<StoredSource>> {
         let file = self.root.join("archive.db");
         let mut query = crate::db(&file, || {
@@ -875,18 +865,15 @@ impl ReadHandle {
             let id = crate::db(&file, || id)?;
             result.push(
                 self.source(&id)?
-                    .ok_or_else(|| refused("retained prompt source missing"))?,
+                    .ok_or_else(|| refused("stored prompt source is missing"))?,
             );
         }
         Ok(result)
     }
 }
 
-#[cfg(test)]
-mod tests;
-
-/// Process-local observation key only. It never proves database contents or
-/// supplies an acquisition checkpoint; restart and due full checks read pages.
+/// File metadata of the thread-history database and its WAL, used to skip a
+/// capture when nothing changed since the last poll. Not a content check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryStamp(Vec<Option<(u64, u64, u64, i64, i64, i64, i64)>>);
 pub fn history_stamp(config: &Config) -> crate::Result<HistoryStamp> {
@@ -922,3 +909,6 @@ pub fn history_stamp(config: &Config) -> crate::Result<HistoryStamp> {
     }
     Ok(HistoryStamp(values))
 }
+
+#[cfg(test)]
+mod tests;

@@ -109,6 +109,35 @@ pub struct ImmutableImport {
     pub context: Vec<String>,
 }
 
+/// A UUIDv7-shaped observation ID: `seen_at`'s milliseconds, then a hash of
+/// the length-prefixed `fields`. The same request at the same place and time
+/// gets the same ID, so retries replay.
+pub(crate) fn observation_id(fields: &[&str], seen_at: i64) -> Result<String> {
+    let mut digest = blake3::Hasher::new();
+    for value in fields {
+        digest.update(&(value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    let millis = u64::try_from(seen_at).map_err(|_| Error::Range)? / 1000;
+    if millis >= 1 << 48 {
+        return Err(Error::Range);
+    }
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+    bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x70;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ))
+}
+
 /// One piece of an input: `(offset, length, blob, blob_offset)`.
 pub(crate) type Part = (u64, u64, BlobHash, u64);
 
