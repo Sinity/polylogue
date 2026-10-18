@@ -23,7 +23,7 @@ fn codex_import(world: &World, name: &str, bytes: &[u8]) -> Value {
     );
     let receipt: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(
-        receipt["source_rows"]["state"] == "settled"
+        receipt["source_rows"]["state"] == "complete"
             || receipt["source_rows"]["usable_result"] == true,
         "{receipt}"
     );
@@ -49,7 +49,7 @@ fn numeric_codex_usage_publishes_exact_source_backed_reads_and_survives_restart(
             json!({"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":counts}}}),
         ].iter().map(|v|v.to_string()+"\n").collect::<String>();
         let receipt = codex_import(&world, "usage.jsonl", bytes.as_bytes());
-        assert_eq!(receipt["source_rows"]["state"], "settled", "{receipt}");
+        assert_eq!(receipt["source_rows"]["state"], "complete", "{receipt}");
         let out = world.cli(&["codex:usage-proof", "read", "--format", "json"]);
         assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
         let before: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -271,7 +271,7 @@ fn codex_native_correspondence_echo_materializes_retracts_and_reapplies_exact_do
         let (bytes, ranges) = codex_record_bytes(&records);
         let mut world = World::new();
         let receipt = codex_import(&world, "echo-materialization.jsonl", bytes.as_bytes());
-        let input = receipt["retained"]["id"].as_str().unwrap();
+        let input = receipt["input"]["id"].as_str().unwrap();
         let out = world.cli(&["codex:echo-materialization", "read", "--format", "json"]);
         assert!(
             matches!(out.status.code(), Some(0 | 5)),
@@ -384,7 +384,7 @@ fn codex_native_correspondence_model_snapshots_keep_response_values_and_origins(
         let (bytes, ranges) = codex_record_bytes(&records);
         let world = World::new();
         let receipt = codex_import(&world, "native-model.jsonl", bytes.as_bytes());
-        let input = receipt["retained"]["id"].as_str().unwrap();
+        let input = receipt["input"]["id"].as_str().unwrap();
         let out = world.cli(&["codex:native-model", "read", "--format", "json"]);
         assert!(
             matches!(out.status.code(), Some(0 | 5)),

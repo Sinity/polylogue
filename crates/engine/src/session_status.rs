@@ -5,8 +5,8 @@ mod claude_active;
 mod codex;
 mod contributors;
 use crate::{owner, source_rows, source_turn::SourceContext, state::claude};
-use polylogue_model::settlement::RecordFailureId;
-use polylogue_model::{Session, settlement::SourceRowBasis};
+use polylogue_model::source_rows::RecordFailureId;
+use polylogue_model::{Session, source_rows::ParsedFrom};
 use polylogue_sources::claude_code::keyed::{ResponseCell, SessionCell};
 use polylogue_store::parser_state::Phase;
 use polylogue_store::{
@@ -30,7 +30,7 @@ pub struct SessionStatus {
     pub unsupported: BTreeSet<String>,
     pub metadata: Option<Session>,
     pub expected: BTreeMap<String, u64>,
-    pub contributors: Vec<SourceRowBasis>,
+    pub contributors: Vec<ParsedFrom>,
     contributor_digest: contributors::ContributorDigest,
     membership_sources: u64,
     input_bytes: usize,
@@ -156,7 +156,7 @@ impl SessionStatus {
             }
         }
         let state = if self.complete() {
-            "settled"
+            "complete"
         } else if self.pending_inputs > 0 || self.population_pending_inputs > 0 {
             "pending"
         } else if self.unavailable_inputs > 0 || self.record_errors > 0 {
@@ -175,11 +175,11 @@ impl SessionStatus {
             "notes": self.notes(),
             "unknown": unknown,
             "diagnostics": {"text_repairs": self.text_repairs},
-            "settlement": {
+            "completion": {
                 "scope": if self.exact { "exact_session" } else { "session_selection" },
                 "operation": if self.document { "normalized_read" } else { "selection" },
                 "state": state,
-                "settled_through": {
+                "computed_from": {
                     "archive_counter": catalog.source_archive_counter(),
                     "recipe": "native-session-v3",
                     "configuration": configuration,
@@ -553,17 +553,17 @@ fn check_operation(
                 // but do not block this check.
                 let readable = head.counts.unrecognized == 0;
                 match receipt.rows.state {
-                    polylogue_model::settlement::SourceRowState::Unavailable {
+                    polylogue_model::source_rows::SourceRowState::Unavailable {
                         usable_result,
                         ..
                     } => {
                         unavailable = true;
                         result.known_rows_readable &= readable && usable_result;
                     }
-                    polylogue_model::settlement::SourceRowState::Pending { .. } => {
+                    polylogue_model::source_rows::SourceRowState::Pending { .. } => {
                         add(&mut result.pending_inputs, 1)?
                     }
-                    polylogue_model::settlement::SourceRowState::Settled => {
+                    polylogue_model::source_rows::SourceRowState::Complete => {
                         result.known_rows_readable &= readable;
                     }
                 }
@@ -727,7 +727,7 @@ fn check_operation(
         }
     }
     if exact.is_none() && result.interpreted_nonempty_inputs > 0 {
-        result.unsupported.insert("Complete settlement of nonempty inputs is supported only for one Claude Code Session without prose search".into());
+        result.unsupported.insert("A complete result for nonempty inputs is supported only for one Claude Code session without prose search".into());
     }
     if result.own_topology_unknown {
         result.active_messages.clear();

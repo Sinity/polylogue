@@ -206,7 +206,7 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
         running.socket().display()
     );
     if json_output && !until_idle {
-        serde_json::to_writer(&mut *out,&json!({"outcome":"ok","acquisition":"observed-claude-location-v1","scope":"retention_only","retained":{"id":source.input.id,"chain":source.input.chain,"revision":source.revision,"length":source.input.length}})).map_err(io_error)?;
+        serde_json::to_writer(&mut *out,&json!({"outcome":"ok","acquisition":"observed-claude-location-v1","scope":"retention_only","input":{"id":source.input.id,"chain":source.input.chain,"revision":source.revision,"length":source.input.length}})).map_err(io_error)?;
         writeln!(out).map_err(io_error)?;
         out.flush().map_err(io_error)?;
     }
@@ -225,7 +225,7 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
                 || !progress["recovery_error"].is_null()
                 || matches!(
                     progress["source_rows"]["state"].as_str(),
-                    Some("settled" | "unavailable")
+                    Some("complete" | "unavailable")
                 )
                 || (progress["parser"]["status"] == "waiting_tail" && progress["active"] == false)
             {
@@ -244,7 +244,7 @@ pub(crate) fn run(args: &[String], archive: &Path, out: &mut impl Write) -> Resu
     }
     running.stop();
     if let Some(progress) = final_progress {
-        let ok = progress["source_rows"]["state"] == "settled";
+        let ok = progress["source_rows"]["state"] == "complete";
         let result = json!({"outcome":if ok{"ok"}else{"degraded"},"acquisition":"observed-claude-location-v1","input":source.input.id,"chain":source.input.chain,"revision":source.revision,"length":source.input.length,"progress":progress});
         if json_output {
             serde_json::to_writer(&mut *out, &result).map_err(io_error)?;
@@ -352,7 +352,7 @@ fn run_codex(
             )
             .map_err(io_error)?;
             // Prompt-history snapshots have no parser job to wait for.
-            if value["source_rows"]["state"] == "settled"
+            if value["source_rows"]["state"] == "complete"
                 || value["source_rows"]["state"] == "unavailable"
                 || !value["failure"].is_null()
                 || !value["recovery_error"].is_null()

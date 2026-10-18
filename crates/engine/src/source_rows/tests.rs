@@ -9,7 +9,7 @@ fn fixture() -> (Receipt, Head) {
         step: 3,
         basis: [4; 32],
     };
-    let basis = SourceRowBasis {
+    let basis = ParsedFrom {
         input: "synthetic-input".into(),
         original_hash: Some(BlobHash::of(b"raw")),
         chain: 1,
@@ -35,8 +35,8 @@ fn fixture() -> (Receipt, Head) {
             unsupported_effects: false,
             rows: SourceRows {
                 scope: SourceRowScope::ImportedSourceRows,
-                basis,
-                state: SourceRowState::Settled,
+                parsed_from: basis,
+                state: SourceRowState::Complete,
             },
         },
         head,
@@ -46,7 +46,7 @@ fn fixture() -> (Receipt, Head) {
 fn receipt_rejects_any_changed_parser_state_or_input_version() {
     let (receipt, head) = fixture();
     receipt
-        .validate_published(&head, &receipt.rows.basis)
+        .validate_published(&head, &receipt.rows.parsed_from)
         .unwrap();
     for alter in [
         |t: &mut Token| t.index_generation.push('x'),
@@ -60,14 +60,14 @@ fn receipt_rejects_any_changed_parser_state_or_input_version() {
         alter(&mut wrong.token);
         assert!(
             receipt
-                .validate_published(&wrong, &receipt.rows.basis)
+                .validate_published(&wrong, &receipt.rows.parsed_from)
                 .is_err()
         );
     }
-    let mut wrong = receipt.rows.basis.clone();
+    let mut wrong = receipt.rows.parsed_from.clone();
     wrong.interpretation = BlobHash::of(b"new recipe");
     assert!(receipt.validate_published(&head, &wrong).is_err());
-    let mut wrong = receipt.rows.basis.clone();
+    let mut wrong = receipt.rows.parsed_from.clone();
     wrong.original_hash = Some(BlobHash::of(b"different raw"));
     assert!(receipt.validate_published(&head, &wrong).is_err());
 }
@@ -78,7 +78,7 @@ fn damaged_status_counts_and_missing_effects_stay_unfinished() {
     wrong.finalization_pending = true;
     assert!(
         receipt
-            .validate_published(&wrong, &receipt.rows.basis)
+            .validate_published(&wrong, &receipt.rows.parsed_from)
             .is_err()
     );
     let mut wrong = head.clone();
@@ -86,22 +86,26 @@ fn damaged_status_counts_and_missing_effects_stay_unfinished() {
     wrong.counts.undecodable = 1;
     assert!(
         receipt
-            .validate_published(&wrong, &receipt.rows.basis)
+            .validate_published(&wrong, &receipt.rows.parsed_from)
             .is_err()
     );
     let mut wrong = receipt.clone();
     wrong.unsupported_effects = true;
-    assert!(wrong.validate_published(&head, &wrong.rows.basis).is_err());
+    assert!(
+        wrong
+            .validate_published(&head, &wrong.rows.parsed_from)
+            .is_err()
+    );
     let mut wrong = head.clone();
     wrong.parsed_upto = 9;
     assert!(
         receipt
-            .validate_published(&wrong, &receipt.rows.basis)
+            .validate_published(&wrong, &receipt.rows.parsed_from)
             .is_err()
     );
     let encoded = serde_json::to_vec(&receipt).unwrap();
     let decoded: Receipt = serde_json::from_slice(&encoded).unwrap();
     decoded
-        .validate_published(&head, &decoded.rows.basis)
+        .validate_published(&head, &decoded.rows.parsed_from)
         .unwrap();
 }

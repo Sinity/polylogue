@@ -18,7 +18,7 @@ pub use measures::{ErrorReason, ToolOutcome, UnknownReason};
 pub use time::{Precision, ProviderTime, TimeQuality, Timestamp};
 pub use types::{Credits, ErrorKind, Failure, Ratio, RecordOutcome, ResultOutcome, Usd};
 
-pub mod settlement;
+pub mod source_rows;
 
 pub mod query;
 pub mod recovery;

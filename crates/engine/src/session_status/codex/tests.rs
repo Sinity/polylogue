@@ -63,7 +63,7 @@ fn flat_event_reads_check_cancellation_and_cumulative_admission_before_lookup() 
 fn benign_events_do_not_supply_an_absent_current_selected_message_projection() {
     use polylogue_model::{
         query::SessionQuery,
-        settlement::{SourceRowScope, SourceRowState, SourceRows},
+        source_rows::{SourceRowScope, SourceRowState, SourceRows},
     };
     use polylogue_sources::{
         codex::{
@@ -153,7 +153,7 @@ fn benign_events_do_not_supply_an_absent_current_selected_message_projection() {
         unsupported_effects: true,
         rows: SourceRows {
             scope: SourceRowScope::ImportedSourceRows,
-            basis: source_rows::computed_from(&input),
+            parsed_from: source_rows::computed_from(&input),
             state: SourceRowState::Unavailable {
                 usable_result: true,
                 notes: vec!["Event product remains unsupported".into()],

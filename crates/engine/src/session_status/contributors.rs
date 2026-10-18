@@ -34,7 +34,7 @@ impl Default for ContributorDigest {
 impl ContributorDigest {
     pub fn include(
         &mut self,
-        basis: &SourceRowBasis,
+        basis: &ParsedFrom,
         required: bool,
         allowance: usize,
     ) -> Result<bool, Error> {
@@ -68,7 +68,7 @@ impl ContributorDigest {
 impl SessionStatus {
     pub(super) fn add_contributor(
         &mut self,
-        basis: SourceRowBasis,
+        basis: ParsedFrom,
         member: bool,
         allowance: usize,
     ) -> Result<(), Error> {

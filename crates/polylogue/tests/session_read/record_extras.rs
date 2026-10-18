@@ -20,8 +20,8 @@ fn repeated_record_extra_selects_one_supplier_in_public_routes() {
     let receipt = world.import(&path, "01900000-0000-7000-8000-000000009701");
     let until = Instant::now() + WAIT;
     loop {
-        let p = world.progress(receipt["retained"]["id"].as_str().unwrap());
-        if p["source_rows"]["state"] == "settled" {
+        let p = world.progress(receipt["input"]["id"].as_str().unwrap());
+        if p["source_rows"]["state"] == "complete" {
             break;
         }
         assert!(Instant::now() < until, "{p}");
@@ -49,7 +49,7 @@ fn repeated_record_extra_selects_one_supplier_in_public_routes() {
     );
     assert_eq!(
         origin["origin"]["binding"]["input"].as_str(),
-        receipt["retained"]["id"].as_str()
+        receipt["input"]["id"].as_str()
     );
     assert_eq!(
         origin["origin"]["selection"]["inputs"][0]["record"]["start"]
@@ -99,7 +99,7 @@ fn repeated_record_extra_selects_one_supplier_in_public_routes() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|s| s["input"] == receipt["retained"]["id"]
+            .any(|s| s["input"] == receipt["input"]["id"]
                 && s["start"] == supplier_start
                 && s["end"] == raw.len() - 1)
     );

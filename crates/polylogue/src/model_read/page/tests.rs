@@ -213,7 +213,7 @@ fn real_prefix_replay_consumes_work_even_when_the_display_window_is_tiny() {
         assert!(progress.failure.is_none(), "{progress:?}");
         if matches!(
             progress.source_rows.state,
-            polylogue_model::settlement::SourceRowState::Settled
+            polylogue_model::source_rows::SourceRowState::Complete
         ) {
             break;
         }

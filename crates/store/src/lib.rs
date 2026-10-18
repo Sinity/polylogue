@@ -49,7 +49,8 @@ mod wal;
 pub const ARCHIVE_VERSION: u32 = 4;
 pub const ARCHIVE_SPEC_COMMIT: &str = "8c4e2210692282420d7a5ca91dc005b409a668f1";
 pub const EMBEDDINGS_VERSION: u32 = 0;
-pub const INDEX_VERSION: u32 = 20;
+// 21: stored source-row receipts use parsed_from/complete/pending_work.
+pub const INDEX_VERSION: u32 = 21;
 /// Hash of `schema/index.sql`; a schema edit without a version bump fails a test.
 pub const INDEX_SQL_BLAKE3: &str =
     "732fc01595575c906896849c1d1df7bdd96213203a35cf95e9382167ca911e12";

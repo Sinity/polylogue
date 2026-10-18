@@ -139,7 +139,7 @@ fn await_pending(world: &World, source: &str, length: usize) {
             && progress["parser"]["status"] == "waiting_tail"
             && progress["active"] == false
         {
-            assert_ne!(progress["source_rows"]["state"], "settled");
+            assert_ne!(progress["source_rows"]["state"], "complete");
             return;
         }
         assert!(

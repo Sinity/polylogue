@@ -92,7 +92,7 @@ fn tools() -> Vec<Tool> {
             "outcome":{"enum":["ok","empty","degraded","error"]},
             "error":{"type":"object","description":"Typed CLI failure, with reason and capacity retry metadata when applicable."},
             "notes":{"type":"array"}, "missing":{"type":"array"},
-            "up_to_date":{"type":"boolean"}, "settlement":{"type":"object"},
+            "up_to_date":{"type":"boolean"}, "completion":{"type":"object"},
             "recovery":{"description":"Recovery record of a recovered copy, or null."}
         });
         if name == "read" {

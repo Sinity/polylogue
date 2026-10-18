@@ -63,7 +63,7 @@ impl World {
             assert!(p.failure.is_none(), "{p:?}");
             if matches!(
                 p.source_rows.state,
-                polylogue_model::settlement::SourceRowState::Settled
+                polylogue_model::source_rows::SourceRowState::Complete
             ) {
                 return;
             }

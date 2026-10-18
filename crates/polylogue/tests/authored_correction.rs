@@ -197,11 +197,8 @@ fn authored_cli_retries_inherits_basis_and_reconstructs_backlinks_without_provid
     w.restart_without_index();
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
-        let p = w.cli(
-            &["progress", imported["retained"]["id"].as_str().unwrap()],
-            0,
-        );
-        if p["source_rows"]["state"] == "settled" {
+        let p = w.cli(&["progress", imported["input"]["id"].as_str().unwrap()], 0);
+        if p["source_rows"]["state"] == "complete" {
             break;
         }
         assert!(Instant::now() < deadline, "{p}");

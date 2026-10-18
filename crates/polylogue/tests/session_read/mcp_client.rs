@@ -76,11 +76,7 @@ fn mcp_client_searches_pages_a_dialogue_read_and_writes_a_note() {
     let world = World::new();
     let input = world.input("mcp-morrow.jsonl", MORROW);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000911");
-    world.read(
-        &reference(),
-        receipt["retained"]["id"].as_str().unwrap(),
-        12,
-    );
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 12);
     let mut client = Client::start(&world);
 
     let discovery = client.rpc("server/discover", json!({}));

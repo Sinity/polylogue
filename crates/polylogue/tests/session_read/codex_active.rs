@@ -101,7 +101,7 @@ fn each_finite_event_family_and_empty_legacy_effects_preserve_current_default_va
         let sid = format!("flat-{family}");
         let raw = bytes(&ordinary(&sid, family));
         let receipt = import(&world, &format!("{sid}.jsonl"), &raw);
-        let input = receipt["retained"]["id"].as_str().unwrap();
+        let input = receipt["input"]["id"].as_str().unwrap();
         world.read(&format!("codex:{sid}"), input, 2);
         let selected = page(&world, &sid, false);
         assert_ne!(selected["outcome"], "error", "{family}: {selected}");
@@ -127,7 +127,7 @@ fn each_finite_event_family_and_empty_legacy_effects_preserve_current_default_va
     let receipt = import(&world, "flat-legacy.jsonl", legacy);
     world.read(
         "codex:flat-legacy",
-        receipt["retained"]["id"].as_str().unwrap(),
+        receipt["input"]["id"].as_str().unwrap(),
         2,
     );
     assert_ne!(page(&world, "flat-legacy", false)["outcome"], "error");
@@ -170,7 +170,7 @@ fn malformed_unknown_topology_and_lineage_controls_remain_unavailable() {
             _ => unreachable!(),
         }
         let receipt = import(&world, &format!("{sid}.jsonl"), &bytes(&records));
-        await_idle(&world, receipt["retained"]["id"].as_str().unwrap());
+        await_idle(&world, receipt["input"]["id"].as_str().unwrap());
         let selected = page(&world, &sid, false);
         assert_eq!(selected["outcome"], "error", "{mode}: {selected}");
     }
@@ -181,7 +181,7 @@ fn an_incomplete_tail_cannot_borrow_benign_event_authority() {
     let mut raw = bytes(&ordinary("flat-partial", "all"));
     raw.extend_from_slice(b"{\"type\":\"event_msg\",\"payload\":");
     let receipt = import(&world, "flat-partial.jsonl", &raw);
-    let input = receipt["retained"]["id"].as_str().unwrap();
+    let input = receipt["input"]["id"].as_str().unwrap();
     let p = await_idle(&world, input);
     assert_eq!(p["parser"]["status"], "waiting_tail");
     assert_eq!(page(&world, "flat-partial", false)["outcome"], "error");
@@ -198,7 +198,7 @@ fn a_lawful_input_correction_keeps_current_body_and_origin_without_inventing_a_r
     }
     let raw = bytes(&records);
     let receipt = import(&world, "flat-correction.jsonl", &raw);
-    let input = receipt["retained"]["id"].as_str().unwrap();
+    let input = receipt["input"]["id"].as_str().unwrap();
     let doc = world.read("codex:flat-correction", input, 3);
     assert_eq!(doc["messages"][2]["blocks"][0]["input"], "changed");
     let selected = page(&world, "flat-correction", false);

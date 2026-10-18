@@ -43,17 +43,17 @@ fn contents(root: &Path) -> Vec<Entry> {
 
 #[test]
 fn old_index_versions_refuse_without_changing_files() {
-    for version in [18, 19] {
+    for version in [19, 20] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("archive");
         old_index(&root, version);
         let before = contents(&root);
         assert!(
-            matches!(crate::Writer::open(&root), Err(Error::IndexRebuildRequired { found, expected: 20, .. }) if found == version)
+            matches!(crate::Writer::open(&root), Err(Error::IndexRebuildRequired { found, expected: crate::INDEX_VERSION, .. }) if found == version)
         );
         assert_eq!(contents(&root), before);
         assert!(
-            matches!(crate::ReadHandle::open(&root), Err(Error::IndexRebuildRequired { found, expected: 20, .. }) if found == version)
+            matches!(crate::ReadHandle::open(&root), Err(Error::IndexRebuildRequired { found, expected: crate::INDEX_VERSION, .. }) if found == version)
         );
         assert_eq!(contents(&root), before);
         assert!(!root.join("migrations").exists());
@@ -107,7 +107,7 @@ fn current_index_reopens_without_migration() {
             ._index
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .unwrap(),
-        20
+        crate::INDEX_VERSION
     );
     assert_eq!(
         writer
@@ -122,7 +122,7 @@ fn current_index_reopens_without_migration() {
 
 #[test]
 fn old_index_with_wal_refuses_without_touching_read_marks() {
-    for version in [18, 19] {
+    for version in [19, 20] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("archive");
         old_index(&root, version);
@@ -151,11 +151,11 @@ fn old_index_with_wal_refuses_without_touching_read_marks() {
         }
         let before = contents(&root);
         assert!(
-            matches!(crate::Writer::open(&root), Err(Error::IndexRebuildRequired { found, expected: 20, .. }) if found == version)
+            matches!(crate::Writer::open(&root), Err(Error::IndexRebuildRequired { found, expected: crate::INDEX_VERSION, .. }) if found == version)
         );
         assert_eq!(contents(&root), before);
         assert!(
-            matches!(crate::ReadHandle::open(&root), Err(Error::IndexRebuildRequired { found, expected: 20, .. }) if found == version)
+            matches!(crate::ReadHandle::open(&root), Err(Error::IndexRebuildRequired { found, expected: crate::INDEX_VERSION, .. }) if found == version)
         );
         assert_eq!(contents(&root), before);
     }

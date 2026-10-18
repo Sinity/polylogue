@@ -215,14 +215,14 @@ impl World {
                     );
                 } else {
                     assert_eq!(document["result"]["outcome"], "ok");
-                    assert_eq!(document["result"]["settlement"]["state"], "settled");
+                    assert_eq!(document["result"]["completion"]["state"], "complete");
                 }
                 if document["messages"].as_array().unwrap().len() == messages
                     && p["source_rows"]["state"] != "pending"
                 {
                     assert_eq!(
                         p["parser"]["finalization_pending"],
-                        p["source_rows"]["state"] != "settled"
+                        p["source_rows"]["state"] != "complete"
                     );
                     return document;
                 }
@@ -391,8 +391,8 @@ fn actual_morrow_json_read_survives_provider_loss_sigkill_and_observation_replay
     let path = world.input("morrow.jsonl", MORROW);
     let request = "01900000-0000-7000-8000-000000000201";
     let receipt = world.import(&path, request);
-    let id = receipt["retained"]["id"].as_str().unwrap();
-    assert_eq!(receipt["retained"]["length"], MORROW.len() as u64);
+    let id = receipt["input"]["id"].as_str().unwrap();
+    assert_eq!(receipt["input"]["length"], MORROW.len() as u64);
     fs::remove_file(&path).unwrap();
     let document = world.read(&reference(), id, 12);
     assert_morrow(&document);
@@ -403,7 +403,7 @@ fn actual_morrow_json_read_survives_provider_loss_sigkill_and_observation_replay
     assert_eq!(end["canonical_complete"], true);
     world.restart(); // Child::kill sends SIGKILL; Drop waits before starting.
     let replay = world.import(&path, request);
-    assert_eq!(replay["retained"], receipt["retained"]);
+    assert_eq!(replay["input"], receipt["input"]);
     assert_eq!(replay["request_id"], receipt["request_id"]);
     assert_eq!(replay["seen_at"], receipt["seen_at"]);
     let after = world.read(&reference(), id, 12);
@@ -432,7 +432,7 @@ fn daemon_raw_frames_and_cli_both_mask_cross_piece_and_dense_credentials() {
     let raw=json!({"type":"assistant","uuid":"masked-message","sessionId":SID,"requestId":"masked-request","message":{"id":"masked-response","content":[{"type":"text","text":text},{"type":"tool_use","id":"masked-call","name":"Bash","input":{"command":"true","nested":dense}}],"stop_reason":"tool_use"}}).to_string()+"\n";
     let path = world.input("masked.jsonl", raw.as_bytes());
     let receipt = world.import(&path, "01900000-0000-7000-8000-000000000202");
-    let document = world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 1);
+    let document = world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 1);
     let (socket, frames, end) = world.socket_read(&reference());
     assert_eq!(socket, document);
     assert_eq!(end["outcome"], "degraded");
@@ -481,7 +481,7 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
     let mut raw = simple("ready", json!("ready text"));
     let path = world.input("ready.jsonl", &raw);
     let first = world.import(&path, "01900000-0000-7000-8000-000000000203");
-    let first_id = first["retained"]["id"].as_str().unwrap();
+    let first_id = first["input"]["id"].as_str().unwrap();
     wait_message(&world, first_id, "ready");
     raw.extend(simple(
         "pending",
@@ -491,7 +491,7 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
     let pending = world.import(&path, "01900000-0000-7000-8000-000000000204");
     let deadline = Instant::now() + WAIT;
     loop {
-        let p = world.raw_progress(pending["retained"]["id"].as_str().unwrap());
+        let p = world.raw_progress(pending["input"]["id"].as_str().unwrap());
         assert_eq!(p["source_rows"]["scope"], "imported_source_rows");
         if !p["failure"].is_null() {
             break;
@@ -515,7 +515,7 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
             &path,
             &format!("01900000-0000-7000-8000-{:012}", 205 + index),
         );
-        wait_message(&world, receipt["retained"]["id"].as_str().unwrap(), native);
+        wait_message(&world, receipt["input"]["id"].as_str().unwrap(), native);
     }
     let out = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
@@ -567,8 +567,8 @@ fn source_row_wait_settles_fixed_basis_then_provider_loss_restart_replays_withou
     let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(receipt.get("canonical_complete").is_none());
     assert_eq!(receipt["source_rows"]["scope"], "imported_source_rows");
-    assert_eq!(receipt["source_rows"]["state"], "settled");
-    assert_eq!(receipt["source_rows"]["basis"]["length"], bytes.len());
+    assert_eq!(receipt["source_rows"]["state"], "complete");
+    assert_eq!(receipt["source_rows"]["parsed_from"]["length"], bytes.len());
     let read = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(read.status.code(), Some(5));
     let first: Value = serde_json::from_slice(&read.stdout).unwrap();
@@ -579,7 +579,7 @@ fn source_row_wait_settles_fixed_basis_then_provider_loss_restart_replays_withou
     let replay = wait_import(&world, &path, id, "20");
     assert_eq!(replay.status.code(), Some(0), "{replay:?}");
     let again: Value = serde_json::from_slice(&replay.stdout).unwrap();
-    assert_eq!(again["retained"], receipt["retained"]);
+    assert_eq!(again["input"], receipt["input"]);
     assert_eq!(again["source_rows"], receipt["source_rows"]);
     let read = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(read.status.code(), Some(5));
@@ -624,13 +624,13 @@ fn incomplete_source_wait_times_out_without_certifying_from_a_later_peer() {
     assert_eq!(output.status.code(), Some(7), "{output:?}");
     let later: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        later["source_rows"]["basis"],
-        receipt["source_rows"]["basis"]
+        later["source_rows"]["parsed_from"],
+        receipt["source_rows"]["parsed_from"]
     );
     assert_eq!(later["source_rows"]["state"], "pending");
     assert!(
-        later["retained"]["id"]
-            != serde_json::from_slice::<Value>(&complete.stdout).unwrap()["retained"]["id"]
+        later["input"]["id"]
+            != serde_json::from_slice::<Value>(&complete.stdout).unwrap()["input"]["id"]
     );
 }
 
@@ -670,7 +670,7 @@ fn disconnecting_a_source_waiter_keeps_the_retained_owner_and_peer_available() {
     );
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let p = world.raw_progress(receipt["retained"]["id"].as_str().unwrap());
+        let p = world.raw_progress(receipt["input"]["id"].as_str().unwrap());
         if p["parser"]["status"] == "waiting_tail" {
             break;
         }
@@ -683,7 +683,7 @@ fn disconnecting_a_source_waiter_keeps_the_retained_owner_and_peer_available() {
     let output = wait_import(&world, &peer, "01900000-0000-7000-8000-000000000406", "20");
     assert_eq!(output.status.code(), Some(0), "{output:?}; {}", world.log());
     assert_eq!(
-        world.raw_progress(receipt["retained"]["id"].as_str().unwrap())["source_rows"]["state"],
+        world.raw_progress(receipt["input"]["id"].as_str().unwrap())["source_rows"]["state"],
         "pending"
     );
 }
@@ -733,12 +733,12 @@ fn retained_byte_eof_stays_pending_until_real_message_effects_are_published() {
     let path = world.input("eof-before-effects.jsonl", &bytes);
     let id = "01900000-0000-7000-8000-000000000409";
     let receipt = world.import(&path, id);
-    let input = receipt["retained"]["id"].as_str().unwrap();
+    let input = receipt["input"]["id"].as_str().unwrap();
     let deadline = Instant::now() + WAIT;
     loop {
         let p = world.raw_progress(input);
         assert!(p["failure"].is_null(), "{p}");
-        if p["parser"]["parsed_upto"] == receipt["retained"]["length"] {
+        if p["parser"]["parsed_upto"] == receipt["input"]["length"] {
             assert_eq!(
                 p["source_rows"]["state"], "pending",
                 "did not observe the actual EOF-before-canonical boundary: {p}"
@@ -771,12 +771,8 @@ fn admission_refusal_and_provider_diagnostics_are_named_without_credential_discl
     assert_eq!(out.status.code(), Some(2), "{out:?}; {}", world.log());
     let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(failure["source_rows"]["state"], "unavailable");
-    assert!(
-        failure["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("admission")
-    );
+    let message = failure["error"]["message"].as_str().unwrap();
+    assert!(message.contains("limit"), "{message}");
     let secret = ["gh", "p_"].concat() + &"A".repeat(36);
     let mut record: Value =
         serde_json::from_slice(&simple("secret-diagnostic", json!("supported content"))).unwrap();
@@ -790,10 +786,10 @@ fn admission_refusal_and_provider_diagnostics_are_named_without_credential_discl
     assert!(text.contains("credential:"), "{text}");
     let failure: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(
-        failure["source_rows"]["basis"]["original_hash"],
+        failure["source_rows"]["parsed_from"]["original_hash"],
         json!(polylogue_model::BlobHash::of(&bytes))
     );
-    let progress = world.raw_progress(failure["retained"]["id"].as_str().unwrap());
+    let progress = world.raw_progress(failure["input"]["id"].as_str().unwrap());
     assert!(!progress.to_string().contains(&secret));
 }
 
@@ -848,11 +844,11 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
             .any(|note| note
                 .as_str()
                 .unwrap()
-                .contains("pending possible Session relationships")),
+                .contains("may relate to this Session are still pending")),
         "{first}"
     );
     assert_eq!(first["result"]["unknown"]["population_pending_inputs"], 1);
-    assert_eq!(first["result"]["settlement"]["state"], "pending");
+    assert_eq!(first["result"]["completion"]["state"], "pending");
     let (socket, _, end) = world.socket_read(&reference());
     assert_eq!(socket, first);
     assert_eq!(end["unknown"], first["result"]["unknown"]);
@@ -893,8 +889,8 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
     );
     assert_eq!(repeated.status.code(), Some(2));
     assert_eq!(
-        serde_json::from_slice::<Value>(&repeated.stdout).unwrap()["retained"],
-        bad_receipt["retained"]
+        serde_json::from_slice::<Value>(&repeated.stdout).unwrap()["input"],
+        bad_receipt["input"]
     );
     let reread = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(reread.status.code(), Some(5));
@@ -916,8 +912,8 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
     );
     assert_eq!(replay.status.code(), Some(2));
     assert_eq!(
-        serde_json::from_slice::<Value>(&replay.stdout).unwrap()["retained"],
-        bad_receipt["retained"]
+        serde_json::from_slice::<Value>(&replay.stdout).unwrap()["input"],
+        bad_receipt["input"]
     );
     let read = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(read.status.code(), Some(5));
@@ -1105,7 +1101,7 @@ fn without_settlement(mut document: Value) -> Value {
     document["result"]
         .as_object_mut()
         .unwrap()
-        .remove("settlement");
+        .remove("completion");
     document
 }
 
@@ -1169,7 +1165,7 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
             assert_eq!(receipt["request_id"], request_id, "{receipt}");
             assert_eq!(receipt["seen_at"], 17, "{receipt}");
             let retained_basis =
-                json!({"retained":receipt["retained"],"basis":receipt["source_rows"]["basis"]});
+                json!({"retained":receipt["input"],"basis":receipt["source_rows"]["parsed_from"]});
             if let Some(expected) = &original {
                 assert_eq!(
                     &retained_basis, expected,
@@ -1179,7 +1175,7 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
                 original = Some(retained_basis);
             }
             if out.status.success() {
-                assert_eq!(receipt["source_rows"]["state"], "settled", "{receipt}");
+                assert_eq!(receipt["source_rows"]["state"], "complete", "{receipt}");
                 eprintln!(
                     "compatible import {request_id} settled after {attempts} attempt(s), {:?}",
                     started.elapsed()
@@ -1199,9 +1195,9 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
                 "compatible import {request_id} exceeded {WAIT:?}; receipt {receipt}; prior progress {progress}; daemon {}",
                 world.log()
             );
-            progress = world.progress(receipt["retained"]["id"].as_str().unwrap());
+            progress = world.progress(receipt["input"]["id"].as_str().unwrap());
             assert_eq!(
-                progress["source_rows"]["basis"], receipt["source_rows"]["basis"],
+                progress["source_rows"]["parsed_from"], receipt["source_rows"]["parsed_from"],
                 "retry target changed"
             );
             eprintln!(
@@ -1215,7 +1211,7 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
     let base = settled_import(&world, &path, "01900000-0000-7000-8000-000000000700");
     assert_eq!(base.status.code(), Some(0), "{base:?}; {}", world.log());
     let base: Value = serde_json::from_slice(&base.stdout).unwrap();
-    let base_input = base["retained"]["id"].as_str().unwrap();
+    let base_input = base["input"]["id"].as_str().unwrap();
     let before = world.read(&reference(), base_input, 12);
     let last = fixture_records().last().unwrap()["uuid"]
         .as_str()
@@ -1239,8 +1235,8 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
         world.log()
     );
     let appended: Value = serde_json::from_slice(&appended.stdout).unwrap();
-    assert_eq!(appended["source_rows"]["state"], "settled");
-    let input = appended["retained"]["id"].as_str().unwrap();
+    assert_eq!(appended["source_rows"]["state"], "complete");
+    let input = appended["input"]["id"].as_str().unwrap();
     let after = world.read(&reference(), input, 14);
     let messages = after["messages"].as_array().unwrap();
     for (prior, current) in before["messages"].as_array().unwrap().iter().zip(messages) {
@@ -1275,7 +1271,7 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
     let replay = settled_import(&world, &path, "01900000-0000-7000-8000-000000000701");
     assert_eq!(replay.status.code(), Some(0), "{replay:?}; {}", world.log());
     let replay: Value = serde_json::from_slice(&replay.stdout).unwrap();
-    assert_eq!(replay["retained"], appended["retained"]);
+    assert_eq!(replay["input"], appended["input"]);
     assert_eq!(world.read(&reference(), input, 14), after);
 }
 
@@ -1352,7 +1348,7 @@ fn model_cli_follows_only_emitted_calls_through_unicode_middle_and_repeated_iden
     let huge = format!("{} {secret} {}", "n".repeat(4090), huge);
     let input = world.input("bounded.jsonl", &model_fixture(&huge, false));
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000800");
-    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 3);
     let expected = [
         ("bounded-first", "A repeated neutral passage.".to_owned()),
         (
@@ -1375,7 +1371,7 @@ fn model_cli_follows_only_emitted_calls_through_unicode_middle_and_repeated_iden
         assert!(!page.to_string().contains(&secret));
         assert_eq!(page["rendered_as"], "native-model-read-v1");
         assert_eq!(page["session"]["display_title"], "Bounded neutral control");
-        assert!(page["settlement"].is_object());
+        assert!(page["completion"].is_object());
         assert!(page["up_to_date"].is_boolean());
         let spans = page["shown"].as_array().unwrap();
         assert!(!spans.is_empty());
@@ -1445,7 +1441,7 @@ fn model_exact_block_append_restart_wrong_ref_options_and_selected_edit_refuse_c
     let huge = "Neutral🙂 ".repeat(6000);
     let input = world.input("bounded.jsonl", &model_fixture(&huge, false));
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000801");
-    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 3);
     let first = model_call(
         &world,
         &json!({"ref":model_ref("bounded-huge")}),
@@ -1508,7 +1504,7 @@ fn model_exact_block_append_restart_wrong_ref_options_and_selected_edit_refuse_c
     );
     let competing = world.input("same-text-new-origin.jsonl", &model_fixture(&huge, true));
     let receipt = world.import(&competing, "01900000-0000-7000-8000-000000000804");
-    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 4);
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 4);
     // Current competing membership is unknown, but cannot replace the stale
     // refusal for an already emitted selection. Fresh reads still refuse.
     let fresh_session = model_call(&world, &json!({"ref":reference()}), Some(1600));
@@ -1548,7 +1544,7 @@ fn model_exact_block_append_restart_wrong_ref_options_and_selected_edit_refuse_c
     let receipt = world.import(&edit, "01900000-0000-7000-8000-000000000803");
     let until = Instant::now() + WAIT;
     loop {
-        let progress = world.raw_progress(receipt["retained"]["id"].as_str().unwrap());
+        let progress = world.raw_progress(receipt["input"]["id"].as_str().unwrap());
         if !progress["failure"].is_null() {
             break;
         }
@@ -1568,11 +1564,7 @@ fn model_mixed_session_refuses_unimplemented_included_tool_blocks_before_content
     let world = World::new();
     let input = world.input("mixed.jsonl", MORROW);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000805");
-    world.read(
-        &reference(),
-        receipt["retained"]["id"].as_str().unwrap(),
-        12,
-    );
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 12);
     let page = model_call(&world, &json!({"ref":reference()}), Some(4000));
     assert_eq!(page["error"]["reason"], "unsupported_model_block_kind");
     assert!(page.get("shown").is_none());
@@ -1584,11 +1576,7 @@ fn model_dialogue_keeps_the_unchanged_morrow_selection_and_truthful_omissions() 
     let world = World::new();
     let input = world.input("dialogue-morrow.jsonl", MORROW);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000811");
-    world.read(
-        &reference(),
-        receipt["retained"]["id"].as_str().unwrap(),
-        12,
-    );
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 12);
     let rows: Vec<Value> = MORROW
         .split(|b| *b == b'\n')
         .filter(|r| !r.is_empty())
@@ -1709,7 +1697,7 @@ fn model_dialogue_and_exact_blocks_preserve_hidden_pem_and_independent_structure
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000812");
     let until = Instant::now() + WAIT;
     loop {
-        let p = world.progress(receipt["retained"]["id"].as_str().unwrap());
+        let p = world.progress(receipt["input"]["id"].as_str().unwrap());
         if p["source_rows"]["state"] != "pending" {
             break;
         }
@@ -1774,7 +1762,7 @@ fn model_disconnect_and_expired_deadline_release_the_reader_without_source_owner
     let body = "Neutral🙂 ".repeat(9000);
     let input = world.input("disconnect.jsonl", &model_fixture(&body, false));
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000806");
-    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 3);
     let socket = polylogue::socket_path(&fs::canonicalize(&world.archive).unwrap(), &world.runtime);
     let mut peer = UnixStream::connect(socket).unwrap();
     writeln!(peer,"{}",json!({"command":"model-read","reference":model_ref("bounded-huge"),"budget_tokens":1000000})).unwrap();
@@ -1834,7 +1822,7 @@ fn model_late_native_metadata_growth_retries_same_cursor_without_rewinding() {
         .collect::<Vec<_>>();
     let input = world.input("late-no-title.jsonl", &no_title);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000807");
-    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 3);
     let mut call = json!({"ref":model_ref("bounded-huge")});
     let start = loop {
         let page = model_call(&world, &call, Some(1800));
@@ -1852,7 +1840,7 @@ fn model_late_native_metadata_growth_retries_same_cursor_without_rewinding() {
         (json!({"type":"ai-title","aiTitle":title,"sessionId":SID}).to_string() + "\n").as_bytes(),
     );
     let receipt = world.import(&metadata, "01900000-0000-7000-8000-000000000808");
-    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 3);
     let refusal = model_call(&world, &call, Some(1800));
     assert_eq!(
         refusal["error"]["reason"], "insufficient_budget",
@@ -1902,11 +1890,7 @@ fn model_full_transcript_keeps_all_morrow_facts_and_effective_selection() {
     let world = World::new();
     let input = world.input("transcript-morrow.jsonl", MORROW);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000820");
-    world.read(
-        &reference(),
-        receipt["retained"]["id"].as_str().unwrap(),
-        12,
-    );
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 12);
     let whole = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(whole.status.code(), Some(0));
     let document: Value = serde_json::from_slice(&whole.stdout).unwrap();
@@ -2017,7 +2001,7 @@ fn model_full_transcript_preserves_tool_body_masking_independent_values_and_admi
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000821");
     let until = Instant::now() + WAIT;
     loop {
-        let p = world.progress(receipt["retained"]["id"].as_str().unwrap());
+        let p = world.progress(receipt["input"]["id"].as_str().unwrap());
         if p["source_rows"]["state"] != "pending" {
             break;
         }
@@ -2117,7 +2101,7 @@ fn model_full_tool_output_resumes_unicode_middle_and_masks_structured_channels()
         .collect::<Vec<_>>();
     let input = world.input("full-result.jsonl", &bytes);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000822");
-    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 3);
     let mut call = transcript_call(&mixed_block("full-result", 0));
     let mut reconstructed = String::new();
     let mut pages = 0;
@@ -2170,11 +2154,7 @@ fn model_branches_preserves_malformed_morrow_facts_without_claiming_active_membe
     bytes.extend_from_slice(b"{not valid json}\n");
     let input = world.input("known-malformed.jsonl", &bytes);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000830");
-    let document = world.read(
-        &reference(),
-        receipt["retained"]["id"].as_str().unwrap(),
-        12,
-    );
+    let document = world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 12);
     assert_eq!(document["result"]["outcome"], "degraded");
     let refused = model_call(&world, &transcript_call(&reference()), Some(4000));
     assert_eq!(
@@ -2199,7 +2179,7 @@ fn model_branches_preserves_malformed_morrow_facts_without_claiming_active_membe
             n.as_str()
                 .is_some_and(|n| n.contains("Active-path membership remains unavailable"))
         }));
-        assert_eq!(page["settlement"]["state"], "unavailable");
+        assert_eq!(page["completion"]["state"], "unavailable");
         assert!(!page["notes"].as_array().unwrap().is_empty());
         assert!(
             page["read_as"]
@@ -2257,7 +2237,7 @@ fn model_branches_includes_known_uncertain_paths_in_catalog_order_without_invent
         .collect::<Vec<_>>();
     let input = world.input("known-branches.jsonl", &bytes);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000831");
-    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 3);
     let refused = model_call(&world, &transcript_call(&reference()), Some(4000));
     assert_eq!(
         refused["error"]["reason"],
@@ -2305,7 +2285,7 @@ fn model_branches_binds_selection_and_does_not_authorize_pending_edits_or_old_in
     let huge = "Neutral🙂 ".repeat(3000);
     let input = world.input("known-current.jsonl", &model_fixture(&huge, false));
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000832");
-    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 3);
     let first = model_call(&world, &known_catalog_call(&reference()), Some(1800));
     assert_ne!(first["outcome"], "error", "{first}");
     let next = first["next"].clone();
@@ -2323,7 +2303,7 @@ fn model_branches_binds_selection_and_does_not_authorize_pending_edits_or_old_in
     let receipt = world.import(&edit, "01900000-0000-7000-8000-000000000833");
     let until = Instant::now() + WAIT;
     loop {
-        let p = world.raw_progress(receipt["retained"]["id"].as_str().unwrap());
+        let p = world.raw_progress(receipt["input"]["id"].as_str().unwrap());
         if !p["failure"].is_null() {
             break;
         }
@@ -2356,7 +2336,7 @@ fn model_branches_does_not_treat_record_error_counts_as_selected_row_authority()
     );
     let input = world.input("known-plus-unrecognized.jsonl", &bytes);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000834");
-    let document = world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    let document = world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 3);
     assert_eq!(document["result"]["unknown"]["record_errors"], 1);
     assert_eq!(document["result"]["unknown"]["unavailable_inputs"], 1);
     let page = model_call(&world, &known_catalog_call(&reference()), Some(4000));
@@ -2387,7 +2367,7 @@ fn model_full_transcript_refuses_zero_block_message_before_claiming_completed_fi
         .collect::<Vec<_>>();
     let input = world.input("zero-block.jsonl", &bytes);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000835");
-    let document = world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 3);
+    let document = world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 3);
     assert_eq!(document["messages"][1]["blocks"], json!([]));
     for reference in [reference(), format!("message:{}:bounded-huge", reference())] {
         let page = model_call(&world, &known_catalog_call(&reference), Some(4000));
