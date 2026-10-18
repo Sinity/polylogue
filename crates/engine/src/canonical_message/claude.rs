@@ -114,7 +114,7 @@ fn contribution(
     } else {
         vec![]
     };
-    if !c.projection.obligations.is_empty() {
+    if !c.projection.unresolved.is_empty() {
         return Err(Error::Unsupported(
             "Claude source mapping/counting obligation remains pending",
         ));
@@ -1166,7 +1166,7 @@ pub(super) fn compute(
                 BlockPhase::Fields(index) | BlockPhase::Retained(index) => {
                     let retained = matches!(phase, BlockPhase::Retained(_));
                     let facts = if retained {
-                        &c.projection.retained
+                        &c.projection.derived
                     } else {
                         &c.projection.facts
                     };

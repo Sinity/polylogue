@@ -2,7 +2,7 @@
 //! reads are charged to the view; scratch encoding has its own limit.
 use super::*;
 use polylogue_sources::{
-    claude_code::{parent::Node, projection::CountingObligation, selection},
+    claude_code::{parent::Node, projection::Unresolved, selection},
     selection::SelectedRaw,
 };
 use std::collections::BTreeSet;
@@ -124,8 +124,8 @@ pub(super) fn resolve(
     )?;
     // Other counting cases stay unsupported.
     c.projection
-        .obligations
-        .retain(|o| *o != CountingObligation::ParentResolution);
+        .unresolved
+        .retain(|o| *o != Unresolved::ParentResolution);
     if let Some(address) = address {
         c.projection.facts[index].selection = Some(if records.is_empty() {
             selection::parent_reference(uuid, address.message, donor)

@@ -140,7 +140,7 @@ fn capacity_is_an_explicit_resumable_admission_not_a_truncation() {
         .unwrap();
     assert_eq!(resumed.records, 1);
     assert_eq!(driver.parsed_upto(), 19 + input.len() as u64);
-    assert!(driver.retained_capacity() >= input.len() - 1);
+    assert!(driver.buffer_capacity() >= input.len() - 1);
     let output = driver.finish();
     assert_eq!(
         output.output.unwrap()[0],

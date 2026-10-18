@@ -35,7 +35,7 @@ fn slots(view: &MemoryReadView, message: usize) -> std::collections::BTreeMap<Sl
     loop {
         match cursor.advance(view).unwrap() {
             Step::Done => break,
-            Step::Unit(Unit::MessageWitness(w)) => {
+            Step::Unit(Unit::MessageSlot(w)) => {
                 assert!(fields.insert(w.slot, w.canonical).is_none());
             }
             Step::Unit(Unit::BlockPresence {

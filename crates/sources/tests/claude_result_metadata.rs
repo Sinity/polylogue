@@ -4,7 +4,7 @@ use polylogue_sources::{
     claude_code::{
         self, FileCtx, KeyedRecords,
         keyed::{Contribution, MemoryReadView, ReadView, ResponseKey},
-        projection::{CountingObligation, Field},
+        projection::{Field, Unresolved},
     },
     frame::drive_jsonl,
 };
@@ -114,9 +114,9 @@ fn finite_named_members_preserve_all_supplied_shapes_exactly_with_no_output_or_s
             let raw = row(Some(&meta), Some(r#""output""#));
             let c = parse(&raw);
             assert!(
-                c.projection.obligations.is_empty(),
+                c.projection.unresolved.is_empty(),
                 "{key}: {:?}",
-                c.projection.obligations
+                c.projection.unresolved
             );
             let expected = RawJson::parse(value.as_bytes()).unwrap();
             assert_eq!(data(&c).get(key), Some(&expected));
@@ -144,7 +144,7 @@ fn whole_sidecar_replacement_and_omission_keep_separate_exact_suppliers() {
     let omitted = row(None, None);
     let raw = a.clone() + &b + &omitted;
     let c = parse(&raw);
-    assert!(c.projection.obligations.is_empty());
+    assert!(c.projection.unresolved.is_empty());
     assert_eq!(data(&c).get("content"), Some(&RawJson::Null));
     assert!(data(&c).get("gitOperation").is_none());
     assert!(data(&c).get("success").is_none());
@@ -177,12 +177,12 @@ fn string_carrier_requires_exactly_one_result_and_unknown_status_and_sidecar_con
         r#"{"success":true,"is_error":false}"#,
     ] {
         let c = parse(&row(Some(meta), Some(r#""output""#)));
-        assert!(!c.projection.obligations.is_empty(), "{meta}");
+        assert!(!c.projection.unresolved.is_empty(), "{meta}");
         assert!(
             c.projection
-                .obligations
+                .unresolved
                 .iter()
-                .all(|v| matches!(v, CountingObligation::UnmappedField { .. }))
+                .all(|v| matches!(v, Unresolved::UnmappedField { .. }))
         );
     }
     let raw = row(Some(r#""sidecar""#), Some(r#""output""#));
@@ -208,7 +208,7 @@ fn string_carrier_requires_exactly_one_result_and_unknown_status_and_sidecar_con
                 .any(|f| matches!(&f.field,Field::ResultData{key,..} if key=="toolUseResult"))
         );
         if content != "[]" {
-            assert!(!c.projection.obligations.is_empty());
+            assert!(!c.projection.unresolved.is_empty());
         }
     }
 }
@@ -220,5 +220,5 @@ fn opaque_success_metadata_never_waives_invalid_protocol_status() {
     )
     .replace("\"is_error\":false", "\"is_error\":\"false\"");
     let c = parse(&raw);
-    assert!(c.projection.obligations.iter().any(|o|matches!(o,CountingObligation::UnmappedField{path} if path==&["message","content","0","is_error"])));
+    assert!(c.projection.unresolved.iter().any(|o|matches!(o,Unresolved::UnmappedField{path} if path==&["message","content","0","is_error"])));
 }

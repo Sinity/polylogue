@@ -789,7 +789,7 @@ fn source_selector_value_and_type_mismatches_get_no_certificate() {
     // consistent. The evaluator must reject the missing path, never attach
     // unchecked JSON.
     let mut world = World::with_mutation(&parsed, &parsed, |delta| {
-        let Some(Some(codex::keyed::Cell::Witness(w))) = delta
+        let Some(Some(codex::keyed::Cell::SlotValue(w))) = delta
             .cells
             .get_mut(&codex::keyed::Key::Presence(0, "at".into()))
         else {
@@ -843,7 +843,7 @@ fn source_set_is_noncontiguous_and_includes_timestamp_only_records() {
     let mut world = World::with_mutation(&bytes, &bytes, |delta| {
         // Timestamps are not part of the digest and must not be dropped by a
         // scan that only reads evidence.
-        let Some(Some(Cell::Witness(w))) = delta.cells.get_mut(&Key::Presence(0, "at".into()))
+        let Some(Some(Cell::SlotValue(w))) = delta.cells.get_mut(&Key::Presence(0, "at".into()))
         else {
             panic!("timestamp witness")
         };

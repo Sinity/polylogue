@@ -13,7 +13,7 @@ pub struct Node {
     pub uuid: NativeId,
     pub kind: String,
     pub subtype: Option<String>,
-    pub subtype_donor: Option<SelectedRaw>,
+    pub subtype_origin: Option<SelectedRaw>,
     pub parent: Option<Link>,
     pub logical_parent: Option<Link>,
     pub summary: Option<Link>,
@@ -82,14 +82,14 @@ impl Node {
                 })
                 .or(previous)
         };
-        let subtype_donor = incoming
+        let subtype_origin = incoming
             .get("subtype")
             .filter(|_| kind == "system")
             .map(|_| SelectedRaw {
                 record: range,
                 path: vec![PathPart::Key("subtype".into())],
             })
-            .or_else(|| old.as_ref().and_then(|o| o.subtype_donor.clone()));
+            .or_else(|| old.as_ref().and_then(|o| o.subtype_origin.clone()));
         let summary = if kind == "user" {
             link(
                 "isCompactSummary",
@@ -116,7 +116,7 @@ impl Node {
             uuid,
             kind,
             subtype: subtype.or_else(|| old.as_ref().and_then(|o| o.subtype.clone())),
-            subtype_donor,
+            subtype_origin,
             parent: link("parentUuid", old.as_ref().and_then(|o| o.parent.clone())),
             logical_parent: link(
                 "logicalParentUuid",
@@ -156,7 +156,7 @@ impl Node {
             0 => Some(self.envelope),
             1 => self.parent.as_ref().map(|l| l.donor.record),
             2 => self.logical_parent.as_ref().map(|l| l.donor.record),
-            3 => self.subtype_donor.as_ref().map(|d| d.record),
+            3 => self.subtype_origin.as_ref().map(|d| d.record),
             4 => self.summary.as_ref().map(|l| l.donor.record),
             5 => self.progress_kind.as_ref().map(|l| l.donor.record),
             _ => None,
@@ -172,7 +172,7 @@ impl Node {
         let selected = match donor {
             1 => self.parent.as_ref().map(|l| &l.donor),
             2 => self.logical_parent.as_ref().map(|l| &l.donor),
-            3 => self.subtype_donor.as_ref(),
+            3 => self.subtype_origin.as_ref(),
             4 => self.summary.as_ref().map(|l| &l.donor),
             5 => self.progress_kind.as_ref().map(|l| &l.donor),
             _ => None,
@@ -231,7 +231,7 @@ pub struct RelationProof {
     pub uuid: NativeId,
     pub kind: String,
     pub subtype: Option<String>,
-    pub subtype_donor: Option<SelectedRaw>,
+    pub subtype_origin: Option<SelectedRaw>,
     pub parent: Option<Link>,
     pub logical_parent: Option<Link>,
     pub summary: Option<Link>,
@@ -244,7 +244,7 @@ impl From<&Node> for RelationProof {
             uuid: node.uuid.clone(),
             kind: node.kind.clone(),
             subtype: node.subtype.clone(),
-            subtype_donor: node.subtype_donor.clone(),
+            subtype_origin: node.subtype_origin.clone(),
             parent: node.parent.clone(),
             logical_parent: node.logical_parent.clone(),
             summary: node.summary.clone(),

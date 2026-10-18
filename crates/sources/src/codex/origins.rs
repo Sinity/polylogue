@@ -35,16 +35,16 @@ impl Origins {
             Self::Unknown => Self::Unknown,
         }
     }
-    pub(super) fn overlay(&self, current: &Self, retained: &[String], provided: &[String]) -> Self {
+    pub(super) fn overlay(&self, current: &Self, kept: &[String], provided: &[String]) -> Self {
         let Self::Located(current) = current else {
             return Self::Unknown;
         };
         let envelope = current.record;
-        if retained.is_empty() {
+        if kept.is_empty() {
             return Self::Located(current.clone());
         }
         let mut fields = BTreeMap::new();
-        for key in retained {
+        for key in kept {
             let Self::Located(origin) = self.field(key) else {
                 return Self::Unknown;
             };

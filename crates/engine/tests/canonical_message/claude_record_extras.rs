@@ -262,7 +262,7 @@ fn selected_supplier_is_cited_independently_of_effective_contribution_origins() 
             .projection
             .facts
             .iter_mut()
-            .chain(&mut c.projection.retained)
+            .chain(&mut c.projection.derived)
         {
             if let Some(selection) = &mut fact.selection {
                 for input in &mut selection.inputs {

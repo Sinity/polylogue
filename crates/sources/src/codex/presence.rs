@@ -18,7 +18,7 @@ pub enum Owner {
     Continuation,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Witness {
+pub struct SlotValue {
     pub slot: Slot,
     pub canonical: Vec<u8>,
     pub source_time: Option<Timestamp>,
@@ -28,7 +28,7 @@ pub struct Witness {
     #[serde(default)]
     pub selection: Option<FactSelection>,
 }
-impl Witness {
+impl SlotValue {
     fn valid_selection(&self) -> bool {
         let Some(selection) = &self.selection else {
             return true;
@@ -89,7 +89,7 @@ impl Witness {
 pub struct Group {
     pub nonempty: bool,
     pub nonempty_text: bool,
-    pub fields: Vec<Witness>,
+    pub fields: Vec<SlotValue>,
 }
 impl Group {
     pub(super) fn valid(&self) -> bool {
@@ -125,8 +125,8 @@ impl Group {
 fn value(raw: &[u8]) -> Option<Value> {
     serde_json::from_slice(raw).ok()
 }
-fn witness(slot: Slot, raw: &[u8], owner: Owner) -> Result<Witness, String> {
-    Ok(Witness {
+fn slot_value(slot: Slot, raw: &[u8], owner: Owner) -> Result<SlotValue, String> {
+    Ok(SlotValue {
         slot,
         canonical: polylogue_model::identity::canonical_record(raw, &[])
             .map_err(|e| e.to_string())?,
@@ -136,16 +136,16 @@ fn witness(slot: Slot, raw: &[u8], owner: Owner) -> Result<Witness, String> {
         selection: None,
     })
 }
-pub(super) fn message(field: M, raw: &[u8], time: Option<Timestamp>) -> Result<Witness, String> {
-    let mut w = witness(Slot::Message(field), raw, Owner::Primary)?;
+pub(super) fn message(field: M, raw: &[u8], time: Option<Timestamp>) -> Result<SlotValue, String> {
+    let mut w = slot_value(Slot::Message(field), raw, Owner::Primary)?;
     w.source_time = time;
     Ok(w)
 }
-pub(super) fn usage(field: U, raw: &[u8]) -> Result<Witness, String> {
-    witness(Slot::Usage(field), raw, Owner::Primary)
+pub(super) fn usage(field: U, raw: &[u8]) -> Result<SlotValue, String> {
+    slot_value(Slot::Usage(field), raw, Owner::Primary)
 }
-pub(super) fn extra(key: &str, raw: &[u8]) -> Result<Witness, String> {
-    witness(
+pub(super) fn extra(key: &str, raw: &[u8]) -> Result<SlotValue, String> {
+    slot_value(
         Slot::Extra {
             block: None,
             key: key.into(),
@@ -178,7 +178,7 @@ pub(super) fn block(
         ..Group::default()
     };
     let mut add = |field: B, fieldraw: &[u8], source_field: &str| -> Result<(), String> {
-        let mut w = witness(
+        let mut w = slot_value(
             Slot::Block {
                 block: slot.clone(),
                 field,
@@ -417,7 +417,7 @@ pub(super) fn block(
             ) {
                 continue;
             }
-            let mut w = witness(
+            let mut w = slot_value(
                 Slot::Extra {
                     block: Some(slot.clone()),
                     key,
@@ -457,7 +457,7 @@ pub fn message_slot(key: &str) -> Option<Slot> {
         _ => return None,
     })
 }
-pub(super) fn matches_message_key(key: &str, w: &Witness) -> bool {
+pub(super) fn matches_message_key(key: &str, w: &SlotValue) -> bool {
     w.valid_selection()
         && message_slot(key).as_ref() == Some(&w.slot)
         && (matches!(w.slot, Slot::Message(M::At | M::CompletedAt)) == w.source_time.is_some())

@@ -168,7 +168,7 @@ impl JsonlContinuation {
     pub fn scanned_upto(&self) -> u64 {
         self.scanned_upto
     }
-    pub fn retained_capacity(&self) -> usize {
+    pub fn buffer_capacity(&self) -> usize {
         self.partial.capacity()
     }
 }
@@ -193,7 +193,7 @@ impl<O> PendingJsonlStep<O> {
     pub fn counts(&self) -> &Counts {
         &self.counts
     }
-    pub fn retained_capacity(&self) -> usize {
+    pub fn buffer_capacity(&self) -> usize {
         self.continuation.partial.capacity()
     }
 
@@ -304,7 +304,7 @@ impl<P: RecordParser> JsonlDriver<P> {
     pub fn counts(&self) -> &Counts {
         &self.counts
     }
-    pub fn retained_capacity(&self) -> usize {
+    pub fn buffer_capacity(&self) -> usize {
         self.partial.capacity()
     }
 
@@ -736,7 +736,7 @@ mod continuation_memory_tests {
         input.extend(std::iter::repeat_n(b'x', 1 << 20));
         let driver = whole_jsonl_driver(Counter(0), &input, 10);
         assert_eq!(
-            driver.retained_capacity(),
+            driver.buffer_capacity(),
             0,
             "whole-run partial tail must stay borrowed"
         );
@@ -766,9 +766,9 @@ mod continuation_memory_tests {
                 .unwrap();
             assert_eq!(step.state, StepState::Exhausted);
             assert!(
-                driver.retained_capacity() <= admitted,
+                driver.buffer_capacity() <= admitted,
                 "{} retained for {admitted} admitted",
-                driver.retained_capacity()
+                driver.buffer_capacity()
             );
         }
         let step = driver
@@ -784,7 +784,7 @@ mod continuation_memory_tests {
         assert_eq!(
             step.state,
             StepState::NeedsCapacity {
-                required: driver.retained_capacity()
+                required: driver.buffer_capacity()
             }
         );
         assert_eq!(

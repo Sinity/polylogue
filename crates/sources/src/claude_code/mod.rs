@@ -15,7 +15,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 17;
+pub const PARSER_VERSION: u32 = 18;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -734,7 +734,7 @@ impl<R: ReadView> KeyedRecords<R> {
             revision,
             old.as_ref().map(|c| &c.projection),
         )?;
-        for fact in projected.facts.iter_mut().chain(&mut projected.retained) {
+        for fact in projected.facts.iter_mut().chain(&mut projected.derived) {
             fact.selection = selection::for_fact(fact, &v, &record_origins);
         }
         if item == 0 {
@@ -767,8 +767,8 @@ impl<R: ReadView> KeyedRecords<R> {
                         response.message.parent = Some(parent.message);
                     } else {
                         projected
-                            .obligations
-                            .push(projection::CountingObligation::ParentResolution);
+                            .unresolved
+                            .push(projection::Unresolved::ParentResolution);
                     }
                 } else {
                     let sidechain_root = if let FileCtx::Main { stem } = &self.ctx {
@@ -805,8 +805,8 @@ impl<R: ReadView> KeyedRecords<R> {
                         projected.facts.push(fact);
                     } else {
                         projected
-                            .obligations
-                            .push(projection::CountingObligation::ParentResolution);
+                            .unresolved
+                            .push(projection::Unresolved::ParentResolution);
                     }
                 }
             }
@@ -815,8 +815,8 @@ impl<R: ReadView> KeyedRecords<R> {
                     serde_json::from_slice(&previous.raw).map_err(|e| e.to_string())?;
                 if previous
                     .projection
-                    .obligations
-                    .contains(&projection::CountingObligation::FirstAuthorUpdate)
+                    .unresolved
+                    .contains(&projection::Unresolved::FirstAuthorUpdate)
                     || response.author_selection.as_ref().is_some_and(|selection| {
                         selection::classify_author(&v, content, selection.context)
                             != (
@@ -836,8 +836,8 @@ impl<R: ReadView> KeyedRecords<R> {
                     .any(|key| old_raw.get(*key) != v.get(*key))
                 {
                     projected
-                        .obligations
-                        .push(projection::CountingObligation::FirstAuthorUpdate);
+                        .unresolved
+                        .push(projection::Unresolved::FirstAuthorUpdate);
                 }
             }
         }
