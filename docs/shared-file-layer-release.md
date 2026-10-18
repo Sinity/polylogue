@@ -34,18 +34,17 @@ If the tag already exists with different content, pick a new version. Confirm th
 
 ## Update Sinex
 
-Sinex pins the tags in `crate/sinex-store/Cargo.toml` (`hashed-blobs`) and `crate/sinexd/Cargo.toml` (`credential-output`):
+Sinex pins `hashed-blobs` by tag in `crate/sinex-store/Cargo.toml` and `credential-output` by the tagged release commit in `crate/sinexd/Cargo.toml`:
 
 ```toml
 hashed-blobs = { git = "https://github.com/Sinity/polylogue", tag = "hashed-blobs-v0.1.1" }
+credential-output = { git = "https://github.com/Sinity/polylogue", rev = "<release sha>" }
 ```
 
-To move to a new tag:
+To move to a new release:
 
-1. Change the tag in the pin. Never add a vendored copy or a path dependency beside it.
-2. Update the lock with the declared `foundation_lock -- -p <crate>` operation. The lock must record the Git URL, the tag and the release SHA.
-3. Replace the old `cargoLock.outputHashes."<crate>-<old version>"` entry in the Sinex Nix package with one for the new version. Start with `pkgs.lib.fakeHash`, take the real hash from the failing declared build, and rebuild.
+1. Change the tag or rev in the pin. Never add a vendored copy or a path dependency beside it.
+2. Run `cargo update -p <crate>`. The lock must record the Git URL and the release SHA.
+3. The Sinex Nix package sets `cargoLock.allowBuiltinFetchGit = true`, so Nix fetches Git dependencies at the locked SHA and needs no hash entry.
 4. For `hashed-blobs`: keep `Reader` `Send + Sync` (Sinex holds it in an `Arc`), and use `put_plain_checked` wherever a caller promises cancellation.
-5. Run the affected Sinex store tests and the Sinex Nix build, then land the change through Sinex's normal route.
-
-Before a tag exists, a Sinex branch may point at the exact Polylogue commit for testing; replace that with the tag before landing.
+5. Run the affected Sinex tests and the Sinex `package` operation, then land the change through Sinex's normal route.
