@@ -1,173 +1,38 @@
-//! Real subprocess daemon/CLI reads with source-scoped completion qualifications.
+//! Session reads, imports with `--wait`, listing and search through the CLI
+//! against a real daemon.
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
-    path::{Path, PathBuf},
-    process::{Child, Command, Output, Stdio},
+    path::Path,
+    process::{Output, Stdio},
     thread,
     time::{Duration, Instant},
 };
-const BINARY: &str = env!("CARGO_BIN_EXE_polylogue");
 const WAIT: Duration = Duration::from_secs(120);
 const SID: &str = "7f3a2c10-0001-4000-8000-000000000001";
 const MORROW: &[u8] = include_bytes!("../../sources/tests/fixtures/morrow-main.jsonl");
-struct OwnedChild(Child);
-impl Drop for OwnedChild {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-struct World {
-    child: Option<OwnedChild>,
-    work: tempfile::TempDir,
-    _socket_owner: tempfile::TempDir,
-    archive: PathBuf,
-    runtime: PathBuf,
-    scratch: PathBuf,
-    log: PathBuf,
-}
+mod support;
+use support::{OwnedChild, World};
 impl World {
-    fn new() -> Self {
-        let work = tempfile::tempdir().unwrap();
-        let archive = work.path().join("archive");
-        let scratch = work.path().join("tmp");
-        fs::create_dir(&scratch).unwrap();
-        // Only short Unix-socket dentries use /tmp; retained bytes and command
-        // captures stay in the test's isolated, harness-owned work directory.
-        let socket_owner = tempfile::tempdir_in("/tmp").unwrap();
-        let runtime = socket_owner.path().join("run");
-        fs::create_dir(&runtime).unwrap();
-        let log = work.path().join("daemon.log");
-        let mut world = Self {
-            child: None,
-            work,
-            _socket_owner: socket_owner,
-            archive,
-            runtime,
-            scratch,
-            log,
-        };
-        world.start();
-        world
-    }
-    fn command(&self) -> Command {
-        let mut command = Command::new(BINARY);
-        command
-            .arg("--archive")
-            .arg(&self.archive)
-            .env("XDG_RUNTIME_DIR", &self.runtime)
-            .env("TMPDIR", &self.scratch);
-        command
-    }
-    fn cli(&self, args: &[&str]) -> Output {
-        // Files avoid pipe-buffer deadlock for large terminal output and let us
-        // enforce a child deadline without adding a separate client protocol.
-        let mut stdout = tempfile::tempfile_in(&self.scratch).unwrap();
-        let mut stderr = tempfile::tempfile_in(&self.scratch).unwrap();
-        let mut child = OwnedChild(
-            self.command()
-                .args(args)
-                .stdout(Stdio::from(stdout.try_clone().unwrap()))
-                .stderr(Stdio::from(stderr.try_clone().unwrap()))
-                .spawn()
-                .unwrap(),
-        );
-        let deadline = Instant::now() + Duration::from_secs(40);
-        let status = loop {
-            assert!(
-                stdout.metadata().unwrap().len() <= 5_000_000,
-                "CLI stdout exceeds test capture allowance"
-            );
-            assert!(
-                stderr.metadata().unwrap().len() <= 1_000_000,
-                "CLI stderr exceeds test capture allowance"
-            );
-            if let Some(status) = child.0.try_wait().unwrap() {
-                break status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "CLI deadline {args:?}; daemon: {}",
-                self.log()
-            );
-            thread::sleep(Duration::from_millis(2));
-        };
-        stdout.seek(SeekFrom::Start(0)).unwrap();
-        stderr.seek(SeekFrom::Start(0)).unwrap();
-        let mut out = vec![];
-        let mut err = vec![];
-        stdout.read_to_end(&mut out).unwrap();
-        stderr.read_to_end(&mut err).unwrap();
-        Output {
-            status,
-            stdout: out,
-            stderr: err,
-        }
-    }
-    fn log(&self) -> String {
-        fs::read_to_string(&self.log).unwrap_or_default()
-    }
-    fn start(&mut self) {
-        assert!(self.child.is_none());
-        self.child = Some(OwnedChild(
-            self.command()
-                .arg("daemon")
-                .stdout(Stdio::null())
-                .stderr(Stdio::from(File::create(&self.log).unwrap()))
-                .spawn()
-                .unwrap(),
-        ));
-        // Generous: the suite runs while other builds load the machine.
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            let out = self.cli(&["status"]);
-            if out.status.success() {
-                let value: Value = serde_json::from_slice(&out.stdout).unwrap();
-                assert_eq!(value["archive"], self.archive.to_str().unwrap());
-                return;
-            }
-            assert!(
-                self.child.as_mut().unwrap().0.try_wait().unwrap().is_none(),
-                "daemon exited: {}; status {out:?}",
-                self.log()
-            );
-            assert!(
-                Instant::now() < deadline,
-                "daemon startup: {}; status {out:?}",
-                self.log()
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-    fn kill(&mut self) {
-        drop(self.child.take());
-    }
-    fn restart(&mut self) {
-        self.kill();
-        self.start();
-    }
-    fn input(&self, name: &str, bytes: &[u8]) -> PathBuf {
-        let path = self.work.path().join(name);
-        fs::write(&path, bytes).unwrap();
-        path
-    }
-    fn import(&self, path: &Path, request_id: &str) -> Value {
-        let context = self.work.path().join("context.json");
-        fs::write(
-            &context,
-            json!({"version":1,"context":["claude-main",SID]}).to_string(),
-        )
-        .unwrap();
-        let out = self.cli(&[
+    /// Runs `import` for a Claude Code file with `context` and extra flags.
+    fn import_cli(
+        &self,
+        path: &Path,
+        request_id: &str,
+        context: &[&str],
+        extra: &[&str],
+    ) -> Output {
+        let file = self.work.path().join("context.json");
+        fs::write(&file, json!({"version":1,"context":context}).to_string()).unwrap();
+        let mut args = vec![
             "import",
             path.to_str().unwrap(),
             "--format",
             "claude-code-jsonl",
             "--context",
-            context.to_str().unwrap(),
+            file.to_str().unwrap(),
             "--request-id",
             request_id,
             "--seen-at",
@@ -176,7 +41,12 @@ impl World {
             "00112233445566778899aabbccddeeff",
             "--host",
             "synthetic-collector",
-        ]);
+        ];
+        args.extend_from_slice(extra);
+        self.cli(&args)
+    }
+    fn import(&self, path: &Path, request_id: &str) -> Value {
+        let out = self.import_cli(path, request_id, &["claude-main", SID], &[]);
         assert_eq!(
             out.status.code(),
             Some(0),
@@ -245,6 +115,12 @@ impl World {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    /// Reads `reference` as JSON, expecting exit `code`.
+    fn read_json(&self, reference: &str, code: i32) -> Value {
+        let out = self.cli(&[reference, "read", "--format", "json"]);
+        assert_eq!(out.status.code(), Some(code), "{out:?}");
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
     fn socket_read(&self, reference: &str) -> (Value, Vec<u8>, Value) {
         let socket =
             polylogue::socket_path(&fs::canonicalize(&self.archive).unwrap(), &self.runtime);
@@ -290,11 +166,6 @@ impl World {
                 other => panic!("unexpected frame {other}"),
             }
         }
-    }
-}
-impl Drop for World {
-    fn drop(&mut self) {
-        self.kill();
     }
 }
 fn reference() -> String {
@@ -386,10 +257,10 @@ fn assert_morrow(document: &Value) {
     assert_eq!(messages[4]["blocks"][0]["data"]["interrupted"], false);
 }
 #[test]
-fn actual_morrow_json_read_survives_provider_loss_sigkill_and_observation_replay() {
+fn morrow_json_read_survives_source_removal_kill_and_import_replay() {
     let mut world = World::new();
     let path = world.input("morrow.jsonl", MORROW);
-    let request = "01900000-0000-7000-8000-000000000201";
+    let request = &request_id(201);
     let receipt = world.import(&path, request);
     let id = receipt["input"]["id"].as_str().unwrap();
     assert_eq!(receipt["input"]["length"], MORROW.len() as u64);
@@ -401,7 +272,7 @@ fn actual_morrow_json_read_survives_provider_loss_sigkill_and_observation_replay
     assert_eq!(framed, document);
     assert_eq!(end["outcome"], "ok");
     assert_eq!(end["canonical_complete"], true);
-    world.restart(); // Child::kill sends SIGKILL; Drop waits before starting.
+    world.restart(); // SIGKILL, then a fresh daemon.
     let replay = world.import(&path, request);
     assert_eq!(replay["input"], receipt["input"]);
     assert_eq!(replay["request_id"], receipt["request_id"]);
@@ -424,14 +295,14 @@ fn actual_morrow_json_read_survives_provider_loss_sigkill_and_observation_replay
     assert_eq!(wait.status.code(), Some(2));
 }
 #[test]
-fn daemon_raw_frames_and_cli_both_mask_cross_piece_and_dense_credentials() {
+fn socket_frames_and_cli_both_mask_split_and_dense_credentials() {
     let world = World::new();
     let token = format!("ghp_{}", "A".repeat(36));
     let text = format!("{} {} suffix λ", "x".repeat(4089), token);
     let dense = (0..80).map(|_| json!({"short":token})).collect::<Vec<_>>();
     let raw=json!({"type":"assistant","uuid":"masked-message","sessionId":SID,"requestId":"masked-request","message":{"id":"masked-response","content":[{"type":"text","text":text},{"type":"tool_use","id":"masked-call","name":"Bash","input":{"command":"true","nested":dense}}],"stop_reason":"tool_use"}}).to_string()+"\n";
     let path = world.input("masked.jsonl", raw.as_bytes());
-    let receipt = world.import(&path, "01900000-0000-7000-8000-000000000202");
+    let receipt = world.import(&path, &request_id(202));
     let document = world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 1);
     let (socket, frames, end) = world.socket_read(&reference());
     assert_eq!(socket, document);
@@ -476,11 +347,11 @@ fn wait_message(world: &World, id: &str, native: &str) {
     }
 }
 #[test]
-fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() {
+fn cli_read_fails_on_pending_message_or_ambiguous_order() {
     let world = World::new();
     let mut raw = simple("ready", json!("ready text"));
     let path = world.input("ready.jsonl", &raw);
-    let first = world.import(&path, "01900000-0000-7000-8000-000000000203");
+    let first = world.import(&path, &request_id(203));
     let first_id = first["input"]["id"].as_str().unwrap();
     wait_message(&world, first_id, "ready");
     raw.extend(simple(
@@ -488,7 +359,7 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
         json!([{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]),
     ));
     let path = world.input("pending.jsonl", &raw);
-    let pending = world.import(&path, "01900000-0000-7000-8000-000000000204");
+    let pending = world.import(&path, &request_id(204));
     let deadline = Instant::now() + WAIT;
     loop {
         let p = world.raw_progress(pending["input"]["id"].as_str().unwrap());
@@ -498,7 +369,7 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
         }
         assert!(
             Instant::now() < deadline,
-            "unsupported image never became explicit: {p}"
+            "unsupported image was not reported as a failure: {p}"
         );
         thread::sleep(Duration::from_millis(5));
     }
@@ -511,10 +382,7 @@ fn actual_cli_refuses_pending_members_and_ambiguous_order_without_json_subset() 
     let world = World::new();
     for (index, native) in ["first", "independent"].into_iter().enumerate() {
         let path = world.input(&format!("{native}.jsonl"), &simple(native, json!(native)));
-        let receipt = world.import(
-            &path,
-            &format!("01900000-0000-7000-8000-{:012}", 205 + index),
-        );
+        let receipt = world.import(&path, &request_id(205 + index as u32));
         wait_message(&world, receipt["input"]["id"].as_str().unwrap(), native);
     }
     let out = world.cli(&[&reference(), "read", "--format", "json"]);
@@ -531,37 +399,25 @@ fn wait_import_context(
     path: &Path,
     request_id: &str,
     timeout: &str,
-    parts: &[&str],
+    context: &[&str],
 ) -> Output {
-    let context = world.work.path().join("context.json");
-    fs::write(&context, json!({"version":1,"context":parts}).to_string()).unwrap();
-    world.cli(&[
-        "import",
-        path.to_str().unwrap(),
-        "--format",
-        "claude-code-jsonl",
-        "--context",
-        context.to_str().unwrap(),
-        "--request-id",
+    world.import_cli(
+        path,
         request_id,
-        "--seen-at",
-        "17",
-        "--machine",
-        "00112233445566778899aabbccddeeff",
-        "--host",
-        "synthetic-collector",
-        "--wait",
-        "--wait-timeout",
-        timeout,
-    ])
+        context,
+        &["--wait", "--wait-timeout", timeout],
+    )
+}
+/// A fixed, valid request ID ending in `n`.
+fn request_id(n: u32) -> String {
+    format!("01900000-0000-7000-8000-{n:012}")
 }
 #[test]
-fn source_row_wait_settles_fixed_basis_then_provider_loss_restart_replays_without_claiming_session_complete()
- {
+fn import_wait_completes_rows_and_replay_after_restart_matches() {
     let mut world = World::new();
-    let bytes = simple("wait-row", json!("settled retained prompt"));
+    let bytes = simple("wait-row", json!("finished prompt"));
     let path = world.input("wait.jsonl", &bytes);
-    let id = "01900000-0000-7000-8000-000000000401";
+    let id = &request_id(401);
     let output = wait_import(&world, &path, id, "20");
     assert_eq!(output.status.code(), Some(0), "{output:?}; {}", world.log());
     let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -569,9 +425,7 @@ fn source_row_wait_settles_fixed_basis_then_provider_loss_restart_replays_withou
     assert_eq!(receipt["source_rows"]["scope"], "imported_source_rows");
     assert_eq!(receipt["source_rows"]["state"], "complete");
     assert_eq!(receipt["source_rows"]["parsed_from"]["length"], bytes.len());
-    let read = world.cli(&[&reference(), "read", "--format", "json"]);
-    assert_eq!(read.status.code(), Some(5));
-    let first: Value = serde_json::from_slice(&read.stdout).unwrap();
+    let first = world.read_json(&reference(), 5);
     assert_eq!(first["result"]["outcome"], "degraded");
     assert!(!first["result"]["notes"].as_array().unwrap().is_empty());
     fs::remove_file(&path).unwrap();
@@ -581,18 +435,16 @@ fn source_row_wait_settles_fixed_basis_then_provider_loss_restart_replays_withou
     let again: Value = serde_json::from_slice(&replay.stdout).unwrap();
     assert_eq!(again["input"], receipt["input"]);
     assert_eq!(again["source_rows"], receipt["source_rows"]);
-    let read = world.cli(&[&reference(), "read", "--format", "json"]);
-    assert_eq!(read.status.code(), Some(5));
-    let second: Value = serde_json::from_slice(&read.stdout).unwrap();
+    let second = world.read_json(&reference(), 5);
     assert_eq!(first["messages"], second["messages"]);
 }
 #[test]
-fn malformed_source_wait_keeps_usable_rows_degraded_and_names_retained_failure() {
+fn import_wait_on_malformed_record_keeps_good_rows_and_reports_the_error() {
     let mut world = World::new();
-    let mut bytes = simple("malformed-row", json!("known retained row"));
+    let mut bytes = simple("malformed-row", json!("known row"));
     bytes.extend_from_slice(b"{not json}\n");
     let path = world.input("malformed-wait.jsonl", &bytes);
-    let id = "01900000-0000-7000-8000-000000000402";
+    let id = &request_id(402);
     let output = wait_import(&world, &path, id, "20");
     assert_eq!(output.status.code(), Some(5), "{output:?}; {}", world.log());
     let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -608,17 +460,17 @@ fn malformed_source_wait_keeps_usable_rows_degraded_and_names_retained_failure()
     assert_eq!(replay.status.code(), Some(5), "{replay:?}");
 }
 #[test]
-fn incomplete_source_wait_times_out_without_certifying_from_a_later_peer() {
+fn import_wait_on_unfinished_tail_times_out_even_after_another_import_finishes() {
     let world = World::new();
     let mut bytes = simple("partial-row", json!("known prefix"));
     bytes.extend_from_slice(b"{\"unfinished\":");
     let path = world.input("partial-wait.jsonl", &bytes);
-    let id = "01900000-0000-7000-8000-000000000403";
+    let id = &request_id(403);
     let output = wait_import(&world, &path, id, "0");
     assert_eq!(output.status.code(), Some(7), "{output:?}");
     let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
     let peer = world.input("peer-wait.jsonl", b"\n");
-    let complete = wait_import(&world, &peer, "01900000-0000-7000-8000-000000000404", "20");
+    let complete = wait_import(&world, &peer, &request_id(404), "20");
     assert_eq!(complete.status.code(), Some(0), "{complete:?}");
     let output = wait_import(&world, &path, id, "1");
     assert_eq!(output.status.code(), Some(7), "{output:?}");
@@ -635,12 +487,12 @@ fn incomplete_source_wait_times_out_without_certifying_from_a_later_peer() {
 }
 
 #[test]
-fn disconnecting_a_source_waiter_keeps_the_retained_owner_and_peer_available() {
+fn disconnecting_a_waiting_import_leaves_the_daemon_working() {
     let world = World::new();
     let mut bytes = simple("disconnect-row", json!("prefix"));
     bytes.extend_from_slice(b"{\"unfinished\":");
     let path = world.input("disconnect-wait.jsonl", &bytes);
-    let id = "01900000-0000-7000-8000-000000000405";
+    let id = &request_id(405);
     let receipt = world.import(&path, id);
     let context = world.work.path().join("context.json");
     let mut client = OwnedChild(
@@ -680,7 +532,7 @@ fn disconnecting_a_source_waiter_keeps_the_retained_owner_and_peer_available() {
     assert!(client.0.try_wait().unwrap().is_none());
     drop(client);
     let peer = world.input("after-disconnect.jsonl", b"\n");
-    let output = wait_import(&world, &peer, "01900000-0000-7000-8000-000000000406", "20");
+    let output = wait_import(&world, &peer, &request_id(406), "20");
     assert_eq!(output.status.code(), Some(0), "{output:?}; {}", world.log());
     assert_eq!(
         world.raw_progress(receipt["input"]["id"].as_str().unwrap())["source_rows"]["state"],
@@ -689,12 +541,12 @@ fn disconnecting_a_source_waiter_keeps_the_retained_owner_and_peer_available() {
 }
 
 #[test]
-fn source_wait_never_turns_no_usable_interpretation_or_unsupported_body_into_empty_success() {
+fn import_wait_reports_unreadable_or_unsupported_input_as_an_error() {
     for (name, bytes, id) in [
         (
             "only-malformed",
             b"{invalid json}\n".to_vec(),
-            "01900000-0000-7000-8000-000000000407",
+            &request_id(407),
         ),
         (
             "unsupported-image",
@@ -702,7 +554,7 @@ fn source_wait_never_turns_no_usable_interpretation_or_unsupported_body_into_emp
                 "unsupported",
                 json!([{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]),
             ),
-            "01900000-0000-7000-8000-000000000408",
+            &request_id(408),
         ),
     ] {
         let mut world = World::new();
@@ -718,7 +570,7 @@ fn source_wait_never_turns_no_usable_interpretation_or_unsupported_body_into_emp
         assert_eq!(reply["outcome"], "error");
         assert_eq!(reply["source_rows"]["state"], "unavailable");
         assert_eq!(reply["source_rows"]["usable_result"], false);
-        assert!(reply["error"]["message"].as_str().unwrap().len() > 0);
+        assert!(!reply["error"]["message"].as_str().unwrap().is_empty());
         fs::remove_file(&path).unwrap();
         world.restart();
         let retry = wait_import(&world, &path, id, "20");
@@ -726,12 +578,12 @@ fn source_wait_never_turns_no_usable_interpretation_or_unsupported_body_into_emp
     }
 }
 #[test]
-fn retained_byte_eof_stays_pending_until_real_message_effects_are_published() {
+fn reaching_eof_stays_pending_until_messages_are_published() {
     let world = World::new();
     let text = "source effect ".repeat(15000);
     let bytes = simple("large-canonical-effect", json!(text));
     let path = world.input("eof-before-effects.jsonl", &bytes);
-    let id = "01900000-0000-7000-8000-000000000409";
+    let id = &request_id(409);
     let receipt = world.import(&path, id);
     let input = receipt["input"]["id"].as_str().unwrap();
     let deadline = Instant::now() + WAIT;
@@ -741,7 +593,7 @@ fn retained_byte_eof_stays_pending_until_real_message_effects_are_published() {
         if p["parser"]["parsed_upto"] == receipt["input"]["length"] {
             assert_eq!(
                 p["source_rows"]["state"], "pending",
-                "did not observe the actual EOF-before-canonical boundary: {p}"
+                "rows were complete as soon as parsing reached EOF: {p}"
             );
             assert_eq!(p["parser"]["finalization_pending"], true);
             break;
@@ -749,25 +601,23 @@ fn retained_byte_eof_stays_pending_until_real_message_effects_are_published() {
         assert!(Instant::now() < deadline, "{p}");
         thread::sleep(Duration::from_millis(2));
     }
-    let settled = wait_import(&world, &path, id, "30");
+    let finished = wait_import(&world, &path, id, "30");
     assert_eq!(
-        settled.status.code(),
+        finished.status.code(),
         Some(0),
-        "{settled:?}; {}",
+        "{finished:?}; {}",
         world.log()
     );
-    let read = world.cli(&[&reference(), "read", "--format", "json"]);
-    assert_eq!(read.status.code(), Some(5));
-    let doc: Value = serde_json::from_slice(&read.stdout).unwrap();
+    let doc = world.read_json(&reference(), 5);
     assert_eq!(doc["messages"][0]["blocks"][0]["text"], text);
 }
 
 #[test]
-fn admission_refusal_and_provider_diagnostics_are_named_without_credential_disclosure() {
+fn size_limit_and_provider_errors_are_reported_without_credentials() {
     let world = World::new();
     let bytes = simple("too-large-member", json!("capacity ".repeat(70000)));
-    let path = world.input("admission-wait.jsonl", &bytes);
-    let out = wait_import(&world, &path, "01900000-0000-7000-8000-000000000410", "20");
+    let path = world.input("limit-wait.jsonl", &bytes);
+    let out = wait_import(&world, &path, &request_id(410), "20");
     assert_eq!(out.status.code(), Some(2), "{out:?}; {}", world.log());
     let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(failure["source_rows"]["state"], "unavailable");
@@ -779,7 +629,7 @@ fn admission_refusal_and_provider_diagnostics_are_named_without_credential_discl
     record["message"][&secret] = json!("unsupported metadata");
     let bytes = (record.to_string() + "\n").into_bytes();
     let path = world.input("diagnostic-wait.jsonl", &bytes);
-    let out = wait_import(&world, &path, "01900000-0000-7000-8000-000000000411", "20");
+    let out = wait_import(&world, &path, &request_id(411), "20");
     assert_eq!(out.status.code(), Some(2), "{out:?}; {}", world.log());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(!text.contains(&secret), "{text}");
@@ -794,21 +644,16 @@ fn admission_refusal_and_provider_diagnostics_are_named_without_credential_discl
 }
 
 #[test]
-fn session_document_includes_malformed_only_and_possible_foreign_link_sources() {
+fn session_document_reports_malformed_inputs_and_possible_foreign_links() {
     let mut world = World::new();
     let clean = world.input(
-        "qualified-main.jsonl",
-        &simple("qualified-row", json!("retained direct Session row")),
+        "clean-main.jsonl",
+        &simple("clean-row", json!("direct session row")),
     );
-    let good = wait_import(&world, &clean, "01900000-0000-7000-8000-000000000420", "20");
+    let good = wait_import(&world, &clean, &request_id(420), "20");
     assert_eq!(good.status.code(), Some(0), "{good:?}");
     let malformed = world.input("only-malformed.jsonl", b"{not json}\n");
-    let bad = wait_import(
-        &world,
-        &malformed,
-        "01900000-0000-7000-8000-000000000421",
-        "20",
-    );
+    let bad = wait_import(&world, &malformed, &request_id(421), "20");
     assert_eq!(bad.status.code(), Some(2), "{bad:?}");
     let bad_receipt: Value = serde_json::from_slice(&bad.stdout).unwrap();
     assert_eq!(bad_receipt["source_rows"]["usable_result"], false);
@@ -816,7 +661,7 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
     let peer_out = wait_import_context(
         &world,
         &peer,
-        "01900000-0000-7000-8000-000000000422",
+        &request_id(422),
         "0",
         &["claude-main", "unrelated-main"],
     );
@@ -853,20 +698,18 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
     assert_eq!(socket, first);
     assert_eq!(end["unknown"], first["result"]["unknown"]);
     assert_eq!(end["notes"], first["result"]["notes"]);
-    // A subagent's parent is not proved by its folder or by any matching row.
-    // Its malformed record cannot be attributed to A; the dependency is named.
+    // A subagent's parent is not known from its folder or a matching row, so
+    // its malformed record is reported as an unresolved dependency.
     let subagent = world.input("unresolved-subagent.jsonl", b"{unreadable}\n");
     let unresolved = wait_import_context(
         &world,
         &subagent,
-        "01900000-0000-7000-8000-000000000424",
+        &request_id(424),
         "20",
         &["claude-subagent", "synthetic-agent"],
     );
     assert_eq!(unresolved.status.code(), Some(2), "{unresolved:?}");
-    let qualified = world.cli(&[&reference(), "read", "--format", "json"]);
-    assert_eq!(qualified.status.code(), Some(5));
-    let first: Value = serde_json::from_slice(&qualified.stdout).unwrap();
+    let first = world.read_json(&reference(), 5);
     assert_eq!(first["result"]["unknown"]["record_errors"], 1);
     assert!(
         first["result"]["notes"]
@@ -878,15 +721,10 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
                 .unwrap()
                 .contains("dependency shapes are unresolved"))
     );
-    // Another observation/path into the identical context-qualified input is
-    // the same failure identity, not a second Session/candidate dependency.
+    // The same bytes and context under another path are the same input, not
+    // a second dependency.
     let copied = world.input("copied-malformed.jsonl", b"{not json}\n");
-    let repeated = wait_import(
-        &world,
-        &copied,
-        "01900000-0000-7000-8000-000000000423",
-        "20",
-    );
+    let repeated = wait_import(&world, &copied, &request_id(423), "20");
     assert_eq!(repeated.status.code(), Some(2));
     assert_eq!(
         serde_json::from_slice::<Value>(&repeated.stdout).unwrap()["input"],
@@ -895,8 +733,8 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
     let reread = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(reread.status.code(), Some(5));
     assert_eq!(
-        without_settlement(serde_json::from_slice::<Value>(&reread.stdout).unwrap()),
-        without_settlement(first.clone())
+        without_completion(serde_json::from_slice::<Value>(&reread.stdout).unwrap()),
+        without_completion(first.clone())
     );
     fs::remove_file(&clean).unwrap();
     fs::remove_file(&malformed).unwrap();
@@ -904,12 +742,7 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
     fs::remove_file(&peer).unwrap();
     fs::remove_file(&subagent).unwrap();
     world.restart();
-    let replay = wait_import(
-        &world,
-        &malformed,
-        "01900000-0000-7000-8000-000000000421",
-        "20",
-    );
+    let replay = wait_import(&world, &malformed, &request_id(421), "20");
     assert_eq!(replay.status.code(), Some(2));
     assert_eq!(
         serde_json::from_slice::<Value>(&replay.stdout).unwrap()["input"],
@@ -918,13 +751,13 @@ fn session_document_includes_malformed_only_and_possible_foreign_link_sources() 
     let read = world.cli(&[&reference(), "read", "--format", "json"]);
     assert_eq!(read.status.code(), Some(5));
     assert_eq!(
-        without_settlement(serde_json::from_slice::<Value>(&read.stdout).unwrap()),
-        without_settlement(first.clone())
+        without_completion(serde_json::from_slice::<Value>(&read.stdout).unwrap()),
+        without_completion(first.clone())
     );
 }
 
 #[test]
-fn ordinary_listing_and_prose_search_share_retained_ids_and_population_qualification() {
+fn listing_and_text_search_return_the_same_session_ids_and_status() {
     let mut world = World::new();
     let empty = world.cli(&["sessions", "--json"]);
     assert_eq!(empty.status.code(), Some(1), "{empty:?}");
@@ -943,12 +776,7 @@ fn ordinary_listing_and_prose_search_share_retained_ids_and_population_qualifica
         "prose-search.jsonl",
         &(prose.to_string() + "\n").into_bytes(),
     );
-    let ready = wait_import(
-        &world,
-        &source,
-        "01900000-0000-7000-8000-000000000430",
-        "20",
-    );
+    let ready = wait_import(&world, &source, &request_id(430), "20");
     assert_eq!(ready.status.code(), Some(0), "{ready:?}");
     let listed = world.cli(&["origin:claude-code", "list", "--json"]);
     assert_eq!(listed.status.code(), Some(5), "{listed:?}");
@@ -1017,12 +845,7 @@ fn prose_conjunction_crosses_text_blocks_but_phrases_do_not() {
     .unwrap();
     record["promptSource"] = json!("typed");
     let source = world.input("split-prose.jsonl", (record.to_string() + "\n").as_bytes());
-    let ready = wait_import(
-        &world,
-        &source,
-        "01900000-0000-7000-8000-000000000434",
-        "20",
-    );
+    let ready = wait_import(&world, &source, &request_id(434), "20");
     assert_eq!(ready.status.code(), Some(0), "{ready:?}");
     for (query, count) in [
         ("boundaryfirst boundarysecond", 1),
@@ -1036,11 +859,11 @@ fn prose_conjunction_crosses_text_blocks_but_phrases_do_not() {
     }
 }
 #[test]
-fn query_unknown_population_is_not_completed_empty_and_request_shapes_refuse() {
+fn query_with_unreadable_inputs_is_degraded_and_unsupported_syntax_fails() {
     let world = World::new();
     let empty = world.input("query-empty.jsonl", b"\n");
     assert_eq!(
-        wait_import(&world, &empty, "01900000-0000-7000-8000-000000000431", "20")
+        wait_import(&world, &empty, &request_id(431), "20")
             .status
             .code(),
         Some(0)
@@ -1048,14 +871,9 @@ fn query_unknown_population_is_not_completed_empty_and_request_shapes_refuse() {
     assert_eq!(world.cli(&["sessions", "--json"]).status.code(), Some(1));
     let malformed = world.input("query-malformed-only.jsonl", b"{not json}\n");
     assert_eq!(
-        wait_import(
-            &world,
-            &malformed,
-            "01900000-0000-7000-8000-000000000432",
-            "20"
-        )
-        .status
-        .code(),
+        wait_import(&world, &malformed, &request_id(432), "20")
+            .status
+            .code(),
         Some(2)
     );
     let query = world.cli(&["sessions", "--json"]);
@@ -1069,7 +887,7 @@ fn query_unknown_population_is_not_completed_empty_and_request_shapes_refuse() {
         wait_import_context(
             &world,
             &sub,
-            "01900000-0000-7000-8000-000000000433",
+            &request_id(433),
             "20",
             &["claude-subagent", "synthetic-agent"]
         )
@@ -1095,9 +913,9 @@ fn query_unknown_population_is_not_completed_empty_and_request_shapes_refuse() {
     }
 }
 
-fn without_settlement(mut document: Value) -> Value {
-    // New observations bind a new read basis even when source payloads and
-    // retained failure identities are unchanged.
+fn without_completion(mut document: Value) -> Value {
+    // A new observation changes what the read was computed from even when
+    // the content and failures are the same.
     document["result"]
         .as_object_mut()
         .unwrap()
@@ -1112,12 +930,7 @@ fn metadata_only_source_is_not_a_complete_empty_selection() {
         "metadata-only.jsonl",
         b"{\"type\":\"ai-title\",\"aiTitle\":\"Synthetic title\"}\n",
     );
-    let imported = wait_import(
-        &world,
-        &source,
-        "01900000-0000-7000-8000-000000000440",
-        "20",
-    );
+    let imported = wait_import(&world, &source, &request_id(440), "20");
     assert_eq!(imported.status.code(), Some(0));
     let selected = world.cli(&[&reference(), "--json"]);
     assert_eq!(
@@ -1136,11 +949,11 @@ fn metadata_only_source_is_not_a_complete_empty_selection() {
 }
 
 #[test]
-fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citation_after_restart() {
-    // This positive, multi-snapshot fixture shares the suite's bounded WAIT.
-    // A short CLI wait can expire under parallel debug-test load while the
-    // retained owner continues; retry only that same receipt and fixed basis.
-    fn settled_import(world: &World, path: &Path, request_id: &str) -> Output {
+fn appended_snapshot_completes_and_cites_both_inputs_after_restart() {
+    // Under parallel debug-test load a CLI wait can time out while the daemon
+    // keeps working; retry the same request until WAIT, checking that the
+    // input and parsed range never change.
+    fn finished_import(world: &World, path: &Path, request_id: &str) -> Output {
         let started = Instant::now();
         let deadline = started + WAIT;
         let mut original = None;
@@ -1164,20 +977,16 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
             });
             assert_eq!(receipt["request_id"], request_id, "{receipt}");
             assert_eq!(receipt["seen_at"], 17, "{receipt}");
-            let retained_basis =
-                json!({"retained":receipt["input"],"basis":receipt["source_rows"]["parsed_from"]});
+            let input = json!({"input":receipt["input"],"parsed_from":receipt["source_rows"]["parsed_from"]});
             if let Some(expected) = &original {
-                assert_eq!(
-                    &retained_basis, expected,
-                    "retry changed immutable retained basis"
-                );
+                assert_eq!(&input, expected, "retry changed the stored input");
             } else {
-                original = Some(retained_basis);
+                original = Some(input);
             }
             if out.status.success() {
                 assert_eq!(receipt["source_rows"]["state"], "complete", "{receipt}");
                 eprintln!(
-                    "compatible import {request_id} settled after {attempts} attempt(s), {:?}",
+                    "compatible import {request_id} finished after {attempts} attempt(s), {:?}",
                     started.elapsed()
                 );
                 return out;
@@ -1208,7 +1017,7 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
     }
     let mut world = World::new();
     let path = world.input("compatible-snapshot.jsonl", MORROW);
-    let base = settled_import(&world, &path, "01900000-0000-7000-8000-000000000700");
+    let base = finished_import(&world, &path, &request_id(700));
     assert_eq!(base.status.code(), Some(0), "{base:?}; {}", world.log());
     let base: Value = serde_json::from_slice(&base.stdout).unwrap();
     let base_input = base["input"]["id"].as_str().unwrap();
@@ -1227,7 +1036,7 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
     }
     stream.sync_all().unwrap();
     drop(stream);
-    let appended = settled_import(&world, &path, "01900000-0000-7000-8000-000000000701");
+    let appended = finished_import(&world, &path, &request_id(701));
     assert_eq!(
         appended.status.code(),
         Some(0),
@@ -1267,8 +1076,8 @@ fn compatible_full_snapshot_append_settles_once_and_preserves_every_input_citati
             .ends_with(":compatible-append-model")
     );
     fs::remove_file(&path).unwrap();
-    world.restart(); // Genuine SIGKILL; ordinary current-index WAL reuse remains supported.
-    let replay = settled_import(&world, &path, "01900000-0000-7000-8000-000000000701");
+    world.restart(); // SIGKILL; the index WAL is reused on start.
+    let replay = finished_import(&world, &path, &request_id(701));
     assert_eq!(replay.status.code(), Some(0), "{replay:?}; {}", world.log());
     let replay: Value = serde_json::from_slice(&replay.stdout).unwrap();
     assert_eq!(replay["input"], appended["input"]);
@@ -2384,8 +2193,8 @@ fn model_full_transcript_refuses_zero_block_message_before_claiming_completed_fi
 #[path = "session_read/observed_prefix.rs"]
 mod observed_prefix;
 
-#[path = "session_read/donor_core.rs"]
-mod donor_core;
+#[path = "session_read/codex_reads.rs"]
+mod codex_reads;
 
 #[path = "session_read/block_metadata.rs"]
 mod block_metadata;

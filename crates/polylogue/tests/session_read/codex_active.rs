@@ -1,4 +1,4 @@
-//! Modern flat-path membership needs source-defined ordinary events, not EOF.
+//! Codex active path: built from the source's ordinary events, not from EOF.
 use super::*;
 fn row(kind: &str, payload: Value) -> Value {
     json!({"type":kind,"payload":payload})
@@ -86,7 +86,7 @@ fn page(world: &World, sid: &str, branches: bool) -> Value {
     model_call(world, &call, Some(65000))
 }
 #[test]
-fn each_finite_event_family_and_empty_legacy_effects_preserve_current_default_values() {
+fn each_event_family_and_empty_legacy_events_keep_default_values() {
     let mut world = World::new();
     for family in [
         "none",
@@ -133,7 +133,7 @@ fn each_finite_event_family_and_empty_legacy_effects_preserve_current_default_va
     assert_ne!(page(&world, "flat-legacy", false)["outcome"], "error");
 }
 #[test]
-fn malformed_unknown_topology_and_lineage_controls_remain_unavailable() {
+fn malformed_or_unknown_topology_and_lineage_events_stay_unavailable() {
     let world = World::new();
     for mode in [
         "malformed",
@@ -176,7 +176,7 @@ fn malformed_unknown_topology_and_lineage_controls_remain_unavailable() {
     }
 }
 #[test]
-fn an_incomplete_tail_cannot_borrow_benign_event_authority() {
+fn an_unfinished_tail_keeps_the_active_path_unavailable() {
     let mut world = World::new();
     let mut raw = bytes(&ordinary("flat-partial", "all"));
     raw.extend_from_slice(b"{\"type\":\"event_msg\",\"payload\":");
@@ -190,7 +190,7 @@ fn an_incomplete_tail_cannot_borrow_benign_event_authority() {
 }
 
 #[test]
-fn a_lawful_input_correction_keeps_current_body_and_origin_without_inventing_a_result() {
+fn input_correction_keeps_current_body_and_origin_without_a_made_up_result() {
     let mut world = World::new();
     let mut records = ordinary("flat-correction", "all");
     for input in ["first", "changed"] {

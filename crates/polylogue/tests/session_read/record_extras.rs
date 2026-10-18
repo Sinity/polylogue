@@ -2,7 +2,7 @@
 use super::*;
 use polylogue_model::RawJson;
 #[test]
-fn repeated_record_extra_selects_one_supplier_in_public_routes() {
+fn repeated_record_extra_comes_from_one_record_in_reads() {
     let world = World::new();
     let usage = r#"{"number":9007199254740993,"text":"\ud800","none":null}"#;
     let row = |uuid: &str, text: &str, extra: &str| {

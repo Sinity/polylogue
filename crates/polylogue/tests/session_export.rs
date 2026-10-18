@@ -1,61 +1,17 @@
 //! `export` through the CLI and a real daemon, using the synthetic Morrow fixture.
 use serde_json::{Value, json};
 use std::{
-    fs::{self, File},
-    path::{Path, PathBuf},
-    process::{Child, Command, Output, Stdio},
+    fs,
+    path::Path,
+    process::{Command, Output, Stdio},
     thread,
     time::{Duration, Instant},
 };
-const BINARY: &str = env!("CARGO_BIN_EXE_polylogue");
 const SID: &str = "7f3a2c10-0001-4000-8000-000000000001";
 const MORROW: &[u8] = include_bytes!("../../sources/tests/fixtures/morrow-main.jsonl");
-struct World {
-    child: Child,
-    work: tempfile::TempDir,
-    runtime: tempfile::TempDir,
-    archive: PathBuf,
-}
+mod support;
+use support::{BINARY, OwnedChild, World};
 impl World {
-    fn new() -> Self {
-        let work = tempfile::tempdir().unwrap();
-        // Only socket dentries use the short tmpfs path.
-        let runtime = tempfile::tempdir_in("/tmp").unwrap();
-        let archive = work.path().join("archive");
-        let log = File::create(work.path().join("daemon.log")).unwrap();
-        let child = Command::new(BINARY)
-            .args(["--archive", archive.to_str().unwrap(), "daemon"])
-            .env("XDG_RUNTIME_DIR", runtime.path())
-            .stdout(Stdio::null())
-            .stderr(log)
-            .spawn()
-            .unwrap();
-        let mut world = Self {
-            child,
-            work,
-            runtime,
-            archive,
-        };
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let out = world.cli(&["status"]);
-            if out.status.success() {
-                break;
-            }
-            assert!(world.child.try_wait().unwrap().is_none(), "{out:?}");
-            assert!(Instant::now() < deadline, "{out:?}");
-            thread::sleep(Duration::from_millis(10));
-        }
-        world
-    }
-    fn cli(&self, args: &[&str]) -> Output {
-        Command::new(BINARY)
-            .args(["--archive", self.archive.to_str().unwrap()])
-            .args(args)
-            .env("XDG_RUNTIME_DIR", self.runtime.path())
-            .output()
-            .unwrap()
-    }
     fn import(&self, native: &str, bytes: &[u8], request: &str) {
         let source = self.work.path().join("provider.jsonl");
         let context = self.work.path().join("context.json");
@@ -96,12 +52,6 @@ impl World {
             "--to",
             to.to_str().unwrap(),
         ])
-    }
-}
-impl Drop for World {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 fn read(path: &Path) -> Value {
@@ -248,13 +198,6 @@ fn ctrl_c_during_a_partial_frame_exits_without_writing_the_export() {
         os::unix::{net::UnixListener, process::ExitStatusExt},
         sync::mpsc,
     };
-    struct Owned(Child);
-    impl Drop for Owned {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
     let work = tempfile::tempdir().unwrap();
     let runtime = tempfile::tempdir_in("/tmp").unwrap();
     let archive = work.path().join("archive");
@@ -313,7 +256,7 @@ fn ctrl_c_during_a_partial_frame_exits_without_writing_the_export() {
         let mut byte = [0];
         stream.read(&mut byte)
     });
-    let mut client = Owned(
+    let mut client = OwnedChild(
         Command::new(BINARY)
             .args([
                 "--archive",

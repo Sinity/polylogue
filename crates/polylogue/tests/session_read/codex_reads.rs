@@ -1,4 +1,4 @@
-//! Actual public default transcript reads require retained flat-path evidence.
+//! Codex session reads: usage, flat conversations and corrected user echoes.
 use super::*;
 
 fn codex_import(world: &World, name: &str, bytes: &[u8]) -> Value {
@@ -31,7 +31,7 @@ fn codex_import(world: &World, name: &str, bytes: &[u8]) -> Value {
 }
 
 #[test]
-fn numeric_codex_usage_publishes_exact_source_backed_reads_and_survives_restart() {
+fn codex_usage_counts_read_back_with_sources_after_restart() {
     for (counts, expected) in [
         (
             json!({"input_tokens":100,"cached_input_tokens":40,"output_tokens":7,"cache_write_input_tokens":2,"reasoning_output_tokens":3}),
@@ -76,7 +76,7 @@ fn numeric_codex_usage_publishes_exact_source_backed_reads_and_survives_restart(
 }
 
 #[test]
-fn flat_codex_conversations_read_without_branches_but_rollback_and_ambiguous_controls_refuse() {
+fn flat_codex_conversations_read_but_rollback_and_ambiguous_controls_fail() {
     for (name, reference, bytes) in [
         (
             "legacy.jsonl",
@@ -144,7 +144,7 @@ fn flat_codex_conversations_read_without_branches_but_rollback_and_ambiguous_con
 }
 
 #[test]
-fn mixed_prompt_history_cannot_certify_complete_codex_conversation_membership() {
+fn mixed_prompt_history_keeps_codex_conversation_incomplete() {
     let mut world = World::new();
     codex_import(
         &world,
@@ -235,7 +235,7 @@ fn has_codex_range(message: &Value, input: &str, range: (u64, u64)) -> bool {
         .any(|s| s["input"] == input && s["start"] == range.0 && s["end"] == range.1)
 }
 #[test]
-fn codex_native_correspondence_echo_materializes_retracts_and_reapplies_exact_donors() {
+fn codex_user_echo_is_added_retracted_and_reapplied_from_the_right_record() {
     for case in [
         "confirmed",
         "retracted",
@@ -299,13 +299,13 @@ fn codex_native_correspondence_echo_materializes_retracts_and_reapplies_exact_do
         if let Some(index) = supplier {
             assert!(
                 has_codex_range(message, input, ranges[index]),
-                "{case}: missing exact author donor {doc}"
+                "{case}: message does not cite the author record {doc}"
             );
         }
         if matches!(case, "retracted" | "source-human" | "event-human") {
             assert!(
                 !has_codex_range(message, input, ranges[3]),
-                "{case}: stale typed echo donor {doc}"
+                "{case}: message still cites the retracted echo {doc}"
             );
         }
         if case == "source-human" {
@@ -336,7 +336,7 @@ fn codex_native_correspondence_echo_materializes_retracts_and_reapplies_exact_do
     }
 }
 #[test]
-fn codex_native_correspondence_model_snapshots_keep_response_values_and_origins() {
+fn codex_echo_snapshots_keep_response_values_and_origins() {
     let header = codex_echo_record("session_meta", json!({"id":"native-model","source":"cli"}));
     let context = codex_echo_record("turn_context", json!({"turn_id":"T"}));
     let reasoning = codex_echo_record(
@@ -411,9 +411,9 @@ fn codex_native_correspondence_model_snapshots_keep_response_values_and_origins(
             baseline = Some(comparable);
         }
         for field in message["field_origins"].as_array().unwrap() {
-            for donor in field["origin"]["selection"]["inputs"].as_array().unwrap() {
-                let start = donor["record"]["start"].as_u64().unwrap() as usize;
-                let end = donor["record"]["end"].as_u64().unwrap() as usize;
+            for source in field["origin"]["selection"]["inputs"].as_array().unwrap() {
+                let start = source["record"]["start"].as_u64().unwrap() as usize;
+                let end = source["record"]["end"].as_u64().unwrap() as usize;
                 let source: Value = serde_json::from_slice(&bytes.as_bytes()[start..end]).unwrap();
                 assert_ne!(
                     source["type"], "event_msg",
