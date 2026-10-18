@@ -8,14 +8,16 @@ Both crates are independent of the product workspace: edition 2021, explicit dep
 
 ## Check a release
 
-On a clean, committed checkout:
+On a clean, committed checkout, inside `nix develop`:
 
 ```sh
-agentctl job start <checkout> shared_file_layer_check --workspace <checkout>
-agentctl job start <checkout> shared_credential_output_check --workspace <checkout>
+cargo package --locked -p hashed-blobs -p credential-output
 ```
 
-These run `scripts/check-shared-file-layer.py` (with `--package credential-output` for the second). It packages the crate, unpacks it outside the workspace, checks the license and source, rejects backend dependencies (tokio, SQLite, Sinex or Polylogue crates), and runs the unpacked crate's tests. It then tags the commit in a temporary clone and builds a small consumer against that tag, with and without default features. This checks packaging and Git resolution, not the remote tag.
+This packs each crate, unpacks it outside the workspace and builds it on its
+own, which catches missing files and undeclared dependencies. The crates'
+tests run in the full suite (`cargo run -p xtask -- check`), and
+`xtask boundaries` rejects internal or SQLite dependencies in either crate.
 
 ## Publish
 

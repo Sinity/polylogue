@@ -18,8 +18,6 @@ When independently acquired conversation evidence publishes the same opaque prov
 
 Startup admission bounds are 512 visited directory entries, depth 8, 512 catalog rows and 512 attempted combined rollout paths. A larger known union is deferred with `deferred_rollout_paths`, counting known prefix paths not attempted at startup; it is not a total provider population. This keeps startup usable for the running cursor. `--until-idle` reports that finite admission without starting continuation. Individual files and the catalog are at most 16 MiB; one startup captures at most 32 MiB. Prompt snapshots admit 1 MiB and 4096 references; public projection examines a prefix of at most 512 retained prompt snapshots, 4 MiB total prompt bytes and five seconds of work. Its reference sample admits 8 KiB and snapshot sample 4 KiB, with explicit omitted/unknown counts. Startup acquisition metadata samples fit 16 KiB independently of completed capture. The existing rollout parser and operation publication/read bounds also apply. Admission failures refuse or explicitly account for partial acquisition, never certify an empty population.
 
-`scripts/check-codex-discovery.py --binary PATH --output NEW_DIR` exercises an exact packaged binary through ordinary CLI and actual SDK MCP processes. The declared `configured_codex_demo` operation retains command/reply files, daemon logs, binary SHA-256 and a report. Controls cover an empty catalog with an omitted rollout, prompt-only pending evidence, restart, removing only the owned rollout, later conversation identity, changed/malformed prompt snapshots, inaccessible versus empty sources, corrupt catalog catalog-relative paths, 64 prompt references and 301 readable rollout paths that exceed the public detail samples. That demonstration does not qualify physical history acquisition, catalog reconciliation, rewrite lineage, source defaults or activation.
-
 Running continuation exposes `status.continuation` separately from the immutable startup acquisition report. Each last finished turn names catalog and rollout availability, exact admitted union-path prefix units, enumeration cycle and completion, examined/unchanged/acquired/failed file counts, charged source bytes, deferred candidates and history byte availability. `pass_active` marks current work; prior finished details remain historical until that turn ends. `partial` enumeration has an unknown total and keeps its cursor. `accessible_empty` is reserved for a completed empty accessible cycle. Source failures remain unavailable, while other retained reads remain usable. These observations never certify general conversation or Session coverage.
 
 A store-owned cursor retains at most nine directory iterators and advances at most 512 directory entries per turn. It preserves position rather than restarting a capped prefix, starts another cycle after EOF, and resets when the configured root's identity changes. One admitted batch holds the union of at most 512 filesystem rollout paths and 512 catalog paths, plus one prompt path. Independent admitted prefixes remain owed; the batch contains at most 1025 candidates. It drains over as many turns as necessary before discovery advances. Per-turn limits are 512 evaluated candidates and 32 MiB of declared source bytes including one descriptor guard byte each. Unused capacity is released at turn end; the next turn receives its ordinary capacity. There is no process-lifetime snapshot or byte quota. `budget_exhausted` and `deferred_candidates` describe unfinished work, with ordinary polling continuing it automatically.
@@ -27,8 +25,6 @@ A store-owned cursor retains at most nine directory iterators and advances at mo
 Fingerprints and stable-descriptor capture run outside the writer. Before reading provider content each turn, the existing owner checks its acquisition/refusal policy. Store's existing retained input and machine/host/path observation metadata recognize previously acquired identical content without creating another request, observation or input. This requires no growing in-memory path cache or new table. Changed candidates use the existing owner import slot, with expected length and content hash checked before source mutation. Required privacy/removal checks remain mandatory. Capture and interpretation retain existing owner fairness; the single polling worker shares cooperative daemon cancellation and joins on shutdown. No extra parser, writer, service or general watcher framework is registered.
 
 The catalog remains a separate read-only finite snapshot of at most 512 rows, with explicit unknown/partial scope when that admission is exceeded. This route does not collect native database pages or repair catalog membership. Independent filesystem continuation can progress beyond a larger catalog or directory prefix. A finite enumeration turn and a complete provider conversation remain separate claims. Removing a provider file preserves retained snapshots and citations. A file waiting while stopped is considered by the next configured startup; `--until-idle` still owns only that startup snapshot.
-
-`scripts/check-codex-continuation.py --binary PATH --output NEW_DIR`, exposed as `configured_codex_continuation_demo`, exercises two later batches through ordinary CLI and official-SDK MCP discovery/read without supplied answer IDs, including an omitted-catalog rollout. Controls also cross reusable turn capacity with many small waves, discover a later rollout beyond one directory prefix, revisit an appended supported rollout, distinguish partial/unavailable/completed-empty acquisition, preserve unchanged source effects and retained citations, catch a waiting restart batch, and interrupt active collection with SIGINT. Private reports record actual acquisition-to-query delay, daemon CPU/RSS/high-water memory, archive bytes, file descriptors and interventions. These finite measurements are not hard RSS or complete source-coverage claims; prior startup controls remain separate evidence.
 
 ## Physical history
 
@@ -101,23 +97,3 @@ coverage. Polling does not repair the provider database or its thread catalog.
 exact acquired input, or retains explicit acquisition unavailability. Its finite
 120-second caller timeout reports pending work honestly; it does not certify an
 idle/empty history or impose an acquisition-format size limit.
-
-`scripts/check-configured-history.py`, declared as `configured_history_demo`, is
-the candidate packaged CLI/MCP acceptance driver. It requires explicit
-`--sdk-python` and `--sdk-client` paths for the pinned official joint SDK adapter,
-freezes its source dependencies into the private result directory, and records
-actual SDK version/context-close receipts separately from direct JSON-RPC controls.
-Both routes discover operation references before exact fact/origin checks.
-It independently checks scoped
-rollout/history correspondence, committed WAL-only rows, an uncommitted distractor,
-terminal failure/exit-code facts, later same-daemon publication, restart, provider
-removal and unsupported-schema retention. Its answer oracle rejects damaged result,
-row, verdict, session/turn scope, conflicting origin, uncommitted-presence and
-invented-tool controls. The reusable-turn controls additionally test correlated
-WAL commits across small quanta, actual regular capture/read service before
-physical selection, earlier complete reads during pending work, cancellation and
-killed-process fresh-view retry. Qualification requires the exact candidate
-package and public journey; an earlier package does not establish changed semantics.
-The driver records daemon/MCP reaping and runtime removal before reporting success.
-These finite controls do not qualify private corpora, multi-GB resource costs,
-rollback-writer availability, cumulative patch-storage amortization or full Sessions.

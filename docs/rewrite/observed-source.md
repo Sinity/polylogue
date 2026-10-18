@@ -64,18 +64,6 @@ returns `Timeout`. The client preserves these typed failures. Verification and
 presentation check peer disappearance at bounded read boundaries; disconnecting
 a read does not cancel the retained source owner.
 
-The independent `observed_source_demo` operation accepts `--binary ABSOLUTE_PATH
---output NEW_DIRECTORY`. It exercises actual daemon and CLI processes, captures
-all attempted client commands and their streams, and keeps `report.json` even
-when a check fails. It distinguishes an owned process kill after retention while
-row work is pending from exact internal install-boundary interruption. Store
-unit controls separately cover registration failure after archive commit,
-missing/overlapping extents, replacement, prefix mutation and short capture.
-The shipped checker validates complete Session, Message and block identities,
-logical text, source spans and decoded origin selectors, and rejects four planted
-identity/binding/span/duplicate mutants. It also witnesses pending target work
-before SIGINT and requires the interrupted idle command to fail.
-
 Source scanning, sampled verification, renames, rewrites, revision coalescing,
 piece joining, general companion acquisition, marker/attachment equivalence, corpus
 resource guarantees, deployment and full M1 are not qualified by this subset.
@@ -119,18 +107,6 @@ Session qualification also verifies required retained snapshots. A normalized
 copy cannot make a lost or changed required witness readable. Output and
 `input cat` retain their existing credential masking.
 
-`claude_body_demo` takes `--binary`, `--binary-candidate`, `--output`, `--sdk-python`, `--sdk-client`
-and `--b3sum`. The SDK client is the official-SDK adapter from the pinned joint
-demo. The driver constructs synthetic inputs and independently assembles the
-expected compound Message-version bytes. It checks CLI and SDK output, native
-identity, exact retained origins, separator-only continuation, later content,
-body-only revision, restart, provider removal, unavailable/corrupt retained
-bytes, missing/denied provider reads, symlinks in each appended path component,
-redundant inline copies and private file
-modes. Every attempted CLI command and failed-run report remains inspectable.
-This is one configured-main body shape, not general attachments, watchers,
-directory discovery, subagent acquisition or full M1 acceptance.
-
 An exact Message or block read verifies the required body witnesses pinned by
 that selected Message's field origins. A different Message's lost required body
 does not prevent an independently backed Text member from being read: its
@@ -156,18 +132,6 @@ Unchanged polls add neither input revisions nor body observations and do not
 restart unchanged parser work. A changed required manifest restarts the existing
 interpretation even when the main revision is unchanged. Pending incomplete
 records remain owed until a later append completes them.
-
-`configured_claude_continuation_demo` accepts the same explicit binary, candidate,
-SDK client and digest-tool arguments as `claude_body_demo`. It starts one
-synthetic configured daemon and discovers a later operator correction through
-ordinary CLI and official SDK MCP search/read, then checks an incomplete suffix,
-late body arrival, body-only revision, exact versions/origins, stable polls,
-missing/denied main paths and provider-free interrupted-tail restart. Controlled
-engine tests park a small acquisition quantum, complete a real ordinary capture
-and retained read before the larger append is selected, and cancel/retry a
-parked capture. This qualifies one configured source shape. General watcher
-semantics, rewrites, directory discovery, installed routing, corpus resource
-bounds and full M1 remain open.
 
 ## Explicit Claude projects directory
 
@@ -243,17 +207,6 @@ never the displayed sample length. Incoming relationship witnesses remain in
 the full context count and digest without becoming a source of the requested
 Session’s Message membership. Unresolved relevant inputs still constrain reads. Relevant witness and
 Message-membership metadata retain their separate admission bounds.
-
-`configured_claude_projects_demo` accepts an explicit packaged binary/candidate,
-SDK interpreter/client, digest tool, output directory, and pinned format-3 binary
-and source. Its synthetic journey includes multiple projects, separate agents,
-shared-parent required bodies, late files/appends, thousands of small sources,
-read service, provider-free restart and the preserving old-preparation route.
-The driver checks default SDK budgets after the larger population exists.
-`--population-size 0` runs only focused continuation/restart/migration controls
-and reports population acceptance as unrun; the default remains 5,000. Its
-receipts report actual dimensions and elapsed work; they are not a production
-throughput, RSS, whole-corpus or activation qualification.
 
 Companion lookup uses an archive-owned partial expression index on the exact
 main context value. Unrelated inputs do not contribute to that lookup's row

@@ -28,10 +28,6 @@ A changed parser/source basis can supersede an unfinished private Message prepar
 | Selected legacy shell output recorded as a JSON-encoded string with output and exit/duration metadata | ToolResult text | The complete recorded envelope string remains text; decoding supplies status and duration. The oracle checks both that exact string and the inner output/metadata literals. The predecessor's plain-output projection discarded the wrapper; this is an explicit representation difference, not plain-output parity. |
 | Legacy state record | Source accounting | Recognized ignored record without normalized content, rather than predecessor materialized accounting. |
 
-`scripts/check-donor-core.py` exercises ordinary CLI discovery/read/search/export and the pinned official Python SDK adapter. Its default includes the donor's 2,000,000-state boundary and 120,000 roughly 1KiB-state regression exceeding 64MiB. It generates these inputs as streams, checks exact source accounting and semantic payload, removes only its synthetic provider copies, restarts the daemon, and compares content, identities and citations. `--families-only` is explicitly exploratory and does not qualify either large regression. These dimensions measure retained state-input handling, not a many-Message or live-corpus capacity benchmark.
-
-An optional `--baseline-run` reuses a stopped synthetic native baseline that retained these inputs but failed canonical publication. The driver copies complete archive custody, including WAL and lock files, records file digests before opening the copy, declares restore preparation with retired writers, retries the retained inputs through the new parser basis, and compares public content and identities. The original baseline remains unchanged.
-
 Codex history-SQLite and prompt-history dependencies remain unresolved for complete conversation qualification. Isolated rollout acceptance does not qualify complete reads of mixed configured homes.
 
 The native source turn admits up to 1,024 records within its existing 64 KiB
