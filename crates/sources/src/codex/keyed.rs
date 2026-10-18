@@ -2196,137 +2196,9 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn output_item(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
-        if let Some(call) = p.get("call_id").and_then(Value::as_str)
-            && let Some(key) = self.operation_key(call)
-            && let Some(Cell::Operation(mut operation)) = self.get(key.clone())
-        {
-            let independent_unified = self.unified_operation_proved(&operation);
-            let output = recorded_output(p.get("output"));
-            let text = match &output {
-                Some(ToolOutput::Text(s)) => s.clone(),
-                _ => String::new(),
-            };
-            let (outcome, exit) = output_outcome(
-                operation.tool.as_deref().unwrap_or(""),
-                p.get("output").unwrap_or(&Value::Null),
-                &text,
-            );
-            operation.result_present = !matches!(
-                outcome,
-                ToolOutcome::Unknown {
-                    reason: UnknownReason::NoResult
-                }
-            );
-            operation.output = if operation.result_present {
-                output.and_then(|o| match o {
-                    ToolOutput::Text(s) => Some(s),
-                    _ => None,
-                })
-            } else {
-                None
-            };
-            operation.outcome = operation
-                .result_present
-                .then(|| outcome.as_str().to_owned());
-            operation.exit_code = exit;
-            if independent_unified || !operation.origins.iter().any(|origin| matches!(origin, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "status")) {
-                        operation.duration_ms = native_duration(p);
-                    }
-            if let Some(origin) = self.operation_origin() {
-                operation.origins.retain(|o|!matches!(o,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..}if tag=="result"));
-                operation.origins.push(origin);
-            }
-            self.put(key, Cell::Operation(operation));
-        }
+        self.record_operation_output(p);
         if let Some(i) = self.known_owner(p) {
-            if !self.own_evidence(i, p, true) {
-                return RecordOutcome::Used;
-            }
-            let effective = self.effective(p);
-            let Some(call_id) = effective
-                .get("call_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-            else {
-                return RecordOutcome::Unrecognized("output without call_id");
-            };
-            let block = self.replacement_block.take().unwrap_or(0);
-            let old = match self.get(Key::Block(i, block)) {
-                Some(Cell::Block(block)) => match block.content {
-                    BlockContent::ToolResult(result) => Some(result),
-                    _ => None,
-                },
-                _ => None,
-            };
-            let old_call = old.as_ref().and_then(|result| result.call_id.clone());
-            if old_call.as_ref().map(NativeId::as_str) != Some(call_id.as_str()) {
-                if let Some(old_call) = old_call
-                    && self.position(Key::Result(old_call.as_str().to_owned())) == Some((i, block))
-                {
-                    self.remove(Key::Result(old_call.as_str().to_owned()));
-                }
-                self.remove_evidence(i, 1, 0);
-            }
-            let recorded = recorded_output(effective.get("output"));
-            if effective.get("output").is_some() && recorded.is_none() {
-                self.s.normalization_incomplete = true;
-            }
-            let text = match &recorded {
-                Some(ToolOutput::Text(text)) => text.as_str(),
-                _ => "",
-            };
-            let tool = self
-                .call(&call_id)
-                .map(|call| call.tool)
-                .unwrap_or_default();
-            let output = effective.get("output").cloned().unwrap_or(Value::Null);
-            let (outcome, exit_code, duration) = if self.get(Key::Evidence(i, 1, 0)).is_some() {
-                if let Some(result) = old.as_ref() {
-                    (result.outcome.clone(), result.exit_code, result.duration_ms)
-                } else {
-                    let (outcome, exit) = output_outcome(&tool, &output, text);
-                    (outcome, exit, native_duration(&effective))
-                }
-            } else {
-                let (outcome, exit) = output_outcome(&tool, &output, text);
-                (outcome, exit, native_duration(&effective))
-            };
-            self.edit_block(i, block, |value| {
-                *value = BlockContent::ToolResult(ToolResult {
-                    data: None,
-                    call_id: Some(NativeId::unicode(&call_id)),
-                    outcome: outcome.clone(),
-                    exit_code,
-                    duration_ms: duration,
-                    output: recorded.clone(),
-                })
-            });
-            self.record_block_slots(i, block, super::presence::Owner::Primary);
-            self.put(Key::Result(call_id.clone()), Cell::Position(i, block));
-            self.association_evidence(i, &call_id, &effective);
-            if let Some(slot) = self.current_item_slot(i, &effective) {
-                self.result_chunk(i, block, slot, &recorded);
-            }
-            if let Some((target, bi)) = self.position(Key::ContinuationTarget(call_id.clone())) {
-                if !self.require_result(target, bi) {
-                    return RecordOutcome::Used;
-                }
-                if self.own_evidence(target, &effective, false) {
-                    self.association_evidence(target, &call_id, &effective);
-                    if let Some(slot) = self.current_item_slot(target, &effective) {
-                        self.result_chunk(target, bi, slot, &recorded);
-                    }
-                    if exit_code.is_some() {
-                        self.edit_block(target, bi, |value| {
-                            if let BlockContent::ToolResult(result) = value {
-                                result.outcome = outcome.clone();
-                                result.exit_code = exit_code;
-                            }
-                        });
-                    }
-                }
-            }
-            return RecordOutcome::Used;
+            return self.replace_output(i, p);
         }
         let Some(call_id) = p.get("call_id").and_then(Value::as_str).map(str::to_owned) else {
             return RecordOutcome::Unrecognized("output without call_id");
@@ -2379,38 +2251,10 @@ impl<V: ReadView> KeyedRecords<V> {
             } else {
                 (outcome, exit_code)
             };
-        if tool == "write_stdin" {
-            let session = self.call(&call_id).and_then(|c| c.stdin_session);
-            if let Some(target) = session
-                .as_ref()
-                .and_then(|s| self.position(Key::Running(s.clone())))
-            {
-                if !self.require_result(target.0, target.1) {
-                    return RecordOutcome::Used;
-                }
-                self.put(Key::Continuation(call_id.clone()), Cell::Present);
-                self.put(
-                    Key::ContinuationTarget(call_id.clone()),
-                    Cell::Position(target.0, target.1),
-                );
-                self.own_evidence(target.0, p, false);
-                self.association_evidence(target.0, &call_id, p);
-                if let Some(slot) = self.current_item_slot(target.0, p) {
-                    self.result_chunk(target.0, target.1, slot, &recorded);
-                }
-                if exit_code.is_some() {
-                    self.edit_block(target.0, target.1, |b| {
-                        if let BlockContent::ToolResult(r) = b {
-                            r.outcome = outcome.clone();
-                            r.exit_code = exit_code;
-                        }
-                    });
-                    if let Some(s) = &session {
-                        self.remove(Key::Running(s.clone()));
-                        self.pin(format!("running:{s}"), Some(target.0), None);
-                    }
-                }
-            }
+        if tool == "write_stdin"
+            && !self.continue_running(&call_id, p, &recorded, &outcome, exit_code)
+        {
+            return RecordOutcome::Used;
         }
         let native = p.get("id").and_then(Value::as_str);
         let Some(id) = self.message_id(native, p) else {
@@ -2476,6 +2320,187 @@ impl<V: ReadView> KeyedRecords<V> {
         RecordOutcome::Used
     }
 
+    /// Record an output on its declared operation, if the call has one.
+    fn record_operation_output(&mut self, p: &Value) {
+        if let Some(call) = p.get("call_id").and_then(Value::as_str)
+            && let Some(key) = self.operation_key(call)
+            && let Some(Cell::Operation(mut operation)) = self.get(key.clone())
+        {
+            let independent_unified = self.unified_operation_proved(&operation);
+            let output = recorded_output(p.get("output"));
+            let text = match &output {
+                Some(ToolOutput::Text(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let (outcome, exit) = output_outcome(
+                operation.tool.as_deref().unwrap_or(""),
+                p.get("output").unwrap_or(&Value::Null),
+                &text,
+            );
+            operation.result_present = !matches!(
+                outcome,
+                ToolOutcome::Unknown {
+                    reason: UnknownReason::NoResult
+                }
+            );
+            operation.output = if operation.result_present {
+                output.and_then(|o| match o {
+                    ToolOutput::Text(s) => Some(s),
+                    _ => None,
+                })
+            } else {
+                None
+            };
+            operation.outcome = operation
+                .result_present
+                .then(|| outcome.as_str().to_owned());
+            operation.exit_code = exit;
+            if independent_unified || !operation.origins.iter().any(|origin| matches!(origin, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "status")) {
+                        operation.duration_ms = native_duration(p);
+                    }
+            if let Some(origin) = self.operation_origin() {
+                operation.origins.retain(|o|!matches!(o,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..}if tag=="result"));
+                operation.origins.push(origin);
+            }
+            self.put(key, Cell::Operation(operation));
+        }
+    }
+    /// A new snapshot of an output this parser already placed in Message `i`:
+    /// replace its result block and pass it on to a continued command.
+    fn replace_output(&mut self, i: usize, p: &Value) -> RecordOutcome<Ignored> {
+        if !self.own_evidence(i, p, true) {
+            return RecordOutcome::Used;
+        }
+        let effective = self.effective(p);
+        let Some(call_id) = effective
+            .get("call_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return RecordOutcome::Unrecognized("output without call_id");
+        };
+        let block = self.replacement_block.take().unwrap_or(0);
+        let old = match self.get(Key::Block(i, block)) {
+            Some(Cell::Block(block)) => match block.content {
+                BlockContent::ToolResult(result) => Some(result),
+                _ => None,
+            },
+            _ => None,
+        };
+        let old_call = old.as_ref().and_then(|result| result.call_id.clone());
+        if old_call.as_ref().map(NativeId::as_str) != Some(call_id.as_str()) {
+            if let Some(old_call) = old_call
+                && self.position(Key::Result(old_call.as_str().to_owned())) == Some((i, block))
+            {
+                self.remove(Key::Result(old_call.as_str().to_owned()));
+            }
+            self.remove_evidence(i, 1, 0);
+        }
+        let recorded = recorded_output(effective.get("output"));
+        if effective.get("output").is_some() && recorded.is_none() {
+            self.s.normalization_incomplete = true;
+        }
+        let text = match &recorded {
+            Some(ToolOutput::Text(text)) => text.as_str(),
+            _ => "",
+        };
+        let tool = self
+            .call(&call_id)
+            .map(|call| call.tool)
+            .unwrap_or_default();
+        let output = effective.get("output").cloned().unwrap_or(Value::Null);
+        let (outcome, exit_code, duration) = if self.get(Key::Evidence(i, 1, 0)).is_some() {
+            if let Some(result) = old.as_ref() {
+                (result.outcome.clone(), result.exit_code, result.duration_ms)
+            } else {
+                let (outcome, exit) = output_outcome(&tool, &output, text);
+                (outcome, exit, native_duration(&effective))
+            }
+        } else {
+            let (outcome, exit) = output_outcome(&tool, &output, text);
+            (outcome, exit, native_duration(&effective))
+        };
+        self.edit_block(i, block, |value| {
+            *value = BlockContent::ToolResult(ToolResult {
+                data: None,
+                call_id: Some(NativeId::unicode(&call_id)),
+                outcome: outcome.clone(),
+                exit_code,
+                duration_ms: duration,
+                output: recorded.clone(),
+            })
+        });
+        self.record_block_slots(i, block, super::presence::Owner::Primary);
+        self.put(Key::Result(call_id.clone()), Cell::Position(i, block));
+        self.association_evidence(i, &call_id, &effective);
+        if let Some(slot) = self.current_item_slot(i, &effective) {
+            self.result_chunk(i, block, slot, &recorded);
+        }
+        if let Some((target, bi)) = self.position(Key::ContinuationTarget(call_id.clone())) {
+            if !self.require_result(target, bi) {
+                return RecordOutcome::Used;
+            }
+            if self.own_evidence(target, &effective, false) {
+                self.association_evidence(target, &call_id, &effective);
+                if let Some(slot) = self.current_item_slot(target, &effective) {
+                    self.result_chunk(target, bi, slot, &recorded);
+                }
+                if exit_code.is_some() {
+                    self.edit_block(target, bi, |value| {
+                        if let BlockContent::ToolResult(result) = value {
+                            result.outcome = outcome.clone();
+                            result.exit_code = exit_code;
+                        }
+                    });
+                }
+            }
+        }
+        RecordOutcome::Used
+    }
+    /// A `write_stdin` output continues the running command it writes to; the
+    /// output that reports an exit code sets the command's outcome. Returns
+    /// false when the step failed.
+    fn continue_running(
+        &mut self,
+        call_id: &str,
+        p: &Value,
+        recorded: &Option<ToolOutput>,
+        outcome: &ToolOutcome,
+        exit_code: Option<i64>,
+    ) -> bool {
+        let session = self.call(call_id).and_then(|c| c.stdin_session);
+        if let Some(target) = session
+            .as_ref()
+            .and_then(|s| self.position(Key::Running(s.clone())))
+        {
+            if !self.require_result(target.0, target.1) {
+                return false;
+            }
+            self.put(Key::Continuation(call_id.to_owned()), Cell::Present);
+            self.put(
+                Key::ContinuationTarget(call_id.to_owned()),
+                Cell::Position(target.0, target.1),
+            );
+            self.own_evidence(target.0, p, false);
+            self.association_evidence(target.0, call_id, p);
+            if let Some(slot) = self.current_item_slot(target.0, p) {
+                self.result_chunk(target.0, target.1, slot, recorded);
+            }
+            if exit_code.is_some() {
+                self.edit_block(target.0, target.1, |b| {
+                    if let BlockContent::ToolResult(r) = b {
+                        r.outcome = outcome.clone();
+                        r.exit_code = exit_code;
+                    }
+                });
+                if let Some(s) = &session {
+                    self.remove(Key::Running(s.clone()));
+                    self.pin(format!("running:{s}"), Some(target.0), None);
+                }
+            }
+        }
+        true
+    }
     fn operation_origin(&self) -> Option<polylogue_model::tool_item::ToolOrigin> {
         let range = self
             .current_origins
@@ -2922,233 +2947,7 @@ impl<V: ReadView> KeyedRecords<V> {
         }
         match ty {
             "CommandExecution" | "FileChange" | "McpToolCall" => {
-                if ty == "CommandExecution"
-                    && item
-                        .get("source")
-                        .and_then(Value::as_str)
-                        .is_some_and(|source| source != "agent")
-                {
-                    self.s.normalization_incomplete = true;
-                    return self.event("non_agent_command_item", at, false, p);
-                }
-                let call_id = item
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .or_else(|| {
-                        item.get("id")
-                            .and_then(Value::as_str)
-                            .filter(|id| self.call(id).is_some())
-                            .map(str::to_owned)
-                    });
-                let is_plain_call = if native_admitted {
-                    self.completed_direct_call(p, &item)
-                } else {
-                    call_id
-                        .as_ref()
-                        .and_then(|c| self.call(c))
-                        .is_some_and(|c| c.tool != "exec")
-                };
-                if is_plain_call {
-                    if let Some(c) = call_id {
-                        let result = self.position(Key::Result(c.clone()));
-                        let previous = result
-                            .and_then(|(i, _)| self.get(Key::Evidence(i, 1, 0)))
-                            .or_else(|| self.get(Key::StatusEvidence(c.clone())));
-                        let mut witness = EvidenceUnit {
-                            tag: "status".into(),
-                            canonical: self.current_raw.clone(),
-                            whole_record: true,
-                            origins: self.current_origins.at_path(&["payload", "item"]),
-                        };
-                        let mut effective = item.clone();
-                        if let Some(Cell::Evidence(old)) = previous {
-                            let id_path = ["payload", "item", "id"];
-                            let turn_path = ["payload", "turn_id"];
-                            let same_id = raw::field(&old.canonical, &id_path)
-                                .ok()
-                                .zip(raw::field(&self.current_raw, &id_path).ok())
-                                .is_some_and(|(a, b)| a == b);
-                            let same_turn = raw::field(&old.canonical, &turn_path).ok()
-                                == raw::field(&self.current_raw, &turn_path).ok();
-                            if same_id && same_turn {
-                                match raw::overlay(
-                                    &old.canonical,
-                                    &self.current_raw,
-                                    &["payload", "item"],
-                                ) {
-                                    Ok((canonical, fields)) => {
-                                        witness.origins = old.origins.overlay(
-                                            &witness.origins,
-                                            &fields.kept,
-                                            &fields.provided,
-                                        );
-                                        witness.whole_record = canonical == self.current_raw;
-                                        witness.canonical = canonical;
-                                        effective = fields.value;
-                                        if !fields.conflicts.is_empty() {
-                                            if let Some((message, _)) = result {
-                                                self.conflicts.push(NativeConflict {
-                                                    message,
-                                                    fields: fields.conflicts,
-                                                });
-                                            } else {
-                                                self.event(
-                                                    "native_status_conflict",
-                                                    at,
-                                                    false,
-                                                    &serde_json::json!({"fields":fields.conflicts})
-                                                        .into(),
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Err(error) => {
-                                        self.failure = Some(error);
-                                        return RecordOutcome::Used;
-                                    }
-                                }
-                            }
-                        }
-                        let (outcome, exit) = native_outcome(&effective);
-                        let duration = native_duration(&effective);
-                        if effective
-                            .get("duration")
-                            .is_some_and(|value| !value.is_null())
-                            && duration.is_none()
-                        {
-                            self.s.normalization_incomplete = true;
-                        }
-                        if let Some((mi, bi)) = result {
-                            if !self.require_result(mi, bi) {
-                                return RecordOutcome::Used;
-                            }
-                            self.edit_block(mi, bi, |block| {
-                                if let BlockContent::ToolResult(result) = block {
-                                    result.outcome = outcome.clone();
-                                    result.exit_code = exit;
-                                    result.duration_ms = duration;
-                                }
-                            });
-                            self.record_block_slots_from(
-                                mi,
-                                bi,
-                                &witness.canonical,
-                                &witness.origins,
-                                super::presence::Owner::Status,
-                            );
-                            self.evidence_unit(mi, 1, 0, witness);
-                        } else {
-                            let (o, r) = outcome_words(&outcome);
-                            self.put(Key::StatusEvidence(c.clone()), Cell::Evidence(witness));
-                            self.put(Key::Outcome(c), Cell::Outcome(o, r, exit));
-                        }
-                    }
-                    return RecordOutcome::Used;
-                }
-                // A turn-scoped native operation has no known Message owner. Keep it
-                // as a session event; never attach it to the latest wrapper.
-                let named = item
-                    .get("parent_call_id")
-                    .or_else(|| item.get("call_id"))
-                    .and_then(Value::as_str)
-                    .filter(|c| self.wrapper_is_open(c))
-                    .map(str::to_owned);
-                let owner = if native_admitted {
-                    None
-                } else {
-                    named.or_else(|| self.wrapper_one())
-                };
-                let prior_owner = self.known_owner(&item);
-                let wrapper_message = if let Some(place) = owner.as_ref() {
-                    match self.call(place) {
-                        Some(call) => Some(call.at.0),
-                        None => {
-                            self.missing("wrapper call");
-                            return RecordOutcome::Used;
-                        }
-                    }
-                } else {
-                    None
-                };
-                let mi = prior_owner.or(wrapper_message);
-                let Some(mi) = mi else {
-                    self.s.normalization_incomplete = true;
-                    let child_id = item.get("id").and_then(Value::as_str).unwrap_or("");
-                    // Marks the overlap for counting only; not a parent.
-                    for (_, w) in self.wrappers() {
-                        self.child(w, format!("~unowned:{child_id}"));
-                    }
-                    return self.event("unowned_tool_item", at, false, p);
-                };
-                if !self.own_evidence(mi, &item, true) {
-                    return RecordOutcome::Used;
-                }
-                let replacing = self.replacement_block.is_some();
-                let item = self.effective(&item);
-                let (outcome, exit) = native_outcome(&item);
-                let duration = native_duration(&item);
-                if item.get("duration").is_some_and(|value| !value.is_null()) && duration.is_none()
-                {
-                    self.s.normalization_incomplete = true;
-                }
-                let child_id = item
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
-                let command = item
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                let tool = if ty == "CommandExecution" {
-                    "exec_command"
-                } else if ty == "FileChange" {
-                    "apply_patch"
-                } else {
-                    "mcp"
-                };
-                let Some(call_block) = self.owned_block(
-                    mi,
-                    BlockContent::ToolCall(ToolCall {
-                        tool: Some(tool.into()),
-                        call_id: Some(NativeId::unicode(&child_id)),
-                        input: Some(item.clone()),
-                        command,
-                    }),
-                ) else {
-                    return RecordOutcome::Used;
-                };
-                if let Some(session) = self.s.session.as_ref()
-                    && let Some(turn) = p
-                        .get("turn_id")
-                        .and_then(Value::as_str)
-                        .or(self.s.turn.as_deref())
-                    && let Ok(id) =
-                        polylogue_model::tool_item::native_id(&session.id, turn, &child_id)
-                {
-                    self.put(Key::OperationBlock(mi, call_block), Cell::Text(id));
-                }
-                let result = BlockContent::ToolResult(ToolResult {
-                    data: None,
-                    call_id: Some(NativeId::unicode(&child_id)),
-                    outcome,
-                    exit_code: exit,
-                    duration_ms: duration,
-                    output: recorded_output(
-                        item.get("aggregated_output").or_else(|| item.get("output")),
-                    ),
-                });
-                if replacing {
-                    self.edit_block(mi, call_block + 1, |content| *content = result);
-                } else {
-                    self.push_block(mi, result);
-                }
-                self.record_block_slots(mi, call_block + 1, super::presence::Owner::Primary);
-                if !replacing && let Some(wrapper) = owner {
-                    self.child(wrapper, child_id);
-                }
-                RecordOutcome::Used
+                self.completed_tool_item(p, &item, ty, native_admitted, at)
             }
             "ContextCompaction" => self.event("compaction", at, true, &item),
             "Plan" => self.event("plan", at, false, &item),
@@ -3160,6 +2959,245 @@ impl<V: ReadView> KeyedRecords<V> {
                 RecordOutcome::Unrecognized("item_completed type not implemented")
             }
         }
+    }
+
+    /// A completed command, file change or MCP call: a status for a direct
+    /// call, or a call and result pair owned by a wrapper or earlier item.
+    fn completed_tool_item(
+        &mut self,
+        p: &Value,
+        item: &Value,
+        ty: &str,
+        native_admitted: bool,
+        at: Option<Timestamp>,
+    ) -> RecordOutcome<Ignored> {
+        if ty == "CommandExecution"
+            && item
+                .get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| source != "agent")
+        {
+            self.s.normalization_incomplete = true;
+            return self.event("non_agent_command_item", at, false, p);
+        }
+        let call_id = item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                item.get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| self.call(id).is_some())
+                    .map(str::to_owned)
+            });
+        let is_plain_call = if native_admitted {
+            self.completed_direct_call(p, item)
+        } else {
+            call_id
+                .as_ref()
+                .and_then(|c| self.call(c))
+                .is_some_and(|c| c.tool != "exec")
+        };
+        if is_plain_call {
+            if let Some(c) = call_id {
+                return self.completed_call_status(c, item, at);
+            }
+            return RecordOutcome::Used;
+        }
+        // A turn-scoped native operation has no known Message owner. Keep it
+        // as a session event; never attach it to the latest wrapper.
+        let named = item
+            .get("parent_call_id")
+            .or_else(|| item.get("call_id"))
+            .and_then(Value::as_str)
+            .filter(|c| self.wrapper_is_open(c))
+            .map(str::to_owned);
+        let owner = if native_admitted {
+            None
+        } else {
+            named.or_else(|| self.wrapper_one())
+        };
+        let prior_owner = self.known_owner(item);
+        let wrapper_message = if let Some(place) = owner.as_ref() {
+            match self.call(place) {
+                Some(call) => Some(call.at.0),
+                None => {
+                    self.missing("wrapper call");
+                    return RecordOutcome::Used;
+                }
+            }
+        } else {
+            None
+        };
+        let mi = prior_owner.or(wrapper_message);
+        let Some(mi) = mi else {
+            self.s.normalization_incomplete = true;
+            let child_id = item.get("id").and_then(Value::as_str).unwrap_or("");
+            // Marks the overlap for counting only; not a parent.
+            for (_, w) in self.wrappers() {
+                self.child(w, format!("~unowned:{child_id}"));
+            }
+            return self.event("unowned_tool_item", at, false, p);
+        };
+        if !self.own_evidence(mi, item, true) {
+            return RecordOutcome::Used;
+        }
+        let replacing = self.replacement_block.is_some();
+        let item = self.effective(item);
+        let (outcome, exit) = native_outcome(&item);
+        let duration = native_duration(&item);
+        if item.get("duration").is_some_and(|value| !value.is_null()) && duration.is_none() {
+            self.s.normalization_incomplete = true;
+        }
+        let child_id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let command = item
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let tool = if ty == "CommandExecution" {
+            "exec_command"
+        } else if ty == "FileChange" {
+            "apply_patch"
+        } else {
+            "mcp"
+        };
+        let Some(call_block) = self.owned_block(
+            mi,
+            BlockContent::ToolCall(ToolCall {
+                tool: Some(tool.into()),
+                call_id: Some(NativeId::unicode(&child_id)),
+                input: Some(item.clone()),
+                command,
+            }),
+        ) else {
+            return RecordOutcome::Used;
+        };
+        if let Some(session) = self.s.session.as_ref()
+            && let Some(turn) = p
+                .get("turn_id")
+                .and_then(Value::as_str)
+                .or(self.s.turn.as_deref())
+            && let Ok(id) = polylogue_model::tool_item::native_id(&session.id, turn, &child_id)
+        {
+            self.put(Key::OperationBlock(mi, call_block), Cell::Text(id));
+        }
+        let result = BlockContent::ToolResult(ToolResult {
+            data: None,
+            call_id: Some(NativeId::unicode(&child_id)),
+            outcome,
+            exit_code: exit,
+            duration_ms: duration,
+            output: recorded_output(item.get("aggregated_output").or_else(|| item.get("output"))),
+        });
+        if replacing {
+            self.edit_block(mi, call_block + 1, |content| *content = result);
+        } else {
+            self.push_block(mi, result);
+        }
+        self.record_block_slots(mi, call_block + 1, super::presence::Owner::Primary);
+        if !replacing && let Some(wrapper) = owner {
+            self.child(wrapper, child_id);
+        }
+        RecordOutcome::Used
+    }
+    /// A completion for a direct call: record its status, exit code and
+    /// duration on the call's result, or keep them until the result arrives.
+    fn completed_call_status(
+        &mut self,
+        c: String,
+        item: &Value,
+        at: Option<Timestamp>,
+    ) -> RecordOutcome<Ignored> {
+        let result = self.position(Key::Result(c.clone()));
+        let previous = result
+            .and_then(|(i, _)| self.get(Key::Evidence(i, 1, 0)))
+            .or_else(|| self.get(Key::StatusEvidence(c.clone())));
+        let mut witness = EvidenceUnit {
+            tag: "status".into(),
+            canonical: self.current_raw.clone(),
+            whole_record: true,
+            origins: self.current_origins.at_path(&["payload", "item"]),
+        };
+        let mut effective = item.clone();
+        if let Some(Cell::Evidence(old)) = previous {
+            let id_path = ["payload", "item", "id"];
+            let turn_path = ["payload", "turn_id"];
+            let same_id = raw::field(&old.canonical, &id_path)
+                .ok()
+                .zip(raw::field(&self.current_raw, &id_path).ok())
+                .is_some_and(|(a, b)| a == b);
+            let same_turn = raw::field(&old.canonical, &turn_path).ok()
+                == raw::field(&self.current_raw, &turn_path).ok();
+            if same_id && same_turn {
+                match raw::overlay(&old.canonical, &self.current_raw, &["payload", "item"]) {
+                    Ok((canonical, fields)) => {
+                        witness.origins =
+                            old.origins
+                                .overlay(&witness.origins, &fields.kept, &fields.provided);
+                        witness.whole_record = canonical == self.current_raw;
+                        witness.canonical = canonical;
+                        effective = fields.value;
+                        if !fields.conflicts.is_empty() {
+                            if let Some((message, _)) = result {
+                                self.conflicts.push(NativeConflict {
+                                    message,
+                                    fields: fields.conflicts,
+                                });
+                            } else {
+                                self.event(
+                                    "native_status_conflict",
+                                    at,
+                                    false,
+                                    &serde_json::json!({"fields":fields.conflicts}).into(),
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.failure = Some(error);
+                        return RecordOutcome::Used;
+                    }
+                }
+            }
+        }
+        let (outcome, exit) = native_outcome(&effective);
+        let duration = native_duration(&effective);
+        if effective
+            .get("duration")
+            .is_some_and(|value| !value.is_null())
+            && duration.is_none()
+        {
+            self.s.normalization_incomplete = true;
+        }
+        if let Some((mi, bi)) = result {
+            if !self.require_result(mi, bi) {
+                return RecordOutcome::Used;
+            }
+            self.edit_block(mi, bi, |block| {
+                if let BlockContent::ToolResult(result) = block {
+                    result.outcome = outcome.clone();
+                    result.exit_code = exit;
+                    result.duration_ms = duration;
+                }
+            });
+            self.record_block_slots_from(
+                mi,
+                bi,
+                &witness.canonical,
+                &witness.origins,
+                super::presence::Owner::Status,
+            );
+            self.evidence_unit(mi, 1, 0, witness);
+        } else {
+            let (o, r) = outcome_words(&outcome);
+            self.put(Key::StatusEvidence(c.clone()), Cell::Evidence(witness));
+            self.put(Key::Outcome(c), Cell::Outcome(o, r, exit));
+        }
+        RecordOutcome::Used
     }
 
     fn token_count(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
