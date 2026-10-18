@@ -6,8 +6,8 @@ inside `nix develop`.
 | Check | Command | When | Typical time |
 | --- | --- | --- | --- |
 | Focused tests | `cargo test -p <crate> <filter>` | while editing | seconds |
-| Fast check | `cargo run -p xtask -- fast` | every push (pre-push hook) | 2-10 s warm, 40 s cold |
-| Full suite | `cargo run -p xtask -- check` | a batch of merged work | 1.5 min warm, 9 min cold |
+| Fast check | `cargo run -p xtask -- fast` | every push (pre-push hook) | 2-16 s warm, 35 s cold |
+| Full suite | `cargo run -p xtask -- check` | a batch of merged work | 30 s warm, 2-3 min after an edit, 9 min cold |
 | End-to-end scenarios | `cargo run -p xtask -- scenarios` | after daemon, CLI or MCP changes | about a minute warm |
 | Package build | `nix flake check` | after dependency or packaging changes | about 2.5 min |
 
@@ -30,8 +30,16 @@ inside `nix develop`.
 btrfs work disk those syncs dominated test time. The daemon `World` harness in
 `crates/polylogue/tests/support` puts its archive on tmpfs even when run
 directly. Two tests deliberately keep a real filesystem, the one named by
-`TEST_DURABLE_TMPDIR` (`target/tmp`): the hashed-blobs batch durability test
-and the store killed-writer WAL reopen test.
+`TEST_DURABLE_TMPDIR` (`target/tmp`): the per-file fsync half of the
+hashed-blobs batch durability test and the store killed-writer WAL reopen
+test.
+
+The dev profile builds dependencies at `opt-level = 2` and workspace crates
+at `opt-level = 1`. Tests spend most of their CPU in SQLite, JSON and the
+credential masker. Measured on 926 tests at load average 25-70: suite CPU fell
+from about 780 s to about 190 s and test execution from 63-76 s to 13-24 s.
+A cold build costs more (9 min instead of 3.5 min); an incremental test build
+after a one-line edit in `store` takes about 2 min under load.
 
 The pre-push hook is `.githooks/pre-push`; enable it with
 `git config core.hooksPath .githooks`. It skips pushes that change no Rust
