@@ -1,5 +1,6 @@
-//! Conservative equality of complete immutable source bodies. This is not
-//! version ranking or missing-field fill. Each worker turn visits one leaf.
+//! Selects a message body when every eligible candidate produced the same
+//! body. Bodies are compared by a digest of their normalized content; this
+//! never ranks versions or fills missing fields. Each `advance` visits one leaf.
 use super::{
     directory as d,
     source::{self, SourceProjection, SourceSelection},
@@ -19,8 +20,9 @@ fn invalid(s: &str) -> Error {
     Error::Invariant(s.into())
 }
 
-/// Private proof producer, restartable from zero. It owns no durable leases:
-/// eligible bodies retain their payload and the writer fences membership.
+/// Incremental comparison of one message's eligible candidates. It holds no
+/// leases and can restart from scratch; the writer rechecks the message's
+/// revision and epoch before installing the result.
 pub struct CompatibleSelection {
     path: PathBuf,
     source: SourceProjection,
@@ -39,7 +41,7 @@ pub enum CompatibilityTurn {
     Ready(CompatibleSelection),
     Contested,
 }
-/// Constructible only by complete immutable-directory traversal.
+/// Digest of one body, produced only by walking its whole directory.
 pub struct CompatibilityCertificate {
     body: i64,
     candidate: i64,
@@ -61,11 +63,19 @@ struct BodyDigest {
     block_after: Option<u64>,
     block_fields: Option<i64>,
     block_field_after: Option<u64>,
-    phase: u8,
+    phase: Phase,
+}
+/// Walk order: message fields, then each group's blocks and their fields.
+#[derive(Clone, Copy)]
+enum Phase {
+    MessageFields,
+    Groups,
+    Blocks,
+    BlockFields,
 }
 
-/// Frame each SQLite scalar including null/type/length. Rows are borrowed;
-/// metadata admission precedes hashing and no normalized payload is decoded.
+/// Hash one row with a type tag and length per column, so distinct rows never
+/// share an encoding. Rows larger than `allowance` are refused before hashing.
 pub(super) fn hash_row(
     connection: &Connection,
     path: &Path,
@@ -105,12 +115,13 @@ pub(super) fn hash_row(
                         hash.update(&[2]);
                         hash.update(&n.to_bits().to_be_bytes());
                     }
-                    ValueRef::Text(b) | ValueRef::Blob(b) => {
-                        hash.update(&[if matches!(row.get_ref(i)?, ValueRef::Text(_)) {
-                            3
-                        } else {
-                            4
-                        }]);
+                    ValueRef::Text(b) => {
+                        hash.update(&[3]);
+                        hash.update(&(b.len() as u64).to_be_bytes());
+                        hash.update(b);
+                    }
+                    ValueRef::Blob(b) => {
+                        hash.update(&[4]);
                         hash.update(&(b.len() as u64).to_be_bytes());
                         hash.update(b);
                     }
@@ -151,7 +162,8 @@ impl BodyDigest {
         }
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"polylogue.complete-source-body.compatibility.v1\0");
-        // Public normalized scalars, never acquisition/source coordinates or PKs.
+        // Normalized columns only: source coordinates or row keys would make
+        // equal bodies from different inputs hash differently.
         hash_row(
             &reader.index,
             &path,
@@ -176,10 +188,10 @@ impl BodyDigest {
             required: length,
         })?;
         let archive_path = reader.root.join("archive.db");
-        let retained = crate::observed::decode(&reader.archive, &archive_path, &input)?
+        let stored = crate::observed::decode(&reader.archive, &archive_path, &input)?
             .ok_or_else(|| Error::Invariant("compatibility source unavailable".into()))?;
-        let format = retained.format;
-        let parts = retained.context;
+        let format = stored.format;
+        let parts = stored.context;
         let required = parts.iter().map(|part| part.len() + 8).sum::<usize>();
         if required > allowance {
             return Err(Error::ParserAdmission {
@@ -202,7 +214,7 @@ impl BodyDigest {
                 owner,
                 basis: basis
                     .try_into()
-                    .map_err(|_| invalid("compatibility body basis"))?,
+                    .map_err(|_| invalid("body basis_digest is not 32 bytes"))?,
                 epoch,
                 path,
                 generation: source.body.generation.clone(),
@@ -217,7 +229,7 @@ impl BodyDigest {
             block_after: None,
             block_fields: None,
             block_field_after: None,
-            phase: 0,
+            phase: Phase::MessageFields,
         })
     }
     fn field(
@@ -257,14 +269,16 @@ impl BodyDigest {
     fn advance(&mut self, reader: &ReadHandle, allowance: usize) -> Result<bool> {
         let path = &self.certificate.path;
         match self.phase {
-            0 => match self.field(reader, self.fields, self.field_after, allowance)? {
-                Some(k) => self.field_after = Some(k),
-                None => {
-                    self.hasher.update(b"end-message-fields\0");
-                    self.phase = 1;
+            Phase::MessageFields => {
+                match self.field(reader, self.fields, self.field_after, allowance)? {
+                    Some(k) => self.field_after = Some(k),
+                    None => {
+                        self.hasher.update(b"end-message-fields\0");
+                        self.phase = Phase::Groups;
+                    }
                 }
-            },
-            1 => {
+            }
+            Phase::Groups => {
                 let next = d::next(
                     &reader.index,
                     path,
@@ -293,11 +307,11 @@ impl BodyDigest {
                         self.group_after = Some(key);
                         self.blocks = Some(pk);
                         self.block_after = None;
-                        self.phase = 2;
+                        self.phase = Phase::Blocks;
                     }
                 }
             }
-            2 => {
+            Phase::Blocks => {
                 match d::next(
                     &reader.index,
                     path,
@@ -309,7 +323,7 @@ impl BodyDigest {
                 )? {
                     None => {
                         self.hasher.update(b"end-group\0");
-                        self.phase = 1;
+                        self.phase = Phase::Groups;
                     }
                     Some((key, edge)) => {
                         let d::Link::Block { pk, call } = edge.link else {
@@ -374,18 +388,19 @@ impl BodyDigest {
                         })?;
                         self.block_after = Some(key);
                         self.block_field_after = None;
-                        self.phase = 3;
+                        self.phase = Phase::BlockFields;
                     }
                 }
             }
-            3 => match self.field(reader, self.block_fields, self.block_field_after, allowance)? {
-                Some(k) => self.block_field_after = Some(k),
-                None => {
-                    self.hasher.update(b"end-block\0");
-                    self.phase = 2;
+            Phase::BlockFields => {
+                match self.field(reader, self.block_fields, self.block_field_after, allowance)? {
+                    Some(k) => self.block_field_after = Some(k),
+                    None => {
+                        self.hasher.update(b"end-block\0");
+                        self.phase = Phase::Blocks;
+                    }
                 }
-            },
-            _ => return Err(invalid("compatibility phase")),
+            }
         }
         Ok(false)
     }
@@ -487,8 +502,7 @@ impl Writer {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
         })?;
-        // A singleton needs no cross-input equality or import interpretation
-        // witness. The immutable source certificate and membership fence suffice.
+        // A single eligible candidate needs no comparison.
         let singleton: bool = db(&path, || {
             self._index.query_row("SELECT NOT EXISTS(SELECT 1 FROM message_candidate WHERE message_pk=?1 AND eligible=1 AND pk<>?2 LIMIT 1)",params![source.body.message,source.candidate],|r|r.get(0))
         })?;
@@ -524,15 +538,15 @@ impl Writer {
         db(&path, || {
             tx.execute("INSERT INTO message_body_compatibility(body_pk,digest) VALUES(?1,?2) ON CONFLICT(body_pk) DO NOTHING",params![proof.body,proof.digest.as_slice()])
         })?;
-        let retained: Vec<u8> = db(&path, || {
+        let stored: Vec<u8> = db(&path, || {
             tx.query_row(
                 "SELECT digest FROM message_body_compatibility WHERE body_pk=?1",
                 [proof.body],
                 |r| r.get(0),
             )
         })?;
-        if retained != proof.digest {
-            return Err(invalid("immutable compatibility certificate changed"));
+        if stored != proof.digest {
+            return Err(invalid("stored body digest differs from the new one"));
         }
         db(&path, || tx.commit())
     }
@@ -582,13 +596,13 @@ impl Writer {
             },
             proof.carrier.ok_or_else(changed)?.1,
         )?;
-        let changed = db(&path, || {
+        let updated = db(&path, || {
             tx.execute(
                 "UPDATE message SET selected_body_pk=?2 WHERE pk=?1 AND selected_body_pk IS NOT ?2",
                 params![proof.source.body.message, body],
             )
         })?;
-        if changed == 0 {
+        if updated == 0 {
             return Ok(SourceSelection::AlreadySelected);
         }
         let next = writer::integer(

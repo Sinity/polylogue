@@ -1,5 +1,5 @@
-//! Disposable source contributions and immutable Message preparation.
-//! Canonical selection and actual-client qualification remain in development.
+//! Message bodies built from source contributions: preparing a body from one
+//! parser run, reading the selected body, and choosing between candidates.
 mod bodies;
 pub use bodies::{BodyId, BodyRetirement, CandidateCollection, CandidateId};
 mod blocks;
@@ -33,8 +33,7 @@ pub(crate) mod writer;
 pub use retirement::{Retirement, ValueCollection};
 pub use writer::{Build, Identity, Preparation, Source};
 
-// Fixtures drive the same bounded production interface. No unbounded selector
-// or superseded product route is exposed to consumers solely for old tests.
+// Test helper that runs the production selection loop to completion.
 #[cfg(test)]
 pub(super) trait SelectCompatibleSourceForTest {
     fn select_compatible_source_message_for_test(
@@ -70,7 +69,7 @@ impl SelectCompatibleSourceForTest for crate::Writer {
             };
         }
         Err(crate::Error::Invariant(
-            "test selection failed to make bounded progress".into(),
+            "test selection did not finish in 100000 steps".into(),
         ))
     }
 }
