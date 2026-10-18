@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.98.1"
 license-file = "../../LICENSE"
 repository = "https://github.com/Sinity/polylogue"
-description = "Bounded streaming credential-output-v1 presentation masking"
+description = "Streaming credential masking for the credential-output-v1 catalog"
 publish = false
 
 [dev-dependencies]

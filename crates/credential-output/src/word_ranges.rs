@@ -1,5 +1,25 @@
-// Python 3 str.isalnum ranges, Unicode 16.0.0.
-// Generated from the normative reference runtime; excludes Other_Alphabetic marks.
+//! Characters that count as part of a word for left word boundaries.
+//!
+//! The ranges are Python 3 `str.isalnum` for Unicode 16.0.0, generated with
+//! the reference implementation; they exclude Other_Alphabetic marks. Update
+//! them together with the boundary tests.
+
+/// True for `_` and every character Python's `str.isalnum` accepts.
+pub(crate) fn is_word_char(c: char) -> bool {
+    c == '_'
+        || WORD_RANGES
+            .binary_search_by(|&(low, high)| {
+                if c < low {
+                    std::cmp::Ordering::Greater
+                } else if c > high {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .is_ok()
+}
+
 const WORD_RANGES: &[(char, char)] = &[
     ('\u{30}', '\u{39}'),
     ('\u{41}', '\u{5a}'),
