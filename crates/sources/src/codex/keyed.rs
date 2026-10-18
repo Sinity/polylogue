@@ -4,7 +4,6 @@
 use super::origins::{Origins, RecordRange};
 use super::*;
 use std::ops::Bound::{Excluded, Unbounded};
-#[path = "keyed_native_messages.rs"]
 mod native_messages;
 pub use native_messages::CompletedMessageProof;
 
@@ -511,11 +510,11 @@ impl<V: ReadView> KeyedRecords<V> {
         if self.failure.is_some() {
             return;
         }
-        if let Some(v) = &v {
-            if !v.fits(&k) {
-                self.failure = Some(format!("invalid Codex cell for {k:?}"));
-                return;
-            }
+        if let Some(v) = &v
+            && !v.fits(&k)
+        {
+            self.failure = Some(format!("invalid Codex cell for {k:?}"));
+            return;
         }
         // Measure the encoded size without allocating a buffer.
         struct Count(usize);
@@ -576,15 +575,14 @@ impl<V: ReadView> KeyedRecords<V> {
                     return None;
                 }
             };
-            if let Some((k, v)) = &base {
-                if (forward && k <= &key)
+            if let Some((k, v)) = &base
+                && ((forward && k <= &key)
                     || (!forward && k >= &key)
                     || !key.same_family(k)
-                    || !v.fits(k)
-                {
-                    self.failure = Some("invalid Codex ordered state read".into());
-                    return None;
-                }
+                    || !v.fits(k))
+            {
+                self.failure = Some("invalid Codex ordered state read".into());
+                return None;
             }
             let changed = if forward {
                 self.changes.range((Excluded(&key), Unbounded)).next()
@@ -702,10 +700,10 @@ impl<V: ReadView> KeyedRecords<V> {
                 _ => (0, 0),
             };
             self.put(Key::BlockOrder(i), Cell::Position(next.0, next.1));
-            if let BlockContent::ToolCall(c) = &v.content {
-                if let Some(id) = &c.call_id {
-                    self.put(Key::CallBlock(id.as_str().to_owned(), i, b), Cell::Present);
-                }
+            if let BlockContent::ToolCall(c) = &v.content
+                && let Some(id) = &c.call_id
+            {
+                self.put(Key::CallBlock(id.as_str().to_owned(), i, b), Cell::Present);
             }
             self.put(Key::Block(i, b), Cell::Block(v));
             let raw = self.current_raw.clone();
@@ -721,10 +719,10 @@ impl<V: ReadView> KeyedRecords<V> {
         let (m, n) = self.header(i)?;
         let id = self.next_block_id(i, &m.id, matches!(content, BlockContent::Thinking(_)))?;
         let b = polylogue_model::Block { id, content };
-        if let BlockContent::ToolCall(c) = &b.content {
-            if let Some(id) = &c.call_id {
-                self.put(Key::CallBlock(id.as_str().to_owned(), i, n), Cell::Present);
-            }
+        if let BlockContent::ToolCall(c) = &b.content
+            && let Some(id) = &c.call_id
+        {
+            self.put(Key::CallBlock(id.as_str().to_owned(), i, n), Cell::Present);
         }
         self.put(Key::Block(i, n), Cell::Block(b));
         self.put(
@@ -899,10 +897,10 @@ impl<V: ReadView> KeyedRecords<V> {
             // A prompt echo may still reclassify this subagent prompt as Human,
             // and a token_count must then find the model message before it, so
             // keep that one open too.
-            if self.s.pending_prompt == Some(i) {
-                if let Some((Key::Model(previous), _)) = self.neighbor(Key::Model(i), false) {
-                    lo = lo.min(previous);
-                }
+            if self.s.pending_prompt == Some(i)
+                && let Some((Key::Model(previous), _)) = self.neighbor(Key::Model(i), false)
+            {
+                lo = lo.min(previous);
             }
         }
         let first = match self.get(Key::Mutable(0, String::new())) {
@@ -1063,20 +1061,19 @@ impl<V: ReadView> KeyedRecords<V> {
         }
     }
     fn record_time_slot(&mut self, i: usize, completed: bool) {
-        if let Some(bytes) = self.current_time_raw.clone() {
-            if let Ok(text) = serde_json::from_slice::<String>(&bytes) {
-                if let Some(at) = crate::time::parse(&text) {
-                    let (key, field) = if completed {
-                        (
-                            "completed_at",
-                            polylogue_model::merge::MessageField::CompletedAt,
-                        )
-                    } else {
-                        ("at", polylogue_model::merge::MessageField::At)
-                    };
-                    self.record_slot(i, key, super::presence::message(field, &bytes, Some(at)));
-                }
-            }
+        if let Some(bytes) = self.current_time_raw.clone()
+            && let Ok(text) = serde_json::from_slice::<String>(&bytes)
+            && let Some(at) = crate::time::parse(&text)
+        {
+            let (key, field) = if completed {
+                (
+                    "completed_at",
+                    polylogue_model::merge::MessageField::CompletedAt,
+                )
+            } else {
+                ("at", polylogue_model::merge::MessageField::At)
+            };
+            self.record_slot(i, key, super::presence::message(field, &bytes, Some(at)));
         }
     }
     fn record_block_slots_from(
@@ -1126,17 +1123,16 @@ impl<V: ReadView> KeyedRecords<V> {
             }
             Err(e) => self.failure = Some(e),
         }
-        if owner == Owner::Primary {
-            if let Ok(phase) =
+        if owner == Owner::Primary
+            && let Ok(phase) =
                 raw::field(raw, &path).and_then(|item| raw::canonical_field(item, &["phase"]))
-            {
-                self.record_slot_at(
-                    i,
-                    "extra:phase",
-                    super::presence::extra("phase", &phase),
-                    origins.field("phase"),
-                );
-            }
+        {
+            self.record_slot_at(
+                i,
+                "extra:phase",
+                super::presence::extra("phase", &phase),
+                origins.field("phase"),
+            );
         }
     }
     fn record_block_slots(&mut self, i: usize, b: usize, owner: super::presence::Owner) {
@@ -1228,37 +1224,37 @@ impl<V: ReadView> KeyedRecords<V> {
                     return None;
                 }
             };
-            if let Some(BlockContent::ToolCall(old)) = previous {
-                if let Some(id) = old.call_id {
-                    let new = match &content {
-                        BlockContent::ToolCall(new) => new.call_id.as_ref().map(NativeId::as_str),
-                        _ => None,
-                    };
-                    if new != Some(id.as_str()) {
-                        self.remove(Key::CallBlock(id.as_str().to_owned(), i, block));
-                        if self
-                            .call(id.as_str())
-                            .is_some_and(|call| call.at == (i, block))
+            if let Some(BlockContent::ToolCall(old)) = previous
+                && let Some(id) = old.call_id
+            {
+                let new = match &content {
+                    BlockContent::ToolCall(new) => new.call_id.as_ref().map(NativeId::as_str),
+                    _ => None,
+                };
+                if new != Some(id.as_str()) {
+                    self.remove(Key::CallBlock(id.as_str().to_owned(), i, block));
+                    if self
+                        .call(id.as_str())
+                        .is_some_and(|call| call.at == (i, block))
+                    {
+                        self.wrapper_remove(id.as_str());
+                        self.remove(Key::Call(id.as_str().to_owned()));
+                        self.remove(Key::CallAssociation(id.as_str().to_owned()));
+                        if let Some(Cell::Position(message, _)) =
+                            self.remove(Key::PendingStdin(id.as_str().to_owned()))
                         {
-                            self.wrapper_remove(id.as_str());
-                            self.remove(Key::Call(id.as_str().to_owned()));
-                            self.remove(Key::CallAssociation(id.as_str().to_owned()));
-                            if let Some(Cell::Position(message, _)) =
-                                self.remove(Key::PendingStdin(id.as_str().to_owned()))
-                            {
-                                self.pin(format!("stdin:{id}"), Some(message), None);
-                            }
+                            self.pin(format!("stdin:{id}"), Some(message), None);
                         }
                     }
                 }
             }
-            if let BlockContent::ToolCall(new) = &content {
-                if let Some(id) = &new.call_id {
-                    self.put(
-                        Key::CallBlock(id.as_str().to_owned(), i, block),
-                        Cell::Present,
-                    );
-                }
+            if let BlockContent::ToolCall(new) = &content
+                && let Some(id) = &new.call_id
+            {
+                self.put(
+                    Key::CallBlock(id.as_str().to_owned(), i, block),
+                    Cell::Present,
+                );
             }
             self.edit_block(i, block, |value| *value = content);
             self.record_block_slots(i, block, super::presence::Owner::Primary);
@@ -1424,7 +1420,7 @@ impl<V: ReadView> KeyedRecords<V> {
                     let association_changed = original.as_ref().is_some_and(|old| {
                         ["role", "type", "call_id", "name"]
                             .iter()
-                            .any(|key| old.get(*key) != fields.value.get(*key))
+                            .any(|key| old.get(key) != fields.value.get(key))
                     });
                     self.effective_item = Some(fields.value);
                     if association_changed {
@@ -2200,48 +2196,47 @@ impl<V: ReadView> KeyedRecords<V> {
     }
 
     fn output_item(&mut self, p: &Value, at: Option<Timestamp>) -> RecordOutcome<Ignored> {
-        if let Some(call) = p.get("call_id").and_then(Value::as_str) {
-            if let Some(key) = self.operation_key(call) {
-                if let Some(Cell::Operation(mut operation)) = self.get(key.clone()) {
-                    let independent_unified = self.unified_operation_proved(&operation);
-                    let output = recorded_output(p.get("output"));
-                    let text = match &output {
-                        Some(ToolOutput::Text(s)) => s.clone(),
-                        _ => String::new(),
-                    };
-                    let (outcome, exit) = output_outcome(
-                        operation.tool.as_deref().unwrap_or(""),
-                        p.get("output").unwrap_or(&Value::Null),
-                        &text,
-                    );
-                    operation.result_present = !matches!(
-                        outcome,
-                        ToolOutcome::Unknown {
-                            reason: UnknownReason::NoResult
-                        }
-                    );
-                    operation.output = if operation.result_present {
-                        output.and_then(|o| match o {
-                            ToolOutput::Text(s) => Some(s),
-                            _ => None,
-                        })
-                    } else {
-                        None
-                    };
-                    operation.outcome = operation
-                        .result_present
-                        .then(|| outcome.as_str().to_owned());
-                    operation.exit_code = exit;
-                    if independent_unified || !operation.origins.iter().any(|origin| matches!(origin, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "status")) {
+        if let Some(call) = p.get("call_id").and_then(Value::as_str)
+            && let Some(key) = self.operation_key(call)
+            && let Some(Cell::Operation(mut operation)) = self.get(key.clone())
+        {
+            let independent_unified = self.unified_operation_proved(&operation);
+            let output = recorded_output(p.get("output"));
+            let text = match &output {
+                Some(ToolOutput::Text(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let (outcome, exit) = output_outcome(
+                operation.tool.as_deref().unwrap_or(""),
+                p.get("output").unwrap_or(&Value::Null),
+                &text,
+            );
+            operation.result_present = !matches!(
+                outcome,
+                ToolOutcome::Unknown {
+                    reason: UnknownReason::NoResult
+                }
+            );
+            operation.output = if operation.result_present {
+                output.and_then(|o| match o {
+                    ToolOutput::Text(s) => Some(s),
+                    _ => None,
+                })
+            } else {
+                None
+            };
+            operation.outcome = operation
+                .result_present
+                .then(|| outcome.as_str().to_owned());
+            operation.exit_code = exit;
+            if independent_unified || !operation.origins.iter().any(|origin| matches!(origin, polylogue_model::tool_item::ToolOrigin::Rollout { tag, .. } if tag == "status")) {
                         operation.duration_ms = native_duration(p);
                     }
-                    if let Some(origin) = self.operation_origin() {
-                        operation.origins.retain(|o|!matches!(o,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..}if tag=="result"));
-                        operation.origins.push(origin);
-                    }
-                    self.put(key, Cell::Operation(operation));
-                }
+            if let Some(origin) = self.operation_origin() {
+                operation.origins.retain(|o|!matches!(o,polylogue_model::tool_item::ToolOrigin::Rollout{tag,..}if tag=="result"));
+                operation.origins.push(origin);
             }
+            self.put(key, Cell::Operation(operation));
         }
         if let Some(i) = self.known_owner(p) {
             if !self.own_evidence(i, p, true) {
@@ -2265,11 +2260,10 @@ impl<V: ReadView> KeyedRecords<V> {
             };
             let old_call = old.as_ref().and_then(|result| result.call_id.clone());
             if old_call.as_ref().map(NativeId::as_str) != Some(call_id.as_str()) {
-                if let Some(old_call) = old_call {
-                    if self.position(Key::Result(old_call.as_str().to_owned())) == Some((i, block))
-                    {
-                        self.remove(Key::Result(old_call.as_str().to_owned()));
-                    }
+                if let Some(old_call) = old_call
+                    && self.position(Key::Result(old_call.as_str().to_owned())) == Some((i, block))
+                {
+                    self.remove(Key::Result(old_call.as_str().to_owned()));
                 }
                 self.remove_evidence(i, 1, 0);
             }
@@ -2651,19 +2645,19 @@ impl<V: ReadView> KeyedRecords<V> {
         };
         if let Ok(id) = operation.id() {
             if let Some(Cell::Operation(mut previous)) = self.get(Key::Operation(format!("1:{id}")))
+                && previous.native
+                && previous.agent_class != "agent"
             {
-                if previous.native && previous.agent_class != "agent" {
-                    // The call gives the Message association only, not a classification
-                    // or result for the earlier native command.
-                    if self.unified_operation_proved(&previous) {
-                        previous.tool = operation.tool;
-                        previous.message = operation.message;
-                        previous.origins.extend(operation.origins);
-                    } else {
-                        self.s.normalization_incomplete = true;
-                    }
-                    operation = previous;
+                // The call gives the Message association only, not a classification
+                // or result for the earlier native command.
+                if self.unified_operation_proved(&previous) {
+                    previous.tool = operation.tool;
+                    previous.message = operation.message;
+                    previous.origins.extend(operation.origins);
+                } else {
+                    self.s.normalization_incomplete = true;
                 }
+                operation = previous;
             }
             self.put(Key::OperationBlock(message, block), Cell::Text(id));
         }
@@ -2745,10 +2739,11 @@ impl<V: ReadView> KeyedRecords<V> {
                 return false;
             }
             if !previous.native || previous.turn == operation.turn {
-                if operation.native && !previous.native {
-                    if let Ok(anchor) = previous.id() {
-                        operation.direct_anchors.push(anchor);
-                    }
+                if operation.native
+                    && !previous.native
+                    && let Ok(anchor) = previous.id()
+                {
+                    operation.direct_anchors.push(anchor);
                 }
                 if !operation.native {
                     operation.provisional_anchor = previous.provisional_anchor;
@@ -2783,23 +2778,23 @@ impl<V: ReadView> KeyedRecords<V> {
         let mut wrappers = Vec::new();
         if operation.message.is_none() {
             for (_, wrapper) in self.wrappers() {
-                if let Some(call) = self.call(&wrapper) {
-                    if let Some(Cell::Text(id)) =
+                if let Some(call) = self.call(&wrapper)
+                    && let Some(Cell::Text(id)) =
                         self.get(Key::OperationBlock(call.at.0, call.at.1))
-                    {
-                        let key = Key::Operation(format!(
-                            "{}:{id}",
-                            if id.starts_with("operation:provisional-v1:") {
-                                0
-                            } else {
-                                1
-                            }
-                        ));
-                        if let Some(Cell::Operation(owner)) = self.get(key) {
-                            if owner.turn == operation.turn && owner.turn.is_some() {
-                                wrappers.push((wrapper, id, owner.origins));
-                            }
+                {
+                    let key = Key::Operation(format!(
+                        "{}:{id}",
+                        if id.starts_with("operation:provisional-v1:") {
+                            0
+                        } else {
+                            1
                         }
+                    ));
+                    if let Some(Cell::Operation(owner)) = self.get(key)
+                        && owner.turn == operation.turn
+                        && owner.turn.is_some()
+                    {
+                        wrappers.push((wrapper, id, owner.origins));
                     }
                 }
             }
@@ -2816,17 +2811,16 @@ impl<V: ReadView> KeyedRecords<V> {
                     end,
                     raw_hash,
                 } = origin
+                    && tag == "call"
                 {
-                    if tag == "call" {
-                        operation
-                            .origins
-                            .push(polylogue_model::tool_item::ToolOrigin::Rollout {
-                                tag: format!("wrapper_overlap:{id}"),
-                                start,
-                                end,
-                                raw_hash,
-                            });
-                    }
+                    operation
+                        .origins
+                        .push(polylogue_model::tool_item::ToolOrigin::Rollout {
+                            tag: format!("wrapper_overlap:{id}"),
+                            start,
+                            end,
+                            raw_hash,
+                        });
                 }
             }
             self.child(raw, format!("~native:{}", operation.invocation));
@@ -2867,16 +2861,15 @@ impl<V: ReadView> KeyedRecords<V> {
             self.s.session.as_ref(),
             p.get("turn_id").and_then(Value::as_str),
             original.get("id").and_then(Value::as_str),
-        ) {
-            if let Ok(id) = polylogue_model::tool_item::native_id(&session.id, turn, id) {
-                let key = Key::UnifiedOperation(id);
-                let conflicting = self.get(key.clone()).is_some()
-                    && original.get("type").and_then(Value::as_str) != Some("CommandExecution");
-                self.remove(key);
-                if conflicting {
-                    self.s.normalization_incomplete = true;
-                    return RecordOutcome::Unrecognized("native command constructor changed");
-                }
+        ) && let Ok(id) = polylogue_model::tool_item::native_id(&session.id, turn, id)
+        {
+            let key = Key::UnifiedOperation(id);
+            let conflicting = self.get(key.clone()).is_some()
+                && original.get("type").and_then(Value::as_str) != Some("CommandExecution");
+            self.remove(key);
+            if conflicting {
+                self.s.normalization_incomplete = true;
+                return RecordOutcome::Unrecognized("native command constructor changed");
             }
         }
         if let Some(outcome) = self.completed_message(p, at) {
@@ -3126,18 +3119,15 @@ impl<V: ReadView> KeyedRecords<V> {
                 ) else {
                     return RecordOutcome::Used;
                 };
-                if let Some(session) = self.s.session.as_ref() {
-                    if let Some(turn) = p
+                if let Some(session) = self.s.session.as_ref()
+                    && let Some(turn) = p
                         .get("turn_id")
                         .and_then(Value::as_str)
                         .or(self.s.turn.as_deref())
-                    {
-                        if let Ok(id) =
-                            polylogue_model::tool_item::native_id(&session.id, turn, &child_id)
-                        {
-                            self.put(Key::OperationBlock(mi, call_block), Cell::Text(id));
-                        }
-                    }
+                    && let Ok(id) =
+                        polylogue_model::tool_item::native_id(&session.id, turn, &child_id)
+                {
+                    self.put(Key::OperationBlock(mi, call_block), Cell::Text(id));
                 }
                 let result = BlockContent::ToolResult(ToolResult {
                     data: None,
@@ -3155,10 +3145,8 @@ impl<V: ReadView> KeyedRecords<V> {
                     self.push_block(mi, result);
                 }
                 self.record_block_slots(mi, call_block + 1, super::presence::Owner::Primary);
-                if !replacing {
-                    if let Some(wrapper) = owner {
-                        self.child(wrapper, child_id);
-                    }
+                if !replacing && let Some(wrapper) = owner {
+                    self.child(wrapper, child_id);
                 }
                 RecordOutcome::Used
             }
@@ -3346,58 +3334,4 @@ impl<V: ReadView> KeyedRecords<V> {
 }
 
 #[cfg(test)]
-mod legacy_time_tests {
-    use super::*;
-
-    #[test]
-    fn explicitly_timed_first_message_keeps_its_own_witness_in_legacy_context() {
-        let memory = MemoryReadView::default();
-        let origin = Origin::new("codex").unwrap();
-        let session_id = SessionId::new(&origin, "synthetic-time").unwrap();
-        let mut session = Session::new(
-            session_id.clone(),
-            origin,
-            "synthetic-time",
-            SessionKind::Main,
-        )
-        .unwrap();
-        session.started_at = Some(crate::time::intrinsic(Timestamp(0)));
-        let resume = Resume {
-            session: Some(session),
-            legacy: true,
-            ..Default::default()
-        };
-        let mut parser = KeyedRecords::new(&memory, resume);
-        let source_time = b"\"2026-09-02T10:00:01.000Z\"";
-        parser.current_time_raw = Some(source_time.to_vec());
-        parser.current_origins = Origins::Record(RecordRange::new(100, 200).unwrap());
-        let mut message = Message::new(
-            MessageId::new(session_id, "first").unwrap(),
-            IdKind::Provider,
-            Role::User,
-            WrittenBy::Human,
-        );
-        message.at = Some(crate::time::intrinsic(
-            crate::time::parse("2026-09-02T10:00:01.000Z").unwrap(),
-        ));
-        let expected = message.at;
-        parser.push_message(message);
-        let delta = parser.finish_delta().unwrap();
-        let Some(Some(Cell::Header { message, .. })) = delta.cells.get(&Key::Message(0)) else {
-            panic!("missing first Message");
-        };
-        assert_eq!(message.at, expected);
-        let Some(Some(Cell::SlotValue(witness))) = delta.cells.get(&Key::Presence(0, "at".into()))
-        else {
-            panic!("missing first time slot");
-        };
-        assert_eq!(witness.canonical, source_time);
-        assert_eq!(
-            witness.origins,
-            Origins::Located(super::super::selection::SelectedRaw {
-                record: RecordRange::new(100, 200).unwrap(),
-                path: vec![super::super::selection::PathPart::Key("timestamp".into())]
-            })
-        );
-    }
-}
+mod tests;

@@ -38,31 +38,6 @@ pub(super) fn overlay(previous: Option<&[u8]>, incoming: &[u8]) -> Result<Vec<u8
     canonical(&encode(&fields)?)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn overlays_keep_exact_number_tokens_and_replace_opaque_usage_without_filling() {
-        let a=br#"{"type":"assistant","uuid":"a","message":{"id":"r","content":[{"type":"tool_use","input":{"n":1E+2,"z":-0}}],"usage":{"input_tokens":1,"output_tokens":2}}}"#;
-        let b = br#"{"type":"assistant","uuid":"a","message":{"usage":{"output_tokens":3}}}"#;
-        let reduced = overlay(Some(a), b).unwrap();
-        assert_eq!(
-            crate::raw::field(&reduced, &["message", "usage"]).unwrap(),
-            Some(br#"{"output_tokens":3}"#.as_slice())
-        );
-        assert_eq!(
-            crate::raw::field(&reduced, &["message", "content"]).unwrap(),
-            Some(br#"[{"input":{"n":1E+2,"z":-0},"type":"tool_use"}]"#.as_slice())
-        );
-        let null = overlay(Some(&reduced), br#"{"message":{"content":null}}"#).unwrap();
-        assert_eq!(
-            crate::raw::field(&null, &["message", "content"]).unwrap(),
-            Some(b"null".as_slice())
-        );
-        assert_eq!(overlay(Some(&reduced), a).unwrap(), canonical(a).unwrap());
-    }
-}
-
 /// Decode the overlaid record.
 pub(super) fn decode_effective(
     raw: &[u8],
@@ -90,4 +65,29 @@ pub(super) fn decode_effective(
         }
     }
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn overlays_keep_number_spelling_and_replace_usage_whole() {
+        let a=br#"{"type":"assistant","uuid":"a","message":{"id":"r","content":[{"type":"tool_use","input":{"n":1E+2,"z":-0}}],"usage":{"input_tokens":1,"output_tokens":2}}}"#;
+        let b = br#"{"type":"assistant","uuid":"a","message":{"usage":{"output_tokens":3}}}"#;
+        let reduced = overlay(Some(a), b).unwrap();
+        assert_eq!(
+            crate::raw::field(&reduced, &["message", "usage"]).unwrap(),
+            Some(br#"{"output_tokens":3}"#.as_slice())
+        );
+        assert_eq!(
+            crate::raw::field(&reduced, &["message", "content"]).unwrap(),
+            Some(br#"[{"input":{"n":1E+2,"z":-0},"type":"tool_use"}]"#.as_slice())
+        );
+        let null = overlay(Some(&reduced), br#"{"message":{"content":null}}"#).unwrap();
+        assert_eq!(
+            crate::raw::field(&null, &["message", "content"]).unwrap(),
+            Some(b"null".as_slice())
+        );
+        assert_eq!(overlay(Some(&reduced), a).unwrap(), canonical(a).unwrap());
+    }
 }

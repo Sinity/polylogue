@@ -1,4 +1,4 @@
-//! Response selection is keyed by exact immediate extra, with original donors.
+//! Claude record extras: one per key per response, with their origins.
 use polylogue_sources::{
     claude_code::{
         FileCtx, KeyedRecords,

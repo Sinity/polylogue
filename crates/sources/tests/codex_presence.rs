@@ -1,4 +1,4 @@
-//! Presence comes from effective raw mappings, never populated DTO defaults.
+//! Codex slot values come from the raw item fields, not normalized defaults.
 use polylogue_model::{
     BlockSlot,
     merge::{BlockField as B, MessageField as M, Slot, UsageField as U},
@@ -156,7 +156,7 @@ fn empty_text_excludes_its_metadata_while_known_empty_nontext_payloads_survive()
     ));
 }
 #[test]
-fn effective_overlay_and_line_steps_keep_exact_fields_once() {
+fn overlay_and_line_steps_keep_each_field_once() {
     let bytes = header()
         + &line(
             "response_item",
@@ -228,13 +228,12 @@ fn intrinsic_time_provenance_is_separate_from_volatile_free_version_units() {
         assert!(!slots(&view, message).contains_key(&Slot::Message(M::At)));
     }
     for (key, cell) in &view.cells {
-        if matches!(key, Key::Evidence(_, _, _)) {
-            if let Cell::Evidence(unit) = cell {
-                if unit.whole_record {
-                    let value: Value = serde_json::from_slice(&unit.canonical).unwrap();
-                    assert!(value.get("timestamp").is_none());
-                }
-            }
+        if matches!(key, Key::Evidence(_, _, _))
+            && let Cell::Evidence(unit) = cell
+            && unit.whole_record
+        {
+            let value: Value = serde_json::from_slice(&unit.canonical).unwrap();
+            assert!(value.get("timestamp").is_none());
         }
     }
 }
@@ -272,7 +271,7 @@ fn native_children_and_legacy_array_results_keep_only_direct_fields() {
 }
 
 #[test]
-fn message_witness_keys_have_one_source_owned_slot_for_insert_and_delete() {
+fn message_slot_keys_map_to_one_slot_for_insert_and_delete() {
     use polylogue_sources::codex::presence::message_slot;
     assert_eq!(message_slot("at"), Some(Slot::Message(M::At)));
     assert_eq!(

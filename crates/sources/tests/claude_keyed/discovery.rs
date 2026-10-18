@@ -60,7 +60,7 @@ fn configured_claude_subagent_folder_never_substitutes_for_missing_or_conflictin
 }
 
 #[test]
-fn configured_claude_explicit_author_evidence_precedes_first_agent_fallback() {
+fn supplied_author_evidence_wins_over_first_agent_fallback() {
     for (label, extra, text, expected) in [
         (
             "typed",

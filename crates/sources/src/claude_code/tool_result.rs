@@ -178,19 +178,20 @@ pub(super) fn decide(record: &Value, index: usize, item: &Value) -> Decision {
             unresolved.push(p(&["toolUseResult", "interrupted"]));
         }
     }
-    if !has_denial && reason_source.is_none() {
-        if let Some(timeout) = meta.and_then(|m| m.get("timedOutAfterMs")) {
-            if timeout.as_u64().is_some() {
-                let path = p(&["toolUseResult", "timedOutAfterMs"]);
-                outcome = status(StatusKind::TimedOut, timeout).unwrap_or(ToolOutcome::Unknown {
-                    reason: UnknownReason::StatusFieldUnreadable,
-                });
-                outcome_source = Some(path.clone());
-                reason_source = Some(path);
-            } else {
-                status_unreadable = true;
-                unresolved.push(p(&["toolUseResult", "timedOutAfterMs"]));
-            }
+    if !has_denial
+        && reason_source.is_none()
+        && let Some(timeout) = meta.and_then(|m| m.get("timedOutAfterMs"))
+    {
+        if timeout.as_u64().is_some() {
+            let path = p(&["toolUseResult", "timedOutAfterMs"]);
+            outcome = status(StatusKind::TimedOut, timeout).unwrap_or(ToolOutcome::Unknown {
+                reason: UnknownReason::StatusFieldUnreadable,
+            });
+            outcome_source = Some(path.clone());
+            reason_source = Some(path);
+        } else {
+            status_unreadable = true;
+            unresolved.push(p(&["toolUseResult", "timedOutAfterMs"]));
         }
     }
     // A background launch: the outcome stays unknown until a completion

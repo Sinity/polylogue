@@ -1,4 +1,4 @@
-//! Provider output projection, independent of storage and canonical publication.
+//! Reading Codex Messages from stored state one unit at a time.
 use polylogue_model::*;
 use polylogue_sources::codex::keyed::{Cell, Key, KeyedRecords, MemoryReadView, ReadView, Resume};
 use polylogue_sources::codex::projection::{self, Cursor, Mode, Step, Unit};

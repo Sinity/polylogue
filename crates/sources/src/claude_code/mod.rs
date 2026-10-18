@@ -80,6 +80,9 @@ pub struct StepOutput {
     pub links: Vec<Link>,
 }
 
+/// A record's Session index, and the (Session, UUID) it was copied from.
+type Route = (usize, Option<(String, String)>);
+
 pub struct KeyedRecords<R: ReadView> {
     ctx: FileCtx,
     view: R,
@@ -104,14 +107,12 @@ impl<R: ReadView> KeyedRecords<R> {
         if let FileCtx::Subagent {
             meta: Some(meta), ..
         } = &ctx
-        {
-            if meta
+            && meta
                 .get("parentAgentId")
                 .and_then(Value::native)
                 .is_some_and(|n| n.encoding().is_some())
-            {
-                return Err("non-scalar subagent parent Session routing is unsupported".into());
-            }
+        {
+            return Err("non-scalar subagent parent Session routing is unsupported".into());
         }
         let header = view.header().map_err(|e| e.to_string())?;
         Ok(Self {
@@ -275,11 +276,7 @@ impl<R: ReadView> KeyedRecords<R> {
         Ok(())
     }
     /// The session this message record belongs to, and the message it copies, if any.
-    fn route(
-        &mut self,
-        v: &Value,
-        uuid: &str,
-    ) -> Result<Option<(usize, Option<(String, String)>)>, String> {
+    fn route(&mut self, v: &Value, uuid: &str) -> Result<Option<Route>, String> {
         let sid_field = v
             .get("sessionId")
             .and_then(Value::as_str)
@@ -824,7 +821,7 @@ impl<R: ReadView> KeyedRecords<R> {
                         "isApiErrorMessage",
                     ]
                     .iter()
-                    .any(|key| old_raw.get(*key) != v.get(*key))
+                    .any(|key| old_raw.get(key) != v.get(key))
                 {
                     projected
                         .unresolved
@@ -843,14 +840,13 @@ impl<R: ReadView> KeyedRecords<R> {
             completion: None,
             projection: projected,
         };
-        if let Some(previous) = &old {
-            if crate::raw::field(&previous.raw, &["message", "content"])?
+        if let Some(previous) = &old
+            && crate::raw::field(&previous.raw, &["message", "content"])?
                 == crate::raw::field(&contribution.raw, &["message", "content"])?
-                && crate::raw::field(&previous.raw, &["toolUseResult"])?
-                    == crate::raw::field(&contribution.raw, &["toolUseResult"])?
-            {
-                background::carry(Some(previous), &mut contribution);
-            }
+            && crate::raw::field(&previous.raw, &["toolUseResult"])?
+                == crate::raw::field(&contribution.raw, &["toolUseResult"])?
+        {
+            background::carry(Some(previous), &mut contribution);
         }
         let old_missing = old.as_ref().map_or(0, |c| {
             c.bodies.iter().filter(|b| b.payload.is_none()).count() as u64
@@ -961,7 +957,7 @@ impl<R: ReadView> KeyedRecords<R> {
                     };
                     response.selected_origins[index] = Some(selected.clone());
                     for fact in &mut response.selected_facts[index] {
-                        fact.selection = selection::for_selected(fact, index, &semantic, &selected);
+                        fact.selection = selection::for_selected(fact, index, semantic, &selected);
                     }
                 }
             }
@@ -1033,23 +1029,23 @@ impl<R: ReadView> KeyedRecords<R> {
             .and_then(Value::as_str)
         {
             for (local, block) in contribution.blocks.iter().enumerate() {
-                if let BlockContent::ToolResult(result) = block {
-                    if let Some(call) = &result.call_id {
-                        self.remember_background(
-                            task,
-                            BackgroundAddress {
-                                session: native.clone(),
-                                response: key.clone(),
-                                message: response.message.id.clone(),
-                                item,
-                                local: local
-                                    .try_into()
-                                    .map_err(|_| "background block index overflow")?,
-                                call: call.as_str().into(),
-                                ambiguous: false,
-                            },
-                        )?;
-                    }
+                if let BlockContent::ToolResult(result) = block
+                    && let Some(call) = &result.call_id
+                {
+                    self.remember_background(
+                        task,
+                        BackgroundAddress {
+                            session: native.clone(),
+                            response: key.clone(),
+                            message: response.message.id.clone(),
+                            item,
+                            local: local
+                                .try_into()
+                                .map_err(|_| "background block index overflow")?,
+                            call: call.as_str().into(),
+                            ambiguous: false,
+                        },
+                    )?;
                 }
             }
         }
@@ -1500,10 +1496,10 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
 
 impl<R: ReadView> KeyedRecords<R> {
     fn finish_output(mut self) -> Result<StepOutput, String> {
-        if let (FileCtx::Main { stem }, Some((_, title))) = (&self.ctx, &self.header.title) {
-            if let Some(&i) = self.by_id.get(stem) {
-                self.sessions[i].session.title = Some(title.clone());
-            }
+        if let (FileCtx::Main { stem }, Some((_, title))) = (&self.ctx, &self.header.title)
+            && let Some(&i) = self.by_id.get(stem)
+        {
+            self.sessions[i].session.title = Some(title.clone());
         }
         self.sessions.sort_by_key(|c| c.ordinal);
         let mut responses: Vec<_> = self

@@ -1,4 +1,4 @@
-//! Source prerequisites over the real synthetic Morrow input, not client/M1 proof.
+//! The Morrow fixture: Message identity, order and field descriptors.
 use polylogue_model::{
     MessageId, Origin, SessionId, WrittenBy,
     merge::{BlockField, MessageField},
@@ -49,7 +49,7 @@ fn units(c: &claude_code::keyed::Contribution, item: u64) -> Vec<Unit> {
     units
 }
 #[test]
-fn morrow_has_exact_native_message_identity_source_order_and_replayable_typed_leaves() {
+fn morrow_keeps_message_ids_source_order_and_replayable_leaves() {
     let mut memory = MemoryReadView::default();
     let output = run(&mut memory, MORROW, 0);
     assert_eq!(output.delta.responses.len(), 12);
@@ -170,7 +170,7 @@ fn line(uuid: &str, response: &str, content: Value) -> String {
     json!({"type":"assistant","uuid":uuid,"requestId":"request","sessionId":SID,"timestamp":"2026-10-01T10:00:00Z","message":{"id":response,"model":"original-model","content":content}}).to_string()+"\n"
 }
 #[test]
-fn uuid_overlay_retains_original_nested_donors_and_first_response_ordinal() {
+fn uuid_overlay_keeps_nested_origins_and_first_response_ordinal() {
     let first = line(
         "z-first",
         "response-z",
@@ -545,7 +545,7 @@ fn channels_never_fabricate_missing_inline_output_or_a_wrapper_count() {
 }
 
 #[test]
-fn false_interrupted_is_its_own_supplied_status_not_a_default_outcome_witness() {
+fn false_interrupted_is_a_supplied_status_not_a_default_outcome() {
     for is_error in [None, Some(false)] {
         let mut block = json!({"type":"tool_result","tool_use_id":"call","content":""});
         if let Some(value) = is_error {
@@ -677,7 +677,7 @@ fn parent_reference_uses_session_scoped_record_address_and_original_origin() {
     );
 }
 #[test]
-fn native_parent_fragments_resolve_their_owner_but_unseen_parents_remain_pending() {
+fn parent_fragments_resolve_their_message_but_unseen_parents_stay_pending() {
     for grouped in [false, true] {
         let first = line("first", "response", json!([{"type":"text","text":"one"}]));
         let second = line("grouped", "response", json!([{"type":"text","text":"two"}]));
@@ -835,7 +835,7 @@ fn correction_units(
     response.metadata_units(&baseline)
 }
 #[test]
-fn stop_sequence_is_one_normalized_selected_extra_with_original_donor_and_raw_correction() {
+fn stop_sequence_is_one_selected_extra_with_its_origin_and_raw_correction() {
     let a=json!({"type":"assistant","uuid":"a","requestId":"request","sessionId":SID,"message":{"id":"response","content":[{"type":"text","text":"a"}],"stop_sequence":"A"}}).to_string()+"\n";
     let b=json!({"type":"assistant","uuid":"b","requestId":"request","sessionId":SID,"message":{"id":"response","content":[{"type":"text","text":"b"}],"stop_sequence":"B"}}).to_string()+"\n";
     let changed_a=json!({"type":"assistant","uuid":"a","requestId":"request","sessionId":SID,"message":{"id":"response","content":[{"type":"text","text":"changed"}],"stop_sequence":"A"}}).to_string()+"\n";

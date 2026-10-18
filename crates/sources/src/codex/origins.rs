@@ -130,7 +130,7 @@ pub struct Cursor {
 mod tests {
     use super::*;
     #[test]
-    fn overlay_preserves_original_root_paths_instead_of_rebasing_retained_fields() {
+    fn overlay_keeps_each_kept_fields_original_path() {
         let old = Origins::Record(RecordRange::new(0, 80).unwrap()).at_path(&["payload"]);
         let new = Origins::Record(RecordRange::new(90, 180).unwrap()).at_path(&["payload", "item"]);
         let overlaid = old.overlay(&new, &["content".into()], &["phase".into()]);

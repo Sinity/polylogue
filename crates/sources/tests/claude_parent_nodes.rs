@@ -1,4 +1,4 @@
-//! Node selection/restart is source-owned; canonical tests resolve Message edges.
+//! Claude parent nodes for non-Message records.
 use polylogue_sources::{
     claude_code::{
         FileCtx, KeyedRecords,
@@ -62,8 +62,7 @@ fn supplied_link_corrections_omission_and_identical_replay_have_deterministic_or
     );
 }
 #[test]
-fn omitted_system_classification_keeps_its_original_donor_and_unknown_correction_poisons_old_relation()
- {
+fn omitted_system_subtype_keeps_its_origin_and_unknown_correction_marks_conflict() {
     let a = "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"uuid\":\"event\",\"sessionId\":\"s\",\"parentUuid\":null,\"logicalParentUuid\":\"a\"}\n";
     let omitted = "{\"type\":\"system\",\"uuid\":\"event\",\"sessionId\":\"s\",\"logicalParentUuid\":\"b\"}\n";
     let mut m = MemoryReadView::default();
@@ -80,8 +79,7 @@ fn omitted_system_classification_keeps_its_original_donor_and_unknown_correction
     assert!(poisoned.predecessor().is_err());
 }
 #[test]
-fn progress_supplement_retains_supplied_classification_and_link_donors_without_recreating_payload()
-{
+fn progress_supplement_keeps_supplied_kind_and_link_origins() {
     let a = "{\"type\":\"progress\",\"uuid\":\"event\",\"sessionId\":\"s\",\"parentUuid\":\"a\",\"data\":{\"type\":\"mcp_progress\",\"payload\":{\"kept_only_in_source\":true}}}\n";
     let b = "{\"type\":\"progress\",\"uuid\":\"event\",\"sessionId\":\"s\",\"parentUuid\":\"b\"}\n";
     let mut m = MemoryReadView::default();

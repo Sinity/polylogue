@@ -1,4 +1,4 @@
-//! Continuation of the existing provider, not repeated whole parses per quantum.
+//! Parsing in budgeted steps gives the same result as one whole parse.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use polylogue_sources::frame::{
     Counts, IgnoredKind, JsonlDriver, Record, RecordOutcome, RecordParser, StepBudget, StepState,
@@ -110,7 +110,7 @@ fn every_cut_preserves_offsets_accounting_and_one_finalization() {
 }
 
 #[test]
-fn capacity_is_an_explicit_resumable_admission_not_a_truncation() {
+fn oversized_record_waits_for_capacity_and_is_never_truncated() {
     let done = Arc::new(AtomicUsize::new(0));
     let mut driver = JsonlDriver::new(recorder(&done), 19);
     let input = b"{\"text\":\"a record spanning several turns\"}\n";

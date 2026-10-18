@@ -1,4 +1,4 @@
-//! Source-local correspondence laws; no private captures or product qualification.
+//! Codex native completion snapshots paired with response items.
 use polylogue_sources::{
     codex::keyed::{Cell, Key, KeyedRecords, Limits, MemoryReadView, Resume},
     frame::{JsonlDriver, StepBudget, drive_jsonl},
@@ -76,7 +76,7 @@ fn messages(v: &MemoryReadView, s: &Resume) -> Value {
     )
 }
 #[test]
-fn native_and_response_orders_preserve_one_exact_message_and_encrypted_reasoning() {
+fn native_and_response_orders_give_one_message_and_keep_encrypted_reasoning() {
     for (native, source) in [("AgentMessage", "assistant"), ("Reasoning", "reasoning")] {
         for native_first in [false, true] {
             let (v, s) = run(MemoryReadView::default(), Resume::default(), &start());
@@ -101,7 +101,7 @@ fn native_and_response_orders_preserve_one_exact_message_and_encrypted_reasoning
     }
 }
 #[test]
-fn unmatched_native_eof_is_explicit_without_fabricating_messages() {
+fn unmatched_native_snapshot_at_eof_stays_pending_without_messages() {
     for native in ["AgentMessage", "Reasoning", "UserMessage"] {
         let (_, s) = run(
             MemoryReadView::default(),
@@ -189,7 +189,7 @@ fn native_reasoning_does_not_claim_unrepresented_plaintext_or_unknown_summary() 
     }
 }
 #[test]
-fn exact_summary_can_correspond_without_replacing_its_source_evidence() {
+fn matching_summary_pairs_without_replacing_its_evidence() {
     let native = edited(&completed("Reasoning", "I", ""), |v| {
         v["payload"]["item"]["summary_text"] = json!(["brief"])
     });
@@ -205,7 +205,7 @@ fn exact_summary_can_correspond_without_replacing_its_source_evidence() {
     assert!(messages(&v, &s).to_string().contains("brief"));
 }
 #[test]
-fn later_corrections_and_constructor_changes_invalidate_exact_current_proof() {
+fn later_corrections_and_constructor_changes_drop_the_pairing() {
     let (v, s) = run(
         MemoryReadView::default(),
         Resume::default(),
@@ -321,7 +321,7 @@ fn editing_the_paired_user_response_invalidates_its_echo_correspondence() {
     assert!(s.normalization_incomplete());
 }
 #[test]
-fn per_record_stop_and_serialized_restart_preserve_the_pending_obligation() {
+fn stopping_after_each_record_and_restarting_keeps_the_snapshot_pending() {
     let (v, s) = run(MemoryReadView::default(), Resume::default(), &start());
     let input = completed("AgentMessage", "I", "text") + &response("assistant", "I", "text");
     let mut driver = JsonlDriver::new(KeyedRecords::new(&v, s.clone()), s.parsed_upto);
@@ -346,7 +346,7 @@ fn per_record_stop_and_serialized_restart_preserve_the_pending_obligation() {
     assert!(!s.normalization_incomplete());
 }
 #[test]
-fn pending_claims_respect_existing_cell_and_encoding_admission() {
+fn pending_snapshots_respect_cell_and_size_limits() {
     let (v, s) = run(MemoryReadView::default(), Resume::default(), &start());
     for limits in [
         Limits {
@@ -417,7 +417,7 @@ fn native_echo_correction_retracts_only_echo_owned_human_value_and_evidence() {
     }
 }
 #[test]
-fn a_separate_user_message_echo_keeps_its_human_value_and_exact_origin() {
+fn a_separate_user_echo_keeps_its_human_value_and_origin() {
     let (v, s) = run(
         MemoryReadView::default(),
         Resume::default(),
@@ -465,8 +465,8 @@ fn reapplying_a_valid_native_echo_keeps_the_native_claim_origins() {
             .unwrap(),
     )
     .unwrap();
-    // The later response resolves the stored native claim, so its own current
-    // source range must not become the origin of the retained echo raw unit.
+    // The later response pairs with the stored snapshot; the echo unit must keep
+    // its own origin, not the response's.
     let (v, s) = run(v, s, &response("user", "U", "corrected"));
     assert!(!s.normalization_incomplete());
     assert_eq!(author(&v), "human");
@@ -500,7 +500,7 @@ fn native_first_user_echo_remains_pending_for_both_id_cases_even_after_duplicate
     }
 }
 #[test]
-fn malformed_explicit_turn_metadata_cannot_fall_back_to_current_scope() {
+fn malformed_turn_metadata_does_not_fall_back_to_the_current_turn() {
     for metadata in [
         Value::Null,
         json!("malformed"),

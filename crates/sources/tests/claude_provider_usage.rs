@@ -1,4 +1,4 @@
-//! One existing selected usage owner supplies raw provider evidence and counters.
+//! Claude `provider_usage` follows the selected usage record.
 use polylogue_model::RawJson;
 use polylogue_sources::{
     claude_code::{

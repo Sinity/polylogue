@@ -1,4 +1,4 @@
-//! Synthetic source-core tests, not runtime/canonical-writer qualification.
+//! Claude parser state across steps, sessions and subagent files.
 use polylogue_model::*;
 use polylogue_sources::claude_code::keyed::*;
 use polylogue_sources::claude_code::{FileCtx, KeyedRecords, StepOutput};
@@ -242,7 +242,7 @@ fn response_tuple_is_typed_and_copies_keep_separate_opaque_relations() {
 }
 
 #[test]
-fn required_companions_leave_missing_work_explicit_and_optional_replicas_do_not_join_evidence() {
+fn missing_required_bodies_stay_pending_and_inline_copies_add_no_evidence() {
     let value = json!({"type":"user","uuid":"u","sessionId":"s","toolUseResult":{"persistedOutputPath":"/source/tool-results/c.txt"},"message":{"content":[{"type":"tool_result","tool_use_id":"c","content":"preview"}]}});
     let mut memory = MemoryReadView::default();
     let (out, _) = step(
@@ -344,10 +344,10 @@ impl ReadView for Metered<'_> {
     fn session(&self, native: &str) -> Result<Option<SessionCell>, Self::Error> {
         self.read("session")?;
         let mut cell = self.memory.session(native).unwrap();
-        if self.fail == Some("session-corrupt") {
-            if let Some(cell) = &mut cell {
-                cell.session.native_id = "different".into();
-            }
+        if self.fail == Some("session-corrupt")
+            && let Some(cell) = &mut cell
+        {
+            cell.session.native_id = "different".into();
         }
         Ok(cell)
     }
@@ -428,9 +428,8 @@ fn append_cost(prefix: usize) -> (usize, usize) {
     assert_eq!(out.delta.responses[0].2.ordinal, 1);
     assert_eq!(meter.reads.get(), 6); // Includes the conflicting non-Message UUID lookup.
     let encoded_bytes = serde_json::to_vec(&out.delta).unwrap().len();
-    // The u64 counter and absolute original-record coordinates are bounded
-    // scalars, not historical collections. Account for their decimal widths
-    // exactly, retaining the rest of the serialized delta unchanged.
+    // Counters and record offsets grow only in decimal width; subtract
+    // exactly that and compare the rest of the serialized delta.
     fn width(value: u64) -> usize {
         let digits = serde_json::to_vec(&value).unwrap().len();
         assert!((1..=20).contains(&digits));

@@ -41,7 +41,7 @@ fn walk(view: &MemoryReadView, legacy: bool, block_only: bool) -> (Vec<String>, 
     (units, steps, meter.reads.get())
 }
 #[test]
-fn old_advance_block_checkpoints_resume_with_exact_units_and_no_extra_reads() {
+fn old_advance_block_cursors_resume_with_the_same_units_and_no_extra_reads() {
     let view = fixture(3);
     for block_only in [false, true] {
         let (units, steps, reads) = walk(&view, false, block_only);
