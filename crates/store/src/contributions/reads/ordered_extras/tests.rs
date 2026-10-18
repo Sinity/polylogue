@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn ordered_extras_connection_allows_only_private_temp_writes() {
+fn read_connection_allows_only_temp_writes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("main.db");
     Connection::open(&path)
@@ -59,7 +59,7 @@ fn ordered_extras_connection_allows_only_private_temp_writes() {
 }
 
 #[test]
-fn ordered_extras_corrupt_oversized_scratch_cells_are_sql_null_before_materialization() {
+fn oversized_temp_rows_are_refused_before_loading() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("main.db");
     Connection::open(&path).unwrap();

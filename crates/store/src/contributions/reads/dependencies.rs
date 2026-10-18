@@ -1,6 +1,9 @@
-//! Snapshot-pinned admission catalog, independent of selected Message rows.
+//! Inputs stored in the archive, listed from a session catalog's snapshot
+//! whether or not any message came from them yet.
 use super::*;
-use crate::{StoredSource, parser_state};
+use crate::{StoredSource, db, parser_state};
+use polylogue_model::SessionId;
+use rusqlite::{OptionalExtension, params};
 #[derive(Clone)]
 pub struct SessionDependencyCursor {
     read: SharedRead,
@@ -63,8 +66,8 @@ impl SessionCatalog {
         }
         Ok(())
     }
-    /// One unique retained input, even when it has no selected/catalog Message.
-    /// `None` ends only this fixed admission catalog, not Session completeness.
+    /// The next stored input in id order, even one with no messages. `None` ends
+    /// this catalog; it does not prove the session complete.
     pub fn next_dependency(
         &self,
         after: Option<&SessionDependencyCursor>,
@@ -89,8 +92,9 @@ impl SessionCatalog {
             return Ok(None);
         };
         let id = id.ok_or_else(|| metadata_admission("Session dependency identity", required))?;
-        let source = crate::observed::decode(archive, &path, &id)?
-            .ok_or_else(|| Error::Invariant("retained dependency disappeared".into()))?;
+        let source = crate::observed::decode(archive, &path, &id)?.ok_or_else(|| {
+            Error::Invariant("stored input disappeared from the archive catalog".into())
+        })?;
         let required = id.len() + source.context.iter().map(String::len).sum::<usize>();
         if required > allowance {
             return Err(metadata_admission(
@@ -139,8 +143,9 @@ impl SessionCatalog {
             },
         )))
     }
-    /// Existing non-Message products must not be silently omitted by the
-    /// narrow native Session reader. This check is local to the exact owner.
+    /// Whether the session has links, events, deliveries, runs or notes. The
+    /// session reader does not return these, so callers must not drop them
+    /// silently.
     pub fn has_other_session_products(&self, id: &SessionId) -> Result<bool> {
         self.visible()?;
         let read = locked(&self.read)?;
@@ -183,8 +188,8 @@ impl SessionCatalog {
         row.map(|(n, path)| path.ok_or_else(|| metadata_admission("Session input path", n)))
             .transpose()
     }
-    /// Reuse the source audit's current-token and selected-body proof within
-    /// this catalog's already pinned index and retained admission view.
+    /// The dependency's selected source projection, read from this catalog's
+    /// snapshot.
     pub fn dependency_selected_projection(
         &self,
         dependency: &SessionInputDependency,
@@ -207,8 +212,8 @@ impl SessionCatalog {
             allowance,
         )
     }
-    /// A point read from the SAME pinned index as Session rows and admission
-    /// traversal. The dependency is unforgeable and bound to that read Arc.
+    /// One parser cell of the dependency, from the same snapshot as the session
+    /// rows. A dependency from another catalog is refused.
     pub fn dependency_cell(
         &self,
         dependency: &SessionInputDependency,

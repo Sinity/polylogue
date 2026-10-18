@@ -29,7 +29,7 @@ fn meter(connection: &Connection) -> (Arc<AtomicUsize>, Arc<AtomicUsize>) {
 }
 
 #[test]
-fn visibility_statements_reuse_compilation_not_results_or_execution_work() {
+fn visibility_checks_reuse_statements_but_rerun_them() {
     let mut f = Fixture::new();
     f.ready("a", 0, 1, "model", false, &[]);
     let reader = f.writer.read_handle().unwrap();
@@ -57,8 +57,8 @@ fn visibility_statements_reuse_compilation_not_results_or_execution_work() {
         archive_compiled.load(Ordering::Relaxed),
     );
     assert!(compiled.0 > 0 && compiled.1 > 0);
-    // The same four SQL templates must still execute on every call. VM work
-    // counts distinguish statement reuse from skipping current authority reads.
+    // The checks must still run on every call: VM step counts tell statement
+    // reuse apart from skipping the check.
     let work = (
         index_work.load(Ordering::Relaxed),
         archive_work.load(Ordering::Relaxed),
@@ -101,7 +101,7 @@ fn visibility_statements_reuse_compilation_not_results_or_execution_work() {
 }
 
 #[test]
-fn warm_visibility_statements_observe_post_pin_revocation() {
+fn visibility_checks_see_changes_after_view_opened() {
     for change in ["hidden", "epoch", "generation", "excision"] {
         let mut f = Fixture::new();
         f.ready("a", 0, 1, "model", false, &[]);

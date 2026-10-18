@@ -129,7 +129,7 @@ fn view(f: &Fixture) -> MessageView {
         .unwrap()
 }
 #[test]
-fn ordered_extras_selected_message_and_block_use_decoded_keys_and_exact_handles() {
+fn ordered_extras_sort_message_and_block_keys() {
     for block in [false, true] {
         let mut f = Fixture::new();
         let keys: Vec<String> = ["z", "\u{10000}", "\u{e000}", "\"", "\n", "\0", "", "a"]
@@ -166,7 +166,7 @@ fn ordered_extras_selected_message_and_block_use_decoded_keys_and_exact_handles(
     }
 }
 #[test]
-fn ordered_extras_accepted_keyset_beyond_four_mib_has_no_aggregate_cap() {
+fn ordered_extras_have_no_total_size_cap() {
     let mut f = Fixture::new();
     let keys: Vec<String> = (0..80)
         .rev()
@@ -189,7 +189,7 @@ fn ordered_extras_accepted_keyset_beyond_four_mib_has_no_aggregate_cap() {
     assert_eq!(temp_count(&view), 0);
 }
 #[test]
-fn ordered_extras_drop_cancel_deadline_and_small_key_allowance_clean_owned_temp_only() {
+fn ordered_extras_drop_temp_table_on_cancel_or_error() {
     let mut f = Fixture::new();
     install(&mut f, &["z".into(), "a".into()], false);
     let view = view(&f);
@@ -218,7 +218,7 @@ fn ordered_extras_drop_cancel_deadline_and_small_key_allowance_clean_owned_temp_
     assert_eq!(temp_count(&view), 0);
 }
 #[test]
-fn ordered_extras_old_selected_root_stays_pinned_and_new_selection_does_not_add_keys() {
+fn ordered_extras_stay_on_the_old_root() {
     let mut f = Fixture::new();
     install(&mut f, &["z".into()], false);
     let old = view(&f);
@@ -241,7 +241,7 @@ fn ordered_extras_old_selected_root_stays_pinned_and_new_selection_does_not_add_
 }
 
 #[test]
-fn ordered_extras_current_removal_epoch_revokes_and_cleans_cursor() {
+fn ordered_extras_stop_when_message_is_removed() {
     let mut f = Fixture::new();
     install(&mut f, &["z".into()], false);
     let view = view(&f);
@@ -260,7 +260,7 @@ fn ordered_extras_current_removal_epoch_revokes_and_cleans_cursor() {
     assert_eq!(temp_count(&view), 0);
 }
 #[test]
-fn ordered_extras_mismatched_handle_and_duplicate_key_refuse_without_wrong_value() {
+fn ordered_extras_refuse_mismatched_or_duplicate_keys() {
     let mut f = Fixture::new();
     install(&mut f, &["z".into(), "a".into()], false);
     let view = view(&f);
@@ -286,7 +286,7 @@ fn ordered_extras_mismatched_handle_and_duplicate_key_refuse_without_wrong_value
 }
 
 #[test]
-fn ordered_extras_sink_error_drops_private_state_before_any_next_value() {
+fn ordered_extras_sink_error_drops_temp_table() {
     let mut f = Fixture::new();
     install(&mut f, &["z".into(), "a".into()], false);
     let view = view(&f);
@@ -308,7 +308,7 @@ fn ordered_extras_sink_error_drops_private_state_before_any_next_value() {
     assert_eq!(temp_count(&view), 0);
 }
 #[test]
-fn ordered_extras_zero_count_conflict_is_occupied_and_not_dropped() {
+fn ordered_extras_keep_conflicted_fields() {
     let mut f = Fixture::new();
     install(&mut f, &["a".into()], false);
     let (body,message,session,root,slot,fact):(i64,i64,i64,i64,i64,i64)=f.writer._index.query_row("SELECT b.pk,b.message_pk,b.session_pk,b.field_root_pk,s.pk,f.pk FROM message_body b JOIN message m ON m.selected_body_pk=b.pk JOIN message_field_slot s ON s.message_pk=m.pk JOIN message_field_fact f ON f.slot_pk=s.pk WHERE m.id=?1",[MessageId::new(f.session.clone(),"ordered").unwrap().as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
