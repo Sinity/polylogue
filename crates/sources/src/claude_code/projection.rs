@@ -490,7 +490,7 @@ pub(super) fn selected(index: usize, raw: &Value, revision: u64) -> Vec<Fact> {
             path(&["message", "model"]),
             revision,
         ),
-        3 if super::parse_time(Some(raw)).is_some() => add(
+        3 if crate::time::intrinsic_field(Some(raw)).is_some() => add(
             &mut facts,
             Field::SelectedMessage(MessageField::CompletedAt),
             path(&["timestamp"]),
@@ -524,7 +524,7 @@ pub(super) fn record(
         finished_witness: v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true),
         ..RecordFacts::default()
     };
-    if super::parse_time(v.get("timestamp")).is_some() {
+    if crate::time::intrinsic_field(v.get("timestamp")).is_some() {
         add(
             &mut result.facts,
             Field::FirstMessage(MessageField::At),

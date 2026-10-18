@@ -448,20 +448,16 @@ impl<P: RecordParser> JsonlDriver<P> {
     fn finish_parts(self) -> (Framed<P::Output, P::Error>, JsonlContinuation) {
         // A callback may have changed ephemeral state before failing. Drop it
         // without finalization; reconstruct from committed state on failure.
-        let output = match self.failure {
-            Some(error) => Err(error),
-            None => self.parser.finish().map_err(|error| ParseFailure {
-                offset: self.parsed_upto,
-                phase: FailurePhase::Finalization,
-                error: ParseError::Provider(error),
-            }),
-        };
-        (
-            Framed {
-                output,
+        let framed = match self.failure {
+            Some(error) => Framed {
+                output: Err(error),
                 counts: self.counts,
                 parsed_upto: self.parsed_upto,
             },
+            None => finish_framed(self.parser, self.counts, self.parsed_upto),
+        };
+        (
+            framed,
             JsonlContinuation {
                 parsed_upto: self.parsed_upto,
                 scanned_upto: self.scanned_upto,
@@ -577,7 +573,14 @@ fn undecodable_document<P: RecordParser>(parser: P, bytes: &[u8]) -> Framed<P::O
         undecodable: vec![0],
         ..Counts::default()
     };
-    let parsed_upto = bytes.len() as u64;
+    finish_framed(parser, counts, bytes.len() as u64)
+}
+
+fn finish_framed<P: RecordParser>(
+    parser: P,
+    counts: Counts,
+    parsed_upto: u64,
+) -> Framed<P::Output, P::Error> {
     let output = parser.finish().map_err(|error| ParseFailure {
         offset: parsed_upto,
         phase: FailurePhase::Finalization,
@@ -585,6 +588,25 @@ fn undecodable_document<P: RecordParser>(parser: P, bytes: &[u8]) -> Framed<P::O
     });
     Framed {
         output,
+        counts,
+        parsed_upto,
+    }
+}
+
+/// A failure at `offset`; the failed record is not counted.
+fn failed<O, E>(
+    counts: Counts,
+    offset: u64,
+    phase: FailurePhase,
+    error: ParseError<E>,
+    parsed_upto: u64,
+) -> Framed<O, E> {
+    Framed {
+        output: Err(ParseFailure {
+            offset,
+            phase,
+            error,
+        }),
         counts,
         parsed_upto,
     }
@@ -607,15 +629,8 @@ fn drive_raw_records<P: RecordParser>(
             Ok(value) => value,
             Err(error @ RawJsonError::Capacity { .. }) => {
                 counts.framed -= 1;
-                return Framed {
-                    output: Err(ParseFailure {
-                        offset: start,
-                        phase: FailurePhase::Decoding,
-                        error: ParseError::Decoding(error),
-                    }),
-                    counts,
-                    parsed_upto: start,
-                };
+                let error = ParseError::Decoding(error);
+                return failed(counts, start, FailurePhase::Decoding, error, start);
             }
             Err(_) => {
                 counts.undecodable.push(start);
@@ -633,29 +648,12 @@ fn drive_raw_records<P: RecordParser>(
             Ok(outcome) => account_outcome(&mut counts, outcome, start),
             Err(error) => {
                 counts.framed -= 1;
-                return Framed {
-                    output: Err(ParseFailure {
-                        offset: start,
-                        phase: FailurePhase::Record,
-                        error: ParseError::Provider(error),
-                    }),
-                    counts,
-                    parsed_upto: start,
-                };
+                let error = ParseError::Provider(error);
+                return failed(counts, start, FailurePhase::Record, error, start);
             }
         }
     }
-    let parsed_upto = bytes.len() as u64;
-    let output = parser.finish().map_err(|error| ParseFailure {
-        offset: parsed_upto,
-        phase: FailurePhase::Finalization,
-        error: ParseError::Provider(error),
-    });
-    Framed {
-        output,
-        counts,
-        parsed_upto,
-    }
+    finish_framed(parser, counts, bytes.len() as u64)
 }
 
 /// One row of a provider database snapshot, its columns as a JSON object
@@ -690,29 +688,13 @@ pub fn drive_rows<P: RecordParser>(
             Ok(outcome) => account_outcome(&mut counts, outcome, at),
             Err(error) => {
                 counts.framed -= 1;
-                return Framed {
-                    output: Err(ParseFailure {
-                        offset: at,
-                        phase: FailurePhase::Record,
-                        error: ParseError::Provider(error),
-                    }),
-                    counts,
-                    parsed_upto: last,
-                };
+                let error = ParseError::Provider(error);
+                return failed(counts, at, FailurePhase::Record, error, last);
             }
         }
         last = last.max(at);
     }
-    let output = parser.finish().map_err(|error| ParseFailure {
-        offset: last,
-        phase: FailurePhase::Finalization,
-        error: ParseError::Provider(error),
-    });
-    Framed {
-        output,
-        counts,
-        parsed_upto: last,
-    }
+    finish_framed(parser, counts, last)
 }
 
 #[cfg(test)]

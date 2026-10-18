@@ -55,21 +55,6 @@ fn native_key(native: &NativeId) -> Result<String, String> {
 fn key_native(key: &str) -> Result<NativeId, String> {
     serde_json::from_str(key).map_err(|e| e.to_string())
 }
-fn provider_time(at: Timestamp) -> ProviderTime {
-    ProviderTime::Intrinsic {
-        at,
-        precision: Precision::Instant,
-        until: None,
-    }
-}
-fn parse_time(value: Option<&Value>) -> Option<ProviderTime> {
-    value.and_then(Value::as_str).and_then(parse_time_text)
-}
-fn parse_time_text(text: &str) -> Option<ProviderTime> {
-    text.parse::<jiff::Timestamp>()
-        .ok()
-        .map(|t| provider_time(Timestamp(t.as_millisecond())))
-}
 
 /// Record kinds that carry nothing to keep in the index (their bytes stay stored).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -680,7 +665,7 @@ impl<R: ReadView> KeyedRecords<R> {
                 );
                 message.prompt_kind = prompt_kind;
                 message.from_name = from_name;
-                message.at = parse_time(v.get("timestamp"));
+                message.at = crate::time::intrinsic_field(v.get("timestamp"));
                 if let Some((source, msg)) = &copy {
                     message.inherited_from = sid(source).and_then(|s| {
                         key_native(msg)
@@ -868,10 +853,10 @@ impl<R: ReadView> KeyedRecords<R> {
             projection: projected,
         };
         if let Some(previous) = &old {
-            if raw::optional_field(&previous.raw, &["message", "content"])?
-                == raw::optional_field(&contribution.raw, &["message", "content"])?
-                && raw::optional_field(&previous.raw, &["toolUseResult"])?
-                    == raw::optional_field(&contribution.raw, &["toolUseResult"])?
+            if crate::raw::field(&previous.raw, &["message", "content"])?
+                == crate::raw::field(&contribution.raw, &["message", "content"])?
+                && crate::raw::field(&previous.raw, &["toolUseResult"])?
+                    == crate::raw::field(&contribution.raw, &["toolUseResult"])?
             {
                 background::carry(Some(previous), &mut contribution);
             }
@@ -939,7 +924,7 @@ impl<R: ReadView> KeyedRecords<R> {
                     .cloned()
                     .ok_or("Claude selected extra normalized value unavailable")?;
                 let raw = Some(raw::canonical(
-                    raw::optional_field(rec.bytes, &["message", key])?
+                    crate::raw::field(rec.bytes, &["message", key])?
                         .ok_or("Claude selected extra raw supplier unavailable")?,
                 )?);
                 match key {
@@ -962,7 +947,7 @@ impl<R: ReadView> KeyedRecords<R> {
                 attrs.insert(key.into(), value);
             }
             for (index, path) in METADATA_PATHS.iter().enumerate() {
-                if let Some(value) = raw::optional_field(rec.bytes, path)? {
+                if let Some(value) = crate::raw::field(rec.bytes, path)? {
                     response.selected[index] = Some(raw::canonical(value)?);
                     response.selected_from[index] = Some(item);
                     let semantic = path
@@ -993,7 +978,7 @@ impl<R: ReadView> KeyedRecords<R> {
             }
         }
         if item == 0 {
-            response.message.at = parse_time(v.get("timestamp"));
+            response.message.at = crate::time::intrinsic_field(v.get("timestamp"));
         }
         apply_selected(&mut response)?;
         if v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true) {
@@ -1148,7 +1133,7 @@ impl<R: ReadView> KeyedRecords<R> {
         let Some(si) = self.file_session(&rec.value)? else {
             return Ok(RecordOutcome::Unrecognized("bad session id"));
         };
-        let at = parse_time(rec.value.get("timestamp"));
+        let at = crate::time::intrinsic_field(rec.value.get("timestamp"));
         let after_message = self.sessions[si].last_message.clone();
         self.events.push((
             self.sessions[si].session.id.clone(),
@@ -1652,7 +1637,7 @@ fn apply_selected(response: &mut ResponseCell) -> Result<(), String> {
             .and_then(Value::as_str)
             .map(str::to_owned);
     }
-    response.message.completed_at = parse_time(values[3].as_ref());
+    response.message.completed_at = crate::time::intrinsic_field(values[3].as_ref());
     Ok(())
 }
 

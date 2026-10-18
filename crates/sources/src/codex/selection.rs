@@ -10,7 +10,7 @@ pub const CODEC_VERSION: u32 = 1;
 /// make immutable historical field descriptors unreadable.
 pub const ADAPTER_RECIPE_VERSION: u32 = 2;
 
-pub use crate::selection::{Cursor, PathPart, SelectedRaw};
+pub use crate::selection::{Binding, Cursor, PathPart, SelectedRaw};
 use crate::selection::{JsonWriteError, Operation, Recipe, ScalarError};
 use polylogue_model::RawJson as Value;
 use polylogue_model::{
@@ -42,12 +42,6 @@ pub struct FactSelection {
     pub adapter_version: u32,
     pub transform: Transform,
     pub inputs: Vec<SelectedRaw>,
-}
-#[derive(Clone, Copy, Serialize)]
-pub struct Binding<'a> {
-    pub input: &'a str,
-    /// Owning archive revision number (1-based), never a source byte offset.
-    pub chain: i64,
 }
 #[derive(Debug)]
 pub enum Error {
@@ -114,27 +108,13 @@ impl FactSelection {
     /// A failed write is not resumable; discard the partial producer or replay.
     pub fn write_bound<W: Write>(&self, binding: Binding<'_>, writer: &mut W) -> Result<(), Error> {
         self.validate()?;
-        if binding.input.is_empty() || binding.chain <= 0 {
-            return Err(Error::Invalid("invalid binding"));
-        }
-        #[derive(Serialize)]
-        struct Bound<'a> {
-            format: &'static str,
-            binding: Binding<'a>,
-            selection: &'a FactSelection,
-        }
-        crate::selection::write_json(
-            &Bound {
-                format: "codex-field-origin",
-                binding,
-                selection: self,
+        binding.validate().map_err(Error::Invalid)?;
+        crate::selection::write_bound("codex-field-origin", self, binding, writer).map_err(
+            |error| match error {
+                JsonWriteError::Io(error) => Error::Io(error),
+                JsonWriteError::Encoding(error) => Error::Encoding(error.to_string()),
             },
-            writer,
         )
-        .map_err(|error| match error {
-            JsonWriteError::Io(error) => Error::Io(error),
-            JsonWriteError::Encoding(error) => Error::Encoding(error.to_string()),
-        })
     }
 }
 impl Recipe for FactSelection {
@@ -263,8 +243,5 @@ impl Recipe for FactSelection {
             return Err(ScalarError::Type);
         }
         Ok(())
-    }
-    fn provider_time(&self, text: &str) -> Option<polylogue_model::ProviderTime> {
-        super::parse_timestamp(text).map(super::provider_time)
     }
 }

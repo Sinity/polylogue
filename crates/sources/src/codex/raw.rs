@@ -1,26 +1,17 @@
-//! Exact raw JSON access. Decoded Value is interpretation data, never the source
-//! of identity or version bytes: it normalizes some numeric spellings.
-use serde_json::value::RawValue;
-use std::collections::BTreeMap;
+//! Codex raw field access and item overlays. Decoded values normalize some
+//! numeric spellings, so identity and version bytes come from here.
+use crate::raw::{encode, object};
 
+/// The raw value at `path`; a missing member is an error.
 pub(super) fn field<'a>(raw: &'a [u8], path: &[&str]) -> Result<&'a [u8], String> {
-    let mut value: &'a RawValue = serde_json::from_slice(raw).map_err(|e| e.to_string())?;
-    for name in path {
-        let fields: BTreeMap<String, &'a RawValue> =
-            serde_json::from_str(value.get()).map_err(|e| e.to_string())?;
-        value = fields
-            .get(*name)
-            .copied()
-            .ok_or_else(|| format!("missing raw Codex field {name}"))?;
-    }
-    Ok(value.get().as_bytes())
+    crate::raw::field(raw, path)?
+        .ok_or_else(|| format!("missing raw Codex field {}", path.join(".")))
 }
 pub(super) fn canonical(raw: &[u8]) -> Result<Vec<u8>, String> {
-    polylogue_model::identity::canonical_record(raw, &["timestamp", "ordinal"])
-        .map_err(|e| e.to_string())
+    crate::raw::canonical(raw, &["timestamp", "ordinal"])
 }
 pub(super) fn canonical_field(raw: &[u8], path: &[&str]) -> Result<Vec<u8>, String> {
-    polylogue_model::identity::canonical_record(field(raw, path)?, &[]).map_err(|e| e.to_string())
+    crate::raw::canonical(field(raw, path)?, &[])
 }
 pub(super) fn session_argument(raw: &[u8], legacy: bool) -> Result<Vec<u8>, String> {
     let args = field(
@@ -46,12 +37,6 @@ pub(super) fn overlay(
     new: &[u8],
     path: &[&str],
 ) -> Result<(Vec<u8>, ValueFields), String> {
-    fn object(raw: &[u8]) -> Result<BTreeMap<String, Box<RawValue>>, String> {
-        serde_json::from_slice(raw).map_err(|e| e.to_string())
-    }
-    fn encode(fields: BTreeMap<String, Box<RawValue>>) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(&fields).map_err(|e| e.to_string())
-    }
     fn replace(raw: &[u8], path: &[&str], value: &[u8]) -> Result<Vec<u8>, String> {
         if path.is_empty() {
             return Ok(value.to_vec());
@@ -65,7 +50,7 @@ pub(super) fn overlay(
             path[0].into(),
             serde_json::from_slice(&replaced).map_err(|e| e.to_string())?,
         );
-        encode(fields)
+        encode(&fields)
     }
     let mut previous = object(field(old, path)?)?;
     let newer = object(field(new, path)?)?;
@@ -85,7 +70,7 @@ pub(super) fn overlay(
         }
     }
     previous.extend(newer);
-    let item = encode(previous)?;
+    let item = encode(&previous)?;
     let canonical = replace(new, path, &item)?;
     let value = serde_json::from_slice(&item).map_err(|e| e.to_string())?;
     Ok((

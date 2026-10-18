@@ -1080,7 +1080,7 @@ impl<V: ReadView> KeyedRecords<V> {
     fn witness_time(&mut self, i: usize, completed: bool) {
         if let Some(bytes) = self.current_time_raw.clone() {
             if let Ok(text) = serde_json::from_slice::<String>(&bytes) {
-                if let Some(at) = parse_timestamp(&text) {
+                if let Some(at) = crate::time::parse(&text) {
                     let (key, field) = if completed {
                         (
                             "completed_at",
@@ -1735,7 +1735,7 @@ impl<V: ReadView> KeyedRecords<V> {
                 .and_then(Value::as_str)
                 .map(str::to_owned);
         }
-        s.started_at = at.map(provider_time);
+        s.started_at = at.map(crate::time::intrinsic);
         let forked = meta.get("forked_from_id").and_then(Value::as_str);
         // This source core records the lineage link; cross-input replay-prefix
         // correspondence has not been supplied, so inherited counts are open.
@@ -1784,7 +1784,7 @@ impl<V: ReadView> KeyedRecords<V> {
             // What the model was told, as an event like `world_state` (spec fix, codex.md).
             self.events.push(Event {
                 kind: "base_instructions".into(),
-                at: at.map(provider_time),
+                at: at.map(crate::time::intrinsic),
                 after_message: None,
                 model_saw: Some(true),
                 data: bi.clone(),
@@ -1808,7 +1808,7 @@ impl<V: ReadView> KeyedRecords<V> {
             .map(|(m, _)| m.id);
         self.events.push(Event {
             kind: kind.into(),
-            at: at.map(provider_time),
+            at: at.map(crate::time::intrinsic),
             after_message: after,
             model_saw: Some(model_saw),
             data: data.clone(),
@@ -1825,7 +1825,7 @@ impl<V: ReadView> KeyedRecords<V> {
         if let (Some(i), false) = (self.s.open_request, reopen) {
             self.witness_time(i, true);
             self.edit(i, |m| {
-                m.completed_at = at.map(provider_time).or(m.completed_at)
+                m.completed_at = at.map(crate::time::intrinsic).or(m.completed_at)
             });
             return Some(i);
         }
@@ -1839,7 +1839,7 @@ impl<V: ReadView> KeyedRecords<V> {
             WrittenBy::Model,
         );
         m.model = self.s.model.clone();
-        m.at = at.map(provider_time);
+        m.at = at.map(crate::time::intrinsic);
         self.push_message(m);
         let i = self.s.messages - 1;
         self.s.open_request = Some(i);
@@ -1961,7 +1961,7 @@ impl<V: ReadView> KeyedRecords<V> {
             _ => (Role::System, WrittenBy::Harness),
         };
         let mut m = Message::new(id, item_id_kind(p), r, wb);
-        m.at = at.map(provider_time);
+        m.at = at.map(crate::time::intrinsic);
         let content = self.message_content(p);
         if let Err(e) = m.push(BlockSlot::Item(0), content) {
             self.failure = Some(e.to_string());
@@ -2437,7 +2437,7 @@ impl<V: ReadView> KeyedRecords<V> {
             return RecordOutcome::Unrecognized("output before session_meta");
         };
         let mut m = Message::new(id, item_id_kind(p), Role::Tool, WrittenBy::Harness);
-        m.at = at.map(provider_time);
+        m.at = at.map(crate::time::intrinsic);
         if let Err(e) = m.push(
             BlockSlot::Item(0),
             BlockContent::ToolResult(ToolResult {
@@ -3196,7 +3196,7 @@ impl<V: ReadView> KeyedRecords<V> {
         if let Some(rl) = p.get("rate_limits") {
             self.events.push(Event {
                 kind: "rate_limit".into(),
-                at: at.map(provider_time),
+                at: at.map(crate::time::intrinsic),
                 after_message: None,
                 model_saw: Some(false),
                 data: rl.clone(),
@@ -3317,7 +3317,7 @@ impl<V: ReadView> KeyedRecords<V> {
         let at = v
             .get("timestamp")
             .and_then(Value::as_str)
-            .and_then(parse_timestamp);
+            .and_then(crate::time::parse);
         if self.s.session.is_none() && v.get("type").is_none() && v.get("id").is_some() {
             // The 2025 bare header: {id, timestamp, instructions, git}.
             self.s.legacy = true;
@@ -3377,7 +3377,7 @@ mod legacy_time_tests {
             SessionKind::Main,
         )
         .unwrap();
-        session.started_at = Some(provider_time(Timestamp(0)));
+        session.started_at = Some(crate::time::intrinsic(Timestamp(0)));
         let resume = Resume {
             session: Some(session),
             legacy: true,
@@ -3393,8 +3393,8 @@ mod legacy_time_tests {
             Role::User,
             WrittenBy::Human,
         );
-        message.at = Some(provider_time(
-            parse_timestamp("2026-09-02T10:00:01.000Z").unwrap(),
+        message.at = Some(crate::time::intrinsic(
+            crate::time::parse("2026-09-02T10:00:01.000Z").unwrap(),
         ));
         let expected = message.at;
         parser.push_message(message);
