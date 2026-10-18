@@ -1,5 +1,6 @@
-//! Claude's anchored projects layout. Disposable traversal state never owns
-//! retained identity; each candidate carries the configured directory capability.
+//! Discovery of Claude transcripts under the configured projects directory.
+//! Every open goes through the held root directory descriptor, so symlinks and
+//! renames below the root cannot redirect it.
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -55,8 +56,8 @@ impl Root {
             ));
         }
         let path = fs::canonicalize(path)?;
-        // An explicit provider root is not a route for recursively importing a
-        // predecessor or successor archive's cache into another archive.
+        // Refuse a root inside any archive, so an archive never imports its own
+        // or another archive's files.
         for parent in path.ancestors() {
             if parent.join("source.db").try_exists()? || parent.join("archive.db").try_exists()? {
                 return Err(refused("Claude projects root is inside an archive"));
@@ -100,8 +101,9 @@ impl Root {
         Ok(File::from(fd))
     }
 }
-/// A source-specific capability, not a native Session assertion. The parser
-/// derives subagent membership from retained records; folder owner is lineage.
+/// One transcript file and the context stored with it. Opens go through the
+/// discovery root when there is one. The parser reads subagent membership from
+/// the records; the folder only names the owner.
 #[derive(Clone, Debug)]
 pub struct Location {
     path: PathBuf,
@@ -327,9 +329,7 @@ impl Cursor {
     ) -> Result<Turn> {
         config.validate()?;
         if budget == 0 || budget > 512 {
-            return Err(refused(
-                "Claude discovery needs machine/host, 1..512 scan entries and 65536..8388608 acquisition quantum",
-            ));
+            return Err(refused("Claude discovery budget must be 1..512 entries"));
         }
         if cancel.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
@@ -445,7 +445,7 @@ impl Cursor {
                 excluded_entries: self.excluded,
                 reason: reason.or_else(|| {
                     self.failed
-                        .then(|| "current discovery cycle has unread/refused entries".into())
+                        .then(|| "some entries in this discovery cycle could not be read".into())
                 }),
                 conversation_coverage: None,
             },

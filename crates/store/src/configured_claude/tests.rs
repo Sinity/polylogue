@@ -28,7 +28,7 @@ fn collect(cursor: &mut Cursor, c: &Config, budget: usize) -> (Vec<Location>, Sc
     }
 }
 #[test]
-fn donor_layout_excludes_nested_copies_and_separates_roles() {
+fn layout_finds_mains_and_subagents_and_skips_copies() {
     let cases = [
         ("-repo/main.jsonl", Some(vec!["claude-main", "main"])),
         ("-repo/agent-a.jsonl", Some(vec!["claude-main", "agent-a"])),
@@ -62,7 +62,7 @@ fn donor_layout_excludes_nested_copies_and_separates_roles() {
     }
 }
 #[test]
-fn five_thousand_files_cross_scan_turns_then_late_project_and_root_replacement() {
+fn scan_spans_turns_and_restarts_when_root_is_replaced() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("projects");
     fs::create_dir(&root).unwrap();
@@ -95,7 +95,7 @@ fn five_thousand_files_cross_scan_turns_then_late_project_and_root_replacement()
     assert_eq!(scan.observed_transcripts, 1);
 }
 #[test]
-fn descriptor_relative_capture_refuses_symlink_swaps_and_archive_roots() {
+fn open_refuses_symlink_swap_and_root_inside_archive() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("projects");
     write(&root, "-repo/main.jsonl", b"inside\n");
@@ -117,7 +117,7 @@ fn descriptor_relative_capture_refuses_symlink_swaps_and_archive_roots() {
             .is_err()
     );
 }
-fn retain(writer: &mut Writer, location: Location, id: &str) -> crate::StoredSource {
+fn store(writer: &mut Writer, location: Location, id: &str) -> crate::StoredSource {
     let prepared = writer
         .blob_capture()
         .unwrap()
@@ -136,7 +136,7 @@ fn retain(writer: &mut Writer, location: Location, id: &str) -> crate::StoredSou
         .unwrap()
 }
 #[test]
-fn declared_agent_context_survives_restart_and_conflicting_main_never_reinterprets_it() {
+fn subagent_context_survives_restart_and_is_never_reread_as_main() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("projects");
     write(&root, "-repo/owner/subagents/agent-a.jsonl", b"{}\n");
@@ -144,7 +144,7 @@ fn declared_agent_context_survives_restart_and_conflicting_main_never_reinterpre
     let location = locations.pop().unwrap();
     let archive = temp.path().join("archive");
     let mut writer = Writer::open(&archive).unwrap();
-    let source = retain(&mut writer, location.clone(), "agent-input");
+    let source = store(&mut writer, location.clone(), "agent-input");
     assert_eq!(source.context, ["claude-subagent", "a", "owner"]);
     let before = writer.status().unwrap().write_counter;
     let refused = writer
@@ -185,11 +185,11 @@ fn declared_agent_context_survives_restart_and_conflicting_main_never_reinterpre
     );
 }
 #[test]
-fn preserving_v3_upgrade_materializes_exact_old_context_and_fences_unaware_writers() {
+fn v3_upgrade_derives_old_contexts_and_blocks_old_writers() {
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
     let main = temp.path().join("legacy-main.jsonl");
-    fs::write(&main, b"retained legacy bytes\n").unwrap();
+    fs::write(&main, b"legacy bytes\n").unwrap();
     let mut writer = Writer::open(&archive).unwrap();
     let source = writer
         .acquire_claude_main(
@@ -226,7 +226,7 @@ fn preserving_v3_upgrade_materializes_exact_old_context_and_fences_unaware_write
             .unwrap()
             .read_source_range(&source.input.id, 1, source.binding, 0, source.input.length)
             .unwrap(),
-        b"retained legacy bytes\n"
+        b"legacy bytes\n"
     );
     let backups = fs::read_dir(archive.join("migrations"))
         .unwrap()
@@ -245,7 +245,7 @@ fn preserving_v3_upgrade_materializes_exact_old_context_and_fences_unaware_write
 }
 
 #[test]
-fn pending_v3_preparation_refuses_upgrade_without_changing_authority_or_custody() {
+fn v3_upgrade_with_pending_copy_preparation_changes_no_files() {
     fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, polylogue_model::BlobHash> {
         fn walk(
             root: &Path,
@@ -281,7 +281,7 @@ fn pending_v3_preparation_refuses_upgrade_without_changing_authority_or_custody(
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("archive");
         let mut writer = Writer::open(&archive).unwrap();
-        writer.put_file_blob(b"preserved pending custody").unwrap();
+        writer.put_file_blob(b"pending preparation blob").unwrap();
         drop(writer);
         let stop = AtomicBool::new(false);
         drop(
@@ -301,8 +301,8 @@ fn pending_v3_preparation_refuses_upgrade_without_changing_authority_or_custody(
         )
         .unwrap();
         let held = if existing_wal {
-            // A committed WAL remains authoritative even if main already has
-            // the old format header. The refusal must not normalize/drop it.
+            // A committed WAL still holds data even when the main file has the
+            // old header; the refusal must leave it alone.
             conn.execute(
                 "UPDATE meta SET value=value||' ' WHERE key='copy_preparation'",
                 [],
@@ -324,7 +324,7 @@ fn pending_v3_preparation_refuses_upgrade_without_changing_authority_or_custody(
             assert_eq!(
                 after.get(path),
                 Some(hash),
-                "pre-existing authoritative file: {path:?}"
+                "existing file changed: {path:?}"
             );
         }
         for path in after.keys().filter(|p| !before.contains_key(*p)) {
@@ -332,7 +332,7 @@ fn pending_v3_preparation_refuses_upgrade_without_changing_authority_or_custody(
             let meta = fs::symlink_metadata(archive.join(path)).unwrap();
             assert!(
                 meta.is_file() && meta.len() == 0,
-                "only a new empty coordination WAL is allowed"
+                "only a new empty WAL may appear"
             );
         }
         drop(held);
