@@ -685,11 +685,12 @@ impl Drop for WalProbeChild {
 #[test]
 fn killed_writer_wal_reopens_or_refuses() {
     for tier in ["archive.db", "embeddings.db"] {
-        let (tmp, root, _) = killed_wal_fixture(if tier == "archive.db" {
+        let mode = if tier == "archive.db" {
             "normal"
         } else {
             "embeddings"
-        });
+        };
+        let (tmp, root, _) = killed_wal_fixture_in(durable_tempdir(), mode);
         let expected_counter = if tier == "archive.db" { 3 } else { 1 };
         let wal = fs::read(root.join(format!("{tier}-wal"))).unwrap();
         let word = |bytes: &[u8]| u32::from_be_bytes(bytes.try_into().unwrap());
@@ -789,7 +790,20 @@ fn killed_writer_wal_reopens_or_refuses() {
 }
 
 pub(crate) fn killed_wal_fixture(mode: &str) -> (tempfile::TempDir, PathBuf, u64) {
-    let tmp = tempfile::tempdir().unwrap();
+    killed_wal_fixture_in(tempfile::tempdir().unwrap(), mode)
+}
+
+/// A directory on a real filesystem when the runner names one in
+/// `TEST_DURABLE_TMPDIR`; the default test TMPDIR is tmpfs, where syncs and
+/// WAL recovery after a kill are not exercised against a disk.
+fn durable_tempdir() -> tempfile::TempDir {
+    match std::env::var_os("TEST_DURABLE_TMPDIR") {
+        Some(dir) => tempfile::tempdir_in(dir).unwrap(),
+        None => tempfile::tempdir().unwrap(),
+    }
+}
+
+fn killed_wal_fixture_in(tmp: tempfile::TempDir, mode: &str) -> (tempfile::TempDir, PathBuf, u64) {
     let root = tmp.path().join("original");
     let ack = tmp.path().join("ack");
     let expected = if matches!(mode, "stale-generation" | "stale-newer" | "stale-empty") {

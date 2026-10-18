@@ -4,9 +4,22 @@ use std::os::unix::fs::PermissionsExt;
 const FRAME: usize = 64 * 1024;
 
 fn store() -> (tempfile::TempDir, Store) {
-    let d = tempfile::tempdir().unwrap();
+    store_in(tempfile::tempdir().unwrap())
+}
+
+fn store_in(d: tempfile::TempDir) -> (tempfile::TempDir, Store) {
     let s = Store::open(d.path().join("root"), vec![], 0o600).unwrap().with_frame_size(FRAME);
     (d, s)
+}
+
+/// A directory on a real filesystem when the runner names one in
+/// `TEST_DURABLE_TMPDIR`; the default test TMPDIR may be tmpfs, where syncs
+/// are no-ops.
+fn durable_tempdir() -> tempfile::TempDir {
+    match std::env::var_os("TEST_DURABLE_TMPDIR") {
+        Some(dir) => tempfile::tempdir_in(dir).unwrap(),
+        None => tempfile::tempdir().unwrap(),
+    }
 }
 
 /// Synthetic, compressible, and different per seed.
@@ -410,7 +423,7 @@ fn delta_against_a_large_base_stays_small() {
 #[test]
 fn batch_success_establishes_durability_and_dedup() {
     for mode in [Durability::PerFile, Durability::Filesystem] {
-        let (_d, s) = store();
+        let (_d, s) = store_in(durable_tempdir());
         let items: Vec<Vec<u8>> = (0..20).map(|i| data(40 + i % 10, 3 * FRAME / 2)).collect(); // ten distinct, each twice
         let mut b = s.batch(mode);
         let hs: Vec<Hash> = items.iter().map(|x| b.put(&x[..], 1).unwrap()).collect();

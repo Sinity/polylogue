@@ -18,7 +18,7 @@ fn forbidden_internal_dependency_is_rejected() {
         )
         .unwrap();
     }
-    assert!(boundaries(root.path()).is_ok());
+    assert!(boundaries(&metadata(root.path()).unwrap()).is_ok());
     fs::OpenOptions::new()
         .append(true)
         .open(root.path().join("query/Cargo.toml"))
@@ -26,7 +26,7 @@ fn forbidden_internal_dependency_is_rejected() {
         .write_all(b"[dependencies]\npolylogue-store={path=\"../store\"}\n")
         .unwrap();
     assert_eq!(
-        boundaries(root.path()).unwrap_err(),
+        boundaries(&metadata(root.path()).unwrap()).unwrap_err(),
         "forbidden dependency: polylogue-query -> polylogue-store"
     );
 }
