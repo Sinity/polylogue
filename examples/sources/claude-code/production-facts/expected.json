@@ -1,0 +1,236 @@
+{
+  "accounting": {
+    "framed": 7,
+    "materialized": {
+      "api-request": 1,
+      "api-request-blob": 1,
+      "api-request-shape": 1,
+      "assistant": 2,
+      "user": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "after": "claude-code:p4",
+        "at": "2026-09-01T08:00:05Z",
+        "data": {
+          "sessionId": "s4",
+          "shape": {
+            "system": [
+              {
+                "text": "You are a helper.",
+                "type": "text"
+              }
+            ],
+            "tools": []
+          },
+          "shapeHash": "aa",
+          "timestamp": "2026-09-01T08:00:05Z",
+          "type": "api-request-shape",
+          "version": "2.2.0"
+        },
+        "kind": "api_request_shape",
+        "range": [
+          1507,
+          1697
+        ],
+        "session": "claude-code:s4"
+      },
+      {
+        "after": "claude-code:p4",
+        "data": {
+          "hash": "bb",
+          "message": {
+            "content": [
+              {
+                "text": "Run the checks.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          "sessionId": "s4",
+          "type": "api-request-blob"
+        },
+        "kind": "api_request_blob",
+        "range": [
+          1698,
+          1833
+        ],
+        "session": "claude-code:s4"
+      },
+      {
+        "after": "claude-code:p4",
+        "at": "2026-09-01T08:00:05Z",
+        "data": {
+          "id": "r-1",
+          "keep": 0,
+          "params": {
+            "max_tokens": 1000,
+            "model": "model-a"
+          },
+          "querySource": "repl_main_thread",
+          "requestDigest": "cc",
+          "sessionId": "s4",
+          "shapeHash": "aa",
+          "tail": [
+            "bb"
+          ],
+          "timestamp": "2026-09-01T08:00:05Z",
+          "type": "api-request",
+          "version": "2.2.0"
+        },
+        "kind": "api_request",
+        "range": [
+          1834,
+          2078
+        ],
+        "session": "claude-code:s4"
+      }
+    ],
+    "links": [
+      {
+        "at": "claude-code:z9",
+        "child": "claude-code:s4",
+        "evidence": "forkedFrom",
+        "kind": "fork",
+        "parent": "claude-code:s0"
+      }
+    ],
+    "messages": [
+      {
+        "end": 222,
+        "message": {
+          "at": "2026-09-01T08:00:00Z",
+          "blocks": [
+            {
+              "text": "Run the checks.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:p1",
+          "production": {
+            "turn_origin": "sdk"
+          },
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:s4"
+        },
+        "offset": 0
+      },
+      {
+        "end": 904,
+        "message": {
+          "at": "2026-09-01T08:00:05Z",
+          "blocks": [
+            {
+              "call_id": "tu1",
+              "command": "make check",
+              "input": {
+                "command": "make check"
+              },
+              "tool": "Bash",
+              "type": "tool_call"
+            }
+          ],
+          "id": "claude-code:p2",
+          "model": "model-a",
+          "parent": "claude-code:p1",
+          "production": {
+            "advisor_model": "model-b",
+            "attribution": {
+              "agent": "lane",
+              "skill": "review"
+            },
+            "cache_miss": {
+              "cache_missed_input_tokens": 120,
+              "type": "tools_changed"
+            },
+            "effort": "high",
+            "first_token_ms": 800,
+            "quota": {
+              "rateLimitType": "five_hour",
+              "resetsAt": 1790000000,
+              "status": "allowed"
+            },
+            "request": "r-1",
+            "requested_model": "model-a[1m]",
+            "thinking_ms": 1200
+          },
+          "role": "assistant",
+          "session": "claude-code:s4"
+        },
+        "offset": 223
+      },
+      {
+        "end": 1179,
+        "message": {
+          "at": "2026-09-01T08:00:09Z",
+          "blocks": [
+            {
+              "call_id": "tu1",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "ok",
+              "type": "tool_result"
+            }
+          ],
+          "id": "claude-code:p3",
+          "parent": "claude-code:p2",
+          "production": {
+            "permission": {
+              "decision": "accept",
+              "reasonType": "mode",
+              "source": "config"
+            }
+          },
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:s4"
+        },
+        "offset": 905
+      },
+      {
+        "end": 1506,
+        "message": {
+          "at": "2026-09-01T08:00:10Z",
+          "blocks": [
+            {
+              "text": "API Error: rate limited",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:p4",
+          "model": "<synthetic>",
+          "parent": "claude-code:p3",
+          "production": {
+            "api_error": {
+              "kind": "rate_limit",
+              "status": 429
+            }
+          },
+          "role": "assistant",
+          "session": "claude-code:s4",
+          "stop_reason": "stop_sequence"
+        },
+        "offset": 1180
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-code:s4",
+        "kind": "main",
+        "mode": "bg",
+        "started": "2026-09-01T08:00:00Z",
+        "tool_version": "2.2.0"
+      }
+    ]
+  }
+}

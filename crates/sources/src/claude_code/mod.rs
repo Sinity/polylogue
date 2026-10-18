@@ -1,5 +1,12 @@
-//! Claude Code session files: `~/.claude/projects/<project>/<session>.jsonl`
-//! and subagent transcripts in `<project>/<session>/subagents/`.
+//! Claude Code session files under its configuration directory
+//! (`$CLAUDE_CONFIG_DIR`, default `~/.claude`):
+//!
+//! - `projects/<project>/<session>.jsonl`, the main transcript, and a copy
+//!   some versions keep at `<project>/<session>/<session>.jsonl`;
+//! - subagent transcripts in `<project>/<session>/subagents/agent-<id>.jsonl`,
+//!   Workflow agents one level deeper in `subagents/workflows/<run>/`, and
+//!   the older layout `<project>/agent-<id>.jsonl`;
+//! - a Workflow run's journal, `subagents/workflows/<run>/journal.jsonl`.
 //!
 //! One line is one record. An assistant response arrives as several
 //! records sharing `message.id`, one per content block; they become one
@@ -13,19 +20,28 @@ mod fields;
 use crate::account::{Accounting, Disposition};
 use crate::fields::unaccounted;
 use crate::frame::Record;
+use crate::origin::Root;
 use crate::parse::{BackgroundUpdate, MessageRow, Output, Parser, StepParser};
 use crate::time;
 use polylogue_model::{
-    ErrorReason, Event, Json, Link, LinkKind, Message, MessageId, NativeId, Origin, Role, Session,
-    SessionId, SessionKind, TitleSource, ToolOutcome, Usage,
+    ApiError, Attribution, ErrorReason, Event, Json, Link, LinkKind, Message, MessageId, NativeId,
+    Origin, Production, Role, Session, SessionId, SessionKind, TitleSource, ToolOutcome, Usage,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
+pub const ROOT: Root = Root {
+    env: Some("CLAUDE_CONFIG_DIR"),
+    default: ".claude",
+};
+
 pub const LOCATIONS: &[&str] = &[
-    ".claude/projects/*/*.jsonl",
-    ".claude/projects/*/*/subagents/agent-*.jsonl",
+    "projects/*/*.jsonl",
+    "projects/*/*/*.jsonl",
+    "projects/*/*/subagents/agent-*.jsonl",
+    "projects/*/*/subagents/workflows/*/agent-*.jsonl",
+    "projects/*/*/subagents/workflows/*/journal.jsonl",
 ];
 
 /// How many closed responses stay reopenable. A continuation record can
@@ -48,8 +64,14 @@ pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
 /// Which kind of file is being read, from its place in the directory tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum File {
+    /// A session's own transcript. `stem` is the session ID the file name
+    /// carries (an `.orphaned-…` suffix removed).
     Main { stem: String },
+    /// A subagent's transcript. `stem` is the file name (`agent-<id>`).
     Subagent { stem: String },
+    /// A Workflow run's journal: which agents it started and what each
+    /// returned. `session` is the session that ran the workflow.
+    Journal { session: String, run: String },
 }
 
 impl File {
@@ -57,18 +79,59 @@ impl File {
         if path.extension()? != "jsonl" {
             return None;
         }
-        let stem = path.file_stem()?.to_str()?.to_owned();
-        let dir = path.parent()?.file_name()?.to_str()?;
-        Some(if dir == "subagents" {
-            Self::Subagent { stem }
-        } else {
-            Self::Main { stem }
+        let name = path.file_stem()?.to_str()?;
+        let dirs: Vec<&str> = path
+            .ancestors()
+            .skip(1)
+            .take(4)
+            .map(|p| p.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+            .collect();
+        let dir = |i: usize| dirs.get(i).copied().unwrap_or("");
+        // `<session>/subagents/workflows/<run>/…`
+        let in_workflow = dir(1) == "workflows" && dir(2) == "subagents";
+        if in_workflow && name == "journal" {
+            return Some(Self::Journal {
+                session: dir(3).to_owned(),
+                run: dir(0).to_owned(),
+            });
+        }
+        let agent = name.starts_with("agent-");
+        if agent && (dir(0) == "subagents" || in_workflow) {
+            return Some(Self::Subagent {
+                stem: name.to_owned(),
+            });
+        }
+        if dir(0) == "subagents" || in_workflow {
+            return None;
+        }
+        if agent {
+            // The older layout kept subagent transcripts beside the session.
+            return Some(Self::Subagent {
+                stem: name.to_owned(),
+            });
+        }
+        let stem = name.split('.').next().unwrap_or(name);
+        // Inside the tool's own tree the layout decides: a copy of the
+        // transcript in the session's own directory reads as another input
+        // of the same session, and any other file there is not a
+        // transcript. An exported file brought in by `import` can sit
+        // anywhere.
+        let in_tree = path
+            .ancestors()
+            .skip(1)
+            .any(|p| p.file_name().is_some_and(|n| n == "projects"));
+        if in_tree && dir(1) != "projects" && dir(0) != stem {
+            return None;
+        }
+        Some(Self::Main {
+            stem: stem.to_owned(),
         })
     }
 
     fn stem(&self) -> &str {
         match self {
             Self::Main { stem } | Self::Subagent { stem } => stem,
+            Self::Journal { session, .. } => session,
         }
     }
 }
@@ -95,8 +158,9 @@ pub struct Carry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Response {
     key: String,
-    /// Where the response's first record starts.
+    /// Where the response's first record starts and its latest one ends.
     offset: u64,
+    end: u64,
     message: Message,
 }
 
@@ -125,11 +189,22 @@ struct Route {
 impl ClaudeCode {
     fn route(&self, v: &Json) -> Route {
         match &self.file {
-            File::Subagent { stem } => Route {
-                native: str_field(v, "agentId")
+            File::Subagent { stem } => {
+                let native = str_field(v, "agentId")
                     .map(|a| format!("agent-{a}"))
-                    .unwrap_or_else(|| stem.clone()),
-                kind: SessionKind::Subagent,
+                    .unwrap_or_else(|| stem.clone());
+                // The call that compacted the parent's history runs as an
+                // agent named `acompact-…`.
+                let kind = if native.starts_with("agent-acompact") {
+                    SessionKind::Compaction
+                } else {
+                    SessionKind::Subagent
+                };
+                Route { native, kind }
+            }
+            File::Journal { session, .. } => Route {
+                native: session.clone(),
+                kind: SessionKind::Main,
             },
             File::Main { stem } => {
                 let base = str_field(v, "sessionId").unwrap_or(stem).to_owned();
@@ -167,12 +242,13 @@ impl ClaudeCode {
                     link(carry, out, LinkKind::Copy, id.clone(), child, "sessionId");
                 }
             }
-            (_, SessionKind::Sidechain) | (File::Subagent { .. }, SessionKind::Subagent) => {
+            (_, SessionKind::Sidechain)
+            | (File::Subagent { .. }, SessionKind::Subagent | SessionKind::Compaction) => {
                 if let Some(parent) = parent.filter(|p| *p != id) {
-                    let evidence = if route.kind == SessionKind::Sidechain {
-                        "isSidechain"
-                    } else {
-                        "agentId"
+                    let evidence = match route.kind {
+                        SessionKind::Sidechain => "isSidechain",
+                        SessionKind::Compaction => "agentId acompact",
+                        _ => "agentId",
                     };
                     link(carry, out, LinkKind::Spawn, parent, id.clone(), evidence);
                 }
@@ -195,6 +271,9 @@ impl ClaudeCode {
         if let Some(at) = v.get("timestamp").and_then(time::rfc3339) {
             s.offer_start(at);
         }
+        if let Some(mode) = str_field(v, "sessionKind") {
+            s.mode = Some(mode.to_owned());
+        }
         Some(s)
     }
 
@@ -202,7 +281,8 @@ impl ClaudeCode {
     fn own_session(&self, carry: &mut Carry) -> Option<SessionId> {
         let stem = self.file.stem();
         let kind = match self.file {
-            File::Main { .. } => SessionKind::Main,
+            File::Main { .. } | File::Journal { .. } => SessionKind::Main,
+            File::Subagent { .. } if stem.starts_with("agent-acompact") => SessionKind::Compaction,
             File::Subagent { .. } => SessionKind::Subagent,
         };
         let id = session_id(stem)?;
@@ -213,7 +293,14 @@ impl ClaudeCode {
         Some(id)
     }
 
-    fn event(&self, carry: &mut Carry, v: &Json, kind: &str, out: &mut Output) -> Disposition {
+    fn event(
+        &self,
+        carry: &mut Carry,
+        record: Record<'_>,
+        v: &Json,
+        kind: &str,
+        out: &mut Output,
+    ) -> Disposition {
         let session = match v.get("sessionId").or(v.get("agentId")) {
             Some(_) => self.session(carry, v, out).map(|s| s.id.clone()),
             None => self.own_session(carry),
@@ -226,6 +313,7 @@ impl ClaudeCode {
             kind: kind.to_owned(),
             at: v.get("timestamp").and_then(time::rfc3339),
             after: carry.last.clone(),
+            range: Some(range(record)),
             data: v.clone(),
         });
         Disposition::Materialized
@@ -261,6 +349,26 @@ impl ClaudeCode {
         let model = str_field(msg, "model").map(str::to_owned);
         let cost = v.get("costUSD").and_then(Json::as_number).cloned();
         let duration = v.get("durationMs").and_then(Json::as_u64);
+        let production = production(v, msg);
+        let end = range(record).1;
+        if let Some(fork) = v.get("forkedFrom")
+            && let (Some(parent), Some(at)) = (
+                str_field(fork, "sessionId").and_then(session_id),
+                str_field(fork, "messageUuid").and_then(message_id),
+            )
+            && parent != session
+        {
+            link_at(
+                carry,
+                out,
+                LinkKind::Fork,
+                parent,
+                session.clone(),
+                Some(at),
+                None,
+                "forkedFrom",
+            );
+        }
 
         if role == Role::Assistant {
             let key = str_field(msg, "id")
@@ -279,6 +387,7 @@ impl ClaudeCode {
             }
             match &mut carry.open {
                 Some(open) => {
+                    open.end = open.end.max(end);
                     let m = &mut open.message;
                     m.blocks.extend(blocks);
                     if !usage.is_empty() {
@@ -288,11 +397,13 @@ impl ClaudeCode {
                     m.model = m.model.take().or(model);
                     m.reported_cost_usd = cost.or(m.reported_cost_usd.take());
                     m.duration_ms = duration.or(m.duration_ms);
+                    m.production.merge(production);
                 }
                 None => {
                     carry.open = Some(Response {
                         key,
                         offset: record.offset,
+                        end,
                         message: Message {
                             id: id.clone(),
                             session,
@@ -306,6 +417,7 @@ impl ClaudeCode {
                             stop_reason,
                             reported_cost_usd: cost,
                             duration_ms: duration,
+                            production,
                         },
                     });
                     carry.last = Some(id);
@@ -325,14 +437,58 @@ impl ClaudeCode {
                 stop_reason,
                 reported_cost_usd: cost,
                 duration_ms: duration,
+                production,
             };
             out.messages.push(MessageRow {
                 offset: record.offset,
+                end,
                 message,
             });
             carry.last = Some(id);
         }
         Disposition::Materialized
+    }
+
+    /// A Workflow journal record: an agent the run started, what it
+    /// returned, or the run's launch. Each spawned agent is linked to the
+    /// session that ran the workflow and named by its label.
+    fn journal(
+        &self,
+        carry: &mut Carry,
+        record: Record<'_>,
+        v: &Json,
+        ty: &str,
+        out: &mut Output,
+    ) -> Disposition {
+        let kind = match ty {
+            "started" => "workflow_agent_started",
+            "result" => "workflow_agent_result",
+            "launched" => "workflow_launched",
+            _ => return Disposition::unknown("unrecognized journal record"),
+        };
+        let Some(parent) = self.own_session(carry) else {
+            return Disposition::refused("session ID is empty");
+        };
+        if let Some(agent) = str_field(v, "agentId").map(|a| format!("agent-{a}"))
+            && let Some(child) = session_id(&agent)
+        {
+            link(
+                carry,
+                out,
+                LinkKind::Spawn,
+                parent,
+                child.clone(),
+                "workflow journal",
+            );
+            if let Some(label) = str_field(v, "label") {
+                carry
+                    .sessions
+                    .entry(agent)
+                    .or_insert_with(|| Session::new(child, SessionKind::Subagent))
+                    .offer_title(label, TitleSource::AgentName);
+            }
+        }
+        self.event(carry, record, v, kind, out)
     }
 
     fn title(&self, carry: &mut Carry, v: &Json, field: &str, source: TitleSource) -> Disposition {
@@ -389,12 +545,55 @@ fn close(carry: &mut Carry, out: &mut Output) {
     if let Some(open) = carry.open.take() {
         out.messages.push(MessageRow {
             offset: open.offset,
+            end: open.end,
             message: open.message.clone(),
         });
         carry.recent.push_back(open);
         while carry.recent.len() > REOPEN_WINDOW {
             carry.recent.pop_front();
         }
+    }
+}
+
+/// Where a record starts and ends in its input.
+fn range(record: Record<'_>) -> (u64, u64) {
+    (record.offset, record.offset + record.bytes.len() as u64)
+}
+
+/// How the harness produced a message: settings, attribution and the
+/// API's diagnostics (`Production`).
+fn production(v: &Json, msg: &Json) -> Production {
+    let s = |k: &str| str_field(v, k).map(str::to_owned);
+    let kept = |x: Option<&Json>| x.filter(|x| !x.is_null()).cloned();
+    Production {
+        effort: s("effort").or_else(|| s("perTurnEffort")),
+        requested_model: s("requestedModel"),
+        advisor_model: s("advisorModel"),
+        attribution: Attribution {
+            agent: s("attributionAgent"),
+            skill: s("attributionSkill"),
+            plugin: s("attributionPlugin"),
+            mcp_server: s("attributionMcpServer"),
+            mcp_tool: s("attributionMcpTool"),
+        },
+        thinking_ms: v.get("thinkingDurationMs").and_then(Json::as_u64),
+        first_token_ms: msg.get("ttftMs").and_then(Json::as_u64),
+        api_error: s("error").map(|kind| ApiError {
+            kind,
+            status: v
+                .get("apiErrorStatus")
+                .and_then(Json::as_u64)
+                .and_then(|n| u16::try_from(n).ok()),
+        }),
+        cache_miss: kept(
+            msg.get("diagnostics")
+                .and_then(|d| d.get("cache_miss_reason")),
+        ),
+        refusal: kept(msg.get("stop_details")),
+        permission: kept(v.get("permissionDecision")),
+        request: s("requestRef"),
+        turn_origin: s("turnOrigin"),
+        quota: kept(v.get("quotaLimits")),
     }
 }
 
@@ -473,19 +672,24 @@ impl Parser for ClaudeCode {
         let Some(ty) = str_field(v, "type") else {
             return Disposition::unknown("no type field");
         };
+        if let File::Journal { .. } = self.file {
+            return self.journal(carry, record, v, ty, out);
+        }
         match ty {
             "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {
-                self.event(carry, v, "compaction_summary", out)
+                self.event(carry, record, v, "compaction_summary", out)
             }
             "user" => self.message(carry, record, v, Role::User, out, acc),
             "assistant" => self.message(carry, record, v, Role::Assistant, out, acc),
             "system" => match str_field(v, "subtype") {
-                Some("compact_boundary") => self.event(carry, v, "compaction", out),
-                Some("microcompact_boundary") => self.event(carry, v, "microcompaction", out),
-                Some(sub) => self.event(carry, v, &sub.replace('-', "_"), out),
+                Some("compact_boundary") => self.event(carry, record, v, "compaction", out),
+                Some("microcompact_boundary") => {
+                    self.event(carry, record, v, "microcompaction", out)
+                }
+                Some(sub) => self.event(carry, record, v, &sub.replace('-', "_"), out),
                 None => Disposition::unknown("system record without a subtype"),
             },
-            "attachment" => self.event(carry, v, "attachment", out),
+            "attachment" => self.event(carry, record, v, "attachment", out),
             "pr-link"
             | "permission-mode"
             | "last-prompt"
@@ -493,13 +697,21 @@ impl Parser for ClaudeCode {
             | "frame-link"
             | "worktree-state"
             | "artifact-comment-monitor"
-            | "artifact-autoreact-ledger" => self.event(carry, v, &ty.replace('-', "_"), out),
-            "file-history-snapshot" | "file-history-delta" => {
-                self.event(carry, v, "file_history", out)
+            | "artifact-autoreact-ledger" => {
+                self.event(carry, record, v, &ty.replace('-', "_"), out)
             }
-            "cost-state" => self.event(carry, v, "tool_cost", out),
-            "started" => self.event(carry, v, "subagent_started", out),
-            "result" => self.event(carry, v, "subagent_result", out),
+            "file-history-snapshot" | "file-history-delta" => {
+                self.event(carry, record, v, "file_history", out)
+            }
+            "cost-state" => self.event(carry, record, v, "tool_cost", out),
+            // The request the harness sent the model, rebuilt exactly: the
+            // system prompt and tools (`shape`) and each message as sent
+            // (`blob`) are keyed by hash, and the request lists them.
+            "api-request" => self.event(carry, record, v, "api_request", out),
+            "api-request-shape" => self.event(carry, record, v, "api_request_shape", out),
+            "api-request-blob" => self.event(carry, record, v, "api_request_blob", out),
+            "started" => self.event(carry, record, v, "subagent_started", out),
+            "result" => self.event(carry, record, v, "subagent_result", out),
             "queue-operation" => {
                 if let Some((task_id, outcome, call_id, output_file)) = background_update(v)
                     && let Some(session) = match v.get("sessionId") {
@@ -515,7 +727,7 @@ impl Parser for ClaudeCode {
                         output_file,
                     });
                 }
-                self.event(carry, v, "queue", out)
+                self.event(carry, record, v, "queue", out)
             }
             "relocated" => {
                 if let Some(dir) = str_field(v, "relocatedCwd")
@@ -524,14 +736,14 @@ impl Parser for ClaudeCode {
                 {
                     s.offer_cwd(dir);
                 }
-                self.event(carry, v, "relocated", out)
+                self.event(carry, record, v, "relocated", out)
             }
             "agent-name" => {
                 let d = self.title(carry, v, "agentName", TitleSource::AgentName);
                 if d != Disposition::Materialized {
                     return d;
                 }
-                self.event(carry, v, "agent_name", out)
+                self.event(carry, record, v, "agent_name", out)
             }
             "custom-title" => self.title(carry, v, "customTitle", TitleSource::Custom),
             "ai-title" => self.title(carry, v, "aiTitle", TitleSource::Generated),
@@ -571,7 +783,7 @@ impl Parser for ClaudeCode {
                     None,
                     "fork-context-ref",
                 );
-                self.event(carry, v, "fork_context", out)
+                self.event(carry, record, v, "fork_context", out)
             }
             "progress" => {
                 let data = v.get("data").unwrap_or(&Json::Null);
@@ -596,7 +808,7 @@ impl Parser for ClaudeCode {
                         );
                         Disposition::Materialized
                     }
-                    Some("hook_progress") => self.event(carry, v, "hook_run", out),
+                    Some("hook_progress") => self.event(carry, record, v, "hook_run", out),
                     Some(_) => {
                         Disposition::unknown("progress tick; the tool's own result supersedes it")
                     }
@@ -615,6 +827,7 @@ impl Parser for ClaudeCode {
         if let Some(open) = &carry.open {
             out.messages.push(MessageRow {
                 offset: open.offset,
+                end: open.end,
                 message: open.message.clone(),
             });
         }

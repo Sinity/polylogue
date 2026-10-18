@@ -1,0 +1,3 @@
+{"type":"user","uuid":"h1","sessionId":"s3","agentId":"acompact-5e","isSidechain":true,"timestamp":"2026-04-01T10:00:00Z","message":{"role":"user","content":"Earlier request."}}
+{"type":"user","uuid":"c1","parentUuid":"h1","sessionId":"s3","agentId":"acompact-5e","isSidechain":true,"isMeta":true,"timestamp":"2026-04-01T10:05:00Z","message":{"role":"user","content":"Summarize the conversation so far."}}
+{"type":"assistant","uuid":"c2","parentUuid":"c1","sessionId":"s3","agentId":"acompact-5e","isSidechain":true,"timestamp":"2026-04-01T10:05:09Z","message":{"id":"msg_c","role":"assistant","content":[{"type":"text","text":"The work so far: one request."}],"stop_reason":"end_turn"}}

@@ -1,0 +1,131 @@
+{
+  "accounting": {
+    "framed": 5,
+    "materialized": {
+      "launched": 1,
+      "result": 2,
+      "started": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": {
+          "key": "run",
+          "phase": "Review",
+          "type": "launched"
+        },
+        "kind": "workflow_launched",
+        "range": [
+          0,
+          48
+        ],
+        "session": "claude-code:s1"
+      },
+      {
+        "data": {
+          "agentId": "w1",
+          "key": "review:a",
+          "label": "review a.rs",
+          "phase": "Review",
+          "type": "started"
+        },
+        "kind": "workflow_agent_started",
+        "range": [
+          49,
+          138
+        ],
+        "session": "claude-code:s1"
+      },
+      {
+        "data": {
+          "agentId": "w2",
+          "key": "review:b",
+          "label": "review b.rs",
+          "phase": "Review",
+          "type": "started"
+        },
+        "kind": "workflow_agent_started",
+        "range": [
+          139,
+          228
+        ],
+        "session": "claude-code:s1"
+      },
+      {
+        "data": {
+          "agentId": "w1",
+          "key": "review:a",
+          "result": {
+            "findings": 0
+          },
+          "type": "result"
+        },
+        "kind": "workflow_agent_result",
+        "range": [
+          229,
+          302
+        ],
+        "session": "claude-code:s1"
+      },
+      {
+        "data": {
+          "agentId": "w2",
+          "key": "review:b",
+          "result": {
+            "findings": 2
+          },
+          "type": "result"
+        },
+        "kind": "workflow_agent_result",
+        "range": [
+          303,
+          376
+        ],
+        "session": "claude-code:s1"
+      }
+    ],
+    "links": [
+      {
+        "child": "claude-code:agent-w1",
+        "evidence": "workflow journal",
+        "kind": "spawn",
+        "parent": "claude-code:s1"
+      },
+      {
+        "child": "claude-code:agent-w2",
+        "evidence": "workflow journal",
+        "kind": "spawn",
+        "parent": "claude-code:s1"
+      }
+    ],
+    "messages": [],
+    "sessions": [
+      {
+        "id": "claude-code:agent-w1",
+        "kind": "subagent",
+        "title": {
+          "source": "agent_name",
+          "text": "review a.rs"
+        }
+      },
+      {
+        "id": "claude-code:agent-w2",
+        "kind": "subagent",
+        "title": {
+          "source": "agent_name",
+          "text": "review b.rs"
+        }
+      },
+      {
+        "id": "claude-code:s1",
+        "kind": "main"
+      }
+    ]
+  }
+}

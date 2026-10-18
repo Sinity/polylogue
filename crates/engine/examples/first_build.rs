@@ -251,8 +251,8 @@ fn dir_size(p: &Path) -> u64 {
         .sum()
 }
 
-fn input_size(home: &Path) -> u64 {
-    polylogue_engine::collect::scan(home)
+fn input_size(config: &Config) -> u64 {
+    polylogue_engine::collect::scan(config)
         .0
         .iter()
         .filter_map(|f| fs::metadata(&f.path).ok())
@@ -283,10 +283,13 @@ fn main() {
         }
     };
     let root = dir.join("archive");
-    let input = input_size(&home);
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
     let mut config = Config::from_env();
     config.home = home;
+    // The measured tree is exactly `--home`; the tools' own directory
+    // variables point at the real one.
+    config.tool_dirs.clear();
+    let input = input_size(&config);
     if let Some(w) = arg("--workers") {
         config.workers = w.parse().unwrap();
     }

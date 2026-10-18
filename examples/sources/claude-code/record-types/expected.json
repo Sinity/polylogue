@@ -45,6 +45,10 @@
           "type": "permission-mode"
         },
         "kind": "permission_mode",
+        "range": [
+          133,
+          207
+        ],
         "session": "claude-code:s1"
       },
       {
@@ -60,6 +64,10 @@
           "type": "system"
         },
         "kind": "compaction",
+        "range": [
+          208,
+          362
+        ],
         "session": "claude-code:s1"
       },
       {
@@ -76,6 +84,10 @@
           "uuid": "cs"
         },
         "kind": "compaction_summary",
+        "range": [
+          363,
+          541
+        ],
         "session": "claude-code:s1"
       },
       {
@@ -86,6 +98,10 @@
           "type": "system"
         },
         "kind": "turn_duration",
+        "range": [
+          542,
+          620
+        ],
         "session": "claude-code:s1"
       },
       {
@@ -95,6 +111,10 @@
           "type": "relocated"
         },
         "kind": "relocated",
+        "range": [
+          656,
+          720
+        ],
         "session": "claude-code:s1"
       },
       {
@@ -107,6 +127,10 @@
           "type": "progress"
         },
         "kind": "hook_run",
+        "range": [
+          920,
+          1012
+        ],
         "session": "claude-code:s1"
       },
       {
@@ -117,6 +141,10 @@
           "type": "queue-operation"
         },
         "kind": "queue",
+        "range": [
+          1013,
+          1178
+        ],
         "session": "claude-code:s1"
       }
     ],

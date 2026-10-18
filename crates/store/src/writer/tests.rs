@@ -39,6 +39,7 @@ fn text_message(id: &str, session: &str, role: Role, text: &str, stop: Option<&s
         stop_reason: stop.map(Into::into),
         reported_cost_usd: None,
         duration_ms: None,
+        production: Default::default(),
     }
 }
 
@@ -99,7 +100,11 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
 }
 
 fn row(offset: u64, message: Message) -> MessageRow {
-    MessageRow { offset, message }
+    MessageRow {
+        offset,
+        end: offset,
+        message,
+    }
 }
 
 fn texts(w: &World, session: &str) -> Vec<String> {
@@ -471,4 +476,31 @@ fn revisions_extents_and_parse_state_follow_appends() {
     assert_eq!(known[0].parsed_upto, 18);
     let state = r.query("SELECT status FROM parse_state", &[]).unwrap();
     assert_eq!(state[0]["status"], "parsing");
+}
+
+#[test]
+fn a_copy_in_a_spawned_session_never_takes_the_message_from_its_origin() {
+    // A compaction call repeats its parent's message; whichever file is read
+    // first, the message stays in the parent with the parent's record.
+    for main_first in [true, false] {
+        let w = world();
+        let original = text_message("h1", "s", Role::User, "original", None);
+        let copy = text_message("h1", "agent-c", Role::User, "copy", None);
+        let main = batch("main", 0, 0, vec![row(0, original)], &["s"]);
+        let mut spawned = batch("spawned", 0, 0, vec![row(0, copy)], &[]);
+        if let Some(p) = &mut spawned.parse {
+            p.output.sessions = vec![Session::new(sid("agent-c"), SessionKind::Compaction)];
+        }
+        let (first, second) = if main_first {
+            (main, spawned)
+        } else {
+            (spawned, main)
+        };
+        w.writer.send(first).unwrap();
+        w.writer.send(second).unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(texts(&w, "s"), ["original"], "main first: {main_first}");
+        assert!(texts(&w, "agent-c").is_empty(), "main first: {main_first}");
+    }
 }

@@ -20,7 +20,7 @@ pub use batch::{
 pub use block::{Attachment, AttachmentDirection, Block, ErrorReason, ToolOutcome, UnknownReason};
 pub use event::{Event, Link, LinkKind};
 pub use id::{BlobHash, IdError, MessageId, NativeId, Origin, SessionId};
-pub use message::{Message, PromptKind, Role};
+pub use message::{ApiError, Attribution, Message, Production, PromptKind, Role};
 pub use note::{Author, Note, NoteKind, Target};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::Timestamp;

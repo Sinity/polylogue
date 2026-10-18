@@ -13,6 +13,10 @@ pub struct Event {
     /// The message the event follows, when the source places it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<MessageId>,
+    /// The byte range of the record the event came from, in its input. It
+    /// places the event among the input's messages and cites its bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<(u64, u64)>,
     /// The record's own fields, kept as written.
     pub data: Json,
 }

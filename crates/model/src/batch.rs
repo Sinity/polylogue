@@ -36,13 +36,16 @@ pub struct InlineBlob {
 }
 
 /// A message as one input holds it. `offset` is where its first record
-/// starts in the input. The same message at the same offset may be sent
-/// again, longer (a response still being written); the writer replaces it.
-/// At another offset or in another input it is another version; the writer
-/// keeps every version and prefers one (architecture 5.5, 5.5a).
+/// starts in the input and `end` where its last record ends, so the stored
+/// byte range covers every record the message was built from. The same
+/// message at the same offset may be sent again, longer (a response still
+/// being written); the writer replaces it. At another offset or in another
+/// input it is another version; the writer keeps every version and prefers
+/// one (architecture 5.5, 5.5a).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MessageRow {
     pub offset: u64,
+    pub end: u64,
     pub message: Message,
 }
 

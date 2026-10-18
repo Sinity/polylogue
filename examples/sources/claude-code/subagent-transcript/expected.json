@@ -25,6 +25,10 @@
           "type": "fork-context-ref"
         },
         "kind": "fork_context",
+        "range": [
+          0,
+          141
+        ],
         "session": "claude-code:agent-ab12"
       }
     ],
@@ -45,6 +49,7 @@
     ],
     "messages": [
       {
+        "end": 325,
         "message": {
           "at": "2026-03-01T11:00:00Z",
           "blocks": [
@@ -61,6 +66,7 @@
         "offset": 142
       },
       {
+        "end": 560,
         "message": {
           "at": "2026-03-01T11:00:03Z",
           "blocks": [

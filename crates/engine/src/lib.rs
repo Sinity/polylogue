@@ -25,7 +25,7 @@ use polylogue_store::{
 };
 use pool::{Done, Job, Pool, Priority};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel};
 use std::sync::{Arc, Mutex};
@@ -46,6 +46,10 @@ pub enum EngineError {
 pub struct Config {
     /// The home directory origins' locations are relative to.
     pub home: PathBuf,
+    /// Tools' own location variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`)
+    /// as the running user set them. An origin whose root names one of
+    /// these reads from it instead of its default under `home`.
+    pub tool_dirs: BTreeMap<String, PathBuf>,
     /// Parse workers; defaults to the number of cores.
     pub workers: usize,
     /// Bytes admitted into the parse pool at once. The pool takes new work
@@ -63,17 +67,39 @@ pub struct Config {
 impl Config {
     /// The running machine's settings. `POLYLOGUE_HOME` replaces the home
     /// directory for tests and measurements.
+    /// The directory an origin's locations are relative to.
+    pub fn root(&self, root: polylogue_sources::origin::Root) -> PathBuf {
+        match root.env.and_then(|var| self.tool_dirs.get(var)) {
+            Some(dir) if dir.is_absolute() => dir.clone(),
+            Some(dir) => self.home.join(dir),
+            None => self.home.join(root.default),
+        }
+    }
+
     pub fn from_env() -> Self {
         let read = |p: &str| {
             std::fs::read_to_string(p)
                 .map(|s| s.trim().to_owned())
                 .unwrap_or_else(|_| "unknown".into())
         };
+        // With `POLYLOGUE_HOME` (tests, measurements) the tools' own
+        // variables belong to the real home and are not read.
+        let isolated = std::env::var_os("POLYLOGUE_HOME").is_some();
+        let tool_dirs = polylogue_sources::ORIGINS
+            .iter()
+            .filter_map(|o| o.root.env)
+            .filter(|_| !isolated)
+            .filter_map(|var| {
+                let dir = std::env::var_os(var).filter(|d| !d.is_empty())?;
+                Some((var.to_owned(), PathBuf::from(dir)))
+            })
+            .collect();
         Self {
             home: std::env::var_os("POLYLOGUE_HOME")
                 .or_else(|| std::env::var_os("HOME"))
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/")),
+            tool_dirs,
             workers: std::thread::available_parallelism().map_or(4, |n| n.get()),
             bytes_in_flight: 512 << 20,
             machine: read("/etc/machine-id"),
@@ -310,7 +336,7 @@ impl Engine {
     pub fn converge(&mut self) -> Result<Pass, EngineError> {
         let started = Instant::now();
         self.load()?;
-        let (found, unreadable) = collect::scan(&self.config.home);
+        let (found, unreadable) = collect::scan(&self.config);
         let mut pass = Pass {
             unreadable_roots: unreadable,
             ..Pass::default()
@@ -609,7 +635,7 @@ impl Engine {
                     let _ = wake.send(LoopMsg::Changed);
                 }
             })?;
-        for root in collect::roots(&self.config.home) {
+        for root in collect::roots(&self.config) {
             watcher.watch(&root, notify::RecursiveMode::Recursive)?;
         }
         drop(tx);

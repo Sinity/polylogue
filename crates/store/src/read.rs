@@ -389,6 +389,11 @@ impl Reader<'_> {
                     .and_then(serde_json::Value::as_number)
                     .cloned(),
                 duration_ms: n(duration),
+                production: attrs
+                    .as_ref()
+                    .and_then(|a| a.get("production"))
+                    .and_then(|p| serde_json::from_value(p.clone()).ok())
+                    .unwrap_or_default(),
             });
         }
         Ok(out)

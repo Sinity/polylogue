@@ -276,22 +276,37 @@ fn every_record_is_accounted_for() {
 
 #[test]
 fn file_roles_come_from_the_path() {
+    let file = |p: &str| File::from_path(Path::new(p));
+    let main = |s: &str| Some(File::Main { stem: s.into() });
+    let sub = |s: &str| Some(File::Subagent { stem: s.into() });
+    assert_eq!(file("/h/.claude/projects/p/s1.jsonl"), main("s1"));
+    // A copy kept in the session's own directory.
+    assert_eq!(file("/h/.claude/projects/p/s1/s1.jsonl"), main("s1"));
+    assert_eq!(file("/h/.claude/projects/p/s1/other.jsonl"), None);
     assert_eq!(
-        File::from_path(Path::new("/h/.claude/projects/p/s1.jsonl")),
-        Some(File::Main { stem: "s1".into() })
+        file("/h/.claude/projects/p/s1.orphaned-17840-d0d1.jsonl"),
+        main("s1")
     );
     assert_eq!(
-        File::from_path(Path::new(
-            "/h/.claude/projects/p/s1/subagents/agent-a.jsonl"
-        )),
-        Some(File::Subagent {
-            stem: "agent-a".into()
+        file("/h/.claude/projects/p/s1/subagents/agent-a.jsonl"),
+        sub("agent-a")
+    );
+    // The older layout beside the session file.
+    assert_eq!(file("/h/.claude/projects/p/agent-a.jsonl"), sub("agent-a"));
+    assert_eq!(
+        file("/h/.claude/projects/p/s1/subagents/workflows/wf_1/agent-b.jsonl"),
+        sub("agent-b")
+    );
+    assert_eq!(
+        file("/h/.claude/projects/p/s1/subagents/workflows/wf_1/journal.jsonl"),
+        Some(File::Journal {
+            session: "s1".into(),
+            run: "wf_1".into()
         })
     );
-    assert_eq!(
-        File::from_path(Path::new("/h/.claude/projects/p/s1.json")),
-        None
-    );
-    assert!(recognize(Path::new("/x/s.jsonl"), b"  {\"type\""));
-    assert!(!recognize(Path::new("/x/s.jsonl"), b"[1,2]"));
+    assert_eq!(file("/h/.claude/projects/p/s1/subagents/other.jsonl"), None);
+    assert_eq!(file("/h/.claude/projects/p/s1.json"), None);
+    let path = Path::new("/h/.claude/projects/p/s.jsonl");
+    assert!(recognize(path, b"  {\"type\""));
+    assert!(!recognize(path, b"[1,2]"));
 }
