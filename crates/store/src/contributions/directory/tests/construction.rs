@@ -107,7 +107,7 @@ fn construct(cache: bool) -> Measurement {
     }
 }
 #[test]
-fn construction_reuses_fixed_write_programs_without_changing_execution_or_work() {
+fn cached_statements_do_not_change_construction_work() {
     let uncached = construct(false);
     let cached = construct(true);
     eprintln!("construction uncached={uncached:?}; cached={cached:?}");
@@ -124,7 +124,7 @@ fn construction_reuses_fixed_write_programs_without_changing_execution_or_work()
 }
 
 #[test]
-fn complete_ready_node_has_one_insert_and_no_later_state_transition() {
+fn nodes_are_inserted_ready_without_state_updates() {
     let (_dir, mut writer, owner, _) = fixture();
     let file = writer.root.join("index.db");
     writer._index.execute_batch("CREATE TRIGGER forbid_node_state_change BEFORE UPDATE OF state ON message_body_node BEGIN SELECT RAISE(ABORT,'directory construction must not transition a ready node'); END;").unwrap();
@@ -146,7 +146,7 @@ fn complete_ready_node_has_one_insert_and_no_later_state_transition() {
     assert_eq!(work.nodes_written, 16);
     assert_eq!(work.edges_written, 16);
     assert_eq!(work.references_changed, 15);
-    // 16 node INSERTs +16 edge INSERTs +15 child acquisitions; no16 state UPDATEs.
+    // 16 node inserts, 16 edge inserts and 15 child reference increments.
     assert_eq!(tx.total_changes() - before, 47);
     assert_eq!(counts.ordinary, 1);
     assert!(

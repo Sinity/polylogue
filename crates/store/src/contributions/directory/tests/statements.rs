@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 #[test]
-fn repeated_directory_walks_reuse_compilation_but_keep_exact_results_and_work() {
+fn repeated_walks_reuse_statements_with_same_results() {
     let (_dir, mut writer, owner, body) = fixture();
     let path = writer.root.join("index.db");
     let mut root = None;
@@ -98,7 +98,7 @@ fn repeated_directory_walks_reuse_compilation_but_keep_exact_results_and_work() 
 }
 
 #[test]
-fn cached_directory_statements_reread_changed_rows_and_keep_all_shape_guards() {
+fn cached_statements_reread_rows_and_keep_shape_checks() {
     for change in [
         "UPDATE message_body_node SET ordinary_count=ordinary_count+1 WHERE pk=?1",
         "UPDATE message_body_node SET height=14 WHERE pk=?1",
