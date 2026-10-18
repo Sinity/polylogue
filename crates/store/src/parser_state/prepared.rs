@@ -127,17 +127,7 @@ fn load(db: &Connection, path: &Path, token: &Token) -> Result<Option<Work>> {
                 "discarding" => WorkPhase::Discarding,
                 _ => return Err(StoreError::Invariant("invalid prepared phase".into())),
             };
-            let next = match status.as_str() {
-                "parsing" => Phase::Parsing,
-                "waiting_tail" => Phase::WaitingTail,
-                "finalizing" => Phase::Finalizing,
-                "done" => Phase::Done,
-                _ => {
-                    return Err(StoreError::Invariant(
-                        "invalid prepared target phase".into(),
-                    ));
-                }
-            };
+            let next = Phase::parse(&status)?;
             Ok(Work {
                 token: WorkToken {
                     head: token.clone(),
@@ -225,7 +215,7 @@ pub(crate) fn admit(
     let now = current(&tx, path, &head.token)?;
     check_unchanged(head, &now)?;
     ensure_idle(&tx, path, &head.token)?;
-    if now.status == "retired" {
+    if now.status == Phase::Retired {
         return Err(StoreError::StaleParserState);
     }
     check_progress(head, &progress)?;
@@ -247,7 +237,7 @@ pub(crate) fn admit(
         inspected_upto,parsed_upto,next_status,finalization_pending,framed,used,ignored,unrecognized_n,undecodable)
         VALUES(?1,?2,?3,?4,?5,?6,?7,'staging',?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         params![head.token.input_pk,head.token.chain,id,head.token.generation,head.token.step,head.token.basis.as_slice(),acquired,
-        values[0],values[1],progress.phase.name(),progress.finalization_pending,values[2],values[3],values[4],values[5],values[6]]))?;
+        values[0],values[1],progress.phase.as_str(),progress.finalization_pending,values[2],values[3],values[4],values[5],values[6]]))?;
     let work = load(&tx, path, &head.token)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(work)

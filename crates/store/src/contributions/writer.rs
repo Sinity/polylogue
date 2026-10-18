@@ -108,7 +108,7 @@ pub(crate) fn source_head(
 ) -> Result<parser_state::Head> {
     let head = parser_state::head(conn, path, source.input_pk, source.chain)?
         .ok_or(Error::StaleMessage)?;
-    if head.token != *source || head.status == "retired" {
+    if head.token != *source || head.status == crate::parser_state::Phase::Retired {
         return Err(Error::StaleMessage);
     }
     let pending: bool = db(path, || {

@@ -89,7 +89,7 @@ fn provider_turns_allow_peer_reads_and_writes_and_eof_is_not_completion() {
     };
     assert_eq!(turns, 10); // four staging, seal, four applying, publication.
     assert_eq!(published.parsed_upto, 100);
-    assert_eq!(published.status, "finalizing");
+    assert_eq!(published.status, Phase::Finalizing);
     assert!(published.finalization_pending);
     let snapshot = writer.parser_snapshot(&published.token).unwrap();
     assert_eq!(
@@ -221,7 +221,7 @@ fn process_exit_during_apply_finishes_stored_members_without_reparse() {
     assert_eq!(published.token.step, 1);
     assert_eq!(published.counts.framed, 1);
     assert!(published.finalization_pending);
-    assert_ne!(published.status, "done");
+    assert_ne!(published.status, Phase::Done);
     let snapshot = writer.parser_snapshot(&published.token).unwrap();
     for i in 0u8..4 {
         assert_eq!(

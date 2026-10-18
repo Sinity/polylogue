@@ -77,7 +77,7 @@ pub struct Head {
     pub acquired_upto: u64,
     pub inspected_upto: u64,
     pub parsed_upto: u64,
-    pub status: String,
+    pub status: Phase,
     pub finalization_pending: bool,
     pub counts: Accounting,
 }
@@ -92,21 +92,36 @@ pub struct Basis<'a> {
     pub companions_json: Option<&'a str>,
     pub excisions_seen: u64,
 }
-#[derive(Clone, Copy, Debug)]
+/// The `parse_state.status` values. A step may set any phase except `Retired`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Parsing,
     WaitingTail,
     Finalizing,
     Done,
+    Retired,
 }
 impl Phase {
-    fn name(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Parsing => "parsing",
             Self::WaitingTail => "waiting_tail",
             Self::Finalizing => "finalizing",
             Self::Done => "done",
+            Self::Retired => "retired",
         }
+    }
+    fn parse(name: &str) -> Result<Self> {
+        Ok(match name {
+            "parsing" => Self::Parsing,
+            "waiting_tail" => Self::WaitingTail,
+            "finalizing" => Self::Finalizing,
+            "done" => Self::Done,
+            "retired" => Self::Retired,
+            _ => {
+                return Err(StoreError::Invariant("unknown parser state status".into()));
+            }
+        })
     }
 }
 pub struct Progress {
@@ -247,7 +262,7 @@ pub(crate) fn head(
                 acquired_upto,
                 inspected_upto,
                 parsed_upto,
-                status,
+                status: Phase::parse(&status)?,
                 finalization_pending,
                 counts: counts.checked()?,
             })
@@ -271,7 +286,7 @@ pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Resu
     let old = head(&tx, path, basis.input_pk, basis.chain)?;
     if let Some(old) = old
         .as_ref()
-        .filter(|h| h.token.basis == basis.digest && h.status != "retired")
+        .filter(|h| h.token.basis == basis.digest && h.status != Phase::Retired)
     {
         let identity: (Option<String>, u64) = sql!(path, tx.query_row(
             "SELECT companions_json, excisions_seen FROM parse_state WHERE input_pk=?1 AND chain=?2",
@@ -349,7 +364,7 @@ impl ParserReader {
         sql!(&path, db.execute_batch("BEGIN DEFERRED"))?;
         let head = current(&db, &path, expected)?;
         prepared::ensure_idle(&db, &path, expected)?;
-        if head.status == "retired" {
+        if head.status == Phase::Retired {
             return Err(StoreError::StaleParserState);
         }
         Ok(Snapshot {
@@ -599,6 +614,11 @@ fn check_progress(expected: &Head, progress: &Progress) -> Result<()> {
             "parser progress moved backwards or past the acquired length".into(),
         ));
     }
+    if progress.phase == Phase::Retired {
+        return Err(StoreError::Invariant(
+            "a parser step cannot retire its state".into(),
+        ));
+    }
     if matches!(progress.phase, Phase::Done)
         && (progress.parsed_upto != expected.acquired_upto || progress.finalization_pending)
     {
@@ -668,7 +688,7 @@ where
     if !from_prepared {
         prepared::ensure_idle(&tx, path, &expected.token)?;
     }
-    if now.status == "retired" {
+    if now.status == Phase::Retired {
         return Err(StoreError::StaleParserState);
     }
     let counts = now.counts.add(progress.counts)?;
@@ -694,7 +714,7 @@ where
     {
         "parsing"
     } else {
-        progress.phase.name()
+        progress.phase.as_str()
     };
     let inspected = integer(progress.inspected_upto)?;
     let parsed = integer(progress.parsed_upto)?;
@@ -831,7 +851,7 @@ pub(crate) fn collect_retired(
 pub(crate) fn remove_retired(db: &mut Connection, path: &Path, expected: &Token) -> Result<()> {
     let tx = sql!(path, db.transaction())?;
     let head = current(&tx, path, expected)?;
-    if head.status != "retired" {
+    if head.status != Phase::Retired {
         return Err(StoreError::Invariant(
             "parser state must be retired before removal".into(),
         ));
@@ -958,7 +978,7 @@ impl crate::Writer {
         let now = current(&tx, &path, &expected.token)?;
         check_unchanged(expected, &now)?;
         prepared::ensure_idle(&tx, &path, &expected.token)?;
-        if now.status != "finalizing"
+        if now.status != Phase::Finalizing
             || !now.finalization_pending
             || now.parsed_upto != now.acquired_upto
         {

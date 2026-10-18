@@ -16,6 +16,7 @@ use polylogue_sources::codex::{
     projection::{Cursor as SourceCursor, Mode, Step, Unit},
     selection::{self, Binding, FactSelection},
 };
+use polylogue_store::parser_state::Phase;
 use polylogue_store::{
     Error as StoreError, ReadHandle, Writer,
     contributions::{
@@ -504,7 +505,7 @@ pub fn start(
     budget: Budget,
     allowance: usize,
 ) -> Result<Action> {
-    if snapshot.head.status != "finalizing" || !snapshot.head.finalization_pending {
+    if snapshot.head.status != Phase::Finalizing || !snapshot.head.finalization_pending {
         return Err(Error::Unsupported(
             "Message materializer currently requires a pinned finalizing source head",
         ));

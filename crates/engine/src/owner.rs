@@ -10,6 +10,7 @@ use crate::{
 };
 use polylogue_model::BlobHash;
 use polylogue_sources::{claude_code, codex, frame::StepBudget};
+use polylogue_store::parser_state::Phase;
 use polylogue_store::{
     Error as StoreError, ImportObservation, InputFormat, PreparedBlob, ReadHandle, StoredInput,
     StoredSource, Writer,
@@ -1195,7 +1196,7 @@ impl Actor {
                         };
                         self.fail(&job.head, reason)?;
                     }
-                    Ok(CanonicalTurn::Done) if job.head.status == "waiting_tail" => {
+                    Ok(CanonicalTurn::Done) if job.head.status == Phase::WaitingTail => {
                         // Complete Claude prefix rows may publish while its
                         // unframed suffix waits. The source stays pending.
                     }
@@ -1258,13 +1259,13 @@ impl Actor {
             Some(head) => self.writer.parser_failure(&head.token)?,
             None => None,
         };
-        let obligation = match parser.as_ref().map(|h| h.status.as_str()) {
+        let obligation = match parser.as_ref().map(|h| h.status) {
             None if input.format == InputFormat::CodexPromptHistory => {
                 "prompt_reference_conversation_evidence"
             }
             None => "source_parser_admission",
-            Some("waiting_tail") => "unfinished_source_record",
-            Some("parsing") => "source_record_interpretation",
+            Some(Phase::WaitingTail) => "unfinished_source_record",
+            Some(Phase::Parsing) => "source_record_interpretation",
             _ => "canonical_source_row_effects_and_audit",
         };
         let mut source_rows = crate::source_rows::pending(&input, obligation);
@@ -1988,14 +1989,14 @@ fn compute_history(
 }
 
 fn can_finalize(input: &StoredSource, head: &Head) -> bool {
-    head.status == "finalizing"
+    head.status == Phase::Finalizing
         || (input.observed()
             && input.format == InputFormat::ClaudeCodeJsonl
-            && head.status == "waiting_tail")
+            && head.status == Phase::WaitingTail)
 }
 fn caught_up(head: &Head) -> bool {
-    matches!(head.status.as_str(), "waiting_tail" | "done")
-        || (head.status == "finalizing" && head.parsed_upto == head.acquired_upto)
+    matches!(head.status, Phase::WaitingTail | Phase::Done)
+        || (head.status == Phase::Finalizing && head.parsed_upto == head.acquired_upto)
 }
 pub(crate) fn parser_version(format: InputFormat) -> u32 {
     match format {
@@ -2276,7 +2277,7 @@ mod tests {
                             polylogue_model::settlement::SourceRowState::Settled
                         )
                     );
-                    assert_ne!(head.status, "done");
+                    assert_ne!(head.status, Phase::Done);
                     break;
                 }
             }
@@ -2488,7 +2489,7 @@ mod tests {
         let head = p.parser.unwrap();
         assert_eq!(head.counts.framed, 2);
         assert_eq!(head.parsed_upto, raw().len() as u64);
-        assert!(matches!(head.status.as_str(), "finalizing" | "done"));
+        assert!(matches!(head.status, Phase::Finalizing | Phase::Done));
         assert_eq!(
             head.finalization_pending,
             !matches!(
@@ -2512,7 +2513,7 @@ mod tests {
         let before = until_caught_up(&service.handle(), &retained.id)
             .parser
             .unwrap();
-        assert_eq!(before.status, "waiting_tail");
+        assert_eq!(before.status, Phase::WaitingTail);
         assert_eq!(before.parsed_upto, raw().len() as u64);
         assert_eq!(before.inspected_upto, bytes.len() as u64);
         service.shutdown().unwrap();
@@ -2564,7 +2565,7 @@ mod tests {
                 let head = p.parser.unwrap();
                 assert_eq!(head.parsed_upto, 0);
                 assert_eq!(head.counts.framed, 0);
-                assert_ne!(head.status, "done");
+                assert_ne!(head.status, Phase::Done);
                 assert_eq!(p.source_rows.basis.input, p.input.id);
                 break;
             }

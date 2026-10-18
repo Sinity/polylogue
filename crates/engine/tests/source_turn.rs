@@ -13,6 +13,7 @@ use polylogue_sources::{
     claude_code::{self, FileCtx},
     codex,
 };
+use polylogue_store::parser_state::Phase;
 use polylogue_store::{
     Error as StoreError, ImportObservation, InputFormat, Writer,
     parser_state::{Basis, Budget, Head},
@@ -222,7 +223,7 @@ fn both_sources_publish_only_after_real_prepared_install_and_reopen_resume() {
         assert!(first.parsed_upto() < (bytes.len() as u64));
         let continuation = world.publish(first);
         assert_eq!(continuation.predecessor(), &world.head.token);
-        assert_eq!(world.head.status, "parsing");
+        assert_eq!(world.head.status, Phase::Parsing);
         let offset = continuation.scanned_upto();
         world.restart();
         let second = pending(
@@ -234,7 +235,7 @@ fn both_sources_publish_only_after_real_prepared_install_and_reopen_resume() {
         let continuation = world.publish(second);
         assert_eq!(world.head.counts.framed, 2);
         assert_eq!(world.head.parsed_upto, bytes.len() as u64);
-        assert_eq!(world.head.status, "finalizing");
+        assert_eq!(world.head.status, Phase::Finalizing);
         assert!(world.head.finalization_pending);
         assert!(matches!(
             world.compute(Some(continuation), 0, budgets()).unwrap(),
@@ -274,7 +275,7 @@ fn partial_tail_waits_without_spin_and_resumes_or_replays_from_complete_record_h
             assert_eq!(first.parsed_upto(), first_end as u64);
             assert_eq!(first.scanned_upto(), cut as u64);
             let continuation = world.publish(first);
-            assert_eq!(world.head.status, "waiting_tail");
+            assert_eq!(world.head.status, Phase::WaitingTail);
             let token = world.head.token.clone();
             let idle = world.compute(Some(continuation), 0, budgets()).unwrap();
             let continuation = match idle {
@@ -317,7 +318,7 @@ fn partial_tail_waits_without_spin_and_resumes_or_replays_from_complete_record_h
             world.publish(next);
             assert_eq!(world.head.counts.framed, 2);
             assert_eq!(world.head.parsed_upto, bytes.len() as u64);
-            assert_eq!(world.head.status, "finalizing");
+            assert_eq!(world.head.status, Phase::Finalizing);
         }
     }
 }
@@ -446,7 +447,7 @@ fn accessible_empty_registered_inputs_still_owe_canonical_finalization() {
         let empty = pending(world.compute(None, 0, budgets()).unwrap());
         assert_eq!(empty.counts().framed, 0);
         let continuation = world.publish(empty);
-        assert_eq!(world.head.status, "finalizing");
+        assert_eq!(world.head.status, Phase::Finalizing);
         assert!(world.head.finalization_pending);
         assert_eq!(world.head.parsed_upto, 0);
         assert!(matches!(
