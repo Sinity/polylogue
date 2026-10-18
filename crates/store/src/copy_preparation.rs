@@ -1,5 +1,7 @@
-//! Stopped local copy preparation. The existing request row records completion;
-//! the single versioned meta value holds interrupted work, never writer authority.
+//! Prepares a stopped local copy of an archive for use (local restore only).
+//! Work in progress is stored as JSON in `meta.copy_preparation` and blocks
+//! ordinary writers until the same request finishes; a `client_request` row
+//! records completion.
 use crate::{Error, Result, client_request, counter, db, open, recovery, wal};
 use polylogue_model::{BlobHash, authored::uuid_v7};
 use rusqlite::{Connection, OptionalExtension};
@@ -15,6 +17,7 @@ use std::{
 fn refused(reason: impl Into<String>) -> Error {
     Error::CopyPreparationRefused(reason.into())
 }
+/// A new random UUIDv7 for `meta.acquisition_lineage`.
 pub(crate) fn fresh_lineage() -> Result<String> {
     let mut bytes = [0u8; 16];
     File::open("/dev/urandom")?.read_exact(&mut bytes)?;
@@ -39,8 +42,17 @@ pub(crate) fn fresh_lineage() -> Result<String> {
     ))
 }
 fn meta(conn: &Connection, path: &Path, key: &str) -> Result<Option<String>> {
-    db(path, || conn.query_row("SELECT CASE WHEN length(CAST(value AS BLOB))<=4096 THEN value END FROM meta WHERE key=?1", [key], |r|r.get::<_,Option<String>>(0)).optional())?
-        .map(|s| s.ok_or_else(|| refused(format!("oversized {key}")))).transpose()
+    db(path, || {
+        conn.query_row(
+            "SELECT CASE WHEN length(CAST(value AS BLOB)) <= 4096 THEN value END \
+             FROM meta WHERE key = ?1",
+            [key],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+    })?
+    .map(|s| s.ok_or_else(|| refused(format!("{key} is too large"))))
+    .transpose()
 }
 pub(crate) fn lineage(conn: &Connection, path: &Path) -> Result<Option<String>> {
     let value = meta(conn, path, "acquisition_lineage")?;
@@ -49,6 +61,8 @@ pub(crate) fn lineage(conn: &Connection, path: &Path) -> Result<Option<String>> 
     }
     Ok(value)
 }
+/// An unfinished preparation, stored in `meta.copy_preparation`. The field
+/// names are on disk in existing archives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pending {
@@ -80,7 +94,7 @@ pub(crate) fn pending(conn: &Connection, path: &Path) -> Result<Option<Pending>>
                 || p.batch_cursor != 0
                 || p.copy_cut > i64::MAX as u64 - 2
             {
-                return Err(refused("invalid copy_preparation authority or version"));
+                return Err(refused("unsupported copy_preparation value"));
             }
             Ok(p)
         })
@@ -91,15 +105,14 @@ fn intent_hash() -> Result<BlobHash> {
         &serde_json::json!({"command":"prepare-copy","mode":"restore","backing":"local","retired_writers":true}),
     )
 }
-/// Upgrading representation must not supersede a previously admitted action.
-/// Missing lineage remains preserved/readable after upgrade; only the ordinary
-/// writer guard denies new mutations without that historical authority.
+/// Refuses a format migration while a preparation is pending: it must finish
+/// with the binary that started it. A missing lineage does not block migration.
 pub(crate) fn migration_guard(root: &Path) -> Result<()> {
     let path = root.join("archive.db");
     let conn = open(&path, true, true)?;
     if let Some(active) = pending(&conn, &path)? {
         return Err(refused(format!(
-            "pending action {}; finish the same preparation with its matching pre-upgrade binary before migration",
+            "copy preparation {} is pending; finish it with the binary that started it before upgrading",
             active.request_id
         )));
     }
@@ -113,22 +126,23 @@ pub(crate) fn writer_guard(root: &Path) -> Result<()> {
     let conn = open(&path, true, true)?;
     if let Some(active) = pending(&conn, &path)? {
         return Err(refused(format!(
-            "pending action {}; retry the same preparation before ordinary mutation",
+            "copy preparation {} is pending; rerun the same preparation before writing",
             active.request_id
         )));
     }
     if lineage(&conn, &path)?.is_none() {
         return Err(refused(
-            "missing historical acquisition lineage; legacy content remains read-only",
+            "archive has no acquisition lineage; it can be read but not written",
         ));
     }
     Ok(())
 }
-/// Reports unavailable files without interpreting absent bytes as empty content.
-/// Hash/integrity verification remains with reads and preparation.
+/// Counts present file blobs whose file is missing. Contents are not checked.
 pub(crate) fn unavailable_blobs(conn: &Connection, path: &Path, root: &Path) -> Result<u64> {
     let mut statement = db(path, || {
-        conn.prepare("SELECT hash FROM blob WHERE place='file' AND state='present' ORDER BY hash")
+        conn.prepare(
+            "SELECT hash FROM blob WHERE place = 'file' AND state = 'present' ORDER BY hash",
+        )
     })?;
     let mut rows = db(path, || statement.query([]))?;
     let mut missing = 0;
@@ -155,14 +169,15 @@ pub struct Report {
     pub latest_acknowledged_head: &'static str,
     pub recovery: Option<polylogue_model::RecoveryRecord>,
 }
-/// Owns the normal archive lock for both admission and checked completion.
-/// Exposes admission so the process owner can report durable pending progress.
+/// A preparation in progress. Holds the archive's writer lock from `begin` to
+/// `finish`, so the caller can report `progress` before the cancellable checks.
 pub struct Preparation {
     root: PathBuf,
     archive: Connection,
     _lock: File,
     plan: Pending,
-    historical: bool,
+    /// The request already completed earlier; `finish` only reports it.
+    already_completed: bool,
 }
 impl Preparation {
     pub fn begin(
@@ -173,15 +188,13 @@ impl Preparation {
         retired_writers: bool,
         cancel: &AtomicBool,
     ) -> Result<Self> {
-        // Capability and custody checks precede even opening the copied database.
+        // Check the arguments before opening the copied database.
         if mode != "restore" || backing != "local" {
-            return Err(refused(
-                "only local restore is supported; independent and primary preparation are unavailable",
-            ));
+            return Err(refused("only local restore is supported"));
         }
         if !retired_writers {
             return Err(refused(
-                "restore requires --retired-writers custody assertion",
+                "restore requires --retired-writers (the original writer is stopped)",
             ));
         }
         if !uuid_v7(request_id) {
@@ -196,32 +209,31 @@ impl Preparation {
         crate::preflight_inner(&root, true)?;
         let checked = open(&path, true, true)?;
         let source = lineage(&checked, &path)?.ok_or_else(|| {
-            refused("missing historical acquisition lineage; restore cannot mint authority")
+            refused("archive has no acquisition lineage; restore cannot create one")
         })?;
         drop(checked);
         recovery::migrate(&root, cancel)?;
         let mut archive = open(&path, false, true)?;
         db(&path, || archive.pragma_update(None, "synchronous", "FULL"))?;
         let hash = intent_hash()?;
-        let historical = client_request::replay(&archive, &path, request_id, hash)?;
+        let already_completed = client_request::replay(&archive, &path, request_id, hash)?;
         let existing = pending(&archive, &path)?;
         if let Some(p) = &existing
-            && !historical
+            && !already_completed
         {
             if p.request_id != request_id || p.intent_hash != hash {
                 return Err(refused(format!(
-                    "pending action {}; changed or different actions cannot advance it",
+                    "copy preparation {} is pending; a different request cannot continue it",
                     p.request_id
                 )));
             }
             if p.source_lineage != source || counter(&archive, &path)? != p.copy_cut + 1 {
-                return Err(refused("pending preparation copy cut or lineage changed"));
-            }
-            if historical {
-                return Err(refused("active action already has a completion row"));
+                return Err(refused(
+                    "archive changed since the pending preparation started",
+                ));
             }
         }
-        let plan = existing.filter(|_| !historical).unwrap_or(Pending {
+        let plan = existing.filter(|_| !already_completed).unwrap_or(Pending {
             version: 1,
             request_id: request_id.into(),
             intent_hash: hash,
@@ -233,7 +245,7 @@ impl Preparation {
             copy_cut: counter(&archive, &path)?,
             batch_cursor: 0,
         });
-        if !historical && meta(&archive, &path, "copy_preparation")?.is_none() {
+        if !already_completed && meta(&archive, &path, "copy_preparation")?.is_none() {
             if plan.copy_cut > i64::MAX as u64 - 2 {
                 return Err(Error::Range);
             }
@@ -241,7 +253,7 @@ impl Preparation {
             db(&path, || {
                 let tx = archive.transaction()?;
                 tx.execute(
-                    "INSERT INTO meta(key,value) VALUES('copy_preparation',?1)",
+                    "INSERT INTO meta(key, value) VALUES('copy_preparation', ?1)",
                     [json],
                 )?;
                 tx.execute(
@@ -256,15 +268,21 @@ impl Preparation {
             archive,
             _lock: lock,
             plan,
-            historical,
+            already_completed,
         })
     }
     pub fn progress(&self) -> serde_json::Value {
-        serde_json::json!({"outcome":if self.historical {"historical_completion"}else{"pending"},"copy_preparation":if self.historical {None}else{Some(&self.plan)},"request_id":self.plan.request_id,"activation_granted":false})
+        let pending = (!self.already_completed).then_some(&self.plan);
+        serde_json::json!({
+            "outcome": if pending.is_some() { "pending" } else { "historical_completion" },
+            "copy_preparation": pending,
+            "request_id": self.plan.request_id,
+            "activation_granted": false,
+        })
     }
     pub fn finish(mut self, cancel: &AtomicBool) -> Result<Report> {
         let path = self.root.join("archive.db");
-        if !self.historical {
+        if !self.already_completed {
             wal::check_cancel(cancel)?;
             recovery::integrity(&self.archive, &path, cancel)?;
             let embeddings = self.root.join("embeddings.db");
@@ -275,7 +293,7 @@ impl Preparation {
                 || counter(&self.archive, &path)? != self.plan.copy_cut + 1
                 || lineage(&self.archive, &path)?.as_deref() != Some(&self.plan.source_lineage)
             {
-                return Err(refused("preparation basis changed before completion"));
+                return Err(refused("archive changed during preparation"));
             }
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -304,7 +322,7 @@ impl Preparation {
         }
         Ok(Report {
             outcome: "degraded",
-            action: if self.historical {
+            action: if self.already_completed {
                 "historical_completion"
             } else {
                 "prepared"

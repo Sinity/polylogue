@@ -1,4 +1,5 @@
-//! The shared durable writing-request identity. Effects remain in their owning tables.
+//! Idempotent client requests: each request ID is stored with the hash of its
+//! intent. What the request did is stored in its own tables.
 use crate::{Error, Result, db};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -7,10 +8,12 @@ pub(crate) fn digest(intent: &serde_json::Value) -> Result<BlobHash> {
     let bytes = serde_json::to_vec(intent).map_err(|e| Error::Invariant(e.to_string()))?;
     Ok(BlobHash::of(&bytes))
 }
+/// Returns true if `id` was already recorded with the same intent hash; a
+/// different hash is a conflict.
 pub(crate) fn replay(conn: &Connection, path: &Path, id: &str, hash: BlobHash) -> Result<bool> {
     let old: Option<Vec<u8>> = db(path, || {
         conn.query_row(
-            "SELECT content_hash FROM client_request WHERE id=?1",
+            "SELECT content_hash FROM client_request WHERE id = ?1",
             [id],
             |r| r.get(0),
         )
@@ -33,7 +36,7 @@ pub(crate) fn insert(
 ) -> Result<usize> {
     db(path, || {
         conn.execute(
-            "INSERT INTO client_request(id,content_hash,created_at) VALUES(?1,?2,?3)",
+            "INSERT INTO client_request(id, content_hash, created_at) VALUES(?1, ?2, ?3)",
             params![id, hash.bytes().as_slice(), created_at],
         )
     })
