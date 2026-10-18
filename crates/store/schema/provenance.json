@@ -6,14 +6,14 @@
       "sha256": "999b8f8333f90a2d868991cc24119e1e07ff1e78611acf3a8f9e58d9208136d4",
       "copied_sha256": "606d11eec6df857411c943203c74a61da4d7186db58a236e13d7855c15f42061",
       "spec_commit": "8c4e2210692282420d7a5ca91dc005b409a668f1",
-      "sql_sha256": "d8075ff03f0d9aceaa77b5dc375b00c04497472b8fba22f4e11271340b05a2a9"
+      "sql_sha256": "4f73eecae366c3e67187f34959de0f1ed00d2cc9ea3dfa1e24acb3d2ded40e74"
     },
     {
       "source": "polylogue-spec/spec/storage/index-db.md",
       "sha256": "c99fedb54aaef332f810f7736ae64271841eb90f2bd5f40d38131a19117485b3",
       "copied_sha256": "6a91077b3a8bcf55541682d58297d92f7b9fee2e56b5c8bb421d220961e4bc4f",
       "spec_commit": "5551b6e3796f968011323e436f0c72f5339832b4",
-      "sql_sha256": "2a9b088e16f626f98794f54dd6726e7b3b97ff64a31b761231c3a33b55d12897",
+      "sql_sha256": "ec36d16bc67b198f16502cd66d417966a83bbbcc6c908d73263410d0ae1227bb",
       "base_spec_commit": "aca97f216bc3c56a81f4b2523b81744ce42c6454",
       "base_source_sha256": "1c7e9c160531040fc7f7afe861cf24ed042a0ad53afd6764125a068c11ae7426"
     },
@@ -23,16 +23,16 @@
       "copied_sha256": "015c0adb3782df00357a7f4005ce78e04a64a947750c8badc550886128813566"
     }
   ],
-  "snapshot_normalization": "One final newline. The archive recovery clauses follow8c4e221; note_target seen_hash retains its separately pinned predecessor comment, so this delivery does not adopt the unrelated authored-note contract or alter existing sqlite_schema text. Native index20 adopts the session.native_id_encoding fact contract from 5551b6e3 while retaining the predecessor delivery schema and other unadopted text from aca97f21. The base revision and source SHA are explicit; copied and SQL hashes bind this bounded native snapshot, not a byte-identical copy of the complete newer upstream document.",
+  "snapshot_normalization": "Each SQL file is the SQL from its spec file at the listed commit, with one final newline. archive.sql follows 8c4e221 for recovery; note_target.seen_hash keeps its older comment so stored schema text is unchanged. index.sql takes session.native_id_encoding from 5551b6e3 and everything else from aca97f21. Comments outside CREATE statements were later rewritten in this repository; stored schema text is unaffected. sql_sha256 is the SHA-256 of the file in this repository.",
   "runtime_metadata_overlay": {
     "archive_version": 4,
     "spec_commit": "6668d9e0a085c11c689add732aa1bd62d3f4fb17",
     "source": "polylogue-spec/spec/storage/archive-db.md, Independent copies and union admission",
-    "changes": "Fresh acquisition_lineage; versioned meta copy_preparation and existing client_request completion; unchanged SQL tables. Preserving format migration never mints missing historical authority."
+    "changes": "Adds meta keys acquisition_lineage (written at fresh creation) and copy_preparation (a versioned JSON value); copy preparation completion is recorded in client_request. No table changes. Upgrading an older format never invents a missing lineage."
   },
   "observed_context_overlay": {
     "archive_version": 4,
     "file": "observed-context.sql",
-    "changes": "Normalized declared context for observed Claude sources; immutable input CHECK and import identity unchanged. Preserving upgrade materializes exact legacy first-observation main context. Missing new-format context refuses; pending v3 preparation must finish with the pinned v3 owner before upgrade. Exact companion-main expression index avoids scanning unrelated input population; manifest matching and ordering unchanged."
+    "changes": "Adds observed_context: the declared context of each observed Claude input. Imported inputs and their CHECK are unchanged. The upgrade fills it from each input's first observation. A format-4 archive missing a context refuses; a pending format-3 copy preparation must be finished with a format-3 build before upgrading. An expression index finds a main file's tool-result inputs without scanning other inputs."
   }
 }

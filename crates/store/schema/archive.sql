@@ -1,5 +1,5 @@
 -- The write counter (key 'write_counter'), incremented once per transaction,
--- and typed archive integrity qualification (key 'recovery_qualification').
+-- and the recovery record of a recovered copy (key 'recovery_qualification').
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 
 -- Machines by /etc/machine-id, with every host name seen with each.

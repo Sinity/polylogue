@@ -158,9 +158,9 @@ CREATE TABLE message_body (
   UNIQUE(pk,message_pk,session_pk,ready),
   UNIQUE(pk,ready)
 ) STRICT;
--- Derived normalized-body equality, never raw source version evidence. The typed
--- producer visits the complete immutable body before issuing this certificate.
--- One fixed child of a body owns no payload lease; body retirement removes it.
+-- Records that two normalized bodies are equal, after comparing every field
+-- and block. Says nothing about which source version is newer. Removed with
+-- its body.
 CREATE TABLE message_body_compatibility (
   body_pk INTEGER PRIMARY KEY,
   body_ready INTEGER NOT NULL DEFAULT 1 CHECK(body_ready=1),
@@ -179,9 +179,9 @@ CREATE INDEX message_body_unseen  ON message_body(input_pk) WHERE first_seen IS 
 CREATE INDEX message_body_branch  ON message_body(session_pk) WHERE on_active_path = 0;
 
 
--- A typed source candidate is not a global winner. Reduce versions per chain,
--- chain representatives per input, then input representatives (sources rules2/5).
--- Unresolved facts/hash/head remain retained and are not fabricated eligibility.
+-- One source's version of a message. The selected body is chosen in three
+-- steps: the best version per chain, then per input, then across inputs.
+-- A candidate whose facts are still unknown stays stored but is not eligible.
 CREATE TABLE message_candidate (
   pk INTEGER PRIMARY KEY AUTOINCREMENT,
   message_pk INTEGER NOT NULL,
@@ -222,8 +222,7 @@ CREATE TABLE message_candidate (
   UNIQUE(pk,message_pk,session_pk,input_pk),
   UNIQUE(pk,message_pk,session_pk,input_pk,chain)
 ) STRICT;
--- One currently eligible effective state of one provider-owned candidate within
--- a retained revision. Prior scheduling cuts are retained history, not donors.
+-- At most one eligible candidate per logical key within one revision.
 CREATE UNIQUE INDEX message_candidate_effective ON message_candidate(
   message_pk,input_pk,chain,revision,logical_key) WHERE eligible=1;
 CREATE INDEX message_candidate_input ON message_candidate(input_pk,chain,revision);
@@ -235,7 +234,8 @@ CREATE INDEX message_candidate_chain_rank ON message_candidate(message_pk,input_
   finish DESC,route DESC,source_blocks DESC,source_text_blocks DESC,source_fields DESC,
   revision_length DESC,version_hash DESC) WHERE eligible=1;
 
--- Fence every eligible-membership change, including withdraw/re-add ABA.
+-- Bump the message's contributor_revision on every eligibility change, so a
+-- writer can detect a candidate withdrawn and re-added since it last looked.
 CREATE TRIGGER message_candidate_membership_insert AFTER INSERT ON message_candidate
 WHEN NEW.eligible=1 BEGIN
   UPDATE message SET contributor_revision=contributor_revision+1 WHERE pk=NEW.message_pk;
@@ -249,9 +249,10 @@ WHEN OLD.eligible=1 BEGIN
   UPDATE message SET contributor_revision=contributor_revision+1 WHERE pk=OLD.message_pk;
 END;
 
--- Representatives retain roots, including eligible missing-field donors, not
--- merely the previous global winner. Edits publish a proved current head or an
--- explicit unresolved state; a hash/mtime/arrival never supplies that proof.
+-- The chosen candidate per chain and per input. Each keeps its body roots
+-- alive, including candidates that supply missing fields. A choice is either
+-- a proven current head or an explicit unresolved state; a hash, mtime or
+-- arrival order never decides it.
 CREATE TABLE message_chain_choice (
   message_pk INTEGER NOT NULL,
   session_pk INTEGER NOT NULL,
@@ -320,9 +321,9 @@ CREATE INDEX message_input_choice_rank ON message_input_choice(message_pk,
   finish DESC,route DESC,source_blocks DESC,source_text_blocks DESC,source_fields DESC,
   version_hash DESC) WHERE state='ready';
 
--- Canonical normalized value bytes, streamed in admitted chunks. Their content
--- hash is payload integrity, never merge version evidence. Raw lazy source
--- locators remain revision addresses; they do not masquerade as normalized bytes.
+-- Normalized value bytes, written in chunks. The hash checks integrity; it is
+-- never used to decide which version is newer. Raw source bytes are addressed
+-- by revision ranges, not stored here.
 CREATE TABLE body_value (
   pk INTEGER PRIMARY KEY AUTOINCREMENT,
   codec TEXT NOT NULL CHECK(codec IN('utf8','json','bytes')),
@@ -382,9 +383,9 @@ CREATE INDEX message_field_fact_slot ON message_field_fact(slot_pk);
 CREATE INDEX message_field_fact_value ON message_field_fact(value_pk);
 CREATE INDEX message_field_fact_origin ON message_field_fact(origin_value_pk);
 
--- Message-local immutable directories. Outer groups reference block roots;
--- separate field roots retain donor facts without serializing/copying a map.
--- Each sparse radix16 node has <=16 edges; u64 ordinals require <=16 levels.
+-- Per-message immutable directories (radix-16 trees). Group nodes point at
+-- block roots; field roots hold field facts without copying a map. A node has
+-- at most 16 edges, so a u64 ordinal needs at most 16 levels.
 CREATE TABLE message_body_node (
   pk INTEGER PRIMARY KEY AUTOINCREMENT,
   message_pk INTEGER NOT NULL,
@@ -466,10 +467,10 @@ CREATE INDEX message_body_edge_conflict ON message_body_edge(conflict_slot_pk);
 CREATE INDEX message_body_edge_call ON message_body_edge(tool_call_pk);
 CREATE INDEX message_body_edge_association ON message_body_edge(association_pk);
 
--- One owned resumable build per Message. This is disposable computation over
--- a pinned basis, not an independent queue. Cursor scalars never contain a
--- growing list of IDs, blocks, fields or parser state. AUTOINCREMENT prevents a
--- stale process from naming a later build after this row has been retired.
+-- At most one resumable build per message, tied to the parser state it was
+-- started from. The cursor holds fixed-size values, never a growing list.
+-- AUTOINCREMENT keeps a stale process from naming a later build after this
+-- row is removed.
 CREATE TABLE message_build (
   pk INTEGER PRIMARY KEY AUTOINCREMENT,
   message_pk INTEGER NOT NULL,
@@ -496,9 +497,9 @@ CREATE INDEX message_build_body ON message_build(body_pk);
 CREATE INDEX message_build_value ON message_build(active_value_pk);
 CREATE INDEX message_build_origin_value ON message_build(active_origin_value_pk);
 CREATE INDEX message_build_block ON message_build(active_block_pk) WHERE active_block_pk IS NOT NULL;
--- Fixed frontier slots lease ready nodes while paths are copied. A path through
--- an outer group/block path or field/conflict-witness path has at most 32 radix16 nodes. Root
--- leases owned by bodies/representatives are separate incoming references.
+-- Slots that hold references to ready nodes while a build copies a path. A
+-- group-and-block or field-and-conflict path has at most 32 nodes. Roots held
+-- by bodies and choices are counted separately.
 CREATE TABLE message_build_frontier (
   build_pk INTEGER NOT NULL,
   message_pk INTEGER NOT NULL,
@@ -512,9 +513,8 @@ CREATE TABLE message_build_frontier (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_build_frontier_node ON message_build_frontier(node_pk);
 
--- Exact contributor spans, pinned to source candidate/input/chain. Several
--- disjoint records may supply one candidate; no bounding-envelope fallback.
--- A citation never substitutes a current chain for this retained chain.
+-- The source byte ranges that make up a candidate, per input and chain.
+-- Several disjoint records may supply one candidate; each keeps its own range.
 CREATE TABLE message_source (
   candidate_pk      INTEGER NOT NULL,
   message_pk        INTEGER NOT NULL,
@@ -530,8 +530,8 @@ CREATE TABLE message_source (
 CREATE INDEX message_source_message ON message_source(message_pk);
 CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
 
--- Deduplicated UTF-8 payload references; bytes live only in body_value_chunk.
--- `id` is the rowid of serving search entries, not a second text payload.
+-- Deduplicated text references; the bytes live in body_value_chunk. `id` is
+-- the rowid used by the search tables.
 CREATE TABLE text (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   hash BLOB NOT NULL UNIQUE CHECK(length(hash)=32),
@@ -600,10 +600,9 @@ CREATE VIRTUAL TABLE output_fts USING fts5(body, content='', contentless_delete=
 CREATE VIRTUAL TABLE fts_vocab_text USING fts5vocab(text_fts, 'row');
 CREATE VIRTUAL TABLE fts_vocab_output USING fts5vocab(output_fts, 'row');
 
--- Stable native/session-owned operation identity. Its selected version is a
--- immutable effective facts candidate. It may have pending payload evidence:
--- known operation existence/classification still counts, while complete-payload
--- reads require ready=1. Unknown Message ownership is independently valid.
+-- A tool operation with a stable identity within its session. Its selected
+-- version holds the facts. Facts known before all bytes arrive still count;
+-- reading the full payload requires ready=1. The owning message may be unknown.
 CREATE TABLE tool_item (
   pk                INTEGER PRIMARY KEY AUTOINCREMENT,
   id                TEXT NOT NULL UNIQUE,
@@ -627,14 +626,10 @@ CREATE UNIQUE INDEX tool_item_native ON tool_item(session_pk, provider_namespace
   WHERE identity_kind = 'native';
 CREATE INDEX tool_item_selected ON tool_item(selected_version_pk) WHERE selected_version_pk IS NOT NULL;
 
--- Candidate identity is independent of its eventual source-evidence digest.
--- A building candidate can retain known call/result facts and exact source
--- locators while required bytes are unavailable. Such facts are inspectable as
--- pending evidence. Proven operation existence is independent of payload
--- readiness; incomplete classification/correspondence remains unknown coverage.
--- New versions use new rows;
--- ready rows are immutable under the typed writer. Pinned/historical body reads
--- name this version, never mutable payload columns on the identity head.
+-- One version of a tool operation. Its key exists before its digest is known,
+-- so a version still being built can hold known facts and source locations
+-- while bytes are missing. A new version is a new row; ready rows never change.
+-- Body reads name the version they saw, never the item's current one.
 CREATE TABLE tool_item_version (
   pk                INTEGER PRIMARY KEY AUTOINCREMENT,
   tool_item_pk      INTEGER NOT NULL,
@@ -674,11 +669,9 @@ CREATE INDEX tool_item_version_input_value ON tool_item_version(input_value_pk);
 CREATE INDEX tool_item_version_data_value ON tool_item_version(result_data_value_pk);
 CREATE INDEX tool_item_version_result_text ON tool_item_version(result_text_id) WHERE result_text_id IS NOT NULL;
 
--- Immutable contributors/field locators of a candidate, including old versions
--- and UI transformations. The stable version key works before a digest exists.
--- Identical distinct chunks keep different slots; replacement uses a new owning
--- candidate version. Body-dependent associations pin that exact candidate, not
--- only whichever digest the identity head currently selects.
+-- The source locations that make up a tool item version, including old
+-- versions and UI transformations. Identical chunks from different places keep
+-- separate rows. Associations from a body point at one exact version.
 CREATE TABLE tool_item_source (
   tool_item_version_pk INTEGER NOT NULL,
   tool_item_pk      INTEGER NOT NULL,
@@ -697,9 +690,9 @@ CREATE TABLE tool_item_source (
 CREATE INDEX tool_item_source_owner ON tool_item_source(tool_item_pk, session_pk);
 CREATE INDEX tool_item_source_input ON tool_item_source(input_pk); -- FK/excision lookup, never a full source scan
 
--- Shared immutable ownership proofs. Visibility requires BOTH selected operation
--- root membership and item.selected_version_pk. An append path-copies the root
--- directory, not every unchanged proof row. Unknown ownership has no proof leaf.
+-- Which message owns which tool item. An association is visible only when it
+-- is under the selected root and matches item.selected_version_pk. An append
+-- copies one directory path, not every row. Unknown ownership has no row.
 CREATE TABLE tool_item_association (
   pk INTEGER PRIMARY KEY AUTOINCREMENT,
   tool_item_version_pk INTEGER NOT NULL,
@@ -722,9 +715,8 @@ CREATE INDEX tool_item_association_item ON tool_item_association(tool_item_pk);
 CREATE INDEX tool_item_association_message ON tool_item_association(message_pk);
 CREATE INDEX tool_item_association_input ON tool_item_association(input_pk,source_chain);
 
--- Direct operation lookup refinement. A block citation remains a block citation;
--- only tool-call lookup follows this proof. Retained proof addresses outlive a
--- disposable body; no old body graph is leased solely to keep an anchor alive.
+-- Lookup from a tool call to its tool item. Block citations do not use it.
+-- Anchors outlive the body they came from without keeping that body alive.
 CREATE TABLE tool_call_anchor (
   anchor TEXT NOT NULL PRIMARY KEY,
   tool_item_pk INTEGER NOT NULL REFERENCES tool_item(pk),
@@ -742,8 +734,8 @@ CREATE INDEX tool_call_anchor_item ON tool_call_anchor(tool_item_pk);
 CREATE INDEX tool_call_anchor_version ON tool_call_anchor(tool_item_version_pk);
 CREATE INDEX tool_call_anchor_input ON tool_call_anchor(input_pk,source_chain);
 
--- One row per tool call, paired with its result inside the same session. The
--- owner of derived call summaries; raw result facts remain on their block.
+-- One row per tool call, paired with its result within the same session.
+-- Derived call summaries live here; raw result facts stay on their block.
 CREATE TABLE tool_call (
   pk                INTEGER PRIMARY KEY AUTOINCREMENT,
   session_pk        INTEGER NOT NULL,       -- kept for index speed; the composite keys make it agree with its blocks
@@ -777,9 +769,9 @@ CREATE TABLE tool_call (
   FOREIGN KEY (result_block_pk, session_pk) REFERENCES block(pk, session_pk),
   UNIQUE(pk,call_block_pk,message_pk,session_pk)
 ) STRICT;
--- One summary per immutable call-block incarnation; NULL permits session-owned items.
--- Different body-specific facts or pairings require distinct call blocks while an
--- older body still leases its summary. Operation IDs need not be unique here.
+-- One summary per call block; a NULL block allows session-owned items. An
+-- older body may still hold its summary, so different facts or pairings need a
+-- different call block. Operation IDs need not be unique here.
 CREATE UNIQUE INDEX tool_call_block ON tool_call(call_block_pk);
 CREATE INDEX tool_call_item ON tool_call(tool_item_pk);
 CREATE INDEX tool_call_item_version ON tool_call(tool_item_version_pk);
@@ -794,9 +786,8 @@ CREATE INDEX tool_call_command ON tool_call(command_value_pk);
 CREATE INDEX tool_call_repo_command ON tool_call(command_norm_value_pk, at);   -- repo_command_last recompute
 CREATE INDEX tool_call_result  ON tool_call(result_block_pk) WHERE result_block_pk IS NOT NULL;   -- foreign-key check
 
--- Serving substring corpus only. Canonical command/path bytes live in body_value.
--- No prepared/unselected summary enters this index; bounded selected-corpus
--- publication and retirement remain part of the open search implementation.
+-- Substring search over commands and paths of selected bodies only; the bytes
+-- themselves live in body_value.
 CREATE VIRTUAL TABLE tool_call_trigram USING fts5(command, path,
     content='', contentless_delete=1, tokenize='trigram');
 
@@ -1009,17 +1000,13 @@ CREATE TABLE parse_state (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX parse_state_status ON parse_state(status) WHERE status NOT IN ('done', 'companion');   -- status, waiting work
 
--- Disposable provider state, addressed by typed provider-owned keys. A read view
--- pins a real SQLite read snapshot (or an independently qualified immutable
--- state version), never a mutable generation/key pair alone. Interpretation
--- holds no write transaction. A small delta may commit with its checkpoint;
--- a larger provider delta uses the parse_work admission barrier below. Logical
--- state publication checks the index generation, basis, state_generation
--- and state_step predecessor. Keyed carry stores bounded references, not these
--- cells (the keyed reference is two big-endian i64s: generation, then step).
--- Same-prefix acquisition may grow while an older step computes; that
--- step cannot certify the new suffix. Prepared output/finalization have their
--- own basis-bound state and are not complete merely because these cells exist.
+-- Disposable parser state, as key/value cells per input. A parse reads a
+-- pinned SQLite snapshot and holds no write transaction. A small change commits
+-- with its checkpoint; a larger one goes through parse_work below. Each commit
+-- checks the index generation, the input's state, and the previous
+-- state_generation and state_step. A reference to a state is two big-endian
+-- i64s: generation, then step. An input may grow while an older step runs; that
+-- step only covers the bytes it read.
 CREATE TABLE parser_cell (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
@@ -1029,26 +1016,18 @@ CREATE TABLE parser_cell (
   value             BLOB NOT NULL,          -- one addressable cell; admission charges its full live representation
   PRIMARY KEY (input_pk, chain, state_generation, namespace, key)
 ) STRICT, WITHOUT ROWID;
--- Generations come from a monotonic per-index meta.parser_generation allocator,
--- surviving head/input removal; recreating either key never reuses an old token.
--- Retired generations are reclaimed in bounded keysets. Excision/input removal
--- must drain their cells before removing input_ref; there is no unbounded FK
--- cascade and no orphan state outside the owning index lifecycle.
+-- Generations come from meta.parser_generation, which only increases, so a
+-- removed and recreated head never reuses a number. Old generations are
+-- deleted in batches. Removing an input must delete its cells first; there is
+-- no foreign-key cascade.
 
--- A provider-state preparation barrier, not a canonical Message publication.
--- Admission pins index incarnation plus the exact parser predecessor. New
--- source snapshots are refused while work exists; already pinned SQLite views
--- remain coherent. No provider interpretation runs under a write transaction.
--- Each admitted batch stages reserved @work:<work_id> parser_cell members before
--- seal, then applies and deletes a bounded keyset. Final publication changes
--- only this control row and the parser head/resume/counts/checkpoint, coupled
--- to the last required canonical publication by its owner. It never
--- adopts or copies an unbounded delta. Public canonical Messages are untouched.
--- Same-prefix growth stays owed. Basis replacement/retirement invalidates this
--- row; old-generation members remain subject to bounded parser_cell collection.
--- Interrupted unsealed staging may instead discard its members in bounded
--- keysets without changing published state. Sealed application must complete or
--- be invalidated; it cannot replay interpretation from a partly changed map.
+-- A large parser-state change, applied in steps. It is tied to the index
+-- generation and the exact parser state it started from. While it exists, new
+-- parses of the input wait; readers already holding a snapshot are unaffected.
+-- Batches stage cells under @work:<work_id> keys, the work is sealed, then
+-- applied and deleted in batches. Only the final step updates the parser head,
+-- counts and checkpoint. Unsealed work can be discarded in batches; sealed work
+-- must be finished or invalidated, never re-parsed from a half-applied map.
 CREATE TABLE parse_work (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
