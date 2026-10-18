@@ -1146,7 +1146,7 @@ fn model_call(world: &World, call: &Value, budget: Option<u64>) -> Value {
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {out:?}"))
 }
 #[test]
-fn model_cli_follows_only_emitted_calls_through_unicode_middle_and_repeated_identities() {
+fn model_cli_pages_follow_next_through_multibyte_text_and_repeated_ids() {
     let world = World::new();
     let huge = format!(
         "BEGIN BLUE\n{}MIDDLE AMBER\n{}END GREEN\n",
@@ -1242,10 +1242,10 @@ fn model_cli_follows_only_emitted_calls_through_unicode_middle_and_repeated_iden
     assert_eq!(expected_index, 3);
     assert!(pages > 10);
     fs::remove_file(&input).unwrap();
-    // This world remains running here; restart qualification is in the second control.
+    // The daemon keeps running here; the restart case is tested below.
 }
 #[test]
-fn model_exact_block_append_restart_wrong_ref_options_and_selected_edit_refuse_correctly() {
+fn model_exact_block_reads_survive_append_and_restart_and_refuse_bad_continuations() {
     let mut world = World::new();
     let huge = "Neutral🙂 ".repeat(6000);
     let input = world.input("bounded.jsonl", &model_fixture(&huge, false));
@@ -1292,7 +1292,7 @@ fn model_exact_block_append_restart_wrong_ref_options_and_selected_edit_refuse_c
     let tiny = model_call(&world, &json!({"ref":model_ref("bounded-huge")}), Some(1));
     assert_eq!(tiny["error"]["minimum_budget"], 128);
     assert!(serde_json::to_vec(&tiny).unwrap().len().div_ceil(4) <= 128);
-    // This supported unrelated main source cannot replace the selected donor.
+    // An unrelated main source must not replace the selected one.
     // A complete competing snapshot below can change its preferred origin.
     let other = "7f3a2c10-0002-4000-8000-000000000002";
     let extra = json!({"type":"user","uuid":"unrelated-message","parentUuid":null,"sessionId":other,"isSidechain":false,"timestamp":"2026-10-01T08:03:00.000Z","promptSource":"typed","message":{"role":"user","content":"Later unrelated neutral fact."}});
@@ -1314,8 +1314,8 @@ fn model_exact_block_append_restart_wrong_ref_options_and_selected_edit_refuse_c
     let competing = world.input("same-text-new-origin.jsonl", &model_fixture(&huge, true));
     let receipt = world.import(&competing, "01900000-0000-7000-8000-000000000804");
     world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 4);
-    // Current competing membership is unknown, but cannot replace the stale
-    // refusal for an already emitted selection. Fresh reads still refuse.
+    // Even with competing membership unknown, an issued continuation is
+    // stale_read; a fresh read is still refused.
     let fresh_session = model_call(&world, &json!({"ref":reference()}), Some(1600));
     assert_eq!(
         fresh_session["error"]["reason"],
@@ -1361,15 +1361,12 @@ fn model_exact_block_append_restart_wrong_ref_options_and_selected_edit_refuse_c
         thread::sleep(Duration::from_millis(5));
     }
     let after = model_call(&world, &fresh["next"], Some(1600));
-    assert_eq!(
-        after["error"]["reason"],
-        "current_selected_basis_unavailable"
-    );
+    assert_eq!(after["error"]["reason"], "selected_rows_unavailable");
     assert!(after["outcome"] == "error", "{after}");
 }
 
 #[test]
-fn model_mixed_session_refuses_unimplemented_included_tool_blocks_before_content() {
+fn model_default_view_refuses_sessions_with_tool_blocks() {
     let world = World::new();
     let input = world.input("mixed.jsonl", MORROW);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000805");
@@ -1381,7 +1378,7 @@ fn model_mixed_session_refuses_unimplemented_included_tool_blocks_before_content
 }
 
 #[test]
-fn model_dialogue_keeps_the_unchanged_morrow_selection_and_truthful_omissions() {
+fn model_dialogue_counts_the_blocks_it_skips() {
     let world = World::new();
     let input = world.input("dialogue-morrow.jsonl", MORROW);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000811");
@@ -1500,7 +1497,7 @@ fn mixed_block(native: &str, slot: u32) -> String {
     )
 }
 #[test]
-fn model_dialogue_and_exact_blocks_preserve_hidden_pem_and_independent_structured_values() {
+fn model_dialogue_and_exact_blocks_mask_credentials_spanning_blocks() {
     let world = World::new();
     let input = world.input("mixed-boundaries.jsonl", &mixed_dialogue_fixture());
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000812");
@@ -1548,7 +1545,7 @@ fn model_dialogue_and_exact_blocks_preserve_hidden_pem_and_independent_structure
     );
     assert_eq!(
         page["error"]["reason"],
-        "prior_tool_output_unavailable_or_exceeds_admission"
+        "prior_tool_output_unavailable_or_too_large"
     );
     assert!(page.get("shown").is_none());
     let page = model_call(
@@ -1566,7 +1563,7 @@ fn model_dialogue_and_exact_blocks_preserve_hidden_pem_and_independent_structure
 }
 
 #[test]
-fn model_disconnect_and_expired_deadline_release_the_reader_without_source_owner_cancellation() {
+fn model_disconnect_or_deadline_releases_the_reader_without_cancelling_imports() {
     let mut world = World::new();
     let body = "Neutral🙂 ".repeat(9000);
     let input = world.input("disconnect.jsonl", &model_fixture(&body, false));
@@ -1587,7 +1584,7 @@ fn model_disconnect_and_expired_deadline_release_the_reader_without_source_owner
         )["outcome"],
         "error"
     );
-    // Reuse the real retained reader with an already expired shared deadline.
+    // Reuse the real reader with a deadline that has already passed.
     world.kill();
     let reader = std::sync::Mutex::new(polylogue_store::ReadHandle::open(&world.archive).unwrap());
     let request =
@@ -1618,7 +1615,7 @@ fn model_disconnect_and_expired_deadline_release_the_reader_without_source_owner
 }
 
 #[test]
-fn model_late_native_metadata_growth_retries_same_cursor_without_rewinding() {
+fn model_page_retries_at_the_same_position_after_metadata_grows() {
     let world = World::new();
     let huge = "Neutral🙂 ".repeat(9000);
     let bytes = model_fixture(&huge, false);
@@ -1695,7 +1692,7 @@ fn transcript_call(reference: &str) -> Value {
     json!({"ref":reference,"view":"transcript","tools":"full","thinking":"full","harness":"full"})
 }
 #[test]
-fn model_full_transcript_keeps_all_morrow_facts_and_effective_selection() {
+fn model_full_transcript_shows_every_block_with_metadata() {
     let world = World::new();
     let input = world.input("transcript-morrow.jsonl", MORROW);
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000820");
@@ -1730,8 +1727,7 @@ fn model_full_transcript_keeps_all_morrow_facts_and_effective_selection() {
         }
         assert!(pages < 100);
     }
-    // The independent packaged oracle owns qualification; this connected test
-    // additionally catches divergence from the unchanged document field encoder.
+    // Also catches divergence from the document field encoder.
     let mut at = 0;
     for message in document["messages"].as_array().unwrap() {
         for block in message["blocks"].as_array().unwrap() {
@@ -1804,7 +1800,7 @@ fn model_full_transcript_keeps_all_morrow_facts_and_effective_selection() {
 }
 
 #[test]
-fn model_full_transcript_preserves_tool_body_masking_independent_values_and_admission() {
+fn model_full_transcript_masks_tool_output_and_limits_its_size() {
     let world = World::new();
     let input = world.input("transcript-mixed.jsonl", &mixed_dialogue_fixture());
     let receipt = world.import(&input, "01900000-0000-7000-8000-000000000821");
@@ -1867,7 +1863,7 @@ fn model_full_transcript_preserves_tool_body_masking_independent_values_and_admi
     );
     assert_eq!(
         page["error"]["reason"],
-        "tool_output_unavailable_or_exceeds_admission"
+        "tool_output_unavailable_or_too_large"
     );
     assert!(page.get("shown").is_none());
     let tiny = model_call(
@@ -1888,7 +1884,7 @@ fn model_full_transcript_preserves_tool_body_masking_independent_values_and_admi
 }
 
 #[test]
-fn model_full_tool_output_resumes_unicode_middle_and_masks_structured_channels() {
+fn model_full_tool_output_resumes_mid_text_and_masks_structured_fields() {
     let world = World::new();
     let credential = format!("ghp_{}", "Z".repeat(36));
     let body = format!(
@@ -1957,7 +1953,7 @@ fn known_catalog_call(reference: &str) -> Value {
     call
 }
 #[test]
-fn model_branches_preserves_malformed_morrow_facts_without_claiming_active_membership() {
+fn model_branches_reads_known_messages_when_the_active_path_is_unknown() {
     let world = World::new();
     let mut bytes = MORROW.to_vec();
     bytes.extend_from_slice(b"{not valid json}\n");
@@ -1966,13 +1962,10 @@ fn model_branches_preserves_malformed_morrow_facts_without_claiming_active_membe
     let document = world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 12);
     assert_eq!(document["result"]["outcome"], "degraded");
     let refused = model_call(&world, &transcript_call(&reference()), Some(4000));
-    assert_eq!(
-        refused["error"]["reason"],
-        "current_selected_basis_unavailable"
-    );
+    assert_eq!(refused["error"]["reason"], "selected_rows_unavailable");
     assert!(refused.get("shown").is_none());
     let mut call = known_catalog_call(&reference());
-    let mut shown = vec![];
+    let mut shown: Vec<Value> = vec![];
     loop {
         let page = model_call(&world, &call, Some(4000));
         assert_eq!(page["outcome"], "degraded", "{page}");
@@ -1986,7 +1979,7 @@ fn model_branches_preserves_malformed_morrow_facts_without_claiming_active_membe
         );
         assert!(page["notes"].as_array().unwrap().iter().any(|n| {
             n.as_str()
-                .is_some_and(|n| n.contains("Active-path membership remains unavailable"))
+                .is_some_and(|n| n.contains("Active path unknown"))
         }));
         assert_eq!(page["completion"]["state"], "unavailable");
         assert!(!page["notes"].as_array().unwrap().is_empty());
@@ -1994,10 +1987,20 @@ fn model_branches_preserves_malformed_morrow_facts_without_claiming_active_membe
             page["read_as"]
                 .as_str()
                 .unwrap()
-                .contains("Known retained Session-catalog")
+                .contains("Every known message in catalog order")
         );
         assert!(serde_json::to_vec(&page).unwrap().len().div_ceil(4) <= 4000);
-        shown.extend(page["shown"].as_array().unwrap().iter().cloned());
+        // A block split across pages continues in the next page's first row.
+        for row in page["shown"].as_array().unwrap() {
+            match shown.last_mut() {
+                Some(last) if last["block"] == row["block"] => {
+                    let text = last["text"].as_str().unwrap().to_owned()
+                        + row["text"].as_str().unwrap();
+                    last["text"] = json!(text);
+                }
+                _ => shown.push(row.clone()),
+            }
+        }
         if page["next"].is_null() {
             break;
         }
@@ -2032,7 +2035,7 @@ fn model_branches_preserves_malformed_morrow_facts_without_claiming_active_membe
 }
 
 #[test]
-fn model_branches_includes_known_uncertain_paths_in_catalog_order_without_inventing_topology() {
+fn model_branches_lists_uncertain_paths_in_catalog_order() {
     let world = World::new();
     let mut rows = model_fixture("branch body", false)
         .split(|b| *b == b'\n')
@@ -2066,7 +2069,7 @@ fn model_branches_includes_known_uncertain_paths_in_catalog_order_without_invent
         );
         assert!(page["notes"].as_array().unwrap().iter().any(|n| {
             n.as_str()
-                .is_some_and(|n| n.contains("Active-path membership remains unavailable"))
+                .is_some_and(|n| n.contains("Active path unknown"))
         }));
         for row in page["shown"].as_array().unwrap() {
             ids.push(row["block"].clone());
@@ -2089,7 +2092,7 @@ fn model_branches_includes_known_uncertain_paths_in_catalog_order_without_invent
 }
 
 #[test]
-fn model_branches_binds_selection_and_does_not_authorize_pending_edits_or_old_incarnations() {
+fn model_branches_continuation_fails_after_option_change_edit_or_restart() {
     let mut world = World::new();
     let huge = "Neutral🙂 ".repeat(3000);
     let input = world.input("known-current.jsonl", &model_fixture(&huge, false));
@@ -2120,10 +2123,7 @@ fn model_branches_binds_selection_and_does_not_authorize_pending_edits_or_old_in
         thread::sleep(Duration::from_millis(5));
     }
     let page = model_call(&world, &next, Some(1800));
-    assert_eq!(
-        page["error"]["reason"],
-        "current_selected_basis_unavailable"
-    );
+    assert_eq!(page["error"]["reason"], "selected_rows_unavailable");
     assert!(page.get("shown").is_none());
     world.restart();
     let page = model_call(&world, &next, Some(1800));
@@ -2135,7 +2135,7 @@ fn model_branches_binds_selection_and_does_not_authorize_pending_edits_or_old_in
 }
 
 #[test]
-fn model_branches_does_not_treat_record_error_counts_as_selected_row_authority() {
+fn model_branches_refuses_when_an_input_is_unreadable() {
     let world = World::new();
     let mut bytes = model_fixture("known body", false);
     bytes.extend_from_slice(b"{invalid json}\n");
@@ -2149,15 +2149,12 @@ fn model_branches_does_not_treat_record_error_counts_as_selected_row_authority()
     assert_eq!(document["result"]["unknown"]["record_errors"], 1);
     assert_eq!(document["result"]["unknown"]["unavailable_inputs"], 1);
     let page = model_call(&world, &known_catalog_call(&reference()), Some(4000));
-    assert_eq!(
-        page["error"]["reason"],
-        "current_selected_basis_unavailable"
-    );
+    assert_eq!(page["error"]["reason"], "selected_rows_unavailable");
     assert!(page.get("shown").is_none());
 }
 
 #[test]
-fn model_full_transcript_refuses_zero_block_message_before_claiming_completed_fidelity() {
+fn model_full_transcript_refuses_a_message_with_no_blocks() {
     let world = World::new();
     let rows = model_fixture("placeholder", false)
         .split(|b| *b == b'\n')
@@ -2182,7 +2179,7 @@ fn model_full_transcript_refuses_zero_block_message_before_claiming_completed_fi
         let page = model_call(&world, &known_catalog_call(&reference), Some(4000));
         assert_eq!(page["error"]["kind"], "not_yet_available");
         assert_eq!(
-            page["error"]["reason"], "zero_block_message_model_read_unavailable",
+            page["error"]["reason"], "zero_block_message_unsupported",
             "{page}"
         );
         assert!(page.get("shown").is_none());

@@ -390,11 +390,7 @@ fn correction_example_keeps_seen_hash_history_and_retry_result() {
 #[test]
 fn target_hash_covers_the_raw_whole_target_within_budget() {
     let world = World::new();
-    let raw = format!(
-        "{} {}",
-        "abc ".repeat(2500),
-        format!("ghp_{}", "A".repeat(36))
-    );
+    let raw = format!("{} ghp_{}", "abc ".repeat(2500), "A".repeat(36));
     world.import("authored-long", json!(raw));
     let reference = "block:claude-code:authored-long:answer:0";
     let read = world.read(reference, 2200);

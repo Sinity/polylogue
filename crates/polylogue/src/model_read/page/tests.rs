@@ -20,11 +20,11 @@ fn identity(i: usize) -> Value {
     json!({"block":format!("block:neutral:{i}"),"sources":[{"start":i,"end":i+1}],"field_origins":[{"path":[i]}]})
 }
 fn envelope() -> Value {
-    json!({"outcome":"ok","new_qualification":{"null":null,"false":false,"extra":"preserved"},"authored_associations_complete":false,"authored_notes":{"next":{"view":"annotations"}}})
+    json!({"outcome":"ok","extra_status":{"null":null,"false":false,"extra":"preserved"},"authored_associations_complete":false,"authored_notes":{"next":{"view":"annotations"}}})
 }
 
 #[test]
-fn consecutive_fragments_preserve_objects_qualifications_and_independent_side_pages() {
+fn consecutive_fragments_keep_envelope_fields_and_note_pages() {
     for mcp in [false, true] {
         let mut args = json!({"reference":"claude-code:neutral","budget_tokens":4000});
         if mcp {
@@ -47,7 +47,7 @@ fn consecutive_fragments_preserve_objects_qualifications_and_independent_side_pa
         }
         let page = assembler.finish().unwrap();
         assert_eq!(page["shown"].as_array().unwrap().len(), 12);
-        assert_eq!(page["new_qualification"], envelope()["new_qualification"]);
+        assert_eq!(page["extra_status"], envelope()["extra_status"]);
         assert_eq!(page["authored_notes"], envelope()["authored_notes"]);
         assert_eq!(page["authored_associations_complete"], false);
         assert_eq!(page["primary_content_complete"], true);
@@ -167,7 +167,7 @@ fn empty_and_absent_fragments_consume_boundaries_without_inventing_text() {
 }
 
 #[test]
-fn real_prefix_replay_consumes_work_even_when_the_display_window_is_tiny() {
+fn re_masking_earlier_blocks_counts_as_work_even_for_a_tiny_window() {
     use polylogue_engine::owner::{ImportRequest, Observation, Owner};
     use polylogue_store::{InputFormat, Writer};
     use std::{
@@ -182,7 +182,7 @@ fn real_prefix_replay_consumes_work_even_when_the_display_window_is_tiny() {
     let sid = "94fdef03-2101-4000-8000-000000000003";
     let record = json!({"type":"user","uuid":"work","sessionId":sid,"parentUuid":null,"promptSource":"typed","message":{"role":"user","content":[{"type":"text","text":"x".repeat(64)},{"type":"text","text":"y"}]}});
     std::fs::write(&path, format!("{record}\n")).unwrap();
-    let retained = owner
+    let input = owner
         .handle()
         .try_import(ImportRequest {
             format: InputFormat::ClaudeCodeJsonl,
@@ -205,7 +205,7 @@ fn real_prefix_replay_consumes_work_even_when_the_display_window_is_tiny() {
     loop {
         let progress = owner
             .handle()
-            .try_progress(&retained.id)
+            .try_progress(&input.id)
             .unwrap()
             .recv_timeout(Duration::from_secs(30))
             .unwrap()
@@ -226,10 +226,7 @@ fn real_prefix_replay_consumes_work_even_when_the_display_window_is_tiny() {
     let error = super::super::window(&m, 1, &b, 0, 1, &mut work, until, &mut || false)
         .err()
         .expect("prefix must consume work before the one-byte selected body");
-    assert_eq!(
-        error["error"]["reason"],
-        "selected_transform_work_admission"
-    );
+    assert_eq!(error["error"]["reason"], "transform_work_limit");
     let mut work = super::super::Work { remaining: 65 };
     let w = super::super::window(&m, 1, &b, 0, 1, &mut work, until, &mut || false).unwrap();
     assert_eq!(w.text, "y");

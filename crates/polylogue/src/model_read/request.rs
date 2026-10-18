@@ -1,5 +1,4 @@
-//! The session model-read wire contract: decode once, execute typed options,
-//! and preserve those options when constructing the next public call.
+//! Decodes a read request once and builds the `next` call with the same options.
 use super::{MAX_BUDGET, MCP_COMPANION, Position, View, key, open, refusal, seal, unavailable};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -54,8 +53,7 @@ impl<'a> Request<'a> {
             Some(Value::String(s)) if s == "transcript" => View::TranscriptFull,
             _ => return Err(refusal("unsupported_view")),
         };
-        // Only the explicit full transcript combination is implemented. Other
-        // planned detail/collapse/range products never silently acquire defaults.
+        // Only tools, thinking and harness all set to full are supported.
         for option in ["tools", "thinking", "harness"] {
             if matches!(view, View::TranscriptFull) {
                 if request.get(option).and_then(Value::as_str) != Some("full") {
@@ -130,8 +128,8 @@ impl<'a> Request<'a> {
         }
     }
 
-    pub fn follow_up(&self, basis: &[u8; 32], position: &Position) -> Value {
-        let token = seal(basis, self.reference, position, self.key);
+    pub fn follow_up(&self, fingerprint: &[u8; 32], position: &Position) -> Value {
+        let token = seal(fingerprint, self.reference, position, self.key);
         let mut args = json!({"ref":self.reference,"continuation":token});
         if matches!(self.presentation, Presentation::Mcp) {
             args["budget_tokens"] = json!(self.budget);
