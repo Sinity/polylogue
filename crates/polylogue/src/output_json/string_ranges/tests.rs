@@ -5,7 +5,7 @@ use std::{cell::Cell, time::Duration};
 
 fn streamed(raw: &[u8], piece: usize) -> io::Result<Vec<u8>> {
     let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
-    encoder.retained_string_ranges(
+    encoder.string_ranges(
         |offset| {
             let start = offset as usize;
             let end = (start + piece).min(raw.len());
@@ -18,11 +18,11 @@ fn streamed(raw: &[u8], piece: usize) -> io::Result<Vec<u8>> {
 fn ordinary(raw: &[u8]) -> io::Result<Vec<u8>> {
     let value = RawJson::parse(raw).unwrap();
     let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
-    encoder.retained(&value, false)?;
+    encoder.raw_json(&value, false)?;
     encoder.finish()
 }
 #[test]
-fn large_string_ranges_match_retained_masking_with_escapes_and_utf8() {
+fn string_ranges_mask_like_the_whole_value_with_escapes_and_utf8() {
     let value = format!(
         "{}\n\\\"🦀 é\t{}",
         "neutral ".repeat(17000),
@@ -84,7 +84,7 @@ fn string_ranges_reject_nonstring_malformed_trailing_and_zero_progress() {
     let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
     assert!(
         encoder
-            .retained_string_ranges(|_| Ok((vec![], false)), &mut || false)
+            .string_ranges(|_| Ok((vec![], false)), &mut || false)
             .is_err()
     );
 }
@@ -94,7 +94,7 @@ fn string_ranges_keep_deadline_cancellation_and_field_read_errors() {
     let polls = Cell::new(0);
     let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
     let error = encoder
-        .retained_string_ranges(
+        .string_ranges(
             |offset| {
                 let start = offset as usize;
                 let end = (start + 4096).min(raw.len());
@@ -110,7 +110,7 @@ fn string_ranges_keep_deadline_cancellation_and_field_read_errors() {
     let mut encoder = Encoder::new(Vec::new(), Instant::now() - Duration::from_millis(1));
     assert_eq!(
         encoder
-            .retained_string_ranges(|_| panic!("expired before read"), &mut || false)
+            .string_ranges(|_| panic!("expired before read"), &mut || false)
             .unwrap_err()
             .kind(),
         io::ErrorKind::TimedOut
@@ -118,7 +118,7 @@ fn string_ranges_keep_deadline_cancellation_and_field_read_errors() {
     let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
     assert_eq!(
         encoder
-            .retained_string_ranges(
+            .string_ranges(
                 |_| Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "synthetic visibility loss"

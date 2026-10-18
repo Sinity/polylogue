@@ -43,10 +43,10 @@ fn masks_logical_strings_once_without_crossing_structured_boundaries() {
     assert!(page["json"].as_str().unwrap().contains("public next field"));
 }
 #[test]
-fn witnesses_and_structural_keys_refuse_instead_of_changing() {
+fn preserved_values_and_keys_are_refused_instead_of_masked() {
     let token = format!("ghp_{}", "A".repeat(36));
-    let witness = RawJson::from(token.clone());
-    assert!(envelope(&witness, until(), true).is_err());
+    let preserved = RawJson::from(token.clone());
+    assert!(envelope(&preserved, until(), true).is_err());
     let key = RawJson::parse(
         serde_json::to_vec(&json!({token:"value"}))
             .unwrap()
@@ -54,21 +54,21 @@ fn witnesses_and_structural_keys_refuse_instead_of_changing() {
     )
     .unwrap();
     assert!(envelope(&key, until(), false).is_err());
-    let witness = raw(r#"{"field":"blocks[0].input","origin":{"path":["\ud800"],"n":1e+02}}"#);
+    let origin = raw(r#"{"field":"blocks[0].input","origin":{"path":["\ud800"],"n":1e+02}}"#);
     assert_eq!(
-        raw(envelope(&witness, until(), true).unwrap()["json"]
+        raw(envelope(&origin, until(), true).unwrap()["json"]
             .as_str()
             .unwrap()),
-        witness
+        origin
     );
 }
 #[test]
-fn surrogate_assessment_never_commits_repaired_or_uncertain_masked_values() {
+fn strings_with_lone_surrogates_are_refused_when_they_need_masking() {
     let token = format!("ghp_{}", "A".repeat(36));
     let source = format!(r#""{token}\ud800""#);
     assert!(envelope(&raw(&source), until(), false).is_err());
-    // A logical surrogate is an actual delimiter, never the source spelling's
-    // six ordinary characters. PEM state still spans the assessment boundary.
+    // A lone surrogate is one character to the masker, not six. A PEM block
+    // still spans it.
     let source = raw(r#""-----BEGIN PRIVATE KEY-----\ud800secret\n-----END PRIVATE KEY-----""#);
     assert!(envelope(&source, until(), false).is_err());
     let clean = raw(r#""ghp_\ud800AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA""#);
@@ -77,10 +77,10 @@ fn surrogate_assessment_never_commits_repaired_or_uncertain_masked_values() {
     assert_eq!(raw(page["json"].as_str().unwrap()), clean);
 }
 #[test]
-fn retained_encoder_streams_original_value_and_envelope_cost_is_final() {
+fn raw_json_writes_the_canonical_value_and_opaque_wraps_it() {
     let value = raw(r#"{"n":1e+02,"s":"\ud800"}"#);
     let mut encoder = crate::output_json::Encoder::new(Vec::new(), until());
-    encoder.retained(&value, false).unwrap();
+    encoder.raw_json(&value, false).unwrap();
     assert_eq!(encoder.finish().unwrap(), value.canonical());
     let mut encoder = crate::output_json::Encoder::new(Vec::new(), until());
     encoder.opaque(&value).unwrap();

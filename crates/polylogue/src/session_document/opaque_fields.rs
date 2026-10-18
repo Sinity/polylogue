@@ -51,7 +51,7 @@ impl OpaqueFields {
                 e.syntax(b",")?;
             }
             e.key(key)?;
-            e.retained(&value, false)?;
+            e.raw_json(&value, false)?;
         }
         Ok(())
     }
