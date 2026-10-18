@@ -110,7 +110,9 @@ impl WriteNote {
             || self.machine.len() > 1024
             || self.value.len() > 16384
         {
-            return Err(invalid("authored identity/value admission exceeded"));
+            return Err(invalid(
+                "note author, machine or text is empty or too long (1024, 1024, 16384 bytes)",
+            ));
         }
         let required = self.request_id.len()
             + self.author.len()
@@ -137,7 +139,9 @@ impl WriteNote {
             .is_some_and(|t| t.is_empty() || t.len() > MAX_TARGETS)
             || self.relations.len() > 2
         {
-            return Err(invalid("authored target/relation admission exceeded"));
+            return Err(invalid(
+                "a note needs 1 to 8 targets and at most 2 relations",
+            ));
         }
         let mut targets = BTreeSet::new();
         for t in self.targets.iter().flatten() {
@@ -150,7 +154,7 @@ impl WriteNote {
         let mut kinds = BTreeSet::new();
         for r in &self.relations {
             if !kinds.insert(r.kind.as_str()) {
-                return Err(invalid("one relation of each supported type is admitted"));
+                return Err(invalid("at most one relation of each type"));
             }
             match r.kind.as_str() {
                 "revises" | "withdraws" => {

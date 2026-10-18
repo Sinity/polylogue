@@ -54,7 +54,7 @@ impl Write for Capped {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() > self.maximum.saturating_sub(self.bytes.len()) {
             self.denied = true;
-            return Err(io::Error::other("leaf admission"));
+            return Err(io::Error::other("leaf too large"));
         }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())

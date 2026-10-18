@@ -12,7 +12,7 @@ pub enum RawJsonError {
         context: &'static str,
         message: &'static str,
     },
-    #[error("{kind} exceeds admitted depth {limit}")]
+    #[error("{kind} is nested deeper than {limit}")]
     Capacity { kind: &'static str, limit: usize },
 }
 fn malformed(context: &'static str, _field: &str, message: &'static str) -> RawJsonError {
@@ -242,7 +242,7 @@ fn admit_depth(raw: &[u8]) -> Result<(), RawJsonError> {
                     depth += 1;
                     if depth > JSON_DEPTH_LIMIT {
                         return Err(RawJsonError::Capacity {
-                            kind: "retained JSON nesting",
+                            kind: "JSON value",
                             limit: JSON_DEPTH_LIMIT,
                         });
                     }
