@@ -1,5 +1,6 @@
-//! Cooperative acquisition quanta. A yield parks the existing worker, retaining
-//! its SQLite view or regular descriptor, encoder and checked-object readers. It is not publication.
+//! Work budgets for cooperative capture. When a turn's budget is spent the
+//! worker calls back and waits there, keeping its open database view, file and
+//! encoder, so the next turn continues where it stopped.
 use crate::{Error, Result};
 use std::{
     cell::RefCell,
@@ -26,7 +27,7 @@ pub struct Progress {
     pub charged_bytes: u64,
     pub checkpoints: u64,
     pub phase: &'static str,
-    /// Work observed so far, including rereads; never a selected frontier.
+    /// Provider bytes read so far, including rereads.
     pub provider_bytes_read: u64,
 }
 pub(crate) type Control<'a> = Rc<RefCell<Turns<'a>>>;
@@ -94,8 +95,8 @@ impl<'a> Turns<'a> {
                 phase,
                 provider_bytes_read: self.provider_bytes_read,
             })?;
-            // Time awaiting another owner grant is not active work and does not
-            // turn a per-turn budget/deadline into an input-size admission.
+            // The 300-second limit is per turn; time spent waiting between
+            // turns does not count.
             self.started = Instant::now();
             self.bytes = 0;
             self.checkpoints = 0;
@@ -110,7 +111,7 @@ impl<'a> Turns<'a> {
 mod tests {
     use super::*;
     #[test]
-    fn quanta_reuse_capacity() {
+    fn budget_resets_after_each_turn() {
         let mut visits = Vec::new();
         let mut visit = |p| {
             visits.push(p);

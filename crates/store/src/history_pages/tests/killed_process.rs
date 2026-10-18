@@ -9,7 +9,7 @@ impl Drop for OwnedChild {
 }
 
 #[test]
-#[ignore = "owned child fixture, executed by killed_preparation_restarts_with_a_fresh_complete_view"]
+#[ignore = "owned child fixture, executed by capture_after_a_killed_process_starts_fresh"]
 fn parked_capture_child() {
     let source = PathBuf::from(std::env::var_os("POLYLOGUE_HISTORY_TURN_SOURCE").unwrap());
     let archive = PathBuf::from(std::env::var_os("POLYLOGUE_HISTORY_TURN_ARCHIVE").unwrap());
@@ -22,16 +22,13 @@ fn parked_capture_child() {
             &source,
             None,
             &AtomicBool::new(false),
-            turns::Budget {
-                bytes: 65536,
-                checkpoints: 2,
-            },
+            budget(),
             |progress| {
                 if progress.provider_bytes_read >= 69632 {
                     let marker = ready.with_extension("preparing");
                     std::fs::write(&marker, progress.provider_bytes_read.to_string()).unwrap();
                     std::fs::rename(&marker, &ready).unwrap();
-                    // This owned fixture intentionally parks until the parent kills it.
+                    // Park until the parent kills this process.
                     loop {
                         std::thread::park();
                     }
@@ -40,11 +37,11 @@ fn parked_capture_child() {
             },
         )
         .unwrap();
-    panic!("fixture should have parked before complete custody");
+    panic!("fixture should have parked before finishing");
 }
 
 #[test]
-fn killed_preparation_restarts_with_a_fresh_complete_view() {
+fn capture_after_a_killed_process_starts_fresh() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("provider.sqlite");
     let archive = temp.path().join("archive");
@@ -55,7 +52,7 @@ fn killed_preparation_restarts_with_a_fresh_complete_view() {
         Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "history_pages::process_turn_tests::parked_capture_child",
+                "history_pages::tests::killed_process::parked_capture_child",
                 "--ignored",
                 "--nocapture",
             ])
@@ -100,9 +97,8 @@ fn killed_preparation_restarts_with_a_fresh_complete_view() {
             .iter()
             .any(|p| p.extension().is_some_and(|x| x == "part"))
     );
-    // The encoder can still buffer its first frame, leaving an empty .part.
-    // Existing file-layer .part names identify non-authoritative preparation;
-    // the vanished SQLite view is never reconstructed from an integer offset.
+    // The encoder may still buffer its first frame, leaving an empty .part
+    // file. A new capture starts over and never resumes from these files.
     let mut writer = Writer::open(&archive).unwrap();
     assert_eq!(
         writer
@@ -115,19 +111,10 @@ fn killed_preparation_restarts_with_a_fresh_complete_view() {
     let fresh = writer
         .blob_capture()
         .unwrap()
-        .capture_history_pages_in_turns(
-            &source,
-            None,
-            &cancel,
-            turns::Budget {
-                bytes: 65536,
-                checkpoints: 2,
-            },
-            |_| Ok(()),
-        )
+        .capture_history_pages_in_turns(&source, None, &cancel, budget(), |_| Ok(()))
         .unwrap();
     let hash = fresh.hash();
-    let retained = writer
+    let stored = writer
         .store_history_pages(
             fresh,
             &ImportObservation {
@@ -143,7 +130,7 @@ fn killed_preparation_restarts_with_a_fresh_complete_view() {
     let raw = writer
         .read_handle()
         .unwrap()
-        .read_source_range(&retained.id, 1, hash, 0, retained.length)
+        .read_source_range(&stored.id, 1, hash, 0, stored.length)
         .unwrap();
     let selected = temp.path().join("selected.sqlite");
     std::fs::write(&selected, raw).unwrap();
@@ -160,6 +147,6 @@ fn killed_preparation_restarts_with_a_fresh_complete_view() {
     );
     assert!(
         parts.iter().all(|p| p.exists()),
-        "fresh acquisition must not repurpose earlier partial files"
+        "a new capture must not reuse earlier partial files"
     );
 }

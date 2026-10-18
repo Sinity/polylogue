@@ -112,7 +112,7 @@ pub struct ImmutableImport {
 /// One piece of an input: `(offset, length, blob, blob_offset)`.
 pub(crate) type Part = (u64, u64, BlobHash, u64);
 
-const MAX_PARTS: usize = 8192;
+pub(crate) const MAX_PARTS: usize = 8192;
 
 fn request_hash(
     format: InputFormat,

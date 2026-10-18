@@ -1,6 +1,25 @@
 use super::*;
+
+mod killed_process;
+mod turn_capture;
+
+fn observation(id: &str) -> ImportObservation<'_> {
+    ImportObservation {
+        id,
+        machine: "synthetic-machine",
+        host: "synthetic-host",
+        path: "copy:history",
+        seen_at: 1,
+    }
+}
+fn budget() -> turns::Budget {
+    turns::Budget {
+        bytes: 65536,
+        checkpoints: 2,
+    }
+}
 #[test]
-fn page_view_and_backup_share_frozen_wal_facts_but_only_data_pages_are_identical() {
+fn page_image_matches_sqlite_backup_except_header_counters() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("provider.sqlite");
     let writer = Connection::open(&path).unwrap();
@@ -38,44 +57,18 @@ fn page_view_and_backup_share_frozen_wal_facts_but_only_data_pages_are_identical
         .enumerate()
         .filter_map(|(i, (a, b))| (a != b).then_some(i))
         .collect::<Vec<_>>();
-    println!("exact backup/header differences: {differences:?}");
+    // Only the header's change counter and version-valid-for bytes differ.
     assert_eq!(differences, vec![27, 95]);
-    println!(
-        "source file-change/valid-for counters={:?}/{:?}; backup counters={:?}/{:?}",
-        &raw[24..28],
-        &raw[92..96],
-        &copied[24..28],
-        &copied[92..96]
-    );
     assert_eq!(&raw[24..28], &raw[92..96]);
     assert_eq!(&copied[24..28], &copied[92..96]);
-    assert!(
-        differences.iter().all(|i| [27, 95].contains(i)),
-        "unexpected page1 payload differences {differences:?}"
-    );
     assert_eq!(
         copy.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0))
             .unwrap(),
         "ok"
     );
-    println!(
-        "same frozen snapshot: selected/read={} temporary backup bytes={} data pages equal={}",
-        raw.len(),
-        copied.len(),
-        image.pages - 1
-    );
-}
-fn observation<'a>(id: &'a str) -> ImportObservation<'a> {
-    ImportObservation {
-        id,
-        machine: "synthetic-machine",
-        host: "synthetic-host",
-        path: "copy:history",
-        seen_at: 1,
-    }
 }
 #[test]
-fn flat_page_ranges_reconstruct_new_and_old_snapshots_without_a_dependency_chain() {
+fn snapshots_store_changed_pages_against_a_base() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("provider.sqlite");
     let c = Connection::open(&path).unwrap();
@@ -91,15 +84,11 @@ fn flat_page_ranges_reconstruct_new_and_old_snapshots_without_a_dependency_chain
         .store_history_pages(first, &observation("a"), 131072)
         .unwrap();
     c.execute_batch("INSERT INTO t VALUES('later');").unwrap();
-    let basis = w.history_basis(&observation("b")).unwrap();
+    let base = w.history_base(&observation("b")).unwrap();
     let second = capture
-        .capture_history_pages(&path, basis, &AtomicBool::new(false))
+        .capture_history_pages(&path, base, &AtomicBool::new(false))
         .unwrap();
     assert!(second.changed_bytes < second.read_bytes);
-    println!(
-        "snapshot read={} changed-page bytes={}",
-        second.read_bytes, second.changed_bytes
-    );
     let second_hash = second.hash;
     let second_changed = second.changed_bytes;
     assert!(second_changed > 0);
@@ -124,18 +113,18 @@ fn flat_page_ranges_reconstruct_new_and_old_snapshots_without_a_dependency_chain
             .unwrap(),
         2
     );
-    let basis = w.history_basis(&observation("c")).unwrap();
+    let base = w.history_base(&observation("c")).unwrap();
     let unchanged = capture
-        .capture_history_pages(&path, basis, &AtomicBool::new(false))
+        .capture_history_pages(&path, base, &AtomicBool::new(false))
         .unwrap();
-    // Compare to the complete base, not the preceding mixed snapshot: pages
-    // still different from that base must remain in the current patch.
+    // Compared with the whole base, not the previous mixed snapshot, so pages
+    // that still differ from the base stay in the patch.
     assert_eq!(unchanged.changed_bytes, second_changed);
     assert_eq!(unchanged.hash, second_hash);
 }
 
 #[test]
-fn raw_snapshot_acquisition_exceeds_interpretation_limit_and_fragmentation_rebases() {
+fn large_snapshot_is_stored_and_fragmentation_falls_back_to_full_copy() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("provider.sqlite");
     let c = Connection::open(&path).unwrap();
@@ -153,11 +142,11 @@ fn raw_snapshot_acquisition_exceeds_interpretation_limit_and_fragmentation_rebas
     let source = w
         .store_history_pages(p, &observation("large"), 131072)
         .unwrap();
-    let retained = w.stored_source(&source.id).unwrap().unwrap();
+    let stored = w.stored_source(&source.id).unwrap().unwrap();
     assert!(matches!(
         w.read_handle()
             .unwrap()
-            .codex_history_rows(&retained, &AtomicBool::new(false)),
+            .codex_history_rows(&stored, &AtomicBool::new(false)),
         Err(Error::ParserAdmission {
             resource: "physical history snapshot bytes",
             ..
@@ -165,18 +154,14 @@ fn raw_snapshot_acquisition_exceeds_interpretation_limit_and_fragmentation_rebas
     ));
     c.execute_batch("UPDATE small SET value=randomblob(3000) WHERE rowid%2=0")
         .unwrap();
-    let basis = w.history_basis(&observation("fragmented")).unwrap();
+    let base = w.history_base(&observation("fragmented")).unwrap();
     let p = capture
-        .capture_history_with_limit(&path, basis, &AtomicBool::new(false), 2)
+        .capture_history_with_limit(&path, base, &AtomicBool::new(false), 2)
         .unwrap();
     assert!(p.rebased);
     assert_eq!(p.changed_bytes, p.length);
     assert!(p.read_bytes > p.length);
     assert_eq!(p.parts.len(), 1);
-    println!(
-        "large raw={}, rebase total source-read={}, retained changed={}",
-        p.length, p.read_bytes, p.changed_bytes
-    );
     let hash = p.hash;
     let n = p.length;
     let r = w
@@ -190,7 +175,7 @@ fn raw_snapshot_acquisition_exceeds_interpretation_limit_and_fragmentation_rebas
     assert_eq!(blake3::hash(&bytes).as_bytes(), hash.bytes());
 }
 #[test]
-fn prepared_or_failed_parts_never_select_an_incomplete_input() {
+fn incomplete_parts_store_nothing() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("provider.sqlite");
     let c = Connection::open(&path).unwrap();
@@ -231,7 +216,7 @@ fn prepared_or_failed_parts_never_select_an_incomplete_input() {
 }
 
 #[test]
-fn alternating_flat_base_patch_layout_reuses_two_checked_objects_during_reconstruction() {
+fn alternating_base_and_patch_reads_verify_each_blob_once() {
     use std::sync::atomic::Ordering;
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("provider.sqlite");
@@ -258,9 +243,9 @@ fn alternating_flat_base_patch_layout_reuses_two_checked_objects_during_reconstr
         .unwrap();
     c.execute_batch("UPDATE t SET value=randomblob(3000) WHERE rowid%2=0")
         .unwrap();
-    let basis = w.history_basis(&observation("fragmented")).unwrap();
+    let base = w.history_base(&observation("fragmented")).unwrap();
     let p = capture
-        .capture_history_pages(&path, basis, &AtomicBool::new(false))
+        .capture_history_pages(&path, base, &AtomicBool::new(false))
         .unwrap();
     assert_eq!(p.base_verification_bytes, base_length);
     let patch_length = p.changed_bytes;
@@ -326,32 +311,22 @@ fn alternating_flat_base_patch_layout_reuses_two_checked_objects_during_reconstr
         at += take;
     }
     assert_eq!(actual, bytes);
-    // Both paths retain two bookkeeping hashes. Only the actual library's
-    // callback work distinguishes a shared expected-object slot from two.
+    // Forcing one shared reader slot makes every switch re-verify a blob.
     assert!(
         bad_polls > 4 * good_polls,
-        "actual check polls: normal={good_polls}, shared-slot mutant={bad_polls}"
+        "check polls: two slots={good_polls}, one slot={bad_polls}"
     );
-    println!(
-        "actual library check polls normal={good_polls}, shared-slot mutant={bad_polls}; explicit warming bytes are counted separately"
-    );
-    let basis = w.history_basis(&observation("same")).unwrap();
+    let base = w.history_base(&observation("same")).unwrap();
     let p = capture
-        .capture_history_pages(&path, basis, &AtomicBool::new(false))
+        .capture_history_pages(&path, base, &AtomicBool::new(false))
         .unwrap();
     assert_eq!(p.base_verification_bytes, base_length);
     assert_eq!(p.changed_bytes, patch_length);
     assert_eq!(p.hash, hash);
-    println!(
-        "alternating layout: explicit warming calls2, bytes={}, current capture base verification={}, differing page bytes={}",
-        base_length + patch_length,
-        p.base_verification_bytes,
-        p.changed_bytes
-    );
 }
 
 #[test]
-fn earlier_bytes_observed_again_keep_identity_and_canonical_extent_layout() {
+fn repeated_snapshot_reuses_existing_input_and_layout() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("provider.sqlite");
     let c = Connection::open(&path).unwrap();
@@ -365,12 +340,12 @@ fn earlier_bytes_observed_again_keep_identity_and_canonical_extent_layout() {
     let first = w
         .store_history_pages(p, &observation("first"), 131072)
         .unwrap();
-    // Another path selecting equal physical bytes must reuse the checked layout,
-    // even when this candidate arrived as an independently encoded whole image.
+    // Equal bytes from another path reuse the stored layout, even though this
+    // capture produced one whole-image patch.
     let p = capture
         .capture_history_pages(&path, None, &AtomicBool::new(false))
         .unwrap();
-    assert!(p.canonical_read_bytes > 0);
+    assert!(p.existing_read_bytes > 0);
     let mut other = observation("another-path");
     other.path = "copy:independent-history";
     let duplicate = w.store_history_pages(p, &other, 131072).unwrap();
@@ -379,7 +354,7 @@ fn earlier_bytes_observed_again_keep_identity_and_canonical_extent_layout() {
     let p = capture
         .capture_history_pages(
             &path,
-            w.history_basis(&observation("second")).unwrap(),
+            w.history_base(&observation("second")).unwrap(),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -395,18 +370,17 @@ fn earlier_bytes_observed_again_keep_identity_and_canonical_extent_layout() {
     let original = reader
         .read_source_range(&first.id, 1, first_hash, 0, first_source.input.length)
         .unwrap();
-    // Restore only this owned provider after closing its SQLite writer.
     drop(c);
     std::fs::write(&path, original).unwrap();
     let p = capture
         .capture_history_pages(
             &path,
-            w.history_basis(&observation("again")).unwrap(),
+            w.history_base(&observation("again")).unwrap(),
             &AtomicBool::new(false),
         )
         .unwrap();
     assert_eq!(p.hash, first_hash);
-    assert!(p.canonical_read_bytes > 0);
+    assert!(p.existing_read_bytes > 0);
     let again = w
         .store_history_pages(p, &observation("again"), 131072)
         .unwrap();
@@ -423,7 +397,7 @@ fn earlier_bytes_observed_again_keep_identity_and_canonical_extent_layout() {
 }
 
 #[test]
-fn cancelled_first_object_warming_is_retried_and_cached_reads_keep_metadata_fences() {
+fn cancelled_first_verification_is_retried_and_reads_check_blob_state() {
     use std::sync::atomic::Ordering;
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("provider.sqlite");
