@@ -847,7 +847,7 @@ mod tests {
                 whole
             );
             drop(w);
-            w = Writer::open(&archive).unwrap();
+            w = crate::tests::reopen_after_drop(&archive);
         }
         let before = w.status().unwrap().write_counter;
         let retry = acquire(&mut w, &path, "unchanged");
