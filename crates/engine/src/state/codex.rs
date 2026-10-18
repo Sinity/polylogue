@@ -1,9 +1,9 @@
 //! Codex parser state as typed cells over a pinned SQLite snapshot. Parsing
 //! and encoding run outside the writer transaction. Budgets count encoded cell
 //! traffic, not memory.
+use crate::limited::{Failure, LimitedVec};
 use std::cell::{Cell as Counter, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 
 use polylogue_sources::codex::{
     self,
@@ -216,65 +216,17 @@ fn admission(resource: &'static str, required: usize) -> StoreError {
     }
 }
 
-/// Length-limited writer for key and JSON encoding. Checks the length before
-/// growing the Vec.
-struct Limited {
-    bytes: Vec<u8>,
-    limit: usize,
-    base: usize,
-    resource: &'static str,
-    failure: Option<StoreError>,
-}
-impl Write for Limited {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if self.failure.is_some() {
-            return Err(std::io::Error::other(
-                "Codex encoding attempt already failed",
-            ));
-        }
-        let required = self.bytes.len().saturating_add(bytes.len());
-        let error = if required > self.limit {
-            Some(admission(self.resource, self.base.saturating_add(required)))
-        } else if let Err(e) = self.bytes.try_reserve_exact(required - self.bytes.len()) {
-            Some(StoreError::Io(std::io::Error::other(e)))
-        } else if self.bytes.capacity() > self.limit {
-            Some(admission(
-                "Codex encoded allocation capacity",
-                self.base.saturating_add(self.bytes.capacity()),
-            ))
-        } else {
-            None
-        };
-        if let Some(error) = error {
-            self.failure = Some(error);
-            return Err(std::io::Error::other("Codex encoding admission failed"));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 fn limited<E: std::fmt::Display>(
     limit: usize,
     base: usize,
     resource: &'static str,
-    f: impl FnOnce(&mut Limited) -> std::result::Result<(), E>,
+    f: impl FnOnce(&mut LimitedVec) -> std::result::Result<(), E>,
 ) -> Result<Vec<u8>> {
-    let mut writer = Limited {
-        bytes: Vec::new(),
-        limit,
-        base,
-        resource,
-        failure: None,
-    };
-    let result = f(&mut writer);
-    if let Some(error) = writer.failure {
-        return Err(error);
-    }
-    result.map_err(|e| invalid("encoding", e))?;
-    Ok(writer.bytes)
+    crate::limited::encode(limit, f).map_err(|failure| match failure {
+        Failure::Limit { required } => admission(resource, base.saturating_add(required)),
+        Failure::Alloc => StoreError::Io(std::io::Error::other("Codex encoding allocation failed")),
+        Failure::Encode(e) => invalid("encoding", e),
+    })
 }
 /// Version of this cell layout. Part of the parser identity.
 pub const STATE_LAYOUT_VERSION: u32 = 3;
