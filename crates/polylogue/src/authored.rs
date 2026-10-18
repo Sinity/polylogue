@@ -1,4 +1,5 @@
-//! Bounded authored-note presentation over the shared archive reader.
+//! Note reads and write replies: note families, their history pages, and the
+//! notes attached to a target.
 use polylogue_model::{ErrorKind, Failure};
 use polylogue_store::{
     ReadHandle,
@@ -16,20 +17,23 @@ pub(crate) fn store_error(error: polylogue_store::Error) -> Value {
         polylogue_store::Error::Authored(e) => json!({"outcome":"error","error":e}),
         polylogue_store::Error::Cancelled => fail(
             ErrorKind::Timeout,
-            "authored read cancelled or deadline exceeded",
+            "note read cancelled or deadline exceeded",
         ),
         e => fail(ErrorKind::NotYetAvailable, e),
     }
 }
-/// Transport loss or an unbound reply cannot establish whether an action committed.
+/// After a lost or mismatched reply the note may or may not have been saved.
 pub fn uncertain_reply(request: &Value, kind: ErrorKind, message: &str) -> Value {
     let mut failure = Failure::new(kind, message);
     failure.retryable = true;
-    failure.hint=Some("A write may have committed. Retry unchanged intent with the same request_id; never replace it merely because a reply was lost or mismatched.".into());
+    failure.hint = Some(
+        "The note may have been saved. Retry the same note with the same request_id; do not send a new request_id because a reply was lost."
+            .into(),
+    );
     json!({"outcome":"error","error":failure,"request_id":request["request_id"],"commit_state":"unknown"})
 }
-/// Both public writing clients bind the immutable effect to the submitted action.
-/// A matching socket/JSON-RPC request number alone does not establish this.
+/// Accept a write reply only when it names the submitted request ID, note and
+/// revision. A matching transport request number is not enough.
 pub fn bind_write_reply(request: &Value, mut reply: Value) -> Value {
     if reply["outcome"] == "error" {
         reply["request_id"] = request["request_id"].clone();
@@ -52,7 +56,7 @@ pub fn bind_write_reply(request: &Value, mut reply: Value) -> Value {
     let revision_matches = if let Some(revision) = reply.get("revision") {
         revision["id"] == id && revision["root"] == root
     } else {
-        reply["outcome"] == "degraded" && reply["presentation"] == "retained_but_unpresentable"
+        reply["outcome"] == "degraded" && reply["presentation"] == "saved_without_details"
     };
     if effect_matches && revision_matches {
         reply
@@ -60,12 +64,13 @@ pub fn bind_write_reply(request: &Value, mut reply: Value) -> Value {
         uncertain_reply(
             request,
             ErrorKind::Io,
-            "Authored reply does not bind its effect to the submitted action; commit outcome is unknown.",
+            "Reply does not match the submitted note; the note may or may not have been saved.",
         )
     }
 }
-/// A durable effect survives a presentation refusal. Return its safe action
-/// identity with degraded qualification instead of losing the commit outcome.
+/// A saved note whose full reply cannot be shown (a credential-like identity,
+/// or more than the 64 KiB metadata limit after inheritance and masking) still
+/// returns its request ID and reference, so the caller can retry safely.
 pub(crate) fn write_reply(
     revision: polylogue_model::authored::Revision,
     recovery: Option<polylogue_model::RecoveryRecord>,
@@ -77,24 +82,37 @@ pub(crate) fn write_reply(
         vec![]
     };
     let identity = json!({"request_id":revision.id,"note":revision.id,"ref":revision.reference(),"root":revision.root,"commit_state":"committed","recovery":recovery});
-    let presentable = revision_identities(&revision, until).is_ok();
+    let showable = revision_identities(&revision, until).is_ok();
     let mut reply = identity.clone();
     reply["outcome"] = json!(if recovery.is_some() { "degraded" } else { "ok" });
     reply["revision"] = json!(revision);
     reply["notes"] = json!(notes);
     reply["missing"] = json!(notes);
-    // Preflight the same encoder before the first socket byte. Inheritance and
-    // masking expansion can exceed the metadata response allowance even though
-    // submitted request metadata was admitted.
-    struct Capacity(usize);
-    impl std::io::Write for Capacity {
+    if showable && fits_metadata(&reply, until) {
+        return reply;
+    }
+    notes.push(
+        "note saved; its full reply needs credential masking or exceeds the 64 KiB metadata limit",
+    );
+    let mut reply = identity;
+    reply["outcome"] = json!("degraded");
+    reply["presentation"] = json!("saved_without_details");
+    reply["notes"] = json!(notes);
+    reply["missing"] = json!(notes);
+    reply["retry"] = json!(
+        "Keep this request_id and retry with it; do not create a new note because the reply could not be shown."
+    );
+    reply
+}
+/// Runs the reply encoder before the first socket byte, counting the trailing
+/// newline, against the 64 KiB metadata response limit.
+fn fits_metadata(reply: &Value, until: Instant) -> bool {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self
-                .0
-                .checked_add(bytes.len())
-                .ok_or_else(|| std::io::Error::other("metadata capacity"))?;
+            self.0 = self.0.saturating_add(bytes.len());
             if self.0 >= 65536 {
-                return Err(std::io::Error::other("metadata capacity"));
+                return Err(std::io::Error::other("metadata limit"));
             }
             Ok(bytes.len())
         }
@@ -102,23 +120,20 @@ pub(crate) fn write_reply(
             Ok(())
         }
     }
-    let mut encoder = crate::output_json::Encoder::new(Capacity(1), until); // newline
-    if presentable && encoder.value(&reply).and_then(|_| encoder.finish()).is_ok() {
-        return reply;
-    }
-    notes.push("authored effect committed; its full immutable outcome cannot be presented within credential/metadata admission");
-    let mut reply = identity;
-    reply["outcome"] = json!("degraded");
-    reply["presentation"] = json!("retained_but_unpresentable");
-    reply["notes"] = json!(notes);
-    reply["missing"] = json!(notes);
-    reply["retry"] = json!(
-        "Retain this request_id. Retry unchanged intent with the same ID; never create a replacement action merely because its reply could not be presented."
-    );
-    reply
+    let mut encoder = crate::output_json::Encoder::new(Counter(1), until);
+    encoder.value(reply).and_then(|_| encoder.finish()).is_ok()
 }
-// Same process key as selected-body continuation, with a separate MAC domain.
-// Only reference/archive hashes, counters and a page position enter this token.
+fn view_tag(view: &str) -> Option<u8> {
+    match view {
+        "history" => Some(1),
+        "withdrawals" => Some(2),
+        "current" => Some(3),
+        "annotations" => Some(4),
+        _ => None,
+    }
+}
+// Same process key as body continuations, with a separate MAC domain. Only
+// hashes, counters and a page position go into the token.
 fn next_call(
     snapshot: &Snapshot,
     reference: &str,
@@ -130,13 +145,8 @@ fn next_call(
     raw.extend_from_slice(&snapshot.identity());
     raw.extend_from_slice(&cutoff.to_le_bytes());
     raw.extend_from_slice(&after.to_le_bytes());
-    let tag = match view {
-        "history" => 1,
-        "withdrawals" => 2,
-        "current" => 3,
-        "annotations" => 4,
-        _ => return Err(fail(ErrorKind::InvalidQuery, "unsupported authored page")),
-    };
+    let tag = view_tag(view)
+        .ok_or_else(|| fail(ErrorKind::InvalidQuery, "unsupported note page view"))?;
     raw.push(tag);
     let key = crate::model_read::key().map_err(|e| fail(ErrorKind::Io, e))?;
     let mut signed = b"authored-page-v1\0".to_vec();
@@ -159,13 +169,13 @@ fn position(
     let (raw, tag) = token
         .strip_prefix("a1.")
         .and_then(|s| s.split_once('.'))
-        .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid authored continuation"))?;
+        .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid note continuation"))?;
     let raw = crate::model_read::unhex(raw)
         .filter(|v| v.len() == 81)
-        .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid authored continuation"))?;
+        .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid note continuation"))?;
     let tag = crate::model_read::unhex(tag)
         .filter(|v| v.len() == 32)
-        .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid authored continuation"))?;
+        .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid note continuation"))?;
     let key = crate::model_read::key().map_err(|e| fail(ErrorKind::Io, e))?;
     let mut signed = b"authored-page-v1\0".to_vec();
     signed.extend_from_slice(&raw);
@@ -176,29 +186,19 @@ fn position(
     {
         return Err(fail(
             ErrorKind::InvalidQuery,
-            "invalid, cross-reference/archive or expired authored continuation",
+            "continuation is for another reference or archive, or has expired",
         ));
     }
-    let expected = match view {
-        "history" => 1,
-        "withdrawals" => 2,
-        "current" => 3,
-        "annotations" => 4,
-        _ => 0,
-    };
-    if raw[80] != expected {
+    if Some(raw[80]) != view_tag(view) {
         return Err(fail(
             ErrorKind::InvalidQuery,
-            "cross-view authored continuation",
+            "continuation is for another view",
         ));
     }
     let cutoff = u64::from_le_bytes(raw[64..72].try_into().unwrap());
     let after = i64::from_le_bytes(raw[72..80].try_into().unwrap());
     if cutoff > snapshot.archive_counter || after < 0 {
-        return Err(fail(
-            ErrorKind::InvalidQuery,
-            "unavailable authored page basis",
-        ));
+        return Err(fail(ErrorKind::InvalidQuery, "invalid note continuation"));
     }
     Ok((cutoff, after))
 }
@@ -214,7 +214,7 @@ pub(crate) fn family_value(
         revision_identities(revision, until).map_err(|_| {
             fail(
                 ErrorKind::NotYetAvailable,
-                "authored identity requires credential masking; exact outcome cannot be presented",
+                "note contains a credential-like identity and cannot be shown",
             )
         })?;
     }
@@ -232,9 +232,6 @@ pub(crate) fn family_value(
             None => Value::Null,
         };
     }
-    v["status_scope"] = json!(
-        "effective status at status_at_archive_counter; target_status compares the live retained source selection"
-    );
     for state in v["shown"].as_array_mut().unwrap() {
         let revision: polylogue_model::authored::Revision =
             serde_json::from_value(state["revision"].clone())
@@ -243,10 +240,10 @@ pub(crate) fn family_value(
         let mut known = true;
         let mut stale = false;
         for t in &revision.targets {
-            let basis =
+            let current =
                 polylogue_engine::authored::current_text(reader, &t.reference, until, cancel)
                     .map_err(store_error)?;
-            let comparison = match (t.seen_hash, basis.seen_hash) {
+            let comparison = match (t.seen_hash, current.seen_hash) {
                 (Some(a), Some(b)) => Some(a != b),
                 _ => None,
             };
@@ -256,7 +253,7 @@ pub(crate) fn family_value(
             if comparison.is_none() {
                 known = false;
             }
-            statuses.push(json!({"ref":t.reference,"attachment":basis.status,"stale":comparison,"current_basis":basis}));
+            statuses.push(json!({"ref":t.reference,"attachment":current.status,"stale":comparison,"current_hash":current}));
         }
         if revision.targets.is_empty() {
             known = false;
@@ -318,12 +315,11 @@ fn association_page(
             f["shown_current_complete"] == true && f["matching_target_revisions_complete"] != false
         });
     Ok(
-        json!({"target":reference,"archive_counter":cutoff,"status_scope":"effective state and membership at archive_counter; live retained source comparison/access checks still apply","families":families,"complete":complete,"next":next}),
+        json!({"target":reference,"archive_counter":cutoff,"families":families,"complete":complete,"next":next}),
     )
 }
-/// Primary bodies can remain readable when their separately bounded relations
-/// cannot fit. Historical association pages retain their archive cutoff; the
-/// source-body certificate uses the separate authored-only watermark.
+/// Notes attached to a body read. They get at most 2 s and half the budget;
+/// when they do not fit, the body is still shown and `next` pages the notes.
 pub(crate) fn bounded_backlinks(
     snapshot: &Snapshot,
     reader: &ReadHandle,
@@ -332,9 +328,6 @@ pub(crate) fn bounded_backlinks(
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
 ) -> Value {
-    // Side metadata cannot consume the primary body's entire lifetime. A
-    // timed-out embedding has its own explicit read route under the full
-    // request deadline, rather than suppressing unchanged primary content.
     let side_until = until.min(Instant::now() + std::time::Duration::from_secs(2));
     let value = backlinks(snapshot, reader, reference, side_until, cancel);
     if let Ok(value) = &value {
@@ -351,9 +344,9 @@ pub(crate) fn bounded_backlinks(
         0,
     )
     .ok();
-    json!({"target":reference,"archive_counter":snapshot.archive_counter,"families":[],"complete":false,"next":next,"unavailable":value.err(),"reason":"authored associations deferred from primary content; use next or exact pinned note reads"})
+    json!({"target":reference,"archive_counter":snapshot.archive_counter,"families":[],"complete":false,"next":next,"unavailable":value.err(),"reason":"notes on this target did not fit this page; follow next"})
 }
-/// Same JSON encoder/masking policy as ordinary metadata, charged in full.
+/// Masks like other metadata and charges the whole encoded reply to the budget.
 pub(crate) fn fit(value: Value, budget: u64, mcp: bool, until: Instant) -> Value {
     let mut bytes = vec![];
     let mut encoder = crate::output_json::Encoder::new(&mut bytes, until);
@@ -373,9 +366,9 @@ pub(crate) fn fit(value: Value, budget: u64, mcp: bool, until: Instant) -> Value
     if bytes.len() >= 65536 || tokens > budget {
         let mut e = fail(
             ErrorKind::NotYetAvailable,
-            "authored result exceeds admitted presentation; use a pinned revision or increase budget_tokens within the metadata allowance",
+            "note result exceeds budget_tokens or the 64 KiB limit; read a pinned revision or raise budget_tokens",
         );
-        e["error"]["reason"] = json!("authored_presentation_admission");
+        e["error"]["reason"] = json!("note_output_limit");
         e["error"]["minimum_tokens"] = json!(tokens);
         return e;
     }
@@ -392,13 +385,13 @@ pub(crate) fn read(
         .map_or(Some(4000), Value::as_u64)
         .filter(|n| *n > 0 && *n <= 1_048_576);
     let Some(budget) = budget else {
-        return fail(ErrorKind::InvalidQuery, "budget_tokens must be1..1048576");
+        return fail(ErrorKind::InvalidQuery, "budget_tokens must be 1..1048576");
     };
     let mut action = || -> Result<Value, Value> {
         if Instant::now() >= until || cancel() {
             return Err(fail(
                 ErrorKind::Timeout,
-                "authored read cancelled or deadline exceeded",
+                "note read cancelled or deadline exceeded",
             ));
         }
         if request.as_object().is_none_or(|o| {
@@ -416,7 +409,7 @@ pub(crate) fn read(
         }) {
             return Err(fail(
                 ErrorKind::NotYetAvailable,
-                "unsupported authored read fields",
+                "unsupported note read field",
             ));
         }
         if request.get("command").is_some_and(|v| v != "model-read")
@@ -424,24 +417,21 @@ pub(crate) fn read(
         {
             return Err(fail(
                 ErrorKind::InvalidQuery,
-                "unsupported authored read command/presentation",
+                "unsupported note read command or presentation",
             ));
         }
         let reference = request["reference"]
             .as_str()
-            .ok_or_else(|| fail(ErrorKind::InvalidQuery, "missing exact reference"))?;
+            .ok_or_else(|| fail(ErrorKind::InvalidQuery, "missing reference"))?;
         let view = request
             .get("view")
             .map_or(Some("family"), Value::as_str)
-            .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid authored view"))?;
+            .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid note view"))?;
         if !matches!(
             view,
             "family" | "history" | "withdrawals" | "current" | "value" | "annotations"
         ) {
-            return Err(fail(
-                ErrorKind::NotYetAvailable,
-                "unsupported authored read view",
-            ));
+            return Err(fail(ErrorKind::NotYetAvailable, "unsupported note view"));
         }
         let snapshot = reader.authored_snapshot().map_err(store_error)?;
         let (cutoff, after) = if let Some(token) = request.get("continuation") {
@@ -449,9 +439,9 @@ pub(crate) fn read(
                 &snapshot,
                 reference,
                 view,
-                token.as_str().ok_or_else(|| {
-                    fail(ErrorKind::InvalidQuery, "invalid authored continuation")
-                })?,
+                token
+                    .as_str()
+                    .ok_or_else(|| fail(ErrorKind::InvalidQuery, "invalid note continuation"))?,
             )?
         } else {
             (snapshot.archive_counter, 0)
@@ -461,14 +451,14 @@ pub(crate) fn read(
             notes.push(polylogue_model::RecoveryRecord::NOTE);
         }
         if cutoff < snapshot.archive_counter {
-            notes.push("effective status is evaluated at the retained page basis, not current now");
+            notes.push("status is as of this page's archive counter, not now");
         }
         let mut value = if view == "annotations" {
             let annotations = association_page(
                 &snapshot, reader, reference, cutoff, after, 1, until, cancel,
             )?;
             if annotations["complete"] == false {
-                notes.push("authored target association evidence has a bounded remainder; follow the named read calls");
+                notes.push("more notes on this target; follow next");
             }
             json!({"authored_notes":annotations,"next":annotations["next"]})
         } else if view == "value" {
@@ -482,12 +472,10 @@ pub(crate) fn read(
             revision_identities(&revision, until).map_err(|_| {
                 fail(
                     ErrorKind::NotYetAvailable,
-                    "authored exact identity cannot be presented",
+                    "note contains a credential-like identity and cannot be shown",
                 )
             })?;
-            notes.push(
-                "immutable retained value only; current and withdrawn status are unevaluated",
-            );
+            notes.push("stored value only; current and withdrawn status not evaluated");
             json!({"revision":revision,"current":null,"withdrawn":null,"status_evaluated":false,"next":null})
         } else {
             let kind = match view {
@@ -500,13 +488,15 @@ pub(crate) fn read(
                 .family_page(reference, cutoff, kind, after, until, cancel)
                 .map_err(store_error)?;
             if family.conflict {
-                notes.push("authored family has conflicting current revisions");
+                notes.push("note has conflicting current revisions");
             }
             if family.history_complete == Some(false)
                 || family.withdrawal_trail_complete == Some(false)
                 || family.shown_current_complete == Some(false)
             {
-                notes.push("authored history/control/current presentation has a bounded remainder; follow the named next calls");
+                notes.push(
+                    "history, withdrawals or current revisions continue; follow the next calls",
+                );
             }
             let family = family_value(family, &snapshot, reader, until, cancel)?;
             let next = match kind {
@@ -520,7 +510,7 @@ pub(crate) fn read(
         if Instant::now() >= until || cancel() {
             return Err(fail(
                 ErrorKind::Timeout,
-                "authored read cancelled or deadline exceeded",
+                "note read cancelled or deadline exceeded",
             ));
         }
         value["outcome"] = json!(if notes.is_empty() { "ok" } else { "degraded" });
@@ -530,9 +520,6 @@ pub(crate) fn read(
         value["recovery"] = json!(snapshot.recovery);
         value["notes"] = json!(notes);
         value["missing"] = json!(notes);
-        value["basis_evidence"] = json!(
-            "Supplied authored basis is evidence attributed to the action, not proof anyone read the underlying text."
-        );
         Ok(value)
     };
     let value = match action() {

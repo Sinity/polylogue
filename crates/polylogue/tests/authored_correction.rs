@@ -1,4 +1,4 @@
-//! Actual CLI adaptation over the ordinary daemon and archive, with synthetic targets.
+//! Note commands through the CLI against a running daemon, with synthetic targets.
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -68,20 +68,20 @@ impl World {
     }
 }
 #[test]
-fn authored_cli_retries_inherits_basis_and_reconstructs_backlinks_without_provider() {
+fn cli_note_retries_revises_and_survives_index_rebuild_without_source() {
     let mut w = World::new();
     let target = "block:claude-code:authored-cli:answer:0";
     let request = "01900000-0000-7000-8000-000000000301";
-    let basis = w.dir.path().join("basis.json");
-    fs::write(&basis,json!([{"ref":target,"seen_hash":"af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"}]).to_string()).unwrap();
+    let targets = w.dir.path().join("targets.json");
+    fs::write(&targets,json!([{"ref":target,"seen_hash":"af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"}]).to_string()).unwrap();
     let args = [
         target,
         "note",
-        "Correction: compare the retained answer with the prepared empty basis.",
+        "Correction: compare the answer with the prepared empty text.",
         "--kind",
         "correction",
-        "--target-basis",
-        basis.to_str().unwrap(),
+        "--targets",
+        targets.to_str().unwrap(),
         "--request-id",
         request,
     ];
@@ -136,7 +136,7 @@ fn authored_cli_retries_inherits_basis_and_reconstructs_backlinks_without_provid
     assert_eq!(before["family"]["shown"][0]["revision"], first["revision"]);
     let target_read = w.cli(&[target, "read", "--budget", "12000"], 5);
     assert_eq!(
-        target_read["authored_basis"]["seen_hash"],
+        target_read["target_hash"]["seen_hash"],
         "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
     );
     assert_eq!(
@@ -147,7 +147,7 @@ fn authored_cli_retries_inherits_basis_and_reconstructs_backlinks_without_provid
         &[
             reference,
             "revise",
-            "Correction: the prepared basis remains the original empty text.",
+            "Correction: the prepared hash is still the empty text.",
             "--request-id",
             "01900000-0000-7000-8000-000000000303",
         ],
@@ -212,7 +212,7 @@ fn authored_cli_retries_inherits_basis_and_reconstructs_backlinks_without_provid
 }
 
 #[test]
-fn authored_cli_lost_response_reports_unknown_commit_and_same_action_identity() {
+fn cli_lost_reply_reports_unknown_commit_and_same_request_id() {
     use std::{
         io::{BufRead, BufReader},
         os::unix::net::UnixListener,
@@ -252,7 +252,7 @@ fn authored_cli_lost_response_reports_unknown_commit_and_same_action_identity() 
 }
 
 #[test]
-fn authored_cli_rejects_a_success_for_another_action_identity() {
+fn cli_rejects_a_success_reply_for_another_request_id() {
     use std::{
         io::{BufRead, BufReader, Write},
         os::unix::net::UnixListener,
@@ -283,6 +283,11 @@ fn authored_cli_rejects_a_success_for_another_action_identity() {
     );
     assert_eq!(reply["request_id"], id);
     assert_eq!(reply["commit_state"], "unknown");
-    assert!(reply["error"]["message"].as_str().unwrap().contains("bind"));
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not match")
+    );
     peer.join().unwrap();
 }

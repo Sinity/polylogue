@@ -74,11 +74,14 @@ Finding and reading:
                                       Export one session into DIR
 
 Notes:
-  REF note TEXT [--kind note|correction] [--corrects REF] [--target-basis FILE]
-  note:ID revise TEXT [--target-basis FILE]
+  REF note TEXT [--kind note|correction] [--corrects REF] [--targets FILE]
+  note:ID revise TEXT [--targets FILE]
   note:ID withdraw --reason TEXT
                                       All note commands accept --request-id UUIDv7;
-                                      reuse it to retry after a lost reply
+                                      reuse it to retry after a lost reply.
+                                      --targets FILE holds a JSON array of
+                                      {ref, seen_hash?}; seen_hash is the
+                                      target_hash.seen_hash from a read
 
 Recovery (archive must be stopped):
   recover --to NEW_DIR                Copy an archive whose last WAL segment is damaged

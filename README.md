@@ -75,7 +75,7 @@ migrate.
 | `message:ID read` | Read one message in the terminal. |
 | `REF read --budget TOKENS` | Read a session, message, block or note as JSON pages that fit the budget. Follow `next` for the following page. `--view dialogue` keeps only human and model text; `--view transcript --tools full --thinking full --harness full` includes everything. |
 | `SESSION export --format json --to DIR` | Export one session into DIR. |
-| `REF note TEXT [--kind note\|correction]` | Add a note to a `message:` or `block:` reference. |
+| `REF note TEXT [--kind note\|correction] [--targets FILE]` | Add a note to a `message:` or `block:` reference. `--targets` names the target and the `seen_hash` you read (a JSON array of `{ref, seen_hash}`; a read returns it as `target_hash.seen_hash`), so later reads can tell when the text changed. |
 | `note:ID revise TEXT` / `note:ID withdraw --reason TEXT` | Change or withdraw a note. |
 | `mcp` | Serve MCP over stdio. |
 | `recover --to NEW_DIR` | Copy a stopped, damaged archive into a new directory. |
