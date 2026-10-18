@@ -40,7 +40,7 @@ impl Actor {
             Ok::<_, StoreError>((
                 self.writer.blob_capture()?,
                 if claude_quantum.is_none() {
-                    self.writer.history_basis(&request.observation.borrowed())?
+                    self.writer.history_base(&request.observation.borrowed())?
                 } else {
                     None
                 },

@@ -1,22 +1,7 @@
 use super::*;
 
-fn observation(id: &str) -> ImportObservation<'_> {
-    ImportObservation {
-        id,
-        machine: "synthetic-machine",
-        host: "synthetic-host",
-        path: "copy:history",
-        seen_at: 1,
-    }
-}
-fn budget() -> turns::Budget {
-    turns::Budget {
-        bytes: 65536,
-        checkpoints: 2,
-    }
-}
 #[test]
-fn reusable_turns_keep_one_wal_view_and_retry_no_prefix_after_cancel() {
+fn turns_keep_one_read_view_and_cancel_restarts_from_scratch() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("provider.sqlite");
     let provider = Connection::open(&path).unwrap();
@@ -29,8 +14,8 @@ fn reusable_turns_keep_one_wal_view_and_retry_no_prefix_after_cancel() {
     let prepared = capture.capture_history_pages_in_turns(&path, None, &cancel, budget(), |progress| {
         assert!(progress.charged_bytes <= 65536 && progress.checkpoints <= 2);
         if !changed && progress.provider_bytes_read >= 16384 {
-            // Separate data pages straddle this quantum. Reopening the view
-            // could combine left10 with right20, a never-committed population.
+            // The two tables sit on pages read in different turns. A reopened
+            // view could mix left=10 with right=20, a state never committed.
             provider.execute_batch("BEGIN;INSERT INTO facts VALUES('later');UPDATE left_field SET value=20;UPDATE right_field SET value=20;COMMIT;BEGIN IMMEDIATE;INSERT INTO facts VALUES('uncommitted');UPDATE left_field SET value=30;UPDATE right_field SET value=30;").unwrap();
             changed = true;
         }
@@ -39,13 +24,13 @@ fn reusable_turns_keep_one_wal_view_and_retry_no_prefix_after_cancel() {
     }).unwrap();
     assert!(turns.len() > 8 && changed);
     let hash = prepared.hash();
-    let retained = writer
+    let stored = writer
         .store_history_pages(prepared, &observation("turns"), 131072)
         .unwrap();
     let raw = writer
         .read_handle()
         .unwrap()
-        .read_source_range(&retained.id, 1, hash, 0, retained.length)
+        .read_source_range(&stored.id, 1, hash, 0, stored.length)
         .unwrap();
     let selected = temp.path().join("selected.sqlite");
     std::fs::write(&selected, raw).unwrap();
@@ -72,7 +57,7 @@ fn reusable_turns_keep_one_wal_view_and_retry_no_prefix_after_cancel() {
     let before = writer.status().unwrap().write_counter;
     let refused =
         capture.capture_history_pages_in_turns(&path, None, &cancel, budget(), |progress| {
-            let old = old_reader.read_source_range(&retained.id, 1, hash, 0, retained.length)?;
+            let old = old_reader.read_source_range(&stored.id, 1, hash, 0, stored.length)?;
             assert_eq!(blake3::hash(&old).as_bytes(), hash.bytes());
             if progress.provider_bytes_read >= 65536 {
                 cancel.store(true, Ordering::Release);
@@ -120,7 +105,7 @@ fn reusable_turns_keep_one_wal_view_and_retry_no_prefix_after_cancel() {
 }
 
 #[test]
-fn many_turns_preserve_one_base_verification_and_current_removal_fences() {
+fn turns_verify_base_once_and_notice_its_deletion() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("provider.sqlite");
     let provider = Connection::open(&path).unwrap();
@@ -138,10 +123,10 @@ fn many_turns_preserve_one_base_verification_and_current_removal_fences() {
     writer
         .store_history_pages(base, &observation("base-turns"), 131072)
         .unwrap();
-    let basis = writer.history_basis(&observation("next-turns")).unwrap();
+    let base = writer.history_base(&observation("next-turns")).unwrap();
     let mut phases = Vec::new();
     let next = capture
-        .capture_history_pages_in_turns(&path, basis, &cancel, budget(), |p| {
+        .capture_history_pages_in_turns(&path, base, &cancel, budget(), |p| {
             phases.push(p.phase);
             Ok(())
         })
@@ -150,11 +135,11 @@ fn many_turns_preserve_one_base_verification_and_current_removal_fences() {
     assert_eq!(next.hash(), base_hash);
     assert!(phases.iter().filter(|p| **p == "base_verification").count() > 2);
     assert!(phases.contains(&"base_ranges"));
-    let basis = writer
-        .history_basis(&observation("removed-between-turns"))
+    let base = writer
+        .history_base(&observation("removed-between-turns"))
         .unwrap();
     let before = writer.status().unwrap().write_counter;
-    let stopped = capture.capture_history_pages_in_turns(&path, basis, &cancel, budget(), |p| {
+    let stopped = capture.capture_history_pages_in_turns(&path, base, &cancel, budget(), |p| {
         if p.phase == "base_ranges" {
             writer
                 .archive

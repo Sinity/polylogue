@@ -1,8 +1,10 @@
-//! Transaction-consistent page capture, with flat immutable CAS ranges. No live
-//! database descriptor is opened outside SQLite. Partial preparation is not input authority.
+//! Capture a live SQLite database as an image of its pages, all read inside one
+//! read transaction. Pages equal to an earlier snapshot (the base) are stored as
+//! ranges of the base's blob; the rest go into one new patch blob.
 use crate::{
     BlobCapture, BlobHash, Error, ImportObservation, InputFormat, PreparedBlob, ReadHandle, Result,
     StoredInput, Writer, db,
+    imports::{MAX_PARTS, Part},
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::{
@@ -13,8 +15,6 @@ use std::{
 };
 pub mod turns;
 use turns::{Control, Turns};
-const MAX_PARTS: usize = 8192;
-type Part = (u64, u64, BlobHash, u64);
 fn uint(r: &rusqlite::Row<'_>, n: usize) -> rusqlite::Result<u64> {
     u64::try_from(r.get::<_, i64>(n)?).map_err(|_| rusqlite::Error::InvalidQuery)
 }
@@ -27,6 +27,10 @@ fn check(cancel: &AtomicBool) -> Result<()> {
     } else {
         Ok(())
     }
+}
+/// Stands for the patch blob in `parts` until the patch's hash is known.
+fn patch_marker() -> BlobHash {
+    BlobHash::from_bytes([0; 32])
 }
 struct Image {
     connection: Connection,
@@ -53,7 +57,7 @@ impl Image {
         db(path, || {
             connection.execute_batch("PRAGMA query_only=ON; BEGIN")
         })?;
-        // Establish the read snapshot before reading size or pages.
+        // Start the read snapshot before reading size or pages.
         let _: i64 = db(path, || {
             connection.query_row("PRAGMA schema_version", [], |r| r.get(0))
         })?;
@@ -66,7 +70,7 @@ impl Image {
         if size.checked_mul(pages).is_none_or(|n| n > i64::MAX as u64) {
             return Err(bad("history page image length is invalid"));
         }
-        // Fail explicitly when a build lacks the required extension.
+        // Fails here if SQLite was built without the dbpage extension.
         let _: i64 = db(path, || {
             connection.query_row(
                 "SELECT count(*) FROM sqlite_dbpage('main') WHERE pgno=1",
@@ -105,24 +109,30 @@ fn append(parts: &mut Vec<Part>, part: Part) {
     }
     parts.push(part);
 }
-pub struct Basis {
+/// The earlier snapshot a new capture is compared against.
+pub struct BaseSnapshot {
     reader: ReadHandle,
     hash: BlobHash,
     length: u64,
 }
 
 impl Writer {
-    /// Select only already admitted history from this exact acquisition binding.
+    /// The input last imported from this observation's machine, host and path.
+    fn latest_history_input(&self, o: &ImportObservation<'_>) -> Result<Option<String>> {
+        db(&self.root.join("archive.db"), || {
+            self.archive.query_row("SELECT i.id FROM observation o JOIN input i ON i.id=o.input JOIN machine m ON m.id=o.machine AND m.host=?3 WHERE o.machine=?1 AND o.path=?2 AND i.format='codex-history-sqlite' AND o.class='imported' ORDER BY o.rowid DESC LIMIT 1",params![o.machine,o.path,o.host],|r|r.get(0)).optional()
+        })
+    }
+
+    /// The stored input for a snapshot with this hash, if it is the one last
+    /// imported from this observation's location.
     pub fn known_history_snapshot(
         &mut self,
         hash: BlobHash,
         o: &ImportObservation<'_>,
     ) -> Result<Option<StoredInput>> {
         self.check_import_acquisition()?;
-        let file = self.root.join("archive.db");
-        let id: Option<String> = db(&file, || {
-            self.archive.query_row("SELECT i.id FROM observation o JOIN input i ON i.id=o.input JOIN machine m ON m.id=o.machine AND m.host=?3 WHERE o.machine=?1 AND o.path=?2 AND i.format='codex-history-sqlite' AND o.class='imported' ORDER BY o.rowid DESC LIMIT 1",params![o.machine,o.path,o.host],|r|r.get(0)).optional()
-        })?;
+        let id = self.latest_history_input(o)?;
         let expected =
             polylogue_model::InputId::imported(&hash, InputFormat::CodexHistorySqlite.name(), &[])
                 .to_string();
@@ -132,20 +142,21 @@ impl Writer {
         Ok(self.immutable_import(&expected)?.map(|input| input.input))
     }
 
-    pub fn history_basis(&mut self, o: &ImportObservation<'_>) -> Result<Option<Basis>> {
+    /// The base for the next capture at this location: the largest whole
+    /// snapshot blob behind the last imported input.
+    pub fn history_base(&mut self, o: &ImportObservation<'_>) -> Result<Option<BaseSnapshot>> {
         self.check_import_acquisition()?;
+        let Some(id) = self.latest_history_input(o)? else {
+            return Ok(None);
+        };
         let file = self.root.join("archive.db");
-        let id: Option<String> = db(&file, || {
-            self.archive.query_row("SELECT i.id FROM observation o JOIN input i ON i.id=o.input JOIN machine m ON m.id=o.machine AND m.host=?3 WHERE o.machine=?1 AND o.path=?2 AND i.format='codex-history-sqlite' AND o.class='imported' ORDER BY o.rowid DESC LIMIT 1",params![o.machine,o.path,o.host],|r|r.get(0)).optional()
-        })?;
-        let Some(id) = id else { return Ok(None) };
         let base: Option<(Vec<u8>, i64)> = db(&file, || {
             self.archive.query_row("SELECT b.hash,b.size FROM extent e JOIN blob b ON b.hash=e.blob WHERE e.input=?1 AND e.chain=1 AND e.offset=e.blob_offset AND b.state='present' AND b.encoding='plain' AND EXISTS(SELECT 1 FROM revision r JOIN input i ON i.id=r.input WHERE r.blake3=b.hash AND r.length=b.size AND i.format='codex-history-sqlite') ORDER BY b.size DESC,b.hash LIMIT 1",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()
         })?;
         let Some((hash, length)) = base else {
             return Ok(None);
         };
-        Ok(Some(Basis {
+        Ok(Some(BaseSnapshot {
             reader: self.read_handle()?,
             hash: BlobHash::from_bytes(
                 hash.try_into()
@@ -161,24 +172,13 @@ impl Writer {
         o: &ImportObservation<'_>,
         allowance: usize,
     ) -> Result<StoredInput> {
-        // PreparedBlob remains archive-bound; certify patch custody before any
-        // input is selectable. A crash here leaves only unselected physical data.
+        // Record the patch blob first; a crash before the input commits leaves
+        // only an unreferenced blob.
         let patch = self.store_captured_blob(p.patch)?;
         let parts = p
             .parts
             .into_iter()
-            .map(|(at, n, h, start)| {
-                (
-                    at,
-                    n,
-                    if h == BlobHash::from_bytes([0; 32]) {
-                        patch
-                    } else {
-                        h
-                    },
-                    start,
-                )
-            })
+            .map(|(at, n, h, start)| (at, n, if h == patch_marker() { patch } else { h }, start))
             .collect::<Vec<_>>();
         self.store_immutable_parts(
             p.hash,
@@ -196,12 +196,16 @@ pub struct PreparedHistory {
     hash: BlobHash,
     length: u64,
     parts: Vec<Part>,
+    /// Page bytes read from the database, including a re-read after falling
+    /// back to a full copy.
     pub read_bytes: u64,
+    /// Bytes written to the patch blob.
     pub changed_bytes: u64,
-    pub predecessor_read_bytes: u64,
+    /// The base was too fragmented, so the whole image went into the patch.
     pub rebased: bool,
     pub base_verification_bytes: u64,
-    pub canonical_read_bytes: u64,
+    /// Bytes read back from an existing input with the same hash.
+    pub existing_read_bytes: u64,
 }
 impl PreparedHistory {
     pub(crate) fn into_plain(self) -> PreparedBlob {
@@ -214,10 +218,12 @@ impl PreparedHistory {
         self.length
     }
 }
+/// Reads the image page by page and yields only pages that differ from the
+/// base, so the blob capture streams just the patch.
 struct Changes<'a, 'b> {
     control: Control<'b>,
     image: Image,
-    basis: Option<Basis>,
+    base: Option<BaseSnapshot>,
     cancel: &'a AtomicBool,
     page: u64,
     buffer: Vec<u8>,
@@ -225,13 +231,67 @@ struct Changes<'a, 'b> {
     parts: Vec<Part>,
     digest: blake3::Hasher,
     changed: u64,
-    old_read_bytes: u64,
-    old_window: Vec<u8>,
-    old_start: u64,
+    base_window: Vec<u8>,
+    base_start: u64,
     part_limit: usize,
     failure: Option<Error>,
 }
-impl Changes<'_, '_> {
+impl<'a, 'b> Changes<'a, 'b> {
+    fn new(
+        control: Control<'b>,
+        image: Image,
+        base: Option<BaseSnapshot>,
+        cancel: &'a AtomicBool,
+        part_limit: usize,
+    ) -> Self {
+        Self {
+            control,
+            image,
+            base,
+            cancel,
+            page: 0,
+            buffer: Vec::new(),
+            at: 0,
+            parts: Vec::new(),
+            digest: blake3::Hasher::new(),
+            changed: 0,
+            base_window: Vec::new(),
+            base_start: 0,
+            part_limit,
+            failure: None,
+        }
+    }
+    fn push_part(&mut self, part: Part) -> Result<()> {
+        append(&mut self.parts, part);
+        if self.parts.len() > self.part_limit {
+            return Err(Error::SnapshotFragmented);
+        }
+        Ok(())
+    }
+    fn equals_base(&mut self, offset: u64, bytes: &[u8]) -> Result<bool> {
+        let Some(base) = &self.base else {
+            return Ok(false);
+        };
+        let size = self.image.size;
+        if offset + size > base.length {
+            return Ok(false);
+        }
+        if self.base_window.is_empty()
+            || offset < self.base_start
+            || offset + size > self.base_start + self.base_window.len() as u64
+        {
+            self.base_start = offset;
+            let length = (base.length - offset).min(self.control.borrow().window());
+            self.base_window =
+                base.reader
+                    .read_blob_range_checked(base.hash, offset, length, || {
+                        check(self.cancel)?;
+                        self.control.borrow_mut().work("base_ranges", 65536)
+                    })?;
+        }
+        let start = (offset - self.base_start) as usize;
+        Ok(bytes == &self.base_window[start..start + size as usize])
+    }
     fn next(&mut self) -> Result<bool> {
         while self.page < self.image.pages {
             let offset = self.page * self.image.size;
@@ -242,51 +302,12 @@ impl Changes<'_, '_> {
             self.control.borrow_mut().page_read(self.image.size)?;
             self.digest.update(&bytes);
             self.page += 1;
-            let equal = if let Some(old) = &self.basis {
-                if offset + self.image.size > old.length {
-                    false
-                } else {
-                    if self.old_window.is_empty()
-                        || offset < self.old_start
-                        || offset + self.image.size > self.old_start + self.old_window.len() as u64
-                    {
-                        self.old_start = offset;
-                        let length = (old.length - offset).min(self.control.borrow().window());
-                        self.old_window =
-                            old.reader
-                                .read_blob_range_checked(old.hash, offset, length, || {
-                                    check(self.cancel)?;
-                                    self.control.borrow_mut().work("base_ranges", 65536)
-                                })?;
-                        self.old_read_bytes += length;
-                    }
-                    let start = (offset - self.old_start) as usize;
-                    bytes == self.old_window[start..start + self.image.size as usize]
-                }
-            } else {
-                false
-            };
-            if equal {
-                let old = self.basis.as_ref().expect("equal basis");
-                append(&mut self.parts, (offset, self.image.size, old.hash, offset));
-                if self.parts.len() > self.part_limit {
-                    return Err(Error::SnapshotFragmented);
-                }
+            if self.equals_base(offset, &bytes)? {
+                let base = self.base.as_ref().expect("base present").hash;
+                self.push_part((offset, self.image.size, base, offset))?;
                 continue;
             }
-            append(
-                &mut self.parts,
-                (
-                    offset,
-                    self.image.size,
-                    BlobHash::from_bytes([0; 32]),
-                    self.changed,
-                ),
-            );
-            if self.parts.len() > self.part_limit {
-                return Err(Error::SnapshotFragmented);
-            }
-
+            self.push_part((offset, self.image.size, patch_marker(), self.changed))?;
             self.changed += self.image.size;
             self.buffer = bytes;
             self.at = 0;
@@ -320,23 +341,25 @@ impl BlobCapture {
     pub fn capture_history_pages(
         &self,
         path: &Path,
-        basis: Option<Basis>,
+        base: Option<BaseSnapshot>,
         cancel: &AtomicBool,
     ) -> Result<PreparedHistory> {
-        self.capture_history_with_limit(path, basis, cancel, MAX_PARTS)
+        self.capture_history_with_limit(path, base, cancel, MAX_PARTS)
     }
     pub fn capture_history_pages_in_turns(
         &self,
         path: &Path,
-        basis: Option<Basis>,
+        base: Option<BaseSnapshot>,
         cancel: &AtomicBool,
         budget: turns::Budget,
         mut yield_turn: impl FnMut(turns::Progress) -> Result<()>,
     ) -> Result<PreparedHistory> {
         let control = Turns::new(budget, &mut yield_turn)?;
-        self.capture_history_controlled(path, basis, cancel, MAX_PARTS, control)
+        self.capture_history_controlled(path, base, cancel, MAX_PARTS, control)
     }
-    fn canonical_layout(
+    /// If an input with the same hash already exists, check its bytes and use
+    /// its extents, so the same snapshot is never stored with two layouts.
+    fn reuse_existing_layout(
         &self,
         mut prepared: PreparedHistory,
         cancel: &AtomicBool,
@@ -353,7 +376,7 @@ impl BlobCapture {
             return Ok(prepared);
         };
         if source.binding != prepared.hash || source.input.length != prepared.length {
-            return Err(bad("existing immutable history identity differs"));
+            return Err(bad("existing history input has a different hash or length"));
         }
         let mut digest = blake3::Hasher::new();
         let mut at = 0;
@@ -362,19 +385,19 @@ impl BlobCapture {
             let bytes =
                 reader.read_source_range_checked(&id, 1, source.binding, at, amount, || {
                     check(cancel)?;
-                    control.borrow_mut().work("canonical_layout", 65536)
+                    control.borrow_mut().work("existing_layout", 65536)
                 })?;
             if bytes.is_empty() {
-                return Err(bad("existing immutable history layout is incomplete"));
+                return Err(bad("existing history input is incomplete"));
             }
             control
                 .borrow_mut()
-                .work("canonical_hash", bytes.len() as u64)?;
+                .work("existing_hash", bytes.len() as u64)?;
             digest.update(&bytes);
             at += bytes.len() as u64;
         }
         if digest.finalize().as_bytes() != prepared.hash.bytes() {
-            return Err(bad("existing immutable history bytes differ"));
+            return Err(bad("existing history input has different bytes"));
         }
         let file = reader.root.join("archive.db");
         let parts: Vec<Part> = db(&file, || {
@@ -393,27 +416,27 @@ impl BlobCapture {
             .collect()
         })?;
         if parts.len() > MAX_PARTS {
-            return Err(bad("existing history exceeds extent publication admission"));
+            return Err(bad("existing history input has too many extents"));
         }
         prepared.parts = parts;
-        prepared.canonical_read_bytes = at;
+        prepared.existing_read_bytes = at;
         Ok(prepared)
     }
     fn capture_history_with_limit(
         &self,
         path: &Path,
-        basis: Option<Basis>,
+        base: Option<BaseSnapshot>,
         cancel: &AtomicBool,
         part_limit: usize,
     ) -> Result<PreparedHistory> {
         let mut yield_turn = |_| Ok(());
         let control = Turns::new(turns::Budget::default(), &mut yield_turn)?;
-        self.capture_history_controlled(path, basis, cancel, part_limit, control)
+        self.capture_history_controlled(path, base, cancel, part_limit, control)
     }
     fn capture_history_controlled(
         &self,
         path: &Path,
-        basis: Option<Basis>,
+        base: Option<BaseSnapshot>,
         cancel: &AtomicBool,
         part_limit: usize,
         control: Control<'_>,
@@ -423,8 +446,8 @@ impl BlobCapture {
         let image = Image::open(path)?;
         let length = image.size * image.pages;
         let mut base_verification_bytes = 0;
-        if let Some(base) = &basis {
-            let stats = base.reader.blob_reader.verify_plain::<Error>(
+        if let Some(base) = &base {
+            base.reader.blob_reader.verify_plain::<Error>(
                 &hashed_blobs::Hash(*base.hash.bytes()),
                 base.length,
                 |bytes| {
@@ -436,53 +459,20 @@ impl BlobCapture {
                     Ok(())
                 },
             )?;
-            let _ = stats;
         }
-        let mut stream = Changes {
-            control: control.clone(),
-            image,
-            basis,
-            cancel,
-            page: 0,
-            buffer: Vec::new(),
-            at: 0,
-            parts: Vec::new(),
-            digest: blake3::Hasher::new(),
-            changed: 0,
-            old_read_bytes: 0,
-            old_window: Vec::new(),
-            old_start: 0,
-            part_limit,
-            failure: None,
-        };
+        let mut stream = Changes::new(control.clone(), image, base, cancel, part_limit);
         let mut result = self.capture_with_check(&mut stream, cancel, |n| {
-            control.borrow_mut().work("patch_custody", n)
+            control.borrow_mut().work("patch_write", n)
         });
         let mut rebased = false;
         let mut prefix_read = 0;
-        let mut previous_read = 0;
         if matches!(stream.failure, Some(Error::SnapshotFragmented)) {
+            // Too many small ranges: copy the whole image instead, reusing the
+            // same read transaction.
             prefix_read = stream.page * stream.image.size;
-            previous_read = stream.old_read_bytes;
-            stream = Changes {
-                control: control.clone(),
-                image: stream.image,
-                basis: None,
-                cancel,
-                page: 0,
-                buffer: Vec::new(),
-                at: 0,
-                parts: Vec::new(),
-                digest: blake3::Hasher::new(),
-                changed: 0,
-                old_read_bytes: 0,
-                old_window: Vec::new(),
-                old_start: 0,
-                part_limit,
-                failure: None,
-            };
+            stream = Changes::new(control.clone(), stream.image, None, cancel, part_limit);
             result = self.capture_with_check(&mut stream, cancel, |n| {
-                control.borrow_mut().work("patch_custody", n)
+                control.borrow_mut().work("patch_write", n)
             });
             rebased = true;
         }
@@ -501,20 +491,13 @@ impl BlobCapture {
             parts: stream.parts,
             read_bytes: length + prefix_read,
             changed_bytes: stream.changed,
-            predecessor_read_bytes: stream.old_read_bytes + previous_read,
             rebased,
             base_verification_bytes,
-            canonical_read_bytes: 0,
+            existing_read_bytes: 0,
         };
         drop(stream.image);
-        self.canonical_layout(prepared, cancel, &control)
+        self.reuse_existing_layout(prepared, cancel, &control)
     }
 }
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod turn_tests;
-
-#[cfg(test)]
-mod process_turn_tests;
