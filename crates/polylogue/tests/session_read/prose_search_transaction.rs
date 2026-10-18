@@ -3,7 +3,7 @@ use super::*;
 use polylogue_model::{MessageId, SessionId, query::TextTerm};
 use polylogue_store::{Error, ReadHandle, prose_search::ProseSearch};
 
-fn selected(world: &World) -> [polylogue_store::contributions::MessageView; 2] {
+fn selected(world: &mut World) -> [polylogue_store::contributions::MessageView; 2] {
     let mut records = Vec::new();
     for (id, text) in [
         ("scratch-first", "sharedalpha green"),
@@ -18,6 +18,10 @@ fn selected(world: &World) -> [polylogue_store::contributions::MessageView; 2] {
     assert_eq!(imported.status.code(), Some(0), "{imported:?}");
     let receipt: Value = serde_json::from_slice(&imported.stdout).unwrap();
     world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 2);
+    let mut child = world.child.take().unwrap();
+    assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGINT) }, 0);
+    assert!(child.0.wait().unwrap().success());
+    drop(child);
     let reader = ReadHandle::open(&world.archive).unwrap();
     let session = SessionId::from_stored(reference()).unwrap();
     ["scratch-first", "scratch-second"].map(|native| {
@@ -44,8 +48,8 @@ fn matches(search: &ProseSearch) -> Vec<String> {
 }
 #[test]
 fn prose_scratch_add_hits_add_hits_uses_real_selected_bodies() {
-    let world = World::new();
-    let [first, second] = selected(&world);
+    let mut world = World::new();
+    let [first, second] = selected(&mut world);
     let mut search = ProseSearch::new().unwrap();
     assert!(matches(&search).is_empty());
     search.add(&first, until(), &mut || false).unwrap();
@@ -62,8 +66,8 @@ fn prose_scratch_add_hits_add_hits_uses_real_selected_bodies() {
 }
 #[test]
 fn prose_scratch_cancel_drop_fresh_query_keeps_no_partial_index() {
-    let world = World::new();
-    let [first, second] = selected(&world);
+    let mut world = World::new();
+    let [first, second] = selected(&mut world);
     let mut cancelled = ProseSearch::new().unwrap();
     cancelled.add(&first, until(), &mut || false).unwrap();
     assert!(matches!(
