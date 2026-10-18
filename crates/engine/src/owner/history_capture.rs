@@ -46,7 +46,7 @@ impl Actor {
                 },
                 if claude_quantum.is_some() {
                     self.writer
-                        .claude_predecessor(&request.path, &request.observation.machine)?
+                        .claude_input_at(&request.path, &request.observation.machine)?
                 } else {
                     None
                 },

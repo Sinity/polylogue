@@ -1,5 +1,6 @@
-//! Retained input identity and contiguous source reads. Provider paths are used
-//! only during explicit configured acquisition, never by interpretation/readback.
+//! Stored inputs: acquiring observed Claude files and reading any input back
+//! by byte range. Provider paths are opened only while acquiring; reads use
+//! the archive alone.
 use crate::{
     BlobHash, Error, ImmutableImport, InputFormat, ReadHandle, StoredInput, Writer, counter, db,
 };
@@ -27,8 +28,8 @@ pub enum SourceIdentity {
 #[derive(Clone, Debug)]
 pub struct StoredSource {
     pub input: StoredInput,
-    /// Immutable original hash, or domain-separated observed input/chain key.
-    /// This is an interpretation binding, not a full observed-content digest.
+    /// An immutable input's original hash, or a hash of an observed input's ID
+    /// and chain. Range reads take it back to check they read the same input.
     pub binding: BlobHash,
     pub identity: SourceIdentity,
     pub format: InputFormat,
@@ -74,8 +75,8 @@ fn refusal(message: &str) -> Error {
     Error::ObservedSourceRefused(message.into())
 }
 
-/// Decode one retained identity from archive facts only. Observed role/context
-/// is durable authority, independently of the provider's current layout.
+/// Decode one stored input from archive rows only, never from the provider's
+/// current layout.
 pub(crate) fn decode(
     connection: &rusqlite::Connection,
     file: &Path,
@@ -101,12 +102,12 @@ pub(crate) fn decode(
             id.into(),
             format,
             length,
-            digest.ok_or_else(|| refusal("immutable digest missing"))?,
+            digest.ok_or_else(|| refusal("immutable input has no digest"))?,
             original.unwrap(),
-            context.ok_or_else(|| refusal("immutable context missing"))?,
+            context.ok_or_else(|| refusal("immutable input has no context"))?,
         )?;
         if revision != 1 || chain != 1 {
-            return Err(refusal("unsupported immutable chain"));
+            return Err(refusal("immutable input has more than one revision"));
         }
         return Ok(Some(StoredSource {
             input: StoredInput {
@@ -126,7 +127,7 @@ pub(crate) fn decode(
         }));
     }
     if context.is_some() || format != "claude-code-jsonl" || chain != 1 {
-        return Err(refusal("unsupported location identity"));
+        return Err(refusal("unsupported observed input"));
     }
     let (machine, path, device, inode): (String, String, i64, i64) = db(file, || {
         connection.query_row("SELECT CASE WHEN length(CAST(machine AS BLOB))<=65536 THEN machine END,CASE WHEN length(CAST(path AS BLOB))<=65536 THEN path END,device,inode FROM observation WHERE input=?1 AND class='first' ORDER BY rowid LIMIT 1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))
@@ -176,10 +177,10 @@ impl Writer {
             .transpose()
             .map(Option::flatten)
     }
-    /// Explicit single regular location, performed before starting the actor.
-    /// Full-prefix comparison deliberately avoids sampled-prefix certification.
-    /// Any in-flight descriptor change refuses this attempt; bytes already in
-    /// CAS remain recoverable but acquire no input/frontier authority.
+    /// Store new bytes of one Claude main file; used before the owner starts.
+    /// The whole stored prefix is compared with the file. If the file changes
+    /// while being read the attempt fails, and blobs already written stay
+    /// unreferenced.
     pub fn acquire_claude_main(
         &mut self,
         path: &Path,
@@ -199,15 +200,16 @@ impl Writer {
             || path_text.len() + machine.len() + host.len() + id.len() > 65536
         {
             return Err(refusal(
-                "absolute path and admitted acquisition identities required",
+                "need an absolute path and nonempty machine, host and ID under 64 KiB",
             ));
         }
-        let old = self.claude_predecessor(path, machine)?;
+        let old = self.claude_input_at(path, machine)?;
         let capture = self.blob_capture()?;
         let prepared = capture.prepare_claude_main(path, old, cancelled, |_| Ok(()), |_| Ok(()))?;
         self.store_claude_main(prepared, machine, host, id, seen_at)
     }
-    pub fn claude_predecessor(
+    /// The input last observed at `path` on `machine`, if any.
+    pub fn claude_input_at(
         &mut self,
         path: &Path,
         machine: &str,
@@ -247,18 +249,14 @@ impl Writer {
             || id.is_empty()
             || path_text.len() + machine.len() + host.len() + id.len() > 65536
         {
-            return Err(refusal(
-                "source metadata exceeds admission or identities are empty",
-            ));
+            return Err(refusal("need nonempty machine, host and ID under 64 KiB"));
         }
-        let current = self.claude_predecessor(path, machine)?;
+        let current = self.claude_input_at(path, machine)?;
         if current
             .as_ref()
             .is_some_and(|s| s.context != location.context())
         {
-            return Err(refusal(
-                "observed interpretation context conflicts with retained binding",
-            ));
+            return Err(refusal("file context differs from the stored input's"));
         }
         if current
             .as_ref()
@@ -267,7 +265,7 @@ impl Writer {
                 .as_ref()
                 .map(|s| (&s.input.id, s.revision, s.input.length))
         {
-            return Err(refusal("retained predecessor changed during acquisition"));
+            return Err(refusal("stored input changed during acquisition"));
         }
         let previous = old.as_ref().map(|s| s.input.length).unwrap_or(0);
         let added = meta.len().checked_sub(previous).ok_or(Error::Range)?;
@@ -276,7 +274,7 @@ impl Writer {
         }
         let archive_file = self.root.join("archive.db");
         let hash =
-            self.store_captured_blob(proof.ok_or_else(|| refusal("missing capture proof"))?)?;
+            self.store_captured_blob(proof.ok_or_else(|| refusal("new bytes were not captured"))?)?;
         let input_id = old.as_ref().map(|s| s.input.id.as_str()).unwrap_or(id);
         let revision = i64::try_from(
             old.as_ref()
@@ -325,7 +323,7 @@ impl Writer {
         })?;
         db(&archive_file, || tx.commit())?;
         self.stored_source(input_id)?
-            .ok_or_else(|| refusal("committed acquisition missing"))
+            .ok_or_else(|| refusal("acquired input is missing after commit"))
     }
 }
 
@@ -340,29 +338,9 @@ pub struct PreparedClaudeMain {
     proof: Option<crate::PreparedBlob>,
 }
 impl crate::BlobCapture {
-    /// One charged-work counter spans prefix checks, record scanning and every
-    /// referenced companion. The engine supplies record interpretation only.
-    pub fn prepare_claude_in_turns(
-        &self,
-        path: &Path,
-        old: Option<StoredSource>,
-        cancelled: &AtomicBool,
-        budget: crate::history_pages::turns::Budget,
-        yield_turn: impl FnMut(crate::history_pages::turns::Progress) -> crate::Result<()>,
-        inspect: impl FnMut(&[u8]) -> crate::Result<()>,
-        finish_references: impl FnOnce() -> crate::Result<Vec<(String, Option<(BlobHash, u64)>)>>,
-    ) -> crate::Result<PreparedClaude> {
-        let location = crate::configured_claude::Location::explicit_main(path.to_path_buf())?;
-        self.prepare_claude_location_in_turns(
-            location,
-            old,
-            cancelled,
-            budget,
-            yield_turn,
-            inspect,
-            finish_references,
-        )
-    }
+    /// Prepare a main file and its companions in cooperative turns. One work
+    /// counter covers the prefix check, `inspect` and every companion; the
+    /// engine supplies `inspect` and the companion list.
     pub fn prepare_claude_location_in_turns(
         &self,
         location: crate::configured_claude::Location,
@@ -425,9 +403,7 @@ impl crate::BlobCapture {
             .as_ref()
             .is_some_and(|s| s.context != location.context())
         {
-            return Err(refusal(
-                "observed interpretation context conflicts with retained binding",
-            ));
+            return Err(refusal("file context differs from the stored input's"));
         }
         let mut file = location.open()?;
         let meta = file.metadata()?;
@@ -441,11 +417,11 @@ impl crate::BlobCapture {
             };
             if device != meta.dev() || inode != meta.ino() {
                 return Err(refusal(
-                    "replacement requires unsupported revision handling",
+                    "file was replaced; replaced files are not supported",
                 ));
             }
             if meta.len() < previous {
-                return Err(refusal("source shrank; rewrite handling is unsupported"));
+                return Err(refusal("file shrank; rewritten files are not supported"));
             }
             let reader = self.read_handle()?;
             let mut offset = 0;
@@ -465,7 +441,7 @@ impl crate::BlobCapture {
                 let mut actual = vec![0; length as usize];
                 file.read_exact(&mut actual)?;
                 if actual != expected {
-                    return Err(refusal("retained predecessor prefix changed"));
+                    return Err(refusal("stored prefix of the file changed"));
                 }
                 work(length)?;
                 offset += length;
@@ -474,8 +450,7 @@ impl crate::BlobCapture {
         file.seek(SeekFrom::Start(previous))?;
         let added = meta.len().checked_sub(previous).ok_or(Error::Range)?;
         let proof = if added > 0 || old.is_none() {
-            let capture = self;
-            Some(capture.capture_with_check(
+            Some(self.capture_with_check(
                 Exact {
                     reader: &mut file,
                     remaining: added,
@@ -517,9 +492,7 @@ impl crate::BlobCapture {
             meta.ctime(),
             meta.ctime_nsec(),
         ) {
-            return Err(refusal(
-                "descriptor changed during acquisition; retry unchanged action",
-            ));
+            return Err(refusal("file changed while being read; retry"));
         }
         if cancelled.load(Ordering::Acquire) {
             return Err(Error::Cancelled);
@@ -550,7 +523,7 @@ impl<R: Read> Read for Exact<R> {
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
-                "observed descriptor ended before stat size",
+                "file ended before its stat size",
             ));
         }
         self.remaining -= n as u64;
@@ -558,8 +531,8 @@ impl<R: Read> Read for Exact<R> {
     }
 }
 impl ReadHandle {
-    /// Resolve exact retained coordinates, checking every covering extent. No
-    /// provider-path fallback and no implicit gap/overlap selection.
+    /// Read a byte range of a stored input. A gap or overlap in its extents is
+    /// an error.
     pub fn read_source_range(
         &self,
         id: &str,
@@ -581,9 +554,7 @@ impl ReadHandle {
     ) -> crate::Result<Vec<u8>> {
         check()?;
         let file = self.root.join("archive.db");
-        let source = self
-            .source(id)?
-            .ok_or_else(|| refusal("unknown retained source"))?;
+        let source = self.source(id)?.ok_or_else(|| refusal("unknown source"))?;
         if source.input.chain != chain
             || source.binding != binding
             || offset
@@ -603,7 +574,7 @@ impl ReadHandle {
                 self.archive.query_row("SELECT offset,length,blob,blob_offset FROM extent WHERE input=?1 AND chain=?2 AND offset<=?3 AND offset+length>?3 ORDER BY offset LIMIT 1",params![id,chain,position as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()
             })?;
             let Some((start, size, hash, blob_start)) = row else {
-                return Err(refusal("missing retained predecessor range"));
+                return Err(refusal("stored input has a gap in its extents"));
             };
             let start = u64::try_from(start).map_err(|_| Error::Range)?;
             let size = u64::try_from(size).map_err(|_| Error::Range)?;
@@ -615,7 +586,7 @@ impl ReadHandle {
                 self.archive.query_row("SELECT EXISTS(SELECT 1 FROM extent WHERE input=?1 AND chain=?2 AND offset<>?3 AND offset<?4 AND offset+length>?3)",params![id,chain,start as i64,extent_end as i64],|r|r.get(0))
             })?;
             if overlaps {
-                return Err(refusal("overlapping retained extents"));
+                return Err(refusal("stored input has overlapping extents"));
             }
             let take = (end - position).min(extent_end - position);
             let hash = BlobHash::from_bytes(
@@ -640,8 +611,8 @@ impl ReadHandle {
         }
         Ok(result)
     }
-    /// Cryptographically verify every backing piece before a reconstruction is
-    /// exposed. Range reads separately check exact coverage and frame integrity.
+    /// Verify every blob behind a stored input. Range reads check extent
+    /// coverage separately.
     pub fn verify_source(
         &self,
         source: &StoredSource,
@@ -651,10 +622,10 @@ impl ReadHandle {
         let mut after = -1i64;
         loop {
             check()?;
-            let row: Option<(i64, Vec<u8>, i64)> = db(&file, || {
-                self.archive.query_row("SELECT e.offset,e.blob,b.size FROM extent e JOIN blob b ON b.hash=e.blob AND b.state='present' WHERE e.input=?1 AND e.chain=?2 AND e.offset>?3 AND e.offset<?4 ORDER BY e.offset LIMIT 1",params![source.input.id,source.input.chain,after,source.input.length as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()
+            let row: Option<(i64, Vec<u8>)> = db(&file, || {
+                self.archive.query_row("SELECT e.offset,e.blob FROM extent e JOIN blob b ON b.hash=e.blob AND b.state='present' WHERE e.input=?1 AND e.chain=?2 AND e.offset>?3 AND e.offset<?4 ORDER BY e.offset LIMIT 1",params![source.input.id,source.input.chain,after,source.input.length as i64],|r|Ok((r.get(0)?,r.get(1)?))).optional()
             })?;
-            let Some((offset, hash, length)) = row else {
+            let Some((offset, hash)) = row else {
                 break;
             };
             after = offset;
@@ -662,17 +633,14 @@ impl ReadHandle {
                 hash.try_into()
                     .map_err(|_| refusal("invalid backing digest"))?,
             );
-            let length = u64::try_from(length).map_err(|_| Error::Range)?;
             let (reader, verify_first) = self.source_readers.select(
                 &source.input.id,
                 source.input.chain,
                 source.binding,
                 hash,
             )?;
-            // Zero-length range rechecks the held descriptor even after its
-            // earlier full verification. The metadata/removal fence is shared.
+            // A zero-length read still re-checks the blob's state in the archive.
             self.read_blob_range_using(reader, verify_first, hash, 0, 0, &mut check)?;
-            let _ = length;
         }
         Ok(())
     }
@@ -690,307 +658,5 @@ impl ReadHandle {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{fs::OpenOptions, io::Write};
-    fn acquire(w: &mut Writer, p: &Path, id: &str) -> StoredSource {
-        w.acquire_claude_main(
-            p,
-            "synthetic-machine",
-            "synthetic-host",
-            id,
-            1,
-            &AtomicBool::new(false),
-        )
-        .unwrap()
-    }
-    #[test]
-    fn invalid_existing_dependency_does_not_publish_a_source_revision() {
-        let root = tempfile::tempdir().unwrap();
-        let archive = root.path().join("archive");
-        let path = root.path().join("source.jsonl");
-        let bytes = b"synthetic retained source\n";
-        std::fs::write(&path, bytes).unwrap();
-        let mut w = Writer::open(&archive).unwrap();
-        let blobs = hashed_blobs::Store::open(&archive, vec![], 0o600).unwrap();
-        let hash = blobs.put(&bytes[..], 1).unwrap();
-        let hex = hash.hex();
-        let physical = archive
-            .join("blobs")
-            .join(&hex[..2])
-            .join(format!("{hex}.zst"));
-        std::fs::write(&physical, b"invalid existing dependency").unwrap();
-        let before = w.status().unwrap().write_counter;
-        assert!(
-            w.acquire_claude_main(&path, "m", "h", "refused", 1, &AtomicBool::new(false))
-                .is_err()
-        );
-        assert_eq!(w.status().unwrap().write_counter, before);
-        let revisions: i64 = w
-            .archive
-            .query_row("SELECT count(*) FROM revision", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(revisions, 0);
-        assert_eq!(
-            std::fs::read(physical).unwrap(),
-            b"invalid existing dependency"
-        );
-    }
-    #[test]
-    fn selected_extents_reuse_checked_bytes_but_current_metadata_still_refuses() {
-        let root = tempfile::tempdir().unwrap();
-        let archive = root.path().join("archive");
-        let path = root.path().join("source.jsonl");
-        std::fs::write(&path, b"abcdefghij").unwrap();
-        let mut w = Writer::open(&archive).unwrap();
-        acquire(&mut w, &path, "first");
-        OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap()
-            .write_all(b"klmnopqr")
-            .unwrap();
-        let source = acquire(&mut w, &path, "second");
-        let reader = w.read_handle().unwrap();
-        reader.verify_source(&source, || Ok(())).unwrap();
-        assert_eq!(
-            reader
-                .read_source_range(&source.input.id, 1, source.binding, 8, 6)
-                .unwrap(),
-            b"ijklmn"
-        );
-        let hash = BlobHash::of(b"klmnopqr");
-        w.archive
-            .execute(
-                "UPDATE blob SET state='deleting' WHERE hash=?1",
-                [hash.bytes().as_slice()],
-            )
-            .unwrap();
-        assert!(
-            reader
-                .read_source_range(&source.input.id, 1, source.binding, 10, 2)
-                .is_err()
-        );
-    }
-    #[test]
-    fn first_nonempty_observed_revision_records_full_digest_without_immutable_identity() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("session.jsonl");
-        let bytes = b"synthetic first observed bytes\n";
-        std::fs::write(&path, bytes).unwrap();
-        let mut w = Writer::open(&root.path().join("archive")).unwrap();
-        let source = acquire(&mut w, &path, "first");
-        let (digest, original): (Vec<u8>, Option<Vec<u8>>) = w.archive.query_row("SELECT r.blake3,i.original_hash FROM revision r JOIN input i ON i.id=r.input WHERE r.input=?1 AND r.number=1", [&source.input.id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
-        assert_eq!(digest, blake3::hash(bytes).as_bytes());
-        assert!(original.is_none());
-        assert!(matches!(source.identity, SourceIdentity::Observed { .. }));
-    }
-    #[test]
-    fn same_location_retains_empty_genesis_separator_and_split_record_extents() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("session.jsonl");
-        std::fs::write(&path, b"").unwrap();
-        let archive = root.path().join("archive");
-        let mut w = Writer::open(&archive).unwrap();
-        let first = acquire(&mut w, &path, "genesis");
-        assert_eq!(first.input.length, 0);
-        let digest: Vec<u8> = w
-            .archive
-            .query_row(
-                "SELECT blake3 FROM revision WHERE input=?1 AND number=1",
-                [&first.input.id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(digest, blake3::hash(b"").as_bytes());
-        let original: Option<Vec<u8>> = w
-            .archive
-            .query_row(
-                "SELECT original_hash FROM input WHERE id=?1",
-                [&first.input.id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(original.is_none());
-        assert_eq!(first.context, ["claude-main", "session"]);
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        let parts = [
-            b"{\"a\":1}\n".as_slice(),
-            b"\n \r\n",
-            b"{\"partial\":",
-            b"true}\n",
-        ];
-        let mut whole = Vec::new();
-        for (i, part) in parts.iter().enumerate() {
-            file.write_all(part).unwrap();
-            file.sync_all().unwrap();
-            whole.extend_from_slice(part);
-            let next = acquire(&mut w, &path, &format!("step-{i}"));
-            assert_eq!(next.input.id, first.input.id);
-            assert_eq!(next.input.chain, 1);
-            assert_eq!(next.binding, first.binding);
-            assert_eq!(next.revision, i as u64 + 2);
-            let digest: Option<Vec<u8>> = w
-                .archive
-                .query_row(
-                    "SELECT blake3 FROM revision WHERE input=?1 AND number=?2",
-                    params![next.input.id, i64::try_from(next.revision).unwrap()],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert!(digest.is_none());
-            assert_eq!(
-                w.read_handle()
-                    .unwrap()
-                    .read_source_range(&next.input.id, 1, next.binding, 0, next.input.length)
-                    .unwrap(),
-                whole
-            );
-            drop(w);
-            w = crate::tests::reopen_after_drop(&archive);
-        }
-        let before = w.status().unwrap().write_counter;
-        let retry = acquire(&mut w, &path, "unchanged");
-        assert_eq!(retry.revision, 5);
-        assert_eq!(w.status().unwrap().write_counter, before);
-        assert_eq!(
-            w.archive
-                .query_row("SELECT count(*) FROM extent", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            4
-        );
-    }
-    #[test]
-    fn mutation_replacement_gap_overlap_and_missing_blob_refuse_without_frontier_advance() {
-        let root = tempfile::tempdir().unwrap();
-        let p = root.path().join("s.jsonl");
-        std::fs::write(&p, b"first\n").unwrap();
-        let mut w = Writer::open(&root.path().join("archive")).unwrap();
-        let s = acquire(&mut w, &p, "first");
-        let counter = w.status().unwrap().write_counter;
-        std::fs::write(&p, b"wrong\nmore\n").unwrap();
-        assert!(
-            w.acquire_claude_main(
-                &p,
-                "synthetic-machine",
-                "synthetic-host",
-                "bad",
-                2,
-                &AtomicBool::new(false)
-            )
-            .is_err()
-        );
-        assert_eq!(w.status().unwrap().write_counter, counter);
-        let replacement = root.path().join("replacement");
-        std::fs::write(&replacement, b"first\nmore\n").unwrap();
-        std::fs::rename(&replacement, &p).unwrap();
-        assert!(
-            w.acquire_claude_main(
-                &p,
-                "synthetic-machine",
-                "synthetic-host",
-                "replaced",
-                2,
-                &AtomicBool::new(false)
-            )
-            .is_err()
-        );
-        assert_eq!(w.status().unwrap().write_counter, counter);
-        w.archive.execute("UPDATE extent SET offset=1", []).unwrap();
-        assert!(
-            w.read_handle()
-                .unwrap()
-                .read_source_range(&s.input.id, 1, s.binding, 0, 6)
-                .is_err()
-        );
-        w.archive.execute("UPDATE extent SET offset=0", []).unwrap();
-        w.archive.execute("INSERT INTO extent(input,chain,offset,length,blob,blob_offset) SELECT input,chain,2,2,blob,0 FROM extent",[]).unwrap();
-        assert!(
-            w.read_handle()
-                .unwrap()
-                .read_source_range(&s.input.id, 1, s.binding, 0, 6)
-                .is_err()
-        );
-        w.archive
-            .execute("DELETE FROM extent WHERE offset=2", [])
-            .unwrap();
-        w.archive
-            .execute("UPDATE blob SET state='deleting'", [])
-            .unwrap();
-        assert!(
-            w.read_handle()
-                .unwrap()
-                .read_source_range(&s.input.id, 1, s.binding, 0, 6)
-                .is_err()
-        );
-    }
-    #[test]
-    fn archive_commit_before_index_registration_recovers_without_provider() {
-        let root = tempfile::tempdir().unwrap();
-        let p = root.path().join("s.jsonl");
-        std::fs::write(&p, b"retained\n").unwrap();
-        let archive = root.path().join("archive");
-        let mut w = Writer::open(&archive).unwrap();
-        w._index.execute_batch("CREATE TRIGGER refuse_ref BEFORE INSERT ON input_ref BEGIN SELECT RAISE(ABORT,'registration interrupted'); END;").unwrap();
-        assert!(
-            w.acquire_claude_main(&p, "m", "h", "id", 1, &AtomicBool::new(false))
-                .is_err()
-        );
-        let before = w.status().unwrap().write_counter;
-        assert!(before > 0);
-        w._index.execute_batch("DROP TRIGGER refuse_ref;").unwrap();
-        drop(w);
-        std::fs::remove_file(p).unwrap();
-        let mut w = Writer::open(&archive).unwrap();
-        let recovered = w.next_stored_source("").unwrap().unwrap();
-        assert_eq!(recovered.input.id, "id");
-        assert_eq!(w.status().unwrap().write_counter, before);
-        assert_eq!(
-            w.read_handle()
-                .unwrap()
-                .read_source_range("id", 1, recovered.binding, 0, 9)
-                .unwrap(),
-            b"retained\n"
-        );
-    }
-    #[test]
-    fn stat_bounded_reader_refuses_short_capture_instead_of_successful_eof() {
-        let mut bytes = Vec::new();
-        let result = Exact {
-            reader: b"short".as_slice(),
-            remaining: 9,
-        }
-        .read_to_end(&mut bytes);
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
-        let mut bounded = Vec::new();
-        Exact {
-            reader: b"longer".as_slice(),
-            remaining: 3,
-        }
-        .read_to_end(&mut bounded)
-        .unwrap();
-        assert_eq!(bounded, b"lon");
-    }
-    #[test]
-    fn retained_source_reads_refuse_unhandled_archive_excisions() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("s.jsonl");
-        std::fs::write(&path, b"retained\n").unwrap();
-        let mut writer = Writer::open(&root.path().join("archive")).unwrap();
-        let source = acquire(&mut writer, &path, "input");
-        writer.archive.execute("INSERT INTO excision(id,scope,created_at,local_seq) VALUES('e','input:unknown',1,1)",[]).unwrap();
-        let reader = writer.read_handle().unwrap();
-        assert!(matches!(
-            reader.source(&source.input.id),
-            Err(Error::ExcisionCheckRequired)
-        ));
-        assert!(matches!(
-            reader.read_source_range(&source.input.id, 1, source.binding, 0, source.input.length),
-            Err(Error::ExcisionCheckRequired)
-        ));
-    }
-}
-
-#[cfg(test)]
-#[path = "observed/claude_turn_tests.rs"]
-mod claude_turn_tests;
+#[path = "observed/tests.rs"]
+mod tests;
