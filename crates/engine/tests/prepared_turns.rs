@@ -234,4 +234,5 @@ fn process_exit_during_apply_recovers_durable_members_without_replay_or_false_do
     }
 }
 
+#[path = "prepared_turns/batches.rs"]
 mod batches;
