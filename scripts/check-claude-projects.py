@@ -450,7 +450,7 @@ def migration(args):
         refusal = subprocess.run([str(args.binary), '--archive', str(run.archive), 'daemon'], env=run.env, capture_output=True, timeout=15)
         (output / 'new-refusal.stdout').write_bytes(refusal.stdout)
         (output / 'new-refusal.stderr').write_bytes(refusal.stderr)
-        assert refusal.returncode != 0 and b'pending action' in refusal.stderr, refusal.stderr
+        assert refusal.returncode != 0 and b'is pending' in refusal.stderr, refusal.stderr
         after_refusal = snapshot()
         assert all(after_refusal.get(path) == digest for path, digest in frozen.items()), 'new writer changed pending v3 authority/custody'
         for path in after_refusal.keys() - frozen.keys():

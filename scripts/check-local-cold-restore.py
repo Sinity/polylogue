@@ -316,7 +316,7 @@ def case(args):
         restored=mcp.Run(binary,destination);restored.env.update(run.env);readers.append(restored)
         report['interruption']=prepare(restored,interrupt=True)
         blocked=subprocess.run(restored.command(['daemon']),env=restored.env,capture_output=True,timeout=15)
-        assert blocked.returncode!=0 and b'pending action' in blocked.stderr,blocked.stderr
+        assert blocked.returncode!=0 and b'is pending' in blocked.stderr,blocked.stderr
         report['pending_writer_refusal']={'exit':blocked.returncode,'stderr':blocked.stderr.decode()}
         report['preparation']=prepare(restored)
         report['layouts']=inspect_custody(destination/'archive',[hashlib.sha256(image1).hexdigest(),hashlib.sha256(image2).hexdigest()])

@@ -3,11 +3,11 @@ use crate::{ReadHandle, Writer};
 const A: &str = "019a1100-0000-7000-8000-000000000001";
 const B: &str = "019a1100-0000-7000-8000-000000000002";
 #[test]
-fn interrupted_preparation_fences_writer_and_resumes_same_action_without_repeating_completion() {
+fn interrupted_preparation_blocks_writer_until_same_request_resumes() {
     let root = tempfile::tempdir().unwrap();
     let mut writer = Writer::open(root.path()).unwrap();
     writer.put_file_blob(b"").unwrap();
-    writer.put_file_blob(b"retained content").unwrap();
+    writer.put_file_blob(b"stored content").unwrap();
     let before = writer.status().unwrap();
     drop(writer);
     let stop = AtomicBool::new(false);
@@ -16,11 +16,8 @@ fn interrupted_preparation_fences_writer_and_resumes_same_action_without_repeati
     assert!(Writer::open(root.path()).is_err());
     stop.store(true, std::sync::atomic::Ordering::Release);
     assert!(matches!(prep.finish(&stop), Err(Error::Cancelled)));
-    assert!(
-        Writer::open(root.path())
-            .unwrap_err_for_test()
-            .contains("pending action")
-    );
+    let error = Writer::open(root.path()).err().unwrap().to_string();
+    assert!(error.contains("is pending"), "{error}");
     stop.store(false, std::sync::atomic::Ordering::Release);
     assert!(Preparation::begin(root.path(), "restore", "local", B, true, &stop).is_err());
     let report = Preparation::begin(root.path(), "restore", "local", A, true, &stop)
@@ -63,7 +60,7 @@ fn interrupted_preparation_fences_writer_and_resumes_same_action_without_repeati
     );
 }
 #[test]
-fn unsupported_modes_missing_custody_and_missing_historical_lineage_cannot_mint_authority() {
+fn unsupported_modes_and_missing_lineage_refuse() {
     let root = tempfile::tempdir().unwrap();
     let writer = Writer::open(root.path()).unwrap();
     drop(writer);
@@ -86,7 +83,7 @@ fn unsupported_modes_missing_custody_and_missing_historical_lineage_cannot_mint_
     assert!(reader.status().unwrap().acquisition_lineage.is_none());
 }
 #[test]
-fn missing_blob_blocks_completion_and_status_keeps_unrelated_readable_bytes() {
+fn missing_blob_blocks_completion_but_others_stay_readable() {
     let root = tempfile::tempdir().unwrap();
     let mut writer = Writer::open(root.path()).unwrap();
     let missing = writer.put_file_blob(b"missing").unwrap();
@@ -115,15 +112,4 @@ fn missing_blob_blocks_completion_and_status_keeps_unrelated_readable_bytes() {
     let prep = Preparation::begin(root.path(), "restore", "local", B, true, &stop).unwrap();
     assert!(prep.finish(&stop).is_err());
     assert!(Writer::open(root.path()).is_err());
-}
-trait Refused {
-    fn unwrap_err_for_test(self) -> String;
-}
-impl Refused for Result<Writer> {
-    fn unwrap_err_for_test(self) -> String {
-        match self {
-            Ok(_) => panic!("unexpected writer"),
-            Err(e) => e.to_string(),
-        }
-    }
 }
