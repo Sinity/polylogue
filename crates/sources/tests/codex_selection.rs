@@ -137,14 +137,14 @@ fn text_and_thinking_use_exact_original_leaf_indices_and_one_normalization_itera
     let data = selection(&view, 0, 1, BlockField::ThinkingData);
     assert_eq!(data.transform, Transform::JsonStringV1);
     assert_eq!(extract(&bytes, &data), vec![json!("cipher")]);
-    let Cell::Witness(model) = view.cells.get(&Key::Presence(0, "model".into())).unwrap() else {
+    let Cell::SlotValue(model) = view.cells.get(&Key::Presence(0, "model".into())).unwrap() else {
         panic!("shape")
     };
     assert_eq!(
         extract(&bytes, model.selection.as_ref().unwrap()),
         vec![json!("selected-model")]
     );
-    let Cell::Witness(at) = view.cells.get(&Key::Presence(0, "at".into())).unwrap() else {
+    let Cell::SlotValue(at) = view.cells.get(&Key::Presence(0, "at".into())).unwrap() else {
         panic!("shape")
     };
     assert_eq!(
@@ -168,7 +168,7 @@ fn overlay_selection_retains_original_content_and_replacement_uses_new_record() 
     let view = parse(&bytes);
     let selected = selection(&view, 0, 0, BlockField::Text);
     assert_eq!(extract(&bytes, &selected), vec![json!("old")]);
-    let Cell::Witness(phase) = view
+    let Cell::SlotValue(phase) = view
         .cells
         .get(&Key::Presence(0, "extra:phase".into()))
         .unwrap()
@@ -719,7 +719,7 @@ fn evaluator_captured_text_thinking_and_message_witnesses_match_owning_leaf_enco
     for cell in view.cells.values() {
         let witnesses: Vec<_> = match cell {
             Cell::Presence(group) => group.fields.iter().collect(),
-            Cell::Witness(w) => vec![w],
+            Cell::SlotValue(w) => vec![w],
             _ => continue,
         };
         for witness in witnesses {

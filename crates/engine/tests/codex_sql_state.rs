@@ -910,7 +910,7 @@ fn timestamp_only_delta_emits_work_without_manufacturing_a_version_change() {
         .unwrap()
         .clone()
         .unwrap();
-    if let Cell::Witness(w) = &mut witness {
+    if let Cell::SlotValue(w) = &mut witness {
         w.source_time.as_mut().unwrap().0 += 5000;
         w.canonical = br#""2026-10-09T14:30:05Z""#.to_vec();
     }

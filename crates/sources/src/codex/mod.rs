@@ -14,7 +14,7 @@ pub mod projection;
 pub mod prompt_history;
 mod raw;
 pub mod selection;
-pub const PARSER_VERSION: u32 = 12;
+pub const PARSER_VERSION: u32 = 13;
 
 /// Record kinds that carry nothing to keep in the index (their bytes stay stored).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

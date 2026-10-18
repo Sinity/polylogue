@@ -142,7 +142,7 @@ fn one_record_after_large_unique_prefix_uses_only_point_and_neighbor_reads() {
     let mut measurements = Vec::new();
     for n in [3, 3000] {
         let (view, resume) = prefix(n);
-        assert_eq!(resume.settled_before(), 1);
+        assert_eq!(resume.first_open_message(), 1);
         let meter = Meter {
             base: &view,
             reads: Counter::new(0),
@@ -322,8 +322,8 @@ fn provider_key_codec_roundtrips_and_preserves_derived_key_order() {
         Key::EvidenceHead(8),
         Key::EvidenceItem(8, "id\0x".into()),
         Key::Context(1),
-        Key::CallWitness("id".into()),
-        Key::StatusWitness("id".into()),
+        Key::CallAssociation("id".into()),
+        Key::StatusEvidence("id".into()),
         Key::Result("id".into()),
         Key::NativeItem("response_item".into(), "id\0x".into()),
         Key::NativeItem("completed:t".into(), "id".into()),

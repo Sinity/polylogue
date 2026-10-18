@@ -4,7 +4,7 @@ use polylogue_sources::{
     claude_code::{
         self, FileCtx, KeyedRecords,
         keyed::{Contribution, MemoryReadView, ReadView, ResponseKey},
-        projection::{CountingObligation, Field, RecordCursor, Unit},
+        projection::{Field, RecordCursor, Unit, Unresolved},
         selection::Transform,
     },
     frame::drive_jsonl,
@@ -98,9 +98,9 @@ fn supplied_flags_preserve_presence_values_origins_and_version_evidence_without_
         }
         let (bytes, c) = parse(meta);
         assert!(
-            c.projection.obligations.is_empty(),
+            c.projection.unresolved.is_empty(),
             "{:?}",
-            c.projection.obligations
+            c.projection.unresolved
         );
         evidence.push(c.record_unit(0));
         let mut mapped = result(&c);
@@ -166,8 +166,8 @@ fn wrong_types_and_unknown_metadata_keep_exact_typed_obligations() {
             }
             let (_, c) = parse(json!({key:value}));
             assert_eq!(
-                c.projection.obligations,
-                vec![CountingObligation::UnmappedField {
+                c.projection.unresolved,
+                vec![Unresolved::UnmappedField {
                     path: vec!["toolUseResult".into(), key.into()]
                 }]
             );

@@ -475,7 +475,7 @@ fn append_cost(prefix: usize) -> (usize, usize) {
         scalar_width += relative(&mut origin.record, base, record_length);
     }
     let projection = &mut out.delta.contributions[0].2.projection;
-    for fact in projection.facts.iter_mut().chain(&mut projection.retained) {
+    for fact in projection.facts.iter_mut().chain(&mut projection.derived) {
         if let Some(selection) = &mut fact.selection {
             for input in &mut selection.inputs {
                 scalar_width += relative(&mut input.record, base, record_length);

@@ -60,7 +60,7 @@ pub(super) fn overlay(
         .filter(|key| !newer.contains_key(*key))
         .cloned()
         .collect();
-    let retained = missing.clone();
+    let kept = missing.clone();
     let mut conflicts = missing;
     for name in ["role", "type"] {
         if let (Some(a), Some(b)) = (previous.get(name), newer.get(name)) {
@@ -79,7 +79,7 @@ pub(super) fn overlay(
             value,
             conflicts,
             provided,
-            retained,
+            kept,
         },
     ))
 }
@@ -87,7 +87,7 @@ pub(super) struct ValueFields {
     pub value: polylogue_model::RawJson,
     pub conflicts: Vec<String>,
     pub provided: Vec<String>,
-    pub retained: Vec<String>,
+    pub kept: Vec<String>,
 }
 #[cfg(test)]
 mod tests {

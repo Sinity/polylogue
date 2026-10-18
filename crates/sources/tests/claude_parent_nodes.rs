@@ -69,7 +69,7 @@ fn omitted_system_classification_keeps_its_original_donor_and_unknown_correction
     let mut m = MemoryReadView::default();
     let first = step(&mut m, a, 0);
     let second = step(&mut m, omitted, a.len() as u64);
-    assert_eq!(first.subtype_donor, second.subtype_donor);
+    assert_eq!(first.subtype_origin, second.subtype_origin);
     assert_eq!(
         second.predecessor().unwrap().unwrap().value.as_str(),
         Some("b")

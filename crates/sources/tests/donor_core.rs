@@ -92,13 +92,13 @@ fn retained_claude_family_admits_idless_records_and_keeps_literal_contributions(
             .delta
             .contributions
             .iter()
-            .all(|(_, _, c)| c.projection.obligations.is_empty()),
+            .all(|(_, _, c)| c.projection.unresolved.is_empty()),
         "{:?}",
         output
             .delta
             .contributions
             .iter()
-            .map(|(_, _, c)| &c.projection.obligations)
+            .map(|(_, _, c)| &c.projection.unresolved)
             .collect::<Vec<_>>()
     );
     let background = output

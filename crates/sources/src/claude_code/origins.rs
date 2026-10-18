@@ -40,7 +40,7 @@ impl RecordOrigins {
                         .get("message")
                         .and_then(|m| m.as_object())
                         .is_some_and(|m| m.contains_key(native_field));
-                    if let Some(origin) = donor(old, &key, supplied, range) {
+                    if let Some(origin) = field_origin(old, &key, supplied, range) {
                         result.fields.insert(key, origin);
                     }
                 }
@@ -49,7 +49,7 @@ impl RecordOrigins {
                 let supplied = incoming
                     .as_object()
                     .is_some_and(|m| m.contains_key(native_name));
-                if let Some(origin) = donor(old, &key, supplied, range) {
+                if let Some(origin) = field_origin(old, &key, supplied, range) {
                     result.fields.insert(key, origin);
                 }
             }
@@ -86,7 +86,7 @@ impl RecordOrigins {
         entry.map(|(key, value)| (key.as_slice(), value))
     }
 }
-fn donor(
+fn field_origin(
     old: Option<&RecordOrigins>,
     key: &[String],
     supplied: bool,

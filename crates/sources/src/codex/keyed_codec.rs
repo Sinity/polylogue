@@ -34,8 +34,8 @@ impl Key {
             Self::EvidenceHead(_) => "evidence_head",
             Self::EvidenceItem(_, _) => "evidence_item",
             Self::Context(_) => "context",
-            Self::CallWitness(_) => "call_witness",
-            Self::StatusWitness(_) => "status_witness",
+            Self::CallAssociation(_) => "call_association",
+            Self::StatusEvidence(_) => "status_evidence",
             Self::Result(_) => "result",
             Self::NativeItem(_, _) => "native_item",
             Self::OutputChunk(_, _, _) => "output_chunk",
@@ -89,8 +89,8 @@ impl Key {
             | Self::PendingStdin(s)
             | Self::ChildCount(s)
             | Self::Occurrence(s)
-            | Self::CallWitness(s)
-            | Self::StatusWitness(s)
+            | Self::CallAssociation(s)
+            | Self::StatusEvidence(s)
             | Self::Result(s)
             | Self::ContinuationTarget(s)
             | Self::Operation(s)
@@ -251,11 +251,11 @@ impl Key {
                 out.write_all(&[21])?;
                 number(out, *n)?;
             }
-            Self::CallWitness(s) => {
+            Self::CallAssociation(s) => {
                 out.write_all(&[22])?;
                 text(out, s)?;
             }
-            Self::StatusWitness(s) => {
+            Self::StatusEvidence(s) => {
                 out.write_all(&[23])?;
                 text(out, s)?;
             }
@@ -364,8 +364,8 @@ impl Key {
             19 => Self::EvidenceHead(r.number()?),
             20 => Self::EvidenceItem(r.number()?, r.text()?),
             21 => Self::Context(r.number()?),
-            22 => Self::CallWitness(r.text()?),
-            23 => Self::StatusWitness(r.text()?),
+            22 => Self::CallAssociation(r.text()?),
+            23 => Self::StatusEvidence(r.text()?),
             24 => Self::Result(r.text()?),
             25 => Self::NativeItem(r.text()?, r.text()?),
             26 => Self::OutputChunk(r.number()?, r.number()?, r.number()?),

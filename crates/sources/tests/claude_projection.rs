@@ -4,7 +4,7 @@ use polylogue_model::{BlockContent, Thinking};
 use polylogue_sources::claude_code::keyed::{
     BodyPayload, Contribution, MemoryReadView, ReadView, ResponseCell, ResponseKey,
 };
-use polylogue_sources::claude_code::projection::{CountingObligation, Field, RecordCursor, Unit};
+use polylogue_sources::claude_code::projection::{Field, RecordCursor, Unit, Unresolved};
 use polylogue_sources::claude_code::{FileCtx, KeyedRecords};
 use polylogue_sources::frame::drive_jsonl;
 use serde_json::{Value, json};
@@ -65,7 +65,7 @@ fn local_units_preserve_empty_blocks_and_exclude_their_metadata_from_counts() {
     step(&mut memory, value);
     let c = contribution(&memory, 0);
     let out = units(&c, 0);
-    assert!(c.projection.obligations.is_empty());
+    assert!(c.projection.unresolved.is_empty());
     let blocks: Vec<_> = out
         .iter()
         .filter_map(|u| {
@@ -267,9 +267,9 @@ fn unresolved_mapping_and_required_body_never_become_completed_empty_projection(
     let c = contribution(&memory, 0);
     assert!(
         c.projection
-            .obligations
+            .unresolved
             .iter()
-            .any(|o| matches!(o, CountingObligation::MissingText { local: 0 }))
+            .any(|o| matches!(o, Unresolved::MissingText { local: 0 }))
     );
     assert!(units(&c, 0).iter().any(|u| matches!(
         u,
@@ -318,7 +318,7 @@ fn completion_proof_is_explicit_and_record_witness_disappears_on_replacement() {
     assert!(units(&contribution(&memory, 0), 0).iter().any(|u| matches!(
         u,
         Unit::RecordHeader {
-            finished_witness: true,
+            aborted_mid_stream: true,
             ..
         }
     )));
@@ -330,7 +330,7 @@ fn completion_proof_is_explicit_and_record_witness_disappears_on_replacement() {
         !units(&contribution(&memory, 0), 0).iter().any(|u| matches!(
             u,
             Unit::RecordHeader {
-                finished_witness: true,
+                aborted_mid_stream: true,
                 ..
             }
         ))

@@ -19,7 +19,7 @@ pub enum Mode {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum Phase {
     Header,
-    MessageWitness(String),
+    MessageSlot(String),
     Block,
     BlockPresence,
     PendingResult,
@@ -57,7 +57,7 @@ pub struct Cursor {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unit {
     Header(Message),
-    MessageWitness(super::presence::Witness),
+    MessageSlot(super::presence::SlotValue),
     BlockPresence {
         index: usize,
         group: Option<super::presence::Group>,
@@ -175,7 +175,7 @@ impl Cursor {
                 self.id = Some(message.id.clone());
                 self.blocks = blocks;
                 self.phase = match self.scope {
-                    Scope::Message => Phase::MessageWitness(String::new()),
+                    Scope::Message => Phase::MessageSlot(String::new()),
                     Scope::Header => Phase::Done,
                     Scope::Block(index) => {
                         if index >= blocks {
@@ -189,14 +189,14 @@ impl Cursor {
                 };
                 Ok(Step::Unit(Unit::Header(message)))
             }
-            Phase::MessageWitness(ref after) => {
+            Phase::MessageSlot(ref after) => {
                 let key = Key::Presence(self.message, after.clone());
                 match view.next(&key)? {
-                    Some((Key::Presence(message, name), Cell::Witness(w)))
+                    Some((Key::Presence(message, name), Cell::SlotValue(w)))
                         if message == self.message && name > *after =>
                     {
-                        self.phase = Phase::MessageWitness(name);
-                        Ok(Step::Unit(Unit::MessageWitness(w)))
+                        self.phase = Phase::MessageSlot(name);
+                        Ok(Step::Unit(Unit::MessageSlot(w)))
                     }
                     Some((found, _)) if found <= key || !found.same_family(&key) => {
                         Err("invalid Codex presence neighbor".into())
@@ -430,9 +430,7 @@ pub fn collect(
                             _ => return Err("projection chunk replaced nontext output".into()),
                         }
                     }
-                    Unit::ResultEnd { .. }
-                    | Unit::MessageWitness(_)
-                    | Unit::BlockPresence { .. } => {}
+                    Unit::ResultEnd { .. } | Unit::MessageSlot(_) | Unit::BlockPresence { .. } => {}
                     Unit::Continuation { call_id } => continued.push(Value::from(call_id)),
                     Unit::WrapperStart { call_id, .. } => {
                         children.insert(call_id.into(), Value::Array(Vec::new()));

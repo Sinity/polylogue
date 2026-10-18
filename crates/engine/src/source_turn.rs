@@ -114,8 +114,8 @@ impl CommittedContinuation {
     pub fn scanned_upto(&self) -> u64 {
         self.framing.scanned_upto()
     }
-    pub fn retained_capacity(&self) -> usize {
-        self.framing.retained_capacity()
+    pub fn buffer_capacity(&self) -> usize {
+        self.framing.buffer_capacity()
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,8 +166,8 @@ impl PendingTurn {
     pub fn counts(&self) -> &Counts {
         self.pending.counts()
     }
-    pub fn retained_capacity(&self) -> usize {
-        self.pending.retained_capacity()
+    pub fn buffer_capacity(&self) -> usize {
+        self.pending.buffer_capacity()
     }
     pub fn step(&self) -> Step {
         self.step

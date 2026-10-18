@@ -12,7 +12,7 @@ use polylogue_model::{
 use polylogue_sources::codex::{
     keyed::{Cell, EvidenceCursor, EvidenceHead, Key, ReadView},
     origins::{self, Origins, RecordRange},
-    presence::{Group, Witness},
+    presence::{Group, SlotValue},
     projection::{Cursor as SourceCursor, Mode, Step, Unit},
     selection::{self, Binding, FactSelection},
 };
@@ -676,14 +676,14 @@ fn block(attempt: &Attempt<'_>, message: usize, index: usize) -> Result<(Block, 
     Ok((value, group))
 }
 
-fn message_witness(attempt: &Attempt<'_>, before: &SourceCursor) -> Result<Witness> {
+fn message_witness(attempt: &Attempt<'_>, before: &SourceCursor) -> Result<SlotValue> {
     let mut source = before.clone();
     let step = source.advance(attempt);
     if let Some(e) = attempt.take_failure() {
         return Err(e.into());
     }
     match step.map_err(Error::Source)? {
-        Step::Unit(Unit::MessageWitness(w)) => Ok(w),
+        Step::Unit(Unit::MessageSlot(w)) => Ok(w),
         _ => Err(Error::Invariant(
             "field locator no longer selects its source witness",
         )),
@@ -801,7 +801,7 @@ fn citation_turn(
                         "source disappeared during citation scan",
                     ));
                 }
-                Step::Unit(Unit::MessageWitness(_)) => Stage::Citations(Citations::Message {
+                Step::Unit(Unit::MessageSlot(_)) => Stage::Citations(Citations::Message {
                     before,
                     after: source,
                     origins: origins::Cursor::default(),
@@ -978,7 +978,7 @@ struct FieldDescriptor<'a> {
     selection: FieldSelector<'a>,
 }
 impl<'a> FieldDescriptor<'a> {
-    fn codex(w: &'a Witness) -> Result<Self> {
+    fn codex(w: &'a SlotValue) -> Result<Self> {
         Ok(Self {
             slot: &w.slot,
             time: w.source_time.map(|t| t.0),
@@ -1399,7 +1399,7 @@ fn compute_one(
                     }
                     advance(state, &cursor, b)
                 }
-                Step::Unit(Unit::MessageWitness(w)) => {
+                Step::Unit(Unit::MessageSlot(w)) => {
                     let _ = w;
                     cursor.verified = None;
                     cursor.stage = Stage::MessageField { witness: before };

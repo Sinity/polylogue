@@ -154,7 +154,7 @@ fn model_context_origins_freeze_and_timestamp_origin_is_outside_digest() {
             panic!("shape")
         };
         assert_eq!(ranges(&context.origins), vec![expected]);
-        let Cell::Witness(w) = view
+        let Cell::SlotValue(w) = view
             .cells
             .get(&Key::Presence(message, "model".into()))
             .unwrap()
@@ -163,7 +163,7 @@ fn model_context_origins_freeze_and_timestamp_origin_is_outside_digest() {
         };
         assert_eq!(ranges(&w.origins), vec![expected]);
     }
-    let Cell::Witness(w) = view.cells.get(&Key::Presence(0, "at".into())).unwrap() else {
+    let Cell::SlotValue(w) = view.cells.get(&Key::Presence(0, "at".into())).unwrap() else {
         panic!("shape")
     };
     assert_eq!(w.slot, Slot::Message(MessageField::At));

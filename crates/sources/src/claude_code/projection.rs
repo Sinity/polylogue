@@ -43,7 +43,7 @@ pub struct Fact {
     pub selection: Option<super::selection::LeafSelection>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CountingObligation {
+pub enum Unresolved {
     MissingText { local: u32 },
     UnmappedField { path: Vec<String> },
     FirstAuthorUpdate,
@@ -53,12 +53,12 @@ pub enum CountingObligation {
 pub struct RecordFacts {
     pub facts: Vec<Fact>,
     /// Derived auxiliary leaves retained with origins, absent from rank/fill.
-    pub retained: Vec<Fact>,
+    pub derived: Vec<Fact>,
     pub block_counts: Vec<(bool, bool)>,
-    pub obligations: Vec<CountingObligation>,
+    pub unresolved: Vec<Unresolved>,
     /// Positive proof on this effective record only. Removing/replacing the
     /// record removes its witness; the owner combines selected group witnesses.
-    pub finished_witness: bool,
+    pub aborted_mid_stream: bool,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordCursor {
@@ -67,7 +67,7 @@ pub struct RecordCursor {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Unit {
-    Retained {
+    Derived {
         item: u64,
         fact: Fact,
         value: Value,
@@ -84,7 +84,7 @@ pub enum Unit {
         uuid: String,
         blocks: u32,
         counting_complete: bool,
-        finished_witness: bool,
+        aborted_mid_stream: bool,
     },
     Block {
         item: u64,
@@ -98,9 +98,9 @@ pub enum Unit {
         fact: Fact,
         value: Value,
     },
-    Counting {
+    Unresolved {
         item: u64,
-        obligation: CountingObligation,
+        unresolved: Unresolved,
     },
     Evidence(EvidenceUnit),
     RequiredBodyUnavailable {
@@ -207,8 +207,8 @@ impl Contribution {
                     uuid: self.uuid.clone(),
                     blocks: u32::try_from(self.blocks.len())
                         .map_err(|_| "Claude block count overflow")?,
-                    counting_complete: self.projection.obligations.is_empty(),
-                    finished_witness: self.projection.finished_witness,
+                    counting_complete: self.projection.unresolved.is_empty(),
+                    aborted_mid_stream: self.projection.aborted_mid_stream,
                 }),
                 1 => {
                     if let Some(content) = self.blocks.get(n) {
@@ -266,11 +266,11 @@ impl Contribution {
                 }
                 3 => self
                     .projection
-                    .obligations
+                    .unresolved
                     .get(n)
-                    .map(|obligation| Unit::Counting {
+                    .map(|unresolved| Unit::Unresolved {
                         item,
-                        obligation: obligation.clone(),
+                        unresolved: unresolved.clone(),
                     }),
                 4 => Some(Unit::Evidence(self.record_unit(item))),
                 5 => match self.bodies.get(n) {
@@ -282,7 +282,7 @@ impl Contribution {
                     None => None,
                 },
                 6 => {
-                    if let Some(fact) = self.projection.retained.get(n) {
+                    if let Some(fact) = self.projection.derived.get(n) {
                         let raw = if matches!(
                             fact.selection.as_ref().map(|s| &s.transform),
                             Some(super::selection::Transform::BackgroundV1 { .. })
@@ -300,7 +300,7 @@ impl Contribution {
                         let value = at(&source, &fact.source_path)
                             .ok_or("Claude retained leaf lost its raw value")?
                             .clone();
-                        Some(Unit::Retained {
+                        Some(Unit::Derived {
                             item,
                             fact: fact.clone(),
                             value,
@@ -521,7 +521,7 @@ pub(super) fn record(
     old: Option<&RecordFacts>,
 ) -> Result<RecordFacts, String> {
     let mut result = RecordFacts {
-        finished_witness: v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true),
+        aborted_mid_stream: v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true),
         ..RecordFacts::default()
     };
     if crate::time::intrinsic_field(v.get("timestamp")).is_some() {
@@ -535,7 +535,7 @@ pub(super) fn record(
     if v.get("parentUuid")
         .is_some_and(|v| !v.is_null() && v.native().is_none())
     {
-        result.obligations.push(CountingObligation::UnmappedField {
+        result.unresolved.push(Unresolved::UnmappedField {
             path: path(&["parentUuid"]),
         });
     }
@@ -606,7 +606,7 @@ pub(super) fn record(
                                     != Some("peer")
                                     && value.is_string()
                                 {
-                                    result.obligations.push(CountingObligation::UnmappedField {
+                                    result.unresolved.push(Unresolved::UnmappedField {
                                         path: path(&["origin", name]),
                                     });
                                 }
@@ -668,9 +668,7 @@ pub(super) fn record(
             .unwrap_or(&Value::Null);
         if empty {
             if !raw.is_string() && !raw.get("text").is_some_and(Value::is_string) {
-                result
-                    .obligations
-                    .push(CountingObligation::MissingText { local })
+                result.unresolved.push(Unresolved::MissingText { local })
             }
             continue;
         }
@@ -742,7 +740,7 @@ pub(super) fn record(
                 // not a second supplied semantic status slot.
                 if let Some(path) = decision.reason {
                     add(
-                        &mut result.retained,
+                        &mut result.derived,
                         Field::Block {
                             local,
                             field: BlockField::OutcomeReason,
@@ -760,9 +758,7 @@ pub(super) fn record(
                     );
                 }
                 for path in decision.unresolved {
-                    result
-                        .obligations
-                        .push(CountingObligation::UnmappedField { path });
+                    result.unresolved.push(Unresolved::UnmappedField { path });
                 }
                 if raw
                     .get("content")
@@ -775,7 +771,7 @@ pub(super) fn record(
                                 .is_some_and(super::tool_result::reference_content)
                     })
                 {
-                    result.obligations.push(CountingObligation::UnmappedField {
+                    result.unresolved.push(Unresolved::UnmappedField {
                         path: {
                             let mut p = base.clone();
                             p.push("content".into());
@@ -787,14 +783,14 @@ pub(super) fn record(
             BlockContent::Image(_) | BlockContent::File(_) => {
                 known.push("source");
                 result
-                    .obligations
-                    .push(CountingObligation::UnmappedField { path: base.clone() });
+                    .unresolved
+                    .push(Unresolved::UnmappedField { path: base.clone() });
             }
             BlockContent::Other { .. } => {
                 leaf("", BlockField::OtherData, true);
                 result
-                    .obligations
-                    .push(CountingObligation::UnmappedField { path: base.clone() });
+                    .unresolved
+                    .push(Unresolved::UnmappedField { path: base.clone() });
             }
         }
         if let Some(object) = raw
@@ -816,7 +812,7 @@ pub(super) fn record(
             .iter()
             .any(|b| matches!(b, BlockContent::ToolResult(_)))
     {
-        result.obligations.push(CountingObligation::UnmappedField {
+        result.unresolved.push(Unresolved::UnmappedField {
             path: path(&["toolUseResult"]),
         });
     }
@@ -825,17 +821,17 @@ pub(super) fn record(
             .iter()
             .any(|b| matches!(b, BlockContent::ToolResult(_)))
     {
-        result.obligations.push(CountingObligation::UnmappedField {
+        result.unresolved.push(Unresolved::UnmappedField {
             path: path(&["toolDenialKind"]),
         });
     }
     if let Some(old) = old {
-        for fact in result.facts.iter_mut().chain(&mut result.retained) {
+        for fact in result.facts.iter_mut().chain(&mut result.derived) {
             if at(incoming, &fact.source_path).is_none() {
                 if let Some(before) = old
                     .facts
                     .iter()
-                    .chain(&old.retained)
+                    .chain(&old.derived)
                     .find(|f| f.field == fact.field)
                 {
                     fact.supplied_revision = before.supplied_revision;

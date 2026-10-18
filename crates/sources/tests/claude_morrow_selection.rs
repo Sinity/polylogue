@@ -7,7 +7,7 @@ use polylogue_sources::{
     claude_code::{
         self, FileCtx, KeyedRecords,
         keyed::{MemoryReadView, ReadView, ResponseKey},
-        projection::{CountingObligation, Field, RecordCursor, Unit},
+        projection::{Field, RecordCursor, Unit, Unresolved},
         selection::{AuthorLeaf, Transform},
     },
     frame::drive_jsonl,
@@ -144,8 +144,8 @@ fn morrow_has_exact_native_message_identity_source_order_and_replayable_typed_le
                     assert_eq!(evaluate(&recipe, MORROW), value);
                     signatures += 1;
                 }
-                Unit::Counting { obligation, .. } => {
-                    panic!("unexpected Morrow counting obligation: {obligation:?}")
+                Unit::Unresolved { unresolved, .. } => {
+                    panic!("unexpected unresolved field: {unresolved:?}")
                 }
                 _ => {}
             }
@@ -306,8 +306,8 @@ fn signature_is_an_auxiliary_unit_and_author_correction_stays_unresolved() {
         .unwrap();
     assert!(
         c.projection
-            .obligations
-            .contains(&CountingObligation::FirstAuthorUpdate)
+            .unresolved
+            .contains(&Unresolved::FirstAuthorUpdate)
     );
     assert_eq!(response.message.written_by, WrittenBy::Human);
     assert_eq!(
@@ -388,7 +388,7 @@ fn inline_output_and_named_channels_remain_distinct_with_known_empty_stderr() {
     );
     assert_eq!(result.data.as_ref().unwrap()["stderr"].as_str(), Some(""));
     assert_eq!(result.exit_code, Some(0));
-    assert!(c.projection.obligations.is_empty());
+    assert!(c.projection.unresolved.is_empty());
     assert_eq!(
         c.projection
             .facts
@@ -482,7 +482,7 @@ fn supplied_status_mapping_and_selector_share_the_classifier_without_double_coun
         );
         let why = c
             .projection
-            .retained
+            .derived
             .iter()
             .find(|f| {
                 matches!(
@@ -505,7 +505,7 @@ fn supplied_status_mapping_and_selector_share_the_classifier_without_double_coun
                 ..
             }
         )));
-        assert!(units(&c,0).iter().any(|unit| matches!(unit,Unit::Retained{fact,..} if matches!(fact.field,Field::Block{field:BlockField::OutcomeReason,..}))));
+        assert!(units(&c,0).iter().any(|unit| matches!(unit,Unit::Derived{fact,..} if matches!(fact.field,Field::Block{field:BlockField::OutcomeReason,..}))));
     }
 }
 
@@ -573,7 +573,7 @@ fn false_interrupted_is_its_own_supplied_status_not_a_default_outcome_witness() 
             result.data.as_ref().unwrap()["interrupted"].as_bool(),
             Some(false)
         );
-        assert!(c.projection.obligations.is_empty());
+        assert!(c.projection.unresolved.is_empty());
         assert_eq!(
             c.projection
                 .facts
@@ -646,7 +646,7 @@ fn parent_reference_uses_session_scoped_record_address_and_original_donor() {
         .contribution(&response.message.id, 0)
         .unwrap()
         .unwrap();
-    assert!(c.projection.obligations.is_empty());
+    assert!(c.projection.unresolved.is_empty());
     let fact = c
         .projection
         .facts
@@ -700,7 +700,7 @@ fn native_parent_fragments_resolve_their_owner_but_unseen_parents_remain_pending
                 .unwrap()
                 .unwrap();
             assert_eq!(response.message.parent, Some(owner.message.id.clone()));
-            assert!(c.projection.obligations.is_empty());
+            assert!(c.projection.unresolved.is_empty());
             let recipe = c
                 .projection
                 .facts
@@ -723,8 +723,8 @@ fn native_parent_fragments_resolve_their_owner_but_unseen_parents_remain_pending
         assert!(response.message.parent.is_none());
         assert!(
             c.projection
-                .obligations
-                .contains(&CountingObligation::ParentResolution)
+                .unresolved
+                .contains(&Unresolved::ParentResolution)
         );
         assert!(
             c.projection
@@ -1033,7 +1033,7 @@ fn morrow_preflight_enumerates_every_extra_and_checks_normalized_source_carriers
         };
         for item in 0..r.items {
             let c = memory.contribution(&r.message.id, item).unwrap().unwrap();
-            for fact in c.projection.facts.iter().chain(&c.projection.retained) {
+            for fact in c.projection.facts.iter().chain(&c.projection.derived) {
                 inspect(fact)
             }
         }
