@@ -546,7 +546,12 @@ fn opaque_field<W: Write>(
 ) -> io::Result<()> {
     if !model_page {
         let first = stored(field.range(0, LEAF))?;
-        if !first.eof && first.bytes.first() == Some(&b'"') {
+        if first.eof {
+            let value = RetainedJson::parse(&first.bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            return opaque_value(e, &value, deadline, false);
+        }
+        if first.bytes.first() == Some(&b'"') {
             return e.retained_string_ranges(
                 |offset| {
                     let part = stored(field.range(offset, PIECE))?;
@@ -558,6 +563,7 @@ fn opaque_field<W: Write>(
                 cancelled,
             );
         }
+        return Err(invalid("normalized JSON leaf exceeds response admission"));
     }
     let value =
         retained_field(field, false)?.ok_or_else(|| invalid("missing opaque block field"))?;
