@@ -1,9 +1,12 @@
 //! Streaming masking for the fixed `credential-output-v1` catalog.
 //!
 //! Text that might still become a credential is held back, up to 512 UTF-8
-//! bytes; going past that returns `InvalidData` without writing the held text.
-//! Recognized secrets and PEM bodies are replaced as they stream, so they do
-//! not accumulate. Any error closes the stream.
+//! bytes. When an undecided match outgrows that window it is forced: its held
+//! text is masked, and every later character it consumes is masked until it
+//! ends. That can mask text that would not have matched, but it never refuses
+//! input and never writes part of a credential. Recognized secrets and PEM
+//! bodies are replaced as they stream, so they do not accumulate. Only sink
+//! errors fail a call, and they close the stream.
 use std::collections::VecDeque;
 use std::io::{self, Write};
 
@@ -13,10 +16,10 @@ use word_ranges::is_word_char;
 #[cfg(test)]
 mod tests;
 
-/// Most UTF-8 bytes held back while a match is undecided. Also caps open URL
-/// and PEM header matches and the length of one PEM header.
+/// Most UTF-8 bytes held back while a match is undecided. Also the longest PEM
+/// label whose END line is tracked; a longer one masks to the end of the string.
 const CARRY: usize = 512;
-/// Most open token matches.
+/// Most undecided token matches before the oldest is forced.
 const MAX_CANDIDATES: usize = 2048;
 /// Catalog families, numbered in catalog order. URL is 19 and PEM is 20; they
 /// are matched by `Url` and `PemHeader`, not by patterns.
@@ -25,13 +28,6 @@ const FAMILIES: usize = 22;
 fn whitespace(c: char) -> bool {
     // Python's str.isspace also counts U+001C..U+001F.
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
-}
-
-fn limit_reached() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        "credential masking limit reached: too much undecided text",
-    )
 }
 
 #[derive(Clone, Copy)]
@@ -328,9 +324,29 @@ struct Candidate {
     alive: bool,
     /// Its masked region has been recorded; it may still grow.
     committed: bool,
+    /// Set when it outgrew the hold window: everything from this offset that
+    /// it consumes is masked while it stays alive.
+    forced: Option<usize>,
 }
 
 impl Candidate {
+    /// Undecided matches hold back output; forced and committed ones do not.
+    fn holds(&self) -> bool {
+        !self.committed && self.forced.is_none()
+    }
+
+    /// Where forcing starts to mask: the secret if it has begun, else the
+    /// whole match.
+    fn force(&mut self, p: &Pattern) -> usize {
+        let from = if self.part > p.secret || self.part == p.secret && self.count > 0 {
+            self.secret
+        } else {
+            self.start
+        };
+        self.forced = Some(from);
+        from
+    }
+
     fn step(&mut self, c: char, pos: usize, p: &Pattern) {
         while self.part < p.parts.len() {
             let part = &p.parts[self.part];
@@ -385,6 +401,8 @@ struct Url {
     colon: Option<usize>,
     /// Last `@` in the authority.
     at: Option<usize>,
+    /// The whole authority is masked while it lasts.
+    forced: bool,
 }
 
 impl Url {
@@ -424,51 +442,68 @@ impl Url {
 }
 
 /// A possible `-----BEGIN ... PRIVATE KEY-----` line.
+#[derive(Default)]
 struct PemHeader {
     start: usize,
-    text: String,
+    /// Characters of `-----BEGIN ` seen.
+    prefix: usize,
+    /// The label, or only its last bytes once it is longer than `CARRY`.
+    label: String,
+    long_label: bool,
+    /// Closing dashes seen.
+    dashes: usize,
+    forced: bool,
 }
 
 impl PemHeader {
-    /// `Ok(Some(end_line))` when the header is complete, `Ok(None)` while it
-    /// may still match, `Err` when it cannot.
-    fn step(&mut self, c: char) -> Result<Option<String>, ()> {
-        self.text.push(c);
-        let prefix = "-----BEGIN ";
-        if self.text.len() <= prefix.len() {
-            return if prefix.starts_with(&self.text) {
-                Ok(None)
-            } else {
-                Err(())
-            };
-        }
-        let tail = &self.text[prefix.len()..];
-        let label_end = tail.find('-').unwrap_or(tail.len());
-        let label = &tail[..label_end];
-        if !label.bytes().all(|b| b.is_ascii_uppercase() || b == b' ')
-            || label.starts_with(' ')
-            || label.contains("  ")
-        {
+    const PREFIX: &'static str = "-----BEGIN ";
+    const SUFFIX: &'static str = " PRIVATE KEY";
+
+    /// `Ok(Some(end))` when the header is complete, `Ok(None)` while it may
+    /// still match, `Err` when it cannot. `end` is the END line, or `None`
+    /// when the label was too long to keep.
+    fn step(&mut self, c: char) -> Result<Option<Option<String>>, ()> {
+        if self.prefix < Self::PREFIX.len() {
+            if Self::PREFIX[self.prefix..].starts_with(c) {
+                self.prefix += 1;
+                return Ok(None);
+            }
             return Err(());
         }
-        if label_end == tail.len() {
-            return Ok(None);
+        if self.dashes > 0 || c == '-' {
+            let label_ok = self.dashes > 0
+                || !self.long_label && self.label == "PRIVATE KEY"
+                || self.label.ends_with(Self::SUFFIX);
+            if c != '-' || !label_ok {
+                return Err(());
+            }
+            self.dashes += 1;
+            if self.dashes < 5 {
+                return Ok(None);
+            }
+            let label = &self.label;
+            return Ok(Some(
+                (!self.long_label).then(|| format!("-----END {label}-----")),
+            ));
         }
-        if !(label == "PRIVATE KEY" || label.ends_with(" PRIVATE KEY")) {
+        let space_ok = !self.label.is_empty() && !self.label.ends_with(' ');
+        if !(c.is_ascii_uppercase() || c == ' ' && space_ok) {
             return Err(());
         }
-        let dashes = &tail[label_end..];
-        if !"-----".starts_with(dashes) {
-            return Err(());
+        self.label.push(c);
+        if self.label.len() > CARRY {
+            self.label.drain(..self.label.len() - Self::SUFFIX.len());
+            self.long_label = true;
         }
-        Ok((dashes.len() == 5).then(|| format!("-----END {label}-----")))
+        Ok(None)
     }
 }
 
-/// An open PEM block; everything is masked until `end` is seen.
+/// An open PEM block; everything is masked until `end` is seen, or to the end
+/// of the string when `end` is `None`.
 struct Pem {
     start: usize,
-    end: String,
+    end: Option<String>,
     /// The last `end.len()` characters.
     tail: VecDeque<char>,
 }
@@ -654,21 +689,6 @@ impl Masker {
     }
 
     fn step(&mut self, c: char, sink: &mut impl Write) -> io::Result<()> {
-        let held = self
-            .pending
-            .front()
-            .map_or(0, |first| self.position - first.pos);
-        if held + c.len_utf8() > CARRY
-            || self.candidates.len() >= MAX_CANDIDATES
-            || self.urls.len() >= CARRY
-            || self.headers.len() >= CARRY
-            || self
-                .headers
-                .iter()
-                .any(|h| h.text.len() + c.len_utf8() > CARRY)
-        {
-            return Err(limit_reached());
-        }
         let pos = self.position;
         self.position += c.len_utf8();
         self.pending.push_back(Cell {
@@ -683,29 +703,120 @@ impl Masker {
                 candidate.step(c, pos, &self.patterns[candidate.pattern]);
             }
         }
-        self.start_candidates(c, pos)?;
+        self.start_candidates(c, pos);
         self.commit_candidates();
-        let safe = self
-            .candidates
-            .iter()
-            .filter(|c| !c.committed)
-            .map(|c| c.start)
-            .chain(self.urls.iter().filter_map(|u| u.authority))
-            .chain(self.headers.iter().map(|h| h.start))
-            .min()
-            .unwrap_or(self.position);
+        self.mask_forced();
+        while let Some(oldest) = self.oldest_hold() {
+            let undecided = self.candidates.iter().filter(|c| c.holds()).count();
+            if self.position - oldest <= CARRY && undecided <= MAX_CANDIDATES {
+                break;
+            }
+            self.force(oldest);
+        }
+        let safe = self.oldest_hold().unwrap_or(self.position);
         self.drain(safe, sink)?;
         self.previous = Some(c);
         Ok(())
     }
 
+    /// Start of the oldest match that still holds back output.
+    fn oldest_hold(&self) -> Option<usize> {
+        self.candidates
+            .iter()
+            .filter(|c| c.holds())
+            .map(|c| c.start)
+            .chain(
+                self.urls
+                    .iter()
+                    .filter(|u| !u.forced)
+                    .filter_map(|u| u.authority),
+            )
+            .chain(self.headers.iter().filter(|h| !h.forced).map(|h| h.start))
+            .min()
+    }
+
+    /// Forces every holding match that starts at `start` and masks what it
+    /// has consumed so far.
+    fn force(&mut self, start: usize) {
+        let mut spans = Vec::new();
+        for c in &mut self.candidates {
+            if c.holds() && c.start == start {
+                let p = &self.patterns[c.pattern];
+                let from = c.force(p);
+                // A finished match waiting behind an earlier one of its family.
+                let end = if c.alive { None } else { c.accepted };
+                spans.push((from, end.unwrap_or(self.position), p.kind));
+            }
+        }
+        for u in &mut self.urls {
+            if !u.forced && u.authority == Some(start) {
+                u.forced = true;
+                spans.push((start, self.position, "URL credentials"));
+            }
+        }
+        for h in &mut self.headers {
+            if !h.forced && h.start == start {
+                h.forced = true;
+                spans.push((start, self.position, "PEM private key"));
+            }
+        }
+        for (a, b, kind) in spans {
+            self.cover(a, b, kind);
+        }
+    }
+
+    /// Extends the masks of forced matches over the character just read, and
+    /// drops matches whose whole span a forced match already masks.
+    fn mask_forced(&mut self) {
+        let mut spans = Vec::new();
+        let mut forced = Vec::new();
+        for c in &self.candidates {
+            if let (Some(from), true) = (c.forced, c.alive) {
+                spans.push((from, self.patterns[c.pattern].kind));
+                forced.push((c.pattern, c.part, c.count, c.start, from));
+            }
+        }
+        spans.extend(
+            self.urls
+                .iter()
+                .filter(|u| u.forced)
+                .filter_map(|u| Some((u.authority?, "URL credentials"))),
+        );
+        spans.extend(
+            self.headers
+                .iter()
+                .filter(|h| h.forced)
+                .map(|h| (h.start, "PEM private key")),
+        );
+        for (from, kind) in spans {
+            self.cover(from, self.position, kind);
+        }
+        // A forced match has masked everything since `from` and masks
+        // everything it reads until it dies. A later match that started inside
+        // that span and has either finished or reached the same state (so it
+        // will die at the same character) adds nothing. Dropping these keeps
+        // the number of forced matches bounded.
+        if !forced.is_empty() {
+            self.candidates.retain(|b| {
+                !forced.iter().any(|&(pattern, part, count, start, from)| {
+                    b.start > start
+                        && b.start >= from
+                        && (!b.alive || b.pattern == pattern && b.part == part && b.count == count)
+                })
+            });
+        }
+    }
+
     fn step_pem(&mut self, c: char, pos: usize) {
         if let Some(pem) = &mut self.pem {
-            pem.tail.push_back(c);
-            if pem.tail.len() > pem.end.len() {
-                pem.tail.pop_front();
+            let mut done = false;
+            if let Some(end) = &pem.end {
+                pem.tail.push_back(c);
+                if pem.tail.len() > end.len() {
+                    pem.tail.pop_front();
+                }
+                done = pem.tail.iter().copied().eq(end.chars());
             }
-            let done = pem.tail.iter().copied().eq(pem.end.chars());
             let start = pem.start;
             self.cover(start, self.position, "PEM private key");
             if done {
@@ -716,7 +827,7 @@ impl Masker {
         if c == '-' {
             self.headers.push(PemHeader {
                 start: pos,
-                text: String::new(),
+                ..PemHeader::default()
             });
         }
         let mut complete = None;
@@ -759,7 +870,7 @@ impl Masker {
         }
     }
 
-    fn start_candidates(&mut self, c: char, pos: usize) -> io::Result<()> {
+    fn start_candidates(&mut self, c: char, pos: usize) {
         for (i, p) in self.patterns.iter().enumerate() {
             let at_boundary = match p.boundary {
                 Boundary::Word => self.previous.is_none_or(|x| !is_word_char(x)),
@@ -776,9 +887,6 @@ impl Masker {
             if !at_boundary || inside_match || !p.parts[0].class.accepts(c) {
                 continue;
             }
-            if self.candidates.len() == MAX_CANDIDATES {
-                return Err(limit_reached());
-            }
             let mut candidate = Candidate {
                 pattern: i,
                 start: pos,
@@ -788,11 +896,11 @@ impl Masker {
                 accepted: None,
                 alive: true,
                 committed: false,
+                forced: None,
             };
             candidate.step(c, pos, p);
             self.candidates.push(candidate);
         }
-        Ok(())
     }
 
     /// Writes held characters before `safe` and every masked cell at the front.

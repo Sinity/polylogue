@@ -219,7 +219,7 @@ fn long_secrets_stream_without_growing_state() {
             m.push(&"A".repeat(4096), &mut out).unwrap();
             assert!(m.pending.len() <= CARRY);
             assert!(m.candidates.len() <= MAX_CANDIDATES);
-            assert!(m.headers.iter().all(|h| h.text.len() <= CARRY));
+            assert!(m.headers.iter().all(|h| h.label.len() <= CARRY));
         }
         m.finish(&mut out).unwrap();
         assert_eq!(out.len(), initial, "{begin}");
@@ -229,38 +229,191 @@ fn long_secrets_stream_without_growing_state() {
     assert_eq!(masked(&[&ordinary]), ordinary);
 }
 #[test]
-fn overlong_undecided_text_is_refused_unwritten_and_closes_the_stream() {
-    for (prefix, visible) in [
-        ("before https://u:", "before https://"),
-        ("before eyJA", "before "),
-        ("before SG.A", "before "),
-        ("before --secret=\"x", "before "),
-        ("before -----BEGIN VENDOR ", "before "),
+fn undecided_text_past_the_window_is_masked_and_streaming_continues() {
+    let filler = "A".repeat(CARRY);
+    for (prefix, expected) in [
+        ("before https://u:", "before https://<masked> after"),
+        ("before eyJA", "before <masked> after"),
+        ("before SG.A", "before <masked> after"),
+        // A quoted value runs to its closing quote, so the rest is masked.
+        ("before --secret=\"x", "before --secret=<masked>"),
+        // Spaces may continue a PEM label; the lowercase `a` ends it.
+        ("before -----BEGIN VENDOR ", "before <masked>after"),
     ] {
         let mut m = Masker::new();
         let mut out = Vec::new();
         m.push(prefix, &mut out).unwrap();
-        let error = m.push(&"A".repeat(CARRY), &mut out).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(std::str::from_utf8(&out).unwrap(), visible, "{prefix}");
-        let calls = out.len();
-        assert!(m.push("later", &mut out).is_err());
-        assert!(m.block_boundary(&mut out).is_err());
-        assert!(m.finish(&mut out).is_err());
-        assert_eq!(out.len(), calls);
+        m.push(&filler, &mut out).unwrap();
+        m.push(" after", &mut out).unwrap();
+        m.finish(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(normalized(&text), expected, "{prefix}");
+        assert!(!text.contains("AAAA"), "{prefix}");
     }
 }
 #[test]
-fn too_many_open_matches_are_refused() {
+fn long_jwt_is_masked_whole() {
+    let payload = "eyJzdWIiOiJ0ZXN0In0".repeat(40);
+    assert!(payload.len() > CARRY);
+    let input = format!("token eyJhbGciOiJIUzI1NiJ9.{payload}.c2lnbmF0dXJl rest");
+    assert_eq!(normalized(&masked(&[&input])), "token <masked> rest");
+    let unfinished = format!("token eyJhbGciOiJIUzI1NiJ9{payload} rest");
+    assert_eq!(normalized(&masked(&[&unfinished])), "token <masked> rest");
+}
+#[test]
+fn long_url_password_is_masked_whole() {
+    let password = "p4ss".repeat(150);
+    let input = format!("see https://user:{password}@example.invalid/path rest");
+    let output = masked(&[&input]);
+    assert!(!output.contains("p4ss"));
+    assert_eq!(normalized(&output), "see https://<masked>/path rest");
+    // A short one keeps the host visible.
+    assert_eq!(
+        normalized(&masked(&["see https://user:p4ss@example.invalid/path"])),
+        "see https://<masked>@example.invalid/path"
+    );
+}
+#[test]
+fn long_ordinary_base64_is_not_masked() {
+    let mut rng = Rng(7);
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let body: String = (0..8192)
+        .map(|_| alphabet[rng.below(alphabet.len())] as char)
+        .collect();
+    for input in [
+        format!("data:image/png;base64,{body}== after"),
+        format!("{body}\n{body}"),
+    ] {
+        assert_eq!(masked(&[&input]), input);
+    }
+}
+#[test]
+fn long_pem_label_masks_to_the_end_of_the_string() {
+    let label = "LONG ".repeat(CARRY / 4);
+    let input =
+        format!("-----BEGIN {label}PRIVATE KEY-----body-----END {label}PRIVATE KEY----- after");
+    assert_eq!(normalized(&masked(&[&input])), "<masked>");
+    // A long header that turns out not to be a private key stays masked.
+    let input = format!("-----BEGIN {label}PUBLIC KEY----- after");
+    assert_eq!(normalized(&masked(&[&input])), "<masked>----- after");
+}
+#[test]
+fn forced_matches_stay_bounded() {
     let mut m = Masker::new();
     let mut out = Vec::new();
     m.push("-----BEGIN PRIVATE KEY-----", &mut out).unwrap();
-    let error = m
-        .push(&"eyJA-".repeat(MAX_CANDIDATES + 1), &mut out)
-        .unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    assert!(m.candidates.len() <= MAX_CANDIDATES + 1);
+    for _ in 0..8 {
+        m.push(&"eyJA-".repeat(MAX_CANDIDATES), &mut out).unwrap();
+        assert!(m.candidates.len() <= 64, "{}", m.candidates.len());
+        assert!(m.pending.len() <= CARRY + 1);
+    }
+    m.push(
+        &format!("--secret=\"{}", "--token=y ".repeat(10_000)),
+        &mut out,
+    )
+    .unwrap();
+    assert!(m.candidates.len() <= 64, "{}", m.candidates.len());
+    m.finish(&mut out).unwrap();
     assert_eq!(normalized(std::str::from_utf8(&out).unwrap()), "<masked>");
+}
+/// Small deterministic generator for the randomized tests.
+struct Rng(u64);
+impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % n as u64) as usize
+    }
+}
+/// Random text built from credential fragments, separators and long runs.
+fn random_text(rng: &mut Rng) -> String {
+    const PIECES: &[&str] = &[
+        " ",
+        "\n",
+        "-",
+        ".",
+        ":",
+        "@",
+        "/",
+        "\"",
+        "'",
+        "=",
+        "A",
+        "z",
+        "9",
+        "é",
+        "雪",
+        "eyJ",
+        ".eyJ",
+        "SG.",
+        "ghp_",
+        "https://",
+        "u:",
+        "--secret=",
+        "--user ",
+        "Bearer ",
+        "Authorization: Basic ",
+        "aws_secret=",
+        "AKIA",
+        "-----BEGIN PRIVATE KEY-----",
+        "-----END PRIVATE KEY-----",
+        "-----BEGIN RSA ",
+    ];
+    let mut text = String::new();
+    for _ in 0..rng.below(60) {
+        if rng.below(8) == 0 {
+            let run = ["A", "b", "0", " ", "-"][rng.below(5)];
+            text.push_str(&run.repeat(rng.below(3 * CARRY)));
+        } else {
+            text.push_str(PIECES[rng.below(PIECES.len())]);
+        }
+    }
+    text
+}
+#[test]
+fn output_does_not_depend_on_chunking() {
+    let mut rng = Rng(0x5eed);
+    for _ in 0..100 {
+        let text = random_text(&mut rng);
+        let whole = masked(&[&text]);
+        for _ in 0..3 {
+            let mut chunks = Vec::new();
+            let mut left = text.len();
+            while left > 0 {
+                let size = 1 + rng.below(left.min(700));
+                chunks.push(size);
+                left -= size;
+            }
+            assert_eq!(byte_chunks(&text, &chunks), whole, "{text:?} {chunks:?}");
+        }
+    }
+}
+#[test]
+fn embedded_credentials_never_leak() {
+    let mut rng = Rng(0xc0ffee);
+    for _ in 0..150 {
+        let secret = "Zk9PQkFS".repeat(5 + rng.below(200));
+        let credential = match rng.below(5) {
+            0 => format!("eyJhbGciOiJub25lIn0.eyJ{secret}.{secret}"),
+            1 => format!("https://user:{secret}@example.invalid/"),
+            2 => format!("ghp_{secret}"),
+            3 => format!("--secret=\"{secret} with spaces\""),
+            _ => format!("Bearer {secret}"),
+        };
+        // An unclosed quote before the credential can end at its opening
+        // quote, as in the catalog's reference matcher, so quotes in the
+        // surrounding text are only allowed across a line break.
+        let (before, after) = (random_text(&mut rng), random_text(&mut rng));
+        let text = if rng.below(2) == 0 {
+            let unquoted = |s: &str| s.replace(['"', '\''], "");
+            format!("{} {credential} {}", unquoted(&before), unquoted(&after))
+        } else {
+            format!("{before}\n{credential}\n{after}")
+        };
+        let output = masked(&[&text]);
+        assert!(!output.contains("Zk9PQkFS"), "{text:?} -> {output:?}");
+    }
 }
 #[test]
 fn sink_errors_are_returned_unchanged_and_close_the_stream() {
