@@ -55,25 +55,23 @@ fn owner(root: &Path) -> Owner {
     )
     .unwrap()
 }
-fn import(handle: &Handle, request: ImportRequest) -> StoredInput {
-    handle
-        .try_import(request)
-        .unwrap()
-        .recv_timeout(WAIT)
-        .unwrap()
-        .unwrap()
-}
-fn progress(handle: &Handle, id: &str) -> Progress {
+/// Sends one request, retrying while the owner's queue is full: the actor
+/// queues its own resumed work there too.
+fn admit<T>(mut send: impl FnMut() -> Result<mpsc::Receiver<Result<T>>>) -> T {
     let mut wait = Wait::new();
     loop {
-        match handle.try_progress(id) {
-            Ok(reply) => {
-                return reply.recv_timeout(WAIT).unwrap().unwrap();
-            }
+        match send() {
+            Ok(reply) => return reply.recv_timeout(WAIT).unwrap().unwrap(),
             Err(Error::Busy) => wait.pause("owner queue stayed full"),
-            other => panic!("progress admission: {:?}", other.err()),
+            Err(error) => panic!("admission: {error}"),
         }
     }
+}
+fn import(handle: &Handle, request: ImportRequest) -> StoredInput {
+    admit(|| handle.try_import(request.clone()))
+}
+fn progress(handle: &Handle, id: &str) -> Progress {
+    admit(|| handle.try_progress(id))
 }
 fn until_caught_up(handle: &Handle, id: &str) -> Progress {
     let mut wait = Wait::new();
@@ -400,13 +398,7 @@ fn partial_tail_is_stable_across_restart_and_retry() {
     assert_eq!(before.inspected_upto, bytes.len() as u64);
     service.shutdown().unwrap();
     let service = owner(&root);
-    service
-        .handle()
-        .try_retry(&retained.id)
-        .unwrap()
-        .recv_timeout(WAIT)
-        .unwrap()
-        .unwrap();
+    admit(|| service.handle().try_retry(&retained.id));
     for _ in 0..8 {
         let p = progress(&service.handle(), &retained.id);
         let head = p.parser.unwrap();
