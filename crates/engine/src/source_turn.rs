@@ -206,9 +206,9 @@ impl CommitGuard {
             let expected_status = if receipt.acquired_upto > predecessor.acquired_upto
                 && matches!(phase, Phase::WaitingTail)
             {
-                "parsing"
+                Phase::Parsing
             } else {
-                phase_name(phase)
+                phase
             };
             if receipt.token != next
                 || receipt.parser_version != predecessor.parser_version
@@ -227,14 +227,6 @@ impl CommitGuard {
             predecessor,
             framing,
         })
-    }
-}
-fn phase_name(phase: Phase) -> &'static str {
-    match phase {
-        Phase::Parsing => "parsing",
-        Phase::WaitingTail => "waiting_tail",
-        Phase::Finalizing => "finalizing",
-        Phase::Done => "done",
     }
 }
 /// After a restart there is no continuation: reread from `parsed_upto`,
@@ -378,7 +370,7 @@ pub fn compute_with_bodies(
         return Err(Error::WindowBeyondAcquisition);
     }
     // A stored stable tail also prevents rereading in a loop after restart.
-    if head.status == "waiting_tail" && head.inspected_upto == head.acquired_upto {
+    if head.status == Phase::WaitingTail && head.inspected_upto == head.acquired_upto {
         return Ok(Computation::Idle {
             reason: IdleReason::WaitingForAppend,
             continuation,

@@ -1,6 +1,7 @@
 //! Claude cursors and source selection. Writes and value/origin checks are in
 //! the parent module, shared with Codex.
 use super::*;
+use polylogue_store::parser_state::Phase;
 mod parent;
 use crate::state::claude::View;
 use polylogue_model::{
@@ -136,7 +137,7 @@ pub fn start(
     budget: Budget,
     allowance: usize,
 ) -> Result<Action> {
-    if !matches!(snapshot.head.status.as_str(), "finalizing" | "waiting_tail")
+    if !matches!(snapshot.head.status, Phase::Finalizing | Phase::WaitingTail)
         || !snapshot.head.finalization_pending
     {
         return Err(Error::Unsupported(

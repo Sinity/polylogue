@@ -99,7 +99,7 @@ fn source_rows_need_finalizing_state_and_roll_back_on_failure() {
         .unwrap();
     assert_eq!(done.token, finalizing.token);
     assert!(!done.finalization_pending);
-    assert_eq!(done.status, "done");
+    assert_eq!(done.status, Phase::Done);
     assert!(
         pinned
             .cell(SOURCE_ROWS_NAMESPACE, b"", 16384)
@@ -186,7 +186,7 @@ fn failure_detail_is_bounded_and_tied_to_its_token() {
     let after = writer.parser_head(input_pk, 1).unwrap().unwrap();
     assert_eq!(after.token, head.token);
     assert_eq!(after.parsed_upto, 0);
-    assert_eq!(after.status, "parsing");
+    assert_eq!(after.status, Phase::Parsing);
     assert!(matches!(
         writer.record_parser_failure(&head.token, Some(&"x".repeat(4097)), usize::MAX),
         Err(StoreError::ParserAdmission { .. })
@@ -271,7 +271,7 @@ fn step_after_growth_returns_to_parsing_and_rejects_stale_heads() {
     )
     .unwrap();
     assert_eq!(next.acquired_upto, 20);
-    assert_eq!(next.status, "parsing");
+    assert_eq!(next.status, Phase::Parsing);
     assert_eq!(old.cell("test", b"a", 10).unwrap().unwrap(), b"old");
     assert!(matches!(
         writer.parser_snapshot(&head.token),
@@ -340,10 +340,10 @@ fn waiting_tail_and_retired_cleanup_respect_budgets() {
         Err(StoreError::ParserAdmission { required: 100, .. })
     ));
     assert!(head.finalization_pending);
-    assert_eq!(head.status, "waiting_tail");
+    assert_eq!(head.status, Phase::WaitingTail);
     assert_eq!(
         writer.begin_parser(&basis(input, 10)).unwrap().status,
-        "waiting_tail"
+        Phase::WaitingTail
     );
     drop(view);
     let retired = retire(&mut writer._index, &file, &head.token).unwrap();

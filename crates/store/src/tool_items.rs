@@ -544,7 +544,9 @@ impl Writer {
         let p = self.root.join("index.db");
         let tx = db(&p, || self._index.transaction())?;
         let h = super::contributions::writer::source_head(&tx, &p, token)?;
-        if h.status != "finalizing" && h.status != "done" {
+        if h.status != crate::parser_state::Phase::Finalizing
+            && h.status != crate::parser_state::Phase::Done
+        {
             return Err(Error::StaleParserState);
         }
         let native = &operation.native_session;

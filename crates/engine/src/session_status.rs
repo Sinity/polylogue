@@ -8,6 +8,7 @@ use crate::{owner, source_rows, source_turn::SourceContext, state::claude};
 use polylogue_model::settlement::RecordFailureId;
 use polylogue_model::{Session, settlement::SourceRowBasis};
 use polylogue_sources::claude_code::keyed::{ResponseCell, SessionCell};
+use polylogue_store::parser_state::Phase;
 use polylogue_store::{
     Error, InputFormat,
     contributions::{SessionCatalog, SessionInputDependency, SessionView},
@@ -533,7 +534,7 @@ fn check_operation(
                     }
                 }
             }
-            None if head.status == "done" => {
+            None if head.status == Phase::Done => {
                 return Err(Error::Invariant(
                     "done Session dependency lost its source-row receipt".into(),
                 ));
@@ -712,7 +713,7 @@ fn observed_member_verified(
     if !input.observed()
         || input.format != InputFormat::ClaudeCodeJsonl
         || !(head.parsed_upto == input.input.length
-            || (head.status == "waiting_tail"
+            || (head.status == Phase::WaitingTail
                 && head.finalization_pending
                 && head.parsed_upto < input.input.length))
         || head.counts.unrecognized > 0

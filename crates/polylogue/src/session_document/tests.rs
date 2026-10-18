@@ -2,6 +2,7 @@
 use super::*;
 use polylogue_engine::owner::{self, ImportRequest, Observation, Owner};
 use polylogue_model::{MessageId, Origin, SessionId};
+use polylogue_store::parser_state::Phase;
 use polylogue_store::{
     InputFormat, ReadHandle, StoredInput, Writer, contributions::SessionCoverage,
 };
@@ -575,7 +576,7 @@ fn exact_selection_can_settle_while_document_keeps_possible_foreign_link_work_pe
     while world
         .progress(&unrelated)
         .parser
-        .is_none_or(|h| h.status != "waiting_tail")
+        .is_none_or(|h| h.status != Phase::WaitingTail)
     {
         assert!(Instant::now() < deadline);
         thread::sleep(POLL);

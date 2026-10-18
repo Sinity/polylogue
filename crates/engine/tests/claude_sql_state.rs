@@ -212,7 +212,7 @@ fn reopen_each_line_preserves_effective_replacement_and_pending_evidence_cells()
     );
     assert_eq!(world.head.counts, accounting(&whole.counts));
     assert!(world.head.finalization_pending);
-    assert_eq!(world.head.status, "finalizing");
+    assert_eq!(world.head.status, Phase::Finalizing);
     let snapshot = world.writer().parser_snapshot(&world.head.token).unwrap();
     let view = adapter::View::new(&snapshot, broad()).unwrap();
     assert_eq!(view.header().unwrap(), memory.header().unwrap());

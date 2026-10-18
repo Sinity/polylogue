@@ -1,4 +1,5 @@
 use super::*;
+use polylogue_store::parser_state::Phase;
 
 #[test]
 fn configured_claude_separate_agent_has_provider_owned_membership() {
@@ -89,7 +90,7 @@ fn configured_claude_foreign_partial_main_does_not_make_requested_membership_pen
         if world
             .progress(&other)
             .parser
-            .is_some_and(|p| p.status == "waiting_tail")
+            .is_some_and(|p| p.status == Phase::WaitingTail)
         {
             break;
         }
@@ -141,7 +142,7 @@ fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() 
     while !world
         .progress(&input)
         .parser
-        .is_some_and(|p| p.status == "waiting_tail")
+        .is_some_and(|p| p.status == Phase::WaitingTail)
     {
         assert!(Instant::now() < until);
         thread::sleep(POLL);

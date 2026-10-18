@@ -62,7 +62,7 @@ fn batches_reduce_turns_and_install_every_cell_without_early_progress() {
     assert_eq!(turns, 12);
     assert_eq!(published.parsed_upto, 100);
     assert!(published.finalization_pending);
-    assert_eq!(published.status, "finalizing");
+    assert_eq!(published.status, Phase::Finalizing);
     let snapshot = writer.parser_snapshot(&published.token).unwrap();
     for c in changes {
         assert_eq!(snapshot.cell(&c.namespace, &c.key, 4096).unwrap(), c.value);

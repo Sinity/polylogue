@@ -226,7 +226,7 @@ fn sqlite_reopen_each_record_matches_whole_shared_core_and_retains_effects() {
             "{key:?}"
         );
     }
-    assert_ne!(world.head.status, "done");
+    assert_ne!(world.head.status, Phase::Done);
 }
 
 #[test]

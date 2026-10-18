@@ -144,7 +144,7 @@ fn restart_resumes_staging_and_partial_apply() {
     ));
     let work = writer.apply_parser(&resumed.token, budget()).unwrap();
     let published = writer.publish_parser(&work.token).unwrap();
-    assert_eq!(published.status, "done");
+    assert_eq!(published.status, Phase::Done);
     assert_eq!(published.counts.used, 1);
     drop(writer);
     let writer = reopen_after_drop(&root);

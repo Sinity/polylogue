@@ -10,6 +10,7 @@ use polylogue_model::{
     BlobHash,
     settlement::{SourceRowBasis, SourceRowScope, SourceRowState, SourceRows},
 };
+use polylogue_store::parser_state::Phase;
 use polylogue_store::{
     Error, InputFormat, StoredSource,
     parser_state::{Budget, Snapshot, Token},
@@ -57,14 +58,14 @@ impl Receipt {
             self.unsupported_effects || head.counts.unrecognized > 0 || head.counts.undecodable > 0;
         let state = match &self.rows.state {
             SourceRowState::Settled => {
-                head.status == "done" && !head.finalization_pending && !missing
+                head.status == Phase::Done && !head.finalization_pending && !missing
             }
             SourceRowState::Unavailable {
                 notes,
                 record_errors,
                 ..
             } => {
-                head.status == "finalizing"
+                head.status == Phase::Finalizing
                     && head.finalization_pending
                     && missing
                     && !notes.is_empty()
@@ -116,7 +117,7 @@ pub fn read(snapshot: &Snapshot, input: &StoredSource) -> Result<Option<Receipt>
         16384,
     )?;
     let Some(value) = value else {
-        if snapshot.head.status == "done" {
+        if snapshot.head.status == Phase::Done {
             return Err(Error::Invariant("done source lost its source-row receipt".into()).into());
         }
         return Ok(None);
@@ -169,7 +170,7 @@ impl Audit {
         reads: Budget,
     ) -> Result<Turn> {
         let head = &snapshot.head;
-        if head.status != "finalizing"
+        if head.status != Phase::Finalizing
             || !head.finalization_pending
             || head.parsed_upto != input.input.length
             || head.acquired_upto != input.input.length
@@ -443,7 +444,7 @@ mod tests {
             acquired_upto: 10,
             inspected_upto: 10,
             parsed_upto: 10,
-            status: "done".into(),
+            status: Phase::Done,
             finalization_pending: false,
             counts: Accounting::default(),
         };
