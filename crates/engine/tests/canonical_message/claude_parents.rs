@@ -235,9 +235,7 @@ fn relation_value_or_supplier_must_match_the_original_record_before_certificatio
                     m::apply(&mut w.writer, a).unwrap(),
                     m::Applied::Source(_)
                 )),
-                Err(m::Error::Unsupported(
-                    "Claude parent proof differs from original source",
-                )) => {
+                Err(m::Error::Unsupported("Claude parent proof differs from original source")) => {
                     refused = true;
                     break;
                 }

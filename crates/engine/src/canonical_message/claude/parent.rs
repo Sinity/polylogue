@@ -61,17 +61,13 @@ fn walk(
             if address.message.session() != head.pending.message.session()
                 || address.message == head.pending.message
             {
-                return Err(unresolved(
-                    "Claude parent crosses Session or grouped self",
-                ));
+                return Err(unresolved("Claude parent crosses Session or grouped self"));
             }
             return Ok(Some(address));
         }
         let node = node.ok_or_else(|| unresolved("Claude parent record unavailable"))?;
         if node.uuid != uuid {
-            return Err(Error::Invariant(
-                "Claude parent lookup identity changed",
-            ));
+            return Err(Error::Invariant("Claude parent lookup identity changed"));
         }
         next = match node.predecessor().map_err(unresolved)? {
             Some(link) => native(&link.value)?,

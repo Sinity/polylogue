@@ -1,4 +1,5 @@
-//! Audited native boundary: handles stay owned and valid for each synchronous call.
+//! Unsafe calls into SQLite, libc and the bundled C code. Every handle passed
+//! stays valid for the whole synchronous call and no pointer escapes.
 #![allow(unsafe_code)]
 use rusqlite::Connection;
 use std::{fs::File, io, os::fd::AsRawFd, path::Path};
@@ -9,22 +10,22 @@ unsafe extern "C" {
 }
 
 pub(crate) fn register() -> i32 {
-    // Static extension takes an ignored nullable pointer and registers process-lived VFS storage.
+    // The argument is ignored; the VFS lives for the whole process.
     unsafe { sqlite3_register_cksumvfs(std::ptr::null()) }
 }
 pub(crate) fn reserve(conn: &Connection) -> i32 {
-    // Connection cannot close or be used concurrently during this call; no handle escapes.
+    // The borrowed connection cannot close or be used concurrently here.
     unsafe { polylogue_reserve_bytes(conn.handle()) }
 }
 
-/// Purge only an idle disposable database's cache. Unlike shrink_memory this
-/// does not ask SQLite's shared cache group to release other readers' pages.
+/// Drops an idle connection's page cache. Unlike `shrink_memory`, this leaves
+/// other connections' pages alone.
 pub(crate) fn reset_scratch_cache(conn: &Connection) -> rusqlite::Result<()> {
     if !conn.is_autocommit() {
         return Err(rusqlite::Error::InvalidQuery);
     }
-    // Borrowed connection stays valid; main is a static C string. This opcode
-    // ignores its final pointer. Callers finalize each bounded statement first.
+    // "main" is a static C string and this opcode ignores the last pointer.
+    // Callers finalize their statements first.
     let code = unsafe {
         rusqlite::ffi::sqlite3_file_control(
             conn.handle(),
@@ -43,13 +44,11 @@ pub(crate) fn reset_scratch_cache(conn: &Connection) -> rusqlite::Result<()> {
     }
 }
 
-/// Observe SQLite's actual page-cache occupancy in resource discriminators.
+/// Page-cache bytes used by this connection.
 #[cfg(test)]
 pub(crate) fn cache_bytes(conn: &Connection) -> rusqlite::Result<i32> {
     let mut current = 0;
     let mut unused_highwater = 0;
-    // Borrowed connection and output cells stay valid for this synchronous
-    // read-only status call. No SQLite handle or pointer escapes.
     let code = unsafe {
         rusqlite::ffi::sqlite3_db_status(
             conn.handle(),
@@ -69,13 +68,12 @@ pub(crate) fn cache_bytes(conn: &Connection) -> rusqlite::Result<i32> {
     }
 }
 
-/// Linux renameat2 is the publication boundary: an existing destination is never replaced.
+/// Renames `source` to `destination`, failing if the destination exists.
 pub(crate) fn publish(source: &Path, destination: &Path) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let source = CString::new(source.as_os_str().as_bytes())?;
     let destination = CString::new(destination.as_os_str().as_bytes())?;
-    // Both strings live through the synchronous syscall. The flag is atomic,
-    // unlike a preceding existence check followed by an ordinary rename.
+    // RENAME_NOREPLACE makes the existence check atomic with the rename.
     if unsafe {
         libc::renameat2(
             libc::AT_FDCWD,
@@ -92,21 +90,22 @@ pub(crate) fn publish(source: &Path, destination: &Path) -> io::Result<()> {
     }
 }
 
-pub(crate) struct Progress<'a>(&'a Connection);
-impl Drop for Progress<'_> {
+/// Removes the progress handler on drop, while the borrowed flag is still alive.
+pub(crate) struct CancelGuard<'a>(&'a Connection);
+impl Drop for CancelGuard<'_> {
     fn drop(&mut self) {
-        // Remove the callback before its borrowed cancellation flag can expire.
         unsafe {
             rusqlite::ffi::sqlite3_progress_handler(self.0.handle(), 0, None, std::ptr::null_mut());
         }
     }
 }
+/// Makes SQLite interrupt the running statement once `cancelled` is set.
 pub(crate) fn cancellation<'a>(
     conn: &'a Connection,
     cancelled: &'a std::sync::atomic::AtomicBool,
-) -> Progress<'a> {
+) -> CancelGuard<'a> {
     unsafe extern "C" fn check(value: *mut std::ffi::c_void) -> i32 {
-        // The guard borrows the flag for the whole synchronous SQLite operation.
+        // The guard keeps the flag borrowed while the handler is installed.
         let cancelled = unsafe { &*value.cast::<std::sync::atomic::AtomicBool>() };
         i32::from(cancelled.load(std::sync::atomic::Ordering::Acquire))
     }
@@ -118,9 +117,11 @@ pub(crate) fn cancellation<'a>(
             std::ptr::from_ref(cancelled).cast_mut().cast(),
         );
     }
-    Progress(conn)
+    CancelGuard(conn)
 }
 
+/// Sets the btrfs no-copy-on-write flag on a directory, so files created in it
+/// later inherit it. Does nothing on other filesystems.
 pub(crate) fn no_cow(path: &Path) -> io::Result<()> {
     let file = File::open(path)?;
     let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
@@ -143,8 +144,9 @@ pub(crate) fn no_cow(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-// SQLite calls are synchronous on the owning thread. Capture only the current
-// operation; unrelated errors must never inherit a previous checksum location.
+// The checksum VFS reports a bad page through this callback on the thread that
+// made the SQLite call. Callers clear it before each call and take it right
+// after, so an unrelated error never picks up an old location.
 #[derive(Debug)]
 pub(crate) struct ChecksumFault {
     pub file: std::path::PathBuf,

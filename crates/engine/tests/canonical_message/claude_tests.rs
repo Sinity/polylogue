@@ -381,9 +381,7 @@ fn a_native_parent_uuid_from_a_later_response_fragment_resolves_its_owning_messa
         if native_parent == "missing-parent" {
             assert!(matches!(
                 world.compute_with(&handle, work_budget()),
-                Err(m::Error::Unsupported(
-                    "Claude parent record unavailable"
-                ))
+                Err(m::Error::Unsupported("Claude parent record unavailable"))
             ));
             continue;
         }
