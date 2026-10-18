@@ -1,5 +1,5 @@
-//! One request owns one downstream socket. Cancellation closes its transport;
-//! it never undoes a note accepted by the writer or cancels source retention.
+//! Cancels one client read by shutting down its socket. Writes the daemon has
+//! already accepted are not undone.
 use std::{
     io,
     net::Shutdown,

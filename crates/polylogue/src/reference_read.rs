@@ -1,5 +1,6 @@
-//! Streaming terminal reads of one whole selected Message snapshot. This is not
-//! the session JSON export surface; history/provenance coverage stays degraded.
+//! `message:<id> read`: streams one message's text and thinking blocks for the
+//! terminal. The result is always degraded because message history and source
+//! locations are not shown. Also holds the line framing shared by reads.
 use polylogue_model::types::{ErrorKind, Failure};
 use polylogue_store::{ReadHandle, contributions::MessageLookup};
 use serde_json::{Value, json};
@@ -19,7 +20,7 @@ pub(crate) fn frame(out: &mut impl Write, value: Value) -> io::Result<()> {
     impl Write for Encoded {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             if bytes.len() > (FRAME as usize - 1).saturating_sub(self.0.len()) {
-                return Err(io::Error::other("read frame exceeds encoded admission"));
+                return Err(io::Error::other("read frame exceeds 64 KiB"));
             }
             self.0.extend_from_slice(bytes);
             Ok(bytes.len())
@@ -34,9 +35,9 @@ pub(crate) fn frame(out: &mut impl Write, value: Value) -> io::Result<()> {
     out.write_all(&encoded.0)
 }
 
-// Masking can expand dense short credentials far beyond the input piece.
-// Encode settled output into bounded frames; the masker still owns undecided
-// bytes. UTF-8 fragments across individual Write calls retain at most3 bytes.
+/// Sends written text as `text` frames of at most `PIECE` source bytes, since
+/// masking can expand short credentials well beyond their input size. A UTF-8
+/// character split across writes is held (at most 3 bytes) until complete.
 pub(crate) fn text_frames<W: Write, T>(
     stream: &mut W,
     run: impl FnOnce(&mut TextFrames<'_, W>) -> io::Result<T>,
@@ -63,8 +64,7 @@ impl<W: Write> TextFrames<'_, W> {
         if valid != 0 {
             let text = std::str::from_utf8(&self.bytes[..valid])
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            // PIECE source bytes need at most6*PIECE JSON escaping bytes, below
-            // FRAME. Only this one bounded encoding is retained while writing.
+            // PIECE bytes escape to at most 6 * PIECE bytes, below FRAME.
             frame(self.stream, json!({"type":"text","data":text}))?;
             self.bytes.drain(..valid);
         }
@@ -106,7 +106,7 @@ pub(crate) fn serve(
         {
             return Err(failed(
                 ErrorKind::InvalidQuery,
-                "read requires an exact reference and terminal format",
+                "read needs a reference and format terminal",
             ));
         }
         let id = request["reference"]
@@ -116,7 +116,7 @@ pub(crate) fn serve(
             .ok_or_else(|| {
                 failed(
                     ErrorKind::NotYetAvailable,
-                    "only explicit message: references are registered by this read path",
+                    "only message: references can be read in the terminal yet",
                 )
             })?;
         let selected = reader
@@ -126,12 +126,12 @@ pub(crate) fn serve(
             .map_err(|e| failed(ErrorKind::Io, e))?;
         let message = match selected {
             MessageLookup::Absent => {
-                return Err(failed(ErrorKind::NotFound, "Message reference is absent"));
+                return Err(failed(ErrorKind::NotFound, "no such message"));
             }
             MessageLookup::Pending => {
                 return Err(failed(
                     ErrorKind::NotYetAvailable,
-                    "Message has no selected whole canonical body; finalization remains pending",
+                    "message is still being processed; try again later",
                 ));
             }
             MessageLookup::Ready(v) => v,
@@ -141,35 +141,29 @@ pub(crate) fn serve(
         frame(stream,json!({"type":"message","id":message.id().as_str(),"session":message.id().session().as_str(),"role":header.role,"written_by":header.written_by})).map_err(|e|failed(ErrorKind::Io,e))?;
         let mut masker = credential_output::Masker::new();
         let mut index = 0u64;
-        loop {
-            let Some(block) = message
-                .block_at(index)
-                .map_err(|e| failed(ErrorKind::Io, e))?
-            else {
-                break;
-            };
+        while let Some(block) = message
+            .block_at(index)
+            .map_err(|e| failed(ErrorKind::Io, e))?
+        {
             if !matches!(block.kind.as_str(), "text" | "thinking") {
                 return Err(failed(
                     ErrorKind::NotYetAvailable,
-                    "selected block kind has no terminal renderer",
+                    "message has blocks other than text or thinking; terminal reads show only those",
                 ));
             }
             frame(stream,json!({"type":"block","kind":block.kind,"slot":block.slot,"encrypted":block.encrypted})).map_err(|e|failed(ErrorKind::Io,e))?;
             let mut offset = 0;
             let mut pending = Vec::with_capacity(4);
-            loop {
-                let Some(range) = block
-                    .text_range(offset, PIECE)
-                    .map_err(|e| failed(ErrorKind::Io, e))?
-                else {
-                    break;
-                };
+            while let Some(range) = block
+                .text_range(offset, PIECE)
+                .map_err(|e| failed(ErrorKind::Io, e))?
+            {
                 let mut bytes = pending;
                 bytes.extend_from_slice(&range.bytes);
                 let valid = match std::str::from_utf8(&bytes) {
                     Ok(_) => bytes.len(),
                     Err(e) if e.error_len().is_none() => e.valid_up_to(),
-                    Err(_) => return Err(failed(ErrorKind::Io, "selected UTF-8 value is invalid")),
+                    Err(_) => return Err(failed(ErrorKind::Io, "stored text is not valid UTF-8")),
                 };
                 let text =
                     std::str::from_utf8(&bytes[..valid]).map_err(|e| failed(ErrorKind::Io, e))?;
@@ -182,13 +176,13 @@ pub(crate) fn serve(
                     if !pending.is_empty() {
                         return Err(failed(
                             ErrorKind::Io,
-                            "selected UTF-8 value ends within a character",
+                            "stored text ends inside a UTF-8 character",
                         ));
                     }
                     break;
                 }
                 if range.next_offset <= offset {
-                    return Err(failed(ErrorKind::Io, "selected range made no progress"));
+                    return Err(failed(ErrorKind::Io, "text range read made no progress"));
                 }
                 offset = range.next_offset;
             }
@@ -205,13 +199,14 @@ pub(crate) fn serve(
     match run() {
         Ok(()) => frame(
             stream,
-            json!({"type":"end","outcome":"degraded","missing":["canonical_history_coverage","source_provenance"],"notes":if recovery.is_some(){vec![polylogue_model::RecoveryRecord::NOTE]}else{vec![]},"recovery":recovery,"canonical_complete":false}),
+            json!({"type":"end","outcome":"degraded","missing":["message_history","source_locations"],"notes":if recovery.is_some(){vec![polylogue_model::RecoveryRecord::NOTE]}else{vec![]},"recovery":recovery,"canonical_complete":false}),
         ),
         Err(error) => frame(stream, error),
     }
 }
-/// Frames are transport-only. The terminal renderer writes one bounded text
-/// piece at a time; it never collects a Message or mistakes EOF for success.
+/// Writes text with control characters escaped as `\xNN` so provider text
+/// cannot move the cursor or clear the screen. With `layout`, newlines and
+/// tabs pass through.
 pub(crate) fn terminal_text(out: &mut impl Write, text: &str, layout: bool) -> io::Result<()> {
     let mut start = 0;
     for (index, ch) in text.char_indices() {
@@ -245,7 +240,7 @@ pub fn request(socket: &Path, reference: &str, out: &mut impl Write) -> io::Resu
         if line.len() > FRAME as usize || !line.ends_with('\n') {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "read stream ended without a bounded completion frame",
+                "read stream ended without a completion frame",
             ));
         }
         let item: Value = serde_json::from_str(&line)?;
@@ -253,11 +248,11 @@ pub fn request(socket: &Path, reference: &str, out: &mut impl Write) -> io::Resu
             Some("message") if !started => {
                 let id = item["id"]
                     .as_str()
-                    .ok_or_else(|| io::Error::other("missing Message identity"))?;
+                    .ok_or_else(|| io::Error::other("message frame has no id"))?;
                 if id != expected {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "Message identity does not match requested reference",
+                        "read returned a different message than requested",
                     ));
                 }
                 let role = item["role"]
@@ -271,7 +266,7 @@ pub fn request(socket: &Path, reference: &str, out: &mut impl Write) -> io::Resu
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "invalid Message role/author",
+                        "message frame has an invalid role or author",
                     ));
                 }
                 terminal_text(out, id, false)?;
@@ -322,92 +317,4 @@ pub fn request(socket: &Path, reference: &str, out: &mut impl Write) -> io::Resu
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn exchange(frames: Vec<Value>) -> (io::Result<Value>, Vec<u8>) {
-        let dir = tempfile::tempdir_in("/tmp").unwrap();
-        let path = dir.path().join("socket");
-        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        let join = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = String::new();
-            BufReader::new(stream.try_clone().unwrap())
-                .read_line(&mut request)
-                .unwrap();
-            assert_eq!(
-                serde_json::from_str::<Value>(&request).unwrap()["command"],
-                "read"
-            );
-            for value in frames {
-                frame(&mut stream, value).unwrap();
-            }
-        });
-        let mut output = Vec::new();
-        let result = request(&path, "message:synthetic:m", &mut output);
-        join.join().unwrap();
-        (result, output)
-    }
-    fn initial() -> Vec<Value> {
-        vec![
-            json!({"type":"message","id":"synthetic:m","role":"assistant","written_by":"model"}),
-            json!({"type":"block","kind":"text"}),
-            json!({"type":"text","data":"retained text"}),
-        ]
-    }
-    #[test]
-    fn partial_transport_cannot_become_a_completed_read() {
-        for end in [
-            None,
-            Some(json!({"type":"end","outcome":"ok"})),
-            Some(json!({"type":"end","outcome":"degraded","canonical_complete":true})),
-        ] {
-            let mut frames = initial();
-            if let Some(end) = end {
-                frames.push(end);
-            }
-            let (result, output) = exchange(frames);
-            assert!(result.is_err());
-            assert!(String::from_utf8(output).unwrap().contains("retained text"));
-        }
-        let mut frames = initial();
-        frames.push(json!({"type":"end","outcome":"degraded","canonical_complete":false,"missing":["history"]}));
-        let (result, _) = exchange(frames);
-        assert_eq!(result.unwrap()["canonical_complete"], false);
-    }
-    #[test]
-    fn message_header_must_match_the_exact_requested_opaque_identity() {
-        for id in ["synthetic:other", "m", "", "synthetic:m:extra"] {
-            let mut frames = initial();
-            frames[0]["id"] = json!(id);
-            let (result, output) = exchange(vec![frames.remove(0)]);
-            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
-            assert!(output.is_empty());
-        }
-        let mut frames = initial();
-        frames.push(json!({"type":"end","outcome":"degraded","canonical_complete":false}));
-        let (result, output) = exchange(frames);
-        assert_eq!(result.unwrap()["outcome"], "degraded");
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "synthetic:m\nassistant · model\n\nretained text\n"
-        );
-    }
-    #[test]
-    fn absent_reference_keeps_stdout_empty_and_retains_typed_failure() {
-        let (result, output) = exchange(vec![failed(ErrorKind::NotFound, "reference absent")]);
-        assert!(output.is_empty());
-        assert_eq!(result.unwrap()["error"]["kind"], "not_found");
-    }
-    #[test]
-    fn terminal_controls_cannot_rewrite_a_readers_display() {
-        let mut output = Vec::new();
-        terminal_text(&mut output, "hello\u{1b}[2J\r\u{85}\tworld\n", true).unwrap();
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "hello\\x1b[2J\\x0d\\x85\tworld\n"
-        );
-        let mut output = Vec::new();
-        terminal_text(&mut output, "id\nwith\ttabs", false).unwrap();
-        assert_eq!(String::from_utf8(output).unwrap(), "id\\x0awith\\x09tabs");
-    }
-}
+mod tests;

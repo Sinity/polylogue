@@ -373,10 +373,9 @@ fn run() -> Result<i32, Failure> {
         return Ok(0);
     }
     if let Some(destination) = export_to {
-        // Preserve default SIGINT termination while IPC is blocked. Process
-        // exit closes the read socket; unfinished staging may remain private.
-        let stop = AtomicBool::new(false);
-        let reply = polylogue::session_export::request(&socket, &args[0], &destination, &stop)
+        // Ctrl-C keeps its default effect: the process exits, which closes the
+        // read socket and leaves only a hidden staging directory.
+        let reply = polylogue::session_export::request(&socket, &args[0], &destination)
             .map_err(io_error)?;
         if reply["outcome"] == "error" {
             return Err(

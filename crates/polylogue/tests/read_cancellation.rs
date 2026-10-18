@@ -9,7 +9,7 @@ use std::{
 };
 
 #[test]
-fn cancellation_closes_each_shared_client_transport_and_joins_its_work() {
+fn cancel_closes_the_socket_of_each_client_request() {
     for operation in ["model", "query", "status"] {
         let root = tempfile::tempdir_in("/tmp").unwrap();
         let socket = root.path().join("socket");
@@ -50,7 +50,7 @@ fn cancellation_closes_each_shared_client_transport_and_joins_its_work() {
         assert_eq!(
             peer.read(&mut b).unwrap(),
             0,
-            "{operation} retained its read socket"
+            "{operation} kept its read socket open"
         );
         work.join().unwrap();
         assert!(started.elapsed() < Duration::from_secs(1));
@@ -58,7 +58,7 @@ fn cancellation_closes_each_shared_client_transport_and_joins_its_work() {
 }
 
 #[test]
-fn cancelling_saturated_connect_stops_before_the_absolute_request_deadline() {
+fn cancel_stops_a_blocked_connect_before_its_deadline() {
     let root = tempfile::tempdir_in("/tmp").unwrap();
     let socket = root.path().join("socket");
     let listener =

@@ -1,4 +1,4 @@
-//! Public daemon/CLI export, using retained synthetic Morrow bytes.
+//! `export` through the CLI and a real daemon, using the synthetic Morrow fixture.
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
@@ -108,7 +108,7 @@ fn read(path: &Path) -> Value {
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
 #[test]
-fn morrow_read_and_export_are_identical_and_atomic_replacement_removes_previous_tree() {
+fn export_matches_read_and_replaces_the_previous_export() {
     let world = World::new();
     world.import(SID, MORROW, "01900000-0000-7000-8000-000000009501");
     let reference = format!("claude-code:{SID}");
@@ -116,7 +116,7 @@ fn morrow_read_and_export_are_identical_and_atomic_replacement_removes_previous_
     assert!(out.status.success(), "{out:?}");
     let document: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(document["messages"].as_array().unwrap().len(), 12);
-    // Independent facts from the source fixture, rather than read/export equality alone.
+    // Check against the fixture itself, not only read/export equality.
     let records: Vec<Value> = MORROW
         .split(|b| *b == b'\n')
         .filter(|l| !l.is_empty())
@@ -215,7 +215,7 @@ fn morrow_read_and_export_are_identical_and_atomic_replacement_removes_previous_
     );
 }
 #[test]
-fn opaque_native_identity_is_not_split_or_interpreted_as_a_path() {
+fn native_id_with_colons_and_dots_is_one_file_name() {
     let world = World::new();
     let native = "opaque:..λ%";
     let bytes = String::from_utf8(MORROW.to_vec())
@@ -242,7 +242,7 @@ fn opaque_native_identity_is_not_split_or_interpreted_as_a_path() {
 }
 
 #[test]
-fn sigint_terminates_partial_frame_export_and_disconnects_without_publication() {
+fn ctrl_c_during_a_partial_frame_exits_without_writing_the_export() {
     use std::{
         io::{BufRead, BufReader, Read, Write},
         os::unix::{net::UnixListener, process::ExitStatusExt},
@@ -303,8 +303,8 @@ fn sigint_terminates_partial_frame_export_and_disconnects_without_publication() 
             json!({"type":"text","data":"{\"format\":\"polylogue-session\","})
         )
         .unwrap();
-        // No newline or completion follows this frame. The old handler merely
-        // set a flag, leaving the client stuck inside read_line until TIME.
+        // This frame never ends, so the client blocks in read_line until the
+        // signal arrives.
         stream
             .write_all(b"{\"type\":\"text\",\"data\":\"unfinished")
             .unwrap();
@@ -332,8 +332,7 @@ fn sigint_terminates_partial_frame_export_and_disconnects_without_publication() 
             .unwrap(),
     );
     started.recv_timeout(Duration::from_secs(5)).unwrap();
-    // The signal targets this exact owned child; the positional argument avoids
-    // interpreting its numeric PID as shell text.
+
     assert!(
         Command::new("sh")
             .args([
@@ -359,8 +358,7 @@ fn sigint_terminates_partial_frame_export_and_disconnects_without_publication() 
     };
     assert_eq!(status.signal(), Some(2));
     let disconnected = producer.join().unwrap();
-    // A full close can reset the stream if the client had unread bytes. Both
-    // observations release the producer; a timeout or open stream fails.
+    // A close with unread bytes can show up as a reset instead of EOF.
     assert!(
         matches!(disconnected, Ok(0))
             || disconnected.is_err_and(|error| error.kind() == std::io::ErrorKind::ConnectionReset),
@@ -387,7 +385,7 @@ fn sigint_terminates_partial_frame_export_and_disconnects_without_publication() 
     assert_eq!(
         stages.len(),
         1,
-        "abrupt SIGINT retains only private unfinished staging"
+        "Ctrl-C leaves only the hidden staging directory"
     );
     assert!(stages[0].path().join("session.json").is_file());
     assert!(!stages[0].path().join("manifest.json").exists());
