@@ -201,7 +201,7 @@ fn published_source_projection_is_inherited_and_replaced_atomically() {
     assert_eq!(old.message(), &f.message);
     assert_eq!(old.evidence_revision(), 1);
     assert_eq!(old.evidence_guard(), b"old source head");
-    assert_eq!(old.predecessor(), &f.head.token);
+    assert_eq!(old.token(), &f.head.token);
     assert_eq!(old.body().pk, build.body);
     assert_eq!(f.scalar("SELECT count(*) FROM message_build"), 0);
     assert_eq!(
@@ -226,13 +226,7 @@ fn published_source_projection_is_inherited_and_replaced_atomically() {
     f.advance_parser();
     let new = f.prepare().unwrap().build;
     f.writer
-        .inherit_message_projection(
-            &new,
-            old.body(),
-            old.predecessor(),
-            &step(0, b"inherited"),
-            4096,
-        )
+        .inherit_message_projection(&new, old.body(), old.token(), &step(0, b"inherited"), 4096)
         .unwrap();
     let new_value = f.json(
         &new,

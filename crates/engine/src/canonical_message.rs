@@ -161,7 +161,7 @@ pub(crate) fn current_codex_projection(
     head.validate().map_err(StoreError::Invariant)?;
     let guard: EvidenceGuard = serde_json::from_slice(source.evidence_guard())
         .map_err(|e| StoreError::Invariant(format!("Codex selected source guard: {e}")))?;
-    Ok(source.predecessor() == token
+    Ok(source.token() == token
         && source.message() == message
         && source.evidence_revision() == head.revision
         && guard
@@ -537,10 +537,10 @@ pub fn start(
                 "current source reference names another Message",
             ));
         }
-        if previous.predecessor() == &snapshot.head.token && prior != typed_guard {
+        if previous.token() == &snapshot.head.token && prior != typed_guard {
             return Err(Error::Invariant("same-token source evidence guard changed"));
         }
-        if previous.predecessor() == &snapshot.head.token && prior == typed_guard {
+        if previous.token() == &snapshot.head.token && prior == typed_guard {
             return Ok(Action {
                 inner: ActionKind::Existing {
                     token: snapshot.head.token.clone(),
@@ -1623,7 +1623,7 @@ fn same_reference(a: Option<&SourceProjection>, b: Option<&SourceProjection>) ->
         (None, None) => true,
         (Some(a), Some(b)) => {
             a.body() == b.body()
-                && a.predecessor() == b.predecessor()
+                && a.token() == b.token()
                 && a.message() == b.message()
                 && a.evidence_revision() == b.evidence_revision()
                 && a.version_hash() == b.version_hash()

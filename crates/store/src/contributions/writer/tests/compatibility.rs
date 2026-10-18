@@ -376,7 +376,7 @@ fn reparse_withdraws_compatibility_and_retirement_drops_it() {
     );
     assert!(
         f.writer
-            .current_source_projection(&old.predecessor, &[3; 32], 4096)
+            .current_source_projection(&old.token, &[3; 32], 4096)
             .is_err()
     );
 }

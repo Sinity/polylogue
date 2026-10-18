@@ -39,9 +39,7 @@ pub(crate) fn current_projection(
     source_binding: BlobHash,
     context: &[String],
 ) -> Result<bool> {
-    if projection.predecessor() != token
-        || projection.message() != &pending.message
-        || pending.incomplete
+    if projection.token() != token || projection.message() != &pending.message || pending.incomplete
     {
         return Ok(false);
     }
@@ -177,7 +175,7 @@ pub fn start(
         }
         let prior: EvidenceGuard = serde_json::from_slice(previous.evidence_guard())
             .map_err(|e| Error::Source(e.to_string()))?;
-        if previous.predecessor() == &snapshot.head.token {
+        if previous.token() == &snapshot.head.token {
             if prior != typed {
                 return Err(Error::Invariant("same-token Claude guard changed"));
             }

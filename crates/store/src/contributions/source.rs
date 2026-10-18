@@ -14,7 +14,7 @@ pub struct SourceProjection {
     pub(super) body: BodyId,
     pub(super) logical: [u8; 32],
     pub(super) candidate: i64,
-    pub(super) predecessor: Token,
+    pub(super) token: Token,
     message: MessageId,
     evidence_revision: u64,
     hash: BlobHash,
@@ -24,8 +24,8 @@ impl SourceProjection {
     pub fn body(&self) -> &BodyId {
         &self.body
     }
-    pub fn predecessor(&self) -> &Token {
-        &self.predecessor
+    pub fn token(&self) -> &Token {
+        &self.token
     }
     pub fn message(&self) -> &MessageId {
         &self.message
@@ -199,7 +199,7 @@ pub(super) fn read_current(
             session,
         },
         candidate,
-        predecessor: parser,
+        token: parser,
         message: message_id,
         evidence_revision: evidence,
         hash: BlobHash::from_bytes(
@@ -324,11 +324,11 @@ impl Writer {
                 || previous.body.generation != build.source.index_generation
                 || previous.body.message != build.message
                 || previous.body.session != build.session
-                || previous.predecessor.input_pk != build.source.input_pk
-                || previous.predecessor.chain != build.source.chain
-                || previous.predecessor.generation != build.source.generation
-                || previous.predecessor.basis != build.source.basis
-                || previous.predecessor.step > build.source.step
+                || previous.token.input_pk != build.source.input_pk
+                || previous.token.chain != build.source.chain
+                || previous.token.generation != build.source.generation
+                || previous.token.basis != build.source.basis
+                || previous.token.step > build.source.step
             {
                 return Err(Error::StaleMessage);
             }
@@ -421,7 +421,7 @@ impl Writer {
                 )?;
                 match previous {
                     Some(previous)
-                        if previous.candidate == candidate && previous.predecessor == token => {}
+                        if previous.candidate == candidate && previous.token == token => {}
                     None if token.generation < build.source.generation => {}
                     _ => return Err(Error::StaleMessage),
                 }
