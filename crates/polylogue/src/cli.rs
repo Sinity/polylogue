@@ -18,6 +18,12 @@ pub struct Args {
     pub json: bool,
     #[command(subcommand)]
     pub command: Option<Command>,
+    /// Explain an empty result: how many rows each condition keeps.
+    #[arg(long, global = true)]
+    pub why: bool,
+    /// Continue from a previous page's `next`.
+    #[arg(long, global = true)]
+    pub cursor: Option<String>,
     /// A query, when no subcommand is given.
     #[arg(trailing_var_arg = true)]
     pub query: Vec<String>,
@@ -318,7 +324,10 @@ pub fn run(args: Args) -> ExitCode {
         },
         Some(Command::List(q)) => Request::Query {
             text: q.query.join(" "),
-            cursor: None,
+            cursor: args.cursor.clone(),
+            page_size: q.limit,
+            why: args.why,
+            session: None,
         },
         Some(Command::Read(r)) => {
             let session = match SessionId::parse(&r.session) {
@@ -423,7 +432,10 @@ pub fn run(args: Args) -> ExitCode {
         }
         None => Request::Query {
             text: args.query.join(" "),
-            cursor: None,
+            cursor: args.cursor.clone(),
+            page_size: None,
+            why: args.why,
+            session: None,
         },
     };
     let root = Archive::default_root();
@@ -456,7 +468,11 @@ pub fn run(args: Args) -> ExitCode {
             println!("accepted {request_id}");
             ExitCode::SUCCESS
         }
-        Response::Error { kind, message } => fail(json, &kind, &message, 1),
+        Response::Error {
+            kind,
+            message,
+            detail,
+        } => fail_detail(json, &kind, &message, detail, 1),
     }
 }
 
@@ -638,6 +654,29 @@ fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
     ExitCode::from(code)
 }
 
+/// An error with structured detail: printed whole for programs; for a
+/// person, the message and the corrected query when there is one.
+fn fail_detail(
+    json: bool,
+    kind: &str,
+    message: &str,
+    detail: Option<serde_json::Value>,
+    code: u8,
+) -> ExitCode {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "error": { "kind": kind, "message": message, "detail": detail } })
+        );
+    } else {
+        eprintln!("polylogue: {kind}: {message}");
+        if let Some(s) = detail.as_ref().and_then(|d| d["suggestion"].as_str()) {
+            eprintln!("polylogue: try: {s}");
+        }
+    }
+    ExitCode::from(code)
+}
+
 /// Plain terminal output until the renderer (architecture 7, `render`)
 /// takes these over: one line per session, one paragraph per message.
 fn print_plain(request: &Request, data: &serde_json::Value) {
@@ -744,6 +783,13 @@ fn print_plain(request: &Request, data: &serde_json::Value) {
                 println!("native resume:      {}", line(&data["native"]));
             }
             println!("with context:       {}", line(&data["context_assisted"]));
+        }
+        Request::Query { .. } => {
+            let _ = polylogue_render::results::render(
+                data,
+                polylogue_render::Format::Terminal,
+                &mut std::io::stdout().lock(),
+            );
         }
         _ => println!("{}", serde_json::to_string_pretty(data).unwrap_or_default()),
     }

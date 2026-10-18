@@ -32,6 +32,7 @@ fn error(kind: &str, message: impl ToString) -> Response {
     Response::Error {
         kind: kind.into(),
         message: message.to_string(),
+        detail: None,
     }
 }
 
@@ -101,6 +102,12 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
     }
 }
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 fn ok(data: impl serde::Serialize) -> Response {
     match serde_json::to_value(data) {
         Ok(data) => Response::Ok { data },
@@ -133,6 +140,40 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
         Request::List { limit, before } => match reader.list(limit, before) {
             Ok(rows) => ok(rows),
             Err(e) => error("store", e),
+        },
+        Request::Query {
+            text,
+            cursor,
+            page_size,
+            why,
+            session,
+        } => {
+            let ask = super::query::Ask {
+                text: &text,
+                cursor: cursor.as_deref(),
+                page_size,
+                why,
+                session,
+                now: now_ms(),
+                // The operator's zone and 04:00 day start; the `day.zone`
+                // and `day.logical_start` settings come with the settings
+                // lane.
+                day: polylogue_model::LogicalDay::system(),
+                embeddings: false,
+            };
+            match super::query::run(&reader, ask) {
+                Ok(data) => Response::Ok { data },
+                Err(f) => Response::Error {
+                    kind: f.kind,
+                    message: f.message,
+                    detail: f.detail,
+                },
+            }
+        }
+        Request::Sql { statement } => match reader.query(&statement, &[]) {
+            // The connection is read-only: a statement that writes fails.
+            Ok(rows) => ok(rows),
+            Err(e) => error("sql", e),
         },
         Request::Read {
             session, logical, ..

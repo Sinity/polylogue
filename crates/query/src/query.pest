@@ -1,67 +1,136 @@
-// The Polylogue query language, ported from the Python grammar (Lark) to
-// pest. Two entry shapes in one grammar:
+// The Polylogue query language (architecture 7; spec query.md, Grammar),
+// ported from the Python grammar to pest. Three shapes:
 //
 //   repo:polylogue since:7d "json envelope" -tag:stale
-//   messages where role:assistant AND text:timeout | group by role | count
+//   tool_calls where outcome:error | group by session | count
+//   tag:project:morrow | tool_calls where action:shell
 //
 // Field names are checked against the field table after parsing, so the
-// grammar accepts any identifier as a field.
+// grammar accepts any identifier as a field. Each top-level shape carries
+// its own end-of-input check, so an ordered choice that matched a prefix
+// still backtracks to the next shape.
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 
-query = { SOI ~ pipeline? ~ EOI }
+query = { SOI ~ (unit_query ~ EOI | expr_query ~ EOI | EOI) }
 
-pipeline = { source ~ ("|" ~ stage)* }
+// `messages where …`, or a bare unit selecting all its rows.
+unit_query = { unit ~ (kw_where ~ expr)? ~ attach? ~ stages }
+// Conditions on sessions, optionally followed by a scoped row query.
+expr_query = { !(unit ~ kw_where) ~ expr ~ attach? ~ stages }
 
-source = { unit_where | predicate }
+stages = { ("|" ~ stage)* }
 
-unit_where = { unit ~ ^"where" ~ predicate }
-unit = @{
-    ^"sessions" | ^"messages" | ^"blocks" | ^"actions" | ^"files" | ^"links"
-  | ^"notes" | ^"assertions" | ^"work" | ^"deliveries" | ^"processes" | ^"runs"
-  | ^"events"
+unit = ${
+    (^"sessions" | ^"messages" | ^"blocks" | ^"tool_calls" | ^"files" | ^"events"
+     | ^"notes" | ^"links" | ^"turns" | ^"runs" | ^"deliveries" | ^"processes")
+    ~ !ident_char
+}
+row_unit = ${
+    (^"message" | ^"block" | ^"tool_call" | ^"file" | ^"event" | ^"note" | ^"link"
+     | ^"turn" | ^"run" | ^"delivery" | ^"process")
+    ~ !ident_char
 }
 
-// Explicit Boolean predicates.
-predicate = { disjunction }
-disjunction = { conjunction ~ (^"OR" ~ conjunction)* }
-conjunction = { negation ~ (^"AND"? ~ negation)* }
-negation = { (^"NOT" ~ negation) | atom }
-atom = { "(" ~ predicate ~ ")" | negated | exists | comparison | range | clause | phrase | word }
+ident_char = _{ ASCII_ALPHANUMERIC | "_" | "-" | "." }
 
-exists = { ^"exists" ~ unit_name ~ "(" ~ predicate ~ ")" }
-unit_name = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_" | "-")* }
+kw_where   = @{ ^"where" ~ !ident_char }
+kw_between = @{ ^"between" ~ !ident_char }
+kw_and_lc  = @{ ^"and" ~ !ident_char }
+kw_with    = @{ ^"with" ~ !ident_char }
+kw_AND     = @{ "AND" ~ !ident_char }
+kw_OR      = @{ "OR" ~ !ident_char }
+kw_NOT     = @{ "NOT" ~ !ident_char }
+kw_exists  = @{ ^"exists" ~ !ident_char }
+kw_seq     = @{ ^"seq" ~ !ident_char }
 
-// The compact form (`repo:x since:7d "phrase"`) is a predicate whose terms
-// are joined by an implied AND.
-negated = { "-" ~ (clause | phrase) }
+// Boolean conditions. Juxtaposition is AND; AND, OR and NOT are written in
+// capitals so the lower-case words remain searchable.
+expr     = { or_expr }
+or_expr  = { and_expr ~ (kw_OR ~ and_expr)* }
+and_expr = { not_expr ~ (kw_AND? ~ !stop ~ not_expr)* }
+not_expr = { negate ~ not_expr | atom }
+negate   = { kw_NOT | "-" }
 
-clause = { field ~ ":" ~ (alternatives | compare_value | value) }
-alternatives = { "(" ~ value ~ ("|" ~ value)* ~ ")" }
-compare_value = { cmp_op ~ value }
+// What may not start another juxtaposed condition.
+stop = _{ kw_OR | kw_with ~ unit ~ "(" | "->" | "|" | ")" | "]" | "," | EOI }
 
-// Readable comparisons: `messages >= 10`, `date between A and B`.
-comparison = { field ~ cmp_op ~ value }
-range = { field ~ ^"between" ~ value ~ ^"and" ~ value }
-cmp_op = @{ ">=" | "<=" | "!=" | ">" | "<" | "=" }
+atom = {
+    "(" ~ expr ~ ")"
+  | exists
+  | seq
+  | between
+  | compare
+  | url
+  | position_ref
+  | match_
+  | text
+}
+
+exists = { kw_exists ~ row_unit ~ "(" ~ expr ~ ")" }
+
+seq       = { kw_seq ~ "(" ~ step ~ (arrow ~ step)+ ~ ")" }
+arrow     = { "->" ~ gap? }
+gap       = { "[" ~ (gap_next | gap_within) ~ "]" }
+gap_next  = { ^"next" }
+gap_within = { ^"within:" ~ duration }
+step      = { step_atom ~ (kw_AND? ~ !(stop) ~ step_atom)* }
+step_atom = { "(" ~ expr ~ ")" | between | compare | match_ | text }
+
+between = { field ~ kw_between ~ scalar ~ kw_and_lc ~ scalar }
+compare = { field ~ op ~ scalar }
+op      = @{ ">=" | "<=" | "!=" | ">" | "<" | "=" }
+match_  = ${ field ~ ":" ~ mvalue }
+
+mvalue       = ${ quoted | alternatives | any_value | bare }
+alternatives = !{ "(" ~ bare ~ ("|" ~ bare)* ~ ")" }
+any_value    = @{ "*" ~ !bare_char }
+
+// A comparison or range value: a number, money, duration or time.
+scalar      = { time_phrase | quoted | bare }
+time_phrase = ${ (^"this" | ^"last") ~ " "+ ~ (^"week" | ^"month") ~ !ident_char }
+duration    = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? ~ ("ms" | "s" | "m" | "h" | "d" | "w") }
 
 field = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_" | "-" | ".")* }
-value = { quoted | bare }
-phrase = { quoted }
-quoted = ${ "\"" ~ inner ~ "\"" }
-inner = @{ (!("\"" | "\\") ~ ANY | "\\" ~ ANY)* }
-bare = @{ (!(WHITESPACE | "(" | ")" | "|" | "\"") ~ ANY)+ }
-word = @{ !(keyword ~ (WHITESPACE | EOI)) ~ (!(WHITESPACE | "(" | ")" | "|" | "\"" | ":" | "-") ~ ANY) ~ (!(WHITESPACE | "(" | ")" | "|" | "\"" | ":") ~ ANY)* }
-keyword = { ^"AND" | ^"OR" | ^"NOT" | ^"where" | ^"between" }
 
-// Pipeline stages after the source.
-stage = { group_by | count | sort_by | limit | offset | project | fuse | unit_where }
-group_by = { ^"group" ~ ^"by" ~ field ~ ("," ~ field)* }
-count = { ^"count" }
-sort_by = { ^"sort" ~ ^"by" ~ field ~ direction? }
-direction = { ^"asc" | ^"desc" }
-limit = { ^"limit" ~ number }
-offset = { ^"offset" ~ number }
-project = { ^"select" ~ field ~ ("," ~ field)* }
-fuse = { ^"fuse" ~ field }
-number = @{ ASCII_DIGIT+ }
+url          = @{ ("https://" | "http://") ~ bare_char+ }
+position_ref = @{ "@" ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+
+text   = ${ quoted | word }
+quoted = ${ "\"" ~ inner ~ "\"" }
+inner  = @{ (!("\"" | "\\") ~ ANY | "\\" ~ ANY)* }
+bare_char = _{ !(WHITESPACE | "(" | ")" | "|" | "\"" | "," | "[" | "]") ~ ANY }
+bare   = @{ bare_char+ }
+word   = @{ !(("AND" | "OR" | "NOT") ~ !ident_char) ~ !("-" | "->") ~ bare_char+ ~ call_args? }
+// A pasted call: `weekday_offset()`, `parse(x)`. Its parts are searched.
+call_args = @{ "(" ~ (!(")" | "(" | WHITESPACE | "\"") ~ ANY)* ~ ")" }
+
+// Attached rows: `with messages(id, role)[role:assistant, last:1]`.
+attach   = { kw_with ~ child ~ ("," ~ child)* }
+child    = { unit ~ "(" ~ field ~ ("," ~ field)* ~ ")" ~ ("[" ~ window ~ ("," ~ window)* ~ "]")? }
+window   = { window_n | expr }
+window_n = ${ (^"first" | ^"last") ~ ":" ~ number }
+
+// Pipeline stages.
+stage = {
+    sort_by | group_by | agg | count | limit | offset | where_stage
+  | distinct | matches | scope_stage
+}
+sort_by     = { ^"sort" ~ ^"by" ~ sort_key ~ direction? }
+sort_key    = { random | field }
+random      = { ^"random" ~ ("(" ~ number ~ ")")? }
+direction   = { ^"asc" | ^"desc" }
+group_by    = { ^"group" ~ ^"by" ~ group_key ~ ("," ~ group_key)* }
+group_key   = { bucket ~ "(" ~ field ~ ")" | field }
+bucket      = { ^"day" | ^"week" | ^"month" }
+agg         = { ^"agg" ~ agg_fn ~ ("," ~ agg_fn)* }
+agg_fn      = ${ agg_name ~ ":" ~ field | ^"count" ~ !ident_char }
+agg_name    = @{ ^"sum" | ^"avg" | ^"min" | ^"max" | ^"count_distinct" | ^"p" ~ ASCII_DIGIT+ }
+count       = { ^"count" ~ !ident_char }
+limit       = { ^"limit" ~ number }
+offset      = { ^"offset" ~ number }
+where_stage = { kw_where ~ expr }
+distinct    = { ^"distinct" ~ !ident_char }
+matches     = { ^"matches" ~ !ident_char }
+scope_stage = { unit ~ (kw_where ~ expr)? }
+number      = @{ ASCII_DIGIT+ }

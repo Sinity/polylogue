@@ -1,0 +1,312 @@
+//! Running a query (architecture 7; spec query.md, Results): compile it,
+//! check pasted IDs, count the whole answer, read one page, cut snippets
+//! for text matches, fill attached rows, and explain an empty result when
+//! asked. Every step reads through one reader, so the count, the page and
+//! the attachments agree.
+
+use base64::Engine as _;
+use polylogue_model::LogicalDay;
+use polylogue_query::{ColKind, Options, Param, Program, QueryError, Shape};
+use polylogue_store::search::Within;
+use polylogue_store::{Reader, SqlValue};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+/// A failed query, as the response's error and its detail.
+#[derive(Debug)]
+pub struct Failure {
+    pub kind: String,
+    pub message: String,
+    pub detail: Option<Value>,
+}
+
+impl From<polylogue_store::StoreError> for Failure {
+    fn from(e: polylogue_store::StoreError) -> Self {
+        Failure {
+            kind: "store".into(),
+            message: e.to_string(),
+            detail: None,
+        }
+    }
+}
+
+impl From<QueryError> for Failure {
+    fn from(e: QueryError) -> Self {
+        Failure {
+            kind: e.kind().into(),
+            message: e.to_string(),
+            detail: serde_json::to_value(&e).ok(),
+        }
+    }
+}
+
+/// What a page carries forward: where the next page starts, and the
+/// instant the query's times were resolved against, so every page answers
+/// the same question.
+#[derive(Debug, Serialize, Deserialize)]
+struct Cursor {
+    offset: u64,
+    now: i64,
+    /// BLAKE3 of the query text: a cursor continues only its own query.
+    query: String,
+}
+
+fn encode(c: &Cursor) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(c).unwrap_or_default())
+}
+
+fn decode(text: &str) -> Option<Cursor> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn query_hash(text: &str) -> String {
+    blake3::hash(text.as_bytes()).to_hex()[..16].to_owned()
+}
+
+/// What a request asks besides the text.
+pub struct Ask<'a> {
+    pub text: &'a str,
+    pub cursor: Option<&'a str>,
+    pub page_size: Option<u64>,
+    pub why: bool,
+    pub session: Option<String>,
+    /// Unix ms; the reader's `now` unless a cursor fixes it.
+    pub now: i64,
+    pub day: LogicalDay,
+    pub embeddings: bool,
+}
+
+pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
+    let cursor = match ask.cursor {
+        Some(c) => {
+            let c = decode(c).ok_or_else(|| Failure {
+                kind: "bad_request".into(),
+                message: "the cursor is not one this daemon issued".into(),
+                detail: None,
+            })?;
+            if c.query != query_hash(ask.text) {
+                return Err(Failure {
+                    kind: "bad_request".into(),
+                    message: "the cursor belongs to another query".into(),
+                    detail: None,
+                });
+            }
+            Some(c)
+        }
+        None => None,
+    };
+    let opts = Options {
+        clock: polylogue_query::Clock::new(cursor.as_ref().map_or(ask.now, |c| c.now), ask.day),
+        origins: polylogue_sources::origin::ORIGINS
+            .iter()
+            .map(|o| o.name.to_owned())
+            .collect(),
+        page_size: ask.page_size,
+        embeddings: ask.embeddings,
+        self_session: ask.session,
+    };
+    let program = polylogue_query::compile(ask.text, &opts)?;
+    check_ids(reader, &program)?;
+    let params = values(&program.params);
+    let count = reader.query(&program.count_sql(), &params)?;
+    let count = count
+        .first()
+        .and_then(|r| r["count(*)"].as_u64())
+        .unwrap_or(0);
+    let offset = cursor.as_ref().map_or(0, |c| c.offset);
+    let page_size = program.page_size.max(1);
+    let mut page_params = params.clone();
+    page_params.push(SqlValue::Int(i64::try_from(page_size).unwrap_or(i64::MAX)));
+    page_params.push(SqlValue::Int(i64::try_from(offset).unwrap_or(i64::MAX)));
+    let mut rows = reader.query(&program.page_sql(), &page_params)?;
+
+    if program.shape == Shape::Rows {
+        snippets(reader, &program, &mut rows)?;
+        attach(reader, &program, &mut rows)?;
+    }
+    for row in &mut rows {
+        present(&program, row);
+    }
+    let next = (offset + page_size < count).then(|| {
+        encode(&Cursor {
+            offset: offset + page_size,
+            now: program.now,
+            query: query_hash(ask.text),
+        })
+    });
+    let outcome = if !program.degraded.is_empty() {
+        "degraded"
+    } else if count == 0 {
+        "empty"
+    } else {
+        "rows"
+    };
+    let mut out = json!({
+        "outcome": outcome,
+        "unit": program.unit.name(),
+        "shape": program.shape,
+        "columns": program.columns,
+        "rows": rows,
+        "count": count,
+        "next": next,
+        "ranked": program.ranked,
+        "notes": program.notes,
+        "degraded": program.degraded,
+        "resolved": {
+            "now": polylogue_model::Timestamp::from_unix_ms(program.now),
+            "zone": program.zone,
+            "day_start_minutes": program.day_start_minutes,
+        },
+    });
+    if ask.why && count == 0 {
+        out["why"] = why(reader, &program, &params)?;
+    }
+    Ok(out)
+}
+
+fn values(params: &[Param]) -> Vec<SqlValue> {
+    params
+        .iter()
+        .map(|p| match p {
+            Param::Int(n) => SqlValue::Int(*n),
+            Param::Real(f) => SqlValue::Real(*f),
+            Param::Text(s) => SqlValue::Text(s.clone()),
+        })
+        .collect()
+}
+
+/// A pasted ID is a reference only when it names exactly one session.
+fn check_ids(reader: &Reader<'_>, program: &Program) -> Result<(), Failure> {
+    for check in &program.id_checks {
+        let found = reader.query(&check.sql, &values(&check.params))?;
+        let ids: Vec<String> = found
+            .iter()
+            .filter_map(|r| r["id"].as_str().map(str::to_owned))
+            .collect();
+        match ids.len() {
+            1 => {}
+            0 => {
+                return Err(Failure {
+                    kind: "not_found".into(),
+                    message: format!("no session or message has an ID starting {:?}", check.word),
+                    detail: Some(json!({ "word": check.word })),
+                });
+            }
+            _ => {
+                return Err(Failure {
+                    kind: "ambiguous".into(),
+                    message: format!("{:?} starts several IDs: {}", check.word, ids.join(", ")),
+                    detail: Some(json!({ "word": check.word, "candidates": ids })),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One snippet per row when text terms ranked the rows.
+fn snippets(reader: &Reader<'_>, program: &Program, rows: &mut [Value]) -> Result<(), Failure> {
+    if !program.ranked {
+        return Ok(());
+    }
+    let fts: Vec<String> = program
+        .text_terms
+        .iter()
+        .filter_map(|t| polylogue_model::text::fts_phrase(t))
+        .collect();
+    if fts.is_empty() {
+        return Ok(());
+    }
+    let fts = fts.join(" AND ");
+    for row in rows {
+        let Some(pk) = row["_pk"].as_i64() else {
+            continue;
+        };
+        let within = match program.unit {
+            polylogue_query::ast::Unit::Sessions => Within::Session(pk),
+            polylogue_query::ast::Unit::Messages => Within::Message(pk),
+            _ => continue,
+        };
+        if let Some(s) = reader.snippet(&fts, within, &program.text_terms)? {
+            row["snippet"] = serde_json::to_value(s).unwrap_or(Value::Null);
+        }
+    }
+    Ok(())
+}
+
+fn attach(reader: &Reader<'_>, program: &Program, rows: &mut [Value]) -> Result<(), Failure> {
+    for a in &program.attach {
+        for row in rows.iter_mut() {
+            let Some(pk) = row["_pk"].as_i64() else {
+                continue;
+            };
+            let mut params = values(&a.params);
+            params.push(SqlValue::Int(pk));
+            let mut children = reader.query(&a.sql, &params)?;
+            if let Some(n) = a.first {
+                children.truncate(usize::try_from(n).unwrap_or(usize::MAX));
+            }
+            if let Some(n) = a.last {
+                let n = usize::try_from(n).unwrap_or(usize::MAX);
+                let skip = children.len().saturating_sub(n);
+                children.drain(..skip);
+            }
+            for c in &mut children {
+                for col in &a.columns {
+                    shape_value(col.kind, &mut c[col.name.as_str()]);
+                }
+            }
+            row[a.name.as_str()] = Value::Array(children);
+        }
+    }
+    Ok(())
+}
+
+/// Times as RFC 3339, booleans as booleans; `_pk` is the reader's own.
+fn present(program: &Program, row: &mut Value) {
+    if let Some(obj) = row.as_object_mut() {
+        obj.remove("_pk");
+    }
+    for col in &program.columns {
+        shape_value(col.kind, &mut row[col.name.as_str()]);
+    }
+}
+
+fn shape_value(kind: ColKind, v: &mut Value) {
+    match kind {
+        ColKind::Time => {
+            if let Some(ms) = v.as_i64() {
+                *v = polylogue_model::Timestamp::from_unix_ms(ms)
+                    .map_or(Value::Null, |t| Value::String(t.to_string()));
+            }
+        }
+        ColKind::Bool => {
+            if let Some(n) = v.as_i64() {
+                *v = Value::Bool(n != 0);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Each top-level condition counted alone against the rows the defaults
+/// keep: `repo:other → 0 of 5`.
+fn why(reader: &Reader<'_>, program: &Program, params: &[SqlValue]) -> Result<Value, Failure> {
+    let count = |sql: &str| -> Result<u64, Failure> {
+        let r = reader.query(sql, params)?;
+        Ok(r.first().and_then(|r| r["count(*)"].as_u64()).unwrap_or(0))
+    };
+    let of = count(&program.why_of)?;
+    let mut out = vec![];
+    for w in &program.why {
+        out.push(json!({ "clause": w.clause, "matches": count(&w.sql)?, "of": of }));
+    }
+    Ok(Value::Array(out))
+}
+
+#[cfg(test)]
+mod tests;

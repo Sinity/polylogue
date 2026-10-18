@@ -284,10 +284,7 @@ impl Writer {
     /// Writes one user request (a note, delivery or setting) and waits for
     /// it to commit. It is written after the batches already queued.
     pub fn user(&self, request: crate::user::UserRequest) -> Result<crate::user::UserOutcome> {
-        user_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            request,
-        )
+        user_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, request)
     }
 
     /// Waits until every batch sent before this call is committed, and
@@ -435,7 +432,10 @@ impl Inner {
     }
 
     /// One user request in its own `archive.db` transaction.
-    fn write_user(&mut self, request: &crate::user::UserRequest) -> Result<crate::user::UserOutcome> {
+    fn write_user(
+        &mut self,
+        request: &crate::user::UserRequest,
+    ) -> Result<crate::user::UserOutcome> {
         let tx = self.archive.transaction()?;
         let seq = bump_counter(&tx)?;
         let outcome = crate::user::apply(&tx, request, seq)?;
@@ -1415,7 +1415,9 @@ impl Ctx<'_, '_> {
             } else {
                 "INSERT INTO output_fts(rowid, body) VALUES (?1, ?2)"
             };
-            self.tx.prepare_cached(sql)?.execute(params![id, body])?;
+            self.tx
+                .prepare_cached(sql)?
+                .execute(params![id, polylogue_model::text::fold(body)])?;
             self.tx
                 .prepare_cached("UPDATE text SET indexed = indexed | ?2 WHERE id = ?1")?
                 .execute(params![id, bit])?;
