@@ -1,11 +1,11 @@
-use super::*;
+use super::super::*;
 
 fn header() -> Value {
     json!({"type":"session","id":"test:deadline","format":"polylogue-session","version":1})
 }
 
 #[test]
-fn socket_timeout_is_typed_as_deadline_without_accepting_partial_document() {
+fn socket_timeout_is_a_deadline_error_and_no_end_is_written() {
     let (client, mut peer) = UnixStream::pair().unwrap();
     frame(&mut peer, header()).unwrap();
     frame(&mut peer, json!({"type":"text","data":"{}"})).unwrap();
@@ -25,7 +25,7 @@ fn socket_timeout_is_typed_as_deadline_without_accepting_partial_document() {
 }
 
 #[test]
-fn trickled_session_frames_cannot_renew_the_absolute_deadline() {
+fn trickled_frames_do_not_extend_the_deadline() {
     let (client, mut peer) = UnixStream::pair().unwrap();
     frame(&mut peer, header()).unwrap();
     frame(&mut peer, json!({"type":"text","data":"x"})).unwrap();
@@ -53,13 +53,13 @@ fn trickled_session_frames_cannot_renew_the_absolute_deadline() {
 }
 
 #[test]
-fn one_incomplete_completion_frame_cannot_trickle_past_the_deadline() {
+fn trickled_bytes_of_one_end_frame_do_not_extend_the_deadline() {
     let (client, mut peer) = UnixStream::pair().unwrap();
     frame(&mut peer, header()).unwrap();
     let mut end = serde_json::to_vec(&json!({"type":"end","outcome":"degraded","canonical_complete":false,"missing":["source_catalog_coverage"]})).unwrap();
     end.push(b'\n');
-    // One frame spans many underlying reads. A kernel timeout renewed per read
-    // would accept this valid end late; complete-frame trickles cannot catch it.
+    // One frame spread over many reads: a timeout renewed per read would
+    // accept this end frame late.
     peer.write_all(&end[..1]).unwrap();
     let send = std::thread::spawn(move || {
         for byte in &end[1..] {

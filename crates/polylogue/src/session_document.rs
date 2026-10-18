@@ -1,13 +1,14 @@
-//! Shared normalized Session document for JSON read and export. A pinned
-//! catalog is not source-complete; the caller must preserve returned coverage.
+//! The JSON session document written by both read and export. The view only
+//! covers messages already indexed, so callers must pass on the returned
+//! completion status.
 use crate::output_json::Encoder;
 use polylogue_model::{
     BlockId, BlockSlot, RawJson, ToolOutcome, ToolOutput,
     merge::{BlockField, MessageField, Slot, UsageField},
 };
 use polylogue_store::contributions::{
-    BlockFieldAddress, BlockView, FieldRead, FieldView, MessageView, SessionCoverage, SessionStep,
-    SessionView, SourceStep,
+    BlockFieldAddress, BlockView, FieldRead, FieldView, MessageView, SessionStep, SessionView,
+    SourceStep,
 };
 use serde_json::{Value, json};
 use std::{
@@ -19,13 +20,15 @@ const PIECE: usize = 4096;
 const METADATA: usize = 4 * 1_048_576;
 mod opaque_fields;
 use opaque_fields::OpaqueFields;
+/// What a finished document write reports to the caller.
 #[derive(Debug)]
-pub(crate) struct Coverage {
+pub(crate) struct Summary {
     pub up_to_date: bool,
     pub messages: u64,
-    pub catalog: SessionCoverage,
-    pub qualification: Value,
-    pub incomplete_reasons: Vec<String>,
+    /// The document's `result` object: outcome, notes and completion.
+    pub status: Value,
+    /// Why the document is not complete; empty when it is.
+    pub missing: Vec<String>,
     pub recovery: Option<polylogue_model::RecoveryRecord>,
 }
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -44,6 +47,26 @@ fn check(deadline: Instant) -> io::Result<()> {
         Ok(())
     }
 }
+fn check_cancel(deadline: Instant, cancelled: &mut dyn FnMut() -> bool) -> io::Result<()> {
+    check(deadline)?;
+    if cancelled() {
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "Session reader cancelled",
+        ));
+    }
+    Ok(())
+}
+/// A store cancellation is the read deadline or the client going away.
+fn cancellable<T>(result: Result<T, polylogue_store::Error>) -> io::Result<T> {
+    result.map_err(|error| {
+        if matches!(error, polylogue_store::Error::Cancelled) {
+            io::Error::new(io::ErrorKind::TimedOut, error)
+        } else {
+            io::Error::other(error)
+        }
+    })
+}
 fn field_bytes(field: &FieldView<'_>, origin: bool) -> io::Result<Option<Vec<u8>>> {
     let range = if origin {
         stored(field.origin_range(0, LEAF))?
@@ -52,11 +75,11 @@ fn field_bytes(field: &FieldView<'_>, origin: bool) -> io::Result<Option<Vec<u8>
     };
     let Some(range) = range else { return Ok(None) };
     if !range.eof {
-        return Err(invalid("normalized JSON leaf exceeds response admission"));
+        return Err(invalid("field value exceeds 64 KiB"));
     }
     Ok(Some(range.bytes))
 }
-fn retained_field(field: &FieldView<'_>, origin: bool) -> io::Result<Option<RawJson>> {
+fn raw_field(field: &FieldView<'_>, origin: bool) -> io::Result<Option<RawJson>> {
     field_bytes(field, origin)?
         .map(|bytes| {
             RawJson::parse(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -65,7 +88,7 @@ fn retained_field(field: &FieldView<'_>, origin: bool) -> io::Result<Option<RawJ
 }
 
 fn field_value(field: &FieldView<'_>, origin: bool) -> io::Result<Option<Value>> {
-    retained_field(field, origin)?
+    raw_field(field, origin)?
         .map(|value| serde_json::from_slice(&value.canonical()).map_err(io::Error::other))
         .transpose()
 }
@@ -74,12 +97,10 @@ fn resolved(field: FieldRead<'_>) -> io::Result<FieldView<'_>> {
     match field {
         FieldRead::Value(value) => Ok(value),
         FieldRead::Conflict => Err(invalid(
-            "unresolved field alternatives are not yet exportable",
+            "field has conflicting values; reading it is not supported yet",
         )),
     }
 }
-// Both document encoding and bounded prefix replay use this admitted typed
-// field. It is normalized JSON, not a provider payload or an arbitrary blob.
 fn tool_output_field(field: &FieldView<'_>) -> io::Result<ToolOutput> {
     let value = field_value(field, false)?.ok_or_else(|| invalid("missing block field"))?;
     serde_json::from_value(value).map_err(Into::into)
@@ -167,54 +188,35 @@ fn member<W: Write>(e: &mut Encoder<W>, name: &str, value: &Value) -> io::Result
     e.key(name)?;
     e.value(value)
 }
-/// Refuse known pending/order failures before any document bytes. This is a
-/// bounded-memory pass over the same snapshot, not a source-completeness proof.
+/// Writes the document for `session`. A pending message or unresolved order
+/// fails before any byte is written; the first pass over the same snapshot
+/// keeps memory flat.
 pub(crate) fn write(
     session: &SessionView,
     out: &mut impl Write,
     deadline: Instant,
-) -> io::Result<Coverage> {
-    write_with_cancel(session, out, deadline, &mut || false)
-}
-pub(crate) fn write_with_cancel(
-    session: &SessionView,
-    out: &mut impl Write,
-    deadline: Instant,
     cancelled: &mut dyn FnMut() -> bool,
-) -> io::Result<Coverage> {
-    let source_qualification = polylogue_engine::session_status::check_with_cancel(
+) -> io::Result<Summary> {
+    let session_status = cancellable(polylogue_engine::session_status::check_with_cancel(
         session,
         deadline,
         16 * 1024 * 1024,
         cancelled,
-    )
-    .map_err(|error| {
-        if matches!(error, polylogue_store::Error::Cancelled) {
-            io::Error::new(io::ErrorKind::TimedOut, error)
-        } else {
-            io::Error::other(error)
-        }
-    })?;
-    let mut qualification = source_qualification.result(&session.catalog());
-    let mut incomplete_reasons = source_qualification.incomplete_reasons();
+    ))?;
+    let mut status = session_status.result(&session.catalog());
+    let mut missing = session_status.incomplete_reasons();
     let recovery = stored(session.recovery())?;
     if recovery.is_some() {
-        incomplete_reasons.push(polylogue_model::RecoveryRecord::NOTE.into());
-        qualification["outcome"] = json!("degraded");
-        qualification["notes"]
+        missing.push(polylogue_model::RecoveryRecord::NOTE.into());
+        status["outcome"] = json!("degraded");
+        status["notes"]
             .as_array_mut()
-            .expect("qualification notes")
+            .expect("status notes")
             .push(json!(polylogue_model::RecoveryRecord::NOTE));
     }
     let mut after = None;
     loop {
-        check(deadline)?;
-        if cancelled() {
-            return Err(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                "Session reader cancelled",
-            ));
-        }
+        check_cancel(deadline, cancelled)?;
         match stored(session.next(after.as_ref(), LEAF))? {
             SessionStep::Ready { cursor, .. } => after = Some(cursor),
             SessionStep::Pending { .. } => {
@@ -228,15 +230,14 @@ pub(crate) fn write_with_cancel(
     }
     let mut e = Encoder::new(out, deadline);
     e.syntax(b"{\"format\":\"polylogue-session\",\"version\":1,\"exported_by\":\"polylogue ")?;
-    // Package version is fixed build metadata, not provider text.
     e.syntax(env!("CARGO_PKG_VERSION").as_bytes())?;
     e.syntax(b"\"")?;
-    member(&mut e, "result", &qualification)?;
+    member(&mut e, "result", &status)?;
     if let Some(recovery) = &recovery {
         member(&mut e, "recovery", &json!(recovery))?;
     }
     e.syntax(b",\"session\":{")?;
-    let h = source_qualification.header(stored(session.header())?);
+    let h = session_status.header(stored(session.header())?);
     e.key("id")?;
     e.reference(h.id.as_str())?;
     member(&mut e, "origin", &json!(h.origin.as_str()))?;
@@ -275,7 +276,7 @@ pub(crate) fn write_with_cancel(
         member(&mut e, "display_title", &json!(title))?;
         member(&mut e, "title_source", &json!("provider"))?;
     }
-    if let Some(models) = source_qualification
+    if let Some(models) = session_status
         .metadata
         .as_ref()
         .and_then(|session| session.models.as_ref())
@@ -288,7 +289,6 @@ pub(crate) fn write_with_cancel(
     if let Some(value) = h.last_activity_at {
         member(&mut e, "last_activity_at", &json!(timestamp(value)?))?;
     }
-    // Machine labels and collection metadata are not inferred from acquisition.
     if let Some(id) = &h.collection_id {
         e.syntax(b",")?;
         e.key("collection")?;
@@ -308,14 +308,8 @@ pub(crate) fn write_with_cancel(
     e.syntax(b"},\"messages\":[")?;
     let mut after = None;
     let mut messages = 0u64;
-    let catalog = loop {
-        check(deadline)?;
-        if cancelled() {
-            return Err(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                "Session reader cancelled",
-            ));
-        }
+    loop {
+        check_cancel(deadline, cancelled)?;
         match stored(session.next(after.as_ref(), LEAF))? {
             SessionStep::Ready {
                 cursor, message, ..
@@ -327,7 +321,7 @@ pub(crate) fn write_with_cancel(
                     &message,
                     &mut e,
                     deadline,
-                    source_qualification
+                    session_status
                         .active_messages
                         .contains(message.id().as_str()),
                     cancelled,
@@ -338,25 +332,24 @@ pub(crate) fn write_with_cancel(
                 after = Some(cursor);
             }
             SessionStep::Pending { .. } | SessionStep::UnresolvedOrder { .. } => {
-                return Err(invalid("pinned session catalog changed shape"));
+                return Err(invalid("session changed between passes"));
             }
-            SessionStep::End { coverage } => break coverage,
+            SessionStep::End { .. } => break,
         }
-    };
+    }
     e.syntax(b"]")?;
-    if source_qualification.complete() {
+    if session_status.complete() {
         e.syntax(b",\"links\":[],\"events\":[],\"notes\":[],\"runs\":[],\"deliveries\":[]")?;
     }
     e.syntax(b",\"inputs\":")?;
-    e.value(&json!(source_qualification.inputs))?;
+    e.value(&json!(session_status.inputs))?;
     e.syntax(b"}")?;
     e.finish()?;
-    Ok(Coverage {
-        up_to_date: source_qualification.up_to_date,
+    Ok(Summary {
+        up_to_date: session_status.up_to_date,
         messages,
-        catalog,
-        qualification,
-        incomplete_reasons,
+        status,
+        missing,
         recovery,
     })
 }
@@ -465,7 +458,7 @@ fn write_message_fields<W: Write>(
     }
     for extras in [false, true] {
         if extras && !model_page {
-            let mut fields = ordered(m.ordered_extras(LEAF, deadline, cancelled))?;
+            let mut fields = cancellable(m.ordered_extras(LEAF, deadline, cancelled))?;
             write_ordered_extras(&mut fields, "attrs", e, deadline, cancelled)?;
             continue;
         }
@@ -524,12 +517,7 @@ fn write_message_fields<W: Write>(
     Ok(())
 }
 
-fn opaque_value<W: Write>(
-    e: &mut Encoder<W>,
-    value: &RawJson,
-    _deadline: Instant,
-    model_page: bool,
-) -> io::Result<()> {
+fn opaque_value<W: Write>(e: &mut Encoder<W>, value: &RawJson, model_page: bool) -> io::Result<()> {
     if model_page {
         e.opaque(value)
     } else {
@@ -540,7 +528,6 @@ fn opaque_value<W: Write>(
 fn opaque_field<W: Write>(
     field: &FieldView<'_>,
     e: &mut Encoder<W>,
-    deadline: Instant,
     model_page: bool,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> io::Result<()> {
@@ -549,25 +536,24 @@ fn opaque_field<W: Write>(
         if first.eof {
             let value = RawJson::parse(&first.bytes)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            return opaque_value(e, &value, deadline, false);
+            return opaque_value(e, &value, false);
         }
         if first.bytes.first() == Some(&b'"') {
             return e.string_ranges(
                 |offset| {
                     let part = stored(field.range(offset, PIECE))?;
                     if part.next_offset != offset.saturating_add(part.bytes.len() as u64) {
-                        return Err(invalid("normalized string range made invalid progress"));
+                        return Err(invalid("string range read returned a wrong offset"));
                     }
                     Ok((part.bytes, part.eof))
                 },
                 cancelled,
             );
         }
-        return Err(invalid("normalized JSON leaf exceeds response admission"));
+        return Err(invalid("field value exceeds 64 KiB"));
     }
-    let value =
-        retained_field(field, false)?.ok_or_else(|| invalid("missing opaque block field"))?;
-    opaque_value(e, &value, deadline, model_page)
+    let value = raw_field(field, false)?.ok_or_else(|| invalid("missing opaque block field"))?;
+    opaque_value(e, &value, model_page)
 }
 
 fn write_block<W: Write>(
@@ -631,7 +617,6 @@ fn write_block_fields<W: Write>(
         let result =
             stored(b.tool_result(LEAF))?.ok_or_else(|| invalid("tool result header absent"))?;
         member(e, "outcome", &json!(result.outcome.as_str()))?;
-        // Reason vocabulary/unknown status comes from the typed immutable body.
         match &result.outcome {
             ToolOutcome::Unknown { reason } => {
                 member(e, "outcome_reason", &json!(reason.as_str()))?
@@ -665,10 +650,11 @@ fn write_block_fields<W: Write>(
                         | BlockField::ExitCode
                         | BlockField::DurationMs
                 );
-            if !include_output && kind == BlockField::Output {
-                if let ToolOutput::Blob(hash) = tool_output_field(&field)? {
-                    member(e, "blob", &json!(format!("blake3:{hash}")))?;
-                }
+            if !include_output
+                && kind == BlockField::Output
+                && let ToolOutput::Blob(hash) = tool_output_field(&field)?
+            {
+                member(e, "blob", &json!(format!("blake3:{hash}")))?;
             }
             if !body_scalar && !result_scalar && (include_output || kind != BlockField::Output) {
                 if kind == BlockField::Output {
@@ -690,7 +676,7 @@ fn write_block_fields<W: Write>(
                     ) {
                         e.syntax(b",")?;
                         e.key(block_name(kind))?;
-                        opaque_field(&field, e, deadline, model_page, cancelled)?;
+                        opaque_field(&field, e, model_page, cancelled)?;
                         cursor = Some(entry.cursor);
                         continue;
                     }
@@ -718,7 +704,7 @@ fn write_block_fields<W: Write>(
     }
     let container = block_extra_container(&b.kind);
     if !model_page {
-        let mut fields = ordered(b.ordered_extras(LEAF, deadline, cancelled))?;
+        let mut fields = cancellable(b.ordered_extras(LEAF, deadline, cancelled))?;
         return write_ordered_extras(&mut fields, container, e, deadline, cancelled);
     }
     let mut cursor = None;
@@ -735,13 +721,13 @@ fn write_block_fields<W: Write>(
     opaque.finish(e)?;
     Ok(())
 }
-/// Finite selected metadata, encoded with exactly the document's logical-value
-/// rules. Body text is excluded and remains owned by the bounded body window.
+/// Message or block metadata for model pages, encoded with the document's
+/// masking rules and capped at `METADATA` bytes. Body text is not included.
 struct Metadata(Vec<u8>);
 impl Write for Metadata {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() > METADATA.saturating_sub(self.0.len()) {
-            return Err(invalid("selected metadata exceeds admission"));
+            return Err(invalid("metadata exceeds 4 MiB"));
         }
         self.0.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -825,7 +811,7 @@ fn origin<W: Write>(
     name: &str,
     first: &mut bool,
 ) -> io::Result<()> {
-    if let Some(value) = retained_field(field, true)? {
+    if let Some(value) = raw_field(field, true)? {
         if *first {
             e.syntax(b",\"field_origins\":[")?;
             *first = false;
@@ -842,15 +828,6 @@ fn origin<W: Write>(
     }
     Ok(())
 }
-fn ordered<T>(result: Result<T, polylogue_store::Error>) -> io::Result<T> {
-    result.map_err(|error| {
-        if matches!(error, polylogue_store::Error::Cancelled) {
-            io::Error::new(io::ErrorKind::TimedOut, error)
-        } else {
-            io::Error::other(error)
-        }
-    })
-}
 fn write_ordered_extras<W: Write>(
     fields: &mut polylogue_store::contributions::OrderedExtras<'_>,
     name: &'static str,
@@ -859,7 +836,7 @@ fn write_ordered_extras<W: Write>(
     cancelled: &mut dyn FnMut() -> bool,
 ) -> io::Result<()> {
     let mut opaque = OpaqueFields::new(name, false);
-    while let Some(entry) = ordered(fields.next(deadline, cancelled))? {
+    while let Some(entry) = cancellable(fields.next(deadline, cancelled))? {
         let bytes = field_bytes(&resolved(entry.value)?, false)?
             .ok_or_else(|| invalid("missing selected opaque value"))?;
         opaque.push(e, &entry.key, &bytes)?;

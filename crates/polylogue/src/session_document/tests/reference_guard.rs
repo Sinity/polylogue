@@ -55,16 +55,16 @@ fn short_native_word_in_foreign_prose_is_not_a_full_session_reference() {
     world.wait_rows(&mention, false);
     let affected = document();
     assert_eq!(affected["result"]["outcome"], "degraded");
-    let basis = affected["result"]["completion"]["computed_from"]["inputs"]
+    let inputs = affected["result"]["completion"]["computed_from"]["inputs"]
         .as_array()
         .unwrap();
     assert!(
-        basis
+        inputs
             .iter()
             .any(|input| input["input"] == mention.id.as_str())
     );
     assert!(
-        !basis
+        !inputs
             .iter()
             .any(|input| input["input"] == ordinary.id.as_str())
     );
