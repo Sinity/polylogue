@@ -707,33 +707,11 @@ fn run(
     })?;
     let readable = if selection.exact.is_some() {
         q.member_rows_readable()
-    } else if branches {
-        q.pending_inputs == 0 && q.known_rows_readable()
     } else {
-        q.pending_inputs == 0
-            && q.known_rows_readable()
-            && (q.unavailable_inputs == 0 || q.active_path_known())
+        q.pending_inputs == 0 && q.known_rows_readable()
     };
     if !readable {
-        let mut failure = unavailable("current_selected_basis_unavailable");
-        if selection.exact.is_none()
-            && !branches
-            && q.pending_inputs == 0
-            && q.known_rows_readable()
-            && !q.active_path_known()
-        {
-            failure["error"]["hint"] = json!(
-                "Active-path membership is unknown. Use --branches (MCP branches:true) to read only known retained catalog members."
-            );
-        }
-        return Err(failure);
-    }
-    if !branches && selection.exact.is_none() && !q.active_path_known() {
-        let mut failure = unavailable("active_path_membership_unavailable");
-        failure["error"]["hint"] = json!(
-            "Active-path membership is unknown. Use --branches (MCP branches:true) to read only known retained catalog members."
-        );
-        return Err(failure);
+        return Err(unavailable("current_selected_basis_unavailable"));
     }
     let mut qualification = q.result(&selection.session.catalog());
     if branches && !q.active_path_known() {
@@ -837,6 +815,21 @@ fn run(
     );
     if old.as_ref().is_some_and(|(b, _, _)| *b != basis) {
         return Err(unavailable("stale_read"));
+    }
+    // Current row authority is required above even for a continuation. Once
+    // that holds, compare its authenticated selection before refusing a lost
+    // active-path proof. An unknown active set is never a usable empty page.
+    if !branches && selection.exact.is_none() && !q.active_path_known() {
+        let reason = if q.unavailable_inputs > 0 {
+            "current_selected_basis_unavailable"
+        } else {
+            "active_path_membership_unavailable"
+        };
+        let mut failure = unavailable(reason);
+        failure["error"]["hint"] = json!(
+            "Active-path membership is unknown. Use --branches (MCP branches:true) to read only known retained catalog members."
+        );
+        return Err(failure);
     }
     if position.block > count || (position.block == count && position.scalar != 0) {
         return Err(refusal("invalid_display_position"));

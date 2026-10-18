@@ -1508,6 +1508,14 @@ fn model_exact_block_append_restart_wrong_ref_options_and_selected_edit_refuse_c
     let competing = world.input("same-text-new-origin.jsonl", &model_fixture(&huge, true));
     let receipt = world.import(&competing, "01900000-0000-7000-8000-000000000804");
     world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 4);
+    // Current competing membership is unknown, but cannot replace the stale
+    // refusal for an already emitted selection. Fresh reads still refuse.
+    let fresh_session = model_call(&world, &json!({"ref":reference()}), Some(1600));
+    assert_eq!(
+        fresh_session["error"]["reason"],
+        "active_path_membership_unavailable"
+    );
+    assert!(fresh_session.get("shown").is_none());
     assert_eq!(
         model_call(&world, &session_next, None)["error"]["reason"],
         "stale_read"
