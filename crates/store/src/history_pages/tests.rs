@@ -295,17 +295,11 @@ fn alternating_flat_base_patch_layout_reuses_two_checked_objects_during_reconstr
     }
     assert_eq!(blake3::hash(&bytes).as_bytes(), hash.bytes());
     assert_eq!(
-        reader
-            .source_readers
-            .explicit_verifications
-            .load(Ordering::Relaxed),
+        reader.source_readers.verifications.load(Ordering::Relaxed),
         2
     );
     assert_eq!(
-        reader
-            .source_readers
-            .explicit_verification_bytes
-            .load(Ordering::Relaxed),
+        reader.source_readers.verified_bytes.load(Ordering::Relaxed),
         base_length + patch_length
     );
     let bad = w.read_handle().unwrap();
@@ -459,19 +453,13 @@ fn cancelled_first_object_warming_is_retried_and_cached_reads_keep_metadata_fenc
     });
     assert!(matches!(result, Err(Error::Cancelled)));
     assert_eq!(
-        reader
-            .source_readers
-            .explicit_verifications
-            .load(Ordering::Relaxed),
+        reader.source_readers.verifications.load(Ordering::Relaxed),
         0
     );
     let bytes = reader.read_source_range(&input.id, 1, hash, 0, n).unwrap();
     assert_eq!(blake3::hash(&bytes).as_bytes(), hash.bytes());
     assert_eq!(
-        reader
-            .source_readers
-            .explicit_verifications
-            .load(Ordering::Relaxed),
+        reader.source_readers.verifications.load(Ordering::Relaxed),
         1
     );
     w.archive
@@ -489,10 +477,7 @@ fn cancelled_first_object_warming_is_retried_and_cached_reads_keep_metadata_fenc
         bytes[..1]
     );
     assert_eq!(
-        reader
-            .source_readers
-            .explicit_verifications
-            .load(Ordering::Relaxed),
+        reader.source_readers.verifications.load(Ordering::Relaxed),
         2
     );
 }
