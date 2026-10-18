@@ -1,4 +1,6 @@
-//! Finite caller-owned lifetime witness, not a Sinex unlock service or a blob-store policy.
+//! Shows how a caller can revoke access to sealed reads that are already in flight: a lock,
+//! expiry or purge must stop a read that unwrapped its key earlier from caching or returning
+//! plaintext. The unlock owner here is a test stand-in, not part of the crate.
 use hashed_blobs::{DataKey, Hash, Store};
 use std::io::Cursor;
 use std::sync::{Arc, Barrier, Mutex};
@@ -15,7 +17,7 @@ struct State {
     key_revision: u64,
     key_live: bool,
     cache: Option<(Ticket, Vec<u8>)>,
-    // A bounded transport handoff. Already handed-off bytes are outside revocation.
+    // Bytes already returned to a client; revocation cannot take these back.
     handed_off: Vec<Vec<u8>>,
 }
 struct Owner(Mutex<State>);
@@ -52,7 +54,7 @@ impl Owner {
         let t = Ticket { session: s.session, key_revision: s.key_revision, principal };
         if Self::valid(&s, t) { Ok(t) } else { Err("sealed or unauthorized".into()) }
     }
-    // Fixed synthetic key provider stands in for authorized age unwrapping. No key backup policy here.
+    // A fixed test key stands in for unwrapping a real key.
     fn unwrap(&self, t: Ticket, key_ref: &str) -> Result<[u8; 32], String> {
         let s = self.0.lock().unwrap();
         if key_ref == "material-one" && Self::valid(&s, t) { Ok([7; 32]) }
@@ -60,7 +62,7 @@ impl Owner {
     }
     fn finish(&self, t: Ticket, bytes: Vec<u8>, fence: bool, in_guard: impl FnOnce()) -> bool {
         let mut s = self.0.lock().unwrap();
-        // The deliberately disabled branch is used only by the negative control below.
+        // `fence: false` is used only to show the race the guard prevents.
         if fence && !Self::valid(&s, t) { return false; }
         in_guard();
         s.cache = Some((t, bytes.clone()));
@@ -105,7 +107,7 @@ fn revoked_schedule(pause: Pause, transition: Transition, fence: bool) -> (bool,
             if matches!(pause, Pause::AfterUnwrap) { e.wait(); r.wait(); }
             Ok(key)
         };
-        // Actual authenticated sealed range decode; no parallel mock decoder.
+        // The real sealed range read, not a mock.
         let bytes = store.read_range_with(&blob, 0, 23, &unwrap).unwrap();
         if matches!(pause, Pause::BeforePublication) { e.wait(); r.wait(); }
         o.finish(t, bytes, fence, || {})
@@ -117,7 +119,7 @@ fn revoked_schedule(pause: Pause, transition: Transition, fence: bool) -> (bool,
         Transition::RelockUnlock => { owner.lock(); owner.unlock(20); }
         Transition::Purge => owner.purge(),
     }
-    // Revocation has acknowledged and owned cache is empty before old work resumes.
+    // Revocation has finished and the cache is empty before the paused read resumes.
     assert_eq!(owner.counts(), (0, 0));
     resume.wait();
     let published = worker.join().unwrap();
