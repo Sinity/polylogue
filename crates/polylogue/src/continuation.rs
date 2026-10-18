@@ -1,0 +1,169 @@
+//! Continuing a session (architecture 7; old nas1, 37t.23). Two ways are
+//! kept apart:
+//!
+//! - **native resume**: the harness's own command reopens the session with
+//!   its full history (`claude --resume <id>`, `codex resume <id>`);
+//! - **context-assisted continuation**: a new session starts with a
+//!   takeover brief Polylogue prepares (`polylogue takeover <id>`), for
+//!   harnesses without native resume or a session whose file is gone.
+//!
+//! Which sessions are worth resuming comes from what they left open, not
+//! from how their text ended.
+
+use polylogue_model::SessionId;
+use polylogue_store::{Obligations, Reader, StoreError};
+use serde::Serialize;
+use std::path::Path;
+
+/// A command line to run in a directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Command {
+    pub program: String,
+    pub args: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+impl Command {
+    pub fn shell_line(&self) -> String {
+        let mut words = vec![self.program.clone()];
+        words.extend(self.args.iter().cloned());
+        let line = words
+            .iter()
+            .map(|w| shell_quote(w))
+            .collect::<Vec<_>>()
+            .join(" ");
+        match &self.cwd {
+            Some(dir) => format!("cd {} && {line}", shell_quote(dir)),
+            None => line,
+        }
+    }
+}
+
+fn shell_quote(w: &str) -> String {
+    if !w.is_empty()
+        && w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
+    {
+        w.to_owned()
+    } else {
+        format!("'{}'", w.replace('\'', r"'\''"))
+    }
+}
+
+/// The harness's own resume command for a session, when it has one.
+pub fn native_resume(session: &SessionId, cwd: Option<&str>) -> Option<Command> {
+    let native = session.native().as_str();
+    let (program, args): (&str, Vec<String>) = match session.origin().as_str() {
+        "claude-code" => {
+            // Subagents and sidechains are not resumable on their own.
+            if native.starts_with("agent-") || native.ends_with("/sidechain") {
+                return None;
+            }
+            ("claude", vec!["--resume".into(), native.into()])
+        }
+        "codex" => ("codex", vec!["resume".into(), native.into()]),
+        "gemini-cli" => ("gemini", vec!["--resume".into(), native.into()]),
+        _ => return None,
+    };
+    Some(Command {
+        program: program.into(),
+        args,
+        cwd: cwd.map(str::to_owned),
+    })
+}
+
+/// How to continue a session: its native resume command if any, and the
+/// context-assisted way, which always exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Plan {
+    pub session: SessionId,
+    pub native: Option<Command>,
+    pub context_assisted: Command,
+}
+
+pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError> {
+    let s = reader
+        .session(session)?
+        .ok_or_else(|| StoreError::NotFound(format!("session {session}")))?;
+    let cwd = s.cwd.last().cloned();
+    Ok(Plan {
+        session: session.clone(),
+        native: native_resume(session, cwd.as_deref()),
+        context_assisted: Command {
+            program: "polylogue".into(),
+            args: vec!["takeover".into(), session.to_string()],
+            cwd,
+        },
+    })
+}
+
+/// A session worth resuming and why.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Candidate {
+    pub session: polylogue_store::SessionSummary,
+    pub open: Obligations,
+    /// Operator notes on it that ask for follow-up (handoffs, blockers).
+    pub follow_ups: Vec<String>,
+    pub native: Option<Command>,
+}
+
+/// Sessions under `cwd`, newest first, that left something open or carry
+/// a handoff or blocker; sessions with nothing open are left out.
+pub fn candidates(
+    reader: &Reader<'_>,
+    cwd: &Path,
+    limit: u64,
+) -> Result<Vec<Candidate>, StoreError> {
+    use polylogue_model::{NoteKind, Target};
+    let dirs = crate::briefing::scope_dirs(cwd);
+    let mut out = Vec::new();
+    // Look further back than `limit`: most sessions finish cleanly.
+    for s in reader.sessions_under(&dirs, None, limit.saturating_mul(10).max(50))? {
+        let id = s.id.to_string();
+        let open = reader.obligations(&id)?.unwrap_or_default();
+        let follow_ups: Vec<String> = reader
+            .notes(&polylogue_store::NoteFilter {
+                targets: vec![Target::Session(s.id.clone())],
+                kinds: vec![NoteKind::Handoff, NoteKind::Blocker],
+                agents: Some(false),
+                ..polylogue_store::NoteFilter::default()
+            })?
+            .into_iter()
+            .map(|n| format!("{}: {}", n.kind.as_str(), n.value.unwrap_or_default()))
+            .collect();
+        if !open.any() && follow_ups.is_empty() {
+            continue;
+        }
+        let native = native_resume(&s.id, s.cwd.as_deref());
+        out.push(Candidate {
+            session: s,
+            open,
+            follow_ups,
+            native,
+        });
+        if out.len() as u64 >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_resume_uses_each_harness_command() {
+        let s = SessionId::parse("claude-code:7f3e").unwrap();
+        let c = native_resume(&s, Some("/realm/project/x repo")).unwrap();
+        assert_eq!(
+            c.shell_line(),
+            "cd '/realm/project/x repo' && claude --resume 7f3e"
+        );
+        let c = native_resume(&SessionId::parse("codex:0199").unwrap(), None).unwrap();
+        assert_eq!(c.shell_line(), "codex resume 0199");
+        assert!(native_resume(&SessionId::parse("claude-code:agent-a1").unwrap(), None).is_none());
+        assert!(native_resume(&SessionId::parse("chatgpt:abc").unwrap(), None).is_none());
+    }
+}

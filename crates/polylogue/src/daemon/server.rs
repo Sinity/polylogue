@@ -4,8 +4,13 @@
 //! read connections while the loop writes.
 
 use super::{Request, Response};
+use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, Pass};
-use polylogue_store::{Archive, ReadPool};
+use polylogue_model::Author;
+use polylogue_store::user::{self as user_writes, machine_id};
+use polylogue_store::{
+    Archive, Delivery, ReadPool, StoreError, UserRequest, UserWrite, WriterSender,
+};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::mpsc::{Sender, channel, sync_channel};
@@ -16,6 +21,8 @@ use std::time::Instant;
 pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
+    /// User writes (notes, deliveries, settings) through the one writer.
+    writes: WriterSender,
     loop_tx: Mutex<Sender<LoopMsg>>,
     status: Arc<Mutex<Pass>>,
     started: Instant,
@@ -25,6 +32,72 @@ fn error(kind: &str, message: impl ToString) -> Response {
     Response::Error {
         kind: kind.into(),
         message: message.to_string(),
+    }
+}
+
+fn store_error(e: &StoreError) -> Response {
+    match e {
+        StoreError::Conflict(_) => error("conflict", e),
+        StoreError::NotFound(_) => error("not_found", e),
+        StoreError::Invalid(_) => error("bad_request", e),
+        _ => error("store", e),
+    }
+}
+
+/// Prepares context and, when a sender is named, records it as a delivery
+/// before handing it out: prepared is recorded first, delivered is a
+/// separate event the client reports.
+fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) -> Response {
+    if matches!(ask, Ask::SessionStart { .. }) {
+        let off = d
+            .reads
+            .reader()
+            .and_then(|r| r.setting("briefing.session_start", &machine_id()))
+            .is_ok_and(|v| v.as_deref() == Some("off"));
+        if off {
+            return ok(serde_json::json!({ "off": true, "empty": true }));
+        }
+    }
+    let prepared = {
+        let reader = match d.reads.reader() {
+            Ok(r) => r,
+            Err(e) => return store_error(&e),
+        };
+        match briefing::prepare(&reader, ask, &request_id, user_writes::now()) {
+            Ok(p) => p,
+            Err(e) => return store_error(&e),
+        }
+    };
+    let mut delivery = None;
+    if let Some(sender) = sender
+        && !prepared.empty
+    {
+        let write = UserWrite::Deliver(Delivery {
+            recipient_kind: if ask.recipient().is_some() {
+                "session".into()
+            } else {
+                "operator".into()
+            },
+            recipient_id: ask.recipient().map(ToString::to_string),
+            sender,
+            event: prepared.event.into(),
+            cwd: ask.cwd().map(|c| c.to_string_lossy().into_owned()),
+            text: prepared.text.clone(),
+            refs: prepared.refs.clone(),
+            left_out: prepared.left_out.clone(),
+        });
+        match d.writes.user(UserRequest::now(request_id, write)) {
+            Ok(out) => delivery = Some(out.id),
+            Err(e) => return store_error(&e),
+        }
+    }
+    ok(serde_json::json!({ "delivery": delivery, "prepared": prepared }))
+}
+
+fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
+    match d.writes.user(UserRequest::now(request_id, w)) {
+        Ok(out) => ok(out),
+        Err(e) => store_error(&e),
     }
 }
 
@@ -91,6 +164,95 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 Err(_) => error("internal", "the convergence loop has stopped"),
             }
         }
+        Request::AddNote { request_id, note } => {
+            drop(reader);
+            write(d, request_id, UserWrite::AddNote { note })
+        }
+        Request::Withdraw {
+            request_id,
+            note,
+            author,
+            reason,
+        } => {
+            drop(reader);
+            write(
+                d,
+                request_id,
+                UserWrite::Withdraw {
+                    note,
+                    author,
+                    reason,
+                },
+            )
+        }
+        Request::Notes { filter } => match reader.notes(&filter) {
+            Ok(notes) => ok(notes),
+            Err(e) => store_error(&e),
+        },
+        Request::Context {
+            request_id,
+            ask,
+            sender,
+        } => {
+            drop(reader);
+            context(d, request_id, &ask, sender)
+        }
+        Request::DeliveryEvent {
+            delivery,
+            what,
+            detail,
+        } => {
+            drop(reader);
+            write(
+                d,
+                user_writes::new_request_id(),
+                UserWrite::DeliveryEvent {
+                    delivery,
+                    what,
+                    detail,
+                },
+            )
+        }
+        Request::Candidates { cwd, limit } => {
+            match crate::continuation::candidates(&reader, &cwd, limit.unwrap_or(10)) {
+                Ok(c) => ok(c),
+                Err(e) => store_error(&e),
+            }
+        }
+        Request::Continue { session } => match crate::continuation::plan(&reader, &session) {
+            Ok(p) => ok(p),
+            Err(e) => store_error(&e),
+        },
+        Request::Setting {
+            request_id,
+            key,
+            value: None,
+            machine: _,
+        } => {
+            let _ = request_id;
+            match reader.setting(&key, &machine_id()) {
+                Ok(v) => ok(serde_json::json!({ "key": key, "value": v })),
+                Err(e) => store_error(&e),
+            }
+        }
+        Request::Setting {
+            request_id,
+            key,
+            value: Some(value),
+            machine,
+        } => {
+            drop(reader);
+            write(
+                d,
+                request_id.unwrap_or_else(user_writes::new_request_id),
+                UserWrite::SetSetting {
+                    key,
+                    value,
+                    author: Author::Operator,
+                    machine: machine.then(machine_id),
+                },
+            )
+        }
         other => {
             let op = serde_json::to_value(&other)
                 .ok()
@@ -134,12 +296,14 @@ pub fn serve() -> std::io::Result<()> {
     let root = Archive::default_root();
     let (archive, _lock) = Archive::open_or_create(&root).map_err(|e| to_io(&e))?;
     let mut engine = Engine::new(Config::from_env(), archive.clone()).map_err(|e| to_io(&e))?;
+    let writes = engine.writer().map_err(|e| to_io(&e))?;
     let reads = ReadPool::open(&archive).map_err(|e| to_io(&e))?;
     let (tx, rx) = channel();
     let status = Arc::new(Mutex::new(Pass::default()));
     let daemon = Arc::new(Daemon {
         archive: archive.clone(),
         reads,
+        writes,
         loop_tx: Mutex::new(tx.clone()),
         status: Arc::clone(&status),
         started: Instant::now(),

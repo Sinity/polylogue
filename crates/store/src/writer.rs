@@ -195,6 +195,11 @@ pub struct WriteReport {
 enum Msg {
     Batch(Box<Batch>),
     Flush(SyncSender<WriteReport>),
+    /// A note, delivery or setting; answered once committed.
+    User(
+        Box<crate::user::UserRequest>,
+        SyncSender<Result<crate::user::UserOutcome>>,
+    ),
 }
 
 /// Handle to the writer thread. Dropping it stops the thread after the
@@ -276,6 +281,15 @@ impl Writer {
         Ok(WriterSender(self.tx.clone().ok_or(StoreError::WriterGone)?))
     }
 
+    /// Writes one user request (a note, delivery or setting) and waits for
+    /// it to commit. It is written after the batches already queued.
+    pub fn user(&self, request: crate::user::UserRequest) -> Result<crate::user::UserOutcome> {
+        user_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            request,
+        )
+    }
+
     /// Waits until every batch sent before this call is committed, and
     /// returns what was written since the previous flush.
     pub fn flush(&self) -> Result<WriteReport> {
@@ -308,6 +322,21 @@ impl WriterSender {
             .send(Msg::Batch(Box::new(batch)))
             .map_err(|_| StoreError::WriterGone)
     }
+
+    /// As [`Writer::user`].
+    pub fn user(&self, request: crate::user::UserRequest) -> Result<crate::user::UserOutcome> {
+        user_via(&self.0, request)
+    }
+}
+
+fn user_via(
+    tx: &SyncSender<Msg>,
+    request: crate::user::UserRequest,
+) -> Result<crate::user::UserOutcome> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::User(Box::new(request), reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
 struct Inner {
@@ -321,6 +350,7 @@ struct Inner {
 impl Inner {
     fn run(&mut self, rx: &Receiver<Msg>) {
         let mut flushes = Vec::new();
+        let mut users = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut group = Vec::new();
             let mut rows = 0;
@@ -332,6 +362,10 @@ impl Inner {
                 }
                 Msg::Flush(reply) => {
                     flushes.push(reply);
+                    false
+                }
+                Msg::User(request, reply) => {
+                    users.push((request, reply));
                     false
                 }
             };
@@ -349,6 +383,9 @@ impl Inner {
             }
             if !group.is_empty() {
                 self.write_group(&group);
+            }
+            for (request, reply) in users.drain(..) {
+                let _ = reply.send(self.write_user(&request));
             }
             if !flushes.is_empty()
                 && let Err(e) = self.settle()
@@ -395,6 +432,20 @@ impl Inner {
                     .push(format!("input {}: {e}", b.input.id));
             }
         }
+    }
+
+    /// One user request in its own `archive.db` transaction.
+    fn write_user(&mut self, request: &crate::user::UserRequest) -> Result<crate::user::UserOutcome> {
+        let tx = self.archive.transaction()?;
+        let seq = bump_counter(&tx)?;
+        let outcome = crate::user::apply(&tx, request, seq)?;
+        if outcome.repeat {
+            // A resent request: nothing to keep, not even the counter bump.
+            tx.rollback()?;
+        } else {
+            tx.commit()?;
+        }
+        Ok(outcome)
     }
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {

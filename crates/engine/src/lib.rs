@@ -298,6 +298,12 @@ fn now_ms() -> i64 {
 }
 
 impl Engine {
+    /// A handle for user writes (notes, deliveries, settings), which go
+    /// through the same writer as the loop's batches.
+    pub fn writer(&self) -> Result<polylogue_store::WriterSender, EngineError> {
+        Ok(self.writer.sender()?)
+    }
+
     /// Starts the writer on an archive the caller has locked.
     pub fn new(config: Config, archive: Archive) -> Result<Self, EngineError> {
         let writer = Writer::start(&archive)?;
