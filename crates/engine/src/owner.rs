@@ -14,7 +14,7 @@ use polylogue_store::parser_state::Phase;
 use polylogue_store::{
     Error as StoreError, ImportObservation, InputFormat, PreparedBlob, ReadHandle, StoredInput,
     StoredSource, Writer,
-    parser_state::{Basis, Budget, Head, ParserReader},
+    parser_state::{Budget, Head, ParserInput, ParserReader},
 };
 use std::{
     path::PathBuf,
@@ -1469,7 +1469,7 @@ impl Actor {
     fn begin(&mut self, input: StoredSource) -> Result<()> {
         let digest = parser_identity(&input);
         let context_json = parser_context_json(&input)?;
-        match self.writer.begin_parser(&Basis {
+        match self.writer.begin_parser(&ParserInput {
             input_pk: input.input.input_pk,
             chain: input.input.chain,
             parser_version: parser_version(input.format),

@@ -131,7 +131,7 @@ fn inspection_rejects_hidden_message_or_changed_source() {
     let mut f = Fixture::new();
     let build = f.prepare().unwrap().build;
     f.writer
-        .begin_parser(&parser_state::Basis {
+        .begin_parser(&parser_state::ParserInput {
             input_pk: f.head.token.input_pk,
             chain: f.head.token.chain,
             parser_version: 3,

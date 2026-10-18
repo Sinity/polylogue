@@ -15,8 +15,8 @@ pub(super) fn fixture() -> (tempfile::TempDir, std::path::PathBuf, Writer, i64) 
         .unwrap();
     (dir, root, writer, input)
 }
-pub(super) fn basis(input_pk: i64, end: u64) -> Basis<'static> {
-    Basis {
+pub(super) fn parser_input(input_pk: i64, end: u64) -> ParserInput<'static> {
+    ParserInput {
         input_pk,
         chain: 1,
         parser_version: 1,
@@ -42,7 +42,7 @@ fn change(key: &str, value: &str) -> CellChange {
 #[test]
 fn source_rows_need_finalizing_state_and_roll_back_on_failure() {
     let (_dir, root, mut writer, input) = fixture();
-    let initial = writer.begin_parser(&basis(input, 10)).unwrap();
+    let initial = writer.begin_parser(&parser_input(input, 10)).unwrap();
     assert!(matches!(
         writer.publish_source_rows(&initial, b"synthetic producer proof", true),
         Err(StoreError::StaleParserState)
@@ -124,7 +124,7 @@ fn source_rows_need_finalizing_state_and_roll_back_on_failure() {
 fn source_rows_refused_after_growth_or_excision() {
     for removed in [false, true] {
         let (_dir, root, mut writer, input) = fixture();
-        let initial = writer.begin_parser(&basis(input, 10)).unwrap();
+        let initial = writer.begin_parser(&parser_input(input, 10)).unwrap();
         let finalizing = write_step(
             &mut writer._index,
             &root.join("index.db"),
@@ -147,7 +147,7 @@ fn source_rows_refused_after_growth_or_excision() {
                 .execute("UPDATE input_ref SET excised=1 WHERE pk=?1", [input])
                 .unwrap();
         } else {
-            writer.begin_parser(&basis(input, 11)).unwrap();
+            writer.begin_parser(&parser_input(input, 11)).unwrap();
         }
         assert!(matches!(
             writer.publish_source_rows(&finalizing, b"old position", true),
@@ -166,7 +166,7 @@ fn source_rows_refused_after_growth_or_excision() {
 #[test]
 fn failure_detail_is_bounded_and_tied_to_its_token() {
     let (_dir, _root, mut writer, input_pk) = fixture();
-    let basis = Basis {
+    let first = ParserInput {
         input_pk,
         chain: 1,
         parser_version: 1,
@@ -175,7 +175,7 @@ fn failure_detail_is_bounded_and_tied_to_its_token() {
         companions_json: None,
         excisions_seen: 0,
     };
-    let head = writer.begin_parser(&basis).unwrap();
+    let head = writer.begin_parser(&first).unwrap();
     writer
         .record_parser_failure(&head.token, Some("retry required"), 4096)
         .unwrap();
@@ -196,9 +196,9 @@ fn failure_detail_is_bounded_and_tied_to_its_token() {
         .unwrap();
     assert_eq!(writer.parser_failure(&head.token).unwrap(), None);
     let newer = writer
-        .begin_parser(&Basis {
+        .begin_parser(&ParserInput {
             digest: [8; 32],
-            ..basis
+            ..first
         })
         .unwrap();
     assert_ne!(newer.token, head.token);
@@ -212,7 +212,7 @@ fn failure_detail_is_bounded_and_tied_to_its_token() {
 #[test]
 fn snapshot_holds_archive_lock_after_its_handles_close() {
     let (_dir, root, mut writer, input) = fixture();
-    let head = writer.begin_parser(&basis(input, 100)).unwrap();
+    let head = writer.begin_parser(&parser_input(input, 100)).unwrap();
     let reader = writer.read_handle().unwrap();
     let snapshot = reader.parser_snapshot(&head.token).unwrap();
     drop(reader);
@@ -242,7 +242,7 @@ fn progress(parsed: u64, inspected: u64, phase: Phase, pending: bool) -> Progres
 fn step_after_growth_returns_to_parsing_and_rejects_stale_heads() {
     let (_dir, root, mut writer, input) = fixture();
     let file = root.join("index.db");
-    let head = writer.begin_parser(&basis(input, 10)).unwrap();
+    let head = writer.begin_parser(&parser_input(input, 10)).unwrap();
     let head = write_step(
         &mut writer._index,
         &file,
@@ -258,7 +258,7 @@ fn step_after_growth_returns_to_parsing_and_rejects_stale_heads() {
         .unwrap()
         .parser_snapshot(&head.token)
         .unwrap();
-    let extended = writer.begin_parser(&basis(input, 20)).unwrap();
+    let extended = writer.begin_parser(&parser_input(input, 20)).unwrap();
     assert_eq!(extended.token, head.token);
     let next = write_step(
         &mut writer._index,
@@ -296,7 +296,7 @@ fn step_after_growth_returns_to_parsing_and_rejects_stale_heads() {
 fn reused_input_key_never_recreates_an_old_token() {
     let (_dir, root, mut writer, input) = fixture();
     let file = root.join("index.db");
-    let old = writer.begin_parser(&basis(input, 10)).unwrap();
+    let old = writer.begin_parser(&parser_input(input, 10)).unwrap();
     let retired = retire(&mut writer._index, &file, &old.token).unwrap();
     remove_retired(&mut writer._index, &file, &retired.token).unwrap();
     writer
@@ -312,7 +312,7 @@ fn reused_input_key_never_recreates_an_old_token() {
         .query_row("SELECT pk FROM input_ref", [], |r| r.get(0))
         .unwrap();
     assert_eq!(input, reused);
-    let next = writer.begin_parser(&basis(reused, 10)).unwrap();
+    let next = writer.begin_parser(&parser_input(reused, 10)).unwrap();
     assert_ne!(next.token, old.token);
     assert!(matches!(
         writer.parser_snapshot(&old.token),
@@ -323,7 +323,7 @@ fn reused_input_key_never_recreates_an_old_token() {
 fn waiting_tail_and_retired_cleanup_respect_budgets() {
     let (_dir, root, mut writer, input) = fixture();
     let file = root.join("index.db");
-    let head = writer.begin_parser(&basis(input, 10)).unwrap();
+    let head = writer.begin_parser(&parser_input(input, 10)).unwrap();
     let head = write_step(
         &mut writer._index,
         &file,
@@ -342,7 +342,10 @@ fn waiting_tail_and_retired_cleanup_respect_budgets() {
     assert!(head.finalization_pending);
     assert_eq!(head.status, Phase::WaitingTail);
     assert_eq!(
-        writer.begin_parser(&basis(input, 10)).unwrap().status,
+        writer
+            .begin_parser(&parser_input(input, 10))
+            .unwrap()
+            .status,
         Phase::WaitingTail
     );
     drop(view);
@@ -378,7 +381,7 @@ fn waiting_tail_and_retired_cleanup_respect_budgets() {
 fn process_exit_mid_step_rolls_back_and_releases_lock() {
     let (_dir, root, mut writer, input) = fixture();
     let file = root.join("index.db");
-    let head = writer.begin_parser(&basis(input, 10)).unwrap();
+    let head = writer.begin_parser(&parser_input(input, 10)).unwrap();
     drop(writer);
     let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "parser_state::tests::crash_child", "--nocapture"])

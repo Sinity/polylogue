@@ -81,7 +81,7 @@ fn append(actor: &mut Actor, input: &StoredSource, main: &Path) -> StoredSource 
     let context = parser_context_json(&current).unwrap();
     actor
         .writer
-        .begin_parser(&Basis {
+        .begin_parser(&ParserInput {
             input_pk: current.input.input_pk,
             chain: current.input.chain,
             parser_version: parser_version(current.format),

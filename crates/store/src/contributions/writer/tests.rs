@@ -73,7 +73,7 @@ impl Fixture {
     fn restart_parser(&mut self, parser_version: u32, digest: u8) {
         self.head = self
             .writer
-            .begin_parser(&parser_state::Basis {
+            .begin_parser(&parser_state::ParserInput {
                 input_pk: self.head.token.input_pk,
                 chain: self.head.token.chain,
                 parser_version,
@@ -285,7 +285,7 @@ fn start_input(
         )
         .unwrap();
     let head = writer
-        .begin_parser(&parser_state::Basis {
+        .begin_parser(&parser_state::ParserInput {
             input_pk: input.input_pk,
             chain: input.chain,
             parser_version: 3,

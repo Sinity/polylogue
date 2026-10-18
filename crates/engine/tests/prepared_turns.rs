@@ -1,5 +1,7 @@
 use polylogue_engine::converge::{PendingInstall, Recovery, Turn, recover_turn};
-use polylogue_store::parser_state::{Accounting, Basis, Budget, CellChange, Head, Phase, Progress};
+use polylogue_store::parser_state::{
+    Accounting, Budget, CellChange, Head, ParserInput, Phase, Progress,
+};
 use polylogue_store::{Error, ImportObservation, InputFormat, Writer};
 
 fn budget() -> Budget {
@@ -28,7 +30,7 @@ fn fixture() -> (tempfile::TempDir, Writer, Head) {
         )
         .unwrap();
     let head = writer
-        .begin_parser(&Basis {
+        .begin_parser(&ParserInput {
             input_pk: input.input_pk,
             chain: 1,
             parser_version: 1,

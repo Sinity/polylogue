@@ -3,7 +3,7 @@ fn reparse(f: &mut Fixture) {
     let old = f.head.clone();
     f.head = f
         .writer
-        .begin_parser(&parser_state::Basis {
+        .begin_parser(&parser_state::ParserInput {
             input_pk: old.token.input_pk,
             chain: old.token.chain,
             parser_version: old.parser_version,

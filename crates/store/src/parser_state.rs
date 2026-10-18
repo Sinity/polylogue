@@ -83,7 +83,7 @@ pub struct Head {
 }
 /// What a parse is computed from: the input's acquired bytes (by digest and
 /// length), the parser version, companion files and excisions seen.
-pub struct Basis<'a> {
+pub struct ParserInput<'a> {
     pub input_pk: i64,
     pub chain: i64,
     pub parser_version: u32,
@@ -279,41 +279,41 @@ fn current(db: &Connection, path: &Path, token: &Token) -> Result<Head> {
 /// Starts or extends the parser state for one input chain. The same digest with
 /// a longer acquired length keeps the generation (the caller guarantees the new
 /// bytes extend the old ones); a different digest starts a new generation.
-pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Result<Head> {
-    let acquired = integer(basis.acquired_upto)?;
-    let excisions = integer(basis.excisions_seen)?;
+pub(crate) fn begin(db: &mut Connection, path: &Path, input: &ParserInput<'_>) -> Result<Head> {
+    let acquired = integer(input.acquired_upto)?;
+    let excisions = integer(input.excisions_seen)?;
     let tx = sql!(path, db.transaction())?;
-    let old = head(&tx, path, basis.input_pk, basis.chain)?;
+    let old = head(&tx, path, input.input_pk, input.chain)?;
     if let Some(old) = old
         .as_ref()
-        .filter(|h| h.token.basis == basis.digest && h.status != Phase::Retired)
+        .filter(|h| h.token.basis == input.digest && h.status != Phase::Retired)
     {
         let identity: (Option<String>, u64) = sql!(path, tx.query_row(
             "SELECT companions_json, excisions_seen FROM parse_state WHERE input_pk=?1 AND chain=?2",
-            params![basis.input_pk, basis.chain], |r| Ok((r.get(0)?, unsigned(r,1)?))))?;
-        if old.parser_version != basis.parser_version
-            || identity.0.as_deref() != basis.companions_json
-            || identity.1 != basis.excisions_seen
+            params![input.input_pk, input.chain], |r| Ok((r.get(0)?, unsigned(r,1)?))))?;
+        if old.parser_version != input.parser_version
+            || identity.0.as_deref() != input.companions_json
+            || identity.1 != input.excisions_seen
         {
             return Err(StoreError::Invariant(
                 "same input digest arrived with a different parser version, companions or excisions".into(),
             ));
         }
-        if basis.acquired_upto < old.acquired_upto {
+        if input.acquired_upto < old.acquired_upto {
             return Err(StoreError::Invariant(
                 "acquired length shrank for the same input digest".into(),
             ));
         }
-        if basis.acquired_upto > old.acquired_upto {
-            sql!(path, tx.execute("DELETE FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4", params![basis.input_pk,basis.chain,old.token.generation,SOURCE_ROWS_NAMESPACE]))?;
+        if input.acquired_upto > old.acquired_upto {
+            sql!(path, tx.execute("DELETE FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4", params![input.input_pk,input.chain,old.token.generation,SOURCE_ROWS_NAMESPACE]))?;
         }
         sql!(path, tx.execute(
             "UPDATE parse_state SET acquired_upto=?3,
              status=CASE WHEN acquired_upto<?3 AND status IN ('done','waiting_tail') THEN 'parsing' ELSE status END
-             WHERE input_pk=?1 AND chain=?2", params![basis.input_pk, basis.chain, acquired]))?;
+             WHERE input_pk=?1 AND chain=?2", params![input.input_pk, input.chain, acquired]))?;
     } else {
         let generation = allocate_generation(&tx, path)?;
-        prepared::invalidate(&tx, path, basis.input_pk, basis.chain)?;
+        prepared::invalidate(&tx, path, input.input_pk, input.chain)?;
         sql!(path, tx.execute(
             "INSERT INTO parse_state(input_pk,chain,parser_version,status,acquired_upto,inspected_upto,parsed_upto,
                 basis_digest,state_generation,state_step,carry,companions_json,excisions_seen)
@@ -323,11 +323,11 @@ pub(crate) fn begin(db: &mut Connection, path: &Path, basis: &Basis<'_>) -> Resu
                 state_generation=excluded.state_generation,state_step=0,carry=excluded.carry,companions_json=excluded.companions_json,
                 excisions_seen=excluded.excisions_seen,finalization_pending=0,detail=NULL,
                 framed=0,used=0,ignored=0,unrecognized_n=0,undecodable=0",
-            params![basis.input_pk,basis.chain,basis.parser_version,acquired,basis.digest.as_slice(),generation,
-                carry(generation,0),basis.companions_json,excisions]))?;
+            params![input.input_pk,input.chain,input.parser_version,acquired,input.digest.as_slice(),generation,
+                carry(generation,0),input.companions_json,excisions]))?;
     }
     let result =
-        head(&tx, path, basis.input_pk, basis.chain)?.ok_or(StoreError::StaleParserState)?;
+        head(&tx, path, input.input_pk, input.chain)?.ok_or(StoreError::StaleParserState)?;
     sql!(path, tx.commit())?;
     Ok(result)
 }
@@ -928,8 +928,8 @@ impl crate::Writer {
         Ok(())
     }
     /// See [`begin`].
-    pub fn begin_parser(&mut self, basis: &Basis<'_>) -> Result<Head> {
-        begin(&mut self._index, &self.root.join("index.db"), basis)
+    pub fn begin_parser(&mut self, input: &ParserInput<'_>) -> Result<Head> {
+        begin(&mut self._index, &self.root.join("index.db"), input)
     }
     pub fn parser_snapshot(&self, token: &Token) -> Result<Snapshot> {
         Snapshot::open(

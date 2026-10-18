@@ -20,7 +20,7 @@ fn same_preparation_resumes_and_a_new_parser_drains_the_old_one() {
     let old = f.head.token.clone();
     f.head = f
         .writer
-        .begin_parser(&parser_state::Basis {
+        .begin_parser(&parser_state::ParserInput {
             input_pk: old.input_pk,
             chain: old.chain,
             parser_version: 4,

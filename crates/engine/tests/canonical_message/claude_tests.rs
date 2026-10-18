@@ -33,7 +33,7 @@ fn make_world_with(
         )
         .unwrap();
     let head = writer
-        .begin_parser(&Basis {
+        .begin_parser(&ParserInput {
             input_pk: input.input_pk,
             chain: input.chain,
             parser_version: cc::PARSER_VERSION,

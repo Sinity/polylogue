@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn reused_reader_releases_old_view_and_checks_token_again() {
     let (_dir, root, mut writer, input) = fixture();
-    let first = writer.begin_parser(&basis(input, 10)).unwrap();
+    let first = writer.begin_parser(&parser_input(input, 10)).unwrap();
     let snapshot = writer
         .parser_reader()
         .unwrap()
@@ -51,7 +51,7 @@ fn reused_reader_releases_old_view_and_checks_token_again() {
 #[test]
 fn idle_reader_holds_archive_lock_until_dropped() {
     let (_dir, root, mut writer, input) = fixture();
-    let first = writer.begin_parser(&basis(input, 10)).unwrap();
+    let first = writer.begin_parser(&parser_input(input, 10)).unwrap();
     let reader = writer
         .parser_reader()
         .unwrap()

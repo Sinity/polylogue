@@ -9,7 +9,7 @@ use crate::{
     contributions::{
         BlockKind, BlockPresence, Identity, ProjectionStep, Source, SourceProjection, SourceRange,
     },
-    parser_state::{self, Accounting, Basis, Budget, Head, Phase, Progress},
+    parser_state::{self, Accounting, Budget, Head, ParserInput, Phase, Progress},
 };
 use polylogue_model::{
     BlobHash,
@@ -54,7 +54,7 @@ impl Fixture {
             )
             .unwrap();
         let head = writer
-            .begin_parser(&Basis {
+            .begin_parser(&ParserInput {
                 input_pk: input.input_pk,
                 chain: input.chain,
                 parser_version: 1,
