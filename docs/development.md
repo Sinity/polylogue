@@ -42,6 +42,6 @@ agentctl job start polylogue exec --workspace <worktree> -- cargo test -p polylo
 
 A PR merges as soon as it is ready; nothing waits on a hosted check. Run the
 full suite on batches of merged work and fix what it finds in follow-up PRs.
-The integration tests use fixed deadlines (40 s per CLI call, 15 s for daemon
+The integration tests use fixed deadlines (40 s per CLI call, 60 s for daemon
 startup), so a heavily loaded machine can fail them spuriously; rerun before
 treating such a failure as a regression.
