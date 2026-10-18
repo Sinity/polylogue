@@ -878,7 +878,7 @@ fn run(
     page["warning"] = json!(WARNING);
     page["session"] = json!({"id":h.id.as_str(),"origin":h.origin.as_str(),"display_title":title,"title_source":if title.is_some(){"provider"}else{"unknown"}});
     if let Some(attrs) = &h.attrs {
-        page["session"]["attrs"] = crate::output_json::retained::envelope(attrs, until, false)
+        page["session"]["attrs"] = crate::output_json::raw_value::envelope(attrs, until, false)
             .map_err(|_| unavailable("session_attrs_privacy_unavailable"))?;
     }
     page["up_to_date"] = json!(q.up_to_date);
@@ -1012,7 +1012,7 @@ fn run(
                                 .collect(),
                             );
                             origins.push(
-                                crate::output_json::retained::envelope(&value, until, true)
+                                crate::output_json::raw_value::envelope(&value, until, true)
                                     .map_err(|_| unavailable("origin_witness_requires_masking"))?,
                             );
                         }

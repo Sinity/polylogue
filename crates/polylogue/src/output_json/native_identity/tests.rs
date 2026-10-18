@@ -1,5 +1,6 @@
-use super::*;
+use crate::output_json::*;
 use polylogue_model::{BlockId, MessageId, NativeId, Origin, RawJson, SessionId};
+use serde_json::Value;
 use std::time::Duration;
 
 fn until() -> Instant {
@@ -22,7 +23,7 @@ fn origin(id: &NativeId, resolved: &str) -> RawJson {
 }
 
 #[test]
-fn native_identity_assesses_original_units_and_never_emits_a_repaired_identity() {
+fn native_id_is_checked_on_its_utf16_units_and_written_unchanged() {
     for prefix in [String::new(), "x".repeat(PIECE - 7) + " "] {
         for suffix in [&[][..], &[0xd800][..]] {
             let id = native(&(prefix.clone() + &secret()), suffix);
@@ -51,7 +52,7 @@ fn native_identity_assesses_original_units_and_never_emits_a_repaired_identity()
 }
 
 #[test]
-fn native_identity_framed_references_assess_session_message_and_origin_components_before_hex() {
+fn framed_references_check_each_native_component() {
     let safe = SessionId::new(&Origin::new("claude").unwrap(), "safe").unwrap();
     let private = native(&secret(), &[0xd800]);
     let private_session =
@@ -91,7 +92,7 @@ fn native_identity_framed_references_assess_session_message_and_origin_component
 }
 
 #[test]
-fn native_identity_only_declared_parent_origin_decodes_native_wire_not_provider_lookalikes() {
+fn only_the_field_origin_parent_reference_is_decoded_as_native_id() {
     let private = native(&secret(), &[0xd800]);
     let descriptor = origin(&private, "claude:ordinary:message");
     let mut bytes = Vec::new();
@@ -123,7 +124,7 @@ fn native_identity_only_declared_parent_origin_decodes_native_wire_not_provider_
     let lookalike = RawJson::parse(&serde_json::to_vec(&private).unwrap()).unwrap();
     let mut bytes = Vec::new();
     Encoder::new(&mut bytes, until())
-        .retained(&lookalike, true)
+        .raw_json(&lookalike, true)
         .unwrap();
     assert_eq!(RawJson::parse(&bytes).unwrap(), lookalike);
     let mut bytes = Vec::new();

@@ -1,13 +1,13 @@
-//! Privacy examines declared logical identities, never their reversible wire
-//! spelling. Provider payloads and literal marker strings are not decoded here.
-use super::{retained, unchanged_key};
+//! Credential checks for native IDs and references. They examine the decoded
+//! identity, not its wire spelling, and never decode provider payloads.
+use super::{raw_value, unchanged_key};
 use polylogue_model::{NativeId, RawJson};
 use std::{io, time::Instant};
 
 pub(super) fn check_native(value: &NativeId, until: Instant) -> io::Result<()> {
-    // Reuse the retained UTF-16 assessment. Replacement scalars are assessment
-    // delimiters only: neither a repaired value nor a transformed ID is emitted.
-    retained::present(&RawJson::from(value), until, true).map(|_| ())
+    // Lone surrogates become replacement characters only for the check;
+    // nothing is written here.
+    raw_value::mask(&RawJson::from(value), until, true).map(|_| ())
 }
 
 pub(super) fn check_public(value: &str, until: Instant) -> io::Result<()> {
@@ -27,8 +27,8 @@ pub(super) fn check_public(value: &str, until: Instant) -> io::Result<()> {
     unchanged_key(value, until)
 }
 
-/// Only this source-owned descriptor position contains a NativeId wire value.
-/// Never infer encoding from an arbitrary provider object with similar keys.
+/// Only the Claude field-origin parent reference holds a `NativeId` in wire
+/// form. Never decode a provider object just because its keys look similar.
 pub(super) fn check_origin(value: &RawJson, until: Instant) -> io::Result<()> {
     if value.get("format").and_then(RawJson::as_str) != Some("claude-code-field-origin") {
         return Ok(());
@@ -52,6 +52,9 @@ pub(super) fn check_origin(value: &RawJson, until: Instant) -> io::Result<()> {
 fn invalid_origin() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
-        "invalid declared native origin witness",
+        "invalid native ID in field origin",
     )
 }
+
+#[cfg(test)]
+mod tests;

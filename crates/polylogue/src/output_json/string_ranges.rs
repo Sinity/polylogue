@@ -1,6 +1,6 @@
-//! Only one normalized JSON string, not a general retained-value parser.
-//! Assessment compares the masking output with a second bounded logical read.
-//! Native non-scalar UTF-16 can then be copied exactly only if unchanged.
+//! Writes one stored JSON string read in ranges, not a general JSON parser.
+//! Masking output is compared with a second decoding pass; a string with lone
+//! surrogates is copied as stored only when masking would not change it.
 use super::{Escaped, PIECE, deadline};
 use credential_output::Masker;
 use std::io::{self, Read, Write};
@@ -287,10 +287,10 @@ pub(super) fn write<W: Write>(
         if comparison.changed {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "retained string requires an unavailable privacy transformation",
+                "string needs masking but has lone surrogates",
             ));
         }
-        // Validation and privacy assessment completed before this exact replay.
+        // Both decoding passes validated the string; copy it as stored.
         let mut offset = 0;
         loop {
             check(cancelled)?;

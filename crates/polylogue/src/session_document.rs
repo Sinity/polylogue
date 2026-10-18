@@ -303,7 +303,7 @@ pub(crate) fn write_with_cancel(
     if let Some(attrs) = &h.attrs {
         e.syntax(b",")?;
         e.key("attrs")?;
-        e.retained(attrs, false)?;
+        e.raw_json(attrs, false)?;
     }
     e.syntax(b"},\"messages\":[")?;
     let mut after = None;
@@ -533,7 +533,7 @@ fn opaque_value<W: Write>(
     if model_page {
         e.opaque(value)
     } else {
-        e.retained(value, false)
+        e.raw_json(value, false)
     }
 }
 
@@ -552,7 +552,7 @@ fn opaque_field<W: Write>(
             return opaque_value(e, &value, deadline, false);
         }
         if first.bytes.first() == Some(&b'"') {
-            return e.retained_string_ranges(
+            return e.string_ranges(
                 |offset| {
                     let part = stored(field.range(offset, PIECE))?;
                     if part.next_offset != offset.saturating_add(part.bytes.len() as u64) {
