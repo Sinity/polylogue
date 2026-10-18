@@ -1,5 +1,4 @@
-//! Actual daemon processes and normative terminal reference reads. These tests
-//! qualify retained source reads, not complete canonical history/search/export.
+//! Terminal `message:` reads against a real daemon process.
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
@@ -49,8 +48,8 @@ impl World {
         let archive = work.path().join("archive");
         let scratch = work.path().join("tmp");
         fs::create_dir(&scratch).unwrap();
-        // Only short Unix-socket dentries use /tmp; retained bytes and command
-        // captures stay in the test's isolated, harness-owned work directory.
+        // Only the socket lives in /tmp (short path limit); everything else
+        // stays in the test's work directory.
         let socket_owner = tempfile::tempdir_in("/tmp").unwrap();
         let runtime = socket_owner.path().join("run");
         fs::create_dir(&runtime).unwrap();
@@ -77,8 +76,8 @@ impl World {
         command
     }
     fn cli(&self, args: &[&str]) -> Output {
-        // Files avoid pipe-buffer deadlock for large terminal output and let us
-        // enforce a child deadline without adding a separate client protocol.
+        // Output goes to files so large output cannot fill a pipe and block
+        // the child while we enforce its deadline.
         let mut stdout = tempfile::tempfile_in(&self.scratch).unwrap();
         let mut stderr = tempfile::tempfile_in(&self.scratch).unwrap();
         let mut child = OwnedChild(
@@ -207,7 +206,7 @@ impl World {
             let progress = self.healthy(id);
             let out = self.cli(&[reference, "read", "--format", "terminal"]);
             if out.status.code() == Some(5) {
-                assert_content(&out.stdout, &expected);
+                assert_content(&out.stdout, expected);
                 assert!(
                     String::from_utf8(out.stderr)
                         .unwrap()
@@ -267,8 +266,7 @@ fn expected(session: &str, native: &str, text: &str) -> String {
     )
 }
 fn negatives(world: &World, reference: &str) {
-    // Session JSON is now registered, but this exact opaque identity is absent.
-    // A recognized absent reference is distinct from an unsupported operation.
+    // A missing session is not found (4), unlike an unsupported operation (2).
     let absent = world.cli(&[
         "session:codex:reference-session",
         "read",
@@ -280,7 +278,7 @@ fn negatives(world: &World, reference: &str) {
     assert!(!absent.stderr.is_empty());
 
     for args in [
-        vec!["search", "retained phrase"],
+        vec!["search", "stored phrase"],
         vec![reference, "read", "--format", "json"],
         vec!["export", reference],
     ] {
@@ -299,9 +297,9 @@ fn negatives(world: &World, reference: &str) {
     assert!(!out.stderr.is_empty());
 }
 #[test]
-fn retained_unicode_reference_reads_exactly_but_coverage_and_search_stay_incomplete() {
+fn unicode_message_reads_exactly_and_the_result_is_degraded() {
     let world = World::new();
-    let text = "ż🙂漢字é retained phrase\n".repeat(7000);
+    let text = "ż🙂漢字é stored phrase\n".repeat(7000);
     assert!(text.len() > 65536);
     let path = world.input(
         "unicode.jsonl",
@@ -327,9 +325,9 @@ fn retained_unicode_reference_reads_exactly_but_coverage_and_search_stay_incompl
     negatives(&world, &reference);
 }
 #[test]
-fn selected_read_and_receipt_survive_peer_work_kill_restart_and_provider_removal() {
+fn read_and_receipt_survive_other_work_restart_and_source_removal() {
     let mut world = World::new();
-    let text = "first selected retained phrase 🙂";
+    let text = "first stored phrase 🙂";
     let first = world.input(
         "first.jsonl",
         &input("stable-session", "stable-message", text),
@@ -367,7 +365,7 @@ fn selected_read_and_receipt_survive_peer_work_kill_restart_and_provider_removal
         }
         assert!(
             Instant::now() < deadline,
-            "no observed unfinished retained peer work: {p}"
+            "other input never seen mid-parse: {p}"
         );
         thread::sleep(Duration::from_millis(5));
     };
@@ -378,7 +376,7 @@ fn selected_read_and_receipt_survive_peer_work_kill_restart_and_provider_removal
     let observed = world.healthy(&peer_id);
     assert_eq!(
         observed["active"], true,
-        "kill boundary must have actual unfinished work: {observed}"
+        "other input must still be parsing at the restart: {observed}"
     );
     assert_eq!(observed["parser"]["finalization_pending"], true);
     world.restart();
@@ -393,7 +391,7 @@ fn selected_read_and_receipt_survive_peer_work_kill_restart_and_provider_removal
     negatives(&world, &reference);
 }
 #[test]
-fn missing_call_id_message_reference_is_an_explicit_failure() {
+fn message_without_call_id_fails_to_read() {
     let world = World::new();
     let bytes=[line(json!({"type":"session_meta","payload":{"id":"unsupported-session","source":"cli","cwd":"/synthetic"}})),line(json!({"type":"response_item","payload":{"type":"function_call","id":"unsupported-native","name":"synthetic-tool","arguments":"{}"}}))].concat();
     let path = world.input("unsupported.jsonl", bytes.as_bytes());
@@ -413,7 +411,7 @@ fn missing_call_id_message_reference_is_an_explicit_failure() {
         }
         assert!(
             Instant::now() < deadline,
-            "unsupported mapping was not accounted: {progress}"
+            "unsupported record was not reported as a failure: {progress}"
         );
         thread::sleep(Duration::from_millis(5));
     }
