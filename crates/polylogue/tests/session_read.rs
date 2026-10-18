@@ -2409,3 +2409,6 @@ mod record_extras;
 
 #[path = "session_read/result_metadata.rs"]
 mod result_metadata;
+
+#[path = "session_read/claude_active_leaf.rs"]
+mod claude_active_leaf;

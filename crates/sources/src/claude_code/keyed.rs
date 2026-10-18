@@ -42,6 +42,15 @@ pub struct Header {
     pub next_session_ordinal: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveLeaf {
+    /// Last marker in source order, including an invalid later marker. This is
+    /// not an inferred last Message and never grants membership by itself.
+    pub record: crate::selection::RecordRange,
+    pub kind: String,
+    pub value: polylogue_model::RetainedJson,
+    pub scoped: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionCell {
     pub session: Session,
     pub ordinal: u64,
@@ -49,6 +58,8 @@ pub struct SessionCell {
     pub next_message_ordinal: u64,
     pub last_message: Option<MessageId>,
     pub facts_pending: bool,
+    #[serde(default)]
+    pub active_leaf: Option<ActiveLeaf>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponseCell {
@@ -94,7 +105,16 @@ impl SelectedRecordExtra {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordRelation {
+    pub uuid: polylogue_model::NativeId,
+    pub record: crate::selection::RecordRange,
+    pub parent: Option<super::parent::Link>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordAddress {
+    /// Small current relation proof; ancestry never hydrates content blocks.
+    #[serde(default)]
+    pub relation: Option<RecordRelation>,
     pub response: ResponseKey,
     pub message: MessageId,
     pub item: u64,

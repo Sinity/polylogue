@@ -1231,7 +1231,18 @@ impl Actor {
                             ),
                         )?;
                     }
-                    Err(e) => self.fail(&job.head, format!("canonical compute: {e}"))?,
+                    Err(e) => {
+                        let changed = matches!(
+                            &e,
+                            Error::Store(StoreError::ParserPredecessorChanged)
+                                | Error::Canonical(canonical_message::Error::Store(
+                                    StoreError::ParserPredecessorChanged
+                                ))
+                        );
+                        if !changed || !self.reselect_obsolete_canonical(&job.input, &job.head)? {
+                            self.fail(&job.head, format!("canonical compute: {e}"))?;
+                        }
+                    }
                 }
             }
             Message::Wake => {}
@@ -1335,6 +1346,37 @@ impl Actor {
         self.writer
             .record_parser_failure(&head.token, Some(&details), DETAIL_BYTES)?;
         Ok(())
+    }
+    // An observed append can replace the source while its old audit is in
+    // flight. Only a typed predecessor rejection plus independently changed
+    // durable evidence authorizes discarding that attempt, never its current
+    // invariant failures. Begin reselects the current basis through normal work.
+    fn reselect_obsolete_canonical(
+        &mut self,
+        previous: &RetainedSource,
+        predecessor: &Head,
+    ) -> Result<bool> {
+        let Some(input) = self.writer.retained_source(&previous.input.id)? else {
+            return Ok(false);
+        };
+        let head = self
+            .writer
+            .parser_head(input.input.input_pk, input.input.chain)?;
+        let source_changed = input.revision != previous.revision
+            || input.input.chain != previous.input.chain
+            || input.input.length != previous.input.length
+            || parser_basis(&input) != parser_basis(&previous);
+        let predecessor_changed = head.as_ref().is_some_and(|head| {
+            head.token != predecessor.token
+                || head.acquired_upto != predecessor.acquired_upto
+                || head.status != predecessor.status
+                || head.finalization_pending != predecessor.finalization_pending
+        });
+        if !source_changed && !predecessor_changed {
+            return Ok(false);
+        }
+        self.active = Some(Active::Begin(input));
+        Ok(true)
     }
     fn take_canonical_reader(&mut self) -> Result<CanonicalReaders> {
         match self.canonical_reader.take() {
@@ -1958,7 +2000,8 @@ fn can_finalize(input: &RetainedSource, head: &Head) -> bool {
             && head.status == "waiting_tail")
 }
 fn settled(head: &Head) -> bool {
-    matches!(head.status.as_str(), "waiting_tail" | "finalizing" | "done")
+    matches!(head.status.as_str(), "waiting_tail" | "done")
+        || (head.status == "finalizing" && head.parsed_upto == head.acquired_upto)
 }
 pub(crate) fn parser_version(format: InputFormat) -> u32 {
     match format {
@@ -2106,6 +2149,7 @@ mod tests {
     mod claude_turns;
     mod configured;
     mod history_turns;
+    mod obsolete_canonical;
     mod reader_shutdown;
     fn owner(root: &Path) -> Owner {
         Owner::start(
