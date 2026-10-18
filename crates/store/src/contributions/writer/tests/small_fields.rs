@@ -1,5 +1,6 @@
 use super::*;
 use crate::contributions::{ProjectionStep, SmallField};
+mod construction;
 fn payload() -> SmallField {
     SmallField::prepare(b"null".to_vec(), b"null".to_vec(), 65536).unwrap()
 }
@@ -171,3 +172,5 @@ fn small_field_stale_source_cannot_allocate_values() {
     ));
     assert_eq!(f.scalar("SELECT count(*) FROM body_value"), 0);
 }
+
+mod runs;

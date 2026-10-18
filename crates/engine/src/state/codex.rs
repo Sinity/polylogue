@@ -370,16 +370,8 @@ impl EffectsHeader {
         Ok(header)
     }
 }
-/// The qualifier uses the same owned codec, without restating adapter keys.
-pub(crate) fn flat_session_header_key(step: u64) -> [u8; EFFECT_KEY_BYTES] {
-    effect_key(step, 0, 0)
-}
-pub(crate) fn effects_preserve_flat_session(bytes: &[u8], step: u64) -> Result<bool> {
-    let header = EffectsHeader::decode(bytes, step)?;
-    // Events include context replacement and rollback-like controls. Links,
-    // conflicting native items and failed reachback need their own reduction.
-    Ok([0, 1, 3, 5].iter().all(|i| header.counts[*i] == 0))
-}
+mod flat_session;
+pub(crate) use flat_session::{FlatSessionEvents, FlatSessionStep};
 /// Only scalar position is durable. Opening a reader revalidates its fixed
 /// header against the pinned snapshot; no decoded aggregate receipt is carried.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

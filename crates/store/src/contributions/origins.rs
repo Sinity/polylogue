@@ -6,7 +6,8 @@ use super::{
     writer::{self, Build},
 };
 use crate::{Error, Result, Writer, db, parser_state};
-use rusqlite::params;
+use rusqlite::{Transaction, params};
+use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceRange {
@@ -21,6 +22,61 @@ fn checked(range: SourceRange, parsed_upto: u64) -> Result<(i64, i64)> {
     }
     Ok((writer::integer(range.start)?, writer::integer(range.end)?))
 }
+pub struct SourceRangeEntry {
+    pub range: SourceRange,
+    pub expected_sequence: u64,
+    pub next_cursor: Vec<u8>,
+}
+impl SourceRangeEntry {
+    pub fn retained_bytes(&self) -> Result<usize> {
+        self.next_cursor
+            .len()
+            .checked_add(std::mem::size_of::<Self>())
+            .ok_or(Error::Range)
+    }
+    fn step(&self) -> ProjectionStep<'_> {
+        ProjectionStep {
+            expected_sequence: self.expected_sequence,
+            next_cursor: &self.next_cursor,
+        }
+    }
+}
+fn write_in(
+    tx: &Transaction<'_>,
+    path: &Path,
+    build: &Build,
+    range: SourceRange,
+    step: &ProjectionStep<'_>,
+    allowance: usize,
+) -> Result<()> {
+    let remaining = allowance.checked_sub(16).ok_or(Error::ParserAdmission {
+        resource: "message source metadata bytes",
+        required: 16,
+    })?;
+    if let Err(error) = blocks::admit(step, remaining) {
+        return Err(match error {
+            Error::ParserAdmission { required, .. } => Error::ParserAdmission {
+                resource: "message source metadata bytes",
+                required: required.checked_add(16).ok_or(Error::Range)?,
+            },
+            other => other,
+        });
+    }
+    writer::check(tx, path, build)?;
+    let head = writer::source_head(tx, path, build.predecessor())?;
+    let (start, end) = checked(range, head.parsed_upto)?;
+    let pending: bool = db(path, || {
+        tx.query_row("SELECT active_value_pk IS NOT NULL OR active_origin_value_pk IS NOT NULL OR active_block_pk IS NOT NULL FROM message_build WHERE pk=?1",[build.pk],|r|r.get(0))
+    })?;
+    if pending {
+        return Err(Error::MessagePreparationPending);
+    }
+    db(path, || {
+        tx.execute("INSERT INTO message_source(candidate_pk,message_pk,session_pk,input_pk,chain,source_start,source_end) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(candidate_pk,input_pk,chain,source_start,source_end) DO NOTHING",params![build.candidate,build.message,build.session,build.source.input_pk,build.source.chain,start,end])
+    })?;
+    blocks::commit_cursor(tx, path, build, step)?;
+    Ok(())
+}
 impl Writer {
     /// Add one exact locator to this candidate's source SET and advance its
     /// scalar cursor atomically. Input/chain come only from the pinned build.
@@ -31,34 +87,38 @@ impl Writer {
         step: &ProjectionStep<'_>,
         allowance: usize,
     ) -> Result<()> {
-        let remaining = allowance.checked_sub(16).ok_or(Error::ParserAdmission {
-            resource: "message source metadata bytes",
-            required: 16,
-        })?;
-        if let Err(error) = blocks::admit(step, remaining) {
-            return Err(match error {
-                Error::ParserAdmission { required, .. } => Error::ParserAdmission {
-                    resource: "message source metadata bytes",
-                    required: required.checked_add(16).ok_or(Error::Range)?,
-                },
-                other => other,
-            });
+        let path = self.root.join("index.db");
+        let tx = db(&path, || self._index.transaction())?;
+        write_in(&tx, &path, build, range, step, allowance)?;
+        db(&path, || tx.commit())?;
+        Ok(())
+    }
+    pub fn add_message_source_run(
+        &mut self,
+        build: &Build,
+        entries: &[SourceRangeEntry],
+        allowance: usize,
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Err(Error::Invariant("empty source range run".into()));
+        }
+        let mut bytes = 0usize;
+        for entry in entries {
+            bytes = bytes
+                .checked_add(entry.retained_bytes()?)
+                .ok_or(Error::Range)?;
+            if bytes > allowance {
+                return Err(Error::ParserAdmission {
+                    resource: "source range run bytes",
+                    required: bytes as u64,
+                });
+            }
         }
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        writer::check(&tx, &path, build)?;
-        let head = writer::source_head(&tx, &path, build.predecessor())?;
-        let (start, end) = checked(range, head.parsed_upto)?;
-        let pending: bool = db(&path, || {
-            tx.query_row("SELECT active_value_pk IS NOT NULL OR active_origin_value_pk IS NOT NULL OR active_block_pk IS NOT NULL FROM message_build WHERE pk=?1",[build.pk],|r|r.get(0))
-        })?;
-        if pending {
-            return Err(Error::MessagePreparationPending);
+        for entry in entries {
+            write_in(&tx, &path, build, entry.range, &entry.step(), allowance)?;
         }
-        db(&path, || {
-            tx.execute("INSERT INTO message_source(candidate_pk,message_pk,session_pk,input_pk,chain,source_start,source_end) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(candidate_pk,input_pk,chain,source_start,source_end) DO NOTHING",params![build.candidate,build.message,build.session,build.source.input_pk,build.source.chain,start,end])
-        })?;
-        blocks::commit_cursor(&tx, &path, build, step)?;
         db(&path, || tx.commit())?;
         Ok(())
     }
@@ -230,7 +290,7 @@ mod tests {
                 build,
             } = self;
             drop(writer);
-            let writer = Writer::open(&root).unwrap();
+            let writer = crate::tests::reopen_after_drop(&root);
             Self {
                 dir,
                 root,

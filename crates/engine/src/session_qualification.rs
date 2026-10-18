@@ -1,6 +1,7 @@
 //! Direct Session input influence, never inferred from matching Message rows.
 //! Catalog traversal and every receipt read share the caller's pinned Session.
 mod basis;
+mod claude_active;
 mod codex;
 use crate::{owner, source_rows, source_turn::SourceContext, state::claude};
 use polylogue_model::settlement::RecordFailureId;
@@ -833,9 +834,11 @@ fn qualify_shape(
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<(), Error> {
     let Some(native) = native else { return Ok(()) };
+    let mut active_leaf = None;
     if let Some(source) =
         cell::<SessionCell>(catalog, dependency, claude::SESSION, &native, allowance)?
     {
+        active_leaf = source.active_leaf.clone();
         if source.session.id.as_str() != target {
             return Err(Error::Invariant(
                 "Session source identity disagrees with context".into(),
@@ -911,7 +914,8 @@ fn qualify_shape(
         }
     }
     let mut tree = BTreeMap::new();
-    for (message, p) in pending {
+    let mut peers = Vec::new();
+    for (message, p) in &pending {
         deadline(until)?;
         if cancelled() {
             return Err(Error::Cancelled);
@@ -929,7 +933,7 @@ fn qualify_shape(
             allowance,
         )?
         .ok_or_else(|| Error::Invariant("missing retained Session response".into()))?;
-        if response.message.id.as_str() != message {
+        if response.message.id.as_str() != message.as_str() {
             return Err(Error::Invariant(
                 "retained Session response identity mismatch".into(),
             ));
@@ -939,6 +943,13 @@ fn qualify_shape(
                 .unsupported
                 .insert("An unclassified Message author remains unresolved".into());
         }
+        let mut peer_calls = BTreeSet::new();
+        let mut pure_results = true;
+        let mut peer_valid = true;
+        let mut result_blocks = 0usize;
+        let mut peer_parent = None;
+        let mut peer_caller = None;
+        let mut peer_record_start = None;
         for item in 0..response.items {
             deadline(until)?;
             if cancelled() {
@@ -952,7 +963,34 @@ fn qualify_shape(
                 allowance,
             )?
             .ok_or_else(|| Error::Invariant("missing retained Session contribution".into()))?;
+            if item == 0 {
+                let raw = polylogue_model::RetainedJson::parse(&contribution.raw)
+                    .map_err(|e| Error::Invariant(e.to_string()))?;
+                peer_caller = raw.get("sourceToolAssistantUUID").cloned();
+                peer_record_start = contribution
+                    .origins
+                    .fields
+                    .get(&vec!["message".into(), "content".into()])
+                    .map(|d| d.record.start);
+                peer_parent = raw
+                    .get("parentUuid")
+                    .and_then(polylogue_model::RetainedJson::native)
+                    .cloned();
+            }
             for block in &contribution.blocks {
+                match block {
+                    polylogue_model::BlockContent::ToolResult(output) => {
+                        result_blocks += 1;
+                        if let Some(id) = &output.call_id {
+                            if id.as_str().is_empty() || !peer_calls.insert(id.clone()) {
+                                peer_valid = false;
+                            }
+                        } else {
+                            peer_valid = false;
+                        }
+                    }
+                    _ => pure_results = false,
+                }
                 match block {
                     polylogue_model::BlockContent::Text { text }
                         if text.split_whitespace().any(|word| {
@@ -974,6 +1012,33 @@ fn qualify_shape(
                             .insert("Agent/Task calls require linked subagent products".into());
                     }
                     _ => {}
+                }
+            }
+        }
+        if response.message.role == polylogue_model::Role::User && pure_results && result_blocks > 0
+        {
+            if let Some(record_start) = peer_record_start {
+                let calls = peer_calls;
+                {
+                    pending_bytes = pending_bytes.saturating_add(
+                        serde_json::to_vec(&(&message, &peer_parent, &peer_caller, &calls))
+                            .map_err(|e| Error::Invariant(e.to_string()))?
+                            .len(),
+                    );
+                    if pending_bytes > allowance {
+                        return Err(Error::ParserAdmission {
+                            resource: "Claude result peer membership",
+                            required: pending_bytes as u64,
+                        });
+                    }
+                    peers.push(claude_active::ResultPeer {
+                        message: message.clone(),
+                        parent: peer_parent,
+                        caller: peer_caller,
+                        record_start,
+                        valid: peer_valid,
+                        calls,
+                    });
                 }
             }
         }
@@ -1014,12 +1079,12 @@ fn qualify_shape(
                     .map(|id| id.as_str().to_owned()),
             ),
         );
-        if !result.expected.contains_key(&message) {
+        if !result.expected.contains_key(message) {
             admit_membership(result, &message, false, allowance)?;
         }
         if result
             .expected
-            .insert(message, p.ordinal)
+            .insert(message.clone(), p.ordinal)
             .is_some_and(|old| old != p.ordinal)
         {
             result.own_topology_unknown = true;
@@ -1029,28 +1094,44 @@ fn qualify_shape(
                 .insert("Independent inputs disagree about Session Message order".into());
         }
     }
-    let mut previous = None;
-    let mut linear = true;
-    let mut active = Vec::new();
-    for (_, (message, parent)) in tree {
-        if parent != previous {
-            linear = false;
-            result.unsupported.insert(
-                "Branched or incomplete parent topology requires active-path reduction".into(),
-            );
+    let active = if let Some(leaf) = active_leaf {
+        // An invalid later marker must not fall back to an older or linear path.
+        claude_active::prove(
+            catalog, dependency, target, native, &leaf, &pending, &peers, until, allowance,
+            cancelled,
+        )?
+    } else {
+        let mut previous = None;
+        let mut active = BTreeSet::new();
+        let mut linear = true;
+        for (_, (message, parent)) in tree {
+            if parent != previous {
+                linear = false;
+            }
+            active.insert(message.clone());
+            previous = Some(message);
         }
-        active.push(message.clone());
-        previous = Some(message);
-    }
-    if linear {
-        for message in active {
-            if !result.active_messages.contains(&message) {
-                admit_membership(result, &message, true, allowance)?;
-                result.active_messages.insert(message);
+        linear.then_some(active)
+    };
+    if let Some(active) = active {
+        if !result.active_messages.is_empty() && result.active_messages != active {
+            result.own_topology_unknown = true;
+            result
+                .unsupported
+                .insert("Independent inputs disagree about the active Message path".into());
+        } else {
+            for message in active {
+                if !result.active_messages.contains(&message) {
+                    admit_membership(result, &message, true, allowance)?;
+                    result.active_messages.insert(message);
+                }
             }
         }
     } else {
         result.own_topology_unknown = true;
+        result.unsupported.insert(
+            "Branched or incomplete parent topology requires a proved native active leaf".into(),
+        );
     }
     Ok(())
 }

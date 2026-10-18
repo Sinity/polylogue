@@ -15,7 +15,7 @@ mod raw;
 pub mod selection;
 mod tool_result;
 use keyed::*;
-pub const PARSER_VERSION: u32 = 16;
+pub const PARSER_VERSION: u32 = 17;
 
 #[derive(Clone, Debug)]
 pub enum FileCtx {
@@ -194,6 +194,7 @@ impl<R: ReadView> KeyedRecords<R> {
                     next_message_ordinal: 0,
                     last_message: None,
                     facts_pending: false,
+                    active_leaf: None,
                 }
             }
         };
@@ -1016,9 +1017,37 @@ impl<R: ReadView> KeyedRecords<R> {
             ),
             pending,
         );
+        let relation = v
+            .get("uuid")
+            .and_then(Value::native)
+            .map(|uuid| {
+                let parent = v
+                    .get("parentUuid")
+                    .map(|value| {
+                        let donor = contribution
+                            .origins
+                            .select(&[crate::selection::PathPart::Key("parentUuid".into())])
+                            .ok_or("Claude record parent donor unavailable")?;
+                        Ok::<_, String>(parent::Link {
+                            value: value.opaque(),
+                            donor,
+                        })
+                    })
+                    .transpose()?;
+                Ok::<_, String>(keyed::RecordRelation {
+                    uuid: uuid.clone(),
+                    record: contribution
+                        .origins
+                        .envelope
+                        .ok_or("Claude record envelope unavailable")?,
+                    parent,
+                })
+            })
+            .transpose()?;
         self.addresses.insert(
             (native.clone(), uuid.into()),
             RecordAddress {
+                relation,
                 response: key.clone(),
                 message: response.message.id.clone(),
                 item,
@@ -1086,6 +1115,33 @@ impl<R: ReadView> KeyedRecords<R> {
                 self.session_index(&format!("{owner}/{agent}"), SessionKind::Subagent)
             }
         }
+    }
+
+    fn active_leaf(&mut self, rec: &Record<'_>, kind: &str) -> Result<(), String> {
+        let Some(si) = self.file_session(&rec.value)? else {
+            return Ok(());
+        };
+        // Metadata in a main file belongs to its declared owner. An explicit
+        // conflicting/malformed claim invalidates the marker, not that owner.
+        let scoped = match &self.ctx {
+            FileCtx::Main { stem } => rec
+                .value
+                .get("sessionId")
+                .is_none_or(|v| v.as_str() == Some(stem.as_str())),
+            FileCtx::Subagent { .. } => false,
+        };
+        self.sessions[si].active_leaf = Some(keyed::ActiveLeaf {
+            record: crate::selection::RecordRange::new(rec.start, rec.end)?,
+            kind: kind.into(),
+            value: rec
+                .value
+                .get("leafUuid")
+                .cloned()
+                .unwrap_or(Value::Null)
+                .opaque(),
+            scoped,
+        });
+        Ok(())
     }
 
     fn event(&mut self, rec: &Record<'_>, kind: &str) -> Result<RecordOutcome<Ignored>, String> {
@@ -1360,7 +1416,10 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                     self.complete_background(rec)?;
                     self.event(rec, "queue")?
                 }
-                "last-prompt" => self.event(rec, "last_prompt")?,
+                "last-prompt" => {
+                    self.active_leaf(rec, "last-prompt")?;
+                    self.event(rec, "last_prompt")?
+                }
                 "file-history-snapshot" | "file-history-delta" => {
                     self.event(rec, "file_history")?
                 }
@@ -1398,6 +1457,9 @@ impl<R: ReadView> RecordParser for KeyedRecords<R> {
                     RecordOutcome::Unrecognized("fork context lineage not yet derived")
                 }
                 "custom-title" | "ai-title" | "summary" => {
+                    if ty == "summary" {
+                        self.active_leaf(rec, "summary")?;
+                    }
                     let (rank, field) = match ty {
                         "custom-title" => (3, "customTitle"),
                         "ai-title" => (2, "aiTitle"),

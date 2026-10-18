@@ -811,7 +811,7 @@ fn same_session_inputs_share_one_membership_admission() {
     fn cohort(prefix: &str) -> Vec<u8> {
         let mut raw = (json!({"type":"ai-title","aiTitle":"Synthetic Session"}).to_string() + "\n")
             .into_bytes();
-        for i in 0..16 {
+        for i in 0..24 {
             let uuid = format!("{prefix}-{i:03}");
             let parent = (i > 0).then(|| format!("{prefix}-{:03}", i - 1));
             raw.extend((json!({"type":"user","uuid":uuid,"sessionId":SID,"parentUuid":parent,"promptSource":"typed","message":{"role":"user","content":"Synthetic prompt"}}).to_string()+"\n").as_bytes());

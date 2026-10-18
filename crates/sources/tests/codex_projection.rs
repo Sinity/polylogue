@@ -329,3 +329,6 @@ fn header_and_selected_result_skip_unrelated_blocks_and_wrapper_children() {
     }
     assert_eq!(costs[0], costs[1]);
 }
+
+#[path = "codex_projection/bookkeeping.rs"]
+mod bookkeeping;

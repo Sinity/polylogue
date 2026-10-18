@@ -491,6 +491,30 @@ fn consecutive_origins(
     Ok(last)
 }
 
+// Only absent slots in the already admitted ResponseCell are bookkeeping.
+// At most eight indices are inspected; no provider reads or field proofs move.
+fn selected_index(r: &ResponseCell, mut index: u8, flag: &AtomicBool) -> Result<u8> {
+    while index < 8 {
+        cancelled(flag)?;
+        let absent = if index < 6 {
+            let i = usize::from(index);
+            r.selected[i].is_none()
+                && r.selected_origins[i].is_none()
+                && r.selected_from[i].is_none()
+                && r.selected_facts[i].is_empty()
+        } else if index == 6 {
+            r.stop_sequence.is_none()
+        } else {
+            r.stop_details.is_none()
+        };
+        if !absent {
+            break;
+        }
+        index += 1;
+    }
+    Ok(index)
+}
+
 pub(super) fn compute(
     snapshot: &Snapshot,
     reader: &ReadHandle,
@@ -629,6 +653,14 @@ pub(super) fn compute(
             }
         }
         Cursor::SelectedCitations { index } => {
+            let index = if state.preparation.active_value.is_none()
+                && state.preparation.active_origin_value.is_none()
+                && cursor.verified.is_none()
+            {
+                selected_index(&r, index, flag)?
+            } else {
+                index
+            };
             if index >= 8 {
                 return progress(
                     state,
@@ -835,8 +867,24 @@ pub(super) fn compute(
             )
         }
         Cursor::Selected { index, fact } => {
+            // An in-flight value/descriptor keeps its original field boundary.
+            let original_index = index;
+            let index = if state.preparation.active_value.is_none()
+                && state.preparation.active_origin_value.is_none()
+                && cursor.verified.is_none()
+            {
+                selected_index(&r, index, flag)?
+            } else {
+                index
+            };
+            let fact = if index == original_index { fact } else { 0 };
             if index >= 8 {
                 return progress(state, &mut cursor, Cursor::RecordExtras { after: None }, b);
+            }
+            if index != original_index {
+                // A streaming BeginValue does not carry a cursor checkpoint.
+                // Commit the chosen real field once before opening its lease.
+                return progress(state, &mut cursor, Cursor::Selected { index, fact: 0 }, b);
             }
             if index >= 6 {
                 let next = Cursor::Selected {
@@ -974,6 +1022,9 @@ pub(super) fn compute(
                     .ok_or(Error::Unsupported(
                         "Claude body differs from pinned manifest",
                     ))?;
+                snapshot.charge_selector_record(
+                    usize::try_from(body.length).map_err(|_| StoreError::Range)?,
+                )?;
                 let text = String::from_utf8(reader.claude_body(body)?)
                     .map_err(|_| Error::Unsupported("Claude body is not UTF-8"))?;
                 if let BlockContent::ToolResult(result) = &mut content {
@@ -1499,3 +1550,7 @@ fn feed_parts(
 #[cfg(test)]
 #[path = "claude/coalescing_tests.rs"]
 mod coalescing_tests;
+
+#[cfg(test)]
+#[path = "claude/bookkeeping_tests.rs"]
+mod bookkeeping_tests;

@@ -453,6 +453,14 @@ fn append_cost(prefix: usize) -> (usize, usize) {
     let mut scalar_width = width(*counter) - width(0);
     *counter = 0;
     let record_length = text.trim_end_matches('\n').len() as u64;
+    for (_, _, address) in &mut out.delta.addresses {
+        if let Some(relation) = &mut address.relation {
+            scalar_width += relative(&mut relation.record, base, record_length);
+            if let Some(parent) = &mut relation.parent {
+                scalar_width += relative(&mut parent.donor.record, base, record_length);
+            }
+        }
+    }
     let origins = &mut out.delta.contributions[0].2.origins;
     scalar_width += relative(origins.envelope.as_mut().unwrap(), base, record_length);
     for origin in origins.fields.values_mut() {
@@ -674,3 +682,6 @@ fn missing_or_misidentified_committed_cells_cannot_restart_a_referenced_response
 
 #[path = "claude_keyed/discovery.rs"]
 mod discovery;
+
+#[path = "claude_keyed/active_leaf.rs"]
+mod active_leaf;

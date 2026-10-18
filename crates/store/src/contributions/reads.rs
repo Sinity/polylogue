@@ -185,8 +185,8 @@ impl MessageView {
     fn visible(&self) -> Result<()> {
         let read = locked(&self.read)?;
         let visible: bool = db(&self.path, || {
-            read.visibility.query_row(
-            "SELECT EXISTS(SELECT 1 FROM message m WHERE m.pk=?1 AND m.session_pk=?2 AND m.id=?3 AND m.hidden=0 AND m.removal_epoch=?4) AND EXISTS(SELECT 1 FROM meta WHERE key='generation' AND value=?5)",
+            read.visibility.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM message m WHERE m.pk=?1 AND m.session_pk=?2 AND m.id=?3 AND m.hidden=0 AND m.removal_epoch=?4) AND EXISTS(SELECT 1 FROM meta WHERE key='generation' AND value=?5)")?.query_row(
             params![self.owner.message,self.owner.session,self.id.as_str(),self.removal_epoch,self.generation],|r|r.get(0))
         })?;
         if !visible {
@@ -772,20 +772,20 @@ impl SessionCatalog {
         let read = locked(&self.read)?;
         let archive_path = self.path.with_file_name("archive.db");
         if db(&archive_path, || {
-            read.archive_visibility.as_ref().unwrap().query_row(
-                "SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)",
-                [],
-                |r| r.get::<_, bool>(0),
-            )
+            read.archive_visibility
+                .as_ref()
+                .unwrap()
+                .prepare_cached("SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)")?
+                .query_row([], |r| r.get::<_, bool>(0))
         })? {
             return Err(Error::ExcisionCheckRequired);
         }
         if !db(&self.path, || {
-            read.visibility.query_row(
-                "SELECT EXISTS(SELECT 1 FROM meta WHERE key='generation' AND value=?1)",
-                [&self.generation],
-                |r| r.get::<_, bool>(0),
-            )
+            read.visibility
+                .prepare_cached(
+                    "SELECT EXISTS(SELECT 1 FROM meta WHERE key='generation' AND value=?1)",
+                )?
+                .query_row([&self.generation], |r| r.get::<_, bool>(0))
         })? {
             return Err(Error::MessagePredecessorChanged);
         }
@@ -1109,9 +1109,9 @@ impl SessionView {
         if let Some(archive) = &read.archive_visibility {
             let archive_path = self.path.with_file_name("archive.db");
             let excision: bool = db(&archive_path, || {
-                archive.query_row("SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)", [], |r| {
-                    r.get(0)
-                })
+                archive
+                    .prepare_cached("SELECT EXISTS(SELECT 1 FROM excision LIMIT 1)")?
+                    .query_row([], |r| r.get(0))
             })?;
             if excision {
                 return Err(Error::ExcisionCheckRequired);
@@ -1119,7 +1119,7 @@ impl SessionView {
         }
 
         let visible: bool = db(&self.path, || {
-            read.visibility.query_row("SELECT EXISTS(SELECT 1 FROM session WHERE pk=?1 AND id=?2) AND EXISTS(SELECT 1 FROM meta WHERE key='generation' AND value=?3)",params![self.pk,self.header.id.as_str(),self.generation],|r|r.get(0))
+            read.visibility.prepare_cached("SELECT EXISTS(SELECT 1 FROM session WHERE pk=?1 AND id=?2) AND EXISTS(SELECT 1 FROM meta WHERE key='generation' AND value=?3)")?.query_row(params![self.pk,self.header.id.as_str(),self.generation],|r|r.get(0))
         })?;
         if visible {
             Ok(())
@@ -1663,6 +1663,7 @@ impl<'a> BlockView<'a> {
 #[cfg(test)]
 mod tests {
     mod ordered_roots;
+    mod visibility_statements;
     use super::super::SelectCompatibleSourceForTest as _;
     use super::*;
     use crate::{

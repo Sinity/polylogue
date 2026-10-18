@@ -209,8 +209,12 @@ fn insert(
     for edge in edges.iter().flatten() {
         total = total.add(edge.counts)?;
     }
+    // All counts and edges are known before allocation. The owning transaction
+    // publishes no root until this helper succeeds; every edge/lease error
+    // propagates and rolls it back. Insert the final ready row once instead of
+    // rewriting its state and referenced unique keys after every fixed path node.
     db(path, || {
-        tx.execute("INSERT INTO message_body_node(message_pk,session_pk,kind,height,state,incoming,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields) VALUES(?1,?2,?3,?4,'building',0,?5,?6,?7,?8,?9)",params![owner.message,owner.session,kind.name(),height,total.ordinary,total.reasoning,total.source_blocks,total.source_text_blocks,total.source_fields])
+        tx.prepare_cached("INSERT INTO message_body_node(message_pk,session_pk,kind,height,state,incoming,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields) VALUES(?1,?2,?3,?4,'ready',0,?5,?6,?7,?8,?9)")?.execute(params![owner.message,owner.session,kind.name(),height,total.ordinary,total.reasoning,total.source_blocks,total.source_text_blocks,total.source_fields])
     })?;
     let pk = tx.last_insert_rowid();
     work.nodes_written += 1;
@@ -243,7 +247,7 @@ fn insert(
         };
         if let Some(child) = child {
             if db(path, || {
-                tx.execute("UPDATE message_body_node SET incoming=incoming+1 WHERE pk=?1 AND message_pk=?2 AND session_pk=?3 AND state='ready'",params![child,owner.message,owner.session])
+                tx.prepare_cached("UPDATE message_body_node SET incoming=incoming+1 WHERE pk=?1 AND message_pk=?2 AND session_pk=?3 AND state='ready'")?.execute(params![child,owner.message,owner.session])
             })? != 1
             {
                 return Err(bad("cannot acquire missing/retiring directory child"));
@@ -251,16 +255,10 @@ fn insert(
             work.references_changed += 1;
         }
         db(path, || {
-            tx.execute("INSERT INTO message_body_edge(parent_pk,message_pk,session_pk,parent_kind,parent_height,slot,child_node_pk,child_kind,child_height,block_pk,field_fact_pk,tool_call_pk,association_pk,conflict_slot_pk,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",params![pk,owner.message,owner.session,kind.name(),height,slot as i64,child,k,h,block,field,call,association,conflict,edge.counts.ordinary,edge.counts.reasoning,edge.counts.source_blocks,edge.counts.source_text_blocks,edge.counts.source_fields])
+            tx.prepare_cached("INSERT INTO message_body_edge(parent_pk,message_pk,session_pk,parent_kind,parent_height,slot,child_node_pk,child_kind,child_height,block_pk,field_fact_pk,tool_call_pk,association_pk,conflict_slot_pk,ordinary_count,reasoning_count,source_blocks,source_text_blocks,source_fields) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)")?.execute(params![pk,owner.message,owner.session,kind.name(),height,slot as i64,child,k,h,block,field,call,association,conflict,edge.counts.ordinary,edge.counts.reasoning,edge.counts.source_blocks,edge.counts.source_text_blocks,edge.counts.source_fields])
         })?;
         work.edges_written += 1;
     }
-    db(path, || {
-        tx.execute(
-            "UPDATE message_body_node SET state='ready' WHERE pk=?1",
-            [pk],
-        )
-    })?;
     Ok((pk, total))
 }
 /// Caller must durably acquire the returned root before committing. No token
@@ -597,6 +595,7 @@ pub(super) fn nth(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod construction;
     mod statements;
     fn fixture() -> (tempfile::TempDir, crate::Writer, Owner, i64) {
         let dir = tempfile::tempdir().unwrap();
