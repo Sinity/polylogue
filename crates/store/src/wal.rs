@@ -1,5 +1,6 @@
-//! Conservative cold-start gate, not a replacement WAL recovery engine.
-//! Caller owns the archive lock; no SQLite connection has opened yet.
+//! Checks WAL files before the first SQLite connection opens, so a damaged or
+//! unexpected WAL fails with `RecoveryRequired` instead of being replayed. This
+//! is a check, not a recovery engine. The caller holds the archive lock.
 use super::{Error, Result, owned_metadata, sibling};
 use polylogue_model::{DurableTier, RecoveredWal};
 use std::{
@@ -37,16 +38,12 @@ pub(crate) fn validate(root: &Path, cancelled: &AtomicBool) -> Result<()> {
         if owned_metadata(&main)?.is_none_or(|m| m.len() == 0) {
             return Err(required(
                 &main,
-                "missing or empty main with retained WAL",
+                "WAL present but the main database is missing or empty",
                 None,
             ));
         }
         if owned_metadata(&sibling(&main, "-shm"))?.is_none() {
-            return Err(required(
-                &wal,
-                "orphan WAL requires controlled recovery",
-                None,
-            ));
+            return Err(required(&wal, "WAL present without its -shm file", None));
         }
         inspect(&wal, &mut || cancelled.load(Ordering::Acquire))?;
     }
@@ -83,19 +80,19 @@ fn read(file: &mut File, bytes: &mut [u8], path: &Path, frame: Option<u64>) -> R
     })
 }
 pub(super) fn inspect(path: &Path, cancelled: &mut impl FnMut() -> bool) -> Result<()> {
-    inspect_inner(path, cancelled, None).map(|_| ())
+    scan(path, cancelled, None).map(|_| ())
 }
 
-/// Only the separately owned copy-recovery path requests this classification.
-/// Normal inspection still refuses at the first salt mismatch, as before.
+/// Like `inspect`, but accepts and reports a tail of frames left over from the
+/// previous WAL generation. Only copy recovery uses this.
 pub(super) fn recovery_tail(
     path: &Path,
     cancelled: &mut impl FnMut() -> bool,
     tier: DurableTier,
 ) -> Result<Option<RecoveredWal>> {
-    inspect_inner(path, cancelled, Some(tier))
+    scan(path, cancelled, Some(tier))
 }
-fn inspect_inner(
+fn scan(
     path: &Path,
     cancelled: &mut impl FnMut() -> bool,
     recover: Option<DurableTier>,
@@ -124,7 +121,7 @@ fn inspect_inner(
     if state != [word(&header[24..28]), word(&header[28..32])] {
         return Err(required(path, "WAL header checksum mismatch", None));
     }
-    // At most one SQLite page, not an allocation proportional to WAL length.
+    // One page buffer, reused for every frame.
     let mut page = vec![0; size as usize];
     let mut position = 32u64;
     let mut frame = 0u64;
@@ -137,11 +134,7 @@ fn inspect_inner(
         }
         frame += 1;
         if length - position < 24 + u64::from(size) {
-            return Err(required(
-                path,
-                "partial WAL frame; commit history is uncertain",
-                Some(frame),
-            ));
+            return Err(required(path, "WAL ends in a partial frame", Some(frame)));
         }
         let mut frame_header = [0; 24];
         read(&mut file, &mut frame_header, path, Some(frame))?;
@@ -150,7 +143,7 @@ fn inspect_inner(
             if recover.is_none() {
                 return Err(required(
                     path,
-                    "uncertain WAL generation tail (may be legitimate reuse)",
+                    "WAL ends with frames from a previous generation",
                     Some(frame),
                 ));
             }
@@ -176,8 +169,8 @@ fn inspect_inner(
                 ));
             }
             let recorded = [word(&frame_header[16..20]), word(&frame_header[20..24])];
-            // The overwritten previous prefix prevents validating the first
-            // old frame. Its recorded state still anchors every later frame.
+            // The first old frame cannot be checked because the frames before
+            // it were overwritten; its recorded checksum seeds the later ones.
             if let Some(previous) = previous_state {
                 let computed = checksum(
                     &page,
@@ -219,11 +212,7 @@ fn inspect_inner(
         return Err(Error::Cancelled);
     }
     if file.metadata()?.len() != length {
-        return Err(required(
-            path,
-            "WAL changed during quiescent inspection",
-            None,
-        ));
+        return Err(required(path, "WAL changed during inspection", None));
     }
     Ok(tail.map(|(_, first)| RecoveredWal {
         tier: recover.unwrap(),
@@ -232,8 +221,8 @@ fn inspect_inner(
     }))
 }
 
-/// Read the effective committed format without letting SQLite alter any siblings.
-/// Caller has already validated the WAL or admitted its narrow generation tail.
+/// The schema version as of the last committed WAL frame, read without letting
+/// SQLite touch the files. The caller has already checked the WAL.
 pub(super) fn schema_version(main: &Path) -> Result<u32> {
     let mut header = [0; 100];
     File::open(main)?.read_exact(&mut header)?;
@@ -284,14 +273,14 @@ mod tests {
         assert_eq!(checksum(&[0, 0, 0, 1, 0, 0, 0, 2], false, [0, 0]), [1, 3]);
     }
     #[test]
-    fn cancelled_scan_does_not_touch_the_file() {
+    fn cancelled_scan_leaves_the_file_unchanged() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("wal");
-        std::fs::write(&path, b"retained bytes").unwrap();
+        std::fs::write(&path, b"wal bytes").unwrap();
         assert!(matches!(
             inspect(&path, &mut || true),
             Err(Error::Cancelled)
         ));
-        assert_eq!(std::fs::read(path).unwrap(), b"retained bytes");
+        assert_eq!(std::fs::read(path).unwrap(), b"wal bytes");
     }
 }
