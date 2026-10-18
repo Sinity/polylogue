@@ -42,7 +42,7 @@ fn parked_history_capture_shares_turns_with_regular_capture_and_reads() {
             ImportReply::Configured(reply),
         ))
         .unwrap();
-    let first = events.recv_timeout(Duration::from_secs(10)).unwrap();
+    let first = events.recv_timeout(super::WAIT).unwrap();
     assert!(matches!(&first, Message::CaptureYield(..)));
     // A real configured input, not a counter.
     let home = temp.path().join("home");
@@ -86,12 +86,9 @@ fn parked_history_capture_shares_turns_with_regular_capture_and_reads() {
     assert!(actor.capture.is_some());
     assert!(actor.turn_capture.as_ref().unwrap().grant.is_some());
     actor
-        .message(events.recv_timeout(Duration::from_secs(10)).unwrap())
+        .message(events.recv_timeout(super::WAIT).unwrap())
         .unwrap();
-    let regular = regular_reply
-        .recv_timeout(Duration::from_secs(10))
-        .unwrap()
-        .unwrap();
+    let regular = regular_reply.recv_timeout(super::WAIT).unwrap().unwrap();
     let source = reader.source(&regular.input.id).unwrap().unwrap();
     assert_eq!(
         reader
@@ -114,7 +111,7 @@ fn parked_history_capture_shares_turns_with_regular_capture_and_reads() {
     let mut turns = 1;
     actor.advance_capture_turn().unwrap();
     loop {
-        let event = events.recv_timeout(Duration::from_secs(10)).unwrap();
+        let event = events.recv_timeout(super::WAIT).unwrap();
         let done = matches!(&event, Message::TurnCaptured(..));
         if let Message::CaptureYield(p, ..) = &event {
             assert!(p.charged_bytes <= 65536 && p.checkpoints <= 2);
@@ -127,10 +124,7 @@ fn parked_history_capture_shares_turns_with_regular_capture_and_reads() {
         actor.advance_capture_turn().unwrap();
     }
     assert!(turns > 2);
-    let result = history
-        .recv_timeout(Duration::from_secs(10))
-        .unwrap()
-        .unwrap();
+    let result = history.recv_timeout(super::WAIT).unwrap().unwrap();
     assert_eq!(result.input.id, physical_id);
     let bytes = reader
         .read_source_range(&result.input.id, 1, expected_hash, 0, result.input.length)
@@ -154,15 +148,15 @@ fn owner_stop_during_a_parked_turn_selects_no_prefix_and_fresh_owner_can_retry()
             ImportReply::Configured(reply),
         ))
         .unwrap();
-    let event = events.recv_timeout(Duration::from_secs(10)).unwrap();
+    let event = events.recv_timeout(super::WAIT).unwrap();
     assert!(matches!(&event, Message::CaptureYield(..)));
     actor.message(event).unwrap();
     actor.begin_stop();
     actor
-        .message(events.recv_timeout(Duration::from_secs(10)).unwrap())
+        .message(events.recv_timeout(super::WAIT).unwrap())
         .unwrap();
     assert!(matches!(
-        result.recv_timeout(Duration::from_secs(10)).unwrap(),
+        result.recv_timeout(super::WAIT).unwrap(),
         Err(Error::Stopped)
     ));
     assert_eq!(actor.writer.status().unwrap().write_counter, before);
@@ -189,7 +183,7 @@ fn owner_stop_during_a_parked_turn_selects_no_prefix_and_fresh_owner_can_retry()
         .handle()
         .try_history_import(physical(&path, "cancel-parked"))
         .unwrap()
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(super::WAIT)
         .unwrap()
         .unwrap();
     assert!(retained.input.length > 0);

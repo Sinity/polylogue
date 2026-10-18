@@ -158,7 +158,6 @@ fn unfinished_last_line_waits_after_restart_without_being_parsed() {
         v["parser"]["status"] == "waiting_tail"
     });
     assert_eq!(before["parser"], after["parser"]);
-    thread::sleep(Duration::from_millis(30));
     assert_eq!(progress(running.socket(), &id)["parser"], after["parser"]);
     assert_eq!(after["source_rows"]["scope"], "imported_source_rows");
 }

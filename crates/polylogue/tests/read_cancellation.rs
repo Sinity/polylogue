@@ -5,7 +5,7 @@ use std::{
     os::unix::net::UnixListener,
     sync::mpsc,
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 #[test]
@@ -38,14 +38,11 @@ fn cancel_closes_the_socket_of_each_client_request() {
         let mut line = String::new();
         BufReader::new(&peer).read_line(&mut line).unwrap();
         assert!(line.contains("command"));
-        let started = Instant::now();
         cancellation.cancel();
-        assert!(
-            received
-                .recv_timeout(Duration::from_secs(1))
-                .unwrap()
-                .is_err()
-        );
+        // The peer never answers and the request's own deadline is 30 s, so
+        // any other error comes from the cancellation.
+        let error = received.recv().unwrap().unwrap_err();
+        assert_ne!(error.kind(), std::io::ErrorKind::TimedOut, "{operation}");
         let mut b = [0];
         assert_eq!(
             peer.read(&mut b).unwrap(),
@@ -53,7 +50,6 @@ fn cancel_closes_the_socket_of_each_client_request() {
             "{operation} kept its read socket open"
         );
         work.join().unwrap();
-        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }
 
@@ -79,17 +75,12 @@ fn cancel_stops_a_blocked_connect_before_its_deadline() {
         ))
         .unwrap()
     });
-    thread::sleep(Duration::from_millis(80));
-    assert!(
-        matches!(received.try_recv(), Err(mpsc::TryRecvError::Empty)),
-        "connect returned before cancellation despite its 30-second lifetime"
-    );
     cancellation.cancel();
-    assert!(
-        received
-            .recv_timeout(Duration::from_millis(500))
-            .unwrap()
-            .is_err()
+    // The listener's queue stays full, so the connect can end only through the
+    // cancellation (ConnectionAborted) or its 30 s deadline (TimedOut).
+    assert_eq!(
+        received.recv().unwrap().unwrap_err().kind(),
+        std::io::ErrorKind::ConnectionAborted
     );
     work.join().unwrap();
 }

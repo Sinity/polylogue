@@ -52,6 +52,14 @@ agentctl job start polylogue exec --workspace <worktree> -- cargo test -p polylo
 
 A PR merges as soon as it is ready; nothing waits on a hosted check. Run the
 full suite on batches of merged work and fix what it finds in follow-up PRs.
-The integration tests use fixed deadlines (40 s per CLI call, 60 s for daemon
-startup), so a heavily loaded machine can fail them spuriously; rerun before
-treating such a failure as a regression.
+
+## Timing in tests
+
+Tests do not assert on elapsed time. A test that checks a deadline arranges
+for the peer to stay silent or keep trickling until the client gives up, so
+only the deadline can end the wait; other tests wait for an event (a reply, a
+child's acknowledgement file, a closed connection) with no deadline of their
+own. A hung test is ended by nextest's slow-timeout (`.config/nextest.toml`),
+so run the suite through `xtask check` or `cargo nextest run`; under plain
+`cargo test` a hung test waits forever. The engine owner tests poll progress
+with a growing pause, because the owner reports progress only on request.

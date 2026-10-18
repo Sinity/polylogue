@@ -49,7 +49,7 @@ fn advance(actor: &mut Actor, receiver: &Receiver<Message>) {
     actor.tick().unwrap();
     if actor.compute.is_some() || actor.canonical.is_some() {
         actor
-            .message(receiver.recv_timeout(Duration::from_secs(10)).unwrap())
+            .message(receiver.recv_timeout(super::WAIT).unwrap())
             .unwrap();
     }
 }
@@ -105,7 +105,7 @@ fn append_during_finalization_discards_only_obsolete_audit_and_restarts_cleanly(
     // The selected audit still holds the old input, but its next snapshot sees
     // the input grown under the same token.
     actor.tick().unwrap();
-    let event = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+    let event = receiver.recv_timeout(super::WAIT).unwrap();
     assert!(matches!(
         &event,
         Message::CanonicalComputed(Err(Error::Store(StoreError::StaleParserState)))
@@ -138,7 +138,7 @@ fn stale_parser_state_and_changed_source_corruption_are_reported() {
             append(&mut actor, &input, &main);
         }
         actor.tick().unwrap();
-        let _actual = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+        let _actual = receiver.recv_timeout(super::WAIT).unwrap();
         let error = if changed {
             StoreError::Invariant("synthetic canonical corruption".into())
         } else {

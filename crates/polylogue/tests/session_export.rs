@@ -5,7 +5,6 @@ use std::{
     path::Path,
     process::{Command, Output, Stdio},
     thread,
-    time::{Duration, Instant},
 };
 const SID: &str = "7f3a2c10-0001-4000-8000-000000000001";
 const MORROW: &[u8] = include_bytes!("../../sources/tests/fixtures/morrow-main.jsonl");
@@ -210,26 +209,9 @@ fn ctrl_c_during_a_partial_frame_exits_without_writing_the_export() {
     let socket = polylogue::socket_path(&fs::canonicalize(&archive).unwrap(), runtime.path());
     fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = UnixListener::bind(socket).unwrap();
-    listener.set_nonblocking(true).unwrap();
     let (ready, started) = mpsc::channel();
     let producer = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "CLI never connected");
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => panic!("{error}"),
-            }
-        };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
         let mut request = String::new();
         BufReader::new(stream.try_clone().unwrap())
             .read_line(&mut request)
@@ -274,7 +256,7 @@ fn ctrl_c_during_a_partial_frame_exits_without_writing_the_export() {
             .spawn()
             .unwrap(),
     );
-    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    started.recv().unwrap();
 
     assert!(
         Command::new("sh")
@@ -288,17 +270,9 @@ fn ctrl_c_during_a_partial_frame_exits_without_writing_the_export() {
             .unwrap()
             .success()
     );
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let status = loop {
-        if let Some(status) = client.0.try_wait().unwrap() {
-            break status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "export client ignored SIGINT while waiting for a partial frame"
-        );
-        thread::sleep(Duration::from_millis(5));
-    };
+    // The producer never finishes the frame, so the client exits only on the
+    // signal.
+    let status = client.0.wait().unwrap();
     assert_eq!(status.signal(), Some(2));
     let disconnected = producer.join().unwrap();
     // A close with unread bytes can show up as a reset instead of EOF.

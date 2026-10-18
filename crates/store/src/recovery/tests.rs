@@ -251,15 +251,11 @@ fn killed_recovery_publishes_all_or_nothing() {
             .env("POLYLOGUE_RECOVERY_ACK", &ack)
             .spawn()
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        // A child that never reaches the boundary is ended by the test
+        // runner's timeout.
         while !ack.exists() {
             if let Some(status) = child.try_wait().unwrap() {
                 panic!("child exited before the boundary: {status}");
-            }
-            if std::time::Instant::now() > deadline {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                panic!("child did not reach the boundary in time");
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }

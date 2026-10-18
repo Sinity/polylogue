@@ -178,17 +178,11 @@ fn mixed_prompt_history_keeps_codex_conversation_incomplete() {
             .spawn()
             .unwrap(),
     ));
-    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let status = world.cli(&["status"]);
         if status.status.code() == Some(5) {
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "mixed source startup: {status:?}; {}",
-            world.log()
-        );
         thread::sleep(Duration::from_millis(10));
     }
     for call in [

@@ -832,15 +832,10 @@ fn killed_wal_fixture_in(tmp: tempfile::TempDir, mode: &str) -> (tempfile::TempD
             .spawn()
             .unwrap(),
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    // A child that never acknowledges is ended by the test runner's timeout.
     while !ack.exists() {
         if let Some(status) = child.0.try_wait().unwrap() {
             panic!("owned fixture exited before acknowledgment: {status}");
-        }
-        if std::time::Instant::now() > deadline {
-            child.0.kill().unwrap();
-            child.0.wait().unwrap();
-            panic!("owned fixture did not acknowledge");
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }

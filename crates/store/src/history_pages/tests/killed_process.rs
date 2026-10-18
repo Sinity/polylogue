@@ -62,15 +62,12 @@ fn capture_after_a_killed_process_starts_fresh() {
             .spawn()
             .unwrap(),
     );
-    let until = std::time::Instant::now() + Duration::from_secs(15);
+    // A child that never reaches the barrier is ended by the test runner's
+    // timeout.
     while !ready.exists() {
         assert!(
             child.0.try_wait().unwrap().is_none(),
             "child exited before its parked quantum"
-        );
-        assert!(
-            std::time::Instant::now() < until,
-            "child did not reach its owned barrier"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
