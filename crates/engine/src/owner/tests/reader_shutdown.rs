@@ -32,7 +32,7 @@ fn actor_closes_idle_readers_before_last_writer_and_plain_restart_accepts_reused
     for n in 0u64..2048 {
         actor.writer.put_file_blob(&n.to_be_bytes()).unwrap();
         writes += 1;
-        if writes % 64 == 0 && previous_generation_tail(&root.join("archive.db-wal")) {
+        if writes.is_multiple_of(64) && previous_generation_tail(&root.join("archive.db-wal")) {
             break;
         }
     }

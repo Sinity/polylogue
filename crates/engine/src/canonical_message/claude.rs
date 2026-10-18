@@ -348,25 +348,23 @@ fn leaf<'a>(
     c: Option<&'a Contribution>,
     content: Option<&'a BlockContent>,
 ) -> Result<ValueSource<'a>> {
-    if matches!(fact.field, Field::FirstMessage(MessageField::Parent)) {
-        if let Some(recipe) = &fact.selection {
-            let resolved = match &recipe.transform {
-                source::selection::Transform::ParentReferenceV1 { resolved, .. }
-                | source::selection::Transform::ParentViaRecordsV1 { resolved, .. } => {
-                    Some(resolved)
-                }
-                _ => None,
-            };
-            if let Some(resolved) = resolved {
-                let mut bytes = Vec::new();
-                polylogue_model::source_leaf::write_message_reference(resolved, &mut bytes)
-                    .map_err(|e| Error::Source(e.to_string()))?;
-                return Ok(ValueSource::Opaque(
-                    RawJson::parse(&bytes)
-                        .map_err(|e| Error::Source(e.to_string()))?
-                        .into_opaque(),
-                ));
-            }
+    if matches!(fact.field, Field::FirstMessage(MessageField::Parent))
+        && let Some(recipe) = &fact.selection
+    {
+        let resolved = match &recipe.transform {
+            source::selection::Transform::ParentReferenceV1 { resolved, .. }
+            | source::selection::Transform::ParentViaRecordsV1 { resolved, .. } => Some(resolved),
+            _ => None,
+        };
+        if let Some(resolved) = resolved {
+            let mut bytes = Vec::new();
+            polylogue_model::source_leaf::write_message_reference(resolved, &mut bytes)
+                .map_err(|e| Error::Source(e.to_string()))?;
+            return Ok(ValueSource::Opaque(
+                RawJson::parse(&bytes)
+                    .map_err(|e| Error::Source(e.to_string()))?
+                    .into_opaque(),
+            ));
         }
     }
     let subject = match &fact.field {
@@ -1353,13 +1351,12 @@ fn proof(
             }
         }
         for fact in &c.projection.facts {
-            if let Field::Extra { local: None, path } = &fact.field {
-                if let [key] = path.as_slice() {
-                    if response.record_extras.contains_key(key) {
-                        extra_baseline.insert(key.clone(), item);
-                        bounded_json(&extra_baseline, b.metadata)?;
-                    }
-                }
+            if let Field::Extra { local: None, path } = &fact.field
+                && let [key] = path.as_slice()
+                && response.record_extras.contains_key(key)
+            {
+                extra_baseline.insert(key.clone(), item);
+                bounded_json(&extra_baseline, b.metadata)?;
             }
         }
         if c.completion.is_some() {

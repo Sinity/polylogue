@@ -269,7 +269,7 @@ impl Audit {
                     if let Some(error) = attempt.take_failure() {
                         return Err(error.into());
                     }
-                    result.map_err(|e| owner::Error::InvalidEvidence(e))?;
+                    result.map_err(owner::Error::InvalidEvidence)?;
                 }
             }
             return Ok(Turn::Progress(self));

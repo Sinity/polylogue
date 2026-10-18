@@ -635,11 +635,11 @@ impl Actor {
                     self.begin_stop();
                 }
             }
-            if !self.stopping {
-                if let Err(e) = self.tick() {
-                    self.fatal = Some(e);
-                    self.begin_stop();
-                }
+            if !self.stopping
+                && let Err(e) = self.tick()
+            {
+                self.fatal = Some(e);
+                self.begin_stop();
             }
             if !self.stopping && (mailbox_empty || commands_since_grant >= COMMANDS) {
                 if let Err(e) = self.advance_capture_turn() {
@@ -666,7 +666,7 @@ impl Actor {
     fn finish_capture(&mut self, job: CaptureJob, result: Result<PreparedCapture>) -> Result<()> {
         job.join.join().map_err(|_| Error::WorkerPanicked)?;
         if self.stop_for_completion(&result) {
-            let _ = job.reply.send(Err(Error::Stopped), false);
+            job.reply.send(Err(Error::Stopped), false);
             return Ok(());
         }
         let mut acquired = true;
@@ -748,7 +748,7 @@ impl Actor {
                 self.restart_scan();
             }
         }
-        let _ = job.reply.send(result, acquired);
+        job.reply.send(result, acquired);
         Ok(())
     }
     fn active_id(&self) -> Option<&str> {
@@ -882,7 +882,7 @@ impl Actor {
         reply: ImportReply,
     ) -> Result<()> {
         if self.stopping {
-            let _ = reply.send(Err(Error::Stopped), false);
+            reply.send(Err(Error::Stopped), false);
             return Ok(());
         }
         let replay = self.writer.replay_immutable_import(
@@ -924,11 +924,11 @@ impl Actor {
                 {
                     self.restart_scan();
                 }
-                let _ = reply.send(Ok(input), false);
+                reply.send(Ok(input), false);
                 return Ok(());
             }
             Err(e) => {
-                let _ = reply.send(Err(e.into()), false);
+                reply.send(Err(e.into()), false);
                 return Ok(());
             }
             Ok(None) => {}
@@ -969,17 +969,17 @@ impl Actor {
             return Ok(());
         }
         if self.capture.is_some() {
-            let _ = reply.send(Err(Error::Busy), false);
+            reply.send(Err(Error::Busy), false);
             return Ok(());
         }
         if let Err(e) = self.writer.check_import_acquisition() {
-            let _ = reply.send(Err(e.into()), false);
+            reply.send(Err(e.into()), false);
             return Ok(());
         }
         let capture = match self.writer.blob_capture() {
             Ok(c) => c,
             Err(e) => {
-                let _ = reply.send(Err(e.into()), false);
+                reply.send(Err(e.into()), false);
                 return Ok(());
             }
         };
@@ -1021,7 +1021,7 @@ impl Actor {
                 })
             }
             Err(e) => {
-                let _ = reply.send(Err(StoreError::Io(e).into()), false);
+                reply.send(Err(StoreError::Io(e).into()), false);
             }
         }
         Ok(())
@@ -1366,7 +1366,7 @@ impl Actor {
         let source_changed = input.revision != previous.revision
             || input.input.chain != previous.input.chain
             || input.input.length != previous.input.length
-            || parser_identity(&input) != parser_identity(&previous);
+            || parser_identity(&input) != parser_identity(previous);
         let predecessor_changed = head.as_ref().is_some_and(|head| {
             head.token != predecessor.token
                 || head.acquired_upto != predecessor.acquired_upto

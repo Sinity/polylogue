@@ -585,7 +585,7 @@ fn check_operation(
                 session,
                 &dependency,
                 target,
-                target_native.as_deref().or_else(|| match &context {
+                target_native.as_deref().or(match &context {
                     // A declared main file can own metadata before any Message
                     // publishes the Session header. The match above already
                     // checked that this is the requested main or its side Session.
@@ -1052,31 +1052,32 @@ fn check_shape(
                 }
             }
         }
-        if response.message.role == polylogue_model::Role::User && pure_results && result_blocks > 0
+        if response.message.role == polylogue_model::Role::User
+            && pure_results
+            && result_blocks > 0
+            && let Some(record_start) = peer_record_start
         {
-            if let Some(record_start) = peer_record_start {
-                let calls = peer_calls;
-                {
-                    pending_bytes = pending_bytes.saturating_add(
-                        serde_json::to_vec(&(&message, &peer_parent, &peer_caller, &calls))
-                            .map_err(|e| Error::Invariant(e.to_string()))?
-                            .len(),
-                    );
-                    if pending_bytes > allowance {
-                        return Err(Error::ParserAdmission {
-                            resource: "Claude result peer membership",
-                            required: pending_bytes as u64,
-                        });
-                    }
-                    peers.push(claude_active::ResultPeer {
-                        message: message.clone(),
-                        parent: peer_parent,
-                        caller: peer_caller,
-                        record_start,
-                        valid: peer_valid,
-                        calls,
+            let calls = peer_calls;
+            {
+                pending_bytes = pending_bytes.saturating_add(
+                    serde_json::to_vec(&(&message, &peer_parent, &peer_caller, &calls))
+                        .map_err(|e| Error::Invariant(e.to_string()))?
+                        .len(),
+                );
+                if pending_bytes > allowance {
+                    return Err(Error::ParserAdmission {
+                        resource: "Claude result peer membership",
+                        required: pending_bytes as u64,
                     });
                 }
+                peers.push(claude_active::ResultPeer {
+                    message: message.clone(),
+                    parent: peer_parent,
+                    caller: peer_caller,
+                    record_start,
+                    valid: peer_valid,
+                    calls,
+                });
             }
         }
         if response.message.copy_origin.is_some() || response.message.inherited_from.is_some() {
@@ -1086,13 +1087,13 @@ fn check_shape(
             );
         }
         let input = dependency.registered().ok_or(Error::Range)?;
-        let logical = owner::claude_key(&message);
+        let logical = owner::claude_key(message);
         let selected = selected_current_projection(catalog, dependency, &logical, allowance)?;
         let proved = match selected {
             Some(source) => crate::canonical_message::current_claude_projection(
                 &source,
                 &head.token,
-                &p,
+                p,
                 input.binding,
                 dependency.context(),
             )
@@ -1117,7 +1118,7 @@ fn check_shape(
             ),
         );
         if !result.expected.contains_key(message) {
-            admit_membership(result, &message, false, allowance)?;
+            admit_membership(result, message, false, allowance)?;
         }
         if result
             .expected

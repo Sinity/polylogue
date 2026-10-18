@@ -144,20 +144,19 @@ impl Actor {
                 .as_ref()
                 .expect("parked capture")
                 .regular_served
+                && let Some((request, configured, reply)) = self.waiting_capture.take()
             {
-                if let Some((request, configured, reply)) = self.waiting_capture.take() {
-                    self.message(Message::Import(request, configured, reply))?;
-                    return Ok(());
-                }
+                self.message(Message::Import(request, configured, reply))?;
+                return Ok(());
             }
             let permission = self.writer.check_import_acquisition();
             if let Some(grant) = self.turn_capture.as_mut().and_then(|h| h.grant.take()) {
                 let _ = grant.send(permission);
             }
-        } else if self.turn_capture.is_none() {
-            if let Some((request, configured, reply)) = self.waiting_capture.take() {
-                self.message(Message::Import(request, configured, reply))?;
-            }
+        } else if self.turn_capture.is_none()
+            && let Some((request, configured, reply)) = self.waiting_capture.take()
+        {
+            self.message(Message::Import(request, configured, reply))?;
         }
         Ok(())
     }

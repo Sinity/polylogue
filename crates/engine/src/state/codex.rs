@@ -723,12 +723,12 @@ pub fn encode_delta(delta: &Delta, next_step: u64, budget: Budget) -> Result<Enc
         )?;
     }
     for (key, value) in &delta.cells {
-        if let Some(value) = value {
-            if !value.valid_for(key) {
-                return Err(StoreError::Invariant(
-                    "Codex delta cell shape differs from provider key".into(),
-                ));
-            }
+        if let Some(value) = value
+            && !value.valid_for(key)
+        {
+            return Err(StoreError::Invariant(
+                "Codex delta cell shape differs from provider key".into(),
+            ));
         }
         let family = key.family();
         let ns_len = PREFIX.len() + family.len();

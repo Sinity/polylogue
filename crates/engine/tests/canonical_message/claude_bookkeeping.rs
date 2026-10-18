@@ -5,10 +5,10 @@ fn fixture(details: Option<Value>) -> Vec<u8> {
     let mut rows = Vec::new();
     for (uuid, text) in [("first", "first text"), ("later", "later text")] {
         let mut row = json!({"type":"assistant","uuid":uuid,"sessionId":SID,"requestId":"request","parentUuid":null,"isSidechain":false,"message":{"id":"response","role":"assistant","content":[{"type":"text","text":text}]}});
-        if uuid == "later" {
-            if let Some(value) = &details {
-                row["message"]["stop_details"] = value.clone();
-            }
+        if uuid == "later"
+            && let Some(value) = &details
+        {
+            row["message"]["stop_details"] = value.clone();
         }
         rows.push(row.to_string() + "\n");
     }
@@ -38,40 +38,38 @@ fn complete(
 ) -> (SourceProjection, usize, u64) {
     for steps in 1..5000 {
         let projection = w.writer.message_projection(h.build(), 65536).unwrap();
-        if legacy {
-            if let Some(raw) = projection.cursor.as_ref() {
-                let mut cursor: Value = serde_json::from_slice(raw).unwrap();
-                let stage = &mut cursor["stage"]["Claude"];
-                for name in ["SelectedCitations", "Selected"] {
-                    if let Some(index) = stage.get(name).and_then(|v| v["index"].as_u64()) {
-                        if absent(response, index as usize) {
-                            stage[name]["index"] = json!(index + 1);
-                            if name == "Selected" {
-                                stage[name]["fact"] = json!(0);
-                            }
-                            let next = serde_json::to_vec(&cursor).unwrap();
-                            w.writer
-                                .advance_message_projection(
-                                    h.build(),
-                                    &ProjectionStep {
-                                        expected_sequence: projection.sequence,
-                                        next_cursor: &next,
-                                    },
-                                    65536,
-                                )
-                                .unwrap();
-                            break;
-                        }
-                    }
-                }
-                if w.writer
-                    .message_projection(h.build(), 65536)
-                    .unwrap()
-                    .sequence
-                    != projection.sequence
+        if legacy && let Some(raw) = projection.cursor.as_ref() {
+            let mut cursor: Value = serde_json::from_slice(raw).unwrap();
+            let stage = &mut cursor["stage"]["Claude"];
+            for name in ["SelectedCitations", "Selected"] {
+                if let Some(index) = stage.get(name).and_then(|v| v["index"].as_u64())
+                    && absent(response, index as usize)
                 {
-                    continue;
+                    stage[name]["index"] = json!(index + 1);
+                    if name == "Selected" {
+                        stage[name]["fact"] = json!(0);
+                    }
+                    let next = serde_json::to_vec(&cursor).unwrap();
+                    w.writer
+                        .advance_message_projection(
+                            h.build(),
+                            &ProjectionStep {
+                                expected_sequence: projection.sequence,
+                                next_cursor: &next,
+                            },
+                            65536,
+                        )
+                        .unwrap();
+                    break;
                 }
+            }
+            if w.writer
+                .message_projection(h.build(), 65536)
+                .unwrap()
+                .sequence
+                != projection.sequence
+            {
+                continue;
             }
         }
         let mut b = work_budget();

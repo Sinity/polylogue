@@ -143,19 +143,19 @@ fn declared_claude_context_replays_without_provider_and_remains_pending() {
     loop {
         let p = progress(&service.handle(), &retained.id);
         assert_eq!(p.source_rows.basis.input, p.input.id);
-        if let Some(head) = p.parser {
-            if head.parsed_upto == retained.length {
-                assert_eq!(head.counts.used, 1);
-                assert_eq!(
-                    head.finalization_pending,
-                    !matches!(
-                        p.source_rows.state,
-                        polylogue_model::settlement::SourceRowState::Settled
-                    )
-                );
-                assert_ne!(head.status, Phase::Done);
-                break;
-            }
+        if let Some(head) = p.parser
+            && head.parsed_upto == retained.length
+        {
+            assert_eq!(head.counts.used, 1);
+            assert_eq!(
+                head.finalization_pending,
+                !matches!(
+                    p.source_rows.state,
+                    polylogue_model::settlement::SourceRowState::Settled
+                )
+            );
+            assert_ne!(head.status, Phase::Done);
+            break;
         }
         assert!(
             Instant::now() < deadline,

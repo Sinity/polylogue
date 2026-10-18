@@ -28,7 +28,7 @@ pub(crate) fn prepare(
             let (pending, paths) = &mut *state;
             for byte in bytes {
                 if *byte == b'\n' {
-                    if let Ok(record) = polylogue_model::RawJson::parse(&pending) {
+                    if let Ok(record) = polylogue_model::RawJson::parse(pending) {
                         for (path, hash, length) in
                             polylogue_sources::claude_code::body_references(&record)
                         {
