@@ -65,7 +65,7 @@ fn hidden_message_or_new_parser_blocks_writes_but_not_retirement() {
     ));
     assert!(matches!(f.prepare(), Err(Error::StaleMessage)));
     f.writer
-        .begin_parser(&parser_state::Basis {
+        .begin_parser(&parser_state::ParserInput {
             input_pk: f.head.token.input_pk,
             chain: 1,
             parser_version: 4,
@@ -128,7 +128,7 @@ fn source_growth_keeps_preparation_but_new_parser_blocks_seal() {
     let length = f.head.acquired_upto;
     f.head = f
         .writer
-        .begin_parser(&parser_state::Basis {
+        .begin_parser(&parser_state::ParserInput {
             input_pk: f.head.token.input_pk,
             chain: 1,
             parser_version: 3,
@@ -141,7 +141,7 @@ fn source_growth_keeps_preparation_but_new_parser_blocks_seal() {
     let build = f.prepare().unwrap().build;
     let grown = f
         .writer
-        .begin_parser(&parser_state::Basis {
+        .begin_parser(&parser_state::ParserInput {
             input_pk: f.head.token.input_pk,
             chain: 1,
             parser_version: 3,
@@ -158,7 +158,7 @@ fn source_growth_keeps_preparation_but_new_parser_blocks_seal() {
         .unwrap();
     let proof = f.writer.validate_value(&value.id).unwrap();
     f.writer
-        .begin_parser(&parser_state::Basis {
+        .begin_parser(&parser_state::ParserInput {
             input_pk: f.head.token.input_pk,
             chain: 1,
             parser_version: 4,

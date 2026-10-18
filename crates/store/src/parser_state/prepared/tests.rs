@@ -1,5 +1,5 @@
 use super::*;
-use crate::parser_state::tests::{basis, fixture as archive};
+use crate::parser_state::tests::{fixture as archive, parser_input};
 use crate::tests::reopen_after_drop;
 fn budget() -> Budget {
     Budget {
@@ -29,7 +29,7 @@ fn change(key: &str, value: &str) -> CellChange {
 }
 fn fixture() -> (tempfile::TempDir, std::path::PathBuf, crate::Writer, Head) {
     let (dir, root, mut writer, input) = archive();
-    let head = writer.begin_parser(&basis(input, 100)).unwrap();
+    let head = writer.begin_parser(&parser_input(input, 100)).unwrap();
     (dir, root, writer, head)
 }
 #[test]
@@ -89,7 +89,7 @@ fn pending_work_blocks_new_snapshots_and_keeps_later_growth() {
         Err(StoreError::ParserWorkPending)
     ));
     writer
-        .begin_parser(&basis(head.token.input_pk, 200))
+        .begin_parser(&parser_input(head.token.input_pk, 200))
         .unwrap();
     work = writer.apply_parser(&work.token, budget()).unwrap();
     let published = writer.publish_parser(&work.token).unwrap();
@@ -168,9 +168,9 @@ fn new_digest_invalidates_work_and_cleanup_deletes_staged_cells() {
         .unwrap();
     let work = writer.seal_parser(&work.token).unwrap();
     let work = writer.apply_parser(&work.token, budget()).unwrap();
-    let mut new_basis = basis(head.token.input_pk, 100);
-    new_basis.digest = [8; 32];
-    let next = writer.begin_parser(&new_basis).unwrap();
+    let mut new_input = parser_input(head.token.input_pk, 100);
+    new_input.digest = [8; 32];
+    let next = writer.begin_parser(&new_input).unwrap();
     assert!(matches!(
         writer.publish_parser(&work.token),
         Err(StoreError::StaleParserState)

@@ -8,7 +8,9 @@ use polylogue_sources::codex::{
     },
 };
 use polylogue_sources::frame::{Counts, drive_jsonl};
-use polylogue_store::parser_state::{Accounting, Basis, Budget, CellChange, Head, Phase, Progress};
+use polylogue_store::parser_state::{
+    Accounting, Budget, CellChange, Head, ParserInput, Phase, Progress,
+};
 use polylogue_store::{Error, ImportObservation, InputFormat, Writer};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -47,7 +49,7 @@ impl World {
             )
             .unwrap();
         let head = writer
-            .begin_parser(&Basis {
+            .begin_parser(&ParserInput {
                 input_pk: retained.input_pk,
                 chain: retained.chain,
                 parser_version: codex::PARSER_VERSION,

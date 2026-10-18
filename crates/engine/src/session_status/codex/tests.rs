@@ -74,7 +74,7 @@ fn benign_events_do_not_supply_an_absent_current_selected_message_projection() {
     };
     use polylogue_store::{
         ImportObservation, InputFormat, Writer,
-        parser_state::{Accounting, Basis, Budget, Phase, Progress},
+        parser_state::{Accounting, Budget, ParserInput, Phase, Progress},
     };
     let raw=concat!(
         "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s\",\"source\":\"cli\",\"base_instructions\":{\"text\":\"Neutral\"}}}\n",
@@ -101,7 +101,7 @@ fn benign_events_do_not_supply_an_absent_current_selected_message_projection() {
         .unwrap();
     let input = writer.stored_source(&retained.id).unwrap().unwrap();
     let head = writer
-        .begin_parser(&Basis {
+        .begin_parser(&ParserInput {
             input_pk: retained.input_pk,
             chain: retained.chain,
             parser_version: PARSER_VERSION,

@@ -278,7 +278,7 @@ fn retired_preparation_drains_across_restarts() {
     );
     f.head = f
         .writer
-        .begin_parser(&parser_state::Basis {
+        .begin_parser(&parser_state::ParserInput {
             input_pk: f.head.token.input_pk,
             chain: 1,
             parser_version: 4,

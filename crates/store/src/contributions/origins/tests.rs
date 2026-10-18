@@ -36,7 +36,7 @@ impl Fixture {
             )
             .unwrap();
         let head = writer
-            .begin_parser(&parser_state::Basis {
+            .begin_parser(&parser_state::ParserInput {
                 input_pk: input.input_pk,
                 chain: input.chain,
                 parser_version: 1,

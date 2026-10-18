@@ -506,7 +506,7 @@ fn uncontested_selection_is_atomic_and_contested_stays_unselected() {
         .unwrap();
     f.head = f
         .writer
-        .begin_parser(&parser_state::Basis {
+        .begin_parser(&parser_state::ParserInput {
             input_pk: input.input_pk,
             chain: input.chain,
             parser_version: 3,

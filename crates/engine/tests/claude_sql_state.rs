@@ -7,7 +7,9 @@ use polylogue_sources::claude_code::keyed::{
 };
 use polylogue_sources::claude_code::{FileCtx, KeyedRecords, PARSER_VERSION};
 use polylogue_sources::frame::{Counts, drive_jsonl};
-use polylogue_store::parser_state::{Accounting, Basis, Budget, CellChange, Head, Phase, Progress};
+use polylogue_store::parser_state::{
+    Accounting, Budget, CellChange, Head, ParserInput, Phase, Progress,
+};
 use polylogue_store::{Error as StoreError, ImportObservation, InputFormat, Writer};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -55,7 +57,7 @@ impl World {
             )
             .unwrap();
         let head = writer
-            .begin_parser(&Basis {
+            .begin_parser(&ParserInput {
                 input_pk: retained.input_pk,
                 chain: retained.chain,
                 parser_version: PARSER_VERSION,
@@ -595,7 +597,7 @@ fn pinned_body_namespace_distinguishes_unavailable_from_invalid_cells() {
     let manifest = serde_json::to_string(&payload).unwrap();
     let mut basis_bytes = world.head.token.basis.to_vec();
     basis_bytes.extend_from_slice(manifest.as_bytes());
-    let basis = Basis {
+    let basis = ParserInput {
         input_pk: world.head.token.input_pk,
         chain: world.head.token.chain,
         parser_version: PARSER_VERSION,

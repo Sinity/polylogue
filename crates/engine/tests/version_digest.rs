@@ -10,7 +10,7 @@ use polylogue_sources::codex::{
 };
 use polylogue_store::{
     Error as StoreError, ImportObservation, InputFormat, Writer,
-    parser_state::{Accounting, Basis, Budget, Head, Phase, Progress},
+    parser_state::{Accounting, Budget, Head, ParserInput, Phase, Progress},
 };
 use std::collections::BTreeMap;
 fn budget() -> Budget {
@@ -45,7 +45,7 @@ impl World {
             )
             .unwrap();
         let predecessor = writer
-            .begin_parser(&Basis {
+            .begin_parser(&ParserInput {
                 input_pk: input.input_pk,
                 chain: input.chain,
                 parser_version: codex::PARSER_VERSION,

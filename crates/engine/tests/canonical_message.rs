@@ -11,7 +11,7 @@ use polylogue_sources::{
 use polylogue_store::{
     ImportObservation, InputFormat, Writer,
     contributions::{MessageLayout, ProjectionStep, SourceProjection},
-    parser_state::{Accounting, Basis, Budget, Head, Phase, Progress},
+    parser_state::{Accounting, Budget, Head, ParserInput, Phase, Progress},
 };
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::atomic::AtomicBool};
@@ -77,7 +77,7 @@ impl World {
             )
             .unwrap();
         let head = writer
-            .begin_parser(&Basis {
+            .begin_parser(&ParserInput {
                 input_pk: input.input_pk,
                 chain: input.chain,
                 parser_version: codex::PARSER_VERSION,
@@ -697,7 +697,7 @@ fn verified_origin_producer_restarts_and_selected_descriptor_outlives_parser_cel
     // descriptor or need the original provider file.
     world
         .writer
-        .begin_parser(&Basis {
+        .begin_parser(&ParserInput {
             input_pk: world.head.token.input_pk,
             chain: world.head.token.chain,
             parser_version: codex::PARSER_VERSION,
@@ -909,7 +909,7 @@ fn parser_generation_replay_replaces_only_verified_prior_candidate_and_preserves
     let old_generation = world.head.token.generation;
     let new = world
         .writer
-        .begin_parser(&Basis {
+        .begin_parser(&ParserInput {
             input_pk: world.head.token.input_pk,
             chain: world.head.token.chain,
             parser_version: codex::PARSER_VERSION,

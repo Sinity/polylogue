@@ -25,7 +25,7 @@ fn fixture() -> (tempfile::TempDir, Actor, StoredSource, Head) {
     let source = writer.stored_source(&input.id).unwrap().unwrap();
     let context = parser_context_json(&source).unwrap();
     let head = writer
-        .begin_parser(&Basis {
+        .begin_parser(&ParserInput {
             input_pk: source.input.input_pk,
             chain: source.input.chain,
             parser_version: parser_version(source.format),

@@ -16,7 +16,7 @@ use polylogue_sources::{
 use polylogue_store::parser_state::Phase;
 use polylogue_store::{
     Error as StoreError, ImportObservation, InputFormat, Writer,
-    parser_state::{Basis, Budget, Head},
+    parser_state::{Budget, Head, ParserInput},
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -100,7 +100,7 @@ impl World {
             )
             .unwrap();
         let head = writer
-            .begin_parser(&Basis {
+            .begin_parser(&ParserInput {
                 input_pk: input.input_pk,
                 chain: input.chain,
                 parser_version: if claude {
@@ -131,7 +131,7 @@ impl World {
     }
     fn grow(&mut self, acquired: u64) {
         let old = &self.head;
-        let basis = Basis {
+        let basis = ParserInput {
             input_pk: old.token.input_pk,
             chain: old.token.chain,
             parser_version: old.parser_version,
