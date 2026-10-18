@@ -5,6 +5,7 @@
 //! with a reason.
 
 pub mod account;
+pub mod browser_capture;
 pub mod chatgpt;
 pub mod claude_ai;
 pub mod claude_code;
@@ -12,6 +13,9 @@ pub mod codex;
 pub mod document;
 pub mod fields;
 pub mod frame;
+pub mod gemini_cli;
+pub mod grok_cli;
+pub mod hook_spool;
 pub mod kept_rows;
 pub mod origin;
 pub mod parse;

@@ -299,3 +299,45 @@ fn a_document_export_is_parsed_whole_however_small_the_chunk() {
     assert_eq!(messages_of(&w.root, "chatgpt:c1")[0].text(), "one");
     assert_eq!(messages_of(&w.root, "chatgpt:c2")[0].text(), "two");
 }
+
+fn capture_file(texts: &[&str]) -> Vec<u8> {
+    let turns: Vec<serde_json::Value> = texts
+        .iter()
+        .enumerate()
+        .map(|(i, t)| serde_json::json!({"provider_turn_id": format!("t{i}"), "role": "user", "text": t, "ordinal": i}))
+        .collect();
+    serde_json::to_vec_pretty(&serde_json::json!({
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "source": "browser-extension",
+        "provenance": {"captured_at": "2026-02-01T00:00:00Z"},
+        "provider_meta": {},
+        "raw_provider_payload": {},
+        "session": {"provider": "grok", "provider_session_id": "g1", "turns": turns}
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_capture_rewritten_in_place_is_parsed_again_whole() {
+    let w = World::new();
+    let dir = w.home.join(".local/state/polylogue/browser-capture/grok");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("g1.json");
+    fs::write(&file, capture_file(&["one"])).unwrap();
+    let (mut e, _lock) = w.engine(64 << 20);
+    let pass = e.converge().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let texts = |root: &Path| -> Vec<String> {
+        messages_of(root, "grok:g1")
+            .iter()
+            .map(Message::text)
+            .collect()
+    };
+    assert_eq!(texts(&w.root), ["one"]);
+    // The extension rewrites the whole file when it captures again.
+    fs::write(&file, capture_file(&["one", "two"])).unwrap();
+    let pass = e.converge().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert_eq!(texts(&w.root), ["one", "two"]);
+}
