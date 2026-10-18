@@ -8,10 +8,12 @@
 //! synced, installed without replacing an existing name, with touched directories synced. Three layouts:
 //!
 //! - **plain**: independent zstd frames (each with its content checksum) followed by a seek table
-//!   in the zstd seekable format, so stock `zstd -d` decompresses the file and a range read
-//!   validates the complete frame map; a scoped Reader verifies once and reuses its checked file/index. Named by the BLAKE3 of the content.
-//! - **delta**: a skippable header frame naming the base, then one zstd frame made as `zstd --patch-from`
-//!   makes one (the base as prefix, a window over base and content, long-distance matching). The base is always plain, so a read decompresses at most two
+//!   in the zstd seekable format, so stock `zstd -d` decompresses the file. A range read checks
+//!   the whole frame table; a `Reader` verifies a blob once and reuses the open file and index.
+//!   Named by the BLAKE3 of the content.
+//! - **delta**: a skippable header frame naming the base, then one zstd frame made the way
+//!   `zstd --patch-from` makes one (the base as prefix, a window over base and content,
+//!   long-distance matching). The base is always plain, so a read decompresses at most two
 //!   blobs. Not seekable.
 //! - **sealed**: each compressed frame encrypted with ChaCha20-Poly1305 under a fresh per-encoding frame key
 //!   (#23), then a footer with the key reference, the frame table and a BLAKE3 of the ciphertext
@@ -155,7 +157,7 @@ pub struct Store {
     frame: usize,
 }
 
-/// Read capability over existing roots. Construction performs no filesystem writes.
+/// Read-only access to existing roots. Never writes, not even to create a root.
 ///
 /// ```compile_fail
 /// let reader = hashed_blobs::Reader::new("unused", vec![]);
@@ -171,18 +173,18 @@ impl Reader {
         Self(Store { write_root: root, roots, mode: 0o600, frame: DEFAULT_FRAME }, Mutex::new(None))
     }
 
-    /// The existing checked decoder, with no write capability exposed.
+    /// The whole content, checked against its name.
     pub fn read(&self, hash: &Hash) -> Result<impl Read> { self.0.read(hash) }
 
     pub fn read_range(&self, hash: &Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
         self.read_range_checked::<Error>(hash, None, offset, len, || Ok(()))
     }
 
-    /// One scoped plain representation and bounded decoded frame slot are retained.
-    /// Each concurrent in-flight call can independently own one representation/frame; the
-    /// caller bounds concurrency. No state mutex is held during IO or caller callbacks.
-    /// First use verifies the expected name; subsequent ranges never reopen its pathname.
-    /// Descriptor mutation refuses; replacement of its pathname does not change the held object.
+    /// A range of a plain blob. The reader keeps one open blob and one decoded frame; the
+    /// first read of a blob verifies its whole name, later reads reuse the open file. Each
+    /// concurrent call may hold its own blob and frame, so the caller limits concurrency. The
+    /// lock is not held during IO or callbacks. A change to the open file is refused; replacing
+    /// the path does not affect the open file.
     pub fn read_range_checked<E: From<Error>>(&self, hash: &Hash, expected_len: Option<u64>, offset: u64, len: u64,
         mut check: impl FnMut() -> std::result::Result<(), E>) -> std::result::Result<Vec<u8>, E> {
         check()?;
@@ -204,7 +206,8 @@ impl Reader {
         result
     }
 
-    /// Bounded plain-object verification; callback chunks are provisional until success.
+    /// Verify a plain blob and keep it open for later ranges. Chunks passed to `visit` are
+    /// not verified until this returns `Ok`.
     pub fn verify_plain<E: From<Error>>(&self, hash: &Hash, expected_len: u64,
         visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<VerificationStats, E> {
         self.slot()?.take();
@@ -217,11 +220,11 @@ impl Reader {
         self.1.lock().map_err(|_| Error::Refused("scoped reader state is poisoned".into()))
     }
 
-    /// Check the existing physical representation and content without a write capability.
+    /// Check a blob's file and content.
     pub fn verify(&self, hash: &Hash) -> Result<Verified> { self.0.verify(hash) }
 }
 
-/// Work performed by one bounded plain verification, including metadata reads.
+/// Work done by one plain verification, including metadata reads.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct VerificationStats {
     pub decoded_bytes: u64,
@@ -256,7 +259,8 @@ fn nonce(k: u32) -> [u8; 12] {
     n
 }
 
-/// Fixed encoding context and the current entry authenticate bounded independent range reads.
+/// Binds a frame to the encoding context and its own table entry, so a range read can
+/// authenticate a frame without reading the others.
 fn aad(f: &SealedFooter, name: &Hash, k: u32, plain_start: u64) -> Vec<u8> {
     let mut a = f.context();
     a.extend_from_slice(&name.0);
@@ -456,9 +460,8 @@ impl SealedFooter {
     }
 }
 
-/// Positional reads of one blob file: readers fetch the seek table, header or footer and the frames
-/// they need. Initial plain proof checks the whole representation with a bounded positional
-/// stream; scoped subsequent ranges reuse that file/index and a bounded decoded frame.
+/// Positional reads of one blob file: readers fetch the seek table, header or footer and the
+/// frames they need, never the whole file.
 struct View {
     file: File,
     len: u64,
@@ -481,8 +484,8 @@ impl View {
     }
 }
 
-// The decoder can consume many zero-output blocks inside one read call. Poll
-// physical reads too, preserving the caller's typed failure outside the io bridge.
+// The decoder can consume many zero-output blocks inside one read call, so the callback is
+// also polled on each file read. Its error is kept aside because io::Read cannot carry it.
 struct ViewRange<'a, F, E> {
     view: Arc<View>,
     pos: u64,
@@ -560,9 +563,8 @@ impl PlainRead {
                         self.stats.frames += 1;
                         self.current = Some(CachedFrame { index, bytes });
                     } else {
-                        // Larger historical writer frames remain supported without a giant
-                        // cache allocation. Fully check the frame before returning selected
-                        // bytes; repeated large-frame ranges deliberately pay a full decode.
+                        // Frames larger than the cache are streamed, not cached: each range
+                        // decodes and checks the whole frame again.
                         let mut position = 0u64;
                         Store::stream_plain_frame::<E>(&self.view, self.hash, (off, c, d), |chunk| {
                             check()?;
@@ -652,15 +654,15 @@ impl Store {
         Ok(TmpFile { file, path, hasher: blake3::Hasher::new() })
     }
 
-    /// Sync the temporary file and link it into place without replacement, syncing every directory touched. If the
-    /// name exists, validate its content before dropping the candidate. Invalid existing objects
-    /// are refused and left untouched; the candidate remains in tmp for owner-scoped recovery.
+    /// Sync the temporary file and hard-link it into place without replacing anything, syncing
+    /// every directory touched. If the name exists, verify the existing file before deleting
+    /// the new one. An invalid existing file is refused and left alone, and the new file stays
+    /// in tmp.
     fn install(&self, tmp: TmpFile, h: Hash, unwrap: Option<Unwrap>) -> Result<Hash> {
         self.install_with(tmp, h, |h| self.validate_existing(h, unwrap))
     }
 
-    // The installation protocol is shared; the caller supplies its existing-object
-    // validation policy and error type. A refusal keeps the completed candidate.
+    // `validate` checks an existing file of the same name; on error the new file stays in tmp.
     fn install_with<E: From<Error>>(&self, tmp: TmpFile, h: Hash,
         mut validate: impl FnMut(Hash) -> std::result::Result<(), E>) -> std::result::Result<Hash, E> {
         tmp.file.sync_all().map_err(Error::Io)?;
@@ -687,7 +689,7 @@ impl Store {
         Ok(h)
     }
 
-    // Refuse rather than overwrite an invalid destination. Failed candidates remain in tmp.
+    // Refuse rather than overwrite an invalid existing file.
     fn validate_existing(&self, h: Hash, unwrap: Option<Unwrap>) -> Result<()> {
         let verified = match self.kind(&h)? {
             Kind::Sealed { .. } => self.verify_with(&h, unwrap.ok_or(Error::Locked(h))?)?,
@@ -760,16 +762,17 @@ impl Store {
     // ---- plain ----
 
     /// Store bytes as a plain seekable blob named by their BLAKE3; durable when it returns.
-    /// This convenience API has no cancellation contract; use `put_plain_checked` for polling.
+    /// Cannot be cancelled; use `put_plain_checked` for that.
     pub fn put(&self, bytes: impl Read, level: i32) -> Result<Hash> {
         let (tmp, h) = self.write_plain(bytes, level)?;
         self.install(tmp, h, None)
     }
 
-    /// Plain acquisition with caller cancellation/deadline polling between input reads,
-    /// before/after each frame compression, and throughout duplicate verification. Existing nonplain
-    /// encodings refuse in this explicitly plain path. Blocking IO/compression is not preempted.
-    /// On failed existing-object validation, neither that object nor its candidate is removed.
+    /// Like `put`, but calls `check` between input reads, around each frame compression and
+    /// while verifying an existing copy, so the caller can cancel or enforce a deadline. A
+    /// blocking read or one compression call is not interrupted. An existing delta or sealed
+    /// blob of the same name is refused. If the existing copy fails verification, neither it
+    /// nor the new file is removed.
     pub fn put_plain_checked<E: From<Error>>(&self, bytes: impl Read, level: i32,
         mut check: impl FnMut() -> std::result::Result<(), E>) -> std::result::Result<Hash, E> {
         let (tmp, h) = self.write_plain_checked(bytes, level, &mut check)?;
@@ -838,8 +841,8 @@ impl Store {
         Ok((tmp, Hash(*name.finalize().as_bytes())))
     }
 
-    /// Check the supported table layout and every indexed known-size/checksummed header.
-    /// Actual decoded lengths and exact compressed extents are checked by the streaming core.
+    /// Check the seek table layout and every frame header it lists. Decoded lengths and
+    /// compressed extents are checked later, while streaming.
     fn seek_table_checked<E: From<Error>>(v: &View, h: Hash,
         mut check: impl FnMut() -> std::result::Result<(), E>) -> std::result::Result<Vec<(u64, u32, u32)>, E> {
         let bad = |what: &str| E::from(Error::Corrupt { blob: h, what: what.to_string() });
@@ -883,8 +886,8 @@ impl Store {
             if c == 0 || end > v.len - tlen {
                 return Err(bad("frame extent outside data region"));
             }
-            // A prior frame's length controls this frame's logical coordinate.
-            // Check every indexed frame header, not only the selected frames.
+            // Earlier frames' lengths set this frame's offset, so every header is checked,
+            // not only the frames a range needs.
             let head = v.at(off, (c as u64).min(18))
                 .map_err(|_| bad("unreadable frame header"))?;
             // Standard frame magic, no dictionary, and a content checksum are required.
@@ -921,8 +924,8 @@ impl Store {
         loop {
             (visit.borrow_mut())(&[])?;
             let read = decoder.read(&mut buf);
-            // io::Read cannot carry E; recover the original caller failure before
-            // classifying decoder/checksum errors. Both cells live only for this call.
+            // io::Read cannot carry E; return the caller's error before treating a read
+            // failure as corruption.
             if let Some(error) = stopped.borrow_mut().take() {
                 return Err(error);
             }
@@ -1272,10 +1275,10 @@ impl Store {
         Ok(out)
     }
 
-    /// A stateless byte range. Plain input checks every frame/extent with bounded streaming;
-    /// sealed input checks selected AEAD tags. This does not check whole-object expected
-    /// identity. Use Reader for one verified representation and bounded frame reuse across
-    /// repeated plain ranges. Deltas are not seekable.
+    /// A byte range. For a plain blob this decodes and checks every frame, so it is slow for
+    /// repeated small reads; for a sealed blob it checks only the needed frames' AEAD tags.
+    /// It does not check the whole blob against its name; `Reader` does, once. Deltas are not
+    /// seekable.
     pub fn read_range(&self, h: &Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
         self.range(h, offset, len, None)
     }
@@ -1314,12 +1317,10 @@ impl Store {
 
     // ---- verify and delete ----
 
-    /// Check a plain object's expected name and length from one opened representation.
-    /// The callback runs before metadata/frame work and on at most 64 KiB decoded chunks;
-    /// it can enforce cancellation/deadlines and must not publish provisional bytes before
-    /// success. Memory consists of the seek table, zstd window, one bounded decoded frame
-    /// and fixed IO buffers. Table metadata grows with frame count; no whole-content buffer
-    /// is created. Delta/sealed encodings are explicitly refused.
+    /// Check a plain blob's name and length. `visit` runs before reading metadata and on each
+    /// decoded chunk of at most 64 KiB, so it can cancel; it must not pass chunks on before
+    /// this returns `Ok`. Memory is the seek table, the zstd window, one decoded frame and
+    /// fixed buffers. Delta and sealed blobs are refused.
     pub fn verify_plain<E: From<Error>>(&self, h: &Hash, expected_len: u64,
         visit: impl FnMut(&[u8]) -> std::result::Result<(), E>) -> std::result::Result<VerificationStats, E> {
         self.open_plain(h, Some(expected_len), visit).map(|(_, stats)| stats)
@@ -1452,11 +1453,10 @@ pub enum Durability {
     Filesystem,
 }
 
-/// A durability batch, not an atomic visibility transaction. New candidates are temporary
-/// before commit starts. Commit installs names individually; an error may leave an installed
-/// subset and temporary candidates, and promises neither all-or-none effects nor durability
-/// of that subset. Success makes all returned names/bytes durable. Retry the same puts safely;
-/// callers publish domain references only after every required dependency succeeds.
+/// Puts that share syncs. Not atomic: `commit` installs names one at a time, and on error
+/// some may be installed (not necessarily durable) and others left in tmp. After `Ok`, every
+/// returned name is durable. Retrying the same puts is safe. Record references to the blobs
+/// only after the commit succeeds.
 pub struct Batch<'a> {
     store: &'a Store,
     durability: Durability,
@@ -1472,7 +1472,7 @@ fn syncfs(f: &File) -> io::Result<()> {
 }
 
 impl Batch<'_> {
-    /// Prepare a temporary candidate and return its name; custody/durability require commit.
+    /// Write a temporary file and return its name; the blob exists only after `commit`.
     pub fn put(&mut self, bytes: impl Read, level: i32) -> Result<Hash> {
         let (tmp, h) = self.store.write_plain(bytes, level)?;
         self.pending.push((tmp, h));
