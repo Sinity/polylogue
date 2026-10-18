@@ -1,5 +1,5 @@
-//! One worker-hashed, admitted immutable chunk. No payload hashing occurs in
-//! its owning write transaction; seal_in retains the existing dedup/lease rules.
+//! A single-chunk JSON value hashed by the worker before the write
+//! transaction; `install_in` stores and seals it with the usual dedup rules.
 use super::*;
 pub(crate) struct Prepared {
     bytes: Vec<u8>,
