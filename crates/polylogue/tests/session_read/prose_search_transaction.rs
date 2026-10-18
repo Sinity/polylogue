@@ -17,7 +17,7 @@ fn selected(world: &mut World) -> [polylogue_store::contributions::MessageView; 
     let imported = wait_import(world, &source, "01900000-0000-7000-8000-000000000901", "20");
     assert_eq!(imported.status.code(), Some(0), "{imported:?}");
     let receipt: Value = serde_json::from_slice(&imported.stdout).unwrap();
-    world.read(&reference(), receipt["retained"]["id"].as_str().unwrap(), 2);
+    world.read(&reference(), receipt["input"]["id"].as_str().unwrap(), 2);
     let mut child = world.child.take().unwrap();
     assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGINT) }, 0);
     assert!(child.0.wait().unwrap().success());

@@ -8,7 +8,7 @@ use crate::{
 };
 use polylogue_model::{
     BlobHash,
-    settlement::{SourceRowBasis, SourceRowScope, SourceRowState, SourceRows},
+    source_rows::{ParsedFrom, SourceRowScope, SourceRowState, SourceRows},
 };
 use polylogue_store::parser_state::Phase;
 use polylogue_store::{
@@ -26,9 +26,9 @@ pub struct Receipt {
     pub rows: SourceRows,
 }
 impl Receipt {
-    pub fn validate(&self, token: &Token, basis: &SourceRowBasis) -> Result<()> {
+    pub fn validate(&self, token: &Token, basis: &ParsedFrom) -> Result<()> {
         if &self.predecessor != token
-            || &self.rows.basis != basis
+            || &self.rows.parsed_from != basis
             || self.rows.scope
                 != if basis.original_hash.is_some() {
                     SourceRowScope::ImportedSourceRows
@@ -44,7 +44,7 @@ impl Receipt {
     fn validate_published(
         &self,
         head: &polylogue_store::parser_state::Head,
-        basis: &SourceRowBasis,
+        basis: &ParsedFrom,
     ) -> Result<()> {
         self.validate(&head.token, basis)?;
         let counts = [
@@ -57,7 +57,7 @@ impl Receipt {
         let missing =
             self.unsupported_effects || head.counts.unrecognized > 0 || head.counts.undecodable > 0;
         let state = match &self.rows.state {
-            SourceRowState::Settled => {
+            SourceRowState::Complete => {
                 head.status == Phase::Done && !head.finalization_pending && !missing
             }
             SourceRowState::Unavailable {
@@ -86,8 +86,8 @@ impl Receipt {
         Ok(())
     }
 }
-pub fn computed_from(input: &StoredSource) -> SourceRowBasis {
-    SourceRowBasis {
+pub fn computed_from(input: &StoredSource) -> ParsedFrom {
+    ParsedFrom {
         input: input.input.id.clone(),
         original_hash: input.original_hash(),
         chain: input.input.chain,
@@ -104,9 +104,9 @@ pub fn pending(input: &StoredSource, obligation: &str) -> SourceRows {
         } else {
             SourceRowScope::ImportedSourceRows
         },
-        basis: computed_from(input),
+        parsed_from: computed_from(input),
         state: SourceRowState::Pending {
-            obligations: vec![obligation.into()],
+            pending_work: vec![obligation.into()],
         },
     }
 }
@@ -130,7 +130,7 @@ pub(crate) fn decode(
     input: &StoredSource,
 ) -> Result<Receipt> {
     let receipt: Receipt = serde_json::from_slice(value)
-        .map_err(|_| Error::Invariant("invalid source row settlement receipt".into()))?;
+        .map_err(|_| Error::Invariant("invalid stored source-row receipt".into()))?;
     receipt.validate_published(head, &computed_from(input))?;
     Ok(receipt)
 }
@@ -385,7 +385,7 @@ impl Audit {
             notes.push("source has undecodable complete records".into());
         }
         let state = if notes.is_empty() {
-            SourceRowState::Settled
+            SourceRowState::Complete
         } else {
             SourceRowState::Unavailable {
                 usable_result: self.usable,
@@ -409,7 +409,7 @@ impl Audit {
                 } else {
                     SourceRowScope::ImportedSourceRows
                 },
-                basis: computed_from(input),
+                parsed_from: computed_from(input),
                 state,
             },
         }))

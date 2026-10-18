@@ -120,7 +120,7 @@ pub struct Progress {
     pub failure: Option<String>,
     pub recovery_error: Option<String>,
     pub active: bool,
-    pub source_rows: polylogue_model::settlement::SourceRows,
+    pub source_rows: polylogue_model::source_rows::SourceRows,
 }
 #[derive(Debug)]
 pub struct ConfiguredImport {
@@ -1237,7 +1237,7 @@ impl Actor {
                     &bytes,
                     matches!(
                         receipt.rows.state,
-                        polylogue_model::settlement::SourceRowState::Settled
+                        polylogue_model::source_rows::SourceRowState::Complete
                     ),
                 )?;
             }
@@ -1285,7 +1285,7 @@ impl Actor {
             } else if let Some(reason) = &failure {
                 // A failed install may still hold unsealed work. Report it as
                 // unavailable, never as a waiting tail.
-                source_rows.state = polylogue_model::settlement::SourceRowState::Unavailable {
+                source_rows.state = polylogue_model::source_rows::SourceRowState::Unavailable {
                     usable_result: self.writer.source_has_tool_items(&input.input)?,
                     notes: vec![reason.clone()],
                     record_errors: head.counts.undecodable,

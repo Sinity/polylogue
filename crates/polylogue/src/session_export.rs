@@ -316,7 +316,7 @@ mod tests {
     }
     #[test]
     fn same_document_qualification_is_preserved_without_single_frame_limit() {
-        let result = json!({"outcome":"degraded","notes":["qualified scope"],"unknown":{},"settlement":{"basis":"x".repeat(131073)}});
+        let result = json!({"outcome":"degraded","notes":["qualified scope"],"unknown":{},"completion":{"basis":"x".repeat(131073)}});
         let document = json!({"format":"polylogue-session","version":1,"result":result,"session":{"id":"test:../a:b/λ%"},"messages":[]});
         let (work, reply) = exchange(document.clone(), end(), false, false);
         assert_eq!(reply["outcome"], "degraded", "{reply}");

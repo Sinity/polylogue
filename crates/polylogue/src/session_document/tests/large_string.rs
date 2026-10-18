@@ -42,7 +42,7 @@ fn codex_large_malformed_arguments_remain_exact_string_with_raw_origin() {
         if !p.active
             && !matches!(
                 p.source_rows.state,
-                polylogue_model::settlement::SourceRowState::Pending { .. }
+                polylogue_model::source_rows::SourceRowState::Pending { .. }
             )
         {
             break;

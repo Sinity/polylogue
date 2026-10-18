@@ -262,7 +262,7 @@ pub fn execute(
         "view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()},
         "defaults":{"exclude_subagents":plan.kind.is_none()&&!plan.all_kinds&&plan.id.is_none()},
         "missing":notes,"notes":notes,"unknown":{"record_errors":status.record_errors,"pending_inputs":status.pending_inputs,"unavailable_inputs":status.unavailable_inputs,"unresolved_inputs":status.unresolved_inputs,"unknown_authors":unknown_authors,"pending_messages":pending,"unresolved_message_order":unresolved_order},
-        "settlement":status.result(catalog)["settlement"],"searched":{"known_sessions":sessions,"candidate_sessions":candidate_count,"selected_messages":known_messages,"prose_messages":corpus.as_ref().map(ProseSearch::documents),"scope":"pinned input and selected body catalog"}}),
+        "completion":status.result(catalog)["completion"],"searched":{"known_sessions":sessions,"candidate_sessions":candidate_count,"selected_messages":known_messages,"prose_messages":corpus.as_ref().map(ProseSearch::documents),"scope":"pinned input and selected body catalog"}}),
     )
 }
 

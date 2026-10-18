@@ -12,13 +12,13 @@ use std::{
 };
 const BINARY: &str = env!("CARGO_BIN_EXE_polylogue");
 fn receipt(settled: bool) -> Value {
-    let mut value = json!({"outcome":"ok","retained":{"id":"synthetic-source","chain":1,"length":7},"source_rows":{"scope":"imported_source_rows","basis":{"input":"synthetic-source","original_hash":polylogue_model::BlobHash::of(b"raw"),"chain":1,"revision":1,"length":7,"parser_version":1,"interpretation":polylogue_model::BlobHash::of(b"basis")},"state":"pending","obligations":["canonical source rows"]}});
+    let mut value = json!({"outcome":"ok","input":{"id":"synthetic-source","chain":1,"length":7},"source_rows":{"scope":"imported_source_rows","parsed_from":{"input":"synthetic-source","original_hash":polylogue_model::BlobHash::of(b"raw"),"chain":1,"revision":1,"length":7,"parser_version":1,"interpretation":polylogue_model::BlobHash::of(b"basis")},"state":"pending","pending_work":["canonical source rows"]}});
     if settled {
-        value["source_rows"]["state"] = json!("settled");
+        value["source_rows"]["state"] = json!("complete");
         value["source_rows"]
             .as_object_mut()
             .unwrap()
-            .remove("obligations");
+            .remove("pending_work");
     }
     value
 }
@@ -195,10 +195,10 @@ fn exercise(mode: Peer) {
             Some(if success { 0 } else { 7 }),
             "{mode:?}: {value}"
         );
-        assert_eq!(value["retained"], receipt(false)["retained"]);
+        assert_eq!(value["input"], receipt(false)["input"]);
         assert_eq!(
-            value["source_rows"]["basis"],
-            receipt(false)["source_rows"]["basis"]
+            value["source_rows"]["parsed_from"],
+            receipt(false)["source_rows"]["parsed_from"]
         );
         assert_eq!(value["request_id"], "01900000-0000-7000-8000-000000000599");
         assert_eq!(value["seen_at"], 17);

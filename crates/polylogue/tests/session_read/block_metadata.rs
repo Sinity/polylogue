@@ -8,7 +8,8 @@ fn wait_selected(world: &World, input: &str) {
         let p = world.progress(input);
         if p["source_rows"]["state"] != "pending" {
             assert!(
-                p["source_rows"]["state"] == "settled" || p["source_rows"]["usable_result"] == true,
+                p["source_rows"]["state"] == "complete"
+                    || p["source_rows"]["usable_result"] == true,
                 "{p}"
             );
             return;
@@ -54,7 +55,7 @@ fn claude_block_metadata_keeps_tool_data_and_other_attrs_in_cli_export_and_bound
     );
     let path = world.input("metadata.jsonl", raw.as_bytes());
     let receipt = world.import(&path, "01900000-0000-7000-8000-000000009601");
-    wait_selected(&world, receipt["retained"]["id"].as_str().unwrap());
+    wait_selected(&world, receipt["input"]["id"].as_str().unwrap());
     let reference = reference();
     let out = world.cli(&[&reference, "read", "--format", "json"]);
     assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
@@ -161,14 +162,14 @@ fn codex_thinking_payload_and_extra_named_data_coexist_and_unknown_path_hint_is_
     let complete = json!({"type":"user","uuid":"ready","sessionId":SID,"message":{"role":"user","content":"Known prefix"}}).to_string()+"\n";
     let complete_path = pending_world.input("complete.jsonl", complete.as_bytes());
     let ready = pending_world.import(&complete_path, "01900000-0000-7000-8000-000000009602");
-    wait_selected(&pending_world, ready["retained"]["id"].as_str().unwrap());
+    wait_selected(&pending_world, ready["input"]["id"].as_str().unwrap());
     let mut partial_bytes = complete.into_bytes();
     partial_bytes.extend_from_slice(b"{\"type\":\"user\",\"uuid\":\"incomplete\"");
     let partial = pending_world.input("partial.jsonl", &partial_bytes);
     let receipt = pending_world.import(&partial, "01900000-0000-7000-8000-000000009603");
     let until = Instant::now() + WAIT;
     loop {
-        let progress = pending_world.progress(receipt["retained"]["id"].as_str().unwrap());
+        let progress = pending_world.progress(receipt["input"]["id"].as_str().unwrap());
         if progress["parser"]["status"] == "waiting_tail" {
             break;
         }

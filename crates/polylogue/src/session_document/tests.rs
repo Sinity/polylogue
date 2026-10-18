@@ -98,7 +98,7 @@ impl World {
         loop {
             let progress = self.progress(input);
             assert!(progress.failure.is_none(), "{:?}", progress.failure);
-            assert_eq!(progress.source_rows.basis.input, input.id);
+            assert_eq!(progress.source_rows.parsed_from.input, input.id);
             if native_ids.iter().all(|native| {
                 self.reader
                     .selected_message(&MessageId::new(self.session(), native).unwrap())
@@ -109,7 +109,7 @@ impl World {
                     progress.parser.unwrap().finalization_pending,
                     !matches!(
                         progress.source_rows.state,
-                        polylogue_model::settlement::SourceRowState::Settled
+                        polylogue_model::source_rows::SourceRowState::Complete
                     )
                 );
                 return;
@@ -140,12 +140,12 @@ impl World {
             let done = if unavailable {
                 matches!(
                     progress.source_rows.state,
-                    polylogue_model::settlement::SourceRowState::Unavailable { .. }
+                    polylogue_model::source_rows::SourceRowState::Unavailable { .. }
                 )
             } else {
                 matches!(
                     progress.source_rows.state,
-                    polylogue_model::settlement::SourceRowState::Settled
+                    polylogue_model::source_rows::SourceRowState::Complete
                 )
             };
             if done {
@@ -203,7 +203,7 @@ fn retained_morrow_document_preserves_twelve_messages_payloads_and_exact_origins
         SessionCoverage::KnownCatalogOnly
     ));
     assert_eq!(document["result"]["outcome"], "ok");
-    assert_eq!(document["result"]["settlement"]["state"], "settled");
+    assert_eq!(document["result"]["completion"]["state"], "complete");
     assert_eq!(document["session"]["title"], "Project skeleton");
     assert_eq!(document["session"]["display_title"], "Project skeleton");
     assert_eq!(document["session"]["title_source"], "provider");
@@ -331,7 +331,10 @@ fn retained_morrow_document_preserves_twelve_messages_payloads_and_exact_origins
     );
     assert_eq!(result["data"]["stderr"], "");
     assert_eq!(result["data"]["interrupted"], false);
-    assert_eq!(world.progress(&input).source_rows.basis.input, input.id);
+    assert_eq!(
+        world.progress(&input).source_rows.parsed_from.input,
+        input.id
+    );
 }
 
 fn simple(uuid: &str, content: Value) -> Vec<u8> {
@@ -399,7 +402,7 @@ fn known_pending_member_refuses_before_emitting_a_complete_looking_subset() {
     let deadline = Instant::now() + WAIT;
     loop {
         let p = world.progress(&input);
-        assert_eq!(p.source_rows.basis.input, input.id);
+        assert_eq!(p.source_rows.parsed_from.input, input.id);
         if p.failure.is_some() {
             break;
         }
@@ -481,7 +484,7 @@ fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_relea
     let until = Instant::now() + WAIT;
     while !matches!(
         world.progress(&input).source_rows.state,
-        polylogue_model::settlement::SourceRowState::Settled
+        polylogue_model::source_rows::SourceRowState::Complete
     ) {
         assert!(Instant::now() < until);
         thread::sleep(POLL);
@@ -500,7 +503,7 @@ fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_relea
     let until = Instant::now() + WAIT;
     while !matches!(
         world.progress(&later).source_rows.state,
-        polylogue_model::settlement::SourceRowState::Unavailable { .. }
+        polylogue_model::source_rows::SourceRowState::Unavailable { .. }
     ) {
         assert!(Instant::now() < until);
         thread::sleep(POLL);
@@ -544,7 +547,7 @@ fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_relea
     // Read cancellation is not owner cancellation or a writer gate.
     assert!(matches!(
         world.progress(&input).source_rows.state,
-        polylogue_model::settlement::SourceRowState::Settled
+        polylogue_model::source_rows::SourceRowState::Complete
     ));
     assert_eq!(world.document().0["result"]["unknown"]["record_errors"], 1);
 }
@@ -596,10 +599,10 @@ fn exact_selection_can_settle_while_document_keeps_possible_foreign_link_work_pe
     .unwrap();
     assert_eq!(selected["outcome"], "ok");
     assert_eq!(selected["up_to_date"], false);
-    assert_eq!(selected["settlement"]["state"], "settled");
+    assert_eq!(selected["completion"]["state"], "complete");
     let fresh = world.document().0;
     assert_eq!(fresh["result"]["outcome"], "degraded");
-    assert_eq!(fresh["result"]["settlement"]["state"], "pending");
+    assert_eq!(fresh["result"]["completion"]["state"], "pending");
     assert_eq!(
         fresh["messages"],
         serde_json::from_slice::<Value>(&old).unwrap()["messages"]

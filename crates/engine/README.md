@@ -39,7 +39,7 @@ writer only applies finished results.
   beginning.
 - `session_status`: for one Session read, walks the stored-input catalog to
   find the contributing inputs and reports whether they are processed:
-  settled, pending, unavailable or unsupported. Membership comes from the
+  complete, pending, unavailable or unsupported. Membership comes from the
   provider sources, not from matching Message rows. Record error counts use
   unique record starts, so replays cannot double-count.
 - `session_query`: typed Session listing and prose search over the same pinned

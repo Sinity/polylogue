@@ -21,7 +21,7 @@ fn import(world: &World, records: Vec<Value>, messages: usize) -> (Value, Value)
     let receipt = world.import(&path, "01900000-0000-7000-8000-000000009101");
     let doc = world.read(
         &reference(),
-        receipt["retained"]["id"].as_str().unwrap(),
+        receipt["input"]["id"].as_str().unwrap(),
         messages,
     );
     (receipt, doc)

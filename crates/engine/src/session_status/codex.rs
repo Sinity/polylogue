@@ -187,11 +187,11 @@ pub(super) fn check(
                 );
             }
             match receipt.rows.state {
-                polylogue_model::settlement::SourceRowState::Settled => {}
-                polylogue_model::settlement::SourceRowState::Pending { .. } => {
+                polylogue_model::source_rows::SourceRowState::Complete => {}
+                polylogue_model::source_rows::SourceRowState::Pending { .. } => {
                     add(&mut result.pending_inputs, 1)?;
                 }
-                polylogue_model::settlement::SourceRowState::Unavailable {
+                polylogue_model::source_rows::SourceRowState::Unavailable {
                     usable_result, ..
                 } => {
                     add(&mut result.unavailable_inputs, 1)?;

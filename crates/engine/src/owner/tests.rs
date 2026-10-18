@@ -142,7 +142,7 @@ fn declared_claude_context_replays_without_provider_and_remains_pending() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let p = progress(&service.handle(), &retained.id);
-        assert_eq!(p.source_rows.basis.input, p.input.id);
+        assert_eq!(p.source_rows.parsed_from.input, p.input.id);
         if let Some(head) = p.parser
             && head.parsed_upto == retained.length
         {
@@ -151,7 +151,7 @@ fn declared_claude_context_replays_without_provider_and_remains_pending() {
                 head.finalization_pending,
                 !matches!(
                     p.source_rows.state,
-                    polylogue_model::settlement::SourceRowState::Settled
+                    polylogue_model::source_rows::SourceRowState::Complete
                 )
             );
             assert_ne!(head.status, Phase::Done);
@@ -182,7 +182,7 @@ fn declared_claude_context_replays_without_provider_and_remains_pending() {
     assert_eq!(
         progress(&service.handle(), &retained.id)
             .source_rows
-            .basis
+            .parsed_from
             .input,
         retained.id
     );
@@ -228,7 +228,7 @@ fn claude_actor_selects_each_pending_locator_and_replays_after_provider_loss() {
     loop {
         let p = progress(&service.handle(), &retained.id);
         assert!(p.failure.is_none(), "{:?}", p.failure);
-        assert_eq!(p.source_rows.basis.input, p.input.id);
+        assert_eq!(p.source_rows.parsed_from.input, p.input.id);
         let selected = ids
             .iter()
             .map(|id| reader.selected_message(id).unwrap())
@@ -265,7 +265,7 @@ fn claude_actor_selects_each_pending_locator_and_replays_after_provider_loss() {
     assert_eq!(
         progress(&service.handle(), &retained.id)
             .source_rows
-            .basis
+            .parsed_from
             .input,
         retained.id
     );
@@ -301,7 +301,7 @@ fn actor_selects_a_source_message_but_history_stays_unfinished() {
     loop {
         let p = progress(&service.handle(), &retained.id);
         assert!(p.failure.is_none(), "{:?}", p.failure);
-        assert_eq!(p.source_rows.basis.input, p.input.id);
+        assert_eq!(p.source_rows.parsed_from.input, p.input.id);
         if let Some(view) = reader.selected_message(&message).unwrap() {
             let block = view
                 .block(polylogue_model::BlockSlot::Item(0))
@@ -313,7 +313,7 @@ fn actor_selects_a_source_message_but_history_stays_unfinished() {
                 p.parser.unwrap().finalization_pending,
                 !matches!(
                     p.source_rows.state,
-                    polylogue_model::settlement::SourceRowState::Settled
+                    polylogue_model::source_rows::SourceRowState::Complete
                 )
             );
             break;
@@ -370,10 +370,10 @@ fn stored_receipt_replays_before_missing_source_and_recovers_provider_state() {
         head.finalization_pending,
         !matches!(
             p.source_rows.state,
-            polylogue_model::settlement::SourceRowState::Settled
+            polylogue_model::source_rows::SourceRowState::Complete
         )
     );
-    assert_eq!(p.source_rows.basis.input, p.input.id);
+    assert_eq!(p.source_rows.parsed_from.input, p.input.id);
     service.shutdown().unwrap();
 }
 #[test]
@@ -410,10 +410,10 @@ fn partial_tail_is_stable_across_restart_and_retry() {
             head.finalization_pending,
             !matches!(
                 p.source_rows.state,
-                polylogue_model::settlement::SourceRowState::Settled
+                polylogue_model::source_rows::SourceRowState::Complete
             )
         );
-        assert_eq!(p.source_rows.basis.input, p.input.id);
+        assert_eq!(p.source_rows.parsed_from.input, p.input.id);
     }
     service.shutdown().unwrap();
 }
@@ -442,7 +442,7 @@ fn oversized_logical_record_is_an_inspectable_admission_failure() {
             assert_eq!(head.parsed_upto, 0);
             assert_eq!(head.counts.framed, 0);
             assert_ne!(head.status, Phase::Done);
-            assert_eq!(p.source_rows.basis.input, p.input.id);
+            assert_eq!(p.source_rows.parsed_from.input, p.input.id);
             break;
         }
         assert!(Instant::now() < deadline, "missing admission failure");

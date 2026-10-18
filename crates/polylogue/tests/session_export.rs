@@ -149,10 +149,10 @@ fn morrow_read_and_export_are_identical_and_atomic_replacement_removes_previous_
         manifest["view"],
         format!(
             "{}:{}",
-            document["result"]["settlement"]["serving_view"]["index_generation"]
+            document["result"]["completion"]["serving_view"]["index_generation"]
                 .as_str()
                 .unwrap(),
-            document["result"]["settlement"]["serving_view"]["index_counter"]
+            document["result"]["completion"]["serving_view"]["index_counter"]
         )
     );
     assert!(!manifest.as_object().unwrap().contains_key("recovery"));

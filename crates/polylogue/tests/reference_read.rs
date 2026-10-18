@@ -216,7 +216,7 @@ impl World {
                 assert_eq!(progress["source_rows"]["scope"], "imported_source_rows");
                 assert_eq!(
                     progress["parser"]["finalization_pending"],
-                    progress["source_rows"]["state"] != "settled"
+                    progress["source_rows"]["state"] != "complete"
                 );
                 return progress;
             }
@@ -308,18 +308,18 @@ fn retained_unicode_reference_reads_exactly_but_coverage_and_search_stay_incompl
         &input("reference-session:opaque", "assistant-native:opaque", &text),
     );
     let receipt = world.import(&path, "01900000-0000-7000-8000-000000000101");
-    let id = receipt["retained"]["id"].as_str().unwrap();
+    let id = receipt["input"]["id"].as_str().unwrap();
     fs::remove_file(&path).unwrap();
     let reference = reference("reference-session:opaque", "assistant-native:opaque");
     let expected = expected("reference-session:opaque", "assistant-native:opaque", &text);
     let progress = world.wait_read(&reference, &expected, id);
     assert_eq!(
         progress["parser"]["parsed_upto"],
-        receipt["retained"]["length"]
+        receipt["input"]["length"]
     );
     assert_eq!(
         progress["parser"]["finalization_pending"],
-        progress["source_rows"]["state"] != "settled"
+        progress["source_rows"]["state"] != "complete"
     );
     let default = world.cli(&[&reference, "read"]);
     assert_eq!(default.status.code(), Some(5));
@@ -336,7 +336,7 @@ fn selected_read_and_receipt_survive_peer_work_kill_restart_and_provider_removal
     );
     let request = "01900000-0000-7000-8000-000000000102";
     let receipt = world.import(&first, request);
-    let id = receipt["retained"]["id"].as_str().unwrap().to_owned();
+    let id = receipt["input"]["id"].as_str().unwrap().to_owned();
     fs::remove_file(&first).unwrap();
     let reference = reference("stable-session", "stable-message");
     let expected = expected("stable-session", "stable-message", text);
@@ -353,7 +353,7 @@ fn selected_read_and_receipt_survive_peer_work_kill_restart_and_provider_removal
     assert!(large.lines().all(|line| line.len() < 65536));
     let second = world.input("peer.jsonl", large.as_bytes());
     let peer = world.import(&second, "01900000-0000-7000-8000-000000000103");
-    let peer_id = peer["retained"]["id"].as_str().unwrap().to_owned();
+    let peer_id = peer["input"]["id"].as_str().unwrap().to_owned();
     fs::remove_file(&second).unwrap();
     let deadline = Instant::now() + WAIT;
     let unfinished = loop {
@@ -384,7 +384,7 @@ fn selected_read_and_receipt_survive_peer_work_kill_restart_and_provider_removal
     world.restart();
     world.wait_read(&reference, &expected, &id);
     let replay = world.import(&first, request);
-    assert_eq!(replay["retained"], receipt["retained"]);
+    assert_eq!(replay["input"], receipt["input"]);
     assert_eq!(replay["request_id"], receipt["request_id"]);
     assert_eq!(replay["seen_at"], receipt["seen_at"]);
     let resumed = world.healthy(&peer_id);
@@ -398,7 +398,7 @@ fn missing_call_id_message_reference_is_an_explicit_failure() {
     let bytes=[line(json!({"type":"session_meta","payload":{"id":"unsupported-session","source":"cli","cwd":"/synthetic"}})),line(json!({"type":"response_item","payload":{"type":"function_call","id":"unsupported-native","name":"synthetic-tool","arguments":"{}"}}))].concat();
     let path = world.input("unsupported.jsonl", bytes.as_bytes());
     let receipt = world.import(&path, "01900000-0000-7000-8000-000000000104");
-    let id = receipt["retained"]["id"].as_str().unwrap();
+    let id = receipt["input"]["id"].as_str().unwrap();
     fs::remove_file(path).unwrap();
     let deadline = Instant::now() + WAIT;
     loop {
@@ -407,7 +407,7 @@ fn missing_call_id_message_reference_is_an_explicit_failure() {
             assert_eq!(progress["source_rows"]["scope"], "imported_source_rows");
             assert_eq!(
                 progress["parser"]["finalization_pending"],
-                progress["source_rows"]["state"] != "settled"
+                progress["source_rows"]["state"] != "complete"
             );
             break;
         }
@@ -481,7 +481,7 @@ fn daemon_masks_credentials_before_both_cli_and_socket_text_frames() {
         let path = world.work.path().join("provider.jsonl");
         fs::write(&path, &original).unwrap();
         let receipt = world.import(&path, "019d59d0-0000-7000-8000-000000000003");
-        let id = receipt["retained"]["id"].as_str().unwrap();
+        let id = receipt["input"]["id"].as_str().unwrap();
         let reference = reference(session, "masked");
         let deadline = Instant::now() + WAIT;
         let output = loop {

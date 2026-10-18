@@ -74,7 +74,7 @@ fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplet
         "01900000-0000-7000-8000-000000000001",
     );
     assert_eq!(retained["outcome"], "ok", "{retained}");
-    let id = retained["retained"]["id"].as_str().unwrap().to_owned();
+    let id = retained["input"]["id"].as_str().unwrap().to_owned();
     let unfinished = wait(running.socket(), &id, |v| {
         v["parser"]["parsed_upto"]
             .as_u64()
@@ -105,7 +105,7 @@ fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplet
         "01900000-0000-7000-8000-000000000001",
     );
     assert_eq!(retry["outcome"], "ok", "{retry}");
-    assert_eq!(retry["retained"], retained["retained"]);
+    assert_eq!(retry["input"], retained["input"]);
     let eof = wait(running.socket(), &id, |v| {
         v["parser"]["status"] == "finalizing"
     });
@@ -113,7 +113,7 @@ fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplet
     assert_eq!(eof["parser"]["records"]["framed"], 10001);
     assert_eq!(
         eof["parser"]["finalization_pending"],
-        eof["source_rows"]["state"] != "settled"
+        eof["source_rows"]["state"] != "complete"
     );
     assert_eq!(eof["source_rows"]["scope"], "imported_source_rows");
     let search = request_value(
@@ -148,7 +148,7 @@ fn public_partial_tail_restart_waits_without_advancing_or_claiming_done() {
         "01900000-0000-7000-8000-000000000003",
     );
     assert_eq!(retained["outcome"], "ok", "{retained}");
-    let id = retained["retained"]["id"].as_str().unwrap().to_owned();
+    let id = retained["input"]["id"].as_str().unwrap().to_owned();
     let before = wait(running.socket(), &id, |v| {
         v["parser"]["status"] == "waiting_tail"
     });
@@ -223,7 +223,7 @@ fn ignored_state_turns_keep_peers_usable_and_resume_exact_accounting() {
         "01900000-0000-7000-8000-000000000021",
     );
     assert_eq!(retained["outcome"], "ok", "{retained}");
-    let id = retained["retained"]["id"].as_str().unwrap().to_owned();
+    let id = retained["input"]["id"].as_str().unwrap().to_owned();
     let prefix = wait(running.socket(), &id, |v| {
         v["parser"]["records"]["ignored"]
             .as_u64()

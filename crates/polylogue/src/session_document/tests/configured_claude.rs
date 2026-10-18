@@ -178,7 +178,7 @@ fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() 
         (q, result)
     }
     let (q, result) = qualify(&world);
-    assert_eq!(result["settlement"]["settled_through"]["inputs_total"], 2);
+    assert_eq!(result["completion"]["computed_from"]["inputs_total"], 2);
     assert!(
         !q.complete(),
         "incoming relationship and partial suffix remain qualified"
@@ -191,7 +191,7 @@ fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() 
     let second = world.import(&second, "second-main");
     world.wait_rows(&second, false);
     let (mut q, result) = qualify(&world);
-    assert_eq!(result["settlement"]["settled_through"]["inputs_total"], 3);
+    assert_eq!(result["completion"]["computed_from"]["inputs_total"], 3);
     q.contributors.truncate(1);
     assert!(
         !q.member_rows_readable(),

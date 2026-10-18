@@ -1,6 +1,6 @@
 use super::*;
-fn basis(i: usize) -> SourceRowBasis {
-    SourceRowBasis {
+fn basis(i: usize) -> ParsedFrom {
+    ParsedFrom {
         input: format!("synthetic-{i}"),
         original_hash: None,
         chain: 1,

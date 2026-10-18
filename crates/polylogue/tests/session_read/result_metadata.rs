@@ -15,8 +15,8 @@ fn sidecar_and_reference_content_have_distinct_exact_public_data_leaves_and_orig
     let receipt = w.import(&path, "01900000-0000-7000-8000-000000009801");
     let until = Instant::now() + WAIT;
     loop {
-        let p = w.progress(receipt["retained"]["id"].as_str().unwrap());
-        if p["source_rows"]["state"] == "settled" {
+        let p = w.progress(receipt["input"]["id"].as_str().unwrap());
+        if p["source_rows"]["state"] == "complete" {
             break;
         }
         assert!(Instant::now() < until, "{p}");
@@ -66,7 +66,7 @@ fn sidecar_and_reference_content_have_distinct_exact_public_data_leaves_and_orig
         );
         assert_eq!(
             origin["origin"]["binding"]["input"].as_str(),
-            receipt["retained"]["id"].as_str()
+            receipt["input"]["id"].as_str()
         );
     }
     let destination = w.work.path().join("result-export");

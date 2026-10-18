@@ -184,7 +184,7 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                 let retained = receive(owner.try_import(request))?;
                 let progress = receive(owner.try_progress(&retained.id))?;
                 Ok(
-                    json!({"outcome":"ok","retained":{"id":retained.id,"length":retained.length,"chain":retained.chain},"source_rows":progress.source_rows,"query_coverage":"incomplete"}),
+                    json!({"outcome":"ok","input":{"id":retained.id,"length":retained.length,"chain":retained.chain},"source_rows":progress.source_rows,"query_coverage":"incomplete"}),
                 )
             }
             "progress" => {
