@@ -1039,7 +1039,7 @@ impl Actor {
                 let (install, guard) = pending.into_install();
                 match PendingInstall::begin(
                     &mut self.writer,
-                    &install.predecessor,
+                    &install.head,
                     install.progress,
                     install.changes,
                 ) {

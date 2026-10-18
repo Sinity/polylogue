@@ -31,9 +31,6 @@ impl PendingInstall {
         let work = writer.prepare_parser(head, progress)?;
         Ok(Self { work, changes })
     }
-    pub fn predecessor(&self) -> &Token {
-        &self.work.token.head
-    }
     /// Runs at most one transaction: stage, seal, apply or publish. Staging and
     /// applying stop at the budget; cells that do not fit wait for the next
     /// call, and a first cell that does not fit fails before writing.
@@ -74,8 +71,8 @@ pub enum Recovery {
 /// After a crash, an unsealed delta is incomplete: discard it in batches and
 /// parse again from the unchanged state. A sealed delta is complete: finish
 /// applying it without parsing against partly changed state.
-pub fn recover_turn(writer: &mut Writer, predecessor: &Token, budget: Budget) -> Result<Recovery> {
-    let Some(work) = writer.parser_work(predecessor)? else {
+pub fn recover_turn(writer: &mut Writer, head: &Token, budget: Budget) -> Result<Recovery> {
+    let Some(work) = writer.parser_work(head)? else {
         return Ok(Recovery::Reparse);
     };
     if matches!(work.progress.phase, Phase::Done) || !work.progress.finalization_pending {

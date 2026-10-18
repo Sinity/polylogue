@@ -178,7 +178,7 @@ impl World {
         let (install, guard) = pending.into_install();
         let mut install = PendingInstall::begin(
             self.writer_mut(),
-            &install.predecessor,
+            &install.head,
             install.progress,
             install.changes,
         )
@@ -222,7 +222,7 @@ fn both_sources_publish_only_after_real_prepared_install_and_reopen_resume() {
         assert_eq!(first.counts().framed, 1);
         assert!(first.parsed_upto() < (bytes.len() as u64));
         let continuation = world.publish(first);
-        assert_eq!(continuation.predecessor(), &world.head.token);
+        assert_eq!(continuation.token(), &world.head.token);
         assert_eq!(world.head.status, Phase::Parsing);
         let offset = continuation.scanned_upto();
         world.restart();
@@ -336,7 +336,7 @@ fn stale_install_drops_checkpoint_and_replays_from_committed_state() {
         assert!(matches!(
             PendingInstall::begin(
                 world.writer_mut(),
-                &stale.predecessor,
+                &stale.head,
                 stale.progress,
                 stale.changes
             ),
