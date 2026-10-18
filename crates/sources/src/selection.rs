@@ -61,9 +61,6 @@ pub trait Recipe {
     fn inputs(&self) -> &[SelectedRaw];
     fn operation(&self) -> Operation;
     fn invalid(&self, reason: &'static str) -> Self::Error;
-    fn provider_time(&self, _text: &str) -> Option<polylogue_model::ProviderTime> {
-        None
-    }
     fn write_scalar<W: Write>(
         &self,
         _value: &Value,
@@ -274,7 +271,7 @@ pub fn write_value<E, W: Write, R: Recipe>(
                 }
                 Operation::ProviderTime => {
                     let text = value.as_str().ok_or(ValueError::Type { input: ordinal })?;
-                    let time = recipe.provider_time(text).ok_or(ValueError::Time)?;
+                    let time = crate::time::parse_intrinsic(text).ok_or(ValueError::Time)?;
                     let status = polylogue_model::source_leaf::write_time(&time, &mut sink)
                         .map_err(ValueError::Leaf)?;
                     if status != polylogue_model::source_leaf::PresenceStatus::Written {
@@ -318,6 +315,44 @@ pub fn write_value<E, W: Write, R: Recipe>(
         return Err(ValueError::Io(error));
     }
     result
+}
+/// The archive input whose records a descriptor selects.
+#[derive(Clone, Copy, Serialize)]
+pub struct Binding<'a> {
+    pub input: &'a str,
+    /// Archive revision number (1-based), never a source byte offset.
+    pub chain: i64,
+}
+impl Binding<'_> {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.input.is_empty() || self.chain <= 0 {
+            return Err("invalid binding");
+        }
+        Ok(())
+    }
+}
+/// Stream `{"format", "binding", "selection"}` for one validated descriptor.
+/// A failed write is not resumable; the caller discards the partial output.
+pub fn write_bound<T: Serialize, W: Write>(
+    format: &'static str,
+    selection: &T,
+    binding: Binding<'_>,
+    writer: &mut W,
+) -> Result<(), JsonWriteError> {
+    #[derive(Serialize)]
+    struct Bound<'a, T> {
+        format: &'static str,
+        binding: Binding<'a>,
+        selection: &'a T,
+    }
+    write_json(
+        &Bound {
+            format,
+            binding,
+            selection,
+        },
+        writer,
+    )
 }
 /// Streaming JSON encoding for provider-owned envelopes. The caller owns the
 /// producer/admission and discards partial output on error; this is not resumable

@@ -162,9 +162,6 @@ impl Recipe for LeafSelection {
     fn invalid(&self, reason: &'static str) -> Error {
         Error(reason)
     }
-    fn provider_time(&self, text: &str) -> Option<polylogue_model::ProviderTime> {
-        super::parse_time_text(text)
-    }
     fn write_scalar<W: Write>(
         &self,
         value: &Value,
@@ -500,11 +497,7 @@ pub(super) fn classify_author(
     (WrittenBy::Unknown, None, None)
 }
 
-#[derive(Clone, Copy, Serialize)]
-pub struct Binding<'a> {
-    pub input: &'a str,
-    pub chain: i64,
-}
+pub use crate::selection::Binding;
 #[derive(Debug)]
 pub enum EncodeError {
     Invalid(Error),
@@ -526,24 +519,10 @@ fn write_bound<T: Serialize, W: Write>(
     binding: Binding<'_>,
     sink: &mut W,
 ) -> Result<(), EncodeError> {
-    if binding.input.is_empty() || binding.chain <= 0 {
-        return Err(EncodeError::Invalid(Error("invalid binding")));
-    }
-    #[derive(Serialize)]
-    struct Bound<'a, T> {
-        format: &'static str,
-        binding: Binding<'a>,
-        selection: &'a T,
-    }
-    selection::write_json(
-        &Bound {
-            format: "claude-code-field-origin",
-            binding,
-            selection: recipe,
-        },
-        sink,
-    )
-    .map_err(|e| match e {
+    binding
+        .validate()
+        .map_err(|reason| EncodeError::Invalid(Error(reason)))?;
+    selection::write_bound("claude-code-field-origin", recipe, binding, sink).map_err(|e| match e {
         selection::JsonWriteError::Encoding(e) => EncodeError::Encoding(e),
         selection::JsonWriteError::Io(e) => EncodeError::Io(e),
     })

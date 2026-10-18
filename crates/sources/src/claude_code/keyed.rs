@@ -439,7 +439,7 @@ impl Contribution {
         }
         // Effective records are already canonical raw JSON. Borrow its exact
         // subtree rather than making another temporary value-sized allocation.
-        super::raw::optional_field(&self.raw, &[key])?
+        crate::raw::field(&self.raw, &[key])?
             .ok_or_else(|| "Claude immediate extra lost its raw value".to_owned())
     }
     pub fn completion_unit(&self, item: u64) -> Option<EvidenceUnit> {
@@ -461,14 +461,14 @@ impl Contribution {
     pub fn final_fields(&self) -> Result<[Option<Vec<u8>>; 8], String> {
         let mut fields: [Option<Vec<u8>>; 8] = Default::default();
         for (i, path) in super::METADATA_PATHS.iter().enumerate() {
-            fields[i] = super::raw::optional_field(&self.raw, path)?
+            fields[i] = crate::raw::field(&self.raw, path)?
                 .map(super::raw::canonical)
                 .transpose()?;
         }
-        fields[6] = super::raw::optional_field(&self.raw, &["message", "stop_sequence"])?
+        fields[6] = crate::raw::field(&self.raw, &["message", "stop_sequence"])?
             .map(super::raw::canonical)
             .transpose()?;
-        fields[7] = super::raw::optional_field(&self.raw, &["message", "stop_details"])?
+        fields[7] = crate::raw::field(&self.raw, &["message", "stop_details"])?
             .map(super::raw::canonical)
             .transpose()?;
         Ok(fields)

@@ -454,17 +454,6 @@ fn item_id_kind(item: &Value) -> IdKind {
         IdKind::Provisional
     }
 }
-fn provider_time(at: Timestamp) -> ProviderTime {
-    ProviderTime::Intrinsic {
-        at,
-        precision: Precision::Instant,
-        until: None,
-    }
-}
-fn parse_timestamp(text: &str) -> Option<Timestamp> {
-    let at = text.parse::<jiff::Timestamp>().ok()?;
-    Some(Timestamp(at.as_millisecond()))
-}
 
 /// Codex's current mapping remains scalar-only. Reject before keyed state or
 /// identity construction; lexical opaque numbers still use the retained tree.

@@ -84,18 +84,28 @@ fn second_adapter_uses_same_path_decode_core_and_owns_its_scalar_rule() {
     ));
 }
 #[test]
-fn provider_time_hook_is_required_and_record_errors_remain_original() {
-    let raw = br#"{"selected":"1970-01-01T00:00:00Z"}"#;
-    let recipe = make_recipe(raw, Operation::ProviderTime);
+fn invalid_time_and_resolver_errors_are_reported_unchanged() {
+    let bad = br#"{"selected":"yesterday"}"#;
     assert!(matches!(
         selection::write_value(
-            &recipe,
-            |_| Ok::<_, ()>(raw.to_vec()),
-            raw.len(),
+            &make_recipe(bad, Operation::ProviderTime),
+            |_| Ok::<_, ()>(bad.to_vec()),
+            bad.len(),
             &mut Vec::new()
         ),
         Err(ValueError::Time)
     ));
+    let raw = br#"{"selected":"1970-01-01T00:00:00Z"}"#;
+    let recipe = make_recipe(raw, Operation::ProviderTime);
+    let mut written = Vec::new();
+    selection::write_value(
+        &recipe,
+        |_| Ok::<_, ()>(raw.to_vec()),
+        raw.len(),
+        &mut written,
+    )
+    .unwrap();
+    assert!(!written.is_empty());
     let marker = Box::new(42);
     let ptr = &*marker as *const i32;
     let mut marker = Some(marker);
