@@ -3,8 +3,8 @@ use std::time::Duration;
 fn until() -> Instant {
     Instant::now() + Duration::from_secs(30)
 }
-fn raw(source: &str) -> RetainedJson {
-    RetainedJson::parse(source.as_bytes()).unwrap()
+fn raw(source: &str) -> RawJson {
+    RawJson::parse(source.as_bytes()).unwrap()
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn envelopes_preserve_numbers_surrogates_keys_and_presence() {
 #[test]
 fn masks_logical_strings_once_without_crossing_structured_boundaries() {
     let token = format!("ghp_{}", "A".repeat(36));
-    let value = RetainedJson::parse(
+    let value = RawJson::parse(
         serde_json::to_vec(&json!({"a":token,"b":"ordinary"}))
             .unwrap()
             .as_slice(),
@@ -45,9 +45,9 @@ fn masks_logical_strings_once_without_crossing_structured_boundaries() {
 #[test]
 fn witnesses_and_structural_keys_refuse_instead_of_changing() {
     let token = format!("ghp_{}", "A".repeat(36));
-    let witness = RetainedJson::from(token.clone());
+    let witness = RawJson::from(token.clone());
     assert!(envelope(&witness, until(), true).is_err());
-    let key = RetainedJson::parse(
+    let key = RawJson::parse(
         serde_json::to_vec(&json!({token:"value"}))
             .unwrap()
             .as_slice(),

@@ -1,6 +1,6 @@
 //! Whole selected provider usage is distinct from typed normalized counters.
 use super::*;
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 fn row(uuid: &str, text: &str, usage: Option<&str>) -> String {
     format!(
         r#"{{"type":"assistant","uuid":"{uuid}","requestId":"r","message":{{"id":"response","content":[{{"type":"text","text":"{text}"}}]{}}}}}
@@ -16,7 +16,7 @@ fn materialize(raw: &str) -> (World, SourceProjection, MessageView) {
     let view = selected(&mut w, &source);
     (w, source, view)
 }
-fn bag(view: &MessageView) -> Option<(RetainedJson, Value)> {
+fn bag(view: &MessageView) -> Option<(RawJson, Value)> {
     match view
         .field(
             &Slot::Extra {
@@ -31,7 +31,7 @@ fn bag(view: &MessageView) -> Option<(RetainedJson, Value)> {
         Some(FieldRead::Value(f)) => {
             assert!(f.supplied);
             Some((
-                RetainedJson::parse(&f.range(0, 65536).unwrap().bytes).unwrap(),
+                RawJson::parse(&f.range(0, 65536).unwrap().bytes).unwrap(),
                 serde_json::from_slice(&f.origin_range(0, 65536).unwrap().unwrap().bytes).unwrap(),
             ))
         }
@@ -44,7 +44,7 @@ fn provider_usage_has_exact_whole_subtree_origin_and_independent_normalized_coun
     let raw = row("a", "a", Some(usage));
     let (_world, _, view) = materialize(&raw);
     let (v, origin) = bag(&view).unwrap();
-    assert_eq!(v, RetainedJson::parse(usage.as_bytes()).unwrap());
+    assert_eq!(v, RawJson::parse(usage.as_bytes()).unwrap());
     assert_eq!(
         origin["selection"]["inputs"][0]["path"],
         json!([{"Key":"message"},{"Key":"usage"}])
@@ -79,7 +79,7 @@ fn usage_replacement_and_omission_preserve_supplier_and_remove_stale_owned_bag()
     let (v, o) = bag(&view).unwrap();
     assert_eq!(
         v,
-        RetainedJson::parse(br#"{"input_tokens":2,"iterations":[]}"#).unwrap()
+        RawJson::parse(br#"{"input_tokens":2,"iterations":[]}"#).unwrap()
     );
     assert_eq!(o["selection"]["inputs"][0]["record"]["start"], a.len());
     let update = row("a", "changed", Some(r#"{"input_tokens":3,"speed":{}}"#));

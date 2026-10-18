@@ -1,7 +1,7 @@
 //! Finite path-preserving events, decoded through the owning immutable codec.
 //! This proves membership only; it never settles Event products or outcomes.
 use super::*;
-use polylogue_model::{RetainedJson, SessionId};
+use polylogue_model::{RawJson, SessionId};
 
 pub(crate) struct FlatSessionStep {
     step: u64,
@@ -78,12 +78,12 @@ impl<'a> FlatSessionEvents<'a> {
                 event.model_saw == Some(true)
                     && event.after_message.is_none()
                     && (data.as_str().is_some()
-                        || data.get("text").and_then(RetainedJson::as_str).is_some())
+                        || data.get("text").and_then(RawJson::as_str).is_some())
             }
             "world_state" => {
                 event.model_saw == Some(true)
-                    && data.get("full").and_then(RetainedJson::as_bool).is_some()
-                    && data.get("state").is_some_and(RetainedJson::is_object)
+                    && data.get("full").and_then(RawJson::as_bool).is_some()
+                    && data.get("state").is_some_and(RawJson::is_object)
             }
             "rate_limit" => {
                 event.model_saw == Some(false) && event.after_message.is_none() && rate_limits(data)
@@ -108,15 +108,14 @@ impl<'a> FlatSessionEvents<'a> {
                     "turn_end" => Some("task_complete"),
                     _ => None,
                 };
-                if expected
-                    .is_some_and(|ty| data.get("type").and_then(RetainedJson::as_str) != Some(ty))
+                if expected.is_some_and(|ty| data.get("type").and_then(RawJson::as_str) != Some(ty))
                     || (expected.is_none() && data.get("type").is_some())
                 {
                     return false;
                 }
                 let Some(turn) = data
                     .get("turn_id")
-                    .and_then(RetainedJson::as_str)
+                    .and_then(RawJson::as_str)
                     .filter(|s| !s.is_empty())
                 else {
                     return false;
@@ -143,7 +142,7 @@ impl<'a> FlatSessionEvents<'a> {
         }
     }
 }
-fn rate_limits(data: &RetainedJson) -> bool {
+fn rate_limits(data: &RawJson) -> bool {
     let Some(object) = data.as_object() else {
         return false;
     };

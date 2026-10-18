@@ -1,5 +1,5 @@
 //! Exact scale conversion shared by provider money and elapsed-time fields.
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 
 pub(crate) fn scaled_integer(value: &Value, scale: i32) -> Option<i64> {
     if !matches!(value, Value::Number(_)) {

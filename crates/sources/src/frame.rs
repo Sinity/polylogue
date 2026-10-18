@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
-use polylogue_model::{RetainedError, RetainedJson as Value, TextRepairs};
+use polylogue_model::{RawJson as Value, RawJsonError, TextRepairs};
 
 /// One framed, decoded record.
 #[derive(Debug)]
@@ -76,7 +76,7 @@ pub enum FailurePhase {
 #[derive(Debug)]
 pub enum ParseError<E> {
     Provider(E),
-    Decoding(RetainedError),
+    Decoding(RawJsonError),
 }
 impl<E: std::fmt::Display> std::fmt::Display for ParseError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -482,7 +482,7 @@ fn account_json<P: RecordParser>(
     }
     let value = match Value::parse_with_repairs(line, start, &counts.text_repairs) {
         Ok(value) => value,
-        Err(error @ RetainedError::Capacity { .. }) => return Err(ParseError::Decoding(error)),
+        Err(error @ RawJsonError::Capacity { .. }) => return Err(ParseError::Decoding(error)),
         Err(_) => {
             counts.framed += 1;
             counts.undecodable.push(start);
@@ -605,7 +605,7 @@ fn drive_raw_records<P: RecordParser>(
         counts.framed += 1;
         let value = match Value::parse_with_repairs(text.as_bytes(), start, &counts.text_repairs) {
             Ok(value) => value,
-            Err(error @ RetainedError::Capacity { .. }) => {
+            Err(error @ RawJsonError::Capacity { .. }) => {
                 counts.framed -= 1;
                 return Framed {
                     output: Err(ParseFailure {

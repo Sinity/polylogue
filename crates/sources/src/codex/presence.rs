@@ -6,7 +6,7 @@ use super::selection::{FactSelection, PathPart, Transform};
 use super::{
     has_nonempty_text, has_recorded_output, is_shell_tool, native_duration, raw, text_parts,
 };
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use polylogue_model::merge::{BlockField as B, MessageField as M, Slot, UsageField as U};
 use polylogue_model::{BlockSlot, Timestamp};
 use serde::{Deserialize, Serialize};

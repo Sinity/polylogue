@@ -1875,7 +1875,7 @@ fn opaque_page_value(value: &Value, masked: bool) -> Value {
     assert_eq!(object["encoding"], "canonical-json-v1");
     assert_eq!(object["masked"], masked);
     let raw = object["json"].as_str().expect("canonical JSON text");
-    let retained = polylogue_model::RetainedJson::parse(raw.as_bytes()).unwrap();
+    let retained = polylogue_model::RawJson::parse(raw.as_bytes()).unwrap();
     assert_eq!(retained.canonical(), raw.as_bytes());
     serde_json::from_str(raw).unwrap()
 }

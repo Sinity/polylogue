@@ -2,7 +2,7 @@
 //! catalog is not source-complete; the caller must preserve returned coverage.
 use crate::output_json::Encoder;
 use polylogue_model::{
-    BlockId, BlockSlot, RetainedJson, ToolOutcome, ToolOutput,
+    BlockId, BlockSlot, RawJson, ToolOutcome, ToolOutput,
     merge::{BlockField, MessageField, Slot, UsageField},
 };
 use polylogue_store::contributions::{
@@ -56,10 +56,10 @@ fn field_bytes(field: &FieldView<'_>, origin: bool) -> io::Result<Option<Vec<u8>
     }
     Ok(Some(range.bytes))
 }
-fn retained_field(field: &FieldView<'_>, origin: bool) -> io::Result<Option<RetainedJson>> {
+fn retained_field(field: &FieldView<'_>, origin: bool) -> io::Result<Option<RawJson>> {
     field_bytes(field, origin)?
         .map(|bytes| {
-            RetainedJson::parse(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            RawJson::parse(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
         })
         .transpose()
 }
@@ -526,7 +526,7 @@ fn write_message_fields<W: Write>(
 
 fn opaque_value<W: Write>(
     e: &mut Encoder<W>,
-    value: &RetainedJson,
+    value: &RawJson,
     _deadline: Instant,
     model_page: bool,
 ) -> io::Result<()> {
@@ -547,7 +547,7 @@ fn opaque_field<W: Write>(
     if !model_page {
         let first = stored(field.range(0, LEAF))?;
         if first.eof {
-            let value = RetainedJson::parse(&first.bytes)
+            let value = RawJson::parse(&first.bytes)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             return opaque_value(e, &value, deadline, false);
         }

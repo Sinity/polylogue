@@ -1,6 +1,6 @@
 //! Retained record relations, not another Message tree or execution authority.
 use crate::selection::{PathPart, RecordRange, SelectedRaw};
-use polylogue_model::{NativeId, RetainedJson as Value};
+use polylogue_model::{NativeId, RawJson as Value};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

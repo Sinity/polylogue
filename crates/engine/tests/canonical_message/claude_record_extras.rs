@@ -1,6 +1,6 @@
 //! Source-selected immediate record extras, never contribution-order overwrites.
 use super::*;
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 fn row(uuid: &str, text: &str, extras: &str) -> String {
     format!(
         r#"{{"type":"assistant","uuid":"{uuid}","requestId":"r",{extras}"message":{{"id":"response","content":[{{"type":"text","text":"{text}"}}]}}}}
@@ -15,7 +15,7 @@ fn materialize(raw: &str) -> (World, SourceProjection, MessageView) {
     let view = selected(&mut w, &source);
     (w, source, view)
 }
-fn extra(view: &MessageView, key: &str) -> (RetainedJson, Value) {
+fn extra(view: &MessageView, key: &str) -> (RawJson, Value) {
     let Some(FieldRead::Value(f)) = view
         .field(
             &Slot::Extra {
@@ -30,7 +30,7 @@ fn extra(view: &MessageView, key: &str) -> (RetainedJson, Value) {
     };
     assert!(f.supplied);
     (
-        RetainedJson::parse(&f.range(0, 65536).unwrap().bytes).unwrap(),
+        RawJson::parse(&f.range(0, 65536).unwrap().bytes).unwrap(),
         serde_json::from_slice(&f.origin_range(0, 65536).unwrap().unwrap().bytes).unwrap(),
     )
 }
@@ -52,17 +52,17 @@ fn grouped_repetition_chooses_actual_supplier_even_for_equal_values_and_omission
     let raw = a.clone() + &b + &c + &omit;
     let (_w, _, v) = materialize(&raw);
     let (value, origin) = extra(&v, "effort");
-    assert_eq!(value, RetainedJson::parse(br#""same""#).unwrap());
+    assert_eq!(value, RawJson::parse(br#""same""#).unwrap());
     assert_eq!(start(&origin), (a.len() + b.len()) as u64);
     assert_eq!(
         origin["selection"]["inputs"][0]["path"],
         json!([{"Key":"effort"}])
     );
     assert_eq!(start(&extra(&v, "independent").1), 0);
-    assert_eq!(extra(&v, "independent").0, RetainedJson::Null);
+    assert_eq!(extra(&v, "independent").0, RawJson::Null);
     assert_eq!(
         extra(&v, "literal.dot").0,
-        RetainedJson::parse(b"1.2300").unwrap()
+        RawJson::parse(b"1.2300").unwrap()
     );
     let equal_update = row("a", "different", r#""effort":"same","#);
     let raw = raw + &equal_update;
@@ -112,19 +112,19 @@ fn earlier_item_correction_changes_selected_raw_evidence_and_reopens_determinist
     let v = selected(&mut w, &source);
     assert_eq!(
         extra(&v, "effort").0,
-        RetainedJson::parse(br#"{"number":9007199254740993,"text":"\ud800","none":null}"#).unwrap()
+        RawJson::parse(br#"{"number":9007199254740993,"text":"\ud800","none":null}"#).unwrap()
     );
     assert_eq!(
         start(&extra(&v, "effort").1),
         (raw.len() - update.len()) as u64
     );
-    assert_eq!(extra(&v, "λ/key").0, RetainedJson::parse(b"3").unwrap());
+    assert_eq!(extra(&v, "λ/key").0, RawJson::parse(b"3").unwrap());
     assert_eq!(
         extra(&v, "λ/key").1["selection"]["inputs"][0]["path"],
         json!([{"Key":"λ/key"}])
     );
     let (_bw, base, bv) = materialize(&(update + &b));
-    assert_eq!(extra(&bv, "effort").0, RetainedJson::parse(b"2").unwrap());
+    assert_eq!(extra(&bv, "effort").0, RawJson::parse(b"2").unwrap());
     assert_ne!(source.version_hash(), base.version_hash());
     let (_rw, replay, rv) = materialize(&raw);
     assert_eq!(source.version_hash(), replay.version_hash());
@@ -214,7 +214,7 @@ fn proof_scratch_admission_is_typed_and_does_not_publish_partial_selection() {
     );
     let source = w.complete(&h);
     let v = selected(&mut w, &source);
-    assert_eq!(extra(&v, "effort").0, RetainedJson::parse(b"3").unwrap());
+    assert_eq!(extra(&v, "effort").0, RawJson::parse(b"3").unwrap());
 }
 #[test]
 fn unchanged_large_extra_keeps_single_whole_record_version_without_metadata_value_copy() {
@@ -228,7 +228,7 @@ fn unchanged_large_extra_keeps_single_whole_record_version_without_metadata_valu
     );
     assert_eq!(
         extra(&view, "effort").0,
-        RetainedJson::parse(format!("\"{}\"", "x".repeat(30000)).as_bytes()).unwrap()
+        RawJson::parse(format!("\"{}\"", "x".repeat(30000)).as_bytes()).unwrap()
     );
 }
 
@@ -276,6 +276,6 @@ fn selected_donor_is_cited_independently_of_current_effective_contribution_origi
     let source = w.complete(&h);
     let v = selected(&mut w, &source);
     let (value, origin) = extra(&v, "effort");
-    assert_eq!(value, RetainedJson::Null);
+    assert_eq!(value, RawJson::Null);
     assert_eq!(start(&origin), original);
 }

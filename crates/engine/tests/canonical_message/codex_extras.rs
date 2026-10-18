@@ -36,8 +36,8 @@ fn block_extra_preserves_opaque_metadata_and_exact_original_field_selection() {
     assert!(field.supplied);
     let bytes = field.range(0, 65536).unwrap().bytes;
     assert_eq!(
-        polylogue_model::RetainedJson::parse(&bytes).unwrap(),
-        polylogue_model::RetainedJson::parse(OPAQUE).unwrap()
+        polylogue_model::RawJson::parse(&bytes).unwrap(),
+        polylogue_model::RawJson::parse(OPAQUE).unwrap()
     );
     assert!(bytes.windows(6).any(|part| part == b"1.2300"));
     let origin: Value =

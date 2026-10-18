@@ -361,7 +361,7 @@ fn leaf<'a>(
                 polylogue_model::source_leaf::write_message_reference(resolved, &mut bytes)
                     .map_err(|e| Error::Source(e.to_string()))?;
                 return Ok(ValueSource::Opaque(
-                    RetainedJson::parse(&bytes)
+                    RawJson::parse(&bytes)
                         .map_err(|e| Error::Source(e.to_string()))?
                         .into_opaque(),
                 ));
@@ -415,7 +415,7 @@ fn leaf<'a>(
                 });
             }
             let c = c.ok_or(Error::Invariant("Claude extra lost its contribution"))?;
-            let raw = RetainedJson::parse(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
+            let raw = RawJson::parse(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
             let value = raw
                 .get(key)
                 .ok_or(Error::Invariant("Claude extra lost its value"))?;
@@ -447,11 +447,11 @@ fn leaf<'a>(
                 Field::ResultData {local: found, key: selected} if found == local && selected == key)) {
                 return Err(Error::UnsupportedField { path: path.clone(), reason: "Claude block extra conflicts with selected structured data" });
             }
-            let raw = RetainedJson::parse(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
+            let raw = RawJson::parse(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
             let value = raw
                 .get("message")
                 .and_then(|v| v.get("content"))
-                .and_then(RetainedJson::as_array)
+                .and_then(RawJson::as_array)
                 .and_then(|v| v.get(*local as usize))
                 .and_then(|v| v.get(key))
                 .ok_or(Error::Invariant("Claude block extra lost its raw value"))?;
@@ -1007,7 +1007,7 @@ pub(super) fn compute(
                     .payload
                     .as_ref()
                     .ok_or(Error::Unsupported("Claude required body unavailable"))?;
-                let raw = polylogue_model::RetainedJson::parse(&c.raw)
+                let raw = polylogue_model::RawJson::parse(&c.raw)
                     .map_err(|e| Error::Source(e.to_string()))?;
                 let path = source::required_body_path(&raw, block_local as usize)
                     .ok_or(Error::Unsupported("Claude required body path unavailable"))?;

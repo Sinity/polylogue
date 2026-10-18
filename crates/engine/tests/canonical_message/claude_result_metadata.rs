@@ -1,6 +1,6 @@
 //! The actual canonical materializer verifies exact result data and source recipes.
 use super::*;
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 fn row(meta: &str, content: &str, extra: &str) -> String {
     format!(
         r#"{{"type":"user","uuid":"result","toolUseResult":{meta},"message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"call","is_error":false,"content":{content}{extra}}}]}}}}
@@ -16,7 +16,7 @@ fn materialize(raw: &str) -> (World, SourceProjection, MessageView) {
     let view = selected(&mut world, &source);
     (world, source, view)
 }
-fn leaf(view: &MessageView, key: &str) -> (RetainedJson, Value) {
+fn leaf(view: &MessageView, key: &str) -> (RawJson, Value) {
     let FieldRead::Value(f) = view
         .field(
             &Slot::Extra {
@@ -32,7 +32,7 @@ fn leaf(view: &MessageView, key: &str) -> (RetainedJson, Value) {
     };
     assert!(f.supplied);
     (
-        RetainedJson::parse(&f.range(0, 65536).unwrap().bytes).unwrap(),
+        RawJson::parse(&f.range(0, 65536).unwrap().bytes).unwrap(),
         serde_json::from_slice(&f.origin_range(0, 65536).unwrap().unwrap().bytes).unwrap(),
     )
 }
@@ -53,7 +53,7 @@ fn first_sidecar_failure_and_string_carrier_have_exact_original_selectors_after_
         let raw = row(meta, r#""real output""#, "");
         let (_w, _, view) = materialize(&raw);
         let (v, o) = leaf(&view, key);
-        let expected = RetainedJson::parse(meta.as_bytes()).unwrap();
+        let expected = RawJson::parse(meta.as_bytes()).unwrap();
         assert_eq!(
             v,
             if key == "toolUseResult" {
@@ -90,11 +90,11 @@ fn reference_arrays_are_exact_structured_content_not_fabricated_output_or_sideca
         let (_w, _, view) = materialize(&raw);
         assert_eq!(
             leaf(&view, "content_items").0,
-            RetainedJson::parse(content.as_bytes()).unwrap()
+            RawJson::parse(content.as_bytes()).unwrap()
         );
         assert_eq!(
             leaf(&view, "content").0,
-            RetainedJson::parse(br#""independent sidecar""#).unwrap()
+            RawJson::parse(br#""independent sidecar""#).unwrap()
         );
         assert_eq!(
             leaf(&view, "content_items").1["selection"]["inputs"][0]["path"],

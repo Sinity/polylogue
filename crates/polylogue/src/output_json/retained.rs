@@ -3,18 +3,18 @@
 //! a transformation with uncertain reconstruction refuses the whole value.
 use super::{deadline, unchanged_key, write_string};
 use credential_output::Masker;
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 use serde_json::{Value, json};
 use std::{io, time::Instant};
 
 pub(super) fn present(
-    value: &RetainedJson,
+    value: &RawJson,
     until: Instant,
     preserve: bool,
-) -> io::Result<(RetainedJson, bool)> {
+) -> io::Result<(RawJson, bool)> {
     deadline(until)?;
     match value {
-        RetainedJson::String(raw) => {
+        RawJson::String(raw) => {
             let units = raw.native().utf16();
             let scalar = String::from_utf16(&units);
             let assessment = scalar
@@ -33,9 +33,9 @@ pub(super) fn present(
                     "retained string requires an unavailable privacy transformation",
                 ));
             }
-            Ok((RetainedJson::from(masked), true))
+            Ok((RawJson::from(masked), true))
         }
-        RetainedJson::Array(items) => {
+        RawJson::Array(items) => {
             let mut changed = false;
             let mut result = Vec::with_capacity(items.len());
             for item in items {
@@ -43,9 +43,9 @@ pub(super) fn present(
                 changed |= masked;
                 result.push(item);
             }
-            Ok((RetainedJson::Array(result), changed))
+            Ok((RawJson::Array(result), changed))
         }
-        RetainedJson::Object(fields) => {
+        RawJson::Object(fields) => {
             let mut changed = false;
             let mut result = std::collections::BTreeMap::new();
             for (key, value) in fields {
@@ -56,13 +56,13 @@ pub(super) fn present(
                 changed |= masked;
                 result.insert(key.clone(), value);
             }
-            Ok((RetainedJson::Object(result), changed))
+            Ok((RawJson::Object(result), changed))
         }
         _ => Ok((value.clone(), false)),
     }
 }
 
-pub(crate) fn envelope(value: &RetainedJson, until: Instant, preserve: bool) -> io::Result<Value> {
+pub(crate) fn envelope(value: &RawJson, until: Instant, preserve: bool) -> io::Result<Value> {
     let (value, masked) = present(value, until, preserve)?;
     let canonical = String::from_utf8(value.canonical()).map_err(io::Error::other)?;
     Ok(json!({"encoding":"canonical-json-v1","json":canonical,"masked":masked}))

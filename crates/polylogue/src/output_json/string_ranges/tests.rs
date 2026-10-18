@@ -1,6 +1,6 @@
 use super::*;
 use crate::output_json::Encoder;
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 use std::{cell::Cell, time::Duration};
 
 fn streamed(raw: &[u8], piece: usize) -> io::Result<Vec<u8>> {
@@ -16,7 +16,7 @@ fn streamed(raw: &[u8], piece: usize) -> io::Result<Vec<u8>> {
     encoder.finish()
 }
 fn ordinary(raw: &[u8]) -> io::Result<Vec<u8>> {
-    let value = RetainedJson::parse(raw).unwrap();
+    let value = RawJson::parse(raw).unwrap();
     let mut encoder = Encoder::new(Vec::new(), Instant::now() + Duration::from_secs(10));
     encoder.retained(&value, false)?;
     encoder.finish()
@@ -45,7 +45,7 @@ fn native_utf16_ranges_preserve_units_and_refuse_uncertain_masking() {
         br#""a\ud800b\udc00c\ud83e\udd80\ufffd""#.as_slice(),
         br#""\ud800\ud800\udc00""#.as_slice(),
     ] {
-        let canonical = RetainedJson::parse(raw).unwrap().canonical();
+        let canonical = RawJson::parse(raw).unwrap().canonical();
         for piece in [1, 3, 7] {
             assert_eq!(
                 streamed(&canonical, piece).unwrap(),

@@ -1,6 +1,6 @@
 //! Exact provider evidence through public JSON/export and bounded metadata.
 use super::*;
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 #[test]
 fn repeated_record_extra_selects_one_supplier_in_public_routes() {
     let world = World::new();
@@ -30,13 +30,13 @@ fn repeated_record_extra_selects_one_supplier_in_public_routes() {
     let reference = reference();
     let out = world.cli(&[&reference, "read", "--format", "json"]);
     assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
-    let doc = RetainedJson::parse(&out.stdout).unwrap();
+    let doc = RawJson::parse(&out.stdout).unwrap();
     let message = &doc["messages"][0];
-    let expected = RetainedJson::parse(usage.as_bytes()).unwrap();
+    let expected = RawJson::parse(usage.as_bytes()).unwrap();
     assert_eq!(message["attrs"]["effort"], expected);
     assert_eq!(
         message["usage"],
-        RetainedJson::parse(br#"{"input":2,"output":3}"#).unwrap()
+        RawJson::parse(br#"{"input":2,"output":3}"#).unwrap()
     );
     let origins = message["field_origins"].as_array().unwrap();
     let origin = origins
@@ -45,7 +45,7 @@ fn repeated_record_extra_selects_one_supplier_in_public_routes() {
         .unwrap();
     assert_eq!(
         origin["origin"]["selection"]["inputs"][0]["path"],
-        RetainedJson::parse(br#"[{"Key":"effort"}]"#).unwrap()
+        RawJson::parse(br#"[{"Key":"effort"}]"#).unwrap()
     );
     assert_eq!(
         origin["origin"]["binding"]["input"].as_str(),
@@ -85,14 +85,13 @@ fn repeated_record_extra_selects_one_supplier_in_public_routes() {
         }
     }
     assert_eq!(documents.len(), 1);
-    let export = RetainedJson::parse(&documents[0]).unwrap();
+    let export = RawJson::parse(&documents[0]).unwrap();
     assert_eq!(export["messages"], doc["messages"]);
     let page = model_call(&world, &known_catalog_call(&reference), Some(16000));
     assert_ne!(page["outcome"], "error", "{page}");
     assert_eq!(page["primary_content_complete"], true);
     let metadata = &page["shown"][0]["message_metadata"];
-    let attrs =
-        RetainedJson::parse(metadata["attrs"]["json"].as_str().unwrap().as_bytes()).unwrap();
+    let attrs = RawJson::parse(metadata["attrs"]["json"].as_str().unwrap().as_bytes()).unwrap();
     assert_eq!(attrs["effort"], expected);
     assert_eq!(metadata["usage"], json!({"input":2,"output":3}));
     assert!(

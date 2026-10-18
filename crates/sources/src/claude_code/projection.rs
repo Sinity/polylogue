@@ -2,7 +2,7 @@
 //! before fill/enrichment; projection never scores an enriched Message. The owner
 //! retains (contribution, local block) identity and assigns final BlockIds later.
 use super::keyed::{Contribution, EvidenceUnit, ResponseCell};
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use polylogue_model::merge::{BlockField, FinishState, MessageField, UsageField};
 use polylogue_model::{BlockContent, Message};
 use serde::{Deserialize, Serialize};

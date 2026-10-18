@@ -1,7 +1,7 @@
 //! Canonical extra-key traversal over one immutable selected root. SQLite's
 //! private file-backed TEMP B-tree sorts keys/handles, never field payloads.
 //! Current typed immediate keys are scalar strings: binary UTF-8 order is their
-//! canonical WTF-8 order. Nested non-scalar keys stay owned by RetainedJson.
+//! canonical WTF-8 order. Nested non-scalar keys stay owned by RawJson.
 use super::*;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use std::time::Instant;

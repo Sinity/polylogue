@@ -19,7 +19,7 @@ fn markers_follow_source_order_across_steps_including_invalid_summary_and_reappl
         assert_eq!(got.kind, kind);
         assert_eq!(
             got.value,
-            polylogue_model::RetainedJson::parse(value.to_string().as_bytes()).unwrap()
+            polylogue_model::RawJson::parse(value.to_string().as_bytes()).unwrap()
         );
         assert_eq!(got.scoped, scoped);
         assert_eq!(got.record.start, at);
@@ -83,7 +83,7 @@ fn point_parent_relation_retains_omitted_donor_and_replaces_supplied_correction_
     let address = memory.record("s", &key).unwrap().unwrap();
     assert!(serde_json::to_vec(&address).unwrap().len() < 1024);
     let relation = address.relation.unwrap();
-    assert_eq!(relation.parent.unwrap().value, RetainedJson::from("before"));
+    assert_eq!(relation.parent.unwrap().value, RawJson::from("before"));
     let patch = line(json!({"type":"user","uuid":"large","sessionId":"s","parentUuid":"after"}));
     step(
         &mut memory,
@@ -100,7 +100,7 @@ fn point_parent_relation_retains_omitted_donor_and_replaces_supplied_correction_
     );
     let relation = memory.record("s", &key).unwrap().unwrap().relation.unwrap();
     let link = relation.parent.unwrap();
-    assert_eq!(link.value, RetainedJson::from("after"));
+    assert_eq!(link.value, RawJson::from("after"));
     assert_eq!(link.donor.record.start, bytes.len() as u64);
     assert_eq!(relation.record.start, (bytes.len() + patch.len()) as u64);
 }

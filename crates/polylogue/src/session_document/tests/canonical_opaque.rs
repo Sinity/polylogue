@@ -1,6 +1,6 @@
 //! Real source -> installed selected fields -> direct normalized output.
 use super::*;
-use polylogue_model::RetainedJson;
+use polylogue_model::RawJson;
 
 fn write_document(world: &World) -> Vec<u8> {
     let selected = world
@@ -22,7 +22,7 @@ fn canonical_opaque_source_assembled_attrs_sort_keys_without_changing_leaf_value
     let input = world.import(&raw, "canonical-attrs");
     world.wait_rows(&input, false);
     let bytes = write_document(&world);
-    let expected = RetainedJson::parse(br#"{"z_extra":{"z":-0,"n":9007199254740993,"e":1e+02,"\ud800":"lone","\ue000":"bmp","\ud800\udc00":"scalar","empty":"","object":{},"array":[]},"stop_sequence":null,"a_extra":null}"#).unwrap();
+    let expected = RawJson::parse(br#"{"z_extra":{"z":-0,"n":9007199254740993,"e":1e+02,"\ud800":"lone","\ue000":"bmp","\ud800\udc00":"scalar","empty":"","object":{},"array":[]},"stop_sequence":null,"a_extra":null}"#).unwrap();
     let needle = format!(
         "\"attrs\":{}",
         String::from_utf8(expected.canonical()).unwrap()
@@ -47,7 +47,7 @@ fn canonical_opaque_source_assembled_data_preserves_exact_nested_values() {
     let input = world.import(&result_source(), "canonical-data-later");
     world.wait_rows(&input, false);
     let bytes = write_document(&world);
-    let expected = RetainedJson::parse(br#"{"totalTokens":9007199254740993,"agentId":{"z":1E2,"\ud800":null,"\ufffd":"scalar","array":[],"object":{},"empty":""},"stdout":""}"#).unwrap();
+    let expected = RawJson::parse(br#"{"totalTokens":9007199254740993,"agentId":{"z":1E2,"\ud800":null,"\ufffd":"scalar","array":[],"object":{},"empty":""},"stdout":""}"#).unwrap();
     let needle = format!(
         "\"data\":{}",
         String::from_utf8(expected.canonical()).unwrap()

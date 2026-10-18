@@ -2,7 +2,7 @@
 //! values replace as units, so a nested leaf extends its original donor path.
 //! None is unavailable provenance, never a fabricated effective-overlay span.
 use crate::selection::{PathPart, RecordRange, SelectedRaw};
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

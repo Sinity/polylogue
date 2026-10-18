@@ -92,10 +92,9 @@ mod tests {
 /// Decode the effective overlay while retaining original diagnostics on supplied nodes.
 pub(super) fn decode_effective(
     raw: &[u8],
-    incoming: &polylogue_model::RetainedJson,
-) -> Result<polylogue_model::RetainedJson, String> {
-    let mut v: polylogue_model::RetainedJson =
-        serde_json::from_slice(raw).map_err(|e| e.to_string())?;
+    incoming: &polylogue_model::RawJson,
+) -> Result<polylogue_model::RawJson, String> {
+    let mut v: polylogue_model::RawJson = serde_json::from_slice(raw).map_err(|e| e.to_string())?;
     // Restore supplied nodes from the framed record so text repair diagnostics
     // keep original byte coordinates; the canonical raw overlay remains exact.
     if let (Some(target), Some(supplied)) = (v.as_object_mut(), incoming.as_object()) {
@@ -103,7 +102,7 @@ pub(super) fn decode_effective(
             if key == &polylogue_model::NativeId::unicode("message") && value.is_object() {
                 if let Some(message) = target
                     .get_mut(key)
-                    .and_then(polylogue_model::RetainedJson::as_object_mut)
+                    .and_then(polylogue_model::RawJson::as_object_mut)
                 {
                     for (field, value) in value.as_object().into_iter().flatten() {
                         if message.contains_key(field) {

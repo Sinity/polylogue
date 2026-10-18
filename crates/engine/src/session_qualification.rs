@@ -964,7 +964,7 @@ fn qualify_shape(
             )?
             .ok_or_else(|| Error::Invariant("missing retained Session contribution".into()))?;
             if item == 0 {
-                let raw = polylogue_model::RetainedJson::parse(&contribution.raw)
+                let raw = polylogue_model::RawJson::parse(&contribution.raw)
                     .map_err(|e| Error::Invariant(e.to_string()))?;
                 peer_caller = raw.get("sourceToolAssistantUUID").cloned();
                 peer_record_start = contribution
@@ -974,7 +974,7 @@ fn qualify_shape(
                     .map(|d| d.record.start);
                 peer_parent = raw
                     .get("parentUuid")
-                    .and_then(polylogue_model::RetainedJson::native)
+                    .and_then(polylogue_model::RawJson::native)
                     .cloned();
             }
             for block in &contribution.blocks {

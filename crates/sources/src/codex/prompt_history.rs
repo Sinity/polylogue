@@ -1,6 +1,6 @@
 //! Prompt-history records prove references and prompt bytes only. They never
 //! establish a conversation boundary, assistant response, or complete history.
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use serde::Serialize;
 #[derive(Debug, Serialize)]
 pub struct Reference {

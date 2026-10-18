@@ -96,7 +96,7 @@ impl<W: Write> Encoder<W> {
         })();
         self.result(result)
     }
-    pub(crate) fn origin(&mut self, value: &polylogue_model::RetainedJson) -> io::Result<()> {
+    pub(crate) fn origin(&mut self, value: &polylogue_model::RawJson) -> io::Result<()> {
         self.check()?;
         let result = native_identity::check_origin(value, self.deadline);
         self.result(result)?;
@@ -111,7 +111,7 @@ impl<W: Write> Encoder<W> {
     /// examines logical strings before the canonical writer emits JSON.
     pub(crate) fn retained(
         &mut self,
-        value: &polylogue_model::RetainedJson,
+        value: &polylogue_model::RawJson,
         preserve: bool,
     ) -> io::Result<()> {
         self.check()?;
@@ -121,7 +121,7 @@ impl<W: Write> Encoder<W> {
         })();
         self.result(result)
     }
-    pub(crate) fn opaque(&mut self, value: &polylogue_model::RetainedJson) -> io::Result<()> {
+    pub(crate) fn opaque(&mut self, value: &polylogue_model::RawJson) -> io::Result<()> {
         self.check()?;
         let result = (|| {
             let envelope = retained::envelope(value, self.deadline, false)?;
@@ -252,7 +252,7 @@ pub(crate) fn check_native_identity(
     native_identity::check_native(value, until)
 }
 pub(crate) fn check_source_origin(
-    value: &polylogue_model::RetainedJson,
+    value: &polylogue_model::RawJson,
     until: Instant,
 ) -> io::Result<()> {
     native_identity::check_origin(value, until)
@@ -454,8 +454,7 @@ mod tests {
         let mut encoder = Encoder::new(Vec::new(), until());
         encoder
             .retained(
-                &polylogue_model::RetainedJson::parse(&serde_json::to_vec(&value).unwrap())
-                    .unwrap(),
+                &polylogue_model::RawJson::parse(&serde_json::to_vec(&value).unwrap()).unwrap(),
                 true,
             )
             .unwrap();
@@ -468,8 +467,7 @@ mod tests {
         assert!(
             encoder
                 .retained(
-                    &polylogue_model::RetainedJson::parse(&serde_json::to_vec(&value).unwrap())
-                        .unwrap(),
+                    &polylogue_model::RawJson::parse(&serde_json::to_vec(&value).unwrap()).unwrap(),
                     true
                 )
                 .is_err()

@@ -22,7 +22,7 @@ pub(super) fn relations(c: &Qualified) -> &[Node] {
 fn unresolved(reason: &'static str) -> Error {
     Error::Unsupported(reason)
 }
-fn native(value: &RetainedJson) -> Result<Option<polylogue_model::NativeId>> {
+fn native(value: &RawJson) -> Result<Option<polylogue_model::NativeId>> {
     if value.is_null() {
         return Ok(None);
     }
@@ -99,7 +99,7 @@ pub(super) fn qualify(
     else {
         return Ok(vec![]);
     };
-    let raw = RetainedJson::parse(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
+    let raw = RawJson::parse(&c.raw).map_err(|e| Error::Source(e.to_string()))?;
     let supplied = raw
         .get("parentUuid")
         .ok_or(Error::Invariant("Claude parent fact has no value"))?;

@@ -1,6 +1,6 @@
 //! Provider-neutral original-record selection, bounded record decoding and leaf
 //! streaming. Provider modules own attribution, descriptor versions and recipes.
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 /// Exact half-open original-record coordinates; the provider-owned envelope
@@ -194,7 +194,7 @@ pub fn write_value<E, W: Write, R: Recipe>(
         failure: None,
     };
     let result = (|| {
-        let mut cached: Option<(RecordRange, polylogue_model::RetainedJson)> = None;
+        let mut cached: Option<(RecordRange, polylogue_model::RawJson)> = None;
         let text = recipe.operation() == Operation::TextJoinLf;
         let mut minuend = None;
         if text {

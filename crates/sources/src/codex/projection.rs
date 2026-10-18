@@ -7,7 +7,7 @@
 //! or Effects obligations. Those remain separately retained; neither this
 //! cursor nor byte EOF certifies normalization, source rank, or version hashes.
 use super::keyed::{Cell, Key, MemoryReadView, ReadView};
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use polylogue_model::*;
 use serde::{Deserialize, Serialize};
 

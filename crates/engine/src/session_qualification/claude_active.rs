@@ -1,7 +1,7 @@
 //! Follow one declared native leaf through point state before folding responses.
 //! The caller already pins current source/selection proofs for every Message.
 use super::*;
-use polylogue_model::{NativeId, RetainedJson};
+use polylogue_model::{NativeId, RawJson};
 use polylogue_sources::claude_code::{
     keyed::{ActiveLeaf, Contribution, PendingMessage, RecordAddress},
     parent::Node,
@@ -10,7 +10,7 @@ use polylogue_sources::claude_code::{
 pub(super) struct ResultPeer {
     pub message: String,
     pub parent: Option<NativeId>,
-    pub caller: Option<RetainedJson>,
+    pub caller: Option<RawJson>,
     pub record_start: u64,
     pub valid: bool,
     pub calls: BTreeSet<NativeId>,
@@ -65,7 +65,7 @@ impl Reads<'_> {
             .transpose()
     }
 }
-fn native(value: &RetainedJson) -> Option<Option<NativeId>> {
+fn native(value: &RawJson) -> Option<Option<NativeId>> {
     if value.is_null() {
         return Some(None);
     }
@@ -329,7 +329,7 @@ fn call_evidence(
     peer: &ResultPeer,
     direct: Option<u64>,
 ) -> Result<Option<()>, Error> {
-    let mut calls = BTreeMap::<NativeId, RetainedJson>::new();
+    let mut calls = BTreeMap::<NativeId, RawJson>::new();
     for item in 0..p.items {
         if direct.is_some_and(|direct| item != direct) {
             continue;
@@ -350,21 +350,21 @@ fn call_evidence(
         if donor.record.start >= peer.record_start {
             continue;
         }
-        let raw = RetainedJson::parse(&c.raw).map_err(|e| Error::Invariant(e.to_string()))?;
+        let raw = RawJson::parse(&c.raw).map_err(|e| Error::Invariant(e.to_string()))?;
         let Some(content) = raw
             .get("message")
             .and_then(|m| m.get("content"))
-            .and_then(RetainedJson::as_array)
+            .and_then(RawJson::as_array)
         else {
             continue;
         };
         for value in content {
-            if value.get("type").and_then(RetainedJson::as_str) != Some("tool_use") {
+            if value.get("type").and_then(RawJson::as_str) != Some("tool_use") {
                 continue;
             }
             let Some(id) = value
                 .get("id")
-                .and_then(RetainedJson::native)
+                .and_then(RawJson::native)
                 .filter(|id| !id.as_str().is_empty())
             else {
                 continue;

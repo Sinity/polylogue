@@ -77,17 +77,17 @@ fn streamed_document_and_sorted_page_envelope_preserve_the_same_fields() {
         fields.finish(&mut e).unwrap();
         e.syntax(b"}").unwrap();
         let encoded = e.finish().unwrap();
-        let mut result = RetainedJson::parse(&encoded).unwrap();
+        let mut result = RawJson::parse(&encoded).unwrap();
         if model_page {
             let inner = result["attrs"]["json"].text().unwrap().to_owned();
-            result = RetainedJson::parse(inner.as_bytes()).unwrap();
+            result = RawJson::parse(inner.as_bytes()).unwrap();
             assert!(inner.starts_with("{\"a\":null,\"z\":"));
         } else {
             result = result["attrs"].clone();
         }
         assert_eq!(
             result,
-            RetainedJson::parse(br#"{"a":null,"z":{"n":1e+02,"s":"\ud800"}}"#).unwrap()
+            RawJson::parse(br#"{"a":null,"z":{"n":1e+02,"s":"\ud800"}}"#).unwrap()
         );
     }
 }
@@ -137,14 +137,14 @@ fn canonical_opaque_privacy_preserves_keys_or_refuses_and_masks_logical_leaf_str
         e.syntax(b"}").unwrap();
         let output = e.finish().unwrap();
         assert!(!String::from_utf8_lossy(&output).contains(&token));
-        let mut parsed = RetainedJson::parse(&output).unwrap()["attrs"].clone();
+        let mut parsed = RawJson::parse(&output).unwrap()["attrs"].clone();
         if page {
             assert_eq!(parsed["masked"].as_bool(), Some(true));
-            parsed = RetainedJson::parse(parsed["json"].text().unwrap().as_bytes()).unwrap();
+            parsed = RawJson::parse(parsed["json"].text().unwrap().as_bytes()).unwrap();
         }
         let value = &parsed["a"];
         assert_eq!(value["safe"].native().unwrap().utf16(), vec![0xd800]);
-        assert!(matches!(value["null"], RetainedJson::Null));
+        assert!(matches!(value["null"], RawJson::Null));
         assert_eq!(
             value["secret"].text(),
             Some("[credential: GitHub token, masked]")

@@ -1,5 +1,5 @@
 //! Native Claude source controls: no database or public-renderer qualification.
-use polylogue_model::{BlockContent, NativeId, RetainedJson, Role};
+use polylogue_model::{BlockContent, NativeId, RawJson, Role};
 use polylogue_sources::claude_code::{FileCtx, KeyedRecords, keyed::MemoryReadView};
 use polylogue_sources::frame::{FailurePhase, ParseError, drive_jsonl};
 
@@ -39,7 +39,7 @@ fn native_ids_opaque_tokens_and_text_repairs_remain_distinct() {
             .len(),
         4
     );
-    let lone_key = RetainedJson::parse(br#""\ud800""#).unwrap();
+    let lone_key = RawJson::parse(br#""\ud800""#).unwrap();
     let encoded_key = serde_json::to_string(lone_key.native().unwrap()).unwrap();
     let lone = &output
         .delta
@@ -71,7 +71,7 @@ fn native_ids_opaque_tokens_and_text_repairs_remain_distinct() {
         input.get("integer").unwrap().canonical(),
         b"9007199254740993"
     );
-    let lone_key = RetainedJson::parse(br#""\ud800""#).unwrap();
+    let lone_key = RawJson::parse(br#""\ud800""#).unwrap();
     let native = lone_key.native().unwrap();
     assert!(input.as_object().unwrap().contains_key(native));
     assert_ne!(native, &NativeId::unicode("~u:eda080"));

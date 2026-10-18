@@ -953,7 +953,7 @@ fn stop_sequence_null_is_supplied_and_omission_preserves_its_original_donor() {
         .unwrap();
     assert_eq!(
         r.message.attrs.as_ref().unwrap().get("stop_sequence"),
-        Some(&polylogue_model::RetainedJson::Null)
+        Some(&polylogue_model::RawJson::Null)
     );
     let fact = r.stop_sequence.as_ref().unwrap();
     assert_eq!(fact.selection.as_ref().unwrap().inputs[0].record.start, 0);
@@ -1121,7 +1121,7 @@ fn selected_usage_tier_is_typed_string_with_null_unknown_and_replacement_omissio
         assert!(r.message.usage.as_ref().unwrap().service_tier.is_none());
         assert_eq!(
             r.message.attrs.as_ref().unwrap().get("stop_sequence"),
-            Some(&polylogue_model::RetainedJson::Null)
+            Some(&polylogue_model::RawJson::Null)
         );
         assert!(
             !r.selected_unit(0)

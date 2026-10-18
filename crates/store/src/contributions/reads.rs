@@ -726,7 +726,7 @@ pub struct SessionHeader {
     pub agent_name: Option<String>,
     pub collection_id: Option<String>,
     pub collection_name: Option<String>,
-    pub attrs: Option<polylogue_model::RetainedJson>,
+    pub attrs: Option<polylogue_model::RawJson>,
     pub started_at: Option<i64>,
     pub last_activity_at: Option<i64>,
     pub stub: bool,

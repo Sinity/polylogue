@@ -12,7 +12,7 @@ pub const ADAPTER_RECIPE_VERSION: u32 = 2;
 
 pub use crate::selection::{Cursor, PathPart, SelectedRaw};
 use crate::selection::{JsonWriteError, Operation, Recipe, ScalarError};
-use polylogue_model::RetainedJson as Value;
+use polylogue_model::RawJson as Value;
 use polylogue_model::{
     BlockContent, BlockSlot, ToolCall, ToolResult,
     merge::{BlockField, Slot},
@@ -20,7 +20,7 @@ use polylogue_model::{
 pub type ValueError<E> = crate::selection::ValueError<E, Error>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Transform {
-    /// Decode as the adapter's polylogue_model::RetainedJson; retain an opaque typed value,
+    /// Decode as the adapter's polylogue_model::RawJson; retain an opaque typed value,
     /// not raw numeric spelling or raw content-version canonical bytes.
     JsonValueV1,
     /// Decode the one selected JSON string.
