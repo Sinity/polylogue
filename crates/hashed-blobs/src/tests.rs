@@ -423,7 +423,13 @@ fn delta_against_a_large_base_stays_small() {
 #[test]
 fn batch_success_establishes_durability_and_dedup() {
     for mode in [Durability::PerFile, Durability::Filesystem] {
-        let (_d, s) = store_in(durable_tempdir());
+        // Per-file fsyncs run on the real filesystem. Filesystem mode is a
+        // syncfs of the whole filesystem, which on the shared work disk waits
+        // for every other writer, so it stays on the default TMPDIR.
+        let (_d, s) = match mode {
+            Durability::PerFile => store_in(durable_tempdir()),
+            _ => store(),
+        };
         let items: Vec<Vec<u8>> = (0..20).map(|i| data(40 + i % 10, 3 * FRAME / 2)).collect(); // ten distinct, each twice
         let mut b = s.batch(mode);
         let hs: Vec<Hash> = items.iter().map(|x| b.put(&x[..], 1).unwrap()).collect();

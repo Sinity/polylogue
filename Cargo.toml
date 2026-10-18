@@ -30,3 +30,12 @@ unsafe_code = "deny"
 [workspace.lints.clippy]
 todo = "deny"
 unimplemented = "deny"
+
+# Tests spend most of their CPU in SQLite, JSON and the credential masker.
+# Optimizing them cuts suite CPU by about three quarters; level 1 for the
+# workspace keeps incremental rebuilds about as cheap as unoptimized ones.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
