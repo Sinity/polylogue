@@ -445,3 +445,24 @@ Invalidated typed echoes retract only their own Human attribution and raw echo
 evidence. Independent source-mode or ordinary user-message-echo proof keeps its
 value and exact donor; reapplication uses the typed claim's original source span.
 Malformed explicit turn metadata never falls back to the current turn.
+
+### Whole-document string fields
+
+Whole Session JSON and directory export can stream a selected string-valued
+`ToolCall.input`, `Thinking.data` or `Other.data` beyond the 64 KiB leaf
+admission. Source parsing and canonical selection remain unchanged. Malformed
+JSON-in-string tool arguments remain the supplied string, including escapes and
+control characters; they do not become an invented object or empty input.
+
+The renderer reads bounded ranges from the same pinned field. It assesses the
+logical string against the existing credential masker and compares the result
+with a second bounded logical read before emitting the value. Scalar strings
+are masked through the existing escaped-output sink. Native non-scalar UTF-16
+strings replay their exact normalized bytes only when the assessment is
+unchanged; uncertain reconstruction still refuses. A third range pass emits the
+value, so this bounds retained buffers rather than promising one-pass work.
+Every range keeps the existing live visibility checks, deadline and cancellation.
+No value tree, authority answer or whole field is cached. Oversized objects and
+arrays, source descriptors and model-page metadata retain their existing
+admission and explicit refusal. Failed output may remain partial; non-success
+is never a completed document or successful export.

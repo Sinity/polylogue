@@ -883,6 +883,7 @@ mod reference_guard;
 mod native_id_privacy;
 
 mod canonical_opaque;
+mod large_string;
 
 #[path = "tests/configured_claude.rs"]
 mod configured_claude;

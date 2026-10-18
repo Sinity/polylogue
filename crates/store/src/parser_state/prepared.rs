@@ -10,6 +10,46 @@ pub struct WorkToken {
     pub staged: i64,
     pub applied: i64,
 }
+impl WorkToken {
+    /// Admit one staging transaction using the same encoded framing as stage().
+    /// An unfit first member fails before mutation; a later unfit member remains
+    /// owed. The returned count never exceeds either caller allowance.
+    pub fn staging_prefix(&self, changes: &[CellChange], budget: Budget) -> Result<usize> {
+        if changes.is_empty() {
+            return Ok(0);
+        }
+        validate(&changes[..1], budget)?;
+        let mut bytes = 0usize;
+        let mut count = 0;
+        for change in changes.iter().take(budget.cells) {
+            let required = staging_bytes(self, change)?;
+            let next = bytes.checked_add(required).ok_or(StoreError::Range)?;
+            if next > budget.encoded_bytes {
+                if count == 0 {
+                    return Err(StoreError::ParserAdmission {
+                        resource: "prepared encoded bytes",
+                        required: next as u64,
+                    });
+                }
+                break;
+            }
+            bytes = next;
+            count += 1;
+        }
+        Ok(count)
+    }
+}
+fn staging_bytes(token: &WorkToken, change: &CellChange) -> Result<usize> {
+    [
+        25,
+        namespace(token.work_id).len(),
+        change.namespace.len(),
+        change.key.len(),
+        change.value.as_ref().map_or(0, Vec::len),
+    ]
+    .into_iter()
+    .try_fold(0usize, |sum, n| sum.checked_add(n).ok_or(StoreError::Range))
+}
 pub struct Work {
     pub token: WorkToken,
     pub applying: bool,
@@ -217,19 +257,11 @@ pub(crate) fn stage(
     budget: Budget,
 ) -> Result<Work> {
     validate(changes, budget)?;
-    // The per-member framing and key overhead are charged before encoding.
-    let overhead = changes
-        .len()
-        .checked_mul(25 + namespace(token.work_id).len())
-        .ok_or(StoreError::ParserAdmission {
-            resource: "prepared encoded bytes",
-            required: u64::MAX,
-        })?;
-    let bytes = changes.iter().fold(overhead, |n, c| {
-        n.saturating_add(c.namespace.len())
-            .saturating_add(c.key.len())
-            .saturating_add(c.value.as_ref().map_or(0, Vec::len))
-    });
+    // Prefix selection and whole-slice staging share exact encoded framing.
+    let bytes = changes.iter().try_fold(0usize, |sum, change| {
+        sum.checked_add(staging_bytes(token, change)?)
+            .ok_or(StoreError::Range)
+    })?;
     if bytes > budget.encoded_bytes {
         return Err(StoreError::ParserAdmission {
             resource: "prepared encoded bytes",

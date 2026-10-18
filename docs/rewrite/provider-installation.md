@@ -1,0 +1,5 @@
+# Bounded provider-state installation
+
+Source interpretation stages an admitted prefix of encoded state cells per durable transaction, then seals the complete delta and applies bounded prefixes. The owner permits at most 64 cells and 2 MiB of encoded staging or application work per transaction. Staging uses the store codec’s exact per-member framing, key and value cost. A later unfit cell remains owed; an unfit first cell fails before mutation. This replaces single-cell staging and two-cell application, which amplified a 64 KiB source chunk into thousands of commits.
+
+Predecessor and work-token checks, transaction rollback and complete-delta sealing remain authoritative. Only publication advances visible source progress. Shutdown discards unsealed work through the existing bounded recovery path; sealed work finishes without replaying interpretation against partially applied state. The actor checks cancellation and serves its mailbox between transactions. Host resource limits, source framing, fixture dimensions, progress deadlines and canonical completeness rules are unchanged.
