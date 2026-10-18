@@ -1191,9 +1191,11 @@ pub(super) fn compute(
                             item,
                             local: block_local,
                             phase: if retained {
-                                BlockPhase::Retained(index.checked_add(1).ok_or(
-                                    Error::Invariant("Claude field cursor overflow"),
-                                )?)
+                                BlockPhase::Retained(
+                                    index
+                                        .checked_add(1)
+                                        .ok_or(Error::Invariant("Claude field cursor overflow"))?,
+                                )
                             } else {
                                 BlockPhase::Fields(index.checked_add(1).ok_or(Error::Invariant(
                                     "Claude block field cursor overflow",

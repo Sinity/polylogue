@@ -117,9 +117,7 @@ pub fn read(snapshot: &Snapshot, input: &StoredSource) -> Result<Option<Receipt>
     )?;
     let Some(value) = value else {
         if snapshot.head.status == "done" {
-            return Err(
-                Error::Invariant("done source lost its source-row receipt".into()).into(),
-            );
+            return Err(Error::Invariant("done source lost its source-row receipt".into()).into());
         }
         return Ok(None);
     };
@@ -380,9 +378,7 @@ impl Audit {
             );
         }
         if head.counts.unrecognized > 0 {
-            notes.push(
-                "source has unrecognized records with unresolved required effects".into(),
-            );
+            notes.push("source has unrecognized records with unresolved required effects".into());
         }
         if head.counts.undecodable > 0 {
             notes.push("source has undecodable complete records".into());
