@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(f.body(0, BlobHash::of(b"")), Err(Error::Phase));
     }
     #[test]
-    fn admission_is_atomic_for_framing_tags_payload_and_body() {
+    fn refused_writes_change_nothing_for_framing_tags_payload_and_body() {
         let prefix = PREFIX.len() as u64 + 8;
         assert!(matches!(
             Framer::compound(1, prefix - 1),
