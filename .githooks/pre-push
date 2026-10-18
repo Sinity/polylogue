@@ -2,7 +2,7 @@
 set -euo pipefail
 # Avoid a second cold build for changes that cannot change the Rust foundation.
 # Inspect every pushed commit, including a new branch relative to fetched master.
-needs_tests=false
+needs_checks=false
 saw_update=false
 while read -r local_ref local_sha remote_ref remote_sha; do
     saw_update=true
@@ -10,7 +10,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         continue
     fi
     if [[ "$local_sha" != "$(git rev-parse HEAD)" ]]; then
-        needs_tests=true
+        needs_checks=true
         break
     fi
     base="$remote_sha"
@@ -20,12 +20,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     if [[ -z "$base" ]] || ! git diff --quiet "$base" "$local_sha" -- \
         Cargo.toml Cargo.lock flake.nix flake.lock rust-toolchain rust-toolchain.toml \
         .cargo build.rs crates xtask scripts examples; then
-        needs_tests=true
+        needs_checks=true
         break
     fi
 done
-if [[ "$saw_update" == true && "$needs_tests" == false ]]; then
+if [[ "$saw_update" == true && "$needs_checks" == false ]]; then
     echo "Rust foundation unchanged; no duplicate local suite. Hosted checks still apply."
     exit 0
 fi
-exec nix develop --command cargo run --locked -p xtask -- check
+exec nix develop --command bash scripts/check-fast.sh

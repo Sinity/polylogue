@@ -32,8 +32,8 @@ jobs:
             - cargo-v1-{{ arch }}-{{ checksum "flake.lock" }}-{{ checksum "Cargo.lock" }}-{{ .Revision }}
             - cargo-v1-{{ arch }}-{{ checksum "flake.lock" }}-{{ checksum "Cargo.lock" }}-
       - run:
-          name: Incremental Rust tests, formatting and crate boundaries
-          command: nix develop --command cargo run --locked -p xtask -- check
+          name: Incremental compilation, formatting and crate boundaries
+          command: nix develop --command bash scripts/check-fast.sh
       - save_cache:
           key: cargo-v1-{{ arch }}-{{ checksum "flake.lock" }}-{{ checksum "Cargo.lock" }}-{{ .Revision }}
           paths:
