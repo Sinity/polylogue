@@ -1,6 +1,6 @@
-//! Current source projection, scoped to one committed parser incarnation.
-//! This selects no canonical Message. Its fixed reference lets the owner resume
-//! after certificate publication without treating a scheduler cut as a version.
+//! The source projection: the body one parser run produced for a logical
+//! message key, plus a reference stored in a parser cell so the owner can find
+//! it again after a restart. Choosing the message's selected body is separate.
 use super::{blocks, bodies::BodyId, completion::PreparedProjection, writer};
 use crate::{Error, Result, Writer, db, parser_state::Token};
 use polylogue_model::{BlobHash, MessageId, SessionId};
@@ -36,7 +36,7 @@ impl SourceProjection {
     pub fn version_hash(&self) -> BlobHash {
         self.hash
     }
-    /// Provider-owned fixed evidence-head encoding, not evidence payload bytes.
+    /// The caller's guard bytes stored with the reference.
     pub fn evidence_guard(&self) -> &[u8] {
         &self.reference[FIXED..]
     }
@@ -161,7 +161,7 @@ pub(super) fn read_current(
         generation,
         source_step,
         source_basis,
-    ) = row.ok_or_else(|| invalid("source projection lost its eligible certificate"))?;
+    ) = row.ok_or_else(|| invalid("source projection reference names no eligible candidate"))?;
     let (id, sid) = match (id, sid) {
         (Some(id), Some(sid)) => (id, sid),
         _ => {
@@ -171,7 +171,7 @@ pub(super) fn read_current(
             });
         }
     };
-    let predecessor = certified_predecessor(
+    let parser = stored_parser_token(
         token,
         generation,
         source_step,
@@ -181,10 +181,7 @@ pub(super) fn read_current(
         evidence,
         &basis,
     )?;
-    if predecessor.generation != token.generation
-        || predecessor.basis != token.basis
-        || predecessor.step != step
-    {
+    if parser.generation != token.generation || parser.basis != token.basis || parser.step != step {
         return Err(Error::StaleMessage);
     }
     let message_id = MessageId::from_stored(
@@ -202,20 +199,21 @@ pub(super) fn read_current(
             session,
         },
         candidate,
-        predecessor,
+        predecessor: parser,
         message: message_id,
         evidence_revision: evidence,
         hash: BlobHash::from_bytes(
             hash.try_into()
-                .map_err(|_| invalid("source certificate hash length"))?,
+                .map_err(|_| invalid("candidate version_hash is not 32 bytes"))?,
         ),
         reference: bytes,
     }))
 }
 
-// Recover the exact source predecessor from its immutable certificate rather
-// than depending on disposable parser cells or guessing from parser_version.
-fn certified_predecessor(
+// Rebuild the parser token that produced a candidate from the candidate's own
+// columns and check it against its digest. Parser cells are dropped on reparse,
+// so they cannot be used for this.
+fn stored_parser_token(
     scope: &Token,
     generation: i64,
     step: i64,
@@ -228,20 +226,20 @@ fn certified_predecessor(
     if generation <= 0 || step < 0 {
         return Err(Error::StaleMessage);
     }
-    let mut predecessor = scope.clone();
-    predecessor.generation = generation;
-    predecessor.step = step;
-    predecessor.basis = source_basis
+    let mut token = scope.clone();
+    token.generation = generation;
+    token.step = step;
+    token.basis = source_basis
         .try_into()
-        .map_err(|_| invalid("source certificate basis length"))?;
-    if preparation_basis != writer::basis(&predecessor, revision, logical, evidence).as_slice() {
+        .map_err(|_| invalid("candidate source_basis_digest is not 32 bytes"))?;
+    if preparation_basis != writer::basis(&token, revision, logical, evidence).as_slice() {
         return Err(Error::StaleMessage);
     }
-    Ok(predecessor)
+    Ok(token)
 }
 
-/// A complete compatible source selection is a bounded equality slice.
-/// Nonidentical or unsupported candidates retain explicit merge work.
+/// Result of selecting a message body from its candidates. `Contested` means
+/// the candidates differ or cannot be compared, and need a merge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceSelection {
     Selected,
@@ -249,7 +247,8 @@ pub enum SourceSelection {
     Contested,
 }
 impl crate::parser_state::Snapshot {
-    /// Source certification and selected-body membership share this pinned view.
+    /// The current projection, checked against the message's selected body in
+    /// this same snapshot.
     pub fn selected_source_projection(
         &self,
         logical: &[u8; 32],
@@ -278,9 +277,9 @@ pub(super) fn read_selected(
     Ok(Some(source))
 }
 impl Writer {
-    /// Read one fixed current reference and its certificate. The parser must be
-    /// at the caller's exact predecessor with no partially applied work. A
-    /// reference cannot silently become an absence after corruption/retirement.
+    /// Read the current projection for a logical key. The parser must be at
+    /// `token`. A stored reference that no longer resolves is an error, not
+    /// `None`.
     pub fn current_source_projection(
         &self,
         token: &Token,
@@ -295,13 +294,10 @@ impl Writer {
             allowance,
         )
     }
-    /// Publish a source certificate and its restart reference atomically. Only
-    /// the identified previous scheduling cut of this same logical candidate is
-    /// withdrawn. A reparse may recover its strictly older parser incarnation
-    /// from verified certificate coordinates; absence within this generation
-    /// never grants that authority.
-    /// This does not choose across revisions/chains/inputs, publish a canonical
-    /// head, consume Effects, index search, or claim complete history coverage.
+    /// Mark a prepared body ready and store its reference, in one transaction.
+    /// With `previous`, the stored reference must still name that projection
+    /// of the same logical key, and its candidate is withdrawn. Without it, only
+    /// a candidate from an older parser generation may be withdrawn.
     pub fn publish_source_projection(
         &mut self,
         prepared: &PreparedProjection,
@@ -335,11 +331,10 @@ impl Writer {
                 return Err(Error::StaleMessage);
             }
         }
-        // A verified append can move the same logical candidate to its newer
-        // retained revision. Immutable independent revisions never acquire this
-        // withdrawal authority. A new parser generation can recover the exact
-        // older certificate without its retired source-reference cell. This
-        // also covers a companion-basis change arriving with a verified append.
+        // Only an observed (growing) input may withdraw an older revision of a
+        // logical key: on append with `previous`, or on reparse in a newer
+        // parser generation whose old reference cell is gone. An immutable
+        // input keeps each revision.
         let observed_source = {
             let id: String = db(&path, || {
                 self._index.query_row(
@@ -390,7 +385,7 @@ impl Writer {
         let logical: [u8; 32] = logical
             .try_into()
             .map_err(|_| invalid("source logical key length"))?;
-        let prepared_predecessor = certified_predecessor(
+        let prepared_token = stored_parser_token(
             &build.source,
             generation,
             step,
@@ -400,7 +395,7 @@ impl Writer {
             evidence,
             &preparation_basis,
         )?;
-        if prepared_predecessor != build.source
+        if prepared_token != build.source
             || preparation_basis != build.digest
             || input != build.source.input_pk
         {
@@ -412,7 +407,7 @@ impl Writer {
         })?;
         let withdrawal = match existing {
             Some((candidate, revision, evidence, generation, step, basis, preparation)) => {
-                let predecessor = certified_predecessor(
+                let token = stored_parser_token(
                     &build.source,
                     generation,
                     step,
@@ -424,12 +419,11 @@ impl Writer {
                 )?;
                 match previous {
                     Some(previous)
-                        if previous.candidate == candidate
-                            && previous.predecessor == predecessor => {}
-                    None if predecessor.generation < build.source.generation => {}
+                        if previous.candidate == candidate && previous.predecessor == token => {}
+                    None if token.generation < build.source.generation => {}
                     _ => return Err(Error::StaleMessage),
                 }
-                Some((candidate, predecessor, preparation))
+                Some((candidate, token, preparation))
             }
             None if previous.is_none() => None,
             None => return Err(Error::StaleMessage),
@@ -446,9 +440,9 @@ impl Writer {
         if changed != 1 {
             return Err(Error::StaleMessage);
         }
-        if let Some((candidate, predecessor, preparation)) = withdrawal {
+        if let Some((candidate, token, preparation)) = withdrawal {
             if db(&path, || {
-                tx.execute("UPDATE message_candidate SET eligible=0 WHERE pk=?1 AND eligible=1 AND source_state_generation=?2 AND source_state_step=?3 AND source_basis_digest=?4 AND basis_digest=?5",params![candidate,predecessor.generation,predecessor.step,predecessor.basis.as_slice(),preparation])
+                tx.execute("UPDATE message_candidate SET eligible=0 WHERE pk=?1 AND eligible=1 AND source_state_generation=?2 AND source_state_step=?3 AND source_basis_digest=?4 AND basis_digest=?5",params![candidate,token.generation,token.step,token.basis.as_slice(),preparation])
             })? != 1
             {
                 return Err(Error::StaleMessage);
@@ -487,7 +481,7 @@ impl Writer {
 mod codec_tests {
     use super::*;
     #[test]
-    fn reference_frames_guard_length_and_refuses_every_truncation() {
+    fn reference_round_trips_and_rejects_truncation() {
         let bytes = reference(3, 7, 0, b"guard\0bytes", 4096).unwrap();
         assert_eq!(
             decode(&bytes).unwrap(),
