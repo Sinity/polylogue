@@ -1,5 +1,5 @@
-//! Explicit Claude tool-result snapshots. Immutable input context owns the main
-//! association and exact provider pathname; no disposable parser cell owns bytes.
+//! Claude tool-result files that a main transcript refers to. Each is stored as
+//! an immutable import whose context names its main input and file path.
 use crate::{BlobHash, Error, ImportObservation, InputFormat, ReadHandle, Result, Writer, db};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,9 +12,9 @@ use std::{
 pub const MAX_BODY: u64 = 1024 * 1024;
 pub const MAX_COMPANIONS: usize = 32;
 
-/// The configured base may resolve normally. Each provider-owned appended
-/// component is opened relative to its held parent descriptor with NOFOLLOW;
-/// renaming or replacing its pathname cannot redirect the next open.
+/// Open `main`'s tool-result file at `path`. The directory holding `main` may
+/// be reached through symlinks; each component below it is opened relative to
+/// its parent with NOFOLLOW, so a rename cannot redirect the open.
 pub(crate) fn open_body(main: &Path, path: &Path) -> Result<Option<File>> {
     use rustix::fs::{Mode, OFlags, openat};
     let parent = main.parent().ok_or(Error::Range)?;
@@ -64,8 +64,8 @@ pub struct Companion {
     pub length: u64,
     pub inline_duplicate: bool,
 }
-/// Verify an immutable snapshot using the caller's pinned archive transaction.
-/// A normalized copy cannot substitute for a lost or changed retained witness.
+/// Read a tool-result body through the caller's archive transaction. The
+/// stored input and blob must match `body` exactly.
 pub(crate) fn read_pinned(
     connection: &rusqlite::Connection,
     root: &Path,
@@ -80,20 +80,20 @@ pub(crate) fn read_pinned(
     })?;
     if !valid {
         return Err(Error::Invariant(
-            "required Claude retained body metadata unavailable".into(),
+            "Claude tool-result is missing from the archive".into(),
         ));
     }
     let reader = hashed_blobs::Reader::new(root, vec![]);
     let bytes = reader.read_range(&hashed_blobs::Hash(*body.blob.bytes()), 0, body.length)?;
     if BlobHash::of(&bytes) != body.blob {
         return Err(Error::Invariant(
-            "required Claude retained body hash differs".into(),
+            "Claude tool-result blob has a different hash".into(),
         ));
     }
     Ok(bytes)
 }
-/// A sealed source descriptor pins the owning Message's exact witness. Other
-/// origin formats retain their existing reader semantics.
+/// If `bytes` is a Claude tool-result origin, check that the body it names is
+/// stored. Other origins are checked by their own readers.
 pub(crate) fn verify_origin(
     connection: &rusqlite::Connection,
     root: &Path,
@@ -188,9 +188,8 @@ pub(crate) fn manifest(
     Ok(result.into_values().collect())
 }
 impl Writer {
-    /// Called only for an explicitly named reference within this main's own
-    /// tool-results directory. Missing provider copies preserve acquired bytes.
-    /// All other open/read failures remain failures, including denied access.
+    /// Store one tool-result file that `main` refers to. A missing file is not
+    /// an error and keeps earlier copies; any other open or read error is.
     pub fn acquire_claude_body(
         &mut self,
         main: &str,
@@ -266,15 +265,7 @@ impl Writer {
         self.store_immutable_input(
             hash,
             InputFormat::ClaudeCodeToolResult,
-            &[
-                main,
-                path,
-                if duplicate {
-                    "inline-duplicate"
-                } else {
-                    "required"
-                },
-            ],
+            &context,
             observation,
             65536,
         )?;
@@ -358,7 +349,7 @@ impl ReadHandle {
             || source.context.get(1) != Some(&body.path)
         {
             return Err(Error::Invariant(
-                "Claude retained companion basis differs".into(),
+                "Claude tool-result does not match its stored input".into(),
             ));
         }
         read_pinned(&self.archive, &self.root, body)
@@ -366,177 +357,5 @@ impl ReadHandle {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt;
-    #[test]
-    fn body_opens_refuse_symlinks_in_each_appended_component() {
-        use std::os::unix::fs::symlink;
-        for component in ["session", "tool-results", "result.txt"] {
-            let root = tempfile::tempdir().unwrap();
-            let main = root.path().join("session.jsonl");
-            let directory = root.path().join("session/tool-results");
-            std::fs::create_dir_all(&directory).unwrap();
-            let body = directory.join("result.txt");
-            std::fs::write(&body, b"outside synthetic body").unwrap();
-            let target = match component {
-                "session" => root.path().join("session"),
-                "tool-results" => directory.clone(),
-                _ => body.clone(),
-            };
-            let outside = root.path().join("outside");
-            std::fs::rename(&target, &outside).unwrap();
-            symlink(&outside, &target).unwrap();
-            assert!(open_body(&main, &body).is_err(), "{component}");
-        }
-    }
-    #[test]
-    fn configured_base_resolution_and_missing_appended_components_remain_supported() {
-        use std::io::Read;
-        use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir().unwrap();
-        let base = root.path().join("base");
-        std::fs::create_dir(&base).unwrap();
-        let configured = root.path().join("configured");
-        symlink(&base, &configured).unwrap();
-        let main = configured.join("session.jsonl");
-        let body = configured.join("session/tool-results/result.txt");
-        assert!(open_body(&main, &body).unwrap().is_none());
-        std::fs::create_dir(base.join("session")).unwrap();
-        assert!(open_body(&main, &body).unwrap().is_none());
-        std::fs::create_dir(base.join("session/tool-results")).unwrap();
-        assert!(open_body(&main, &body).unwrap().is_none());
-        std::fs::write(&body, b"inside configured authority").unwrap();
-        let mut bytes = Vec::new();
-        open_body(&main, &body)
-            .unwrap()
-            .unwrap()
-            .read_to_end(&mut bytes)
-            .unwrap();
-        assert_eq!(bytes, b"inside configured authority");
-    }
-    #[test]
-    fn snapshots_pin_latest_acquisition_and_retained_bytes_survive_provider_loss() {
-        let root = tempfile::tempdir().unwrap();
-        let archive = root.path().join("archive");
-        let main_path = root.path().join("session.jsonl");
-        let directory = root.path().join("session/tool-results");
-        std::fs::create_dir_all(&directory).unwrap();
-        let provider = directory.join("result.txt");
-        let mut writer = Writer::open(&archive).unwrap();
-        let stop = AtomicBool::new(false);
-        for (request, bytes) in [
-            ("a", b"first".as_slice()),
-            ("b", b"second"),
-            ("c", b"first"),
-        ] {
-            std::fs::write(&provider, bytes).unwrap();
-            writer
-                .acquire_claude_body(
-                    "main",
-                    &main_path,
-                    &provider,
-                    &ImportObservation {
-                        id: request,
-                        machine: "test",
-                        host: "test",
-                        path: "copy:synthetic",
-                        seen_at: 1,
-                    },
-                    &stop,
-                    None,
-                )
-                .unwrap();
-            let pinned = manifest(&writer.archive, &archive.join("archive.db"), "main").unwrap();
-            assert_eq!(pinned.len(), 1);
-            assert_eq!(
-                writer
-                    .read_handle()
-                    .unwrap()
-                    .claude_body(&pinned[0])
-                    .unwrap(),
-                bytes
-            );
-        }
-        let pinned = manifest(&writer.archive, &archive.join("archive.db"), "main")
-            .unwrap()
-            .pop()
-            .unwrap();
-        std::fs::remove_file(&provider).unwrap();
-        writer
-            .acquire_claude_body(
-                "main",
-                &main_path,
-                &provider,
-                &ImportObservation {
-                    id: "missing",
-                    machine: "test",
-                    host: "test",
-                    path: "copy:synthetic",
-                    seen_at: 1,
-                },
-                &stop,
-                None,
-            )
-            .unwrap();
-        assert_eq!(
-            writer.read_handle().unwrap().claude_body(&pinned).unwrap(),
-            b"first"
-        );
-        writer
-            .archive
-            .execute(
-                "UPDATE blob SET state='deleting' WHERE hash=?1",
-                [pinned.blob.bytes().as_slice()],
-            )
-            .unwrap();
-        assert!(writer.read_handle().unwrap().claude_body(&pinned).is_err());
-    }
-    #[test]
-    fn failed_provider_reads_and_excisions_never_become_missing_or_empty() {
-        let root = tempfile::tempdir().unwrap();
-        let main_path = root.path().join("session.jsonl");
-        let directory = root.path().join("session/tool-results");
-        std::fs::create_dir_all(&directory).unwrap();
-        let provider = directory.join("result.txt");
-        let mut writer = Writer::open(&root.path().join("archive")).unwrap();
-        let observation = ImportObservation {
-            id: "a",
-            machine: "test",
-            host: "test",
-            path: "copy:synthetic",
-            seen_at: 1,
-        };
-        std::fs::write(&provider, b"private synthetic body").unwrap();
-        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0)).unwrap();
-        assert!(
-            writer
-                .acquire_claude_body(
-                    "main",
-                    &main_path,
-                    &provider,
-                    &observation,
-                    &AtomicBool::new(false),
-                    None
-                )
-                .is_err()
-        );
-        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o600)).unwrap();
-        writer.archive.execute("INSERT INTO excision(id,scope,created_at,local_seq) VALUES('x','session:synthetic',1,1)",[]).unwrap();
-        assert!(matches!(
-            writer.acquire_claude_body(
-                "main",
-                &main_path,
-                &provider,
-                &observation,
-                &AtomicBool::new(false),
-                None
-            ),
-            Err(Error::ExcisionCheckRequired)
-        ));
-    }
-}
-
-#[cfg(test)]
-#[path = "claude_bodies/manifest_tests.rs"]
-mod manifest_tests;
+#[path = "claude_bodies/tests.rs"]
+mod tests;
