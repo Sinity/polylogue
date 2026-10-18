@@ -15,7 +15,7 @@ history; nothing below is kept as a compatibility path.
 | `.gitignore` | Rust build exclusions. |
 | `AGENTS.md`, `README.md` | Rewritten for the Rust workspace. |
 | `docs` | Notes under `docs/rewrite/`. |
-| `CHANGELOG.md` | Kept as [docs/history/PREDECESSOR-CHANGELOG.md](history/PREDECESSOR-CHANGELOG.md). |
+| `CHANGELOG.md` | Kept as [docs/history/PYTHON-CHANGELOG.md](history/PYTHON-CHANGELOG.md). |
 | `LICENSE` | Unchanged. |
 
 ## Removed
