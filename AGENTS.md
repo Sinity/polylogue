@@ -12,7 +12,11 @@ Keep substantial unit tests and fixtures in separate source files, using private
 
 ## Commands and style
 
-Use the declared AgentCTL operations for builds and suites. `nix flake check` builds packaged binaries and runs foundation checks; `cargo run -p xtask -- check` runs the local check route. Rust uses four spaces and rustfmt. Stage explicit paths; run the normal hooks. Keep the target crate edges: model never depends on storage or IO; only store uses SQLite; surfaces obtain typed store handles, never raw connections.
+Use the declared AgentCTL operations for builds and suites. `nix flake check` builds packaged binaries and runs foundation checks; `scripts/check-fast.sh` owns routine checks; `cargo run -p xtask -- check` runs the full local workspace suite. Rust uses four spaces and rustfmt. Stage explicit paths; run the normal hooks. Keep the target crate edges: model never depends on storage or IO; only store uses SQLite; surfaces obtain typed store handles, never raw connections.
+
+## Development flow
+
+Optimize routine development for fast feedback and integration. Use cheap checks and focused behavioral tests for the actual delta; full local packages, full behavioral suites and full-corpus verification are not prerequisites for every development merge. Development bugs can be repaired after integration. Keep pass, fail, pending, unrun and superseded outcomes explicit; integration is not proof of testing. Run extended validation separately on meaningful integrated batches and continue independent development while it runs. Coalesce expensive queued checks to useful latest-main candidates through supported job tooling; do not enqueue a full verification sequence for every small change. Use the normal permitted PR route and existing required checks; do not change branch protection. Real-data custody, secrets, destructive operations and deployment retain their separate safeguards.
 
 ## Correctness and delivery
 
