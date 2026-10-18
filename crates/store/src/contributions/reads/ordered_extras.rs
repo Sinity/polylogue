@@ -1,17 +1,18 @@
-//! Canonical extra-key traversal over one immutable selected root. SQLite's
-//! private file-backed TEMP B-tree sorts keys/handles, never field payloads.
-//! Current typed immediate keys are scalar strings: binary UTF-8 order is their
-//! canonical WTF-8 order. Nested non-scalar keys stay owned by RawJson.
-use super::*;
+//! Extra fields of a message or block in key order. Keys (never values) are
+//! sorted in a private SQLite TEMP table, so the key count has no limit. Keys
+//! are strings, and their UTF-8 byte order is their canonical order.
+use super::{fields::FieldScope, *};
+use crate::db;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+use rusqlite::{OptionalExtension, params};
 use std::time::Instant;
 
 const PREFIX: &str = "polylogue_extra_order_";
 
-/// Called once, before a new pinned connection starts its read transaction.
-/// SQLite owns private TEMP files under the process startup temp environment;
-/// deployment must qualify that placement as private and on disk. No global
-/// SQLite directory or retained/provider path is changed here.
+/// Set up a read connection before its transaction starts: TEMP tables go to
+/// files, and the authorizer allows writes only to this module's TEMP tables.
+/// SQLite puts those files in the process temp directory, which must be
+/// private and on disk.
 pub(super) fn configure(connection: &Connection, path: &std::path::Path) -> Result<()> {
     db(path, || {
         connection.execute_batch(
@@ -46,8 +47,7 @@ pub(super) fn configure(connection: &Connection, path: &std::path::Path) -> Resu
                 {
                     Authorization::Allow
                 }
-                // OS-read-only main remains an independent boundary. In particular,
-                // TEMP support grants neither main writes nor arbitrary ATTACH.
+                // Everything else is denied, including writes to main and ATTACH.
                 _ => Authorization::Deny,
             }
         }))
@@ -59,9 +59,9 @@ pub struct ExtraFieldEntry<'a> {
     pub value: FieldRead<'a>,
 }
 
-/// Request-local ordering state. It borrows the selected Message, so body/root
-/// membership and visibility remain the existing reader's authority. Dropping
-/// it removes only its own TEMP table, including on sink/cancellation errors.
+/// Extra fields of one message or block, in key order. Visibility is checked
+/// through the borrowed message view. Dropping it drops its TEMP table, also
+/// after errors.
 pub struct OrderedExtras<'a> {
     message: &'a MessageView,
     root: Option<i64>,
@@ -150,8 +150,8 @@ impl<'a> OrderedExtras<'a> {
         loop {
             check(until, cancelled)?;
             message.visible()?;
-            // Existing directory traversal validates shape, ownership and
-            // current-root membership; historical slots never enter the sort.
+            // The directory walk checks shape and owner; only slots in this root
+            // are sorted.
             let found = {
                 let read = locked(&message.read)?;
                 message.field_successor(
@@ -181,8 +181,7 @@ impl<'a> OrderedExtras<'a> {
         }
         Ok(ordered)
     }
-    /// One indexed successor and one existing pinned field resolution. No
-    /// statement or lock survives the call, and no model-page state is kept.
+    /// The next extra field. No statement or lock is held between calls.
     pub fn next(
         &mut self,
         until: Instant,
@@ -291,8 +290,8 @@ fn read_next_cells(
     after: Option<&[u8]>,
     allowance: usize,
 ) -> rusqlite::Result<Option<ExtraCells>> {
-    // Even private TEMP state can be corrupt. Read lengths before materializing
-    // either blob, exactly as the ordinary selected-field bounded reader does.
+    // Read lengths first, so a corrupt oversized row is refused before it is
+    // loaded.
     let projection = "length(sort_key),length(semantic_key),CASE WHEN length(sort_key)<=?1 THEN sort_key END,CASE WHEN length(semantic_key)<=?1 THEN semantic_key END";
     let row = |r: &rusqlite::Row<'_>| {
         Ok(ExtraCells {
@@ -340,10 +339,14 @@ fn extra_key(scope: FieldScope, semantic: &[u8]) -> Result<Option<String>> {
             }
         }
         FieldScope::Block { .. } => {
-            match serde_json::from_slice::<super::super::writer::BlockFieldKey<'_>>(semantic)
-                .map_err(invalid)?
+            match serde_json::from_slice::<crate::contributions::writer::BlockFieldKey<'_>>(
+                semantic,
+            )
+            .map_err(invalid)?
             {
-                super::super::writer::BlockFieldKey::Extra(key) => Ok(Some(key.into_owned())),
+                crate::contributions::writer::BlockFieldKey::Extra(key) => {
+                    Ok(Some(key.into_owned()))
+                }
                 _ => Ok(None),
             }
         }
