@@ -2,7 +2,7 @@ use super::*;
 use polylogue_store::parser_state::Phase;
 
 #[test]
-fn configured_claude_separate_agent_has_provider_owned_membership() {
+fn separate_agent_session_has_its_own_membership() {
     let world = World::new();
     let native = "actual-owner/a";
     let bytes = (json!({"type":"user","uuid":"u","sessionId":"actual-owner","promptSource":"typed","message":{"role":"user","content":"Separate agent independent text."}}).to_string()+"\n").into_bytes();
@@ -18,16 +18,13 @@ fn configured_claude_separate_agent_has_provider_owned_membership() {
     world.wait_rows(&input, true);
     let id = SessionId::new(&Origin::new("claude-code").unwrap(), native).unwrap();
     let view = world.reader.selected_session(&id, 65536).unwrap().unwrap();
-    let qualification =
+    let status =
         polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 8000).unwrap();
-    assert!(qualification.known_rows_readable(), "{qualification:?}");
-    assert!(
-        !qualification.complete(),
-        "lineage products remain qualified separately"
-    );
-    assert_eq!(qualification.expected.len(), 1);
-    assert_eq!(qualification.inputs.len(), 1);
-    assert_eq!(qualification.contributors[0].input, input.id);
+    assert!(status.known_rows_readable(), "{status:?}");
+    assert!(!status.complete(), "lineage keeps the session incomplete");
+    assert_eq!(status.expected.len(), 1);
+    assert_eq!(status.inputs.len(), 1);
+    assert_eq!(status.contributors[0].input, input.id);
     let mut bytes = vec![];
     write(&view, &mut bytes, Instant::now() + WAIT).unwrap();
     let document: Value = serde_json::from_slice(&bytes).unwrap();
@@ -53,9 +50,9 @@ fn configured_claude_separate_agent_has_provider_owned_membership() {
 }
 
 #[test]
-fn configured_claude_exact_read_does_not_charge_streamed_foreign_population_as_live_metadata() {
+fn foreign_sessions_do_not_count_toward_the_requested_session() {
     let world = World::new();
-    let bytes = (json!({"type":"user","uuid":"u","sessionId":SID,"promptSource":"typed","message":{"role":"user","content":"Retained exact target."}}).to_string()+"\n").into_bytes();
+    let bytes = (json!({"type":"user","uuid":"u","sessionId":SID,"promptSource":"typed","message":{"role":"user","content":"Target text."}}).to_string()+"\n").into_bytes();
     let own = world.import(&bytes, "own-target");
     world.wait_rows(&own, false);
     for i in 0..40 {
@@ -69,15 +66,15 @@ fn configured_claude_exact_read_does_not_charge_streamed_foreign_population_as_l
         .selected_session(&world.session(), 65536)
         .unwrap()
         .unwrap();
-    let qualification =
+    let status =
         polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 8000).unwrap();
-    assert!(qualification.known_rows_readable(), "{qualification:?}");
-    assert_eq!(qualification.contributors.len(), 1);
-    assert_eq!(qualification.contributors[0].input, own.id);
+    assert!(status.known_rows_readable(), "{status:?}");
+    assert_eq!(status.contributors.len(), 1);
+    assert_eq!(status.contributors[0].input, own.id);
 }
 
 #[test]
-fn configured_claude_foreign_partial_main_does_not_make_requested_membership_pending() {
+fn foreign_partial_main_does_not_make_requested_session_pending() {
     let world = World::new();
     let bytes = (json!({"type":"user","uuid":"u","sessionId":SID,"promptSource":"typed","message":{"role":"user","content":"Independent readable main."}}).to_string()+"\n").into_bytes();
     let own = world.import(&bytes, "readable-main");
@@ -102,21 +99,21 @@ fn configured_claude_foreign_partial_main_does_not_make_requested_membership_pen
         .selected_session(&world.session(), 65536)
         .unwrap()
         .unwrap();
-    let qualification =
+    let status =
         polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 8000).unwrap();
-    assert!(qualification.known_rows_readable(), "{qualification:?}");
-    assert!(!qualification.complete());
-    let result = qualification.result(&view.catalog());
+    assert!(status.known_rows_readable(), "{status:?}");
+    assert!(!status.complete());
+    let result = status.result(&view.catalog());
     assert_eq!(result["unknown"]["population_pending_inputs"], 1);
     assert!(result["unknown"].get("pending_inputs").is_none());
-    assert_eq!(qualification.expected.len(), 1);
+    assert_eq!(status.expected.len(), 1);
 }
 
 #[test]
-fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() {
+fn observed_member_is_readable_despite_incoming_agent_link() {
     let mut world = World::new();
     world.path = world._dir.path().join(format!("{SID}.jsonl"));
-    let mut bytes = (json!({"type":"user","uuid":"u","sessionId":SID,"promptSource":"typed","message":{"role":"user","content":"Earlier certified main text."}}).to_string()+"\n").into_bytes();
+    let mut bytes = (json!({"type":"user","uuid":"u","sessionId":SID,"promptSource":"typed","message":{"role":"user","content":"Earlier main text."}}).to_string()+"\n").into_bytes();
     bytes.extend_from_slice(b"{\"type\":\"user\",\"uuid\":\"unfinished\"");
     fs::write(&world.path, bytes).unwrap();
     let observation = Observation {
@@ -155,7 +152,7 @@ fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() 
         vec!["claude-subagent".into(), "a".into(), SID.into()],
     );
     world.wait_rows(&agent, true);
-    fn qualify(world: &World) -> (polylogue_engine::session_status::SessionStatus, Value) {
+    fn member_status(world: &World) -> (polylogue_engine::session_status::SessionStatus, Value) {
         let view = world
             .reader
             .selected_session(&world.session(), 65536)
@@ -177,20 +174,20 @@ fn configured_claude_observed_member_is_independent_of_incoming_agent_lineage() 
         let result = q.result(&view.catalog());
         (q, result)
     }
-    let (q, result) = qualify(&world);
+    let (q, result) = member_status(&world);
     assert_eq!(result["completion"]["computed_from"]["inputs_total"], 2);
     assert!(
         !q.complete(),
-        "incoming relationship and partial suffix remain qualified"
+        "incoming link and partial suffix keep the session incomplete"
     );
     assert!(q.member_rows_readable(), "{q:?}");
-    // A second actual source of main membership must still deny the observed
-    // exception, even if a consumer omits that source from display metadata.
+    // A second input with main-session rows must still make the member
+    // unreadable, even when the contributor list shown is truncated.
     world.path = world._dir.path().join("second-main.jsonl");
-    let second=(json!({"type":"user","uuid":"u","sessionId":SID,"promptSource":"typed","message":{"role":"user","content":"Earlier certified main text."}}).to_string()+"\n").into_bytes();
+    let second=(json!({"type":"user","uuid":"u","sessionId":SID,"promptSource":"typed","message":{"role":"user","content":"Earlier main text."}}).to_string()+"\n").into_bytes();
     let second = world.import(&second, "second-main");
     world.wait_rows(&second, false);
-    let (mut q, result) = qualify(&world);
+    let (mut q, result) = member_status(&world);
     assert_eq!(result["completion"]["computed_from"]["inputs_total"], 3);
     q.contributors.truncate(1);
     assert!(

@@ -1,5 +1,6 @@
-//! Direct documents stream canonically ordered installed leaves; model pages admit the complete
-//! opaque object before retaining it for canonical key ordering and framing.
+//! Writes a provider `attrs` or `data` object. Documents stream fields in the
+//! stored canonical key order; model pages collect the whole object (up to
+//! `METADATA` bytes) and write it as one opaque envelope.
 use super::{Encoder, METADATA, RawJson, invalid};
 use polylogue_model::NativeId;
 use std::{
@@ -24,15 +25,15 @@ impl OpaqueFields {
     }
     pub fn push<W: Write>(&mut self, e: &mut Encoder<W>, key: &str, raw: &[u8]) -> io::Result<()> {
         if let Some((fields, bytes)) = &mut self.page {
-            // Charge the bounded raw leaf before parsing or retaining it. The
-            // final Metadata sink separately bounds privacy/escaping expansion.
+            // Count the raw bytes before parsing. The metadata sink caps the
+            // output again after masking and escaping.
             let key_bytes = serde_json::to_vec(key)?.len();
             let next = bytes
                 .checked_add(key_bytes)
                 .and_then(|n| n.checked_add(2))
                 .and_then(|n| n.checked_add(raw.len()))
                 .filter(|n| *n <= METADATA)
-                .ok_or_else(|| invalid("selected opaque metadata exceeds admission"))?;
+                .ok_or_else(|| invalid("opaque metadata exceeds 4 MiB"))?;
             let value = RawJson::parse(raw).map_err(io::Error::other)?;
             fields.insert(key.into(), value);
             *bytes = next;
@@ -70,5 +71,4 @@ impl OpaqueFields {
 }
 
 #[cfg(test)]
-#[path = "opaque_fields_tests.rs"]
 mod tests;

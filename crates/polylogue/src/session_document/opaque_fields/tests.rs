@@ -8,7 +8,7 @@ fn encoder() -> Encoder<Vec<u8>> {
 }
 
 #[test]
-fn page_refuses_before_retaining_over_budget_leaf_and_stops_the_suffix() {
+fn model_page_stops_at_the_field_that_exceeds_the_limit() {
     let raw = serde_json::to_vec(&"a".repeat(super::super::LEAF - 2)).unwrap();
     let mut fields = OpaqueFields::new("attrs", true);
     let mut e = encoder();
@@ -22,19 +22,19 @@ fn page_refuses_before_retaining_over_budget_leaf_and_stops_the_suffix() {
     })();
     assert_eq!(
         result.unwrap_err().to_string(),
-        "selected opaque metadata exceeds admission"
+        "opaque metadata exceeds 4 MiB"
     );
-    let (retained, bytes) = fields.page.as_ref().unwrap();
-    assert_eq!(attempted.get(), retained.len() + 1);
+    let (kept, bytes) = fields.page.as_ref().unwrap();
+    assert_eq!(attempted.get(), kept.len() + 1);
     assert!(attempted.get() < 1000);
     assert!(*bytes <= METADATA);
-    assert!(!retained.contains_key(&format!("field{:04}", retained.len()).into()));
-    // Nothing was serialized or handed to the downstream privacy clone yet.
+    assert!(!kept.contains_key(&format!("field{:04}", kept.len()).into()));
+    // Nothing is written until finish.
     assert!(e.finish().unwrap().is_empty());
 }
 
 #[test]
-fn direct_document_streams_without_collecting_and_sink_failure_stops_next_leaf() {
+fn document_streams_fields_and_stops_reading_after_sink_failure() {
     struct Stop;
     impl Write for Stop {
         fn write(&mut self, _: &[u8]) -> io::Result<usize> {
@@ -60,7 +60,7 @@ fn direct_document_streams_without_collecting_and_sink_failure_stops_next_leaf()
 }
 
 #[test]
-fn streamed_document_and_sorted_page_envelope_preserve_the_same_fields() {
+fn streamed_document_and_sorted_model_page_hold_the_same_fields() {
     for model_page in [false, true] {
         let mut e = encoder();
         e.syntax(b"{\"_\":null").unwrap();
@@ -93,9 +93,7 @@ fn streamed_document_and_sorted_page_envelope_preserve_the_same_fields() {
 }
 
 #[test]
-fn canonical_opaque_direct_keys_stream_beyond_four_mib_without_aggregate_admission() {
-    // This is a volume/admission control, not a debug-build latency promise.
-    // Production deadlines and the shared masker remain unchanged.
+fn document_streams_more_than_four_mib_of_keys() {
     let mut fields = OpaqueFields::new("attrs", false);
     let mut e = Encoder::new(std::io::sink(), Instant::now() + Duration::from_secs(120));
     let mut bytes = 0;
@@ -109,7 +107,7 @@ fn canonical_opaque_direct_keys_stream_beyond_four_mib_without_aggregate_admissi
     assert!(bytes > METADATA);
 }
 #[test]
-fn canonical_opaque_direct_duplicate_or_reversed_keys_refuse() {
+fn document_refuses_duplicate_or_out_of_order_keys() {
     for second in ["z", "a"] {
         let mut fields = OpaqueFields::new("attrs", false);
         let mut e = encoder();
@@ -119,7 +117,7 @@ fn canonical_opaque_direct_duplicate_or_reversed_keys_refuse() {
 }
 
 #[test]
-fn canonical_opaque_privacy_preserves_keys_or_refuses_and_masks_logical_leaf_strings() {
+fn keys_needing_masking_are_refused_and_values_are_masked() {
     let token = format!("ghp_{}", "A".repeat(36));
     let mut refused = Vec::new();
     let mut fields = OpaqueFields::new("attrs", false);

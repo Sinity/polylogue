@@ -1,8 +1,7 @@
-//! Source fallback -> canonical installed field -> shared read/export document.
 use super::*;
 
 #[test]
-fn codex_large_malformed_arguments_remain_exact_string_with_raw_origin() {
+fn large_malformed_codex_arguments_stay_one_string_with_origin() {
     let world = World::new();
     let argument = format!("{}\n\\\"🦀 unfinished {{", "neutral ".repeat(17000));
     assert!(argument.len() > 131072);
@@ -92,8 +91,8 @@ fn codex_large_malformed_arguments_remain_exact_string_with_raw_origin() {
         serde_json::from_slice::<Value>(&raw.as_bytes()[start..end]).unwrap()["payload"]["arguments"],
         argument
     );
-    // Bounded model metadata remains admitted as a whole. Whole JSON streaming
-    // must not silently relax that separate response envelope.
+    // Model metadata still has the 64 KiB field cap; only documents stream
+    // large strings.
     let m = world
         .reader
         .selected_message(
@@ -106,6 +105,6 @@ fn codex_large_malformed_arguments_remain_exact_string_with_raw_origin() {
         block_metadata(&b, Instant::now() + WAIT)
             .unwrap_err()
             .to_string()
-            .contains("response admission")
+            .contains("exceeds 64 KiB")
     );
 }

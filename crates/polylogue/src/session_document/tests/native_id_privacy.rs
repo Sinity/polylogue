@@ -10,8 +10,7 @@ fn tool_input(call: &NativeId) -> Vec<u8> {
 }
 
 #[test]
-fn native_identity_scalar_and_surrogate_tool_call_ids_require_logical_privacy_before_wire_encoding()
-{
+fn call_ids_containing_credentials_are_refused() {
     let token = format!("ghp_{}", "A".repeat(36));
     for surrogate in [false, true] {
         let mut units: Vec<u16> = token.encode_utf16().collect();
@@ -47,7 +46,7 @@ fn native_identity_scalar_and_surrogate_tool_call_ids_require_logical_privacy_be
 }
 
 #[test]
-fn native_identity_ordinary_surrogate_and_split_token_calls_keep_exact_wire_values() {
+fn ordinary_and_surrogate_call_ids_are_written_unchanged() {
     let split = NativeId::from_utf16(
         &"ghp_"
             .encode_utf16()

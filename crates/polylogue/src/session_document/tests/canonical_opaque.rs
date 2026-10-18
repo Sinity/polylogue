@@ -1,4 +1,3 @@
-//! Real source -> installed selected fields -> direct normalized output.
 use super::*;
 use polylogue_model::RawJson;
 
@@ -14,7 +13,7 @@ fn write_document(world: &World) -> Vec<u8> {
 }
 
 #[test]
-fn canonical_opaque_source_assembled_attrs_sort_keys_without_changing_leaf_values() {
+fn attrs_from_source_are_written_in_canonical_key_order() {
     let mut raw = titled("canonical-root");
     raw.extend(format!(r#"{{"type":"assistant","uuid":"canonical-answer","parentUuid":"canonical-root","sessionId":"{SID}","timestamp":"2026-10-01T08:01:00Z","requestId":"canonical-request","a_extra":null,"z_extra":{{"z":-0,"n":9007199254740993,"e":1e+02,"\ud800":"lone","\ue000":"bmp","\ud800\udc00":"scalar","empty":"","object":{{}},"array":[]}},"message":{{"id":"canonical-response","role":"assistant","model":"synthetic-model","content":[{{"type":"text","text":"Synthetic answer"}}],"stop_reason":"end_turn","stop_sequence":null}}}}
 "#).as_bytes());
@@ -29,7 +28,7 @@ fn canonical_opaque_source_assembled_attrs_sort_keys_without_changing_leaf_value
     );
     assert!(
         String::from_utf8(bytes).unwrap().contains(&needle),
-        "assembled attrs must use retained canonical order: {needle}"
+        "attrs must use canonical key order: {needle}"
     );
 }
 
@@ -42,7 +41,7 @@ fn result_source() -> Vec<u8> {
 }
 
 #[test]
-fn canonical_opaque_source_assembled_data_preserves_exact_nested_values() {
+fn data_from_source_keeps_nested_values_unchanged() {
     let world = World::new();
     let input = world.import(&result_source(), "canonical-data-later");
     world.wait_rows(&input, false);
@@ -54,6 +53,6 @@ fn canonical_opaque_source_assembled_data_preserves_exact_nested_values() {
     );
     assert!(
         String::from_utf8(bytes).unwrap().contains(&needle),
-        "assembled data must use retained canonical order: {needle}"
+        "data must use canonical key order: {needle}"
     );
 }

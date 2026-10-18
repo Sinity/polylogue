@@ -1,11 +1,9 @@
-//! Actual Owner-driven selected Session documents; synthetic retained sources only.
+//! Session documents built by a real owner from synthetic source files.
 use super::*;
 use polylogue_engine::owner::{self, ImportRequest, Observation, Owner};
 use polylogue_model::{MessageId, Origin, SessionId};
 use polylogue_store::parser_state::Phase;
-use polylogue_store::{
-    InputFormat, ReadHandle, StoredInput, Writer, contributions::SessionCoverage,
-};
+use polylogue_store::{InputFormat, ReadHandle, StoredInput, Writer};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -18,12 +16,23 @@ use std::{
 const SID: &str = "7f3a2c10-0001-4000-8000-000000000001";
 const MORROW: &[u8] = include_bytes!("../../../sources/tests/fixtures/morrow-main.jsonl");
 const WAIT: Duration = Duration::from_secs(40);
-// Debug suites run several durable source owners concurrently. Polling their
-// actors continuously adds requests and competes with canonical finalization.
-// Keep source settlement bounded, with the same allowance as client fixtures;
-// document operations retain their separate, shorter deadline above.
+// Debug test runs start many owners at once, so source processing gets a
+// longer wait than document writes.
 const SOURCE_WAIT: Duration = Duration::from_secs(120);
 const POLL: Duration = Duration::from_millis(5);
+/// Calls an owner request again while the owner is busy, then waits for the reply.
+macro_rules! retry_busy {
+    ($call:expr) => {{
+        let deadline = Instant::now() + WAIT;
+        loop {
+            match $call {
+                Ok(reply) => break reply.recv_timeout(WAIT).unwrap().unwrap(),
+                Err(owner::Error::Busy) if Instant::now() < deadline => thread::sleep(POLL),
+                Err(e) => panic!("owner request: {e}"),
+            }
+        }
+    }};
+}
 struct World {
     owner: Option<Owner>,
     reader: ReadHandle,
@@ -65,30 +74,11 @@ impl World {
             metadata_allowance: 65536,
         };
         let handle = self.owner.as_ref().unwrap().handle();
-        let deadline = Instant::now() + WAIT;
-        loop {
-            match handle.try_import(request.clone()) {
-                Ok(reply) => return reply.recv_timeout(WAIT).unwrap().unwrap(),
-                Err(owner::Error::Busy) if Instant::now() < deadline => thread::sleep(POLL),
-                Err(e) => panic!("import admission: {e}"),
-            }
-        }
+        retry_busy!(handle.try_import(request.clone()))
     }
     fn progress(&self, input: &StoredInput) -> owner::Progress {
-        let deadline = Instant::now() + WAIT;
-        loop {
-            match self
-                .owner
-                .as_ref()
-                .unwrap()
-                .handle()
-                .try_progress(&input.id)
-            {
-                Ok(reply) => return reply.recv_timeout(WAIT).unwrap().unwrap(),
-                Err(owner::Error::Busy) if Instant::now() < deadline => thread::sleep(POLL),
-                Err(e) => panic!("progress admission: {e}"),
-            }
-        }
+        let handle = self.owner.as_ref().unwrap().handle();
+        retry_busy!(handle.try_progress(&input.id))
     }
     fn session(&self) -> SessionId {
         SessionId::new(&Origin::new("claude-code").unwrap(), SID).unwrap()
@@ -114,9 +104,8 @@ impl World {
                 );
                 return;
             }
-            // A required companion may report unavailability after these rows
-            // were installed. This wait proves selection; document qualification
-            // owns the complete-source claim, including that missing companion.
+            // A missing companion file may be reported after these rows are
+            // selected; the document's completion status covers that case.
             assert!(
                 progress.recovery_error.is_none(),
                 "{:?}",
@@ -158,16 +147,20 @@ impl World {
             thread::sleep(POLL);
         }
     }
-    fn document(&self) -> (Value, Coverage) {
+    fn document(&self) -> (Value, Summary) {
         let session = self
             .reader
             .selected_session(&self.session(), 65536)
             .unwrap()
             .unwrap();
         let mut bytes = Vec::new();
-        let coverage = write(&session, &mut bytes, Instant::now() + WAIT).unwrap();
-        (serde_json::from_slice(&bytes).unwrap(), coverage)
+        let summary = write(&session, &mut bytes, Instant::now() + WAIT).unwrap();
+        (serde_json::from_slice(&bytes).unwrap(), summary)
     }
+}
+/// The document writer without cancellation.
+fn write(session: &SessionView, out: &mut impl Write, deadline: Instant) -> io::Result<Summary> {
+    super::write(session, out, deadline, &mut || false)
 }
 impl Drop for World {
     fn drop(&mut self) {
@@ -185,7 +178,7 @@ fn records() -> Vec<Value> {
         .collect()
 }
 #[test]
-fn retained_morrow_document_preserves_twelve_messages_payloads_and_exact_origins() {
+fn morrow_document_keeps_all_twelve_messages_payloads_and_origins() {
     let world = World::new();
     let input = world.import(MORROW, "morrow-session-document");
     let records = records();
@@ -196,12 +189,8 @@ fn retained_morrow_document_preserves_twelve_messages_payloads_and_exact_origins
     world.wait_rows(&input, false);
     world.wait_selected(&input, &ids);
     fs::remove_file(&world.path).unwrap();
-    let (document, coverage) = world.document();
-    assert_eq!(coverage.messages, 12);
-    assert!(matches!(
-        coverage.catalog,
-        SessionCoverage::KnownCatalogOnly
-    ));
+    let (document, summary) = world.document();
+    assert_eq!(summary.messages, 12);
     assert_eq!(document["result"]["outcome"], "ok");
     assert_eq!(document["result"]["completion"]["state"], "complete");
     assert_eq!(document["session"]["title"], "Project skeleton");
@@ -343,7 +332,7 @@ fn simple(uuid: &str, content: Value) -> Vec<u8> {
     raw
 }
 #[test]
-fn response_masking_preserves_dense_nested_strings_and_unicode_without_raw_credentials() {
+fn document_masks_dense_nested_credentials_and_keeps_unicode() {
     let world = World::new();
     let token = format!("ghp_{}", "A".repeat(36));
     let dense = (0..80)
@@ -358,8 +347,8 @@ fn response_masking_preserves_dense_nested_strings_and_unicode_without_raw_crede
     let input = world.import(&raw, "masked-session-document");
     world.wait_selected(&input, &["masked-message"]);
     fs::remove_file(&world.path).unwrap();
-    let (document, coverage) = world.document();
-    assert_eq!(coverage.messages, 1);
+    let (document, summary) = world.document();
+    assert_eq!(summary.messages, 1);
     let encoded = serde_json::to_string(&document).unwrap();
     assert!(!encoded.contains(&token));
     assert!(encoded.contains("[credential:"));
@@ -375,13 +364,9 @@ fn response_masking_preserves_dense_nested_strings_and_unicode_without_raw_crede
             .len(),
         80
     );
-    assert!(matches!(
-        coverage.catalog,
-        SessionCoverage::KnownCatalogOnly
-    ));
 }
 #[test]
-fn known_pending_member_refuses_before_emitting_a_complete_looking_subset() {
+fn pending_message_fails_the_write_before_any_output() {
     let world = World::new();
     let mut raw = simple("ready-member", json!("ready text"));
     let first = world.import(&raw, "ready-session-document");
@@ -392,8 +377,8 @@ fn known_pending_member_refuses_before_emitting_a_complete_looking_subset() {
         .unwrap()
         .unwrap();
     let ready_body = ready.body_pk();
-    // This is a second immutable input, not a proved revision of the first.
-    // Preserve the already selected Message while the new member stays pending.
+    // A second input, not a revision of the first: the selected message stays
+    // while the new one is pending.
     raw.extend(simple(
         "pending-member",
         json!([{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]),
@@ -408,7 +393,7 @@ fn known_pending_member_refuses_before_emitting_a_complete_looking_subset() {
         }
         assert!(
             Instant::now() < deadline,
-            "unsupported image did not remain explicit"
+            "unsupported image was not reported as a failure"
         );
         thread::sleep(POLL);
     }
@@ -443,14 +428,13 @@ fn known_pending_member_refuses_before_emitting_a_complete_looking_subset() {
     );
     assert_eq!(sequence, 1);
     let mut bytes = Vec::new();
-    let error = write(&view, &mut bytes, Instant::now() + WAIT)
-        .err()
-        .expect("pending member must refuse");
+    let error =
+        write(&view, &mut bytes, Instant::now() + WAIT).expect_err("pending member must refuse");
     assert!(error.to_string().contains("pending Message"), "{error}");
     assert!(bytes.is_empty());
 }
 #[test]
-fn duplicate_source_sequence_refuses_instead_of_sorting_messages_by_primary_key() {
+fn duplicate_sequence_fails_instead_of_guessing_message_order() {
     let world = World::new();
     let first = world.import(
         &simple("first-import", json!("first")),
@@ -468,19 +452,18 @@ fn duplicate_source_sequence_refuses_instead_of_sorting_messages_by_primary_key(
         .unwrap()
         .unwrap();
     let mut bytes = Vec::new();
-    let error = write(&view, &mut bytes, Instant::now() + WAIT)
-        .err()
-        .expect("ambiguous order must refuse");
+    let error =
+        write(&view, &mut bytes, Instant::now() + WAIT).expect_err("ambiguous order must refuse");
     assert!(error.to_string().contains("order is unresolved"), "{error}");
     assert!(bytes.is_empty());
 }
 
 #[test]
-fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_releases_computation() {
+fn pinned_view_ignores_later_inputs_and_cancel_stops_the_status_check() {
     let world = World::new();
-    let raw=(json!({"type":"user","uuid":"basis-row","sessionId":SID,"timestamp":"2026-10-01T08:00:00Z","message":{"role":"user","content":"pinned context"}}).to_string()+"\n").into_bytes();
+    let raw=(json!({"type":"user","uuid":"pinned-row","sessionId":SID,"timestamp":"2026-10-01T08:00:00Z","message":{"role":"user","content":"pinned context"}}).to_string()+"\n").into_bytes();
     let input = world.import(&raw, "01900000-0000-7000-8000-000000000601");
-    world.wait_selected(&input, &["basis-row"]);
+    world.wait_selected(&input, &["pinned-row"]);
     let until = Instant::now() + WAIT;
     while !matches!(
         world.progress(&input).source_rows.state,
@@ -518,8 +501,8 @@ fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_relea
     write(&fresh, &mut second, Instant::now() + WAIT).unwrap();
     let second: Value = serde_json::from_slice(&second).unwrap();
     assert_eq!(second["result"]["unknown"]["record_errors"], 1);
-    // An undecodable newer record can hide a branch. Its arrival removes the
-    // derived active-path assertion; content, identity and origins stay exact.
+    // An undecodable newer record may hide a branch, so active-path flags go
+    // away; content, IDs and origins stay the same.
     let mut original = first["messages"].clone();
     let mut current = second["messages"].clone();
     for messages in [&mut original, &mut current] {
@@ -544,7 +527,7 @@ fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_relea
     assert!(matches!(cancelled, Err(polylogue_store::Error::Cancelled)));
     drop(fresh);
     drop(pinned);
-    // Read cancellation is not owner cancellation or a writer gate.
+    // Cancelling a read does not affect the owner.
     assert!(matches!(
         world.progress(&input).source_rows.state,
         polylogue_model::source_rows::SourceRowState::Complete
@@ -559,7 +542,7 @@ fn titled(uuid: &str) -> Vec<u8> {
     raw
 }
 #[test]
-fn exact_selection_can_settle_while_document_keeps_possible_foreign_link_work_pending() {
+fn query_can_be_complete_while_document_waits_on_possible_foreign_links() {
     let world = World::new();
     let input = world.import(&titled("exact-row"), "exact-good");
     world.wait_rows(&input, false);
@@ -612,7 +595,7 @@ fn exact_selection_can_settle_while_document_keeps_possible_foreign_link_work_pe
     assert_eq!(old, again);
 }
 #[test]
-fn malformed_only_relevant_input_without_selected_rows_revokes_complete_claim() {
+fn malformed_input_without_rows_makes_document_degraded() {
     let world = World::new();
     let input = world.import(&titled("known-row"), "malformed-control-good");
     world.wait_rows(&input, false);
@@ -625,16 +608,15 @@ fn malformed_only_relevant_input_without_selected_rows_revokes_complete_claim() 
     assert_eq!(document["messages"].as_array().unwrap().len(), 1);
 }
 #[test]
-fn eof_without_finished_row_effects_does_not_certify_exact_read() {
+fn reading_to_eof_with_missing_companion_is_not_complete() {
     let world = World::new();
     let mut raw = titled("known-row");
-    // A required body-bearing tool-result companion has no acquisition route
-    // here. Byte EOF cannot discharge its source mapping obligation.
+    // The tool result's companion file does not exist, so reaching the end of
+    // the source file does not finish its rows.
     raw.extend((json!({"type":"user","uuid":"required-result","sessionId":SID,"parentUuid":"known-row","timestamp":"2026-10-01T08:01:00Z","toolUseResult":{"persistedOutputPath":"/absent/tool-results/result.txt"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"missing-companion","content":"<persisted-output>\n/absent/tool-results/result.txt\n</persisted-output>"}]}}).to_string()+"\n").as_bytes());
     let input = world.import(&raw, "required-companion-eof");
-    // The known row may already be selected when the owner reaches the
-    // intentionally unavailable companion. That expected failure must not race
-    // this test's independent selection witness.
+    // Wait for the known row first so the expected companion failure cannot
+    // race this check.
     let selected = MessageId::new(world.session(), "known-row").unwrap();
     let deadline = Instant::now() + WAIT;
     while world.reader.selected_message(&selected).unwrap().is_none() {
@@ -677,7 +659,7 @@ fn eof_without_finished_row_effects_does_not_certify_exact_read() {
 }
 
 #[test]
-fn foreign_incoming_link_and_copy_sidechain_evidence_prevent_complete_document() {
+fn foreign_link_copy_or_sidechain_keeps_document_incomplete() {
     let world = World::new();
     let input = world.import(&titled("known-row"), "lineage-good");
     world.wait_rows(&input, false);
@@ -721,12 +703,12 @@ fn foreign_incoming_link_and_copy_sidechain_evidence_prevent_complete_document()
             .unwrap();
         let q =
             polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 65536).unwrap();
-        assert!(!q.complete(), "{label} must keep lineage qualification");
+        assert!(!q.complete(), "{label} must keep the session incomplete");
     }
 }
 
 #[test]
-fn foreign_copied_parent_and_fork_evidence_prevent_complete_target_document() {
+fn foreign_copy_or_fork_keeps_target_document_incomplete() {
     for how in ["copied-sessionId", "forkedFrom"] {
         let world = World::new();
         let base = world.import(&titled("known-row"), "foreign-copy-base");
@@ -772,7 +754,7 @@ fn two_row_input(reverse: bool, branched: bool) -> Vec<u8> {
         .collect()
 }
 #[test]
-fn later_branch_or_reversed_input_withholds_all_active_path_claims() {
+fn later_branch_or_reversed_input_drops_active_path_flags() {
     for (reverse, branched) in [(false, true), (true, false)] {
         let world = World::new();
         let base = world.import(&two_row_input(false, false), "topology-base");
@@ -793,10 +775,10 @@ fn later_branch_or_reversed_input_withholds_all_active_path_claims() {
             .selected_session(&world.session(), 65536)
             .unwrap()
             .unwrap();
-        let qualification =
+        let status =
             polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 65536).unwrap();
-        assert!(!qualification.complete());
-        assert!(qualification.active_messages.is_empty());
+        assert!(!status.complete());
+        assert!(status.active_messages.is_empty());
         let document = world.document().0;
         assert!(
             document["messages"]
@@ -808,7 +790,7 @@ fn later_branch_or_reversed_input_withholds_all_active_path_claims() {
     }
 }
 #[test]
-fn same_session_inputs_share_one_membership_admission() {
+fn inputs_of_one_session_share_one_membership_limit() {
     fn cohort(prefix: &str) -> Vec<u8> {
         let mut raw = (json!({"type":"ai-title","aiTitle":"Synthetic Session"}).to_string() + "\n")
             .into_bytes();
@@ -846,19 +828,19 @@ fn same_session_inputs_share_one_membership_admission() {
                 ..
             })
         ),
-        "two-input membership must exceed one request admission: {second:?}"
+        "two inputs must exceed the membership limit: {second:?}"
     );
 }
 
 #[test]
-fn model_metadata_wraps_whole_opaque_values_after_privacy() {
+fn model_metadata_wraps_opaque_values_after_masking() {
     let original = polylogue_model::RawJson::parse(br#"{"n":1e+02,"s":"\ud800"}"#).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     let result = metadata(
         |e| {
             e.syntax(b",")?;
             e.key("attrs")?;
-            opaque_value(e, &original, deadline, true)
+            opaque_value(e, &original, true)
         },
         deadline,
     )
@@ -871,18 +853,12 @@ fn model_metadata_wraps_whole_opaque_values_after_privacy() {
         original
     );
     let mut encoder = Encoder::new(Vec::new(), deadline);
-    opaque_value(&mut encoder, &original, deadline, false).unwrap();
+    opaque_value(&mut encoder, &original, false).unwrap();
     assert_eq!(encoder.finish().unwrap(), original.canonical());
 }
 
-#[path = "tests/reference_guard.rs"]
-mod reference_guard;
-
-#[path = "tests/native_id_privacy.rs"]
-mod native_id_privacy;
-
 mod canonical_opaque;
-mod large_string;
-
-#[path = "tests/configured_claude.rs"]
 mod configured_claude;
+mod large_string;
+mod native_id_privacy;
+mod reference_guard;
