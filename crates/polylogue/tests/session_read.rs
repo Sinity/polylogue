@@ -120,7 +120,8 @@ impl World {
                 .spawn()
                 .unwrap(),
         ));
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // Generous: the suite runs while other builds load the machine.
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let out = self.cli(&["status"]);
             if out.status.success() {

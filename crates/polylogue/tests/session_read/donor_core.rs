@@ -178,7 +178,7 @@ fn mixed_prompt_history_cannot_certify_complete_codex_conversation_membership() 
             .spawn()
             .unwrap(),
     ));
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let status = world.cli(&["status"]);
         if status.status.code() == Some(5) {

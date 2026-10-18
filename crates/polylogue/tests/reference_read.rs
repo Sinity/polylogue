@@ -126,7 +126,7 @@ impl World {
                 .spawn()
                 .unwrap(),
         ));
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let out = self.cli(&["status"]);
             if out.status.success() {
