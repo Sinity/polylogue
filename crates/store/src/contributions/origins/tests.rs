@@ -84,7 +84,7 @@ impl Fixture {
                     written_by: WrittenBy::Model,
                 },
                 Source {
-                    predecessor: &head.token,
+                    token: &head.token,
                     revision: 1,
                     evidence_revision: 1,
                     logical_key: [3; 32],

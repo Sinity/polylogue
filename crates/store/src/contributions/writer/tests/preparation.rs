@@ -110,7 +110,7 @@ fn failed_or_conflicting_prepare_leaves_no_rows() {
             written_by: WrittenBy::Model,
         },
         Source {
-            predecessor: &f.head.token,
+            token: &f.head.token,
             revision: 1,
             evidence_revision: 1,
             logical_key: [3; 32],

@@ -177,7 +177,7 @@ impl EvidenceDigest {
     fn validate(&self, handle: &Handle) -> Result<BlobHash> {
         match self {
             Self::Codex(p)
-                if p.token() == handle.build.predecessor()
+                if p.token() == handle.build.token()
                     && p.head() == handle.head.codex()?
                     && p.message() == handle.request.message =>
             {
@@ -579,7 +579,7 @@ pub fn inspect(writer: &mut Writer, handle: &Handle, allowance: usize) -> Result
         &handle.build,
         handle.identity.borrowed(handle.request.message as u64),
         Source {
-            predecessor: handle.build.predecessor(),
+            token: handle.build.token(),
             revision: handle.request.revision,
             evidence_revision: handle.head.revision(),
             logical_key: handle.request.logical_key,
@@ -1093,7 +1093,7 @@ fn field_turn(
             if length == bytes.len() as u64 {
                 let binding = Binding {
                     input: input_id,
-                    chain: state.handle.build.predecessor().chain,
+                    chain: state.handle.build.token().chain,
                 };
                 let descriptor = ValueSource::Descriptor { selection, binding };
                 let (origin_length, origin) = encode_window(&descriptor, 0, limit, flag)?;
@@ -1163,7 +1163,7 @@ fn field_turn(
     );
     let binding = Binding {
         input: input_id,
-        chain: state.handle.build.predecessor().chain,
+        chain: state.handle.build.token().chain,
     };
     let mut descriptor = DigestSink::new(flag);
     let described = selection.write_bound(binding, &mut descriptor);
@@ -1263,7 +1263,7 @@ fn compute_one(
     flag: &AtomicBool,
 ) -> Result<Action> {
     cancelled(flag)?;
-    if snapshot.head.token != *state.handle.build.predecessor() {
+    if snapshot.head.token != *state.handle.build.token() {
         return Err(Error::Invariant(
             "Message builder snapshot parser state changed",
         ));
@@ -1370,7 +1370,7 @@ fn compute_one(
                             _ => {}
                         }
                     };
-                    if proof.token() != state.handle.build.predecessor()
+                    if proof.token() != state.handle.build.token()
                         || proof.head() != state.handle.head.codex()?
                         || proof.message() != message
                     {
@@ -1650,7 +1650,7 @@ pub fn apply(writer: &mut Writer, action: Action) -> Result<Applied> {
                 return Err(StoreError::StaleMessage.into());
             }
             let source = Source {
-                predecessor: &token,
+                token: &token,
                 revision: request.revision,
                 evidence_revision: head.revision(),
                 logical_key: request.logical_key,

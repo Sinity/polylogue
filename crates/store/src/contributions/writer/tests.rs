@@ -318,7 +318,7 @@ fn identity<'a>(
 
 fn source(token: &parser_state::Token) -> Source<'_> {
     Source {
-        predecessor: token,
+        token,
         revision: 1,
         evidence_revision: 1,
         logical_key: [3; 32],

@@ -33,7 +33,7 @@ impl Writer {
     ) -> Result<bool> {
         let required = 256usize
             .saturating_add(message.as_str().len())
-            .saturating_add(source.predecessor.index_generation.len());
+            .saturating_add(source.token.index_generation.len());
         if required > allowance {
             return Err(Error::ParserAdmission {
                 resource: "superseded message preparation metadata bytes",
@@ -43,7 +43,7 @@ impl Writer {
         let path = self.root.join("index.db");
         check_source(self, source)?;
         let expected = preparation_digest(
-            source.predecessor,
+            source.token,
             source.revision,
             &source.logical_key,
             source.evidence_revision,
@@ -59,7 +59,7 @@ impl Writer {
                     contributor_revision: r.get(5)?, removal_epoch: r.get(6)?,
                     digest: digest(r, 7)?,
                     source: parser_state::Token {
-                        index_generation: source.predecessor.index_generation.clone(),
+                        index_generation: source.token.index_generation.clone(),
                         input_pk: r.get(9)?, chain: r.get(10)?,
                         generation: r.get(11)?, step: r.get(12)?, basis: digest(r, 13)?,
                     },

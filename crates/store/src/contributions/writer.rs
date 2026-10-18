@@ -23,9 +23,9 @@ pub struct Identity<'a> {
 }
 /// Where the Message comes from: one logical candidate (`logical_key`, chosen
 /// by the format) in one stored archive revision, read under the parser state
-/// `predecessor`. How the parser splits its work does not change either key.
+/// `token`. How the parser splits its work does not change either key.
 pub struct Source<'a> {
-    pub predecessor: &'a parser_state::Token,
+    pub token: &'a parser_state::Token,
     pub revision: u64,
     pub evidence_revision: u64,
     pub logical_key: [u8; 32],
@@ -53,7 +53,7 @@ impl Build {
     pub fn candidate_pk(&self) -> i64 {
         self.candidate
     }
-    pub fn predecessor(&self) -> &parser_state::Token {
+    pub fn token(&self) -> &parser_state::Token {
         &self.source
     }
 }
@@ -189,11 +189,11 @@ pub(super) fn check_source(
         return Err(Error::Range);
     }
     let path = writer.root.join("index.db");
-    let head = source_head(&writer._index, &path, source.predecessor)?;
+    let head = source_head(&writer._index, &path, source.token)?;
     let input: String = db(&path, || {
         writer._index.query_row(
             "SELECT id FROM input_ref WHERE pk=?1",
-            [source.predecessor.input_pk],
+            [source.token.input_pk],
             |r| r.get(0),
         )
     })?;
@@ -203,7 +203,7 @@ pub(super) fn check_source(
             .archive
             .query_row(
                 "SELECT length FROM revision WHERE input=?1 AND number=?2 AND chain=?3",
-                params![input, revision, source.predecessor.chain],
+                params![input, revision, source.token.chain],
                 |r| parser_state::unsigned(r, 0),
             )
             .optional()
@@ -231,7 +231,7 @@ fn check_request(
         identity.native_session,
         identity.native_session_encoding.unwrap_or_default(),
         identity.message.as_str(),
-        source.predecessor.index_generation.as_str(),
+        source.token.index_generation.as_str(),
     ] {
         bytes = bytes.checked_add(text.len()).ok_or(Error::Range)?;
     }
@@ -292,9 +292,9 @@ fn load_preparation(
     source: &Source<'_>,
 ) -> Result<Preparation> {
     check_current(conn, path, build)?;
-    if source.predecessor != &build.source
+    if source.token != &build.source
         || preparation_digest(
-            source.predecessor,
+            source.token,
             source.revision,
             &source.logical_key,
             source.evidence_revision,
@@ -432,13 +432,13 @@ impl Writer {
         let (head, length) = check_source(self, &source)?;
         let length_i = to_i64(length)?;
         let digest = preparation_digest(
-            source.predecessor,
+            source.token,
             source.revision,
             &source.logical_key,
             source.evidence_revision,
         );
         let tx = db(&path, || self._index.transaction())?;
-        source_head(&tx, &path, source.predecessor)?;
+        source_head(&tx, &path, source.token)?;
         let session = insert_session(&tx, &path, &identity)?;
         db(&path, || {
             tx.execute("INSERT INTO message(id,session_pk,seq) VALUES(?1,?2,?3) ON CONFLICT(id) DO NOTHING",params![identity.message.as_str(),session,sequence])
@@ -476,12 +476,12 @@ impl Writer {
             let role = role_name(identity.role);
             let by = written_by_name(identity.written_by);
             db(&path, || {
-                tx.execute("INSERT INTO message_body(message_pk,session_pk,basis_digest,contributor_revision,removal_epoch,layout,role,written_by,input_pk,source_chain,parser_version,source_sequence) VALUES(?1,?2,?3,?4,?5,'flat',?6,?7,?8,?9,?10,?11)",params![message,session,digest.as_slice(),contributor,removal,role,by,source.predecessor.input_pk,source.predecessor.chain,head.parser_version,sequence])
+                tx.execute("INSERT INTO message_body(message_pk,session_pk,basis_digest,contributor_revision,removal_epoch,layout,role,written_by,input_pk,source_chain,parser_version,source_sequence) VALUES(?1,?2,?3,?4,?5,'flat',?6,?7,?8,?9,?10,?11)",params![message,session,digest.as_slice(),contributor,removal,role,by,source.token.input_pk,source.token.chain,head.parser_version,sequence])
             })?;
             let body = tx.last_insert_rowid();
             let route = route_code(source.route);
             db(&path, || {
-                tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,source_state_generation,source_state_step,source_basis_digest,basis_digest,body_pk,finish,route) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15)",params![message,session,source.predecessor.input_pk,source.predecessor.chain,revision,length_i,evidence,source.logical_key.as_slice(),head.parser_version,source.predecessor.generation,source.predecessor.step,source.predecessor.basis.as_slice(),digest.as_slice(),body,route])
+                tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,source_state_generation,source_state_step,source_basis_digest,basis_digest,body_pk,finish,route) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15)",params![message,session,source.token.input_pk,source.token.chain,revision,length_i,evidence,source.logical_key.as_slice(),head.parser_version,source.token.generation,source.token.step,source.token.basis.as_slice(),digest.as_slice(),body,route])
             })?;
             let candidate = tx.last_insert_rowid();
             db(&path, || {
@@ -497,7 +497,7 @@ impl Writer {
         };
         let build = Build {
             path: path.clone(),
-            source: source.predecessor.clone(),
+            source: source.token.clone(),
             pk,
             body,
             candidate,

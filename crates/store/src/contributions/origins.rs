@@ -62,7 +62,7 @@ fn write_in(
         });
     }
     writer::check_writable(tx, path, build)?;
-    let head = writer::source_head(tx, path, build.predecessor())?;
+    let head = writer::source_head(tx, path, build.token())?;
     let (start, end) = checked(range, head.parsed_upto)?;
     let pending: bool = db(path, || {
         tx.query_row("SELECT active_value_pk IS NOT NULL OR active_origin_value_pk IS NOT NULL OR active_block_pk IS NOT NULL FROM message_build WHERE pk=?1",[build.pk],|r|r.get(0))
@@ -126,7 +126,7 @@ impl parser_state::Snapshot {
     /// The build's input id, refused if longer than `allowance`. The caller
     /// compares it with the input it expects; this lookup does not validate it.
     pub fn message_source_input_id(&self, build: &Build, allowance: usize) -> Result<String> {
-        if self.head.token != *build.predecessor() {
+        if self.head.token != *build.token() {
             return Err(Error::StaleMessage);
         }
         writer::check_current(&self.db, &self.path, build)?;
@@ -143,7 +143,7 @@ impl parser_state::Snapshot {
     /// Whether this snapshot records `range` for the build. A writer must
     /// recheck its own state before acting on the answer.
     pub fn has_message_source(&self, build: &Build, range: SourceRange) -> Result<bool> {
-        if self.head.token != *build.predecessor() {
+        if self.head.token != *build.token() {
             return Err(Error::StaleMessage);
         }
         writer::check_writable(&self.db, &self.path, build)?;

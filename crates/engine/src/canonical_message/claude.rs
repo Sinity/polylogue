@@ -64,7 +64,7 @@ pub(super) struct Digest {
 }
 impl Digest {
     pub(super) fn validate(&self, h: &Handle) -> Result<BlobHash> {
-        if self.token != *h.build.predecessor()
+        if self.token != *h.build.token()
             || h.head != ProviderHead::Claude(self.head.clone())
             || self.source_binding != h.request.source_binding
         {
