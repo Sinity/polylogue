@@ -88,10 +88,7 @@ fn parked_history_capture_shares_turns_with_regular_capture_and_reads() {
     actor
         .message(events.recv_timeout(super::WAIT).unwrap())
         .unwrap();
-    let regular = regular_reply
-        .recv_timeout(super::WAIT)
-        .unwrap()
-        .unwrap();
+    let regular = regular_reply.recv_timeout(super::WAIT).unwrap().unwrap();
     let source = reader.source(&regular.input.id).unwrap().unwrap();
     assert_eq!(
         reader
@@ -127,10 +124,7 @@ fn parked_history_capture_shares_turns_with_regular_capture_and_reads() {
         actor.advance_capture_turn().unwrap();
     }
     assert!(turns > 2);
-    let result = history
-        .recv_timeout(super::WAIT)
-        .unwrap()
-        .unwrap();
+    let result = history.recv_timeout(super::WAIT).unwrap().unwrap();
     assert_eq!(result.input.id, physical_id);
     let bytes = reader
         .read_source_range(&result.input.id, 1, expected_hash, 0, result.input.length)

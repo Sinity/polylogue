@@ -86,10 +86,7 @@ fn claude_capture_reuses_quanta_and_serves_a_regular_capture_before_selecting_th
     actor
         .message(events.recv_timeout(super::WAIT).unwrap())
         .unwrap();
-    let imported = regular_reply
-        .recv_timeout(super::WAIT)
-        .unwrap()
-        .unwrap();
+    let imported = regular_reply.recv_timeout(super::WAIT).unwrap().unwrap();
     let retained = reader.source(&imported.id).unwrap().unwrap();
     assert_eq!(
         reader
@@ -110,10 +107,7 @@ fn claude_capture_reuses_quanta_and_serves_a_regular_capture_before_selecting_th
     );
     actor.advance_capture_turn().unwrap();
     assert!(finish(&mut actor, &events) > 2);
-    let appended = pending
-        .recv_timeout(super::WAIT)
-        .unwrap()
-        .unwrap();
+    let appended = pending.recv_timeout(super::WAIT).unwrap().unwrap();
     assert!(appended.acquired);
     assert_eq!(appended.input.id, source.input.id);
     assert_eq!(appended.input.length, initial.len() as u64 + 262144);
