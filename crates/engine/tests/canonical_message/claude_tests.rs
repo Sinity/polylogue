@@ -703,3 +703,6 @@ mod result_metadata;
 
 #[path = "claude_small_fields.rs"]
 mod small_fields;
+
+#[path = "claude_bookkeeping.rs"]
+mod bookkeeping;

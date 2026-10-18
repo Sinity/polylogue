@@ -369,14 +369,16 @@ impl Cursor {
             Phase::AdvanceBlock => {
                 if matches!(self.scope, Scope::Block(_)) {
                     self.phase = Phase::Done;
-                    return Ok(Step::Continue);
+                    return Ok(Step::Done);
                 }
                 self.block = self
                     .block
                     .checked_add(1)
                     .ok_or("Codex projection block index overflow")?;
                 self.phase = Phase::Block;
-                Ok(Step::Continue)
+                // AdvanceBlock itself performs no reads or output. Reenter at
+                // Block exactly once, so this call still does at most one read.
+                self.step(view)
             }
             Phase::Done => Ok(Step::Done),
         }
