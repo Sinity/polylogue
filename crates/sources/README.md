@@ -1,19 +1,73 @@
-# Source interpretation
+# polylogue-sources
 
-This crate contains one fallible framing route with Codex rollout and Claude Code interpretation cores. The application registers explicit immutable Codex/Claude imports and one observed Claude main startup location through the same framing/state cores. Source-core tests alone do not qualify the application.
+Parsers for provider session files: Claude Code JSONL and Codex rollouts, plus
+Codex prompt history and thread-history rows. The crate does no IO. The engine
+hands it bytes and a read-only view of the stored parser state, and writes the
+returned changes.
 
-Framing retains JSON number tokens, UTF-16 string values and object keys. Claude main records project provider UUIDs and call IDs through `NativeId`; interpreted text alone records replacement diagnostics in `Counts.text_repairs`, separately from record outcomes. Opaque tool input/data remains lossless. Parser-cell UUID and response keys use strict serialized `NativeId` JSON, so Unicode strings and encoded objects cannot alias. This changes parser/key interpretation; old cells and historical field recipes are not silently reused.
+## Modules
 
-This promotion does not support non-scalar source-derived Session routing or structural field names needing encoded selectors. Those records fail before accepted progress; opaque nested keys remain supported. Codex's current adapter explicitly refuses non-scalar strings/keys, preserving its earlier admitted scope while retaining numeric tokens. A depth-capacity failure is owed work, not an accepted undecodable record. These source checks do not qualify native storage, CLI/MCP pages, export or rebuild.
+- `frame`: splits input into records (JSONL lines, JSON array elements or
+  SQLite rows), decodes each one, keeps its byte range and counts what the
+  provider did with it. `Counts::balanced` checks that every framed record was
+  used, ignored, unrecognized or undecodable.
+- `raw`, `time`: byte-exact JSON field access and timestamp parsing shared by
+  both providers.
+- `selection`: field descriptors. A descriptor names the original record range
+  and JSON path a normalized value came from, plus a versioned transform, so a
+  reader can recompute the value from the stored bytes.
+- `claude_code`, `codex`: the provider parsers.
 
-`frame::JsonlDriver` owns record boundaries and accounting. Its byte, record and retained-record allowances are logical scheduling/admission controls. Callback failure fuses the attempted driver; a failed attempt cannot finalize or resume. `PendingJsonlStep::commit_with` returns a partial-record continuation only after the owning writer commits the provider state, output and complete-record checkpoint together. These interfaces do not establish a hard RSS bound.
+## Parsing in steps
 
-`codex::keyed::KeyedRecords<V>` reads a caller-pinned `ReadView` and returns touched `Cell` changes plus `Resume`, events and links. All whole/step tests use this same core. `MemoryReadView` is an inspection/test adapter. There is no whole-State JSON carry or parallel parser implementation. The provider's ordered key codec supplies sortable identity and capped sizing to a storage adapter; storage and source-current checks belong to its owner.
+`frame::JsonlDriver` feeds complete lines to a provider's `RecordParser`, within
+a byte and record budget. A partial last line is kept in a buffer that is moved,
+never copied, to the next step. `checkpoint` ends a step;
+`PendingJsonlStep::commit_with` hands back the continuation only after the
+writer has committed the parser state, its output and the record position
+together. If the parser or writer fails, the step is discarded and the next
+attempt starts from the last committed state. A record larger than the budget's
+`record_bytes` is reported as `NeedsCapacity`; it is never skipped or cut.
+`drive_jsonl` runs a whole input through the same driver.
 
-Each changed message has raw canonical `Evidence` cells, an `EvidenceHead` revision/count, and a `pending_versions` obligation. `EvidenceHead::next_slot` produces one point-lookup key at a time in the normative item/association/status/context/usage order. A missing optional association/context slot is skipped; missing own-item slots are corruption. Count emitted units against `EvidenceHead.units`. The writer must pin the input chain, parser/schema, committed state predecessor and evidence revision, prepare the shared specification's framed digest outside its write transaction, then validate that basis again before publishing it. Replacing an evidence slot invalidates prior preparation. `Message.version_hash` stays absent until that finalization succeeds. Parser finish does not scan old members or calculate a content hash from normalized messages.
+Records decode to `RawJson`, which keeps number tokens, UTF-16 strings and
+object keys exactly as written. Text repairs are counted in
+`Counts.text_repairs`, separately from record outcomes. Codex still refuses
+non-scalar strings and keys.
 
-The port handles modern/legacy rollout records, request grouping, reasoning replacement, structural prompt echoes, ordinary call/result outcomes and running continuations. Exact identical native items within an owned request are re-emissions. Repeated native snapshots replace their existing blocks and evidence slots. Missing earlier fields survive as raw-field overlays and produce conflict diagnostics. Changes to role, record type, call ID or tool-name association leave membership explicitly incomplete until affected associations are repaired. Unowned code-mode operations and non-Agent completed commands remain session events with `Resume::normalization_incomplete()`; no latest-wrapper Message is invented. Unmapped message content is retained as an Other block with incomplete normalization; unreadable model context does not reuse a stale model. Some newer completed-item kinds remain unrecognized. Application registration and native representation limits are described in the [representation guide](../../docs/rewrite/codex-native-representations.md). Cross-revision/replayed-prefix correspondence remains unsupported. Fork lineage is retained with incomplete inheritance normalization until correspondence is supplied.
+## Provider state
 
-Continuation output is stored as addressable OutputChunk cells with durable PendingResult obligations and Delta.pending_results; the writer assembles only that affected result outside its transaction, guarded by the evidence revision. Inspection materialization assembles these chunks explicitly. A single admitted record can still change many open wrappers, read a large block or produce large events. Those affected-output costs need resumable owner scheduling. The crate does not qualify public-client, restart/finalization or process resource acceptance.
+Both parsers read stored cells through a `ReadView` (point lookups, plus ordered
+neighbors for Codex) and return only the cells they changed, with events and
+links. There is no whole-state snapshot and no second parser path;
+`MemoryReadView` is an in-memory view for tests.
 
-Codex field witnesses can retain an immutable source-owned `FactSelection`: original record range, typed original JSON paths and a closed versioned transformation. Missing-field overlays preserve each retained field's original root; copied context and timestamp witnesses keep their own origins. Text/Thinking extraction shares the normalization iterator. `write_bound` streams one admitted field descriptor with pinned input/chain binding and preserves sink errors. Coordinates and selectors do not enter content-version equality or rank. Inner JSON command/results and ordered continuation composition still have no supported selector. The canonical materializer resolves supported selections against retained original bytes before attaching a descriptor and certifying source membership. Unsupported selector shapes remain explicit obligations; source-core tests alone do not qualify that application path.
+Claude Code groups records into responses by message ID, overlays repeated
+records with the same UUID (later members replace earlier ones; `message`
+members merge), resolves parents through non-Message records, splits sidechains
+and subagents into their own Sessions, and attaches background-task
+completions and required tool-result bodies to their calls. Published Messages
+are assembled by the engine from the per-record contribution cells.
+
+Codex groups items into model requests, replaces reasoning snapshots, pairs
+calls with outputs (including running commands and code-mode wrappers), and
+recognizes prompt echoes. A repeated identical item is a re-emission; a changed
+snapshot replaces its blocks, keeps fields missing from the newer copy and
+reports the conflict. Each changed Message has evidence cells, an
+`EvidenceHead` and a `pending_versions` entry. The engine walks the evidence
+slots with `EvidenceHead::next_slot`, computes the version digest outside its
+write transaction and checks the evidence revision again before publishing.
+`Message.version_hash` stays empty until then. Continuation output is stored as
+`OutputChunk` cells with `pending_results` entries. Code-mode operations without
+an owner and non-Agent commands become Session events and mark normalization
+incomplete; unmapped content becomes an `Other` block. See
+[the Codex notes](../../docs/rewrite/codex-native-representations.md) for
+supported records and limits.
+
+## Tests
+
+Integration tests in `tests/` use synthetic fixtures. `tests/fixtures/python/`
+holds files copied from the Python Polylogue; see
+[python-port.md](../../docs/rewrite/python-port.md).
+`tests/fixtures/morrow-main.README.md` explains how the Morrow fixture was
+generated.

@@ -150,7 +150,7 @@ fn value(view: &MessageView, slot: &Slot) -> (Value, bool, Value) {
 #[test]
 fn background_completion_cites_its_own_record_in_the_source_set() {
     let bytes =
-        include_bytes!("../../../sources/tests/fixtures/donor/claude-normalization-main.jsonl");
+        include_bytes!("../../../sources/tests/fixtures/python/claude-normalization-main.jsonl");
     let (mut world, pending) = make_world(bytes, bytes);
     let pending = pending
         .iter()
@@ -318,7 +318,7 @@ fn real_morrow_claude_bodies_use_native_ids_flat_order_and_verified_origins() {
 #[test]
 fn same_file_sidechain_keeps_raw_main_parent_as_an_extra_without_a_message_parent() {
     let bytes =
-        include_bytes!("../../../sources/tests/fixtures/donor/claude-normalization-main.jsonl");
+        include_bytes!("../../../sources/tests/fixtures/python/claude-normalization-main.jsonl");
     let (mut world, pending) = make_world(bytes, bytes);
     let main = format!("claude-code:{SID}");
     let pending = pending

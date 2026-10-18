@@ -81,13 +81,13 @@ fn flat_codex_conversations_read_without_branches_but_rollback_and_ambiguous_con
         (
             "legacy.jsonl",
             "codex:legacy-response-session",
-            include_bytes!("../../../sources/tests/fixtures/donor/legacy-response-records.jsonl")
+            include_bytes!("../../../sources/tests/fixtures/python/legacy-response-records.jsonl")
                 .as_slice(),
         ),
         (
             "headers.jsonl",
             "codex:tool-result-headers",
-            include_bytes!("../../../sources/tests/fixtures/donor/tool-result-headers.jsonl")
+            include_bytes!("../../../sources/tests/fixtures/python/tool-result-headers.jsonl")
                 .as_slice(),
         ),
     ] {
@@ -118,7 +118,7 @@ fn flat_codex_conversations_read_without_branches_but_rollback_and_ambiguous_con
     for kind in ["thread_rolled_back", "future_topology_control"] {
         let world = World::new();
         let mut bytes =
-            include_bytes!("../../../sources/tests/fixtures/donor/tool-result-headers.jsonl")
+            include_bytes!("../../../sources/tests/fixtures/python/tool-result-headers.jsonl")
                 .to_vec();
         bytes.extend_from_slice(
             (json!({"type":"event_msg","payload":{"type":kind,"num_turns":1}}).to_string() + "\n")
@@ -149,7 +149,7 @@ fn mixed_prompt_history_cannot_certify_complete_codex_conversation_membership() 
     codex_import(
         &world,
         "headers.jsonl",
-        include_bytes!("../../../sources/tests/fixtures/donor/tool-result-headers.jsonl"),
+        include_bytes!("../../../sources/tests/fixtures/python/tool-result-headers.jsonl"),
     );
     world.kill();
     let home = world.work.path().join("codex-home");
