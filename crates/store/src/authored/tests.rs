@@ -40,7 +40,7 @@ fn withdraw(n: u32, reference: String) -> WriteNote {
     }
 }
 #[test]
-fn authored_history_retry_stale_revision_and_recursive_withdrawal_survive_index_loss() {
+fn history_retry_stale_revision_and_withdrawals_survive_index_loss() {
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
     let mut writer = Writer::open(&archive).unwrap();
@@ -163,7 +163,7 @@ fn authored_history_retry_stale_revision_and_recursive_withdrawal_survive_index_
     );
 }
 #[test]
-fn authored_replay_normalizes_sets_and_rejects_unsupported_intent_without_rows() {
+fn replay_sorts_sets_and_rejects_unsupported_intent_without_rows() {
     let temp = tempfile::tempdir().unwrap();
     let mut writer = Writer::open(temp.path()).unwrap();
     let mut a = request(20);
@@ -195,7 +195,7 @@ fn authored_replay_normalizes_sets_and_rejects_unsupported_intent_without_rows()
 }
 
 #[test]
-fn authored_controls_require_committed_parents_and_refusals_are_atomic() {
+fn revise_and_withdraw_need_committed_parents_and_refusals_roll_back() {
     let temp = tempfile::tempdir().unwrap();
     let mut writer = Writer::open(temp.path()).unwrap();
     let initial = writer.status().unwrap().write_counter;
@@ -263,7 +263,7 @@ fn authored_controls_require_committed_parents_and_refusals_are_atomic() {
 }
 
 #[test]
-fn authored_basis_shape_is_admitted_before_reading_its_bytes() {
+fn oversized_seen_hash_is_refused_before_reading_it() {
     let temp = tempfile::tempdir().unwrap();
     let mut writer = Writer::open(temp.path()).unwrap();
     let n = writer.write_note(&request(40)).unwrap();
@@ -283,11 +283,11 @@ fn authored_basis_shape_is_admitted_before_reading_its_bytes() {
             ..
         })
     ));
-    assert!(error.to_string().contains("basis length"));
+    assert!(error.to_string().contains("seen_hash"), "{error}");
 }
 
 #[test]
-fn accepted_revision_growth_keeps_exact_current_history_and_repeated_restoration_reachable() {
+fn long_revision_history_keeps_current_history_and_undo_readable() {
     for (count, bytes) in [(129, 5), (16, 16384)] {
         let temp = tempfile::tempdir().unwrap();
         let mut writer = Writer::open(temp.path()).unwrap();
@@ -338,8 +338,8 @@ fn accepted_revision_growth_keeps_exact_current_history_and_repeated_restoration
         assert_eq!(history.len(), count as usize);
         assert_eq!(history[0], first.reference());
         assert_eq!(history.last(), Some(&latest.reference()));
-        // Every new withdrawal/restoration adds history; it must not consume a
-        // reserved final undo slot or hydrate the old 16 KiB values.
+        // Each withdrawal and undo adds history; reading it must not load the
+        // old 16 KiB values or run out of room for the last undo.
         let mut control = writer
             .write_note(&withdraw(2000, latest.reference()))
             .unwrap();
@@ -383,8 +383,8 @@ fn accepted_revision_growth_keeps_exact_current_history_and_repeated_restoration
             "committed replay precedes present control state and returns the original effect"
         );
         assert_eq!(writer.status().unwrap().write_counter, counter);
-        // Status on all pages is evaluated at the same cutoff, even after a
-        // later withdrawal and withdrawal-of-withdrawal were admitted.
+        // Every page reports status at the same archive counter, even after a
+        // later withdrawal and a withdrawal of that withdrawal.
         let old = reader
             .authored_snapshot()
             .unwrap()
@@ -403,7 +403,7 @@ fn accepted_revision_growth_keeps_exact_current_history_and_repeated_restoration
 }
 
 #[test]
-fn target_association_pages_keep_seventeen_unique_families_and_all_retained_memberships() {
+fn backlinks_pages_list_each_family_once_with_all_matches() {
     let temp = tempfile::tempdir().unwrap();
     let mut writer = Writer::open(temp.path()).unwrap();
     let first = writer.write_note(&request(1)).unwrap();
@@ -466,7 +466,7 @@ fn target_association_pages_keep_seventeen_unique_families_and_all_retained_memb
 }
 
 #[test]
-fn prospective_deadline_refusal_rolls_back_request_note_and_counter_but_not_committed_replay() {
+fn deadline_refusal_rolls_back_write_but_replay_still_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     let mut writer = Writer::open(dir.path()).unwrap();
     let first = writer.write_note(&request(1)).unwrap();
@@ -504,12 +504,12 @@ fn prospective_deadline_refusal_rolls_back_request_note_and_counter_but_not_comm
 }
 
 #[test]
-fn malformed_retained_controls_refuse_effective_authority_but_keep_explicit_exact_inspection() {
+fn malformed_controls_refuse_status_but_pinned_value_reads_work() {
     for cyclic in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut writer = Writer::open(dir.path()).unwrap();
         for n in [1, 2] {
-            writer.archive.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,local_seq) VALUES(?1,?2,'note','retained malformed-import evidence','agent','machine',0,?3)",params![id(n),id(1),n]).unwrap();
+            writer.archive.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,local_seq) VALUES(?1,?2,'note','malformed import','agent','machine',0,?3)",params![id(n),id(1),n]).unwrap();
         }
         writer
             .archive
@@ -549,7 +549,7 @@ fn malformed_retained_controls_refuse_effective_authority_but_keep_explicit_exac
                 .exact(&format!("note:{}@{}", id(1), id(1)), 2)
                 .unwrap()
                 .value,
-            "retained malformed-import evidence"
+            "malformed import"
         );
         let before = writer.status().unwrap().write_counter;
         assert!(matches!(

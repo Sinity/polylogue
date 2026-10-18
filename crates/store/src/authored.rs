@@ -1,5 +1,6 @@
-//! Durable attributed notes, using the archive writer and existing request identity.
-//! The index is never authority for authored intent, revision order or withdrawal.
+//! Notes, corrections and withdrawals written by people or agents. They are
+//! stored only in `archive.db`, each written with its `client_request` row, and
+//! read from an archive snapshot; the index never holds them.
 use crate::{Error, ReadHandle, Result, Writer, client_request, counter, db};
 use polylogue_model::{
     BlobHash, ErrorKind, Failure,
@@ -13,37 +14,57 @@ use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-const BYTES: usize = 262144;
+const MAX_REVISION_BYTES: usize = 262144;
 mod evaluation;
 #[cfg(test)]
 mod tests;
 use evaluation::{Evaluation, default_until};
 use std::time::Instant;
+fn unavailable(message: impl Into<String>) -> Error {
+    failure(ErrorKind::NotYetAvailable, message)
+}
+fn check_deadline(until: Instant, cancel: &mut dyn FnMut() -> bool) -> Result<()> {
+    if Instant::now() >= until || cancel() {
+        return Err(Error::Cancelled);
+    }
+    Ok(())
+}
 fn failure(kind: ErrorKind, message: impl Into<String>) -> Error {
     Error::Authored(Failure::new(kind, message))
 }
 fn checked_reference(reference: &str) -> Result<(&str, Option<&str>)> {
     authored::note_reference(reference).map_err(Error::Authored)
 }
-struct Admission(usize);
-impl Admission {
+/// Bytes of one revision's metadata read so far.
+struct SizeBudget(usize);
+impl SizeBudget {
     fn add(&mut self, n: usize) -> Result<()> {
         self.0 = self.0.checked_add(n).ok_or(Error::Range)?;
-        if self.0 > BYTES {
+        if self.0 > MAX_REVISION_BYTES {
             return Err(Error::ParserAdmission {
-                resource: "authored exact revision metadata",
+                resource: "note revision metadata",
                 required: self.0 as u64,
             });
         }
         Ok(())
     }
 }
-fn revision(conn: &Connection, path: &Path, id: &str, budget: &mut Admission) -> Result<Revision> {
+/// Reads one revision with its targets and relations. The size of each part
+/// is checked in SQL before the text is loaded.
+fn revision(conn: &Connection, path: &Path, id: &str, budget: &mut SizeBudget) -> Result<Revision> {
     let n: Option<i64> = db(path, || {
-        conn.query_row("SELECT length(CAST(id AS BLOB))+length(CAST(root AS BLOB))+length(CAST(kind AS BLOB))+coalesce(length(CAST(value AS BLOB)),0)+length(CAST(author AS BLOB))+length(CAST(machine AS BLOB)) FROM note WHERE id=?1",[id],|r|r.get(0)).optional()
+        conn.query_row(
+            "SELECT length(CAST(id AS BLOB)) + length(CAST(root AS BLOB)) \
+             + length(CAST(kind AS BLOB)) + coalesce(length(CAST(value AS BLOB)), 0) \
+             + length(CAST(author AS BLOB)) + length(CAST(machine AS BLOB)) \
+             FROM note WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()
     })?;
     budget.add(
-        usize::try_from(n.ok_or_else(|| failure(ErrorKind::NotFound, "note revision is absent"))?)
+        usize::try_from(n.ok_or_else(|| failure(ErrorKind::NotFound, "note revision not found"))?)
             .map_err(|_| Error::Range)?,
     )?;
     let (id, root, kind, value, author, machine, created_at): (
@@ -55,30 +76,44 @@ fn revision(conn: &Connection, path: &Path, id: &str, budget: &mut Admission) ->
         String,
         i64,
     ) = db(path, || {
-        conn.query_row("SELECT id,root,kind,value,author,machine,created_at FROM note WHERE id=?1 AND key IS NULL AND check_json IS NULL AND valid_until IS NULL AND source IS NULL",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))
+        conn.query_row(
+            "SELECT id, root, kind, value, author, machine, created_at FROM note \
+             WHERE id = ?1 AND key IS NULL AND check_json IS NULL \
+             AND valid_until IS NULL AND source IS NULL",
+            [id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
     })?;
     let kind = match kind.as_str() {
         "note" => NoteKind::Note,
         "correction" => NoteKind::Correction,
         "withdrawal" => NoteKind::Withdrawal,
-        _ => {
-            return Err(failure(
-                ErrorKind::NotYetAvailable,
-                "authored family contains an unsupported note kind or field",
-            ));
-        }
+        _ => return Err(unavailable("note has an unsupported kind or field")),
     };
     let mut targets = vec![];
     let mut statement = db(path, || {
-        conn.prepare("SELECT length(CAST(ref AS BLOB)),CASE WHEN length(CAST(ref AS BLOB))<=16384 THEN ref END,CASE WHEN length(seen_hash)=32 THEN seen_hash END,anchor_input,anchor_chain,anchor_start,anchor_end,anchor_parser,length(seen_hash) FROM note_target WHERE note_id=?1 ORDER BY ref LIMIT 9")
+        conn.prepare(
+            "SELECT length(CAST(ref AS BLOB)), \
+             CASE WHEN length(CAST(ref AS BLOB)) <= 16384 THEN ref END, \
+             CASE WHEN length(seen_hash) = 32 THEN seen_hash END, \
+             anchor_input, anchor_chain, anchor_start, anchor_end, anchor_parser, \
+             length(seen_hash) FROM note_target WHERE note_id = ?1 ORDER BY ref LIMIT 9",
+        )
     })?;
     let mut rows = db(path, || statement.query([&id]))?;
     while let Some(r) = db(path, || rows.next())? {
         if targets.len() == authored::MAX_TARGETS {
-            return Err(failure(
-                ErrorKind::NotYetAvailable,
-                "authored target admission exceeded",
-            ));
+            return Err(unavailable("note has too many targets"));
         }
         budget.add(
             usize::try_from(db(path, || crate::parser_state::unsigned(r, 0))?)
@@ -88,34 +123,23 @@ fn revision(conn: &Connection, path: &Path, id: &str, budget: &mut Admission) ->
         let reference: Option<String> = db(path, || r.get(1))?;
         let hash_length: Option<i64> = db(path, || r.get(8))?;
         if hash_length.is_some_and(|n| n != 32) {
-            return Err(failure(
-                ErrorKind::NotYetAvailable,
-                "invalid authored basis length",
-            ));
+            return Err(unavailable("stored seen_hash is not 32 bytes"));
         }
         let bytes: Option<Vec<u8>> = db(path, || r.get(2))?;
         for i in 3..8 {
             if db(path, || r.get_ref(i))? != rusqlite::types::ValueRef::Null {
-                return Err(failure(
-                    ErrorKind::NotYetAvailable,
-                    "anchored authored target presentation is unsupported",
-                ));
+                return Err(unavailable("anchored note targets are not supported yet"));
             }
         }
         let seen_hash = bytes
             .map(|v| {
                 v.try_into()
                     .map(BlobHash::from_bytes)
-                    .map_err(|_| Error::Invariant("invalid authored basis length".into()))
+                    .map_err(|_| Error::Invariant("stored seen_hash is not 32 bytes".into()))
             })
             .transpose()?;
         targets.push(Target {
-            reference: reference.ok_or_else(|| {
-                failure(
-                    ErrorKind::NotYetAvailable,
-                    "authored target identity admission exceeded",
-                )
-            })?,
+            reference: reference.ok_or_else(|| unavailable("note target reference is too long"))?,
             seen_hash,
         });
     }
@@ -123,15 +147,19 @@ fn revision(conn: &Connection, path: &Path, id: &str, budget: &mut Admission) ->
     drop(statement);
     let mut relations = vec![];
     let mut statement = db(path, || {
-        conn.prepare("SELECT length(CAST(kind AS BLOB))+length(CAST(other AS BLOB)),CASE WHEN length(CAST(kind AS BLOB))+length(CAST(other AS BLOB))<=17408 THEN kind END,CASE WHEN length(CAST(kind AS BLOB))+length(CAST(other AS BLOB))<=17408 THEN other END FROM note_relation WHERE note_id=?1 ORDER BY kind,other LIMIT 9")
+        conn.prepare(
+            "SELECT length(CAST(kind AS BLOB)) + length(CAST(other AS BLOB)), \
+             CASE WHEN length(CAST(kind AS BLOB)) + length(CAST(other AS BLOB)) <= 17408 \
+             THEN kind END, \
+             CASE WHEN length(CAST(kind AS BLOB)) + length(CAST(other AS BLOB)) <= 17408 \
+             THEN other END \
+             FROM note_relation WHERE note_id = ?1 ORDER BY kind, other LIMIT 9",
+        )
     })?;
     let mut rows = db(path, || statement.query([&id]))?;
     while let Some(r) = db(path, || rows.next())? {
         if relations.len() == 8 {
-            return Err(failure(
-                ErrorKind::NotYetAvailable,
-                "authored relation admission exceeded",
-            ));
+            return Err(unavailable("note has too many relations"));
         }
         budget.add(
             usize::try_from(db(path, || crate::parser_state::unsigned(r, 0))?)
@@ -139,20 +167,10 @@ fn revision(conn: &Connection, path: &Path, id: &str, budget: &mut Admission) ->
         )?;
         let kind: Option<String> = db(path, || r.get(1))?;
         let other: Option<String> = db(path, || r.get(2))?;
-        relations.push(Relation {
-            kind: kind.ok_or_else(|| {
-                failure(
-                    ErrorKind::NotYetAvailable,
-                    "authored relation admission exceeded",
-                )
-            })?,
-            other: other.ok_or_else(|| {
-                failure(
-                    ErrorKind::NotYetAvailable,
-                    "authored relation admission exceeded",
-                )
-            })?,
-        });
+        let (kind, other) = kind
+            .zip(other)
+            .ok_or_else(|| unavailable("note relation is too long"))?;
+        relations.push(Relation { kind, other });
     }
     Ok(Revision {
         id,
@@ -166,10 +184,11 @@ fn revision(conn: &Connection, path: &Path, id: &str, budget: &mut Admission) ->
         relations,
     })
 }
-fn member(conn: &Connection, path: &Path, root: &str, id: &str, cutoff: u64) -> Result<()> {
+/// Fails unless `id` is a revision in the family `root` at archive counter `cutoff`.
+fn check_member(conn: &Connection, path: &Path, root: &str, id: &str, cutoff: u64) -> Result<()> {
     let exists: bool = db(path, || {
         conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM note WHERE id=?1 AND root=?2 AND local_seq<=?3)",
+            "SELECT EXISTS(SELECT 1 FROM note WHERE id = ?1 AND root = ?2 AND local_seq <= ?3)",
             params![id, root, cutoff as i64],
             |r| r.get(0),
         )
@@ -177,12 +196,14 @@ fn member(conn: &Connection, path: &Path, root: &str, id: &str, cutoff: u64) -> 
     if !exists {
         return Err(failure(
             ErrorKind::NotFound,
-            "pinned note is not a retained revision of this family at the read basis",
+            "note is not a revision of this family at this archive counter",
         ));
     }
     Ok(())
 }
-fn exact_id(
+/// The revision ID a reference names: its pin, or the family root. With
+/// `revise`, an unpinned reference resolves to the single current revision.
+fn resolve_revision(
     conn: &Connection,
     path: &Path,
     reference: &str,
@@ -192,10 +213,10 @@ fn exact_id(
     let (root, pin) = checked_reference(reference)?;
     let cutoff = counter(conn, path)?;
     if let Some(pin) = pin {
-        member(conn, path, root, pin, cutoff)?;
+        check_member(conn, path, root, pin, cutoff)?;
         return Ok(pin.into());
     }
-    member(conn, path, root, root, cutoff)?;
+    check_member(conn, path, root, root, cutoff)?;
     if !revise {
         return Ok(root.into());
     }
@@ -212,7 +233,10 @@ fn exact_id(
     }
     Ok(heads[0].clone())
 }
-fn association_population(
+/// Collects the families with a revision that targets `target`, keyed by the
+/// first matching `note_target` row, in a temporary on-disk database so that
+/// memory does not grow with the number of notes.
+fn families_citing(
     conn: &Connection,
     path: &Path,
     target: &str,
@@ -220,63 +244,53 @@ fn association_population(
     until: Instant,
     cancel: &mut dyn FnMut() -> bool,
 ) -> Result<(Connection, tempfile::NamedTempFile)> {
-    // Build only the unique family population in bounded indexed source
-    // steps. The temporary index spills to owned scratch; no Rust set grows
-    // with annotations and no DISTINCT aggregate hides evaluation work.
     let (population, _file) = evaluation::workspace()?;
     population
         .execute_batch("CREATE TABLE family(root TEXT PRIMARY KEY, first_rowid INTEGER UNIQUE);")
-        .map_err(|e| failure(ErrorKind::NotYetAvailable, e.to_string()))?;
+        .map_err(|e| unavailable(e.to_string()))?;
     let mut pos = 0i64;
     let mut steps = 0u64;
     loop {
-        if Instant::now() >= until || cancel() {
-            return Err(Error::Cancelled);
-        }
-        crate::native::reset_scratch_cache(&population).map_err(|e| {
-            failure(
-                ErrorKind::NotYetAvailable,
-                format!("authored association cache reset unavailable: {e}"),
-            )
-        })?;
+        check_deadline(until, cancel)?;
+        reset_cache(&population)?;
         steps += 1;
         if steps > 1_000_000 {
-            return Err(failure(
-                ErrorKind::NotYetAvailable,
-                "authored association evaluation step capacity exceeded",
-            ));
+            return Err(unavailable("too many steps collecting note backlinks"));
         }
         let row: Option<(i64, Option<String>, u64)> = db(path, || {
-            conn.query_row("SELECT t.rowid,CASE WHEN length(CAST(n.root AS BLOB))<=128 THEN n.root END,n.local_seq FROM note_target t INDEXED BY note_target_ref JOIN note n ON n.id=t.note_id WHERE t.ref=?1 AND t.rowid>?2 ORDER BY t.rowid LIMIT 1",params![target,pos],|r|Ok((r.get(0)?,r.get(1)?,crate::parser_state::unsigned(r,2)?))).optional()
+            conn.query_row(
+                "SELECT t.rowid, CASE WHEN length(CAST(n.root AS BLOB)) <= 128 THEN n.root END, \
+                 n.local_seq FROM note_target t INDEXED BY note_target_ref \
+                 JOIN note n ON n.id = t.note_id \
+                 WHERE t.ref = ?1 AND t.rowid > ?2 ORDER BY t.rowid LIMIT 1",
+                params![target, pos],
+                |r| Ok((r.get(0)?, r.get(1)?, crate::parser_state::unsigned(r, 2)?)),
+            )
+            .optional()
         })?;
         let Some((row, root, seq)) = row else { break };
         pos = row;
         if seq > cutoff {
             continue;
         }
-        let root = root.ok_or_else(|| {
-            failure(
-                ErrorKind::NotYetAvailable,
-                "authored identity admission exceeded",
-            )
-        })?;
+        let root = root.ok_or_else(|| unavailable("note ID is too long"))?;
         population
             .execute(
-                "INSERT OR IGNORE INTO family(root,first_rowid) VALUES(?1,?2)",
+                "INSERT OR IGNORE INTO family(root, first_rowid) VALUES(?1, ?2)",
                 params![root, row],
             )
-            .map_err(|e| {
-                failure(
-                    ErrorKind::NotYetAvailable,
-                    format!("authored association scratch capacity/unavailability: {e}"),
-                )
-            })?;
+            .map_err(|e| unavailable(format!("note backlinks scratch database failed: {e}")))?;
     }
     Ok((population, _file))
 }
+/// Drops the scratch database's page cache so its memory stays small.
+fn reset_cache(scratch: &Connection) -> Result<()> {
+    crate::native::reset_scratch_cache(scratch)
+        .map_err(|e| unavailable(format!("note scratch cache reset failed: {e}")))
+}
 impl Writer {
-    /// Archive qualification is independent of derived-tier availability. Read
-    /// it before the action; a later status failure cannot relabel a commit.
+    /// The archive's recovery record, if any. Read it before writing a note so
+    /// that a later status failure cannot change what the reply reports.
     pub fn authored_recovery(&self) -> Result<Option<polylogue_model::RecoveryRecord>> {
         crate::recovery::record(&self.archive, &self.root.join("archive.db"))
     }
@@ -289,7 +303,7 @@ impl Writer {
         let path = self.root.join("archive.db");
         let tx = db(&path, || self.archive.transaction())?;
         if client_request::replay(&tx, &path, &request.request_id, hash)? {
-            return revision(&tx, &path, &request.request_id, &mut Admission(0));
+            return revision(&tx, &path, &request.request_id, &mut SizeBudget(0));
         }
         let mut kind = request.kind.unwrap_or(NoteKind::Note);
         let mut root = request.request_id.clone();
@@ -297,12 +311,11 @@ impl Writer {
         let mut relations = vec![];
         for r in &request.relations {
             if r.kind == "revises" {
-                let id = exact_id(&tx, &path, &r.other, true, until)?;
-                let previous = revision(&tx, &path, &id, &mut Admission(0))?;
+                let id = resolve_revision(&tx, &path, &r.other, true, until)?;
+                let previous = revision(&tx, &path, &id, &mut SizeBudget(0))?;
                 if previous.kind == NoteKind::Withdrawal {
-                    return Err(failure(
-                        ErrorKind::NotYetAvailable,
-                        "revise note/correction only; restore a withdrawal by withdrawing it",
+                    return Err(unavailable(
+                        "only notes and corrections can be revised; withdraw a withdrawal to undo it",
                     ));
                 }
                 let mut cancel = || false;
@@ -322,13 +335,13 @@ impl Writer {
                         .collect::<Vec<_>>();
                     return Err(failure(
                         ErrorKind::Conflict,
-                        format!("stale ordinary revision; current revisions: {current:?}"),
+                        format!("revision is out of date; current revisions: {current:?}"),
                     ));
                 }
                 if request.kind.is_some_and(|k| k != previous.kind) {
                     return Err(failure(
                         ErrorKind::InvalidQuery,
-                        "ordinary revision cannot change note kind",
+                        "a revision cannot change the note kind",
                     ));
                 }
                 kind = previous.kind;
@@ -345,8 +358,8 @@ impl Writer {
                     other: reference,
                 });
             } else if r.kind == "withdraws" {
-                let id = exact_id(&tx, &path, &r.other, false, until)?;
-                let n = revision(&tx, &path, &id, &mut Admission(0))?;
+                let id = resolve_revision(&tx, &path, &r.other, false, until)?;
+                let n = revision(&tx, &path, &id, &mut SizeBudget(0))?;
                 relations.push(Relation {
                     kind: r.kind.clone(),
                     other: n.reference(),
@@ -358,7 +371,7 @@ impl Writer {
         if kind != NoteKind::Withdrawal && targets.is_empty() {
             return Err(failure(
                 ErrorKind::InvalidQuery,
-                "authored note requires exact targets",
+                "a note needs at least one target",
             ));
         }
         targets.sort_by(|a, b| a.reference.cmp(&b.reference));
@@ -377,12 +390,25 @@ impl Writer {
             .ok_or(Error::Range)?;
         client_request::insert(&tx, &path, &request.request_id, hash, created_at)?;
         db(&path, || {
-            tx.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,local_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![request.request_id,root,kind.as_str(),request.value,request.author,request.machine,created_at,next as i64])
+            tx.execute(
+                "INSERT INTO note(id, root, kind, value, author, machine, created_at, local_seq) \
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    request.request_id,
+                    root,
+                    kind.as_str(),
+                    request.value,
+                    request.author,
+                    request.machine,
+                    created_at,
+                    next as i64
+                ],
+            )
         })?;
         for t in &targets {
             db(&path, || {
                 tx.execute(
-                    "INSERT INTO note_target(note_id,ref,seen_hash) VALUES(?1,?2,?3)",
+                    "INSERT INTO note_target(note_id, ref, seen_hash) VALUES(?1, ?2, ?3)",
                     params![
                         request.request_id,
                         t.reference,
@@ -394,27 +420,24 @@ impl Writer {
         for r in &relations {
             db(&path, || {
                 tx.execute(
-                    "INSERT INTO note_relation(note_id,kind,other) VALUES(?1,?2,?3)",
+                    "INSERT INTO note_relation(note_id, kind, other) VALUES(?1, ?2, ?3)",
                     params![request.request_id, r.kind, r.other],
                 )
             })?;
         }
         db(&path, || {
             tx.execute(
-                "UPDATE meta SET value=?1 WHERE key='write_counter'",
+                "UPDATE meta SET value = ?1 WHERE key = 'write_counter'",
                 [next.to_string()],
             )
         })?;
-        // Prospective control evaluation includes every family reached through
-        // withdrawals. Failure rolls back note, request identity and counter.
-        // Committed replay above deliberately never reruns this admission.
+        // Refuse a note that would leave a family, or the backlinks of a
+        // target, impossible to read; failure rolls back the whole write. A
+        // replayed request returned above and is not checked again.
         let mut cancel = || false;
-        Evaluation::new(&tx, &path, &root, next, until, &mut cancel)?.qualify_all_families()?;
-        // New target membership also has a bounded navigation dependency.
-        // Reuse the reader's exact unique-population builder before admitting
-        // growth that would make that association traversal unavailable.
+        Evaluation::new(&tx, &path, &root, next, until, &mut cancel)?.check_all_families()?;
         for target in &targets {
-            association_population(&tx, &path, &target.reference, next, until, &mut cancel)?;
+            families_citing(&tx, &path, &target.reference, next, until, &mut cancel)?;
         }
         db(&path, || tx.commit())?;
         Ok(Revision {
@@ -477,7 +500,8 @@ pub struct Snapshot {
     conn: Connection,
     path: PathBuf,
     pub archive_counter: u64,
-    /// Indexed authored-only watermark, separate from general archive bookkeeping.
+    /// The highest note `local_seq`; unlike the archive counter it changes
+    /// only when a note is written.
     pub authored_sequence: u64,
     pub recovery: Option<polylogue_model::RecoveryRecord>,
     _lock: Arc<File>,
@@ -516,18 +540,18 @@ impl Snapshot {
         if cutoff > self.archive_counter {
             return Err(failure(
                 ErrorKind::InvalidQuery,
-                "unavailable authored read basis",
+                "archive counter is newer than this snapshot",
             ));
         }
         let (root, pin) = checked_reference(reference)?;
         let id = pin.ok_or_else(|| {
             failure(
                 ErrorKind::InvalidQuery,
-                "value-only reads require an exact pinned revision",
+                "value reads need a pinned revision (note:ROOT@ID)",
             )
         })?;
-        member(&self.conn, &self.path, root, id, cutoff)?;
-        revision(&self.conn, &self.path, id, &mut Admission(0))
+        check_member(&self.conn, &self.path, root, id, cutoff)?;
+        revision(&self.conn, &self.path, id, &mut SizeBudget(0))
     }
     pub fn family(&self, reference: &str) -> Result<Family> {
         self.family_page(
@@ -549,10 +573,7 @@ impl Snapshot {
         cancel: &mut dyn FnMut() -> bool,
     ) -> Result<Family> {
         if cutoff > self.archive_counter || after < 0 {
-            return Err(failure(
-                ErrorKind::InvalidQuery,
-                "invalid authored page basis",
-            ));
+            return Err(failure(ErrorKind::InvalidQuery, "invalid page position"));
         }
         let (root, pin) = checked_reference(reference)?;
         if kind == PageKind::Current && pin.is_some() {
@@ -561,9 +582,9 @@ impl Snapshot {
                 "current pages require a family reference without a revision pin",
             ));
         }
-        member(&self.conn, &self.path, root, root, cutoff)?;
+        check_member(&self.conn, &self.path, root, root, cutoff)?;
         if let Some(pin) = pin {
-            member(&self.conn, &self.path, root, pin, cutoff)?;
+            check_member(&self.conn, &self.path, root, pin, cutoff)?;
         }
         let mut eval = Evaluation::new(&self.conn, &self.path, root, cutoff, until, cancel)?;
         let heads = eval.heads(root)?;
@@ -575,32 +596,20 @@ impl Snapshot {
             PageKind::Current => heads.get(after as usize).cloned().into_iter().collect(),
             _ => vec![],
         };
-        let mut state = |id: &str| -> Result<NoteState> {
+        let mut shown = vec![];
+        for id in &selected {
             if Instant::now() >= until {
                 return Err(Error::Cancelled);
             }
-            let n = revision(&self.conn, &self.path, id, &mut Admission(0))?;
-            let current = eval.is_current(id, &n.root)?;
-            let withdrawn = eval.withdrawn(id)? || eval.withdrawn(&n.root)?;
-            Ok(NoteState {
-                revision: n,
-                current,
-                withdrawn,
-            })
-        };
-        let shown = selected
-            .iter()
-            .map(|id| state(id))
-            .collect::<Result<Vec<_>>>()?;
+            shown.push(self.note_state(&mut eval, id)?);
+        }
         let mut history = vec![];
         let mut history_after = None;
         if matches!(kind, PageKind::Family | PageKind::History) {
             let mut pos = if kind == PageKind::History { after } else { 0 };
             loop {
                 eval.checkpoint()?;
-                let next: Option<(i64, Option<String>, u64)> = db(&self.path, || {
-                    self.conn.query_row("SELECT rowid,CASE WHEN length(CAST(id AS BLOB))<=128 THEN id END,local_seq FROM note INDEXED BY note_root WHERE root=?1 AND rowid>?2 ORDER BY rowid LIMIT 1",params![root,pos],|r|Ok((r.get(0)?,r.get(1)?,crate::parser_state::unsigned(r,2)?))).optional()
-                })?;
+                let next = evaluation::next_in_family(&self.conn, &self.path, root, pos)?;
                 let Some((row, id, seq)) = next else { break };
                 if seq > cutoff {
                     pos = row;
@@ -610,12 +619,7 @@ impl Snapshot {
                     history_after = Some(pos);
                     break;
                 }
-                let id = id.ok_or_else(|| {
-                    failure(
-                        ErrorKind::NotYetAvailable,
-                        "authored identity admission exceeded",
-                    )
-                })?;
+                let id = id.ok_or_else(|| unavailable("note ID is too long"))?;
                 history.push(format!("note:{root}@{id}"));
                 pos = row;
             }
@@ -623,30 +627,22 @@ impl Snapshot {
         let mut withdrawal_trail = vec![];
         let mut withdrawal_after = None;
         if matches!(kind, PageKind::Family | PageKind::Withdrawals) {
-            let mut rows = eval.trail(
-                root,
-                if kind == PageKind::Withdrawals {
-                    after
-                } else {
-                    0
-                },
-                if kind == PageKind::Withdrawals { 1 } else { 8 },
-            )?;
-            let limit = if kind == PageKind::Withdrawals { 1 } else { 8 };
+            let (start, limit) = if kind == PageKind::Withdrawals {
+                (after, 1)
+            } else {
+                (0, 8)
+            };
+            let mut rows = eval.trail(root, start, limit)?;
             if rows.len() > limit {
                 withdrawal_after = Some(rows[limit - 1].0);
                 rows.truncate(limit);
             }
             let mut trail_bytes = 0usize;
-            let mut last = if kind == PageKind::Withdrawals {
-                after
-            } else {
-                0
-            };
+            let mut last = start;
             for (row, id) in rows {
                 let size: i64 = db(&self.path, || {
                     self.conn.query_row(
-                        "SELECT length(CAST(value AS BLOB)) FROM note WHERE id=?1",
+                        "SELECT length(CAST(value AS BLOB)) FROM note WHERE id = ?1",
                         [&id],
                         |r| r.get(0),
                     )
@@ -657,32 +653,18 @@ impl Snapshot {
                 }
                 trail_bytes += size as usize;
                 last = row;
-                let n = revision(&self.conn, &self.path, &id, &mut Admission(0))?;
-                let current = eval.is_current(&id, &n.root)?;
-                let withdrawn = eval.withdrawn(&id)? || eval.withdrawn(&n.root)?;
-                withdrawal_trail.push(NoteState {
-                    revision: n,
-                    current,
-                    withdrawn,
-                });
+                withdrawal_trail.push(self.note_state(&mut eval, &id)?);
             }
         }
-        let current_after = if pin.is_none()
-            && matches!(kind, PageKind::Family | PageKind::Current)
-            && (if kind == PageKind::Current {
-                after as usize + 1
-            } else {
-                1
-            }) < heads.len()
-        {
-            Some(if kind == PageKind::Current {
-                after + 1
-            } else {
-                1
-            })
+        let next_current = if kind == PageKind::Current {
+            after + 1
         } else {
-            None
+            1
         };
+        let current_after = (pin.is_none()
+            && matches!(kind, PageKind::Family | PageKind::Current)
+            && (next_current as usize) < heads.len())
+        .then_some(next_current);
         Ok(Family {
             root: root.into(),
             conflict: heads.len() > 1,
@@ -706,6 +688,17 @@ impl Snapshot {
             current_after,
         })
     }
+    fn note_state(&self, eval: &mut Evaluation, id: &str) -> Result<NoteState> {
+        let revision = revision(&self.conn, &self.path, id, &mut SizeBudget(0))?;
+        let current = eval.is_current(id, &revision.root)?;
+        let withdrawn = eval.withdrawn(id)? || eval.withdrawn(&revision.root)?;
+        Ok(NoteState {
+            revision,
+            current,
+            withdrawn,
+        })
+    }
+    /// One page of the note families whose revisions target `target`.
     pub fn backlinks_page(
         &self,
         target: &str,
@@ -722,25 +715,26 @@ impl Snapshot {
         {
             return Err(failure(
                 ErrorKind::InvalidQuery,
-                "invalid exact target association page",
+                "invalid target backlinks page",
             ));
         }
         let (population, _file) =
-            association_population(&self.conn, &self.path, target, cutoff, until, cancel)?;
+            families_citing(&self.conn, &self.path, target, cutoff, until, cancel)?;
         let mut families = vec![];
         let mut next = None;
         let mut pos = after;
         loop {
-            if Instant::now() >= until || cancel() {
-                return Err(Error::Cancelled);
-            }
-            crate::native::reset_scratch_cache(&population).map_err(|e| {
-                failure(
-                    ErrorKind::NotYetAvailable,
-                    format!("authored association cache reset unavailable: {e}"),
+            check_deadline(until, cancel)?;
+            reset_cache(&population)?;
+            let row: Option<(i64, String)> = population
+                .query_row(
+                    "SELECT first_rowid, root FROM family WHERE first_rowid > ?1 \
+                     ORDER BY first_rowid LIMIT 1",
+                    [pos],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
-            })?;
-            let row:Option<(i64,String)>=population.query_row("SELECT first_rowid,root FROM family WHERE first_rowid>?1 ORDER BY first_rowid LIMIT 1",[pos],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|failure(ErrorKind::NotYetAvailable,e.to_string()))?;
+                .optional()
+                .map_err(|e| unavailable(e.to_string()))?;
             let Some((row, root)) = row else { break };
             if families.len() == limit {
                 next = Some(pos);
@@ -758,11 +752,25 @@ impl Snapshot {
             let mut matching_complete = true;
             let mut member_pos = 0i64;
             loop {
-                if Instant::now() >= until || cancel() {
-                    return Err(Error::Cancelled);
-                }
+                check_deadline(until, cancel)?;
                 let m: Option<(i64, String, u64, bool)> = db(&self.path, || {
-                    self.conn.query_row("SELECT n.rowid,n.id,n.local_seq,EXISTS(SELECT 1 FROM note_target t WHERE t.note_id=n.id AND t.ref=?3) FROM note n INDEXED BY note_root WHERE n.root=?1 AND n.rowid>?2 ORDER BY n.rowid LIMIT 1",params![root,member_pos,target],|r|Ok((r.get(0)?,r.get(1)?,crate::parser_state::unsigned(r,2)?,r.get(3)?))).optional()
+                    self.conn
+                        .query_row(
+                            "SELECT n.rowid, n.id, n.local_seq, EXISTS(SELECT 1 FROM note_target t \
+                             WHERE t.note_id = n.id AND t.ref = ?3) \
+                             FROM note n INDEXED BY note_root \
+                             WHERE n.root = ?1 AND n.rowid > ?2 ORDER BY n.rowid LIMIT 1",
+                            params![root, member_pos, target],
+                            |r| {
+                                Ok((
+                                    r.get(0)?,
+                                    r.get(1)?,
+                                    crate::parser_state::unsigned(r, 2)?,
+                                    r.get(3)?,
+                                ))
+                            },
+                        )
+                        .optional()
                 })?;
                 let Some((r, id, seq, matches)) = m else {
                     break;
@@ -780,12 +788,15 @@ impl Snapshot {
             family.matching_target_revisions_complete = Some(matching_complete);
             let mut current_matches = vec![];
             for current in &family.current {
-                if Instant::now() >= until || cancel() {
-                    return Err(Error::Cancelled);
-                }
+                check_deadline(until, cancel)?;
                 let (_, pin) = checked_reference(current)?;
                 let matches: bool = db(&self.path, || {
-                    self.conn.query_row("SELECT EXISTS(SELECT 1 FROM note_target t JOIN note n ON n.id=t.note_id WHERE t.note_id=?1 AND t.ref=?2 AND n.local_seq<=?3)",params![pin.unwrap(),target,cutoff as i64],|r|r.get(0))
+                    self.conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM note_target t JOIN note n ON n.id = t.note_id \
+                         WHERE t.note_id = ?1 AND t.ref = ?2 AND n.local_seq <= ?3)",
+                        params![pin.unwrap(), target, cutoff as i64],
+                        |r| r.get(0),
+                    )
                 })?;
                 if matches {
                     current_matches.push(current.clone());
