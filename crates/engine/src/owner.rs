@@ -2107,7 +2107,10 @@ fn source_budgets() -> Budgets {
 }
 fn install_budget() -> Budget {
     Budget {
-        cells: 2,
+        // Small provider cells share a bounded durable transaction. The actor
+        // observes cancellation and serves its mailbox between transactions;
+        // only publication advances the visible source checkpoint.
+        cells: 64,
         encoded_bytes: 2 * 1024 * 1024,
     }
 }

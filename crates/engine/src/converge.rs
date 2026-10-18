@@ -39,15 +39,19 @@ impl PendingInstall {
         &self.work.token.predecessor
     }
     /// Each call performs at most one staging/application/control transaction.
-    /// Staging deliberately takes one encoded member; application honors the
-    /// supplied cell/byte budget. An admission error leaves durable work owed.
+    /// Staging and application honor the supplied cell/byte budget. A later
+    /// unfit member stays owed; an unfit first member fails without mutation.
     pub fn turn(&mut self, writer: &mut Writer, budget: Budget) -> Result<Turn> {
         if !self.work.applying {
             let staged = usize::try_from(self.work.token.staged).map_err(|_| Error::Range)?;
             if staged < self.changes.len() {
+                let count = self
+                    .work
+                    .token
+                    .staging_prefix(&self.changes[staged..], budget)?;
                 self.work = writer.stage_parser(
                     &self.work.token,
-                    &self.changes[staged..staged + 1],
+                    &self.changes[staged..staged + count],
                     budget,
                 )?;
             } else {
