@@ -597,40 +597,20 @@ pub fn inspect(writer: &mut Writer, handle: &Handle, allowance: usize) -> Result
         projection,
     })
 }
-struct Limited {
-    bytes: Vec<u8>,
-    maximum: usize,
-    refused: bool,
-}
-impl Write for Limited {
-    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-        if b.len() > self.maximum.saturating_sub(self.bytes.len()) {
-            self.refused = true;
-            return Err(io::Error::other("Message metadata admission"));
-        }
-        self.bytes.extend_from_slice(b);
-        Ok(b.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 fn bounded_json(value: &impl Serialize, maximum: usize) -> Result<Vec<u8>> {
-    let mut writer = Limited {
-        bytes: vec![],
-        maximum,
-        refused: false,
-    };
-    let result = serde_json::to_writer(&mut writer, value);
-    if writer.refused {
-        return Err(StoreError::ParserAdmission {
-            resource: "Message materializer metadata",
-            required: (maximum as u64).saturating_add(1),
+    crate::limited::encode(maximum, |w| serde_json::to_writer(w, value)).map_err(|failure| {
+        match failure {
+            crate::limited::Failure::Limit { required } => StoreError::ParserAdmission {
+                resource: "Message materializer metadata",
+                required: required as u64,
+            }
+            .into(),
+            crate::limited::Failure::Alloc => {
+                Error::Source("Message metadata allocation failed".into())
+            }
+            crate::limited::Failure::Encode(e) => Error::Source(e.to_string()),
         }
-        .into());
-    }
-    result.map_err(|e| Error::Source(e.to_string()))?;
-    Ok(writer.bytes)
+    })
 }
 fn action(state: &State, b: Budgets, change: Change) -> Action {
     Action {

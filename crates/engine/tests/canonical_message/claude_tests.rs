@@ -255,8 +255,8 @@ fn real_morrow_claude_bodies_use_native_ids_flat_order_and_verified_origins() {
         while let Some(block) = view.block_at(index).unwrap() {
             assert_eq!(block.slot, BlockSlot::Item(index as u32));
             assert_eq!(block.group, 0);
-            if block.kind == "thinking" {
-                if let Some(FieldRead::Value(signature)) = block
+            if block.kind == "thinking"
+                && let Some(FieldRead::Value(signature)) = block
                     .field(
                         &Slot::Block {
                             block: block.slot.clone(),
@@ -265,15 +265,14 @@ fn real_morrow_claude_bodies_use_native_ids_flat_order_and_verified_origins() {
                         65536,
                     )
                     .unwrap()
-                {
-                    assert!(!signature.supplied);
-                    assert!(
-                        serde_json::from_slice::<Value>(&signature.range(0, 65536).unwrap().bytes)
-                            .unwrap()
-                            .is_string()
-                    );
-                    assert!(signature.origin_range(0, 65536).unwrap().is_some())
-                }
+            {
+                assert!(!signature.supplied);
+                assert!(
+                    serde_json::from_slice::<Value>(&signature.range(0, 65536).unwrap().bytes)
+                        .unwrap()
+                        .is_string()
+                );
+                assert!(signature.origin_range(0, 65536).unwrap().is_some())
             }
             index += 1;
         }
@@ -402,7 +401,7 @@ fn a_native_parent_uuid_from_a_later_response_fragment_resolves_its_owning_messa
     }
 }
 fn input(text: &str) -> Vec<u8> {
-    json!({"type":"assistant","uuid":"opaque:message","requestId":"request","sessionId":SID,"timestamp":"2026-10-01T10:00:00Z","message":{"id":"response","content":[{"type":"thinking","thinking":"reason","signature":"retained-signature"},{"type":"text","text":text}],"stop_reason":"end_turn"}}).to_string().into_bytes().into_iter().chain([b'\n']).collect()
+    json!({"type":"assistant","uuid":"opaque:message","requestId":"request","sessionId":SID,"timestamp":"2026-10-01T10:00:00Z","message":{"id":"response","content":[{"type":"thinking","thinking":"reason","signature":"retained-signature"},{"type":"text","text":text}],"stop_reason":"end_turn"}}).to_string().into_bytes().into_iter().chain(*b"\n").collect()
 }
 #[test]
 fn claude_reopens_partial_normalized_and_origin_values_and_finish_before_publication() {

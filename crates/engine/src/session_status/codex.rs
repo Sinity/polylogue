@@ -97,10 +97,10 @@ fn flat_effects(
         }
         for ordinal in 0..=proof.events() {
             let bytes = reads.cell(&proof.event_key(ordinal)?, allowance)?;
-            if let Some(event) = proof.event(ordinal, bytes.as_deref())? {
-                if !events.accepts(&event) {
-                    return Ok(false);
-                }
+            if let Some(event) = proof.event(ordinal, bytes.as_deref())?
+                && !events.accepts(&event)
+            {
+                return Ok(false);
             }
         }
     }

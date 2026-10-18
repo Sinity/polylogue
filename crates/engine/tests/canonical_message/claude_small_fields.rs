@@ -77,23 +77,23 @@ fn complete_budget(
         let kind = a.operation();
         let projection = w.writer.message_projection(h.build(), 65536).unwrap();
         let before = projection.sequence;
-        if kind == "advance" {
-            if let Some(cursor) = projection.cursor {
-                let cursor: Value = serde_json::from_slice(&cursor).unwrap();
-                let stage = &cursor["stage"];
-                let key = if let Some(claude) = stage.get("Claude") {
-                    claude
-                        .as_object()
-                        .and_then(|v| v.keys().next())
-                        .map_or("unit", String::as_str)
-                } else {
-                    stage
-                        .as_object()
-                        .and_then(|v| v.keys().next())
-                        .map_or("unit", String::as_str)
-                };
-                *counts.entry(format!("advance_from_{key}")).or_default() += 1;
-            }
+        if kind == "advance"
+            && let Some(cursor) = projection.cursor
+        {
+            let cursor: Value = serde_json::from_slice(&cursor).unwrap();
+            let stage = &cursor["stage"];
+            let key = if let Some(claude) = stage.get("Claude") {
+                claude
+                    .as_object()
+                    .and_then(|v| v.keys().next())
+                    .map_or("unit", String::as_str)
+            } else {
+                stage
+                    .as_object()
+                    .and_then(|v| v.keys().next())
+                    .map_or("unit", String::as_str)
+            };
+            *counts.entry(format!("advance_from_{key}")).or_default() += 1;
         }
         *counts.entry("worker_total".into()).or_default() += 1;
         *counts.entry(kind.to_owned()).or_default() += 1;

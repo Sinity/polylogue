@@ -1,8 +1,9 @@
 //! Claude parser state over a pinned SQLite snapshot: point reads and cell
 //! encoding. Parses no records and writes nothing. Counters limit encoded cell
 //! traffic, not decoded memory.
+use crate::limited::Failure;
 use std::cell::{Cell, RefCell};
-use std::io::{self, Write};
+use std::io;
 
 use polylogue_model::{Event, Link, MessageId, SessionId};
 use polylogue_sources::claude_code::keyed::{
@@ -310,67 +311,21 @@ fn admission(resource: &'static str, required: usize) -> StoreError {
     }
 }
 
-/// Checks the encoded length before each append. On failure, `required` is a
-/// lower bound because encoding stops at once.
-struct Limited {
-    bytes: Vec<u8>,
-    limit: usize,
-    required: Option<usize>,
-    allocation_failed: bool,
-}
-impl Write for Limited {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let required = self.bytes.len().saturating_add(bytes.len());
-        if required > self.limit {
-            self.required = Some(required);
-            return Err(io::Error::other(
-                "Claude state encoding allowance exhausted",
-            ));
-        }
-        if self
-            .bytes
-            .try_reserve_exact(required - self.bytes.len())
-            .is_err()
-        {
-            self.allocation_failed = true;
-            return Err(io::Error::new(
-                io::ErrorKind::OutOfMemory,
-                "Claude state encoding allocation failed",
-            ));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 fn encode<T: Serialize + ?Sized>(value: &T, limit: usize, already: usize) -> Result<Vec<u8>> {
-    let mut writer = Limited {
-        bytes: Vec::new(),
-        limit,
-        required: None,
-        allocation_failed: false,
-    };
-    if let Err(e) = serde_json::to_writer(&mut writer, value) {
-        if let Some(required) = writer.required {
-            return Err(admission(
+    crate::limited::encode(limit, |w| serde_json::to_writer(w, value)).map_err(|failure| {
+        match failure {
+            Failure::Limit { required } => admission(
                 "Claude state encoded bytes",
                 already.saturating_add(required),
-            ));
-        }
-        if writer.allocation_failed {
-            return Err(io::Error::new(
+            ),
+            Failure::Alloc => io::Error::new(
                 io::ErrorKind::OutOfMemory,
                 "Claude state encoding allocation failed",
             )
-            .into());
+            .into(),
+            Failure::Encode(e) => StoreError::Invariant(format!("cannot encode Claude state: {e}")),
         }
-        return Err(StoreError::Invariant(format!(
-            "cannot encode Claude state: {e}"
-        )));
-    }
-    Ok(writer.bytes)
+    })
 }
 
 /// Encodes outside the writer transaction. The framer supplies the

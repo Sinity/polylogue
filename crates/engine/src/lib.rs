@@ -10,6 +10,7 @@ pub mod version_digest;
 
 pub mod canonical_message;
 
+mod limited;
 mod source_rows;
 
 pub mod session_status;

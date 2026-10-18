@@ -195,12 +195,11 @@ fn parent_relation_work_refuses_small_point_and_scratch_allowances_without_insta
     );
     w = w.reopen();
     let s = w.complete(&h);
-    assert_eq!(
+    assert!(
         selected(&mut w, &s)
             .field(&Slot::Message(MessageField::Parent), 65536)
             .unwrap()
-            .is_some(),
-        true
+            .is_some()
     );
 }
 #[test]

@@ -62,8 +62,7 @@ source records.
 
 Not implemented yet: fair per-input scheduling, global tool-call pairing,
 cross-input election, a persistent search index, linked subagent promotion,
-snippets, and retirement of old
-source bodies after excision.
+snippets, and retirement of old source bodies after excision.
 
 ## Tests
 

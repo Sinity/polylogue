@@ -635,11 +635,11 @@ impl Actor {
                     self.begin_stop();
                 }
             }
-            if !self.stopping {
-                if let Err(e) = self.tick() {
-                    self.fatal = Some(e);
-                    self.begin_stop();
-                }
+            if !self.stopping
+                && let Err(e) = self.tick()
+            {
+                self.fatal = Some(e);
+                self.begin_stop();
             }
             if !self.stopping && (mailbox_empty || commands_since_grant >= COMMANDS) {
                 if let Err(e) = self.advance_capture_turn() {
@@ -666,7 +666,7 @@ impl Actor {
     fn finish_capture(&mut self, job: CaptureJob, result: Result<PreparedCapture>) -> Result<()> {
         job.join.join().map_err(|_| Error::WorkerPanicked)?;
         if self.stop_for_completion(&result) {
-            let _ = job.reply.send(Err(Error::Stopped), false);
+            job.reply.send(Err(Error::Stopped), false);
             return Ok(());
         }
         let mut acquired = true;
@@ -748,7 +748,7 @@ impl Actor {
                 self.restart_scan();
             }
         }
-        let _ = job.reply.send(result, acquired);
+        job.reply.send(result, acquired);
         Ok(())
     }
     fn active_id(&self) -> Option<&str> {
@@ -775,175 +775,9 @@ impl Actor {
         // recv_timeout may have blocked since the loop last checked for stop.
         self.observe_stop();
         match message {
-            Message::Note(request, deadline, reply) => {
-                let result = if self.stopping {
-                    Err(Error::Stopped)
-                } else if Instant::now() >= deadline {
-                    Err(StoreError::Authored(polylogue_model::Failure::new(
-                        polylogue_model::ErrorKind::Timeout,
-                        "queued authored write deadline passed; no effect committed",
-                    ))
-                    .into())
-                } else {
-                    self.writer
-                        .authored_recovery()
-                        .and_then(|recovery| {
-                            self.writer
-                                .write_note_until(&request, deadline)
-                                .map(|revision| AuthoredReply { revision, recovery })
-                        })
-                        .map_err(Error::Store)
-                };
-                let _ = reply.send(result);
-            }
+            Message::Note(request, deadline, reply) => self.note(request, deadline, reply),
             Message::Import(request, configured, reply) => {
-                if self.stopping {
-                    let _ = reply.send(Err(Error::Stopped), false);
-                    return Ok(());
-                }
-                let replay = self.writer.replay_immutable_import(
-                    request.format,
-                    &request
-                        .context
-                        .iter()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>(),
-                    &request.observation.borrowed(),
-                    request.metadata_allowance,
-                );
-                match replay {
-                    Ok(Some(input)) => {
-                        if let Some((candidate, hash, _)) = &configured {
-                            if let Err(error) = self.writer.check_import_acquisition() {
-                                reply.send(Err(error.into()), false);
-                                return Ok(());
-                            }
-                            if input.id
-                                != polylogue_model::InputId::imported(
-                                    hash,
-                                    candidate.format().name(),
-                                    &[],
-                                )
-                                .as_str()
-                            {
-                                reply.send(
-                                    Err(StoreError::ClientRequestConflict {
-                                        id: request.observation.id.clone(),
-                                    }
-                                    .into()),
-                                    false,
-                                );
-                                return Ok(());
-                            }
-                        }
-                        self.scan_again = true;
-                        if !self.scanning
-                            && self.active.is_none()
-                            && self.compute.is_none()
-                            && self.canonical.is_none()
-                        {
-                            self.restart_scan();
-                        }
-                        let _ = reply.send(Ok(input), false);
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        let _ = reply.send(Err(e.into()), false);
-                        return Ok(());
-                    }
-                    Ok(None) => {}
-                }
-                if let Some((candidate, hash, _)) = &configured {
-                    match self.writer.known_configured_snapshot(
-                        candidate,
-                        *hash,
-                        &request.observation.machine,
-                        &request.observation.host,
-                        &request.observation.path,
-                    ) {
-                        Ok(Some(input)) => {
-                            reply.send(Ok(input), false);
-                            return Ok(());
-                        }
-                        Err(error) => {
-                            reply.send(Err(error.into()), false);
-                            return Ok(());
-                        }
-                        Ok(None) => {}
-                    }
-                }
-                if request.format == InputFormat::CodexHistorySqlite {
-                    return self.start_history(request, reply);
-                }
-                if self.capture.is_none()
-                    && self
-                        .turn_capture
-                        .as_ref()
-                        .is_some_and(|h| h.grant.is_none() || h.regular_served)
-                {
-                    if self.waiting_capture.is_none() {
-                        self.waiting_capture = Some((request, configured, reply));
-                    } else {
-                        reply.send(Err(Error::Busy), false);
-                    }
-                    return Ok(());
-                }
-                if self.capture.is_some() {
-                    let _ = reply.send(Err(Error::Busy), false);
-                    return Ok(());
-                }
-                if let Err(e) = self.writer.check_import_acquisition() {
-                    let _ = reply.send(Err(e.into()), false);
-                    return Ok(());
-                }
-                let capture = match self.writer.blob_capture() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let _ = reply.send(Err(e.into()), false);
-                        return Ok(());
-                    }
-                };
-                if let Some(history) = &mut self.turn_capture {
-                    history.regular_served = true;
-                }
-                let cancelled = Arc::clone(&self.inner.cancelled);
-                let sender = self.inner.sender.clone();
-                let path = request.path;
-                let expected = configured.as_ref().map(|(_, hash, _)| *hash);
-                let join = thread::Builder::new()
-                    .name("polylogue-capture".into())
-                    .spawn(move || {
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            if let Some((candidate, _, length)) = configured {
-                                capture
-                                    .capture_codex_candidate(&candidate, length, &cancelled)
-                                    .map(PreparedCapture::Blob)
-                            } else {
-                                capture
-                                    .capture_regular_file(&path, &cancelled)
-                                    .map(PreparedCapture::Blob)
-                            }
-                        }))
-                        .map_err(|_| Error::WorkerPanicked)
-                        .and_then(|r| r.map_err(Error::Store));
-                        let _ = sender.send(Message::Captured(result));
-                    });
-                match join {
-                    Ok(join) => {
-                        self.capture = Some(CaptureJob {
-                            expected,
-                            format: request.format,
-                            context: request.context,
-                            observation: request.observation,
-                            allowance: request.metadata_allowance,
-                            reply,
-                            join,
-                        })
-                    }
-                    Err(e) => {
-                        let _ = reply.send(Err(StoreError::Io(e).into()), false);
-                    }
-                }
+                self.import(request, configured, reply)?
             }
             Message::Claude(request, location, quantum_bytes, reply) => {
                 if self.stopping {
@@ -1009,123 +843,282 @@ impl Actor {
                     .ok_or(Error::InvalidRequest("unexpected acquisition completion"))?;
                 self.finish_capture(history.job, result)?;
             }
-            Message::Computed(result) => {
-                let Some(job) = self.compute.take() else {
-                    return Err(Error::InvalidRequest("unexpected source completion"));
-                };
-                job.join.join().map_err(|_| Error::WorkerPanicked)?;
-                if self.stop_for_completion(&result) {
+            Message::Computed(result) => self.computed(result)?,
+            Message::CanonicalComputed(result) => self.canonical_computed(result)?,
+            Message::Wake => {}
+        }
+        Ok(())
+    }
+    fn note(
+        &mut self,
+        request: polylogue_model::authored::WriteNote,
+        deadline: Instant,
+        reply: Reply<AuthoredReply>,
+    ) {
+        let result = if self.stopping {
+            Err(Error::Stopped)
+        } else if Instant::now() >= deadline {
+            Err(StoreError::Authored(polylogue_model::Failure::new(
+                polylogue_model::ErrorKind::Timeout,
+                "queued authored write deadline passed; no effect committed",
+            ))
+            .into())
+        } else {
+            self.writer
+                .authored_recovery()
+                .and_then(|recovery| {
+                    self.writer
+                        .write_note_until(&request, deadline)
+                        .map(|revision| AuthoredReply { revision, recovery })
+                })
+                .map_err(Error::Store)
+        };
+        let _ = reply.send(result);
+    }
+    fn import(
+        &mut self,
+        request: ImportRequest,
+        configured: Option<(polylogue_store::configured_codex::Candidate, BlobHash, u64)>,
+        reply: ImportReply,
+    ) -> Result<()> {
+        if self.stopping {
+            reply.send(Err(Error::Stopped), false);
+            return Ok(());
+        }
+        let replay = self.writer.replay_immutable_import(
+            request.format,
+            &request
+                .context
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            &request.observation.borrowed(),
+            request.metadata_allowance,
+        );
+        match replay {
+            Ok(Some(input)) => {
+                if let Some((candidate, hash, _)) = &configured {
+                    if let Err(error) = self.writer.check_import_acquisition() {
+                        reply.send(Err(error.into()), false);
+                        return Ok(());
+                    }
+                    if input.id
+                        != polylogue_model::InputId::imported(hash, candidate.format().name(), &[])
+                            .as_str()
+                    {
+                        reply.send(
+                            Err(StoreError::ClientRequestConflict {
+                                id: request.observation.id.clone(),
+                            }
+                            .into()),
+                            false,
+                        );
+                        return Ok(());
+                    }
+                }
+                self.scan_again = true;
+                if !self.scanning
+                    && self.active.is_none()
+                    && self.compute.is_none()
+                    && self.canonical.is_none()
+                {
+                    self.restart_scan();
+                }
+                reply.send(Ok(input), false);
+                return Ok(());
+            }
+            Err(e) => {
+                reply.send(Err(e.into()), false);
+                return Ok(());
+            }
+            Ok(None) => {}
+        }
+        if let Some((candidate, hash, _)) = &configured {
+            match self.writer.known_configured_snapshot(
+                candidate,
+                *hash,
+                &request.observation.machine,
+                &request.observation.host,
+                &request.observation.path,
+            ) {
+                Ok(Some(input)) => {
+                    reply.send(Ok(input), false);
                     return Ok(());
                 }
-                match result {
-                    Ok(Computation::Pending(pending)) => {
-                        let (install, guard) = pending.into_install();
-                        match PendingInstall::begin(
-                            &mut self.writer,
-                            &install.predecessor,
-                            install.progress,
-                            install.changes,
-                        ) {
-                            Ok(p) => {
-                                self.active = Some(Active::Install(job.input, job.head, p, guard))
-                            }
-                            Err(e) => self.fail(&job.head, e.to_string())?,
-                        }
+                Err(error) => {
+                    reply.send(Err(error.into()), false);
+                    return Ok(());
+                }
+                Ok(None) => {}
+            }
+        }
+        if request.format == InputFormat::CodexHistorySqlite {
+            return self.start_history(request, reply);
+        }
+        if self.capture.is_none()
+            && self
+                .turn_capture
+                .as_ref()
+                .is_some_and(|h| h.grant.is_none() || h.regular_served)
+        {
+            if self.waiting_capture.is_none() {
+                self.waiting_capture = Some((request, configured, reply));
+            } else {
+                reply.send(Err(Error::Busy), false);
+            }
+            return Ok(());
+        }
+        if self.capture.is_some() {
+            reply.send(Err(Error::Busy), false);
+            return Ok(());
+        }
+        if let Err(e) = self.writer.check_import_acquisition() {
+            reply.send(Err(e.into()), false);
+            return Ok(());
+        }
+        let capture = match self.writer.blob_capture() {
+            Ok(c) => c,
+            Err(e) => {
+                reply.send(Err(e.into()), false);
+                return Ok(());
+            }
+        };
+        if let Some(history) = &mut self.turn_capture {
+            history.regular_served = true;
+        }
+        let cancelled = Arc::clone(&self.inner.cancelled);
+        let sender = self.inner.sender.clone();
+        let path = request.path;
+        let expected = configured.as_ref().map(|(_, hash, _)| *hash);
+        let join = thread::Builder::new()
+            .name("polylogue-capture".into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if let Some((candidate, _, length)) = configured {
+                        capture
+                            .capture_codex_candidate(&candidate, length, &cancelled)
+                            .map(PreparedCapture::Blob)
+                    } else {
+                        capture
+                            .capture_regular_file(&path, &cancelled)
+                            .map(PreparedCapture::Blob)
                     }
-                    Ok(Computation::History { progress, changes }) => {
-                        match PendingInstall::begin(&mut self.writer, &job.head, progress, changes)
-                        {
-                            Ok(install) => {
-                                self.active =
-                                    Some(Active::HistoryInstall(job.input, job.head, install))
-                            }
-                            Err(e) => self.fail(&job.head, e.to_string())?,
-                        }
-                    }
-                    Ok(Computation::Idle { .. }) => {}
+                }))
+                .map_err(|_| Error::WorkerPanicked)
+                .and_then(|r| r.map_err(Error::Store));
+                let _ = sender.send(Message::Captured(result));
+            });
+        match join {
+            Ok(join) => {
+                self.capture = Some(CaptureJob {
+                    expected,
+                    format: request.format,
+                    context: request.context,
+                    observation: request.observation,
+                    allowance: request.metadata_allowance,
+                    reply,
+                    join,
+                })
+            }
+            Err(e) => {
+                reply.send(Err(StoreError::Io(e).into()), false);
+            }
+        }
+        Ok(())
+    }
+    fn computed(&mut self, result: Result<Computation>) -> Result<()> {
+        let Some(job) = self.compute.take() else {
+            return Err(Error::InvalidRequest("unexpected source completion"));
+        };
+        job.join.join().map_err(|_| Error::WorkerPanicked)?;
+        if self.stop_for_completion(&result) {
+            return Ok(());
+        }
+        match result {
+            Ok(Computation::Pending(pending)) => {
+                let (install, guard) = pending.into_install();
+                match PendingInstall::begin(
+                    &mut self.writer,
+                    &install.head,
+                    install.progress,
+                    install.changes,
+                ) {
+                    Ok(p) => self.active = Some(Active::Install(job.input, job.head, p, guard)),
                     Err(e) => self.fail(&job.head, e.to_string())?,
                 }
             }
-            Message::CanonicalComputed(result) => {
-                let job = self
-                    .canonical
-                    .take()
-                    .ok_or(Error::InvalidRequest("unexpected canonical completion"))?;
-                self.canonical_reader = job.join.join().map_err(|_| Error::WorkerPanicked)?;
-                if self.stop_for_completion(&result) {
-                    return Ok(());
+            Ok(Computation::History { progress, changes }) => {
+                match PendingInstall::begin(&mut self.writer, &job.head, progress, changes) {
+                    Ok(install) => {
+                        self.active = Some(Active::HistoryInstall(job.input, job.head, install))
+                    }
+                    Err(e) => self.fail(&job.head, e.to_string())?,
                 }
-                match result {
-                    Ok(CanonicalTurn::Operation(id, operation, digest)) => {
+            }
+            Ok(Computation::Idle { .. }) => {}
+            Err(e) => self.fail(&job.head, e.to_string())?,
+        }
+        Ok(())
+    }
+    fn canonical_computed(&mut self, result: Result<CanonicalTurn>) -> Result<()> {
+        let job = self
+            .canonical
+            .take()
+            .ok_or(Error::InvalidRequest("unexpected canonical completion"))?;
+        self.canonical_reader = job.join.join().map_err(|_| Error::WorkerPanicked)?;
+        if self.stop_for_completion(&result) {
+            return Ok(());
+        }
+        match result {
+            Ok(CanonicalTurn::Operation(id, operation, digest)) => {
+                match self
+                    .writer
+                    .publish_tool_item(&job.head.token, &operation, digest)
+                {
+                    Ok(_) => {
+                        self.active = Some(Active::Canonical(
+                            job.input,
+                            job.head,
+                            match job.position {
+                                CanonicalPosition::ToolsBeforeFailure(_, reason) => {
+                                    CanonicalPosition::ToolsBeforeFailure(Some(id), reason)
+                                }
+                                _ => CanonicalPosition::ToolsAfter(Some(id)),
+                            },
+                            None,
+                        ))
+                    }
+                    Err(e) => self.fail(&job.head, e.to_string())?,
+                }
+            }
+            Ok(CanonicalTurn::Action(action)) => {
+                let operation = action.operation();
+                match canonical_message::apply(&mut self.writer, action) {
+                    Ok(canonical_message::Applied::Prepared(handle)) => {
+                        self.active = Some(Active::Canonical(
+                            job.input,
+                            job.head,
+                            job.position,
+                            Some(handle),
+                        ));
+                    }
+                    Ok(canonical_message::Applied::Progress) => {
+                        self.active = Some(Active::Canonical(
+                            job.input,
+                            job.head,
+                            job.position,
+                            job.handle,
+                        ));
+                    }
+                    Ok(
+                        canonical_message::Applied::Source(source)
+                        | canonical_message::Applied::Existing(source),
+                    ) => {
                         match self
                             .writer
-                            .publish_tool_item(&job.head.token, &operation, digest)
+                            .begin_compatible_source_selection(&source, 65536)
                         {
-                            Ok(_) => {
-                                self.active = Some(Active::Canonical(
-                                    job.input,
-                                    job.head,
-                                    match job.position {
-                                        CanonicalPosition::ToolsBeforeFailure(_, reason) => {
-                                            CanonicalPosition::ToolsBeforeFailure(Some(id), reason)
-                                        }
-                                        _ => CanonicalPosition::ToolsAfter(Some(id)),
-                                    },
-                                    None,
-                                ))
-                            }
-                            Err(e) => self.fail(&job.head, e.to_string())?,
-                        }
-                    }
-                    Ok(CanonicalTurn::Action(action)) => {
-                        let operation = action.operation();
-                        match canonical_message::apply(&mut self.writer, action) {
-                            Ok(canonical_message::Applied::Prepared(handle)) => {
-                                self.active = Some(Active::Canonical(
-                                    job.input,
-                                    job.head,
-                                    job.position,
-                                    Some(handle),
-                                ));
-                            }
-                            Ok(canonical_message::Applied::Progress) => {
-                                self.active = Some(Active::Canonical(
-                                    job.input,
-                                    job.head,
-                                    job.position,
-                                    job.handle,
-                                ));
-                            }
-                            Ok(
-                                canonical_message::Applied::Source(source)
-                                | canonical_message::Applied::Existing(source),
-                            ) => {
-                                match self
-                                    .writer
-                                    .begin_compatible_source_selection(&source, 65536)
-                                {
-                                    Ok(selection) => {
-                                        self.active = Some(Active::Selecting(
-                                            job.input,
-                                            job.head,
-                                            job.position,
-                                            selection,
-                                        ))
-                                    }
-                                    Err(e) => {
-                                        self.fail(&job.head, format!("canonical selection: {e}"))?
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                self.fail(&job.head, format!("canonical {operation}: {e}"))?
-                            }
-                        }
-                    }
-                    Ok(CanonicalTurn::Selected(turn)) => {
-                        use polylogue_store::contributions::CompatibilityTurn;
-                        match turn {
-                            CompatibilityTurn::Progress(selection) => {
+                            Ok(selection) => {
                                 self.active = Some(Active::Selecting(
                                     job.input,
                                     job.head,
@@ -1133,120 +1126,133 @@ impl Actor {
                                     selection,
                                 ))
                             }
-                            CompatibilityTurn::Certified(selection, certificate) => {
-                                match self.writer.certify_body_compatibility(certificate) {
-                                    Ok(()) => {
-                                        self.active = Some(Active::Selecting(
-                                            job.input,
-                                            job.head,
-                                            job.position,
-                                            selection,
-                                        ))
-                                    }
-                                    Err(e) => self
-                                        .fail(&job.head, format!("canonical compatibility: {e}"))?,
-                                }
+                            Err(e) => self.fail(&job.head, format!("canonical selection: {e}"))?,
+                        }
+                    }
+                    Err(e) => self.fail(&job.head, format!("canonical {operation}: {e}"))?,
+                }
+            }
+            Ok(CanonicalTurn::Selected(turn)) => {
+                use polylogue_store::contributions::CompatibilityTurn;
+                match turn {
+                    CompatibilityTurn::Progress(selection) => {
+                        self.active = Some(Active::Selecting(
+                            job.input,
+                            job.head,
+                            job.position,
+                            selection,
+                        ))
+                    }
+                    CompatibilityTurn::Certified(selection, certificate) => {
+                        match self.writer.certify_body_compatibility(certificate) {
+                            Ok(()) => {
+                                self.active = Some(Active::Selecting(
+                                    job.input,
+                                    job.head,
+                                    job.position,
+                                    selection,
+                                ))
                             }
-                            CompatibilityTurn::Ready(selection) => {
-                                match self
-                                    .writer
-                                    .install_compatible_source_selection(selection, 65536)
-                                {
-                                    Ok(_) => {
-                                        self.active = Some(Active::Canonical(
-                                            job.input,
-                                            job.head,
-                                            job.position.next()?,
-                                            None,
-                                        ))
-                                    }
-                                    Err(e) => {
-                                        self.fail(&job.head, format!("canonical selection: {e}"))?
-                                    }
-                                }
-                            }
-                            CompatibilityTurn::Contested => {
-                                let reason = "canonical Message has incompatible or unsupported input candidates; merge remains pending".to_owned();
-                                if job.input.format == InputFormat::CodexRollout {
-                                    self.active = Some(Active::Canonical(
-                                        job.input,
-                                        job.head,
-                                        CanonicalPosition::ToolsBeforeFailure(None, reason),
-                                        None,
-                                    ));
-                                } else {
-                                    self.fail(&job.head, reason)?;
-                                }
+                            Err(e) => {
+                                self.fail(&job.head, format!("canonical compatibility: {e}"))?
                             }
                         }
                     }
-                    Ok(CanonicalTurn::Pending(cursor, pending)) => {
-                        self.active = Some(Active::Canonical(
-                            job.input,
-                            job.head,
-                            CanonicalPosition::ClaudeMessage(cursor, pending),
-                            None,
-                        ));
-                    }
-                    Ok(CanonicalTurn::Done)
-                        if matches!(job.position, CanonicalPosition::ToolsBeforeFailure(_, _)) =>
-                    {
-                        let CanonicalPosition::ToolsBeforeFailure(_, reason) = job.position else {
-                            unreachable!()
-                        };
-                        self.fail(&job.head, reason)?;
-                    }
-                    Ok(CanonicalTurn::Done) if job.head.status == Phase::WaitingTail => {
-                        // Complete Claude prefix rows may publish while its
-                        // unframed suffix waits. The source stays pending.
-                    }
-                    Ok(CanonicalTurn::Done) => {
-                        self.active = Some(Active::Canonical(
-                            job.input,
-                            job.head,
-                            CanonicalPosition::Audit(Box::new(crate::source_rows::Audit::new())),
-                            None,
-                        ));
-                    }
-                    Ok(CanonicalTurn::Audited(crate::source_rows::Turn::Progress(audit))) => {
-                        self.active = Some(Active::Canonical(
-                            job.input,
-                            job.head,
-                            CanonicalPosition::Audit(Box::new(audit)),
-                            None,
-                        ));
-                    }
-                    Ok(CanonicalTurn::Audited(crate::source_rows::Turn::Complete(receipt))) => {
-                        receipt.validate(
-                            &job.head.token,
-                            &crate::source_rows::computed_from(&job.input),
-                        )?;
-                        let bytes = serde_json::to_vec(&receipt)
-                            .map_err(|e| Error::InvalidEvidence(e.to_string()))?;
-                        self.writer.publish_source_rows(
-                            &job.head,
-                            &bytes,
-                            matches!(
-                                receipt.rows.state,
-                                polylogue_model::settlement::SourceRowState::Settled
-                            ),
-                        )?;
-                    }
-                    Err(e) => {
-                        let changed = matches!(
-                            &e,
-                            Error::Store(StoreError::StaleParserState)
-                                | Error::Canonical(canonical_message::Error::Store(
-                                    StoreError::StaleParserState
+                    CompatibilityTurn::Ready(selection) => {
+                        match self
+                            .writer
+                            .install_compatible_source_selection(selection, 65536)
+                        {
+                            Ok(_) => {
+                                self.active = Some(Active::Canonical(
+                                    job.input,
+                                    job.head,
+                                    job.position.next()?,
+                                    None,
                                 ))
-                        );
-                        if !changed || !self.reselect_obsolete_canonical(&job.input, &job.head)? {
-                            self.fail(&job.head, format!("canonical compute: {e}"))?;
+                            }
+                            Err(e) => self.fail(&job.head, format!("canonical selection: {e}"))?,
+                        }
+                    }
+                    CompatibilityTurn::Contested => {
+                        let reason = "canonical Message has incompatible or unsupported input candidates; merge remains pending".to_owned();
+                        if job.input.format == InputFormat::CodexRollout {
+                            self.active = Some(Active::Canonical(
+                                job.input,
+                                job.head,
+                                CanonicalPosition::ToolsBeforeFailure(None, reason),
+                                None,
+                            ));
+                        } else {
+                            self.fail(&job.head, reason)?;
                         }
                     }
                 }
             }
-            Message::Wake => {}
+            Ok(CanonicalTurn::Pending(cursor, pending)) => {
+                self.active = Some(Active::Canonical(
+                    job.input,
+                    job.head,
+                    CanonicalPosition::ClaudeMessage(cursor, pending),
+                    None,
+                ));
+            }
+            Ok(CanonicalTurn::Done)
+                if matches!(job.position, CanonicalPosition::ToolsBeforeFailure(_, _)) =>
+            {
+                let CanonicalPosition::ToolsBeforeFailure(_, reason) = job.position else {
+                    unreachable!()
+                };
+                self.fail(&job.head, reason)?;
+            }
+            Ok(CanonicalTurn::Done) if job.head.status == Phase::WaitingTail => {
+                // Complete Claude prefix rows may publish while its
+                // unframed suffix waits. The source stays pending.
+            }
+            Ok(CanonicalTurn::Done) => {
+                self.active = Some(Active::Canonical(
+                    job.input,
+                    job.head,
+                    CanonicalPosition::Audit(Box::new(crate::source_rows::Audit::new())),
+                    None,
+                ));
+            }
+            Ok(CanonicalTurn::Audited(crate::source_rows::Turn::Progress(audit))) => {
+                self.active = Some(Active::Canonical(
+                    job.input,
+                    job.head,
+                    CanonicalPosition::Audit(Box::new(audit)),
+                    None,
+                ));
+            }
+            Ok(CanonicalTurn::Audited(crate::source_rows::Turn::Complete(receipt))) => {
+                receipt.validate(
+                    &job.head.token,
+                    &crate::source_rows::computed_from(&job.input),
+                )?;
+                let bytes = serde_json::to_vec(&receipt)
+                    .map_err(|e| Error::InvalidEvidence(e.to_string()))?;
+                self.writer.publish_source_rows(
+                    &job.head,
+                    &bytes,
+                    matches!(
+                        receipt.rows.state,
+                        polylogue_model::settlement::SourceRowState::Settled
+                    ),
+                )?;
+            }
+            Err(e) => {
+                let changed = matches!(
+                    &e,
+                    Error::Store(StoreError::StaleParserState)
+                        | Error::Canonical(canonical_message::Error::Store(
+                            StoreError::StaleParserState
+                        ))
+                );
+                if !changed || !self.reselect_obsolete_canonical(&job.input, &job.head)? {
+                    self.fail(&job.head, format!("canonical compute: {e}"))?;
+                }
+            }
         }
         Ok(())
     }
@@ -1360,7 +1366,7 @@ impl Actor {
         let source_changed = input.revision != previous.revision
             || input.input.chain != previous.input.chain
             || input.input.length != previous.input.length
-            || parser_identity(&input) != parser_identity(&previous);
+            || parser_identity(&input) != parser_identity(previous);
         let predecessor_changed = head.as_ref().is_some_and(|head| {
             head.token != predecessor.token
                 || head.acquired_upto != predecessor.acquired_upto
@@ -1388,482 +1394,501 @@ impl Actor {
         }
         let active = match self.active.take() {
             Some(a) => a,
-            None => {
-                if !self.scanning {
-                    return Ok(());
-                }
-                // Alternate recent-change hints with the catalog scan. The
-                // current input finishes first so its in-memory continuation
-                // survives; new work need not wait for the whole catalog.
-                let changed = if self.background_due {
-                    None
-                } else {
-                    self.changed_input.take()
-                };
-                let next = if let Some(id) = changed {
-                    self.background_due = true;
-                    self.writer.stored_source(&id)
-                } else {
-                    self.background_due = false;
-                    let next = self.writer.next_stored_source(&self.after);
-                    if let Ok(Some(input)) = &next {
-                        self.after = input.input.id.clone();
-                    }
-                    next
-                };
-                match next {
-                    Ok(Some(input)) => {
-                        // Prompt references are not parsed as conversations.
-                        if input.format == InputFormat::CodexPromptHistory {
-                            return Ok(());
-                        }
-                        Active::Begin(input)
-                    }
-                    Ok(None) => {
-                        self.scanning = false;
-                        if self.scan_again {
-                            self.restart_scan();
-                        }
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        self.recovery_error = Some(diagnostic(e.to_string()));
-                        self.scanning = false;
-                        return Ok(());
-                    }
-                }
-            }
+            None => match self.next_input()? {
+                Some(a) => a,
+                None => return Ok(()),
+            },
         };
         match active {
-            Active::Begin(input) => {
-                let digest = parser_identity(&input);
-                let context_json = parser_context_json(&input)?;
-                match self.writer.begin_parser(&Basis {
-                    input_pk: input.input.input_pk,
-                    chain: input.input.chain,
-                    parser_version: parser_version(input.format),
-                    digest,
-                    acquired_upto: input.input.length,
-                    companions_json: Some(&context_json),
-                    excisions_seen: 0,
-                }) {
-                    Ok(head) => {
-                        if self.writer.parser_failure(&head.token)?.is_none() {
-                            self.active = Some(Active::Recover(input, head));
-                        }
-                    }
-                    Err(e) => {
-                        self.recovery_error = Some(diagnostic(e.to_string()));
-                        self.scanning = false;
-                    }
-                }
-            }
-            Active::Recover(input, head) => {
-                match converge::recover_turn(&mut self.writer, &head.token, install_budget()) {
-                    Ok(Recovery::Yielded) => self.active = Some(Active::Recover(input, head)),
-                    Ok(Recovery::Reparse) => {
-                        if !caught_up(&head) {
-                            self.active = Some(Active::Compute(input, head, None));
-                        } else if can_finalize(&input, &head)
-                            && crate::source_rows::read(
-                                &self.writer.parser_snapshot(&head.token)?,
-                                &input,
-                            )?
-                            .is_none()
-                        {
-                            self.active = Some(Active::Canonical(
-                                input.clone(),
-                                head,
-                                CanonicalPosition::first(input.format),
-                                None,
-                            ));
-                        }
-                    }
-                    Ok(Recovery::Published(head)) => {
-                        if !caught_up(&head) {
-                            self.active = Some(Active::Compute(input, head, None));
-                        } else if can_finalize(&input, &head)
-                            && crate::source_rows::read(
-                                &self.writer.parser_snapshot(&head.token)?,
-                                &input,
-                            )?
-                            .is_none()
-                        {
-                            self.active = Some(Active::Canonical(
-                                input.clone(),
-                                head,
-                                CanonicalPosition::first(input.format),
-                                None,
-                            ));
-                        }
-                    }
-                    Err(e) => self.fail(&head, e.to_string())?,
-                }
-            }
+            Active::Begin(input) => self.begin(input)?,
+            Active::Recover(input, head) => self.recover(input, head)?,
             Active::Compute(input, head, continuation) => {
-                let snapshot = match self.writer.parser_snapshot(&head.token) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        self.fail(&head, e.to_string())?;
-                        return Ok(());
-                    }
-                };
-                let reader = match self.writer.read_handle() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        self.fail(&head, e.to_string())?;
-                        return Ok(());
-                    }
-                };
-                let offset = source_turn::read_offset(&head, continuation.as_ref())?;
-                let length = head
-                    .acquired_upto
-                    .checked_sub(offset)
-                    .ok_or(StoreError::Range)?
-                    .min(WINDOW_BYTES);
-                let hash = input.binding;
-                let input_id = input.input.id.clone();
-                let input_chain = input.input.chain;
-                let input_for_history = input.clone();
-                let history = input.format == InputFormat::CodexHistorySqlite;
-                let context = if history {
-                    SourceContext::Codex
-                } else {
-                    parser_context(&input)?
-                };
-                let cancelled = Arc::clone(&self.inner.cancelled);
-                let sender = self.inner.sender.clone();
-                let join = thread::Builder::new()
-                    .name("polylogue-source".into())
-                    .spawn(move || {
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                            || -> Result<Computation> {
-                                if cancelled.load(Ordering::Acquire) {
-                                    return Err(StoreError::Cancelled.into());
-                                }
-                                if history {
-                                    return compute_history(
-                                        &reader,
-                                        &input_for_history,
-                                        &cancelled,
-                                    );
-                                }
-                                let bytes = reader.read_source_range_checked(
-                                    &input_id,
-                                    input_chain,
-                                    hash,
-                                    offset,
-                                    length,
-                                    || {
-                                        if cancelled.load(Ordering::Acquire) {
-                                            Err(StoreError::Cancelled)
-                                        } else {
-                                            Ok(())
-                                        }
-                                    },
-                                )?;
-                                if cancelled.load(Ordering::Acquire) {
-                                    return Err(StoreError::Cancelled.into());
-                                }
-                                for body in input_for_history
-                                    .companions
-                                    .iter()
-                                    .filter(|body| !body.inline_duplicate)
-                                {
-                                    reader.claude_body(body)?;
-                                }
-                                Ok(source_turn::compute_with_bodies(
-                                    &snapshot,
-                                    continuation,
-                                    Window {
-                                        offset,
-                                        bytes: &bytes,
-                                    },
-                                    context,
-                                    source_budgets(),
-                                    &input_for_history.companions,
-                                )?)
-                            },
-                        ))
-                        .map_err(|_| Error::WorkerPanicked)
-                        .and_then(|r| r);
-                        let _ = sender.send(Message::Computed(result));
-                    });
-                match join {
-                    Ok(join) => self.compute = Some(ComputeJob { input, head, join }),
-                    Err(e) => self.fail(&head, e.to_string())?,
-                }
+                self.start_compute(input, head, continuation)?
             }
             Active::Selecting(input, head, position, selection) => {
-                let reader = self.take_canonical_reader()?;
-                let cancelled = Arc::clone(&self.inner.cancelled);
-                let sender = self.inner.sender.clone();
-                let join = thread::Builder::new()
-                    .name("polylogue-compatible-source".into())
-                    .spawn(move || {
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            selection.advance(&reader.values, 65536, &cancelled)
-                        }))
-                        .map_err(|_| Error::WorkerPanicked)
-                        .and_then(|r| r.map_err(Error::Store))
-                        .map(CanonicalTurn::Selected);
-                        let _ = sender.send(Message::CanonicalComputed(result));
-                        Some(reader)
-                    });
-                match join {
-                    Ok(join) => {
-                        self.canonical = Some(CanonicalJob {
-                            input,
-                            head,
-                            position,
-                            handle: None,
-                            join,
-                        })
-                    }
-                    Err(e) => self.fail(&head, e.to_string())?,
-                }
+                self.start_selection(input, head, position, selection)?
             }
             Active::Canonical(input, head, position, handle) => {
-                let CanonicalReaders {
-                    values: reader,
-                    parser,
-                } = self.take_canonical_reader()?;
-                let snapshot = parser.snapshot(&head.token)?;
-                let state = handle
-                    .as_ref()
-                    .map(|h| canonical_message::inspect(&mut self.writer, h, 65536))
-                    .transpose();
-                let state = match state {
-                    Ok(s) => s,
-                    Err(e) => {
-                        self.fail(&head, format!("canonical inspect: {e}"))?;
-                        return Ok(());
-                    }
-                };
-                let logical_key = position.logical_key()?;
-                let current = if state.is_none() {
-                    logical_key
-                        .as_ref()
-                        .map(|key| {
-                            self.writer
-                                .current_source_projection(&head.token, key, 65536)
-                        })
-                        .transpose()?
-                        .flatten()
-                } else {
-                    None
-                };
-                let input_for_audit = input.clone();
-                let source_binding = input.binding;
-                let context = input.context.clone();
-                let work_position = position.clone();
-                let cancelled = Arc::clone(&self.inner.cancelled);
-                let sender = self.inner.sender.clone();
-                let join = thread::Builder::new()
-                    .name("polylogue-canonical".into())
-                    .spawn(move || {
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                            || -> Result<CanonicalTurn> {
-                                if cancelled.load(Ordering::Acquire) {
-                                    return Err(StoreError::Cancelled.into());
-                                }
-                                if let CanonicalPosition::Audit(audit) = work_position {
-                                    return Ok(CanonicalTurn::Audited(audit.advance(
-                                        &snapshot,
-                                        &input_for_audit,
-                                        source_budgets().reads,
-                                    )?));
-                                }
-                                let tools_after = match &work_position {
-                                    CanonicalPosition::ToolsAfter(after)
-                                    | CanonicalPosition::ToolsBeforeFailure(after, _) => {
-                                        Some(after.clone())
-                                    }
-                                    CanonicalPosition::Codex(ordinal) => {
-                                        let attempt = crate::state::codex::Attempt::new(
-                                            &snapshot,
-                                            source_budgets().reads,
-                                        );
-                                        let resume =
-                                            attempt.resume().map_err(Error::InvalidEvidence)?;
-                                        (*ordinal >= resume.message_count()).then_some(None)
-                                    }
-                                    _ => None,
-                                };
-                                if let Some(after) = tools_after {
-                                    use polylogue_sources::codex::keyed::{Cell, Key, ReadView};
-                                    let attempt = crate::state::codex::Attempt::new(
-                                        &snapshot,
-                                        source_budgets().reads,
-                                    );
-                                    return match attempt
-                                        .next(&Key::Operation(after.unwrap_or_default()))
-                                        .map_err(Error::InvalidEvidence)?
-                                    {
-                                        Some((Key::Operation(id), Cell::Operation(operation))) => {
-                                            let digest = operation_digest(
-                                                &reader,
-                                                &input_for_audit,
-                                                &operation,
-                                                &cancelled,
-                                            )?;
-                                            Ok(CanonicalTurn::Operation(id, operation, digest))
-                                        }
-                                        None => Ok(CanonicalTurn::Done),
-                                        _ => Err(Error::InvalidRequest(
-                                            "invalid native operation cell",
-                                        )),
-                                    };
-                                }
-                                let action = if let Some(state) = state {
-                                    canonical_message::compute(
-                                        &snapshot,
-                                        &reader,
-                                        &state,
-                                        canonical_budgets(),
-                                        &cancelled,
-                                    )
-                                    .map_err(Error::Canonical)?
-                                } else if let CanonicalPosition::ClaudeAfter(after) = &work_position
-                                {
-                                    let view = crate::state::claude::View::new(
-                                        &snapshot,
-                                        source_budgets().reads,
-                                    )?;
-                                    return Ok(match view.next_pending(after.as_ref())? {
-                                        Some((cursor, pending)) => {
-                                            CanonicalTurn::Pending(cursor, pending)
-                                        }
-                                        None => CanonicalTurn::Done,
-                                    });
-                                } else if let CanonicalPosition::ClaudeMessage(_, pending) =
-                                    &work_position
-                                {
-                                    canonical_message::start_claude(
-                                        &snapshot,
-                                        &canonical_message::ClaudeRequest {
-                                            pending: pending.clone(),
-                                            source_binding,
-                                            context,
-                                            revision: input_for_audit.revision,
-                                            logical_key: logical_key.ok_or(
-                                                Error::InvalidRequest("missing Claude logical key"),
-                                            )?,
-                                        },
-                                        current,
-                                        source_budgets().reads,
-                                        65536,
-                                    )
-                                    .map_err(Error::Canonical)?
-                                } else {
-                                    let CanonicalPosition::Codex(ordinal) = work_position else {
-                                        return Err(Error::InvalidRequest(
-                                            "invalid canonical position",
-                                        ));
-                                    };
-                                    let attempt = crate::state::codex::Attempt::new(
-                                        &snapshot,
-                                        source_budgets().reads,
-                                    );
-                                    let resume = attempt.resume();
-                                    if let Some(e) = attempt.take_failure() {
-                                        return Err(e.into());
-                                    }
-                                    let resume = resume.map_err(|e| {
-                                        Error::Canonical(canonical_message::Error::Source(e))
-                                    })?;
-                                    if ordinal >= resume.message_count() {
-                                        return Ok(CanonicalTurn::Done);
-                                    }
-                                    canonical_message::start(
-                                        &snapshot,
-                                        &canonical_message::Request {
-                                            message: ordinal,
-                                            revision: input_for_audit.revision,
-                                            logical_key: logical_key.ok_or(
-                                                Error::InvalidRequest("missing Codex logical key"),
-                                            )?,
-                                            source_binding,
-                                        },
-                                        current,
-                                        source_budgets().reads,
-                                        65536,
-                                    )
-                                    .map_err(Error::Canonical)?
-                                };
-                                Ok(CanonicalTurn::Action(action))
-                            },
-                        ))
-                        .map_err(|_| Error::WorkerPanicked)
-                        .and_then(|r| r);
-                        // Release the snapshot before the actor applies the
-                        // result. Reuse keeps connections, not a read view.
-                        let (result, readers) = match snapshot.into_reader() {
-                            Ok(parser) => (
-                                result,
-                                Some(CanonicalReaders {
-                                    values: reader,
-                                    parser,
-                                }),
-                            ),
-                            Err(error) => (Err(error.into()), None),
-                        };
-                        let _ = sender.send(Message::CanonicalComputed(result));
-                        readers
-                    });
-                match join {
-                    Ok(join) => {
-                        self.canonical = Some(CanonicalJob {
-                            input,
-                            head,
-                            position,
-                            handle,
-                            join,
-                        })
-                    }
-                    Err(e) => self.fail(&head, e.to_string())?,
+                self.start_canonical(input, head, position, handle)?
+            }
+            Active::HistoryInstall(input, head, install) => {
+                self.install_history(input, head, install)?
+            }
+            Active::Install(input, head, install, guard) => {
+                self.install(input, head, install, guard)?
+            }
+        }
+        Ok(())
+    }
+    /// Picks the next input: a recent-change hint or the next catalog entry.
+    fn next_input(&mut self) -> Result<Option<Active>> {
+        if !self.scanning {
+            return Ok(None);
+        }
+        // Alternate recent-change hints with the catalog scan. The
+        // current input finishes first so its in-memory continuation
+        // survives; new work need not wait for the whole catalog.
+        let changed = if self.background_due {
+            None
+        } else {
+            self.changed_input.take()
+        };
+        let next = if let Some(id) = changed {
+            self.background_due = true;
+            self.writer.stored_source(&id)
+        } else {
+            self.background_due = false;
+            let next = self.writer.next_stored_source(&self.after);
+            if let Ok(Some(input)) = &next {
+                self.after = input.input.id.clone();
+            }
+            next
+        };
+        match next {
+            Ok(Some(input)) => {
+                // Prompt references are not parsed as conversations.
+                if input.format == InputFormat::CodexPromptHistory {
+                    return Ok(None);
+                }
+                Ok(Some(Active::Begin(input)))
+            }
+            Ok(None) => {
+                self.scanning = false;
+                if self.scan_again {
+                    self.restart_scan();
+                }
+                Ok(None)
+            }
+            Err(e) => {
+                self.recovery_error = Some(diagnostic(e.to_string()));
+                self.scanning = false;
+                Ok(None)
+            }
+        }
+    }
+    fn begin(&mut self, input: StoredSource) -> Result<()> {
+        let digest = parser_identity(&input);
+        let context_json = parser_context_json(&input)?;
+        match self.writer.begin_parser(&Basis {
+            input_pk: input.input.input_pk,
+            chain: input.input.chain,
+            parser_version: parser_version(input.format),
+            digest,
+            acquired_upto: input.input.length,
+            companions_json: Some(&context_json),
+            excisions_seen: 0,
+        }) {
+            Ok(head) => {
+                if self.writer.parser_failure(&head.token)?.is_none() {
+                    self.active = Some(Active::Recover(input, head));
                 }
             }
-            Active::HistoryInstall(input, head, mut install) => {
-                match install.turn(&mut self.writer, install_budget()) {
-                    Ok(Turn::Yielded) => {
-                        self.active = Some(Active::HistoryInstall(input, head, install))
-                    }
-                    Ok(Turn::Published(published)) => {
-                        self.active = Some(Active::Canonical(
-                            input,
-                            published,
-                            CanonicalPosition::ToolsAfter(None),
-                            None,
-                        ))
-                    }
-                    Err(e) => self.fail(&head, e.to_string())?,
-                }
+            Err(e) => {
+                self.recovery_error = Some(diagnostic(e.to_string()));
+                self.scanning = false;
             }
-            Active::Install(input, head, mut install, guard) => {
-                match install.turn(&mut self.writer, install_budget()) {
-                    Ok(Turn::Yielded) => {
-                        self.active = Some(Active::Install(input, head, install, guard))
-                    }
-                    Ok(Turn::Published(published)) => match guard.published(&published) {
-                        Ok(continuation) => {
-                            if !caught_up(&published) {
-                                self.active =
-                                    Some(Active::Compute(input, published, Some(continuation)));
-                            } else if can_finalize(&input, &published) {
-                                self.active = Some(Active::Canonical(
-                                    input.clone(),
-                                    published,
-                                    CanonicalPosition::first(input.format),
-                                    None,
-                                ));
-                            }
+        }
+        Ok(())
+    }
+    fn recover(&mut self, input: StoredSource, head: Head) -> Result<()> {
+        let head = match converge::recover_turn(&mut self.writer, &head.token, install_budget()) {
+            Ok(Recovery::Yielded) => {
+                self.active = Some(Active::Recover(input, head));
+                return Ok(());
+            }
+            Ok(Recovery::Reparse) => head,
+            Ok(Recovery::Published(head)) => head,
+            Err(e) => return self.fail(&head, e.to_string()),
+        };
+        if !caught_up(&head) {
+            self.active = Some(Active::Compute(input, head, None));
+        } else if can_finalize(&input, &head)
+            && crate::source_rows::read(&self.writer.parser_snapshot(&head.token)?, &input)?
+                .is_none()
+        {
+            self.active = Some(Active::Canonical(
+                input.clone(),
+                head,
+                CanonicalPosition::first(input.format),
+                None,
+            ));
+        }
+        Ok(())
+    }
+    fn start_compute(
+        &mut self,
+        input: StoredSource,
+        head: Head,
+        continuation: Option<CommittedContinuation>,
+    ) -> Result<()> {
+        let snapshot = match self.writer.parser_snapshot(&head.token) {
+            Ok(s) => s,
+            Err(e) => {
+                self.fail(&head, e.to_string())?;
+                return Ok(());
+            }
+        };
+        let reader = match self.writer.read_handle() {
+            Ok(r) => r,
+            Err(e) => {
+                self.fail(&head, e.to_string())?;
+                return Ok(());
+            }
+        };
+        let offset = source_turn::read_offset(&head, continuation.as_ref())?;
+        let length = head
+            .acquired_upto
+            .checked_sub(offset)
+            .ok_or(StoreError::Range)?
+            .min(WINDOW_BYTES);
+        let hash = input.binding;
+        let input_id = input.input.id.clone();
+        let input_chain = input.input.chain;
+        let input_for_history = input.clone();
+        let history = input.format == InputFormat::CodexHistorySqlite;
+        let context = if history {
+            SourceContext::Codex
+        } else {
+            parser_context(&input)?
+        };
+        let cancelled = Arc::clone(&self.inner.cancelled);
+        let sender = self.inner.sender.clone();
+        let join = thread::Builder::new()
+            .name("polylogue-source".into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<Computation> {
+                        if cancelled.load(Ordering::Acquire) {
+                            return Err(StoreError::Cancelled.into());
                         }
-                        Err(e) => self.fail(&published, e.to_string())?,
+                        if history {
+                            return compute_history(&reader, &input_for_history, &cancelled);
+                        }
+                        let bytes = reader.read_source_range_checked(
+                            &input_id,
+                            input_chain,
+                            hash,
+                            offset,
+                            length,
+                            || {
+                                if cancelled.load(Ordering::Acquire) {
+                                    Err(StoreError::Cancelled)
+                                } else {
+                                    Ok(())
+                                }
+                            },
+                        )?;
+                        if cancelled.load(Ordering::Acquire) {
+                            return Err(StoreError::Cancelled.into());
+                        }
+                        for body in input_for_history
+                            .companions
+                            .iter()
+                            .filter(|body| !body.inline_duplicate)
+                        {
+                            reader.claude_body(body)?;
+                        }
+                        Ok(source_turn::compute_with_bodies(
+                            &snapshot,
+                            continuation,
+                            Window {
+                                offset,
+                                bytes: &bytes,
+                            },
+                            context,
+                            source_budgets(),
+                            &input_for_history.companions,
+                        )?)
                     },
-                    Err(e) => self.fail(&head, e.to_string())?,
-                }
+                ))
+                .map_err(|_| Error::WorkerPanicked)
+                .and_then(|r| r);
+                let _ = sender.send(Message::Computed(result));
+            });
+        match join {
+            Ok(join) => self.compute = Some(ComputeJob { input, head, join }),
+            Err(e) => self.fail(&head, e.to_string())?,
+        }
+        Ok(())
+    }
+    fn start_selection(
+        &mut self,
+        input: StoredSource,
+        head: Head,
+        position: CanonicalPosition,
+        selection: polylogue_store::contributions::CompatibleSelection,
+    ) -> Result<()> {
+        let reader = self.take_canonical_reader()?;
+        let cancelled = Arc::clone(&self.inner.cancelled);
+        let sender = self.inner.sender.clone();
+        let join = thread::Builder::new()
+            .name("polylogue-compatible-source".into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    selection.advance(&reader.values, 65536, &cancelled)
+                }))
+                .map_err(|_| Error::WorkerPanicked)
+                .and_then(|r| r.map_err(Error::Store))
+                .map(CanonicalTurn::Selected);
+                let _ = sender.send(Message::CanonicalComputed(result));
+                Some(reader)
+            });
+        match join {
+            Ok(join) => {
+                self.canonical = Some(CanonicalJob {
+                    input,
+                    head,
+                    position,
+                    handle: None,
+                    join,
+                })
             }
+            Err(e) => self.fail(&head, e.to_string())?,
+        }
+        Ok(())
+    }
+    fn start_canonical(
+        &mut self,
+        input: StoredSource,
+        head: Head,
+        position: CanonicalPosition,
+        handle: Option<canonical_message::Handle>,
+    ) -> Result<()> {
+        let CanonicalReaders {
+            values: reader,
+            parser,
+        } = self.take_canonical_reader()?;
+        let snapshot = parser.snapshot(&head.token)?;
+        let state = handle
+            .as_ref()
+            .map(|h| canonical_message::inspect(&mut self.writer, h, 65536))
+            .transpose();
+        let state = match state {
+            Ok(s) => s,
+            Err(e) => {
+                self.fail(&head, format!("canonical inspect: {e}"))?;
+                return Ok(());
+            }
+        };
+        let logical_key = position.logical_key()?;
+        let current = if state.is_none() {
+            logical_key
+                .as_ref()
+                .map(|key| {
+                    self.writer
+                        .current_source_projection(&head.token, key, 65536)
+                })
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        let input_for_audit = input.clone();
+        let source_binding = input.binding;
+        let context = input.context.clone();
+        let work_position = position.clone();
+        let cancelled = Arc::clone(&self.inner.cancelled);
+        let sender = self.inner.sender.clone();
+        let join = thread::Builder::new()
+            .name("polylogue-canonical".into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<CanonicalTurn> {
+                        if cancelled.load(Ordering::Acquire) {
+                            return Err(StoreError::Cancelled.into());
+                        }
+                        if let CanonicalPosition::Audit(audit) = work_position {
+                            return Ok(CanonicalTurn::Audited(audit.advance(
+                                &snapshot,
+                                &input_for_audit,
+                                source_budgets().reads,
+                            )?));
+                        }
+                        let tools_after = match &work_position {
+                            CanonicalPosition::ToolsAfter(after)
+                            | CanonicalPosition::ToolsBeforeFailure(after, _) => {
+                                Some(after.clone())
+                            }
+                            CanonicalPosition::Codex(ordinal) => {
+                                let attempt = crate::state::codex::Attempt::new(
+                                    &snapshot,
+                                    source_budgets().reads,
+                                );
+                                let resume = attempt.resume().map_err(Error::InvalidEvidence)?;
+                                (*ordinal >= resume.message_count()).then_some(None)
+                            }
+                            _ => None,
+                        };
+                        if let Some(after) = tools_after {
+                            use polylogue_sources::codex::keyed::{Cell, Key, ReadView};
+                            let attempt = crate::state::codex::Attempt::new(
+                                &snapshot,
+                                source_budgets().reads,
+                            );
+                            return match attempt
+                                .next(&Key::Operation(after.unwrap_or_default()))
+                                .map_err(Error::InvalidEvidence)?
+                            {
+                                Some((Key::Operation(id), Cell::Operation(operation))) => {
+                                    let digest = operation_digest(
+                                        &reader,
+                                        &input_for_audit,
+                                        &operation,
+                                        &cancelled,
+                                    )?;
+                                    Ok(CanonicalTurn::Operation(id, operation, digest))
+                                }
+                                None => Ok(CanonicalTurn::Done),
+                                _ => Err(Error::InvalidRequest("invalid native operation cell")),
+                            };
+                        }
+                        let action = if let Some(state) = state {
+                            canonical_message::compute(
+                                &snapshot,
+                                &reader,
+                                &state,
+                                canonical_budgets(),
+                                &cancelled,
+                            )
+                            .map_err(Error::Canonical)?
+                        } else if let CanonicalPosition::ClaudeAfter(after) = &work_position {
+                            let view =
+                                crate::state::claude::View::new(&snapshot, source_budgets().reads)?;
+                            return Ok(match view.next_pending(after.as_ref())? {
+                                Some((cursor, pending)) => CanonicalTurn::Pending(cursor, pending),
+                                None => CanonicalTurn::Done,
+                            });
+                        } else if let CanonicalPosition::ClaudeMessage(_, pending) = &work_position
+                        {
+                            canonical_message::start_claude(
+                                &snapshot,
+                                &canonical_message::ClaudeRequest {
+                                    pending: pending.clone(),
+                                    source_binding,
+                                    context,
+                                    revision: input_for_audit.revision,
+                                    logical_key: logical_key.ok_or(Error::InvalidRequest(
+                                        "missing Claude logical key",
+                                    ))?,
+                                },
+                                current,
+                                source_budgets().reads,
+                                65536,
+                            )
+                            .map_err(Error::Canonical)?
+                        } else {
+                            let CanonicalPosition::Codex(ordinal) = work_position else {
+                                return Err(Error::InvalidRequest("invalid canonical position"));
+                            };
+                            let attempt = crate::state::codex::Attempt::new(
+                                &snapshot,
+                                source_budgets().reads,
+                            );
+                            let resume = attempt.resume();
+                            if let Some(e) = attempt.take_failure() {
+                                return Err(e.into());
+                            }
+                            let resume = resume.map_err(|e| {
+                                Error::Canonical(canonical_message::Error::Source(e))
+                            })?;
+                            if ordinal >= resume.message_count() {
+                                return Ok(CanonicalTurn::Done);
+                            }
+                            canonical_message::start(
+                                &snapshot,
+                                &canonical_message::Request {
+                                    message: ordinal,
+                                    revision: input_for_audit.revision,
+                                    logical_key: logical_key.ok_or(Error::InvalidRequest(
+                                        "missing Codex logical key",
+                                    ))?,
+                                    source_binding,
+                                },
+                                current,
+                                source_budgets().reads,
+                                65536,
+                            )
+                            .map_err(Error::Canonical)?
+                        };
+                        Ok(CanonicalTurn::Action(action))
+                    },
+                ))
+                .map_err(|_| Error::WorkerPanicked)
+                .and_then(|r| r);
+                // Release the snapshot before the actor applies the
+                // result. Reuse keeps connections, not a read view.
+                let (result, readers) = match snapshot.into_reader() {
+                    Ok(parser) => (
+                        result,
+                        Some(CanonicalReaders {
+                            values: reader,
+                            parser,
+                        }),
+                    ),
+                    Err(error) => (Err(error.into()), None),
+                };
+                let _ = sender.send(Message::CanonicalComputed(result));
+                readers
+            });
+        match join {
+            Ok(join) => {
+                self.canonical = Some(CanonicalJob {
+                    input,
+                    head,
+                    position,
+                    handle,
+                    join,
+                })
+            }
+            Err(e) => self.fail(&head, e.to_string())?,
+        }
+        Ok(())
+    }
+    fn install_history(
+        &mut self,
+        input: StoredSource,
+        head: Head,
+        mut install: PendingInstall,
+    ) -> Result<()> {
+        match install.turn(&mut self.writer, install_budget()) {
+            Ok(Turn::Yielded) => self.active = Some(Active::HistoryInstall(input, head, install)),
+            Ok(Turn::Published(published)) => {
+                self.active = Some(Active::Canonical(
+                    input,
+                    published,
+                    CanonicalPosition::ToolsAfter(None),
+                    None,
+                ))
+            }
+            Err(e) => self.fail(&head, e.to_string())?,
+        }
+        Ok(())
+    }
+    fn install(
+        &mut self,
+        input: StoredSource,
+        head: Head,
+        mut install: PendingInstall,
+        guard: CommitGuard,
+    ) -> Result<()> {
+        match install.turn(&mut self.writer, install_budget()) {
+            Ok(Turn::Yielded) => self.active = Some(Active::Install(input, head, install, guard)),
+            Ok(Turn::Published(published)) => match guard.published(&published) {
+                Ok(continuation) => {
+                    if !caught_up(&published) {
+                        self.active = Some(Active::Compute(input, published, Some(continuation)));
+                    } else if can_finalize(&input, &published) {
+                        self.active = Some(Active::Canonical(
+                            input.clone(),
+                            published,
+                            CanonicalPosition::first(input.format),
+                            None,
+                        ));
+                    }
+                }
+                Err(e) => self.fail(&published, e.to_string())?,
+            },
+            Err(e) => self.fail(&head, e.to_string())?,
         }
         Ok(())
     }
@@ -2120,505 +2145,6 @@ fn diagnostic(mut text: String) -> String {
     text
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{path::Path, time::Instant};
-
-    fn request(path: &Path, id: &str) -> ImportRequest {
-        ImportRequest {
-            format: InputFormat::CodexRollout,
-            context: vec![],
-            path: path.to_owned(),
-            observation: Observation {
-                id: id.into(),
-                machine: "synthetic-machine".into(),
-                host: "synthetic-host".into(),
-                path: path.to_str().unwrap().into(),
-                seen_at: 0,
-            },
-            metadata_allowance: 4096,
-        }
-    }
-    mod cancellation;
-    mod changed_inputs;
-    mod claude_turns;
-    mod configured;
-    mod history_turns;
-    mod obsolete_canonical;
-    mod reader_shutdown;
-    fn owner(root: &Path) -> Owner {
-        Owner::start(
-            Writer::open(root).unwrap(),
-            Arc::new(AtomicBool::new(false)),
-        )
-        .unwrap()
-    }
-    fn import(handle: &Handle, request: ImportRequest) -> StoredInput {
-        handle
-            .try_import(request)
-            .unwrap()
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap()
-            .unwrap()
-    }
-    fn progress(handle: &Handle, id: &str) -> Progress {
-        let end = Instant::now() + Duration::from_secs(10);
-        loop {
-            match handle.try_progress(id) {
-                Ok(reply) => {
-                    return reply
-                        .recv_timeout(Duration::from_secs(10))
-                        .unwrap()
-                        .unwrap();
-                }
-                Err(Error::Busy) if Instant::now() < end => thread::yield_now(),
-                other => panic!("progress admission: {:?}", other.err()),
-            }
-        }
-    }
-    fn until_caught_up(handle: &Handle, id: &str) -> Progress {
-        let end = Instant::now() + Duration::from_secs(10);
-        loop {
-            let p = progress(handle, id);
-            assert!(p.failure.is_none(), "{:?}", p.failure);
-            assert!(p.recovery_error.is_none(), "{:?}", p.recovery_error);
-            if p.parser.as_ref().is_some_and(caught_up) {
-                return p;
-            }
-            assert!(
-                Instant::now() < end,
-                "provider did not reach stable frontier"
-            );
-            thread::yield_now();
-        }
-    }
-    fn raw() -> &'static [u8] {
-        b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"synthetic-session\",\"source\":\"cli\"}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"u\",\"role\":\"user\",\"content\":[{\"text\":\"hello\"}]}}\n"
-    }
-    #[test]
-    fn authored_reply_does_not_open_derived_status_after_commit() {
-        use polylogue_model::authored::{NoteKind, Target, WriteNote};
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        let writer = Writer::open(root).unwrap();
-        let reader = writer.read_handle().unwrap();
-        // Keep the open connections and make only a new derived-tier open fail.
-        std::fs::rename(root.join("embeddings.db"), root.join("held-embeddings.db")).unwrap();
-        std::fs::create_dir(root.join("embeddings.db")).unwrap();
-        assert!(writer.status().is_err());
-        let service = Owner::start(writer, Arc::new(AtomicBool::new(false))).unwrap();
-        let request = WriteNote {
-            request_id: "01900000-0000-7000-8000-000000000501".into(),
-            author: "agent".into(),
-            machine: "synthetic-machine".into(),
-            created_at: None,
-            kind: Some(NoteKind::Correction),
-            value: "Correction survives a derived status outage.".into(),
-            targets: Some(vec![Target {
-                reference: "message:future".into(),
-                seen_hash: None,
-            }]),
-            relations: vec![],
-        };
-        let committed = service
-            .handle()
-            .try_note(request.clone(), Instant::now() + Duration::from_secs(30))
-            .unwrap()
-            .recv_timeout(Duration::from_secs(30))
-            .unwrap()
-            .unwrap();
-        assert!(committed.recovery.is_none());
-        let retry = service
-            .handle()
-            .try_note(request, Instant::now() + Duration::from_secs(30))
-            .unwrap()
-            .recv_timeout(Duration::from_secs(30))
-            .unwrap()
-            .unwrap();
-        assert_eq!(committed.revision, retry.revision);
-        assert_eq!(
-            reader
-                .authored_snapshot()
-                .unwrap()
-                .family(&committed.revision.reference())
-                .unwrap()
-                .history
-                .len(),
-            1
-        );
-        std::fs::remove_dir(root.join("embeddings.db")).unwrap();
-        std::fs::rename(root.join("held-embeddings.db"), root.join("embeddings.db")).unwrap();
-        service.shutdown().unwrap();
-    }
-    #[test]
-    fn declared_claude_context_replays_without_provider_and_remains_pending() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("untrusted-download-name.jsonl");
-        let raw=b"{\"type\":\"user\",\"sessionId\":\"declared-main\",\"uuid\":\"u\",\"message\":{\"role\":\"user\",\"content\":\"retained prompt\"}}\n";
-        std::fs::write(&path, raw).unwrap();
-        let mut request = request(&path, "claude-observation");
-        request.format = InputFormat::ClaudeCodeJsonl;
-        request.context = vec!["claude-main".into(), "declared-main".into()];
-        let root = dir.path().join("archive");
-        let service = owner(&root);
-        let retained = import(&service.handle(), request.clone());
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let p = progress(&service.handle(), &retained.id);
-            assert_eq!(p.source_rows.basis.input, p.input.id);
-            if let Some(head) = p.parser {
-                if head.parsed_upto == retained.length {
-                    assert_eq!(head.counts.used, 1);
-                    assert_eq!(
-                        head.finalization_pending,
-                        !matches!(
-                            p.source_rows.state,
-                            polylogue_model::settlement::SourceRowState::Settled
-                        )
-                    );
-                    assert_ne!(head.status, Phase::Done);
-                    break;
-                }
-            }
-            assert!(
-                Instant::now() < deadline,
-                "Claude parser did not publish its checkpoint"
-            );
-            thread::yield_now();
-        }
-        std::fs::remove_file(&path).unwrap();
-        assert_eq!(import(&service.handle(), request.clone()), retained);
-        let mut wrong = request.clone();
-        wrong.context[1] = "another-main".into();
-        assert!(matches!(
-            service
-                .handle()
-                .try_import(wrong)
-                .unwrap()
-                .recv_timeout(Duration::from_secs(10))
-                .unwrap(),
-            Err(Error::Store(StoreError::ClientRequestConflict { .. }))
-        ));
-        service.shutdown().unwrap();
-        let service = owner(&root);
-        assert_eq!(import(&service.handle(), request), retained);
-        assert_eq!(
-            progress(&service.handle(), &retained.id)
-                .source_rows
-                .basis
-                .input,
-            retained.id
-        );
-        service.shutdown().unwrap();
-    }
-    #[test]
-    fn claude_actor_selects_each_pending_locator_and_replays_after_provider_loss() {
-        use polylogue_sources::{claude_code::keyed::MemoryReadView, frame::drive_jsonl};
-        let raw = concat!(
-            "{\"type\":\"user\",\"sessionId\":\"declared-main\",\"uuid\":\"u\",\"promptSource\":\"typed\",\"message\":{\"role\":\"user\",\"content\":\"retained question\"}}\n",
-            "{\"type\":\"assistant\",\"sessionId\":\"declared-main\",\"uuid\":\"a\",\"parentUuid\":\"u\",\"message\":{\"id\":\"answer\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"retained answer\"}],\"stop_reason\":\"end_turn\"}}\n"
-        );
-        let framed = drive_jsonl(
-            claude_code::KeyedRecords::new(
-                claude_code::FileCtx::main("declared-main"),
-                MemoryReadView::default(),
-            )
-            .unwrap(),
-            raw.as_bytes(),
-            0,
-        );
-        let ids = framed
-            .output
-            .unwrap()
-            .delta
-            .pending_messages
-            .into_iter()
-            .map(|p| p.message)
-            .collect::<Vec<_>>();
-        assert_eq!(ids.len(), 2);
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("opaque-download.jsonl");
-        std::fs::write(&path, raw).unwrap();
-        let root = dir.path().join("archive");
-        let writer = Writer::open(&root).unwrap();
-        let reader = writer.read_handle().unwrap();
-        let service = Owner::start(writer, Arc::new(AtomicBool::new(false))).unwrap();
-        let mut r = request(&path, "claude-selected");
-        r.format = InputFormat::ClaudeCodeJsonl;
-        r.context = vec!["claude-main".into(), "declared-main".into()];
-        let retained = import(&service.handle(), r.clone());
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let p = progress(&service.handle(), &retained.id);
-            assert!(p.failure.is_none(), "{:?}", p.failure);
-            assert_eq!(p.source_rows.basis.input, p.input.id);
-            let selected = ids
-                .iter()
-                .map(|id| reader.selected_message(id).unwrap())
-                .collect::<Vec<_>>();
-            if selected.iter().all(Option::is_some) {
-                for (view, text) in selected
-                    .into_iter()
-                    .zip(["retained question", "retained answer"])
-                {
-                    let view = view.unwrap();
-                    let block = view
-                        .block(polylogue_model::BlockSlot::Item(0))
-                        .unwrap()
-                        .unwrap();
-                    assert_eq!(
-                        block.text_range(0, 64).unwrap().unwrap().bytes,
-                        text.as_bytes()
-                    );
-                }
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "Claude pending locators did not become selected"
-            );
-            thread::yield_now();
-        }
-        std::fs::remove_file(&path).unwrap();
-        assert_eq!(import(&service.handle(), r.clone()), retained);
-        service.shutdown().unwrap();
-        drop(reader);
-        let service = owner(&root);
-        assert_eq!(import(&service.handle(), r), retained);
-        assert_eq!(
-            progress(&service.handle(), &retained.id)
-                .source_rows
-                .basis
-                .input,
-            retained.id
-        );
-        service.shutdown().unwrap();
-    }
-    #[test]
-    fn actor_selects_a_source_message_but_history_stays_unfinished() {
-        use polylogue_sources::{
-            codex::keyed::{KeyedRecords, MemoryReadView, Resume},
-            frame::drive_jsonl,
-        };
-        let framed = drive_jsonl(
-            KeyedRecords::new(MemoryReadView::default(), Resume::default()),
-            raw(),
-            0,
-        );
-        let delta = framed.output.unwrap();
-        let mut memory = MemoryReadView::default();
-        memory.apply(&delta);
-        let message = memory.projected_message(0).unwrap().unwrap().id;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("synthetic-canonical.jsonl");
-        std::fs::write(&path, raw()).unwrap();
-        let writer = Writer::open(&dir.path().join("archive")).unwrap();
-        let reader = writer.read_handle().unwrap();
-        let service = Owner::start(writer, Arc::new(AtomicBool::new(false))).unwrap();
-        let retained = import(
-            &service.handle(),
-            request(&path, "synthetic-canonical-request"),
-        );
-        std::fs::remove_file(&path).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            let p = progress(&service.handle(), &retained.id);
-            assert!(p.failure.is_none(), "{:?}", p.failure);
-            assert_eq!(p.source_rows.basis.input, p.input.id);
-            if let Some(view) = reader.selected_message(&message).unwrap() {
-                let block = view
-                    .block(polylogue_model::BlockSlot::Item(0))
-                    .unwrap()
-                    .unwrap();
-                let range = block.text_range(0, 64).unwrap().unwrap();
-                assert_eq!(range.bytes, b"hello");
-                assert_eq!(
-                    p.parser.unwrap().finalization_pending,
-                    !matches!(
-                        p.source_rows.state,
-                        polylogue_model::settlement::SourceRowState::Settled
-                    )
-                );
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "canonical source message did not become readable"
-            );
-            thread::yield_now();
-        }
-        // Receipt replay works after the provider file is gone, while the actor
-        // serves selected-Message readers.
-        assert_eq!(
-            import(
-                &service.handle(),
-                request(&path, "synthetic-canonical-request")
-            )
-            .id,
-            retained.id
-        );
-        service.shutdown().unwrap();
-        assert!(reader.selected_message(&message).unwrap().is_some());
-    }
-    #[test]
-    fn stored_receipt_replays_before_missing_source_and_recovers_provider_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("archive");
-        let path = dir.path().join("synthetic.jsonl");
-        std::fs::write(&path, raw()).unwrap();
-        let service = owner(&root);
-        let retained = import(&service.handle(), request(&path, "synthetic-request"));
-        std::fs::remove_file(&path).unwrap();
-        let replay = import(&service.handle(), request(&path, "synthetic-request"));
-        assert_eq!(retained.id, replay.id);
-        let mut changed = request(&path, "synthetic-request");
-        changed.observation.seen_at = 1;
-        assert!(matches!(
-            service
-                .handle()
-                .try_import(changed)
-                .unwrap()
-                .recv_timeout(Duration::from_secs(10))
-                .unwrap(),
-            Err(Error::Store(_))
-        ));
-        service.shutdown().unwrap();
-        let service = owner(&root);
-        let p = until_caught_up(&service.handle(), &retained.id);
-        let head = p.parser.unwrap();
-        assert_eq!(head.counts.framed, 2);
-        assert_eq!(head.parsed_upto, raw().len() as u64);
-        assert!(matches!(head.status, Phase::Finalizing | Phase::Done));
-        assert_eq!(
-            head.finalization_pending,
-            !matches!(
-                p.source_rows.state,
-                polylogue_model::settlement::SourceRowState::Settled
-            )
-        );
-        assert_eq!(p.source_rows.basis.input, p.input.id);
-        service.shutdown().unwrap();
-    }
-    #[test]
-    fn partial_tail_is_stable_across_restart_and_retry() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().join("archive");
-        let path = dir.path().join("synthetic-tail.jsonl");
-        let mut bytes = raw().to_vec();
-        bytes.extend_from_slice(b"{\"type\":");
-        std::fs::write(&path, &bytes).unwrap();
-        let service = owner(&root);
-        let retained = import(&service.handle(), request(&path, "synthetic-tail-request"));
-        let before = until_caught_up(&service.handle(), &retained.id)
-            .parser
-            .unwrap();
-        assert_eq!(before.status, Phase::WaitingTail);
-        assert_eq!(before.parsed_upto, raw().len() as u64);
-        assert_eq!(before.inspected_upto, bytes.len() as u64);
-        service.shutdown().unwrap();
-        let service = owner(&root);
-        service
-            .handle()
-            .try_retry(&retained.id)
-            .unwrap()
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap()
-            .unwrap();
-        for _ in 0..8 {
-            let p = progress(&service.handle(), &retained.id);
-            let head = p.parser.unwrap();
-            assert_eq!(head.token, before.token);
-            assert_eq!(head.counts, before.counts);
-            assert_eq!(
-                head.finalization_pending,
-                !matches!(
-                    p.source_rows.state,
-                    polylogue_model::settlement::SourceRowState::Settled
-                )
-            );
-            assert_eq!(p.source_rows.basis.input, p.input.id);
-        }
-        service.shutdown().unwrap();
-    }
-    #[test]
-    fn oversized_logical_record_is_an_inspectable_admission_failure() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("synthetic-large.jsonl");
-        let mut bytes = b"{\"type\":\"synthetic\",\"payload\":\"".to_vec();
-        bytes.resize(1024 * 1024 + 64, b'x');
-        bytes.extend_from_slice(b"\"}\n");
-        std::fs::write(&path, &bytes).unwrap();
-        let service = owner(&dir.path().join("archive"));
-        let retained = import(&service.handle(), request(&path, "synthetic-large-request"));
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let p = progress(&service.handle(), &retained.id);
-            if let Some(failure) = p.failure {
-                assert_eq!(
-                    failure,
-                    format!(
-                        "source framing requires {} bytes (allocation failed: false)",
-                        bytes.len() - 1
-                    )
-                );
-                let head = p.parser.unwrap();
-                assert_eq!(head.parsed_upto, 0);
-                assert_eq!(head.counts.framed, 0);
-                assert_ne!(head.status, Phase::Done);
-                assert_eq!(p.source_rows.basis.input, p.input.id);
-                break;
-            }
-            assert!(Instant::now() < deadline, "missing admission failure");
-            thread::yield_now();
-        }
-        service.shutdown().unwrap();
-    }
-    #[test]
-    fn queue_capacity_request_bytes_and_shutdown_return_typed_errors() {
-        let (sender, _receiver) = mpsc::sync_channel(1);
-        let inner = Arc::new(Inner {
-            sender,
-            accepting: Mutex::new(true),
-            cancelled: Arc::new(AtomicBool::new(false)),
-        });
-        let handle = Handle { inner };
-        let _first = handle.try_progress("synthetic").unwrap();
-        assert!(matches!(handle.try_progress("synthetic"), Err(Error::Busy)));
-        assert!(matches!(
-            handle.try_progress(&"x".repeat(REQUEST_BYTES + 1)),
-            Err(Error::RequestTooLarge { .. })
-        ));
-        let mut mismatched = request(Path::new("/synthetic/path"), "synthetic");
-        mismatched.observation.path = "/synthetic/other".into();
-        assert!(matches!(
-            handle.try_import(mismatched),
-            Err(Error::InvalidRequest(_))
-        ));
-        *handle.inner.accepting.lock().unwrap() = false;
-        assert!(matches!(handle.try_retry("synthetic"), Err(Error::Stopped)));
-        let text = diagnostic("ą".repeat(DETAIL_BYTES));
-        assert!(text.len() <= DETAIL_BYTES);
-        assert!(text.ends_with("[diagnostic truncated]"));
-    }
-    #[test]
-    fn shutdown_replies_to_accepted_import_instead_of_losing_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("synthetic.jsonl");
-        std::fs::write(&path, raw()).unwrap();
-        let service = owner(&dir.path().join("archive"));
-        let reply = service
-            .handle()
-            .try_import(request(&path, "synthetic-stop"))
-            .unwrap();
-        service.shutdown().unwrap();
-        assert!(matches!(
-            reply.recv_timeout(Duration::from_secs(10)),
-            Ok(Ok(_)) | Ok(Err(Error::Stopped))
-        ));
-    }
-}
-
 pub(crate) fn claude_key(message: &str) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
     hash.update(b"polylogue.claude.logical-message.v1\0");
@@ -2641,3 +2167,6 @@ fn canonical_budgets() -> canonical_message::Budgets {
         hash_bytes: 65536,
     }
 }
+
+#[cfg(test)]
+mod tests;

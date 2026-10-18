@@ -101,21 +101,18 @@ type Result<T> = std::result::Result<T, Error>;
 /// Not cloneable and not constructible from inspected offsets: its token is
 /// the publication that released the framing state.
 pub struct CommittedContinuation {
-    predecessor: Token,
+    token: Token,
     framing: JsonlContinuation,
 }
 impl CommittedContinuation {
-    pub fn predecessor(&self) -> &Token {
-        &self.predecessor
+    pub fn token(&self) -> &Token {
+        &self.token
     }
     pub fn parsed_upto(&self) -> u64 {
         self.framing.parsed_upto()
     }
     pub fn scanned_upto(&self) -> u64 {
         self.framing.scanned_upto()
-    }
-    pub fn buffer_capacity(&self) -> usize {
-        self.framing.buffer_capacity()
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,12 +143,12 @@ pub struct PendingTurn {
 /// `Turn::Published`. A failed or abandoned install drops the guard and parsing
 /// restarts from the last committed complete record.
 pub struct Install {
-    pub predecessor: Head,
+    pub head: Head,
     pub progress: Progress,
     pub changes: Vec<CellChange>,
 }
 pub struct CommitGuard {
-    predecessor: Head,
+    head: Head,
     pending: PendingJsonlStep<()>,
     expected_counts: Accounting,
     phase: Phase,
@@ -166,23 +163,20 @@ impl PendingTurn {
     pub fn counts(&self) -> &Counts {
         self.pending.counts()
     }
-    pub fn buffer_capacity(&self) -> usize {
-        self.pending.buffer_capacity()
-    }
     pub fn step(&self) -> Step {
         self.step
     }
     pub fn into_install(self) -> (Install, CommitGuard) {
         let phase = self.progress.phase;
         let guard = CommitGuard {
-            predecessor: self.head.clone(),
+            head: self.head.clone(),
             pending: self.pending,
             expected_counts: self.expected_counts,
             phase,
         };
         (
             Install {
-                predecessor: self.head,
+                head: self.head,
                 progress: self.progress,
                 changes: self.changes,
             },
@@ -195,15 +189,15 @@ impl CommitGuard {
     /// mismatched receipt discards the continuation.
     pub fn published(self, receipt: &Head) -> Result<CommittedContinuation> {
         let Self {
-            predecessor,
+            head,
             pending,
             expected_counts,
             phase,
         } = self;
-        let (predecessor, framing) = pending.commit_with(|(), _, parsed, scanned| {
-            let mut next = predecessor.token.clone();
+        let (token, framing) = pending.commit_with(|(), _, parsed, scanned| {
+            let mut next = head.token.clone();
             next.step = next.step.checked_add(1).ok_or(StoreError::Range)?;
-            let expected_status = if receipt.acquired_upto > predecessor.acquired_upto
+            let expected_status = if receipt.acquired_upto > head.acquired_upto
                 && matches!(phase, Phase::WaitingTail)
             {
                 Phase::Parsing
@@ -211,22 +205,19 @@ impl CommitGuard {
                 phase
             };
             if receipt.token != next
-                || receipt.parser_version != predecessor.parser_version
+                || receipt.parser_version != head.parser_version
                 || receipt.parsed_upto != parsed
                 || receipt.inspected_upto != scanned
                 || receipt.counts != expected_counts
                 || !receipt.finalization_pending
-                || receipt.acquired_upto < predecessor.acquired_upto
+                || receipt.acquired_upto < head.acquired_upto
                 || receipt.status != expected_status
             {
                 return Err(Error::Store(StoreError::StaleParserState));
             }
             Ok(receipt.token.clone())
         })?;
-        Ok(CommittedContinuation {
-            predecessor,
-            framing,
-        })
+        Ok(CommittedContinuation { token, framing })
     }
 }
 /// After a restart there is no continuation: reread from `parsed_upto`,
@@ -235,7 +226,7 @@ pub fn read_offset(head: &Head, continuation: Option<&CommittedContinuation>) ->
     match continuation {
         None => Ok(head.parsed_upto),
         Some(c)
-            if c.predecessor == head.token
+            if c.token == head.token
                 && c.parsed_upto() == head.parsed_upto
                 && c.scanned_upto() == head.inspected_upto =>
         {
