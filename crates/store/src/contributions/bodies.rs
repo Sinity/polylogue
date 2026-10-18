@@ -1,9 +1,12 @@
-//! Retiring an unselected immutable body detaches retention metadata, never its
-//! rank/digest certificate. Each turn owns a fixed row transition or root lease.
-use super::{directory as d, writer::Build};
+//! Retiring ready bodies that are no longer selected, and deleting candidates
+//! nothing uses. Each call does one step: one row change or one root release.
+use super::{
+    directory as d,
+    writer::{Build, check_index},
+};
 use crate::{Error, Result, Writer, db};
 use rusqlite::{OptionalExtension, params};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BodyId {
@@ -20,7 +23,7 @@ pub struct CandidateId {
     pk: i64,
     message: i64,
     session: i64,
-    basis: [u8; 32],
+    digest: [u8; 32],
 }
 impl Build {
     pub fn body_id(&self) -> BodyId {
@@ -39,13 +42,13 @@ impl Build {
             pk: self.candidate,
             message: self.message,
             session: self.session,
-            basis: self.digest,
+            digest: self.digest,
         }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CandidateCollection {
-    Retained,
+    InUse,
     Source,
     Candidate,
     Missing,
@@ -60,55 +63,31 @@ pub enum BodyRetirement {
     Body,
     Missing,
 }
-fn check(connection: &rusqlite::Connection, path: &Path, id: &BodyId) -> Result<()> {
-    if path != id.path {
-        return Err(Error::StaleMessage);
-    }
-    let generation: String = db(path, || {
-        connection.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
-            r.get(0)
-        })
-    })?;
-    if generation != id.generation {
-        return Err(Error::StaleMessage);
-    }
-    Ok(())
-}
 impl Writer {
-    /// Certificate/provenance deletion never scans facts: known leaf collection
-    /// releases the actual fact owners first, and each remaining locator is one
-    /// keyset turn. A still-referenced certificate remains intact.
+    /// Deletes an unused candidate one step per call: first its source ranges,
+    /// one per call, then the candidate row. Returns `InUse` while it is
+    /// eligible, attached to a body, chosen anywhere or referenced by a fact.
     pub fn collect_message_candidate(&mut self, id: &CandidateId) -> Result<CandidateCollection> {
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        if path != id.path {
-            return Err(Error::StaleMessage);
-        }
-        let generation: String = db(&path, || {
-            tx.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
-                r.get(0)
-            })
-        })?;
-        if generation != id.generation {
-            return Err(Error::StaleMessage);
-        }
+        check_index(&tx, &path, &id.path, &id.generation)?;
         let row: Option<(bool, Option<i64>, Vec<u8>)> = db(&path, || {
             tx.query_row("SELECT eligible,body_pk,basis_digest FROM message_candidate WHERE pk=?1 AND message_pk=?2 AND session_pk=?3",params![id.pk,id.message,id.session],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()
         })?;
-        let Some((eligible, body, basis)) = row else {
+        let Some((eligible, body, digest)) = row else {
             return Ok(CandidateCollection::Missing);
         };
-        if basis != id.basis {
+        if digest != id.digest {
             return Err(Error::StaleMessage);
         }
         if eligible || body.is_some() {
-            return Ok(CandidateCollection::Retained);
+            return Ok(CandidateCollection::InUse);
         }
-        let retained: bool = db(&path, || {
+        let in_use: bool = db(&path, || {
             tx.query_row("SELECT EXISTS(SELECT 1 FROM message_body WHERE preferred_candidate_pk=?1) OR EXISTS(SELECT 1 FROM message_chain_choice WHERE candidate_pk=?1) OR EXISTS(SELECT 1 FROM message_input_choice WHERE candidate_pk=?1) OR EXISTS(SELECT 1 FROM message_field_fact WHERE candidate_pk=?1)",[id.pk],|r|r.get(0))
         })?;
-        if retained {
-            return Ok(CandidateCollection::Retained);
+        if in_use {
+            return Ok(CandidateCollection::InUse);
         }
         let source: Option<(i64, i64, i64, i64)> = db(&path, || {
             tx.query_row("SELECT input_pk,chain,source_start,source_end FROM message_source WHERE candidate_pk=?1 ORDER BY input_pk,chain,source_start,source_end LIMIT 1",[id.pk],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()
@@ -138,10 +117,14 @@ impl Writer {
         db(&path, || tx.commit())?;
         Ok(CandidateCollection::Candidate)
     }
+    /// Retires a ready body that is not selected, one step per call: detach one
+    /// candidate that points at it, then delete the body and release its roots.
+    /// Returns why it stopped: still selected, still building, an eligible or
+    /// pending candidate, or done.
     pub fn retire_message_body(&mut self, id: &BodyId) -> Result<BodyRetirement> {
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        check(&tx, &path, id)?;
+        check_index(&tx, &path, &id.path, &id.generation)?;
         let roots: Option<(Option<i64>, Option<i64>, Option<i64>, bool)> = db(&path, || {
             tx.query_row(
             "SELECT block_root_pk,field_root_pk,operation_root_pk,ready FROM message_body WHERE pk=?1 AND message_pk=?2 AND session_pk=?3",
@@ -172,7 +155,7 @@ impl Writer {
         }
         if !ready {
             return Err(Error::Invariant(
-                "unready bodies use their owning preparation abort".into(),
+                "an unready body is retired through its preparation".into(),
             ));
         }
         let eligible: bool = db(&path, || {

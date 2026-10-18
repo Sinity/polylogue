@@ -1,14 +1,15 @@
-//! Durable preparation control. These APIs never select a partially built body,
-//! make a candidate eligible, or certify parser completion. Projection, ranking,
-//! evidence verification and atomic publication still have separate obligations.
+//! Message preparation: reserve an unready body and candidate for one Message
+//! from one source revision, then fill it with values, fields and blocks. Every
+//! write checks the parser state it was prepared under. Nothing here selects a
+//! body or makes a candidate eligible.
 use crate::{Error, Result, Writer, db, parser_state, values};
 use polylogue_model::merge::RouteKind;
 use polylogue_model::{MessageId, Origin, Role, SessionId, SessionKind, WrittenBy};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::{Path, PathBuf};
 
-/// Identity metadata is admitted before any transaction. Session relations are
-/// supplied explicitly; opaque Message IDs are never split to recover a parent.
+/// The Message being prepared. Message IDs are opaque: the session is passed
+/// here, never parsed out of the Message ID.
 pub struct Identity<'a> {
     pub session: &'a SessionId,
     pub origin: &'a Origin,
@@ -20,8 +21,9 @@ pub struct Identity<'a> {
     pub role: Role,
     pub written_by: WrittenBy,
 }
-/// One format-declared logical candidate in one retained archive revision.
-/// Scheduling cuts do not create a logical key or a new revision.
+/// Where the Message comes from: one logical candidate (`logical_key`, chosen
+/// by the format) in one stored archive revision, read under the parser state
+/// `predecessor`. How the parser splits its work does not change either key.
 pub struct Source<'a> {
     pub predecessor: &'a parser_state::Token,
     pub revision: u64,
@@ -29,8 +31,8 @@ pub struct Source<'a> {
     pub logical_key: [u8; 32],
     pub route: RouteKind,
 }
-/// Only committed preparation IDs escape. The source predecessor, archive
-/// revision and local index path/incarnation are checked at every mutation.
+/// Handle to a committed preparation. Every write checks that its parser
+/// state, archive revision and index file are still current.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Build {
     pub(super) path: PathBuf,
@@ -55,21 +57,27 @@ impl Build {
         &self.source
     }
 }
+/// A preparation and its unfinished work: the value and source descriptor
+/// being written, and the finished projection once the build reaches its rank
+/// phase.
 #[derive(Clone, Debug)]
 pub struct Preparation {
     pub build: Build,
     pub active_value: Option<values::Head>,
-    /// Independent descriptor producer; ready JSON is not semantic validation.
+    /// The source descriptor being written, kept apart from the normalized
+    /// value. Sealing checks that it is JSON, not what it means.
     pub active_origin_value: Option<values::Head>,
     pub projection: Option<super::completion::PreparedProjection>,
 }
-fn bad(message: &str) -> Error {
+fn invalid(message: &str) -> Error {
     Error::Invariant(message.into())
 }
-pub(super) fn integer(n: u64) -> Result<i64> {
+pub(super) fn to_i64(n: u64) -> Result<i64> {
     i64::try_from(n).map_err(|_| Error::Range)
 }
-pub(super) fn basis(
+/// Digest of everything a preparation is computed from: parser state, archive
+/// revision, logical key and evidence revision.
+pub(super) fn preparation_digest(
     source: &parser_state::Token,
     revision: u64,
     logical: &[u8; 32],
@@ -126,13 +134,36 @@ pub(crate) fn source_head(
     }
     Ok(head)
 }
-pub(super) fn check(conn: &Connection, path: &Path, build: &Build) -> Result<()> {
-    check_at(conn, path, build, true)
+/// Checks that `path` and the index generation are the ones a handle was made
+/// for, so a handle from another or a rebuilt index is refused.
+pub(super) fn check_index(
+    conn: &Connection,
+    path: &Path,
+    expected_path: &Path,
+    generation: &str,
+) -> Result<()> {
+    if path != expected_path {
+        return Err(Error::StaleMessage);
+    }
+    let current: String = db(path, || {
+        conn.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
+            r.get(0)
+        })
+    })?;
+    if current != generation {
+        return Err(Error::StaleMessage);
+    }
+    Ok(())
 }
-pub(super) fn check_completed(conn: &Connection, path: &Path, build: &Build) -> Result<()> {
-    check_at(conn, path, build, false)
+/// Checks that `build` is current and still in its projection phase.
+pub(super) fn check_writable(conn: &Connection, path: &Path, build: &Build) -> Result<()> {
+    check_build(conn, path, build, true)
 }
-fn check_at(conn: &Connection, path: &Path, build: &Build, mutating: bool) -> Result<()> {
+/// Checks that `build` is current; a finished projection also passes.
+pub(super) fn check_current(conn: &Connection, path: &Path, build: &Build) -> Result<()> {
+    check_build(conn, path, build, false)
+}
+fn check_build(conn: &Connection, path: &Path, build: &Build, writable: bool) -> Result<()> {
     if path != build.path {
         return Err(Error::StaleMessage);
     }
@@ -142,18 +173,18 @@ fn check_at(conn: &Connection, path: &Path, build: &Build, mutating: bool) -> Re
         || row.2 != build.contributor_revision
         || row.3 != build.removal_epoch
         || !matches!(row.0.as_str(), "project" | "rank")
-        || (mutating && row.0 != "project")
+        || (writable && row.0 != "project")
     {
         return Err(Error::StaleMessage);
     }
     Ok(())
 }
-pub(super) fn admitted_source(
+pub(super) fn check_source(
     writer: &Writer,
     source: &Source<'_>,
 ) -> Result<(parser_state::Head, u64)> {
-    let revision = integer(source.revision)?;
-    integer(source.evidence_revision)?;
+    let revision = to_i64(source.revision)?;
+    to_i64(source.evidence_revision)?;
     if revision <= 0 {
         return Err(Error::Range);
     }
@@ -183,13 +214,15 @@ pub(super) fn admitted_source(
     }
     Ok((head, length))
 }
-fn admit_preparation(
+fn check_request(
     identity: &Identity<'_>,
     source: &Source<'_>,
     allowance: usize,
 ) -> Result<(i64, i64, i64)> {
     if identity.message.session() != identity.session || identity.native_session.is_empty() {
-        return Err(bad("invalid preparation identity relation"));
+        return Err(invalid(
+            "Message ID is not in the given session, or the native session ID is empty",
+        ));
     }
     let mut bytes = 256usize;
     for text in [
@@ -209,14 +242,46 @@ fn admit_preparation(
         });
     }
     polylogue_model::NativeId::from_wire(identity.native_session, identity.native_session_encoding)
-        .map_err(|e| bad(&e.to_string()))?;
-    let sequence = integer(identity.sequence)?;
-    let revision = integer(source.revision)?;
-    let evidence = integer(source.evidence_revision)?;
+        .map_err(|e| invalid(&e.to_string()))?;
+    let sequence = to_i64(identity.sequence)?;
+    let revision = to_i64(source.revision)?;
+    let evidence = to_i64(source.evidence_revision)?;
     if revision <= 0 {
         return Err(Error::Range);
     }
     Ok((sequence, revision, evidence))
+}
+
+/// Inserts the session if it is new and returns its pk. An existing session
+/// must have the same origin, native ID and kind.
+fn insert_session(conn: &Connection, path: &Path, identity: &Identity<'_>) -> Result<i64> {
+    let kind = kind_name(identity.session_kind);
+    db(path, || {
+        conn.execute("INSERT INTO session(id,origin,native_id,native_id_encoding,kind,changed) VALUES(?1,?2,?3,?4,?5,0) ON CONFLICT(id) DO NOTHING",params![identity.session.as_str(),identity.origin.as_str(),identity.native_session,identity.native_session_encoding,kind])
+    })?;
+    let (session, origin, native, encoding, stored_kind): (
+        i64,
+        String,
+        String,
+        Option<String>,
+        String,
+    ) = db(path, || {
+        conn.query_row(
+            "SELECT pk,origin,native_id,native_id_encoding,kind FROM session WHERE id=?1",
+            [identity.session.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+    })?;
+    if origin != identity.origin.as_str()
+        || native != identity.native_session
+        || encoding.as_deref() != identity.native_session_encoding
+        || stored_kind != kind
+    {
+        return Err(invalid(
+            "stored session differs from the one being prepared",
+        ));
+    }
+    Ok(session)
 }
 
 fn load_preparation(
@@ -226,9 +291,9 @@ fn load_preparation(
     identity: &Identity<'_>,
     source: &Source<'_>,
 ) -> Result<Preparation> {
-    check_completed(conn, path, build)?;
+    check_current(conn, path, build)?;
     if source.predecessor != &build.source
-        || basis(
+        || preparation_digest(
             source.predecessor,
             source.revision,
             &source.logical_key,
@@ -237,18 +302,16 @@ fn load_preparation(
     {
         return Err(Error::StaleMessage);
     }
-    let kind = match identity.session_kind {
-        SessionKind::Main => "main",
-        SessionKind::Subagent => "subagent",
-        SessionKind::Chat => "chat",
-    };
+    let kind = kind_name(identity.session_kind);
     let session_ok: bool = db(path, || {
         conn.query_row(
         "SELECT id=?2 AND origin=?3 AND native_id=?4 AND native_id_encoding IS ?5 AND kind=?6 FROM session WHERE pk=?1",
         params![build.session,identity.session.as_str(),identity.origin.as_str(),identity.native_session,identity.native_session_encoding,kind],|r|r.get(0))
     })?;
     if !session_ok {
-        return Err(bad("stored Session identity disagrees with preparation"));
+        return Err(invalid(
+            "stored session differs from the one being prepared",
+        ));
     }
     let message_ok: bool = db(path, || {
         conn.query_row(
@@ -261,19 +324,21 @@ fn load_preparation(
         return Err(Error::StaleMessage);
     }
     let compatible: bool = db(path, || {
-        conn.query_row("SELECT b.role=?2 AND b.written_by=?3 AND c.route=?4 AND c.pk=?5 FROM message_body b JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE b.pk=?1",params![build.body,match identity.role {Role::User=>"user",Role::Assistant=>"assistant",Role::System=>"system",Role::Tool=>"tool"},match identity.written_by {WrittenBy::Human=>"human",WrittenBy::Model=>"model",WrittenBy::Harness=>"harness",WrittenBy::Unknown=>"unknown"},match source.route {RouteKind::PageDom=>0,RouteKind::AccountExport=>1,RouteKind::Native=>2},build.candidate],|r|r.get(0))
+        conn.query_row("SELECT b.role=?2 AND b.written_by=?3 AND c.route=?4 AND c.pk=?5 FROM message_body b JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE b.pk=?1",params![build.body,role_name(identity.role),written_by_name(identity.written_by),route_code(source.route),build.candidate],|r|r.get(0))
     })?;
     if !compatible {
-        return Err(bad("preparation metadata changed under the same basis"));
+        return Err(invalid(
+            "role, author or route differs from the existing preparation",
+        ));
     }
     let (phase, hash): (String, Option<Vec<u8>>) = db(path, || {
         conn.query_row("SELECT w.phase,c.version_hash FROM message_build w JOIN message_body b ON b.pk=w.body_pk JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE w.pk=?1",[build.pk],|r|Ok((r.get(0)?,r.get(1)?)))
     })?;
     let projection = if phase == "rank" {
         let hash: [u8; 32] = hash
-            .ok_or_else(|| bad("completed projection lacks digest"))?
+            .ok_or_else(|| invalid("finished projection has no version hash"))?
             .try_into()
-            .map_err(|_| bad("projection digest length"))?;
+            .map_err(|_| invalid("version hash is not 32 bytes"))?;
         Some(super::completion::PreparedProjection {
             build: build.clone(),
             hash: polylogue_model::BlobHash::from_bytes(hash),
@@ -288,55 +353,85 @@ fn load_preparation(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
     })?;
-    let active_value = active
-        .map(|pk| {
-            values::head(
-                conn,
-                path,
-                &values::ValueId {
-                    pk,
-                    index_generation: build.source.index_generation.clone(),
-                    index_path: path.to_path_buf(),
-                },
-            )
-        })
-        .transpose()?;
-    let active_origin_value = origin
-        .map(|pk| {
-            values::head(
-                conn,
-                path,
-                &values::ValueId {
-                    pk,
-                    index_generation: build.source.index_generation.clone(),
-                    index_path: path.to_path_buf(),
-                },
-            )
-        })
-        .transpose()?;
     Ok(Preparation {
         build: build.clone(),
-        active_value,
-        active_origin_value,
+        active_value: active
+            .map(|pk| value_head(conn, path, build, pk))
+            .transpose()?,
+        active_origin_value: origin
+            .map(|pk| value_head(conn, path, build, pk))
+            .transpose()?,
         projection,
     })
 }
 
+/// Head of a value owned by `build`, in the same index.
+pub(super) fn value_head(
+    conn: &Connection,
+    path: &Path,
+    build: &Build,
+    pk: i64,
+) -> Result<values::Head> {
+    values::head(
+        conn,
+        path,
+        &values::ValueId {
+            pk,
+            index_generation: build.source.index_generation.clone(),
+            index_path: path.to_path_buf(),
+        },
+    )
+}
+
+fn kind_name(kind: SessionKind) -> &'static str {
+    match kind {
+        SessionKind::Main => "main",
+        SessionKind::Subagent => "subagent",
+        SessionKind::Chat => "chat",
+    }
+}
+
+fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::System => "system",
+        Role::Tool => "tool",
+    }
+}
+
+fn written_by_name(written_by: WrittenBy) -> &'static str {
+    match written_by {
+        WrittenBy::Human => "human",
+        WrittenBy::Model => "model",
+        WrittenBy::Harness => "harness",
+        WrittenBy::Unknown => "unknown",
+    }
+}
+
+fn route_code(route: RouteKind) -> i64 {
+    match route {
+        RouteKind::PageDom => 0,
+        RouteKind::AccountExport => 1,
+        RouteKind::Native => 2,
+    }
+}
+
 impl Writer {
-    /// Reserve one pending body/candidate. Repeating the identical pinned
-    /// request resumes it; a different request must retire the old preparation.
-    /// Existing selected bodies and source eligibility are untouched.
+    /// Reserves an unready body and candidate for this Message, or resumes the
+    /// existing preparation when the request is identical. A different request
+    /// returns `MessagePreparationPending` until the old one is retired.
     pub fn prepare_message(
         &mut self,
         identity: Identity<'_>,
         source: Source<'_>,
         allowance: usize,
     ) -> Result<Preparation> {
-        let (sequence, revision, evidence) = admit_preparation(&identity, &source, allowance)?;
+        let (sequence, revision, evidence) = check_request(&identity, &source, allowance)?;
         let path = self.root.join("index.db");
-        let (head, length) = admitted_source(self, &source)?;
-        let length_i = integer(length)?;
-        let digest = basis(
+        let (head, length) = check_source(self, &source)?;
+        let length_i = to_i64(length)?;
+        let digest = preparation_digest(
             source.predecessor,
             source.revision,
             &source.logical_key,
@@ -344,34 +439,7 @@ impl Writer {
         );
         let tx = db(&path, || self._index.transaction())?;
         source_head(&tx, &path, source.predecessor)?;
-        let kind = match identity.session_kind {
-            SessionKind::Main => "main",
-            SessionKind::Subagent => "subagent",
-            SessionKind::Chat => "chat",
-        };
-        db(&path, || {
-            tx.execute("INSERT INTO session(id,origin,native_id,native_id_encoding,kind,changed) VALUES(?1,?2,?3,?4,?5,0) ON CONFLICT(id) DO NOTHING",params![identity.session.as_str(),identity.origin.as_str(),identity.native_session,identity.native_session_encoding,kind])
-        })?;
-        let (session, origin, native, encoding, stored_kind): (
-            i64,
-            String,
-            String,
-            Option<String>,
-            String,
-        ) = db(&path, || {
-            tx.query_row(
-                "SELECT pk,origin,native_id,native_id_encoding,kind FROM session WHERE id=?1",
-                [identity.session.as_str()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-        })?;
-        if origin != identity.origin.as_str()
-            || native != identity.native_session
-            || encoding.as_deref() != identity.native_session_encoding
-            || stored_kind != kind
-        {
-            return Err(bad("stored Session identity disagrees with preparation"));
-        }
+        let session = insert_session(&tx, &path, &identity)?;
         db(&path, || {
             tx.execute("INSERT INTO message(id,session_pk,seq) VALUES(?1,?2,?3) ON CONFLICT(id) DO NOTHING",params![identity.message.as_str(),session,sequence])
         })?;
@@ -405,27 +473,13 @@ impl Writer {
             })?;
             (pk, body, candidate)
         } else {
-            let role = match identity.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::System => "system",
-                Role::Tool => "tool",
-            };
-            let by = match identity.written_by {
-                WrittenBy::Human => "human",
-                WrittenBy::Model => "model",
-                WrittenBy::Harness => "harness",
-                WrittenBy::Unknown => "unknown",
-            };
+            let role = role_name(identity.role);
+            let by = written_by_name(identity.written_by);
             db(&path, || {
                 tx.execute("INSERT INTO message_body(message_pk,session_pk,basis_digest,contributor_revision,removal_epoch,layout,role,written_by,input_pk,source_chain,parser_version,source_sequence) VALUES(?1,?2,?3,?4,?5,'flat',?6,?7,?8,?9,?10,?11)",params![message,session,digest.as_slice(),contributor,removal,role,by,source.predecessor.input_pk,source.predecessor.chain,head.parser_version,sequence])
             })?;
             let body = tx.last_insert_rowid();
-            let route = match source.route {
-                RouteKind::PageDom => 0,
-                RouteKind::AccountExport => 1,
-                RouteKind::Native => 2,
-            };
+            let route = route_code(source.route);
             db(&path, || {
                 tx.execute("INSERT INTO message_candidate(message_pk,session_pk,input_pk,chain,revision,revision_length,evidence_revision,logical_key,parser_version,source_state_generation,source_state_step,source_basis_digest,basis_digest,body_pk,finish,route) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15)",params![message,session,source.predecessor.input_pk,source.predecessor.chain,revision,length_i,evidence,source.logical_key.as_slice(),head.parser_version,source.predecessor.generation,source.predecessor.step,source.predecessor.basis.as_slice(),digest.as_slice(),body,route])
             })?;
@@ -457,10 +511,8 @@ impl Writer {
         db(&path, || tx.commit())?;
         Ok(preparation)
     }
-    /// Inspect only this committed private Build. Unlike reservation, this
-    /// performs no INSERT/UPDATE or allocation, including at completed rank.
-    /// The caller's full source/identity admission and all live fences remain
-    /// checked; mutations still revalidate and CAS their own transactions.
+    /// Reads the state of a committed preparation without writing anything.
+    /// The request is checked as in `prepare_message`.
     pub fn inspect_message_preparation(
         &mut self,
         build: &Build,
@@ -468,34 +520,34 @@ impl Writer {
         source: Source<'_>,
         allowance: usize,
     ) -> Result<Preparation> {
-        admit_preparation(&identity, &source, allowance)?;
-        admitted_source(self, &source)?;
+        check_request(&identity, &source, allowance)?;
+        check_source(self, &source)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
         let preparation = load_preparation(&tx, &path, build, &identity, &source)?;
         db(&path, || tx.commit())?;
         Ok(preparation)
     }
-    /// The value and its durable producer lease are admitted in one transaction.
-    /// The returned ID cannot name a rolled-back allocation.
+    /// Starts the normalized value for the next field or block. The value and
+    /// its lease are created in one transaction.
     pub fn begin_message_value(
         &mut self,
         build: &Build,
         codec: values::Codec,
         length: u64,
     ) -> Result<values::Head> {
-        self.begin_owned_message_value(build, ValuePurpose::Normalized, codec, length)
+        self.begin_build_value(build, ValuePurpose::Normalized, codec, length)
     }
-    /// Stage a source-owned descriptor separately from its normalized value.
-    /// JSON codec/readiness proves integrity only, not selector/span semantics.
+    /// Starts the JSON source descriptor for the next field, kept apart from
+    /// its normalized value. Sealing checks that it is JSON, not what it means.
     pub fn begin_message_origin_value(
         &mut self,
         build: &Build,
         length: u64,
     ) -> Result<values::Head> {
-        self.begin_owned_message_value(build, ValuePurpose::Origin, values::Codec::Json, length)
+        self.begin_build_value(build, ValuePurpose::Origin, values::Codec::Json, length)
     }
-    fn begin_owned_message_value(
+    fn begin_build_value(
         &mut self,
         build: &Build,
         purpose: ValuePurpose,
@@ -504,7 +556,7 @@ impl Writer {
     ) -> Result<values::Head> {
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        check(&tx, &path, build)?;
+        check_writable(&tx, &path, build)?;
         let column = purpose.column();
         let active: Option<i64> = db(&path, || {
             tx.query_row(
@@ -526,23 +578,24 @@ impl Writer {
         db(&path, || tx.commit())?;
         Ok(value)
     }
-    /// Integrity sealing retains this producer's lease, including when the
-    /// normalized value and descriptor deduplicate to the exact same PK.
+    /// Seals the active value. If identical bytes already exist, the active
+    /// value moves to that copy; the build keeps exactly one lease either way,
+    /// also when the normalized value and descriptor end up the same row.
     pub fn seal_message_value(
         &mut self,
         build: &Build,
         proof: &values::Validation,
     ) -> Result<values::Seal> {
-        self.seal_owned_message_value(build, ValuePurpose::Normalized, proof)
+        self.seal_build_value(build, ValuePurpose::Normalized, proof)
     }
     pub fn seal_message_origin_value(
         &mut self,
         build: &Build,
         proof: &values::Validation,
     ) -> Result<values::Seal> {
-        self.seal_owned_message_value(build, ValuePurpose::Origin, proof)
+        self.seal_build_value(build, ValuePurpose::Origin, proof)
     }
-    fn seal_owned_message_value(
+    fn seal_build_value(
         &mut self,
         build: &Build,
         purpose: ValuePurpose,
@@ -550,7 +603,7 @@ impl Writer {
     ) -> Result<values::Seal> {
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        check(&tx, &path, build)?;
+        check_writable(&tx, &path, build)?;
         let column = purpose.column();
         let active: Option<i64> = db(&path, || {
             tx.query_row(
@@ -595,10 +648,9 @@ impl Writer {
         Ok(sealed)
     }
 
-    /// Transfer the active ready value to one source-supplied field fact and
-    /// copy at most one fixed-depth field-directory path. The caller establishes
-    /// semantic block correspondence before naming a Slot; ordinal coincidence
-    /// is insufficient. The filled body never supplies its own rank facts.
+    /// Writes the sealed active value as a new Message field. Fails if the
+    /// field already exists; use `set_message_field` to replace it. Block
+    /// fields go through `write_block_field`.
     pub fn write_message_field(
         &mut self,
         build: &Build,
@@ -618,8 +670,8 @@ impl Writer {
             FieldUpdate::Insert,
         )
     }
-    /// Explicitly set one dirty Message-local leaf (insert or replace).
-    /// Source suppliedness remains mapper-owned; no root inspection is needed.
+    /// Writes the sealed active value as a Message field, replacing any value
+    /// already there.
     pub fn set_message_field(
         &mut self,
         build: &Build,
@@ -639,8 +691,8 @@ impl Writer {
             FieldUpdate::Set,
         )
     }
-    /// Removal consumes no value. Missing is idempotent only at a fresh cursor;
-    /// a stale replay rolls back the same cursor CAS as other projection work.
+    /// Removes a Message field. Removing a missing field still advances the
+    /// cursor; a replayed step fails like any other.
     pub fn remove_message_field(
         &mut self,
         build: &Build,
@@ -673,35 +725,25 @@ impl Writer {
             polylogue_model::merge::Slot::Block { .. }
                 | polylogue_model::merge::Slot::Extra { block: Some(_), .. }
         ) {
-            return Err(bad("block-local fields require active block ownership"));
+            return Err(invalid("block fields are written with write_block_field"));
         }
-        super::blocks::admit(step, allowance)?;
+        super::blocks::check_step(step, allowance)?;
         let key = field_key(slot, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        check(&tx, &path, build)?;
+        check_writable(&tx, &path, build)?;
         update_field_in(&tx, &path, build, &key, None, source_time, supplied, intent)?;
         super::blocks::commit_cursor(&tx, &path, build, step)?;
         db(&path, || tx.commit())?;
         Ok(())
     }
-    /// Invalidation may outlive its source basis or privacy epoch. It can only
-    /// retire the exact committed private build, never resume it or make output
-    /// visible. Payload/node draining remains separately owed after this step.
+    /// Marks the preparation for retirement and releases its active value and
+    /// block. Works even after the source or Message has changed. The rest is
+    /// removed by `retire_message_turn`.
     pub fn retire_message_preparation(&mut self, build: &Build) -> Result<()> {
         let path = self.root.join("index.db");
-        if path != build.path {
-            return Err(Error::StaleMessage);
-        }
         let tx = db(&path, || self._index.transaction())?;
-        let generation: String = db(&path, || {
-            tx.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
-                r.get(0)
-            })
-        })?;
-        if generation != build.source.index_generation {
-            return Err(Error::StaleMessage);
-        }
+        check_index(&tx, &path, &build.path, &build.source.index_generation)?;
         let active: Option<(Option<i64>, Option<i64>, Option<i64>)> = db(&path, || {
             tx.query_row("SELECT w.active_value_pk,w.active_origin_value_pk,w.active_block_pk FROM message_build w JOIN message_body b ON b.pk=w.body_pk JOIN message_candidate c ON c.pk=b.preferred_candidate_pk WHERE w.pk=?1 AND w.body_pk=?2 AND w.basis_digest=?3 AND b.ready=0 AND c.ready=0 AND c.eligible=0",params![build.pk,build.body,build.digest.as_slice()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()
         })?;
@@ -723,7 +765,7 @@ impl Writer {
                 )
             })?;
             if changed != 1 {
-                return Err(bad("missing active value producer lease"));
+                return Err(invalid("active value has no lease"));
             }
             db(&path, || {
                 tx.execute(
@@ -751,35 +793,16 @@ impl ValuePurpose {
     }
 }
 
-/// One active ready producer lease becomes one field fact/root lease. The
-/// caller has checked private block ownership (if any) in this transaction.
-pub(super) fn write_field_in(
-    tx: &rusqlite::Transaction<'_>,
-    path: &Path,
-    build: &Build,
-    key: &[u8],
-    block: Option<i64>,
-    source_time: Option<i64>,
-    supplied: bool,
-) -> Result<()> {
-    update_field_in(
-        tx,
-        path,
-        build,
-        key,
-        block,
-        source_time,
-        supplied,
-        FieldUpdate::Insert,
-    )
-}
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FieldUpdate {
+pub(super) enum FieldUpdate {
     Insert,
     Set,
     Remove,
 }
-fn update_field_in(
+/// Applies one field change to the Message's field root, or to `block`'s.
+/// Insert and Set move the active value's lease to the new field fact. The
+/// caller has checked that `block`, if any, is this build's active block.
+pub(super) fn update_field_in(
     tx: &rusqlite::Transaction<'_>,
     path: &Path,
     build: &Build,
@@ -802,29 +825,13 @@ fn update_field_in(
         }
     } else {
         let value = value.ok_or(Error::ValueNotReady)?;
-        let head = values::head(
-            tx,
-            path,
-            &values::ValueId {
-                pk: value,
-                index_generation: build.source.index_generation.clone(),
-                index_path: path.to_path_buf(),
-            },
-        )?;
+        let head = value_head(tx, path, build, value)?;
         if head.state != values::State::Ready {
             return Err(Error::ValueNotReady);
         }
     }
     if let Some(origin) = origin {
-        let head = values::head(
-            tx,
-            path,
-            &values::ValueId {
-                pk: origin,
-                index_generation: build.source.index_generation.clone(),
-                index_path: path.to_path_buf(),
-            },
-        )?;
+        let head = value_head(tx, path, build, origin)?;
         if head.state != values::State::Ready || head.codec != values::Codec::Json {
             return Err(Error::ValueNotReady);
         }
@@ -872,7 +879,7 @@ fn update_field_in(
         &mut work,
     )?;
     match (intent, existing.is_some()) {
-        (FieldUpdate::Insert, true) => return Err(bad("duplicate field in this immutable root")),
+        (FieldUpdate::Insert, true) => return Err(invalid("field is already written")),
         (FieldUpdate::Remove, false) => return Ok(()),
         _ => {}
     }
@@ -940,8 +947,8 @@ pub(super) fn field_key(slot: &polylogue_model::merge::Slot, allowance: usize) -
     let lower = extra.checked_add(attachment).ok_or(Error::Range)?;
     encoded_key(slot, lower, allowance)
 }
-/// Shared block-local field address codec. The block's root supplies its
-/// correspondence; an ordinal never becomes part of this semantic key.
+/// Key of a field inside a block. It never contains the block's ordinal: the
+/// block's own field root scopes it.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) enum BlockFieldKey<'a> {
     Field(polylogue_model::merge::BlockField),
@@ -962,7 +969,7 @@ pub(super) fn block_field_key(
             key.len(),
             allowance,
         ),
-        _ => Err(bad("block field requires mapper-proved block membership")),
+        _ => Err(invalid("slot is not a block field")),
     }
 }
 fn encoded_key(value: &impl serde::Serialize, lower: usize, allowance: usize) -> Result<Vec<u8>> {

@@ -1,6 +1,6 @@
-//! Recover a superseded private preparation through the existing bounded
-//! retirement owner. Ready bodies and the retained input are never removed.
-use super::writer::{Build, Source, admitted_source, basis};
+//! Retiring a preparation that a newer source state has replaced. Ready bodies
+//! and stored inputs are never touched.
+use super::writer::{Build, Source, check_source, preparation_digest};
 use crate::{Error, Result, Writer, db, parser_state};
 use polylogue_model::MessageId;
 use rusqlite::OptionalExtension;
@@ -13,17 +13,18 @@ fn digest(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<[u8; 32]> 
             rusqlite::types::Type::Blob,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "preparation digest length",
+                "preparation digest is not 32 bytes",
             )),
         )
     })
 }
 
 impl Writer {
-    /// Perform at most one invalidation or retirement turn for this Message's
-    /// obsolete private build. `true` means retry preparation on another turn;
-    /// `false` leaves an identical preparation resumable or permits a new one.
-    /// The current source is checked first; stale callers cannot retire work.
+    /// Does one retirement step for this Message's preparation if it was made
+    /// from a different source state than `source`. Returns true if it did a
+    /// step (call again), false if there is nothing to retire: no preparation,
+    /// or one for this same source that can be resumed. `source` must be
+    /// current, so a stale caller cannot retire newer work.
     pub fn retire_superseded_message_turn(
         &mut self,
         message: &MessageId,
@@ -40,8 +41,8 @@ impl Writer {
             });
         }
         let path = self.root.join("index.db");
-        admitted_source(self, source)?;
-        let expected = basis(
+        check_source(self, source)?;
+        let expected = preparation_digest(
             source.predecessor,
             source.revision,
             &source.logical_key,

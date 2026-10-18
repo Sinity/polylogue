@@ -1,6 +1,5 @@
-//! Fixed-size projection metadata after the owning source worker has finished
-//! projection, suppliedness and evidence verification. This does not elect a
-//! winner, apply donor fills, publish search or declare parser completion.
+//! Finishing a Message projection: record its source counts and version hash
+//! and move the build to its rank phase. Nothing is selected or published here.
 use super::{
     blocks, directory as d,
     writer::{self, Build},
@@ -26,13 +25,10 @@ impl PreparedProjection {
     }
 }
 impl Writer {
-    /// The source owner calls this only after its complete projection cursor
-    /// and exact selected-evidence proof agree with this Build's pinned basis.
-    /// No payload hashing/serialization, member scan or source IO runs here.
-    /// This is an unready intermediate and remains eligible for bounded abort;
-    /// canonical publication must separately establish immutable readiness.
-    /// Unknown source completion remains eligible unclassified, never Finished.
-    /// Source mapping/evidence gaps must remain pending instead of calling this.
+    /// Call once the whole source unit is projected and its evidence checked;
+    /// with gaps, leave the preparation pending instead. The body stays unready
+    /// and can still be retired; publication makes it ready. An unknown finish
+    /// state is stored as unknown, never as finished.
     pub fn finish_message_projection(
         &mut self,
         build: &Build,
@@ -41,10 +37,10 @@ impl Writer {
         finish: FinishState,
         allowance: usize,
     ) -> Result<PreparedProjection> {
-        blocks::admit(step, allowance)?;
+        blocks::check_step(step, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        writer::check(&tx, &path, build)?;
+        writer::check_writable(&tx, &path, build)?;
         let (active, active_origin, active_block, blocks, fields, operations): (
             Option<i64>,
             Option<i64>,
@@ -66,8 +62,7 @@ impl Writer {
         };
         let counts = d::summary(&tx, &path, owner, d::Kind::Groups, blocks)?;
         let facts = d::summary(&tx, &path, owner, d::Kind::Fields, fields)?;
-        // Validate the fixed root even when there are no operations; operation
-        // leaf/ToolItem readiness remains the owning producer's prerequisite.
+        // Validates the operations root even when it is empty.
         d::summary(&tx, &path, owner, d::Kind::Operations, operations)?;
         blocks::commit_cursor(&tx, &path, build, step)?;
         let (completion, progress) = match finish {
@@ -75,9 +70,6 @@ impl Writer {
             FinishState::Unknown => (1, None),
             FinishState::Finished => (2, Some(false)),
         };
-        // Intermediate metadata remains unready and ineligible. A ready
-        // body/candidate certificate is reserved for canonical publication, so
-        // interrupted projection/folding still uses bounded unpublished abort.
         if db(&path, || {
             tx.execute(
                 "UPDATE message_body SET in_progress=?2 WHERE pk=?1 AND ready=0",

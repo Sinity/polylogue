@@ -605,7 +605,7 @@ impl Writer {
         if updated == 0 {
             return Ok(SourceSelection::AlreadySelected);
         }
-        let next = writer::integer(
+        let next = writer::to_i64(
             crate::counter(&tx, &path)?
                 .checked_add(1)
                 .ok_or(Error::Range)?,

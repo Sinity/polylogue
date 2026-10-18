@@ -185,7 +185,7 @@ fn reparse_rejects_missing_or_inconsistent_old_source() {
             "future generation" => {
                 let mut token = old.predecessor().clone();
                 token.generation = f.head.token.generation + 1;
-                let digest = basis(&token, 1, &[3; 32], 1);
+                let digest = preparation_digest(&token, 1, &[3; 32], 1);
                 f.writer._index.execute("UPDATE message_candidate SET source_state_generation=?2,basis_digest=?3 WHERE pk=?1",params![old_build.candidate,token.generation,digest.as_slice()]).unwrap();
                 (
                     old_build.candidate,

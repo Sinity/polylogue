@@ -1,8 +1,9 @@
-//! One prepared block and its resumable projection checkpoint commit
-//! together. Payload interpretation/serialization/hash work precedes this tx.
+//! Blocks of a prepared Message, and the projection cursor. Each write commits
+//! together with one cursor step, so a source unit applies exactly once. Values
+//! are hashed and serialized before these transactions start.
 use super::{
     directory as d,
-    writer::{self, Build},
+    writer::{self, Build, FieldUpdate},
 };
 use crate::{Error, Result, Writer, db, values};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -14,8 +15,8 @@ pub enum BlockKind<'a> {
     Thinking {
         encrypted: Option<bool>,
     },
-    /// Identity is proved by the caller's operation scope/alias rules. This
-    /// writer never derives an operation identity from a block or native ID.
+    /// `operation_id` comes from the caller; it is never derived from a block
+    /// or native ID.
     ToolCall {
         operation_id: &'a str,
         at: Option<i64>,
@@ -57,20 +58,23 @@ impl ToolAction {
         }
     }
 }
-/// Provider-owned block ordinal convention, fixed before block preparation.
+/// How block ordinals are numbered. The source sets it before the first block;
+/// it cannot change afterwards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageLayout {
     Flat,
     SeparateReasoning,
 }
-/// Mapper witnesses before fill/enrichment, independent of normalized defaults.
+/// Whether the source itself had this block and its text, before defaults or
+/// filling. Both count toward the candidate's rank.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BlockPresence {
     pub source_block: bool,
     pub source_text: bool,
 }
-/// Cursor bytes are a bounded provider-owned resume object, never a Message or
-/// growing member list. Sequence CAS prevents replay of an already committed unit.
+/// One step of a resumable projection. `expected_sequence` must equal the stored
+/// sequence, so a step that already committed cannot apply twice. `next_cursor`
+/// is the source's small resume token, not a growing list.
 pub struct ProjectionStep<'a> {
     pub expected_sequence: u64,
     pub next_cursor: &'a [u8],
@@ -80,7 +84,7 @@ pub struct ProjectionState {
     pub sequence: u64,
     pub cursor: Option<Vec<u8>>,
 }
-pub(super) fn admit(step: &ProjectionStep<'_>, allowance: usize) -> Result<()> {
+pub(super) fn check_step(step: &ProjectionStep<'_>, allowance: usize) -> Result<()> {
     let required = step
         .next_cursor
         .len()
@@ -92,7 +96,7 @@ pub(super) fn admit(step: &ProjectionStep<'_>, allowance: usize) -> Result<()> {
             required: required as u64,
         });
     }
-    writer::integer(step.expected_sequence.checked_add(1).ok_or(Error::Range)?)?;
+    writer::to_i64(step.expected_sequence.checked_add(1).ok_or(Error::Range)?)?;
     Ok(())
 }
 pub(super) fn commit_cursor(
@@ -101,7 +105,7 @@ pub(super) fn commit_cursor(
     build: &Build,
     step: &ProjectionStep<'_>,
 ) -> Result<()> {
-    let expected = writer::integer(step.expected_sequence)?;
+    let expected = writer::to_i64(step.expected_sequence)?;
     let changed = db(path, || {
         tx.execute("UPDATE message_build SET source_cursor=source_cursor+1 WHERE pk=?1 AND source_cursor=?2",params![build.pk,expected])
     })?;
@@ -123,9 +127,8 @@ impl Writer {
                 required: overhead as u64,
             })?;
         let path = self.root.join("index.db");
-        // Reading the durable cursor also resumes the completed rank phase.
-        // Mutating APIs retain their stricter project-only checks.
-        writer::check_completed(&self._index, &path, build)?;
+        // Readable after the projection is finished, unlike the writes.
+        writer::check_current(&self._index, &path, build)?;
         let sequence = db(&path, || {
             self._index.query_row(
                 "SELECT source_cursor FROM message_build WHERE pk=?1",
@@ -146,31 +149,29 @@ impl Writer {
             Some((_, Some(bytes))) => Some(bytes),
             None if sequence == 0 => None,
             None => {
-                return Err(Error::Invariant(
-                    "committed Message projection lost its cursor".into(),
-                ));
+                return Err(Error::Invariant("projection cursor is missing".into()));
             }
         };
         Ok(ProjectionState { sequence, cursor })
     }
-    /// A no-output source unit still advances only after its checkpoint commits.
+    /// Advances the cursor for a source unit that writes nothing.
     pub fn advance_message_projection(
         &mut self,
         build: &Build,
         step: &ProjectionStep<'_>,
         allowance: usize,
     ) -> Result<()> {
-        admit(step, allowance)?;
+        check_step(step, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        writer::check(&tx, &path, build)?;
-        refuse_origin(&tx, &path, build)?;
+        writer::check_writable(&tx, &path, build)?;
+        require_no_pending_origin(&tx, &path, build)?;
         commit_cursor(&tx, &path, build, step)?;
         db(&path, || tx.commit())?;
         Ok(())
     }
-    /// Layout affects public block IDs. It cannot change after a block/root
-    /// exists; the owning source supplies it instead of inferring from content.
+    /// Sets the block layout, which determines public block IDs. Fails once a
+    /// block exists. The source declares it; it is never inferred from content.
     pub fn set_message_layout(
         &mut self,
         build: &Build,
@@ -178,11 +179,11 @@ impl Writer {
         step: &ProjectionStep<'_>,
         allowance: usize,
     ) -> Result<()> {
-        admit(step, allowance)?;
+        check_step(step, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        writer::check(&tx, &path, build)?;
-        refuse_origin(&tx, &path, build)?;
+        writer::check_writable(&tx, &path, build)?;
+        require_no_pending_origin(&tx, &path, build)?;
         let layout = match layout {
             MessageLayout::Flat => "flat",
             MessageLayout::SeparateReasoning => "separate_reasoning",
@@ -197,9 +198,10 @@ impl Writer {
         db(&path, || tx.commit())?;
         Ok(())
     }
-    /// Stage one private block. Text/thinking may transfer a UTF-8 producer;
-    /// tools start with no active value and receive fields through the same root.
-    /// A call summary stays private until its block leaf is installed.
+    /// Starts a block that later field writes attach to; `install_block` adds
+    /// it to the Message. Text and thinking blocks take the active UTF-8 value
+    /// as their text. Tool blocks need no active value; a tool call also gets
+    /// its tool_call row here.
     pub fn begin_block(
         &mut self,
         build: &Build,
@@ -210,18 +212,18 @@ impl Writer {
         step: &ProjectionStep<'_>,
         allowance: usize,
     ) -> Result<i64> {
-        admit(step, allowance)?;
-        admit_kind(kind, step, allowance)?;
+        check_step(step, allowance)?;
+        check_kind(kind, step, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        writer::check(&tx, &path, build)?;
+        writer::check_writable(&tx, &path, build)?;
         let block = begin_in(&tx, &path, build, group, local, kind, presence)?;
         commit_cursor(&tx, &path, build, step)?;
         db(&path, || tx.commit())?;
         Ok(block)
     }
-    /// Mapper-proved membership is THIS active block, not a coincident final
-    /// ordinal. The root owns correspondence; keys contain only local semantics.
+    /// Writes the sealed active value as a field of the block started by
+    /// `begin_block`. The field key does not include the block's ordinal.
     pub fn write_block_field(
         &mut self,
         build: &Build,
@@ -231,30 +233,30 @@ impl Writer {
         step: &ProjectionStep<'_>,
         allowance: usize,
     ) -> Result<()> {
-        admit(step, allowance)?;
+        check_step(step, allowance)?;
         let key = writer::block_field_key(slot, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        writer::check(&tx, &path, build)?;
+        writer::check_writable(&tx, &path, build)?;
         write_field_in(&tx, &path, build, slot, &key, source_time, supplied)?;
         commit_cursor(&tx, &path, build, step)?;
         db(&path, || tx.commit())?;
         Ok(())
     }
-    /// Transfer one independently prepared UTF-8 command producer. It is not
-    /// decoded from a JSON field under the writer transaction. The summary owns
-    /// this exact lease, even when another summary column aliases the value.
+    /// Stores the active UTF-8 value as the started tool call's command. The
+    /// caller prepares the command text; it is not decoded from a JSON field.
+    /// Each tool_call column holds its own lease, even on the same value.
     pub fn write_tool_command(
         &mut self,
         build: &Build,
         step: &ProjectionStep<'_>,
         allowance: usize,
     ) -> Result<()> {
-        admit(step, allowance)?;
+        check_step(step, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        writer::check(&tx, &path, build)?;
-        refuse_origin(&tx, &path, build)?;
+        writer::check_writable(&tx, &path, build)?;
+        require_no_pending_origin(&tx, &path, build)?;
         let block = active_block(&tx, &path, build)?;
         let call = active_call(&tx, &path, build, block)?;
         let value = active_value(&tx, &path, build, values::Codec::Utf8)?;
@@ -265,9 +267,7 @@ impl Writer {
             )
         })? != 1
         {
-            return Err(Error::Invariant(
-                "private call already has its command value".into(),
-            ));
+            return Err(Error::Invariant("tool call already has a command".into()));
         }
         if db(&path, || {
             tx.execute(
@@ -282,24 +282,24 @@ impl Writer {
         db(&path, || tx.commit())?;
         Ok(())
     }
-    /// Install only after every field value has transferred and the active
-    /// value is empty. Each fixed directory path and cursor CAS commit together.
+    /// Adds the started block to the Message's block directory. Requires that
+    /// no active value is left.
     pub fn install_block(
         &mut self,
         build: &Build,
         step: &ProjectionStep<'_>,
         allowance: usize,
     ) -> Result<i64> {
-        admit(step, allowance)?;
+        check_step(step, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        writer::check(&tx, &path, build)?;
+        writer::check_writable(&tx, &path, build)?;
         let block = install_in(&tx, &path, build)?;
         commit_cursor(&tx, &path, build, step)?;
         db(&path, || tx.commit())?;
         Ok(block)
     }
-    /// Atomic convenience over the SAME staging and installation core.
+    /// `begin_block` and `install_block` in one transaction.
     pub fn write_block(
         &mut self,
         build: &Build,
@@ -310,11 +310,11 @@ impl Writer {
         step: &ProjectionStep<'_>,
         allowance: usize,
     ) -> Result<i64> {
-        admit(step, allowance)?;
-        admit_kind(kind, step, allowance)?;
+        check_step(step, allowance)?;
+        check_kind(kind, step, allowance)?;
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;
-        writer::check(&tx, &path, build)?;
+        writer::check_writable(&tx, &path, build)?;
         begin_in(&tx, &path, build, group, local, kind, presence)?;
         let block = install_in(&tx, &path, build)?;
         commit_cursor(&tx, &path, build, step)?;
@@ -345,13 +345,12 @@ fn outcome_reason(outcome: &polylogue_model::ToolOutcome) -> Option<std::borrow:
         } => Some(reason.as_str().into()),
     }
 }
-fn admit_kind(kind: BlockKind<'_>, step: &ProjectionStep<'_>, allowance: usize) -> Result<()> {
+/// Checks that the block's metadata and the cursor fit in `allowance`.
+fn check_kind(kind: BlockKind<'_>, step: &ProjectionStep<'_>, allowance: usize) -> Result<()> {
     let bytes = match kind {
         BlockKind::ToolCall { operation_id, .. } => {
             if operation_id.is_empty() {
-                return Err(Error::Invariant(
-                    "call requires caller-proved operation identity".into(),
-                ));
+                return Err(Error::Invariant("tool call needs an operation ID".into()));
             }
             operation_id.len()
         }
@@ -360,27 +359,8 @@ fn admit_kind(kind: BlockKind<'_>, step: &ProjectionStep<'_>, allowance: usize) 
             duration_ms,
             ..
         } => {
-            duration_ms.map(writer::integer).transpose()?;
-            use polylogue_model::{ErrorReason, ToolOutcome};
-            match outcome {
-                ToolOutcome::Error {
-                    reason: Some(ErrorReason::Denied(kind)),
-                } => kind.len().checked_add(7).ok_or(Error::Range)?,
-                ToolOutcome::Error {
-                    reason: Some(ErrorReason::Other(reason)),
-                } => reason.len(),
-                ToolOutcome::Unknown { reason } => reason.as_str().len(),
-                ToolOutcome::Error {
-                    reason: Some(ErrorReason::Interrupted),
-                } => "interrupted".len(),
-                ToolOutcome::Error {
-                    reason: Some(ErrorReason::TimedOut),
-                } => "timed_out".len(),
-                ToolOutcome::Error {
-                    reason: Some(ErrorReason::BlockedByHook),
-                } => "blocked_by_hook".len(),
-                _ => 0,
-            }
+            duration_ms.map(writer::to_i64).transpose()?;
+            outcome_reason(outcome).map_or(0, |reason| reason.len())
         }
         _ => 0,
     };
@@ -398,7 +378,7 @@ fn admit_kind(kind: BlockKind<'_>, step: &ProjectionStep<'_>, allowance: usize) 
     }
     Ok(())
 }
-fn refuse_origin(tx: &Transaction<'_>, path: &Path, build: &Build) -> Result<()> {
+fn require_no_pending_origin(tx: &Transaction<'_>, path: &Path, build: &Build) -> Result<()> {
     let pending: bool = db(path, || {
         tx.query_row(
             "SELECT active_origin_value_pk IS NOT NULL FROM message_build WHERE pk=?1",
@@ -430,14 +410,14 @@ pub(super) fn write_field_in(
         )
     {
         return Err(Error::Invariant(
-            "thinking signature cannot supply content rank".into(),
+            "a thinking signature cannot be source-supplied".into(),
         ));
     }
     let block = active_block(tx, path, build)?;
     let empty:bool=db(path,||tx.query_row("SELECT b.kind='text' AND v.length=0 FROM block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN body_value v ON v.pk=t.value_pk WHERE b.pk=?1",[block],|r|r.get::<_,Option<bool>>(0)))?.unwrap_or(false);
     if supplied && empty {
         return Err(Error::Invariant(
-            "empty Text cannot supply field rank".into(),
+            "fields of an empty text block cannot be source-supplied".into(),
         ));
     }
     if matches!(
@@ -463,12 +443,20 @@ pub(super) fn write_field_in(
         })? != 1
         {
             return Err(Error::Invariant(
-                "private call already has its Tool field".into(),
+                "tool call already has a tool field".into(),
             ));
         }
     }
-    writer::write_field_in(tx, path, build, key, Some(block), source_time, supplied)?;
-    Ok(())
+    writer::update_field_in(
+        tx,
+        path,
+        build,
+        key,
+        Some(block),
+        source_time,
+        supplied,
+        FieldUpdate::Insert,
+    )
 }
 
 fn active_block(tx: &Transaction<'_>, path: &Path, build: &Build) -> Result<i64> {
@@ -485,25 +473,29 @@ fn active_block(tx: &Transaction<'_>, path: &Path, build: &Build) -> Result<i64>
     })?;
     if !private {
         return Err(Error::Invariant(
-            "active block is not private to preparation".into(),
+            "active block is already referenced outside this preparation".into(),
         ));
     }
     let kind: String = db(path, || {
         tx.query_row("SELECT kind FROM block WHERE pk=?1", [block], |r| r.get(0))
     })?;
-    let call = super::retirement::call_summary(tx, path, block)?;
+    let call = super::retirement::tool_call_of(tx, path, block)?;
     match (kind.as_str(), call) {
         ("tool_call", Some(call)) => {
-            if super::retirement::call_summary_referenced(tx, path, call)? {
+            if super::retirement::tool_call_referenced(tx, path, call)? {
                 return Err(Error::Invariant(
-                    "active call summary is not private".into(),
+                    "active tool call is already referenced".into(),
                 ));
             }
         }
-        ("tool_call", None) => return Err(Error::Invariant("active call has no summary".into())),
+        ("tool_call", None) => {
+            return Err(Error::Invariant(
+                "tool call block has no tool_call row".into(),
+            ));
+        }
         (_, Some(_)) => {
             return Err(Error::Invariant(
-                "non-call block owns a call summary".into(),
+                "non-call block has a tool_call row".into(),
             ));
         }
         _ => {}
@@ -511,14 +503,14 @@ fn active_block(tx: &Transaction<'_>, path: &Path, build: &Build) -> Result<i64>
     Ok(block)
 }
 fn active_call(tx: &Transaction<'_>, path: &Path, build: &Build, block: i64) -> Result<i64> {
-    let call = super::retirement::call_summary(tx, path, block)?
-        .ok_or(Error::Invariant("active block is not a call".into()))?;
+    let call = super::retirement::tool_call_of(tx, path, block)?
+        .ok_or(Error::Invariant("active block is not a tool call".into()))?;
     let owned: bool = db(path, || {
         tx.query_row("SELECT call_block_pk=?2 AND message_pk=?3 AND session_pk=?4 FROM tool_call WHERE pk=?1",params![call,block,build.message,build.session],|r|r.get(0))
     })?;
     if !owned {
         return Err(Error::Invariant(
-            "private call summary owner changed".into(),
+            "tool_call row belongs to another block or message".into(),
         ));
     }
     Ok(call)
@@ -537,15 +529,7 @@ fn active_value(
         )
     })?;
     let value = value.ok_or(Error::ValueNotReady)?;
-    let head = values::head(
-        tx,
-        path,
-        &values::ValueId {
-            pk: value,
-            index_generation: build.source.index_generation.clone(),
-            index_path: path.to_path_buf(),
-        },
-    )?;
+    let head = writer::value_head(tx, path, build, value)?;
     if head.state != values::State::Ready || head.codec != codec {
         return Err(Error::ValueNotReady);
     }
@@ -560,7 +544,7 @@ fn begin_in(
     kind: BlockKind<'_>,
     presence: BlockPresence,
 ) -> Result<i64> {
-    refuse_origin(tx, path, build)?;
+    require_no_pending_origin(tx, path, build)?;
     let active: Option<i64> = db(path, || {
         tx.query_row(
             "SELECT active_block_pk FROM message_build WHERE pk=?1",
@@ -571,11 +555,11 @@ fn begin_in(
     if active.is_some() {
         return Err(Error::MessagePreparationPending);
     }
-    let group_i = writer::integer(group)?;
-    let local_i = writer::integer(local)?;
+    let group_i = writer::to_i64(group)?;
+    let local_i = writer::to_i64(local)?;
     if presence.source_text && !presence.source_block {
         return Err(Error::Invariant(
-            "text witness without block witness".into(),
+            "source text without a source block".into(),
         ));
     }
     let value: Option<i64> = db(path, || {
@@ -591,7 +575,7 @@ fn begin_in(
     );
     if tool && presence.source_text {
         return Err(Error::Invariant(
-            "tool blocks cannot supply text-block rank".into(),
+            "tool blocks cannot have source text".into(),
         ));
     }
     if tool && value.is_some() {
@@ -600,21 +584,13 @@ fn begin_in(
     let text = if tool {
         None
     } else if let Some(value) = value {
-        let head = values::head(
-            tx,
-            path,
-            &values::ValueId {
-                pk: value,
-                index_generation: build.source.index_generation.clone(),
-                index_path: path.to_path_buf(),
-            },
-        )?;
+        let head = writer::value_head(tx, path, build, value)?;
         if head.state != values::State::Ready || head.codec != values::Codec::Utf8 {
             return Err(Error::ValueNotReady);
         }
         if presence.source_text && head.length == 0 {
             return Err(Error::Invariant(
-                "empty text payload cannot supply text-block rank".into(),
+                "empty text cannot count as source text".into(),
             ));
         }
         if matches!(kind, BlockKind::Text)
@@ -622,7 +598,7 @@ fn begin_in(
             && (presence.source_block || presence.source_text)
         {
             return Err(Error::Invariant(
-                "empty Text cannot supply source rank".into(),
+                "an empty text block cannot count as a source block".into(),
             ));
         }
         let hash = head.hash.ok_or(Error::ValueNotReady)?;
@@ -637,14 +613,14 @@ fn begin_in(
         let text = if let Some((text, stored)) = old_text {
             if stored != value {
                 return Err(Error::Invariant(
-                    "text dedupe disagrees with canonical value".into(),
+                    "stored text points at a different value".into(),
                 ));
             }
             if db(path, || {
                 tx.execute("UPDATE body_value SET incoming=incoming-1 WHERE pk=?1 AND state='ready' AND incoming>1",[value])
             })? != 1
             {
-                return Err(Error::Invariant("shared text lost its value lease".into()));
+                return Err(Error::Invariant("shared text value has no lease".into()));
             }
             text
         } else {
@@ -697,7 +673,7 @@ fn begin_in(
             duration_ms,
         } => {
             let reason = outcome_reason(outcome);
-            let duration = duration_ms.map(writer::integer).transpose()?;
+            let duration = duration_ms.map(writer::to_i64).transpose()?;
             db(path, || {
                 tx.execute("UPDATE block SET result_outcome=?2,result_reason=?3,result_exit_code=?4,result_duration_ms=?5 WHERE pk=?1",params![block,outcome.as_str(),reason.as_deref(),exit_code,duration])
             })?;
@@ -713,7 +689,7 @@ fn begin_in(
     Ok(block)
 }
 fn install_in(tx: &Transaction<'_>, path: &Path, build: &Build) -> Result<i64> {
-    refuse_origin(tx, path, build)?;
+    require_no_pending_origin(tx, path, build)?;
     let block = active_block(tx, path, build)?;
     let active: Option<i64> = db(path, || {
         tx.query_row(
@@ -774,7 +750,7 @@ fn install_in(tx: &Transaction<'_>, path: &Path, build: &Build) -> Result<i64> {
             ..
         }) => Some(pk),
         None => None,
-        _ => return Err(Error::Invariant("invalid block group root".into())),
+        _ => return Err(Error::Invariant("malformed block group entry".into())),
     };
     let counts = d::Counts {
         ordinary: i64::from(!reasoning),
@@ -797,7 +773,7 @@ fn install_in(tx: &Transaction<'_>, path: &Path, build: &Build) -> Result<i64> {
         Some(d::Edge {
             link: d::Link::Block {
                 pk: block,
-                call: super::retirement::call_summary(tx, path, block)?,
+                call: super::retirement::tool_call_of(tx, path, block)?,
             },
             counts,
         }),
@@ -845,10 +821,9 @@ pub(super) fn discard_cursor(tx: &Transaction<'_>, path: &Path, build: &Build) -
     Ok(())
 }
 
-/// Drop one known supported leaf after its final graph/producer/result owner.
-/// A call owns one summary with fixed value leases; its independent serving
-/// owners must release their known reference and retry this helper. No scan for
-/// orphan blocks/summaries is introduced. Other block forms remain owed.
+/// Deletes a block once nothing references it, together with its tool_call
+/// row, field root and text. If the tool_call row is still referenced
+/// elsewhere, the block stays; that owner calls this again after releasing it.
 pub(super) fn release_unreferenced_block(tx: &Transaction<'_>, path: &Path, pk: i64) -> Result<()> {
     let referenced: bool = db(path, || {
         tx.query_row("SELECT EXISTS(SELECT 1 FROM message_build WHERE active_block_pk=?1) OR EXISTS(SELECT 1 FROM message_body_edge WHERE block_pk=?1) OR EXISTS(SELECT 1 FROM tool_call WHERE result_block_pk=?1)",[pk],|r|r.get(0))
@@ -871,31 +846,33 @@ pub(super) fn release_unreferenced_block(tx: &Transaction<'_>, path: &Path, pk: 
         kind.as_str(),
         "text" | "thinking" | "tool_call" | "tool_result"
     ) {
-        return Err(Error::Invariant(
-            "this block kind still requires its owning retirement implementation".into(),
-        ));
+        return Err(Error::Invariant(format!(
+            "cannot release a block of kind {kind}"
+        )));
     }
-    if let Some(call) = super::retirement::call_summary(tx, path, pk)? {
+    if let Some(call) = super::retirement::tool_call_of(tx, path, pk)? {
         if kind != "tool_call" {
             return Err(Error::Invariant(
-                "non-call block owns a call summary".into(),
+                "non-call block has a tool_call row".into(),
             ));
         }
-        if !super::retirement::release_call_summary(tx, path, call, pk, session)? {
+        if !super::retirement::release_tool_call(tx, path, call, pk, session)? {
             return Ok(());
         }
     } else if kind == "tool_call" {
-        return Err(Error::Invariant("call block lost its summary".into()));
+        return Err(Error::Invariant(
+            "tool call block has no tool_call row".into(),
+        ));
     }
     db(path, || tx.execute("DELETE FROM block WHERE pk=?1", [pk]))?;
     if let Some(root) = fields {
         d::release(tx, path, d::Owner { message, session }, root)?;
     }
     if let Some(text) = text {
-        let retained: bool = db(path, || {
+        let in_use: bool = db(path, || {
             tx.query_row("SELECT EXISTS(SELECT 1 FROM block WHERE text_id=?1) OR EXISTS(SELECT 1 FROM tool_item_version WHERE result_text_id=?1)",[text],|r|r.get(0))
         })?;
-        if !retained {
+        if !in_use {
             let value: i64 = db(path, || {
                 tx.query_row("SELECT value_pk FROM text WHERE id=?1", [text], |r| {
                     r.get(0)
@@ -908,9 +885,9 @@ pub(super) fn release_unreferenced_block(tx: &Transaction<'_>, path: &Path, pk: 
     Ok(())
 }
 impl Writer {
-    /// Reclaim one zero-lease Message-local node, including at most16 known
-    /// block leaves. Selected/history roots and shared subtrees retain leases.
-    /// No scan for an unreferenced block or payload population is performed.
+    /// Deletes one unreferenced directory node of this Message, and the blocks
+    /// only it held (at most 16). Returns false when none is left; call until
+    /// then.
     pub fn collect_message_nodes(&mut self, message: &polylogue_model::MessageId) -> Result<bool> {
         let path = self.root.join("index.db");
         let tx = db(&path, || self._index.transaction())?;

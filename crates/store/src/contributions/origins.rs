@@ -19,7 +19,7 @@ fn checked(range: SourceRange, parsed_upto: u64) -> Result<(i64, i64)> {
             "message source range is empty or past the parsed end".into(),
         ));
     }
-    Ok((writer::integer(range.start)?, writer::integer(range.end)?))
+    Ok((writer::to_i64(range.start)?, writer::to_i64(range.end)?))
 }
 pub struct SourceRangeEntry {
     pub range: SourceRange,
@@ -52,7 +52,7 @@ fn write_in(
         resource: "message source metadata bytes",
         required: 16,
     })?;
-    if let Err(error) = blocks::admit(step, remaining) {
+    if let Err(error) = blocks::check_step(step, remaining) {
         return Err(match error {
             Error::ParserAdmission { required, .. } => Error::ParserAdmission {
                 resource: "message source metadata bytes",
@@ -61,7 +61,7 @@ fn write_in(
             other => other,
         });
     }
-    writer::check(tx, path, build)?;
+    writer::check_writable(tx, path, build)?;
     let head = writer::source_head(tx, path, build.predecessor())?;
     let (start, end) = checked(range, head.parsed_upto)?;
     let pending: bool = db(path, || {
@@ -129,8 +129,8 @@ impl parser_state::Snapshot {
         if self.head.token != *build.predecessor() {
             return Err(Error::StaleMessage);
         }
-        writer::check_completed(&self.db, &self.path, build)?;
-        let allowance = writer::integer(u64::try_from(allowance).map_err(|_| Error::Range)?)?;
+        writer::check_current(&self.db, &self.path, build)?;
+        let allowance = writer::to_i64(u64::try_from(allowance).map_err(|_| Error::Range)?)?;
         let (required, value): (i64, Option<String>) = db(&self.path, || {
             self.db.query_row("SELECT length(CAST(id AS BLOB)),CASE WHEN length(CAST(id AS BLOB))<=?2 THEN id ELSE NULL END FROM input_ref WHERE pk=?1",params![build.source.input_pk,allowance],|r|Ok((r.get(0)?,r.get(1)?)))
         })?;
@@ -146,7 +146,7 @@ impl parser_state::Snapshot {
         if self.head.token != *build.predecessor() {
             return Err(Error::StaleMessage);
         }
-        writer::check(&self.db, &self.path, build)?;
+        writer::check_writable(&self.db, &self.path, build)?;
         let (start, end) = checked(range, self.head.parsed_upto)?;
         db(&self.path, || {
             self.db.query_row("SELECT EXISTS(SELECT 1 FROM message_source WHERE candidate_pk=?1 AND input_pk=?2 AND chain=?3 AND source_start=?4 AND source_end=?5)",params![build.candidate,build.source.input_pk,build.source.chain,start,end],|r|r.get(0))

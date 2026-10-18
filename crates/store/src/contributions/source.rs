@@ -116,7 +116,7 @@ pub(super) fn read_current(
     let row: Option<(u64, Option<Vec<u8>>)> = db(&path, || {
         connection.query_row(
             "SELECT length(value),CASE WHEN length(value)<=?6 THEN value ELSE NULL END FROM parser_cell WHERE input_pk=?1 AND chain=?2 AND state_generation=?3 AND namespace=?4 AND key=?5",
-            params![token.input_pk,token.chain,token.generation,NAMESPACE,logical_key.as_slice(),writer::integer(allowance as u64).unwrap_or(i64::MAX)],|r|Ok((crate::parser_state::unsigned(r,0)?,r.get(1)?))).optional()
+            params![token.input_pk,token.chain,token.generation,NAMESPACE,logical_key.as_slice(),writer::to_i64(allowance as u64).unwrap_or(i64::MAX)],|r|Ok((crate::parser_state::unsigned(r,0)?,r.get(1)?))).optional()
     })?;
     let Some((size, bytes)) = row else {
         return Ok(None);
@@ -146,7 +146,7 @@ pub(super) fn read_current(
     let row: Option<Row> = db(&path, || {
         connection.query_row(
             "SELECT b.message_pk,b.session_pk,c.evidence_revision,c.revision,c.basis_digest,c.version_hash,length(CAST(m.id AS BLOB))+length(CAST(s.id AS BLOB)),CASE WHEN length(CAST(m.id AS BLOB))+length(CAST(s.id AS BLOB))<=?6 THEN m.id END,CASE WHEN length(CAST(m.id AS BLOB))+length(CAST(s.id AS BLOB))<=?6 THEN s.id END,c.source_state_generation,c.source_state_step,c.source_basis_digest FROM message_body b JOIN message_candidate c ON c.body_pk=b.pk AND c.pk=?2 JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk=b.session_pk WHERE b.pk=?1 AND b.ready=1 AND c.ready=1 AND c.eligible=1 AND c.input_pk=?3 AND c.chain=?4 AND c.logical_key=?5 AND b.removal_epoch=m.removal_epoch AND m.hidden=0",
-            params![body,candidate,token.input_pk,token.chain,logical_key.as_slice(),writer::integer(allowance.saturating_sub(bytes.len()) as u64).unwrap_or(i64::MAX)],|r|Ok((r.get(0)?,r.get(1)?,crate::parser_state::unsigned(r,2)?,crate::parser_state::unsigned(r,3)?,r.get(4)?,r.get(5)?,crate::parser_state::unsigned(r,6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?))).optional()
+            params![body,candidate,token.input_pk,token.chain,logical_key.as_slice(),writer::to_i64(allowance.saturating_sub(bytes.len()) as u64).unwrap_or(i64::MAX)],|r|Ok((r.get(0)?,r.get(1)?,crate::parser_state::unsigned(r,2)?,crate::parser_state::unsigned(r,3)?,r.get(4)?,r.get(5)?,crate::parser_state::unsigned(r,6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?))).optional()
     })?;
     let (
         message,
@@ -232,7 +232,9 @@ fn stored_parser_token(
     token.basis = source_basis
         .try_into()
         .map_err(|_| invalid("candidate source_basis_digest is not 32 bytes"))?;
-    if preparation_basis != writer::basis(&token, revision, logical, evidence).as_slice() {
+    if preparation_basis
+        != writer::preparation_digest(&token, revision, logical, evidence).as_slice()
+    {
         return Err(Error::StaleMessage);
     }
     Ok(token)
@@ -351,7 +353,7 @@ impl Writer {
         let observed_append = observed_source && previous.is_some();
         let observed_reparse = observed_source && previous.is_none();
         let tx = db(&path, || self._index.transaction())?;
-        writer::check_completed(&tx, &path, build)?;
+        writer::check_current(&tx, &path, build)?;
         type Prepared = (
             Vec<u8>,
             i64,
