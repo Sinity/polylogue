@@ -104,13 +104,14 @@ JSON replies carry the same outcome in `outcome` (`ok`, `empty`, `degraded`,
 
 - `crates/model`: identity, value and outcome types; no I/O.
 - `crates/store`: the SQLite archive. Nothing else opens a database.
-- `crates/hashed-blobs`: the content-addressed file store shared with Sinex
-  ([release process](docs/shared-file-layer-release.md)).
 - `crates/sources`, `crates/engine`: provider parsers and the work that turns
   stored files into sessions and messages.
 - `crates/query`: the query parser.
-- `crates/credential-output`: credential masking for output.
 - `crates/polylogue`: configuration, daemon, CLI and MCP.
+
+The content-addressed file store (`hashed-blobs`), credential masking and the
+`xtask` core (`devkit`) come from
+[polylogue-sinex-common](https://github.com/Sinity/polylogue-sinex-common), shared with Sinex.
 
 [docs/development.md](docs/development.md) describes the development checks,
 [docs/rewrite/](docs/rewrite/README.md) has notes on how parts work, and

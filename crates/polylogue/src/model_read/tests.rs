@@ -54,7 +54,7 @@ fn credential_masks_and_control_escapes_are_never_split() {
         full: false,
         present: true,
     };
-    let mut masker = credential_output::Masker::new();
+    let mut masker = credential_masking::Masker::new();
     masker.push("🙂\u{1b} ghp_", &mut w).unwrap();
     masker.push(&"A".repeat(36), &mut w).unwrap();
     masker.finish(&mut w).unwrap();

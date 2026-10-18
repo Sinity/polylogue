@@ -1,11 +1,12 @@
+use clap::Parser;
+use devkit::{Nextest, Run, select::Selection};
 use serde_json::Value;
 use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    process::{self, Command, ExitCode},
+    path::Path,
+    process::{Command, ExitCode},
 };
 
-/// Packages rustfmt checks. The shared crates keep their upstream layout.
+/// Packages rustfmt checks.
 const FORMATTED: &[&str] = &[
     "polylogue-model",
     "polylogue-query",
@@ -16,13 +17,37 @@ const FORMATTED: &[&str] = &[
     "xtask",
 ];
 
+#[derive(Parser)]
+#[command(name = "xtask", about = "Polylogue development checks")]
+enum Cli {
+    /// Formatting, crate boundaries and `cargo check` of every target.
+    Fast,
+    /// Formatting, crate boundaries and the full test suite.
+    Check,
+    /// The end-to-end tests: the real daemon, CLI and MCP server.
+    Scenarios,
+    /// Tests only: everything, or what changed since the merge base.
+    Test {
+        /// Only packages changed since the merge base with origin/master, and
+        /// what depends on them.
+        #[arg(long)]
+        changed: bool,
+        /// Further `cargo nextest run` arguments: packages, filters, names.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Crate dependency boundaries only.
+    Boundaries,
+    #[command(flatten)]
+    Shared(devkit::cli::Command),
+}
+
 /// Internal dependencies each workspace package may use. Only the store may
 /// depend on rusqlite.
 fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
     Some(match package {
-        "polylogue-model" | "hashed-blobs" | "credential-output" | "xtask" => &[],
-        "polylogue-sources" | "polylogue-query" => &["polylogue-model"],
-        "polylogue-store" => &["polylogue-model", "hashed-blobs"],
+        "polylogue-model" | "xtask" => &[],
+        "polylogue-sources" | "polylogue-query" | "polylogue-store" => &["polylogue-model"],
         "polylogue-engine" => &[
             "polylogue-model",
             "polylogue-sources",
@@ -35,7 +60,6 @@ fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
             "polylogue-sources",
             "polylogue-query",
             "polylogue-engine",
-            "credential-output",
         ],
         _ => return None,
     })
@@ -79,130 +103,94 @@ fn boundaries(metadata: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn status(command: &mut Command) -> Result<(), ExitCode> {
-    match command.status() {
-        Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(ExitCode::from(status.code().unwrap_or(1) as u8)),
-        Err(error) => {
-            eprintln!("{command:?}: {error}");
-            Err(ExitCode::FAILURE)
-        }
-    }
-}
-
-fn cargo(args: &[&str]) -> Result<(), ExitCode> {
-    status(Command::new("cargo").args(args))
-}
-
-/// A per-run temporary directory on tmpfs, removed when dropped. Tests write
-/// fsync'd archives; on the btrfs work disk those syncs dominate test time.
-/// Under an AgentCTL tmpfs scratch it nests inside that, so a killed run is
-/// still cleaned up by the job.
-struct RunTemp(PathBuf);
-impl RunTemp {
-    fn new() -> Result<Self, ExitCode> {
-        let inherited = env::temp_dir();
-        let base = if inherited.starts_with("/dev/shm") || !Path::new("/dev/shm").is_dir() {
-            inherited
-        } else {
-            PathBuf::from("/dev/shm")
-        };
-        let path = base.join(format!("polylogue-test-{}", process::id()));
-        fs::create_dir(&path).map_err(|error| {
-            eprintln!("{}: {error}", path.display());
-            ExitCode::FAILURE
-        })?;
-        Ok(Self(path))
-    }
-}
-impl Drop for RunTemp {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!("{}: {error}", self.0.display());
-        }
-    }
-}
-
-/// Runs `cargo nextest` with temporary files on tmpfs. Tests that check
-/// durability on a real filesystem find one in `TEST_DURABLE_TMPDIR`.
-fn nextest(metadata: &Value, filter: &[&str]) -> Result<(), ExitCode> {
-    let target = metadata["target_directory"].as_str().ok_or_else(|| {
-        eprintln!("metadata target_directory missing");
-        ExitCode::FAILURE
-    })?;
-    let durable = Path::new(target).join("tmp");
-    fs::create_dir_all(&durable).map_err(|error| {
-        eprintln!("{}: {error}", durable.display());
-        ExitCode::FAILURE
-    })?;
-    let temp = RunTemp::new()?;
-    status(
-        Command::new("cargo")
-            .args([
-                "nextest",
-                "run",
-                "--locked",
-                "--no-fail-fast",
-                "--no-tests=fail",
-            ])
-            .args(filter)
-            .env("TMPDIR", &temp.0)
-            .env("TEST_DURABLE_TMPDIR", &durable),
-    )
-}
-
-fn fmt_check() -> Result<(), ExitCode> {
-    let mut args = vec!["fmt"];
+fn fmt_check(run: &mut Run) -> devkit::Result {
+    let mut fmt = Command::new("cargo");
+    fmt.arg("fmt");
     for package in FORMATTED {
-        args.extend(["-p", package]);
+        fmt.args(["-p", package]);
     }
-    args.extend(["--", "--check"]);
-    cargo(&args)
+    fmt.args(["--", "--check"]);
+    run.command("fmt", &mut fmt)
 }
 
-fn run(command: &str) -> Result<(), ExitCode> {
-    let metadata = metadata(Path::new(".")).and_then(|metadata| {
-        boundaries(&metadata)?;
-        Ok(metadata)
-    });
-    let metadata = metadata.map_err(|error| {
-        eprintln!("{error}");
-        ExitCode::FAILURE
-    })?;
-    match command {
-        "boundaries" => Ok(()),
-        "fast" => {
-            fmt_check()?;
-            cargo(&["check", "--locked", "--workspace", "--all-targets"])
-        }
-        "check" => {
-            fmt_check()?;
-            nextest(&metadata, &["--workspace"])
-        }
-        "scenarios" => nextest(&metadata, &["-p", "polylogue", "-E", "kind(test)"]),
-        _ => unreachable!(),
+fn boundaries_step(run: &mut Run) -> devkit::Result {
+    run.step("boundaries", |run| {
+        Ok(metadata(&run.root).and_then(|metadata| boundaries(&metadata))?)
+    })
+}
+
+fn nextest(args: Vec<String>) -> Nextest {
+    Nextest {
+        args,
+        tmpfs: true,
+        ..Nextest::default()
     }
 }
 
-fn usage() -> ExitCode {
-    eprintln!("usage: cargo run -p xtask -- <fast|check|scenarios|boundaries>");
-    ExitCode::from(2)
+fn run(command: &str, args: &[String], steps: impl FnOnce(&mut Run) -> devkit::Result) -> ExitCode {
+    let mut run = Run::start("polylogue", command, args);
+    let _ = steps(&mut run);
+    run.finish()
 }
 
 fn main() -> ExitCode {
-    let args: Vec<_> = env::args().skip(1).collect();
-    let [command] = args.as_slice() else {
-        return usage();
-    };
-    if !matches!(
-        command.as_str(),
-        "fast" | "check" | "scenarios" | "boundaries"
-    ) {
-        return usage();
-    }
-    match run(command) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(code) => code,
+    match Cli::parse() {
+        Cli::Fast => run("fast", &[], |run| {
+            fmt_check(run)?;
+            boundaries_step(run)?;
+            run.cargo(
+                "check",
+                &["check", "--locked", "--workspace", "--all-targets"],
+            )
+        }),
+        Cli::Check => run("check", &[], |run| {
+            fmt_check(run)?;
+            boundaries_step(run)?;
+            run.nextest(
+                "test",
+                &nextest(vec!["--locked".into(), "--workspace".into()]),
+            )
+        }),
+        Cli::Scenarios => run("scenarios", &[], |run| {
+            run.nextest(
+                "test",
+                &nextest(
+                    ["--locked", "-p", "polylogue", "-E", "kind(test)"]
+                        .map(String::from)
+                        .to_vec(),
+                ),
+            )
+        }),
+        Cli::Boundaries => run("boundaries", &[], boundaries_step),
+        Cli::Test { changed, args } => {
+            let mut nextest_args = vec!["--locked".to_owned()];
+            if !args.iter().any(|a| a == "-p" || a.starts_with("--package")) {
+                nextest_args.push("--workspace".to_owned());
+            }
+            if changed {
+                let root = Path::new(".");
+                match devkit::select::changed(root, "origin/master") {
+                    Ok(Selection::Nothing) => {
+                        eprintln!("no package changed since the merge base; nothing to test");
+                        return ExitCode::SUCCESS;
+                    }
+                    Ok(selection) => {
+                        if let Some(filter) = selection.filterset() {
+                            nextest_args.extend(["-E".to_owned(), filter]);
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            nextest_args.extend(args.iter().cloned());
+            run("test", &args, |run| {
+                run.nextest("test", &nextest(nextest_args))
+            })
+        }
+        Cli::Shared(command) => devkit::cli::execute("polylogue", command),
     }
 }
 

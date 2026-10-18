@@ -149,7 +149,7 @@ fn present(
     out: &mut impl Write,
     check: &mut impl FnMut() -> Result<(), Failure>,
 ) -> Result<(), Failure> {
-    let mut masker = credential_output::Masker::new();
+    let mut masker = credential_masking::Masker::new();
     let mut offset = 0;
     let mut pending = Vec::new();
     while offset < source.input.length {

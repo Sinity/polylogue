@@ -9,13 +9,14 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-credential-output = { path = "crates/credential-output" }
 polylogue-model = { path = "crates/model" }
+credential-masking = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.1.0" }
+hashed-blobs = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.1.0" }
+devkit = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.1.0" }
 polylogue-store = { path = "crates/store" }
 polylogue-sources = { path = "crates/sources" }
 polylogue-query = { path = "crates/query" }
 polylogue-engine = { path = "crates/engine" }
-hashed-blobs = { path = "crates/hashed-blobs" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 thiserror = "2"

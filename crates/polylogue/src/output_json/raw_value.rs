@@ -3,7 +3,7 @@
 //! masking; if it does, the whole value is refused, since masking it could not
 //! keep its exact UTF-16 units.
 use super::{deadline, unchanged_key, write_string};
-use credential_output::Masker;
+use credential_masking::Masker;
 use polylogue_model::RawJson;
 use serde_json::{Value, json};
 use std::{io, time::Instant};

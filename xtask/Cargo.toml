@@ -6,6 +6,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
+devkit.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

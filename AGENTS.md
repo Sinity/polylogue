@@ -9,7 +9,6 @@ operator switches over.
 ## Structure
 
 - `crates/model`: pure identity, value and outcome types; no IO, no storage.
-- `crates/hashed-blobs`: the content-addressed file store shared with Sinex.
 - `crates/store`: every SQLite connection and write. Nothing else touches SQLite.
 - `crates/engine`: parses provider files outside the writer and hands the
   results to the store.
