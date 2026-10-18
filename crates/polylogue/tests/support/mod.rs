@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     thread,
     time::{Duration, Instant},
@@ -22,6 +22,18 @@ impl Drop for OwnedChild {
     }
 }
 
+/// A temporary directory on tmpfs. The daemon fsyncs every archive write, and
+/// on the btrfs work disk those syncs dominate test time. An inherited TMPDIR
+/// that is already on tmpfs (set by `xtask check`) is kept.
+pub fn tempdir() -> tempfile::TempDir {
+    let inherited = std::env::temp_dir();
+    if inherited.starts_with("/dev/shm") || !Path::new("/dev/shm").is_dir() {
+        tempfile::tempdir().unwrap()
+    } else {
+        tempfile::tempdir_in("/dev/shm").unwrap()
+    }
+}
+
 pub struct World {
     pub child: Option<OwnedChild>,
     pub work: tempfile::TempDir,
@@ -34,7 +46,7 @@ pub struct World {
 impl World {
     /// Starts a daemon on a fresh archive and waits until `status` succeeds.
     pub fn new() -> Self {
-        let work = tempfile::tempdir().unwrap();
+        let work = tempdir();
         let archive = work.path().join("archive");
         let scratch = work.path().join("tmp");
         fs::create_dir(&scratch).unwrap();

@@ -10,21 +10,21 @@ inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR"]
 unset = ["PYTHONPATH", "PYTHONHOME"]
 
 [operations.check]
-description = "Formatting, crate boundaries and the full workspace test suite"
+description = "Formatting, crate boundaries and the full workspace test suite (cargo nextest)"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
 timeout_seconds = 3600
-scratch = "nvme"
+scratch = "tmpfs"
 cache = "none"
 
 [operations.scenarios]
 description = "End-to-end runs of the real daemon, CLI and MCP server over synthetic archives"
-exec = ["nix", "develop", "--command", "cargo", "test", "--locked", "-p", "polylogue", "--test", "*"]
+exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "scenarios"]
 pool = "bulk"
 result = "exit"
 timeout_seconds = 1800
-scratch = "nvme"
+scratch = "tmpfs"
 cache = "none"
 
 [operations.package]
