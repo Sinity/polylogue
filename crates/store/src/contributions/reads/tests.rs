@@ -111,7 +111,7 @@ impl Fixture {
                     written_by: WrittenBy::Model,
                 },
                 Source {
-                    predecessor: &self.head.token,
+                    token: &self.head.token,
                     revision: 1,
                     evidence_revision: self.head.token.step as u64,
                     logical_key: [key; 32],

@@ -74,7 +74,7 @@ fn same_preparation_resumes_and_a_new_parser_drains_the_old_one() {
         1
     );
     let next = f.prepare().unwrap().build;
-    assert_ne!(next.predecessor(), build.predecessor());
+    assert_ne!(next.token(), build.token());
     assert!(f.writer.message_projection(&build, 4096).is_err());
 }
 

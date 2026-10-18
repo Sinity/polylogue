@@ -271,7 +271,7 @@ fn reparse_leaves_other_logical_keys_and_revisions_alone() {
                 written_by: WrittenBy::Model,
             },
             Source {
-                predecessor: &f.head.token,
+                token: &f.head.token,
                 revision: if other_revision { 2 } else { 1 },
                 evidence_revision: 1,
                 logical_key: if other_revision { [3; 32] } else { [4; 32] },
