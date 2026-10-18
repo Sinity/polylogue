@@ -155,12 +155,46 @@ impl SessionStatus {
                 unknown[name] = json!(n);
             }
         }
-        json!({"outcome":if self.complete() {"ok"} else {"degraded"},
-            "notes":self.notes(), "unknown":unknown,
-            "diagnostics":{"text_repairs":self.text_repairs},
-            "settlement":{"scope":if self.exact{"exact_session"}else{"session_selection"},"operation":if self.document{"normalized_read"}else{"selection"},"state":if self.complete(){"settled"}else if self.pending_inputs>0||self.population_pending_inputs>0{"pending"}else if self.unavailable_inputs>0||self.record_errors>0{"unavailable"}else{"unsupported"},
-                "settled_through":{"archive_counter":catalog.source_archive_counter(),"recipe":"native-session-v3","configuration":if self.contributor_digest.observed{"retained-native-context-v1"}else{"fixed-immutable-native-context-v1"},"inputs":self.contributors,"inputs_total":self.contributor_digest.count,"inputs_enumerated":self.contributors.len() as u64==self.contributor_digest.count,"inputs_digest":self.contributor_digest.digest()},
-                "serving_view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()}}})
+        let state = if self.complete() {
+            "settled"
+        } else if self.pending_inputs > 0 || self.population_pending_inputs > 0 {
+            "pending"
+        } else if self.unavailable_inputs > 0 || self.record_errors > 0 {
+            "unavailable"
+        } else {
+            "unsupported"
+        };
+        let digest = &self.contributor_digest;
+        let configuration = if digest.observed {
+            "retained-native-context-v1"
+        } else {
+            "fixed-immutable-native-context-v1"
+        };
+        json!({
+            "outcome": if self.complete() { "ok" } else { "degraded" },
+            "notes": self.notes(),
+            "unknown": unknown,
+            "diagnostics": {"text_repairs": self.text_repairs},
+            "settlement": {
+                "scope": if self.exact { "exact_session" } else { "session_selection" },
+                "operation": if self.document { "normalized_read" } else { "selection" },
+                "state": state,
+                "settled_through": {
+                    "archive_counter": catalog.source_archive_counter(),
+                    "recipe": "native-session-v3",
+                    "configuration": configuration,
+                    "inputs": self.contributors,
+                    "inputs_total": digest.count,
+                    "inputs_enumerated": self.contributors.len() as u64 == digest.count,
+                    "inputs_digest": digest.digest(),
+                },
+                "serving_view": {
+                    "index_generation": catalog.position().generation,
+                    "index_counter": catalog.position().counter,
+                    "archive_counter": catalog.source_archive_counter(),
+                },
+            },
+        })
     }
 }
 fn add(value: &mut u64, n: u64) -> Result<(), Error> {
