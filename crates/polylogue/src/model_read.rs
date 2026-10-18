@@ -726,7 +726,7 @@ fn run(
             .expect("notes")
             .push(json!(polylogue_model::RecoveryRecord::NOTE));
     }
-    let authored_basis = if let Some(m) = &selection.exact {
+    let target_hash = if let Some(m) = &selection.exact {
         Some(stored(polylogue_engine::authored::selected_text(
             m,
             selection.slot.as_ref(),
@@ -893,8 +893,8 @@ fn run(
     page["next"] = Value::Null;
     page["authority"] =
         json!("current selected-body visibility; native privacy/removal products unavailable");
-    if let Some(witness) = &authored_basis {
-        page["authored_basis"] = json!(witness);
+    if let Some(hash) = &target_hash {
+        page["target_hash"] = json!(hash);
     }
     if let Some(notes) = &authored_notes {
         page["authored_notes"] = notes.clone();

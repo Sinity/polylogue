@@ -1,4 +1,4 @@
-//! CLI adaptation supplies attribution; the daemon owns typed intent validation.
+//! Note commands on the CLI. The CLI adds the author; the daemon validates the note.
 use polylogue_model::{
     ErrorKind, Failure,
     authored::{NoteKind, Relation, Target, WriteNote},
@@ -88,7 +88,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
     let mut id = None;
     let mut kind = None;
     let mut value = None;
-    let mut basis = None;
+    let mut targets_file = None;
     let mut corrects = None;
     let mut reason = None;
     let mut i = 2;
@@ -103,7 +103,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
             let slot = match arg.as_str() {
                 "--request-id" => &mut id,
                 "--kind" => &mut kind,
-                "--target-basis" => &mut basis,
+                "--targets" => &mut targets_file,
                 "--corrects" => &mut corrects,
                 "--reason" => &mut reason,
                 _ => {
@@ -114,7 +114,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
                 }
             };
             if slot.replace(v).is_some() {
-                return Err(invalid("duplicate authored option"));
+                return Err(invalid("duplicate note option"));
             }
         } else if value.replace(arg.clone()).is_some() {
             return Err(invalid("give the note text once"));
@@ -134,18 +134,18 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
         .transpose()?;
     let mut relations = vec![];
     let mut targets = None;
-    if let Some(path) = basis {
+    if let Some(path) = targets_file {
         let file = fs::File::open(path).map_err(|e| Failure::new(ErrorKind::Io, e.to_string()))?;
         let mut bytes = vec![];
         file.take(65537)
             .read_to_end(&mut bytes)
             .map_err(|e| Failure::new(ErrorKind::Io, e.to_string()))?;
         if bytes.len() > 65536 {
-            return Err(invalid("--target-basis file is larger than 65536 bytes"));
+            return Err(invalid("--targets file is larger than 65536 bytes"));
         }
         let parsed: Vec<Target> = serde_json::from_slice(&bytes).map_err(|e| {
             invalid(format!(
-                "--target-basis must be a JSON array of {{\"ref\", \"seen_hash\"?}}: {e}"
+                "--targets must be a JSON array of {{\"ref\", \"seen_hash\"?}}: {e}"
             ))
         })?;
         targets = Some(parsed);
@@ -159,7 +159,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
                 .as_ref()
                 .is_some_and(|t| t.len() != 1 || t[0].reference != *reference)
             {
-                return Err(invalid("--target-basis must name the note's target"));
+                return Err(invalid("--targets must name the note's target"));
             }
             if targets.is_none() {
                 targets = Some(vec![Target {
@@ -175,7 +175,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
         "revise" => {
             if kind.is_some() || reason.is_some() {
                 return Err(invalid(
-                    "usage: note:ID revise TEXT [--target-basis FILE] [--request-id UUIDv7]",
+                    "usage: note:ID revise TEXT [--targets FILE] [--request-id UUIDv7]",
                 ));
             }
             relations.push(Relation {
@@ -233,7 +233,7 @@ pub(crate) fn request(args: &[String]) -> Result<Option<Value>, Failure> {
 mod tests {
     use super::*;
     #[test]
-    fn authored_attribution_distinguishes_terminal_script_and_harness_without_impersonation() {
+    fn author_is_operator_script_agent_or_harness_session() {
         assert_eq!(attribution(false, None, None, false, true), "operator");
         assert_eq!(attribution(false, None, None, false, false), "script");
         assert_eq!(attribution(false, None, None, true, true), "agent");
