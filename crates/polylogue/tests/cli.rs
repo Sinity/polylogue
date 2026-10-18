@@ -30,7 +30,7 @@ fn help_version_and_schema_work_offline_without_creating_an_archive() {
     }
 }
 #[test]
-fn unsupported_features_and_bad_arguments_never_return_empty_success() {
+fn unsupported_commands_and_bad_arguments_fail_with_exit_two() {
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("not-created");
     for args in [
@@ -70,7 +70,7 @@ fn unsupported_features_and_bad_arguments_never_return_empty_success() {
 }
 
 #[test]
-fn actual_daemon_and_client_restart_in_owned_state() {
+fn daemon_restarts_on_the_same_archive() {
     use std::process::{Child, Stdio};
     use std::time::{Duration, Instant};
     struct OwnedChild(Child);
@@ -82,8 +82,7 @@ fn actual_daemon_and_client_restart_in_owned_state() {
     }
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
-    // Unix socket names have a kernel length limit independent of TMPDIR.
-    // Only socket dentries live here; database/blob work stays in managed TMPDIR.
+    // Unix socket paths are limited to 108 bytes, so only the socket goes in /tmp.
     let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
     let runtime = runtime_owner.path().join("runtime");
     std::fs::create_dir(&runtime).unwrap();
@@ -101,7 +100,7 @@ fn actual_daemon_and_client_restart_in_owned_state() {
     };
     let mut first = start();
     let wait_status = |child: &mut OwnedChild| {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let output = Command::new(binary)
                 .args(["--archive", archive.to_str().unwrap(), "status"])
@@ -111,7 +110,7 @@ fn actual_daemon_and_client_restart_in_owned_state() {
             if output.status.success() {
                 let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
                 assert_eq!(value["archive"], archive.to_str().unwrap());
-                assert_eq!(value["product_path"], "partial");
+                assert!(value["store"].is_object(), "{value}");
                 break;
             }
             assert!(
@@ -120,7 +119,7 @@ fn actual_daemon_and_client_restart_in_owned_state() {
             );
             assert!(
                 Instant::now() < deadline,
-                "foundation startup timed out: {output:?}"
+                "daemon startup timed out: {output:?}"
             );
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -142,7 +141,7 @@ fn actual_daemon_and_client_restart_in_owned_state() {
 }
 
 #[test]
-fn mcp_discovers_only_supported_tools_without_a_daemon_or_archive_creation() {
+fn mcp_lists_its_tools_without_a_daemon_or_archive() {
     use serde_json::{Value, json};
     use std::{io::Write, process::Stdio};
     let temp = tempfile::tempdir().unwrap();

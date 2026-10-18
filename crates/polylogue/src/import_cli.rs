@@ -1,4 +1,5 @@
-//! Client acquisition metadata is fixed once per action and reused on retry.
+//! Parse `import`. The request ID, time, machine and host are fixed when the
+//! command first runs, and a retry must pass the same values.
 use polylogue_model::types::{ErrorKind, Failure};
 use serde_json::{Value, json};
 use std::{
@@ -174,8 +175,8 @@ pub(crate) fn request(args: &[String]) -> Result<Value, Failure> {
         json!({"command":"import","context":context,"id":id,"format":format.name(),"path":path,"machine":machine,"host":host,"seen_at":seen_at,"wait":wait,"wait_seconds":wait_seconds}),
     )
 }
-// Context is a bounded explicit declaration, never inferred from the loose
-// capture filename. Its contents become immutable interpretation identity.
+// Context comes only from the --context file, never from the file name, and
+// is part of the stored input's identity.
 fn read_context(path: &str) -> Result<Vec<String>, Failure> {
     let file = fs::File::open(path).map_err(|e| Failure::new(ErrorKind::Io, e.to_string()))?;
     let mut bytes = Vec::new();
@@ -283,7 +284,7 @@ mod tests {
         }
         fs::write(&file, vec![b' '; 65537]).unwrap();
         assert!(super::request(&args).is_err());
-        args.drain(4..6); // Removing context never gives the download name authority.
+        args.drain(4..6); // Without --context, the file name must not be used instead.
         assert!(super::request(&args).is_err());
     }
     #[test]

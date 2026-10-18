@@ -1,5 +1,6 @@
-//! One explicit configured home, advanced in reusable bounded turns through the
-//! existing owner import slot. Turn limits never become lifetime quotas.
+//! Collect from a configured Codex home: poll it in short turns, each limited
+//! in files and bytes, and import changed files through the writer. The limits
+//! are per turn; every file is reached eventually.
 use polylogue_engine::owner::{Error, Handle, ImportRequest, Observation};
 use polylogue_model::BlobHash;
 use polylogue_store::configured_codex::{Availability, Candidate, Config, RolloutCursor};
@@ -56,7 +57,8 @@ pub(crate) struct Status {
     pub paginated_snapshots: u64,
     pub paginated_pending: bool,
     pub paginated_state: &'static str,
-    /// Most recent retained physical input, not a current-provider frontier.
+    /// The last stored snapshot of the paginated history, not necessarily the
+    /// provider's current state.
     pub paginated_input: Option<String>,
     pub paginated_length: Option<u64>,
 }
@@ -87,7 +89,7 @@ pub(crate) struct Pass {
 impl Status {
     pub fn initial() -> Self {
         Self {
-            mode: "bounded_configured_codex_polling_v1",
+            mode: "codex_home",
             state: "polling",
             pause_between_turns_ms: 1000,
             per_turn_entry_limit: REQUESTS,
@@ -272,8 +274,8 @@ pub(crate) fn run(
     let mut pending = VecDeque::new();
     let mut previous: Option<Pass> = None;
     let mut status = Status::initial();
-    // Preserve configured pending evidence even if archive permission refuses
-    // before the collector can admit its first physical attempt.
+    // Report the paginated history as pending even if the first attempt fails
+    // before it starts.
     status.paginated_pending = config.paginated_history.is_some();
     status.paginated_state = if status.paginated_pending {
         "pending"
@@ -292,7 +294,7 @@ pub(crate) fn run(
         status.state = if stop.load(Ordering::Acquire) {
             "stopped"
         } else {
-            "startup_physical_attempt_complete"
+            "startup_attempt_finished"
         };
         *shared.lock().expect("continuation status") = Some(status);
         return;
@@ -306,7 +308,7 @@ pub(crate) fn run(
         *shared.lock().expect("continuation status") = Some(status.clone());
         if let Err(error) = permission(&handle, &stop) {
             status.pass_active = false;
-            status.state = "acquisition_unavailable";
+            status.state = "failed";
             status.last_pass = None;
             status.last_error = Some(diagnostic(error));
             status.last_attempt_finished_at = now().ok();

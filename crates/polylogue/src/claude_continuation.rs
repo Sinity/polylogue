@@ -1,8 +1,8 @@
-//! Configured Claude locations delegate acquisition to the existing owner.
+//! Collect from a configured Claude Code session file: poll it and hand new
+//! bytes to the writer in chunks.
 use polylogue_engine::owner::{Error, Handle, Observation};
 use serde::Serialize;
 use std::{
-    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -19,7 +19,7 @@ pub(crate) struct Status {
     pub attempts: u64,
     pub last_error: Option<String>,
     pub input: Option<String>,
-    pub retained_length: Option<u64>,
+    pub stored_length: Option<u64>,
     pub unchanged_passes: u64,
     pub quantum_bytes: u64,
     pub projects: Option<projects::ProjectStatus>,
@@ -27,12 +27,12 @@ pub(crate) struct Status {
 impl Status {
     pub fn initial(quantum_bytes: u64) -> Self {
         Self {
-            mode: "bounded_configured_claude_polling_v1",
+            mode: "claude_session_file",
             state: "polling",
             attempts: 0,
             last_error: None,
             input: None,
-            retained_length: None,
+            stored_length: None,
             unchanged_passes: 0,
             quantum_bytes,
             projects: None,
@@ -41,14 +41,18 @@ impl Status {
 }
 pub(crate) fn run(
     handle: Handle,
-    path: PathBuf,
-    machine: String,
-    host: String,
-    request: String,
+    file: crate::ClaudeFile,
     quantum_bytes: u64,
     stop: Arc<AtomicBool>,
     shared: Arc<Mutex<Option<Status>>>,
 ) {
+    let crate::ClaudeFile {
+        path,
+        machine,
+        host,
+        request_id: request,
+        ..
+    } = file;
     let mut status = Status::initial(quantum_bytes);
     while !stop.load(Ordering::Acquire) {
         for _ in 0..100 {
@@ -98,7 +102,7 @@ pub(crate) fn run(
                 };
                 status.last_error = None;
                 status.input = Some(reply.input.id);
-                status.retained_length = Some(reply.input.length);
+                status.stored_length = Some(reply.input.length);
                 if !reply.acquired {
                     status.unchanged_passes += 1;
                 }

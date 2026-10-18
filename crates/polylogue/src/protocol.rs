@@ -1,4 +1,5 @@
-//! Typed actor requests are bounded before they enter the single writer queue.
+//! Daemon handling of the requests that go to the writer: import, progress,
+//! retry and notes. Each is validated and size-limited before it is queued.
 use polylogue_engine::owner::{Error as OwnerError, Handle, ImportRequest, Observation};
 use polylogue_model::types::{ErrorKind, Failure};
 use serde_json::{Value, json};
@@ -23,7 +24,7 @@ fn actor_error(error: OwnerError) -> Value {
             ErrorKind::Conflict
         }
         OwnerError::Store(polylogue_store::Error::ExcisionCheckRequired) => ErrorKind::Refused {
-            reason: "excision-aware collector is not registered".into(),
+            reason: "excision checks are not supported yet".into(),
         },
         OwnerError::InvalidRequest(_) | OwnerError::RequestTooLarge { .. } => {
             ErrorKind::InvalidQuery
@@ -79,7 +80,7 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                     .remove("deadline_ms")
                     .map(|v| {
                         v.as_u64().filter(|n| *n > 0 && *n <= 30000).ok_or_else(|| {
-                            failed(ErrorKind::InvalidQuery, "deadline_ms must be1..30000")
+                            failed(ErrorKind::InvalidQuery, "deadline_ms must be 1..30000")
                         })
                     })
                     .transpose()?
@@ -88,7 +89,7 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                     .map_err(|e| {
                         failed(
                             ErrorKind::InvalidQuery,
-                            format!("unsupported authored request: {e}"),
+                            format!("invalid note request: {e}"),
                         )
                     })?;
                 request
@@ -131,31 +132,19 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                     "codex-history-sqlite" => polylogue_store::InputFormat::CodexHistorySqlite,
                     "claude-code-jsonl" => polylogue_store::InputFormat::ClaudeCodeJsonl,
                     _ => {
-                        return Err(failed(
-                            ErrorKind::NotYetAvailable,
-                            "source import format is not registered",
-                        ));
+                        return Err(failed(ErrorKind::NotYetAvailable, "unknown import format"));
                     }
                 };
-                let context = request
+                let context: Vec<String> = request
                     .get("context")
-                    .and_then(Value::as_array)
+                    .cloned()
+                    .and_then(|v| serde_json::from_value(v).ok())
                     .ok_or_else(|| {
                         failed(
                             ErrorKind::InvalidQuery,
-                            "context must be an explicit string array",
+                            "context must be an array of strings",
                         )
-                    })?
-                    .iter()
-                    .map(|v| {
-                        v.as_str().map(str::to_owned).ok_or_else(|| {
-                            failed(
-                                ErrorKind::InvalidQuery,
-                                "context must be an explicit string array",
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    })?;
                 format
                     .validate_context(&context.iter().map(String::as_str).collect::<Vec<_>>())
                     .map_err(|e| failed(ErrorKind::InvalidQuery, e.to_string()))?;
@@ -181,10 +170,10 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                         )?,
                     },
                 };
-                let retained = receive(owner.try_import(request))?;
-                let progress = receive(owner.try_progress(&retained.id))?;
+                let stored = receive(owner.try_import(request))?;
+                let progress = receive(owner.try_progress(&stored.id))?;
                 Ok(
-                    json!({"outcome":"ok","input":{"id":retained.id,"length":retained.length,"chain":retained.chain},"source_rows":progress.source_rows,"query_coverage":"incomplete"}),
+                    json!({"outcome":"ok","input":{"id":stored.id,"length":stored.length,"chain":stored.chain},"source_rows":progress.source_rows,"query_coverage":"incomplete"}),
                 )
             }
             "progress" => {
@@ -211,10 +200,7 @@ pub(crate) fn handle(request: &Value, owner: &Handle) -> Value {
                 receive(owner.try_retry(text(request, "input")?))?;
                 Ok(json!({"outcome":"ok","query_coverage":"incomplete"}))
             }
-            _ => Err(failed(
-                ErrorKind::NotYetAvailable,
-                "operation is not registered; only selected message: terminal reads are available, with incomplete coverage",
-            )),
+            _ => Err(failed(ErrorKind::NotYetAvailable, "unknown command")),
         }
     };
     match action() {

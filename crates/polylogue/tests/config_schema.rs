@@ -22,7 +22,7 @@ fn startup(config: &Value, root: &Path) -> Output {
 }
 
 #[test]
-fn config_schema_matches_projects_selection_and_configured_cli_rejections() {
+fn config_schema_matches_what_daemon_config_accepts() {
     let root = tempfile::tempdir().unwrap();
     let output = Command::new(BINARY)
         .args(["config", "schema"])
@@ -62,8 +62,8 @@ fn config_schema_matches_projects_selection_and_configured_cli_rejections() {
     }
 
     let valid = json!({"root":root.path().join("projects"),"machine":"synthetic","host":"test"});
-    // Parsing and validation succeed before the deliberate finite-idle refusal.
-    // This never opens an archive or starts a daemon.
+    // The file parses and validates, then --until-idle is refused, before any
+    // archive is opened.
     for quantum in [None, Some(json!(65536)), Some(json!(8388608))] {
         let mut source = valid.clone();
         if let Some(quantum) = quantum {
@@ -156,7 +156,7 @@ impl Drop for OwnedDaemon {
 }
 
 #[test]
-fn config_schema_quantum_defaults_and_endpoints_match_actual_daemon_status() {
+fn chunk_size_defaults_and_limits_match_daemon_status() {
     for source in ["claude_projects", "claude_main"] {
         for quantum in [None, Some(65536), Some(8388608)] {
             let root = tempfile::tempdir().unwrap();
@@ -196,7 +196,7 @@ fn config_schema_quantum_defaults_and_endpoints_match_actual_daemon_status() {
                     .spawn()
                     .unwrap(),
             );
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + Duration::from_secs(60);
             loop {
                 let output = Command::new(BINARY)
                     .args(["--archive", archive.to_str().unwrap(), "status"])

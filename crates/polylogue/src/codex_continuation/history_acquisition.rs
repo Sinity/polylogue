@@ -1,6 +1,5 @@
-//! Nonblocking physical admission/completion within the existing configured
-//! collector. The actor owns actual acquisition quanta, including while this
-//! collector handles another regular-source turn.
+//! Import of Codex's paginated history database, stepped without blocking the
+//! Codex home collector. The writer copies it in chunks between other work.
 use super::*;
 use polylogue_engine::owner::ConfiguredImport;
 use std::sync::mpsc::TryRecvError;
@@ -47,16 +46,16 @@ impl Acquisition {
                     .saturating_add(u64::from(reply.acquired));
                 status.paginated_input = Some(reply.input.id);
                 status.paginated_length = Some(reply.input.length);
-                status.paginated_state = "retained";
+                status.paginated_state = "stored";
                 self.poll.verified(
                     pending.before,
                     polylogue_store::configured_codex::history_stamp(config).ok(),
                     Instant::now(),
                 );
                 status.paginated_history = Some(diagnostic(if reply.acquired {
-                    "retained_snapshot; interpretation coverage separate"
+                    "stored a new snapshot"
                 } else {
-                    "unchanged_verified_snapshot"
+                    "unchanged; checked byte for byte"
                 }));
             }
             Err(error) => {
@@ -79,9 +78,9 @@ impl Acquisition {
                 status.paginated_state = "metadata_only";
                 status.paginated_history = Some(diagnostic(
                     if decision == HistoryDecision::UnchangedMetadata {
-                        "unchanged_metadata; full byte verification not due"
+                        "size and time unchanged; full check not due yet"
                     } else {
-                        "changed_metadata; waiting for quiet interval or hourly full attempt"
+                        "changed; waiting for it to stay quiet, or for the hourly full check"
                     },
                 ));
                 self.next = Instant::now() + Duration::from_secs(config.paginated_interval_seconds);
@@ -90,7 +89,7 @@ impl Acquisition {
             let built = (|| -> Result<ImportRequest, String> {
                 let path = polylogue_store::configured_codex::paginated_path(config)
                     .map_err(reason)?
-                    .ok_or("physical history disabled")?;
+                    .ok_or("paginated history is not configured")?;
                 let seen_at = now()?;
                 let candidate = Candidate::paginated(path.clone());
                 let id = candidate
@@ -129,9 +128,7 @@ impl Acquisition {
             });
             status.paginated_pending = true;
             status.paginated_state = "pending";
-            status.paginated_history = Some(diagnostic(
-                "physical acquisition pending; no selected prefix",
-            ));
+            status.paginated_history = Some(diagnostic("copying the paginated history"));
         }
         let Some(pending) = &mut self.pending else {
             return;

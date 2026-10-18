@@ -1,5 +1,4 @@
-//! Public socket peer operations during unfinished source work. Canonical
-//! publication/search are deliberately not certified by these retention tests.
+//! Socket clients while the daemon is still parsing a large or unfinished file.
 use polylogue::{Running, request, request_value};
 use serde_json::{Value, json};
 use std::{
@@ -15,8 +14,7 @@ fn progress(socket: &Path, id: &str) -> Value {
     request_value(socket, &json!({"command":"progress","input":id})).unwrap()
 }
 fn wait(socket: &Path, id: &str, condition: impl Fn(&Value) -> bool) -> Value {
-    // This debug-build recovery control checks continued progress and exact EOF,
-    // not throughput. Keep the full 10,000-message fixture under shared IO load.
+    // Checks that parsing keeps moving and stops at the right end, not speed.
     let deadline = Instant::now() + Duration::from_secs(300);
     let mut last_parser = Value::Null;
     let mut last_change = Instant::now();
@@ -44,11 +42,10 @@ fn wait(socket: &Path, id: &str, condition: impl Fn(&Value) -> bool) -> Value {
     }
 }
 #[test]
-fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplete() {
+fn clients_can_write_while_a_large_file_parses_and_restart_resumes_it() {
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
-    // Unix socket names have a kernel length limit independent of TMPDIR.
-    // Only socket dentries live here; database/blob work stays in managed TMPDIR.
+    // Unix socket paths are limited to 108 bytes, so only the socket goes in /tmp.
     let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
     let runtime = runtime_owner.path().join("runtime");
     let large = temp.path().join("large.jsonl");
@@ -96,7 +93,7 @@ fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplet
     assert_eq!(during["source_rows"]["scope"], "imported_source_rows");
     running.stop();
     drop(running);
-    // Neither the provider pathname nor a capture worker is recovery authority.
+    // After restart, parsing resumes from the stored copy, not the original path.
     fs::remove_file(&large).unwrap();
     let running = Running::start(&archive, &runtime).unwrap();
     let retry = import(
@@ -128,11 +125,10 @@ fn actual_socket_peers_write_during_large_input_then_restart_keeps_eof_incomplet
     assert_eq!(search["error"]["kind"], "not_yet_available");
 }
 #[test]
-fn public_partial_tail_restart_waits_without_advancing_or_claiming_done() {
+fn unfinished_last_line_waits_after_restart_without_being_parsed() {
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
-    // Unix socket names have a kernel length limit independent of TMPDIR.
-    // Only socket dentries live here; database/blob work stays in managed TMPDIR.
+    // Unix socket paths are limited to 108 bytes, so only the socket goes in /tmp.
     let runtime_owner = tempfile::tempdir_in("/tmp").unwrap();
     let runtime = runtime_owner.path().join("runtime");
     let path = temp.path().join("tail.jsonl");
@@ -168,7 +164,7 @@ fn public_partial_tail_restart_waits_without_advancing_or_claiming_done() {
 }
 
 #[test]
-fn actual_request_conflict_and_invalid_identity_are_typed_before_source_open() {
+fn conflicting_request_id_and_bad_ids_fail_before_the_file_is_opened() {
     let temp = tempfile::tempdir().unwrap();
     let runtime = tempfile::tempdir_in("/tmp").unwrap();
     let running = Running::start(&temp.path().join("archive"), runtime.path()).unwrap();
@@ -186,7 +182,7 @@ fn actual_request_conflict_and_invalid_identity_are_typed_before_source_open() {
 }
 
 #[test]
-fn ignored_state_turns_keep_peers_usable_and_resume_exact_accounting() {
+fn many_ignored_records_parse_in_turns_while_clients_are_served() {
     use std::io::Write;
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
@@ -229,8 +225,7 @@ fn ignored_state_turns_keep_peers_usable_and_resume_exact_accounting() {
             .as_u64()
             .is_some_and(|n| n > 0 && n < states)
     });
-    // An ordinary read and a second acquisition remain serviceable while the
-    // bounded ignored-state computation is unfinished.
+    // Reads and a second import are served while parsing is still running.
     assert_eq!(request(running.socket()).unwrap()["outcome"], "ok");
     let peer = import(
         running.socket(),
@@ -258,8 +253,7 @@ fn ignored_state_turns_keep_peers_usable_and_resume_exact_accounting() {
         eof["parser"]["records"],
         json!({"framed":states+1,"used":1,"ignored":states,"unrecognized":0,"undecodable":0})
     );
-    // This distinguishes bounded batching from the former 32-record durable
-    // scheduling amplification, without making wall-clock speed an oracle.
+    // Records are parsed in large batches, not a few records per step.
     assert!(
         eof["parser"]["step"].as_u64().unwrap() < states / 32,
         "{eof}"

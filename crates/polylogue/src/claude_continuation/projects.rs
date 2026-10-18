@@ -1,5 +1,5 @@
-//! One configured projects root feeds the same source acquisition slot. Runnable
-//! scan/capture backlog advances immediately; quiet cycles wait before rescanning.
+//! Collect from a configured Claude Code projects directory. While there is
+//! work to do it runs continuously; once caught up it waits before rescanning.
 use super::*;
 use polylogue_store::configured_claude::{Config, Cursor, Scan};
 use std::collections::VecDeque;
@@ -44,7 +44,7 @@ pub(crate) fn run(
     shared: Arc<Mutex<Option<Status>>>,
 ) {
     let mut status = Status::initial(config.acquisition_quantum_bytes);
-    status.mode = "bounded_configured_claude_projects_v1";
+    status.mode = "claude_projects";
     status.state = "discovering";
     status.projects = Some(ProjectStatus::initial());
     let mut cursor = Cursor::default();
@@ -90,7 +90,7 @@ pub(crate) fn run(
                         _ => "unavailable",
                     };
                     projects.failed_attempts += 1;
-                    // A failed walk is not an accessible-empty or complete scan.
+                    // A failed walk is neither an empty directory nor a full scan.
                     publish(&shared, &status);
                     for _ in 0..100 {
                         if stop.load(Ordering::Acquire) {
@@ -178,7 +178,7 @@ pub(crate) fn run(
             Ok(reply) => {
                 status.state = "discovering";
                 status.last_error = None;
-                status.retained_length = Some(reply.input.length);
+                status.stored_length = Some(reply.input.length);
                 status.input = Some(reply.input.id.clone());
                 if reply.acquired {
                     projects.acquired_source_attempts += 1;
@@ -188,7 +188,7 @@ pub(crate) fn run(
                 } else {
                     status.unchanged_passes += 1;
                 }
-                // A bounded display sample is never the acquisition queue.
+                // This is a short sample for status, not the work queue.
                 if !projects.known_inputs.contains(&reply.input.id) {
                     if projects.known_inputs.len() < 32 {
                         projects.known_inputs.push(reply.input.id);
@@ -198,7 +198,7 @@ pub(crate) fn run(
                 }
             }
             Err(error) => {
-                status.state = "acquisition_unavailable";
+                status.state = "failed";
                 status.last_error = Some(error.to_string().chars().take(256).collect());
                 projects.failed_attempts += 1;
             }
