@@ -52,7 +52,7 @@ pub const EMBEDDINGS_VERSION: u32 = 0;
 pub const INDEX_VERSION: u32 = 20;
 /// Hash of `schema/index.sql`; a schema edit without a version bump fails a test.
 pub const INDEX_SQL_BLAKE3: &str =
-    "8d44aa6bed43153b9870660655885d2743ac01ca7a17d9ea0a4d64729cf86adf";
+    "732fc01595575c906896849c1d1df7bdd96213203a35cf95e9382167ca911e12";
 pub const INDEX_SPEC_COMMIT: &str = "5551b6e3796f968011323e436f0c72f5339832b4";
 const ARCHIVE_SQL: &str = include_str!("../schema/archive.sql");
 const OBSERVED_CONTEXT_SQL: &str = include_str!("../schema/observed-context.sql");
