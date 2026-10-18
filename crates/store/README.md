@@ -70,7 +70,7 @@ that fails its checksum returns `CorruptPage` with the file, page and offset.
 
 ## What is stored, by module
 
-- **Inputs** (`retained`, `observed`, `capture`, `claude_bodies`,
+- **Inputs** (`imports`, `observed`, `capture`, `claude_bodies`,
   `history_pages`, `codex_history`): every imported source file is stored
   once, immutably, with its byte digest and format context. A retried import
   with the same client request replays the stored result. `observed` reads
