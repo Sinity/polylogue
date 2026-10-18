@@ -1053,7 +1053,7 @@ mod tests {
                 message,
             } = self;
             drop(writer);
-            let writer = Writer::open(&root).unwrap();
+            let writer = crate::tests::reopen_after_drop(&root);
             Self {
                 _dir,
                 root,
