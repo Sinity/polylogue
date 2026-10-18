@@ -528,7 +528,7 @@ fn dependency_basis_stays_pinned_when_a_later_input_is_admitted_and_cancel_relea
     write(&pinned, &mut old_again, Instant::now() + WAIT).unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&old_again).unwrap(), first);
     let mut attempts = 0;
-    let cancelled = polylogue_engine::session_qualification::qualify_with_cancel(
+    let cancelled = polylogue_engine::session_status::check_with_cancel(
         &fresh,
         Instant::now() + WAIT,
         65536,
@@ -667,8 +667,7 @@ fn eof_without_finished_row_effects_does_not_certify_exact_read() {
         .selected_session(&world.session(), 65536)
         .unwrap()
         .unwrap();
-    let q = polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 65536)
-        .unwrap();
+    let q = polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 65536).unwrap();
     assert!(!q.complete());
     assert!(q.pending_inputs > 0 || q.unavailable_inputs > 0);
 }
@@ -717,8 +716,7 @@ fn foreign_incoming_link_and_copy_sidechain_evidence_prevent_complete_document()
             .unwrap()
             .unwrap();
         let q =
-            polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 65536)
-                .unwrap();
+            polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 65536).unwrap();
         assert!(!q.complete(), "{label} must keep lineage qualification");
     }
 }
@@ -792,8 +790,7 @@ fn later_branch_or_reversed_input_withholds_all_active_path_claims() {
             .unwrap()
             .unwrap();
         let qualification =
-            polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 65536)
-                .unwrap();
+            polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 65536).unwrap();
         assert!(!qualification.complete());
         assert!(qualification.active_messages.is_empty());
         let document = world.document().0;
@@ -826,8 +823,7 @@ fn same_session_inputs_share_one_membership_admission() {
         .selected_session(&world.session(), 65536)
         .unwrap()
         .unwrap();
-    let first =
-        polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 8000);
+    let first = polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 8000);
     assert!(first.is_ok(), "first input must fit: {first:?}");
     drop(view);
     let second = world.import(&cohort("b"), "membership-second");
@@ -837,8 +833,7 @@ fn same_session_inputs_share_one_membership_admission() {
         .selected_session(&world.session(), 65536)
         .unwrap()
         .unwrap();
-    let second =
-        polylogue_engine::session_qualification::qualify(&view, Instant::now() + WAIT, 8000);
+    let second = polylogue_engine::session_status::check(&view, Instant::now() + WAIT, 8000);
     assert!(
         matches!(
             second,

@@ -106,14 +106,14 @@ fn flat_effects(
     }
     Ok(true)
 }
-pub(super) fn qualify(
+pub(super) fn check(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
     plan: &polylogue_model::query::SessionQuery,
     exact: Option<&str>,
     until: Instant,
     allowance: usize,
-    result: &mut Qualification,
+    result: &mut SessionStatus,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<(), Error> {
     let Some(input) = dependency.registered() else {
@@ -141,14 +141,14 @@ pub(super) fn qualify(
     {
         return Ok(());
     }
-    result.include_basis(source_rows::basis(&input), true, allowance)?;
+    result.add_contributor(source_rows::computed_from(&input), true, allowance)?;
     let mut entry = json!({"id":dependency.id(),"format":dependency.format().name(),"parser_version":head.parser_version});
     if let Some(path) = catalog.dependency_first_path(dependency, allowance)? {
         entry["path"] = json!(path);
     }
     result.include_input(entry, allowance)?;
     if head.acquired_upto != input.input.length
-        || head.token.basis != owner::parser_basis(&input)
+        || head.token.basis != owner::parser_identity(&input)
         || head.parser_version != owner::parser_version(input.format)
         || resume.parsed_upto != head.parsed_upto
     {

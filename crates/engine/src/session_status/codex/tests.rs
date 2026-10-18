@@ -105,7 +105,7 @@ fn benign_events_do_not_supply_an_absent_current_selected_message_projection() {
             input_pk: retained.input_pk,
             chain: retained.chain,
             parser_version: PARSER_VERSION,
-            digest: owner::parser_basis(&input),
+            digest: owner::parser_identity(&input),
             acquired_upto: raw.len() as u64,
             companions_json: None,
             excisions_seen: 0,
@@ -153,7 +153,7 @@ fn benign_events_do_not_supply_an_absent_current_selected_message_projection() {
         unsupported_effects: true,
         rows: SourceRows {
             scope: SourceRowScope::ImportedSourceRows,
-            basis: source_rows::basis(&input),
+            basis: source_rows::computed_from(&input),
             state: SourceRowState::Unavailable {
                 usable_result: true,
                 notes: vec!["Event product remains unsupported".into()],
@@ -167,13 +167,13 @@ fn benign_events_do_not_supply_an_absent_current_selected_message_projection() {
     let reader = writer.read_handle().unwrap();
     let catalog = reader.session_catalog(1024 * 1024).unwrap();
     let (_, dependency) = catalog.next_dependency(None, 1024 * 1024).unwrap().unwrap();
-    let mut result = Qualification {
+    let mut result = SessionStatus {
         exact: true,
         known_rows_readable: true,
         ..Default::default()
     };
     let mut cancel = || false;
-    qualify(
+    check(
         &catalog,
         &dependency,
         &SessionQuery {

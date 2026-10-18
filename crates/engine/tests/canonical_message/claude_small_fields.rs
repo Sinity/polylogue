@@ -240,7 +240,7 @@ fn cancelled_small_field_computation_and_stale_atomic_action_publish_nothing() {
     );
 }
 #[test]
-fn small_field_restart_after_atomic_install_keeps_exact_supplier() {
+fn small_field_restart_after_atomic_install_keeps_its_supplier() {
     let raw = bytes();
     let (mut w, p) = make_world(&raw, &raw);
     let r = request(&w, &p[0]);

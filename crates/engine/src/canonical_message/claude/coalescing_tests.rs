@@ -2,7 +2,7 @@ use super::*;
 use polylogue_sources::selection::{PathPart, RecordRange, SelectedRaw};
 use source::origins::RecordOrigins;
 #[test]
-fn consecutive_citations_preserve_interleaved_donors_old_cursors_and_cancellation() {
+fn consecutive_citations_keep_interleaved_suppliers_old_cursors_and_cancellation() {
     let a = RecordRange { start: 0, end: 10 };
     let b = RecordRange { start: 11, end: 20 };
     let mut origins = RecordOrigins {

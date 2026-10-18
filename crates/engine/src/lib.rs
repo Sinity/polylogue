@@ -7,13 +7,13 @@ pub mod owner;
 pub mod source_turn;
 pub mod state;
 
-pub mod version_proof;
+pub mod version_digest;
 
 pub mod canonical_message;
 
 mod source_rows;
 
-pub mod session_qualification;
+pub mod session_status;
 
 pub mod codex_discovery;
 pub mod session_query;

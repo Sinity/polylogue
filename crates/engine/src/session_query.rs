@@ -1,5 +1,5 @@
 //! Shared typed Session listing/search over the same admission and body view.
-use crate::session_qualification;
+use crate::session_status;
 use polylogue_model::{SessionKind, query::SessionQuery};
 use polylogue_store::{
     Error,
@@ -57,8 +57,7 @@ pub fn execute(
     until: Instant,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<Value, Error> {
-    let qualification =
-        session_qualification::qualify_catalog(catalog, plan, until, 1_048_576, cancelled)?;
+    let status = session_status::check_catalog(catalog, plan, until, 1_048_576, cancelled)?;
     let mut cursor = None;
     let mut candidates = BTreeMap::new();
     let mut metadata_bytes = 0usize;
@@ -91,7 +90,7 @@ pub fn execute(
         if !selected && plan.text.is_empty() {
             continue;
         }
-        let header = qualification.header(stored_header);
+        let header = status.header(stored_header);
         let mut after = None;
         let mut known = 0u64;
         let mut last_message_at: Option<i64> = None;
@@ -127,7 +126,7 @@ pub fn execute(
         }
         if selected {
             let mut value = row(&header, known);
-            if let Some(models) = qualification
+            if let Some(models) = status
                 .metadata
                 .as_ref()
                 .and_then(|session| session.models.as_ref())
@@ -179,12 +178,12 @@ pub fn execute(
         rows.truncate(limit);
     }
     let recovery = catalog.recovery()?;
-    let mut notes = qualification.notes();
+    let mut notes = status.notes();
     if recovery.is_some() {
         notes.push(polylogue_model::RecoveryRecord::NOTE.to_owned());
     }
     if (plan.id.is_none() || !plan.text.is_empty())
-        && (sessions > 0 || known_messages > 0 || qualification.interpreted_nonempty_inputs > 0)
+        && (sessions > 0 || known_messages > 0 || status.interpreted_nonempty_inputs > 0)
     {
         notes.push("Only the known selected Session/Message catalog was searched; Session metadata reductions, linked/subagent expansion, inherited/copy classification and complete source populations remain pending.".to_owned());
     }
@@ -232,7 +231,7 @@ pub fn execute(
     } else {
         "ok"
     };
-    let mut read_as = if qualification.complete() && plan.id.is_some() {
+    let mut read_as = if status.complete() && plan.id.is_some() {
         "Select the exact Session and its source-proved owned Message catalog from the pinned retained basis; this selection does not certify the larger normalized document's foreign incoming-link dependencies.".to_owned()
     } else if corpus.is_some() {
         "Find known selected Sessions with all prose terms in the same human or model Message, phrases within one Text block, ordered by newest known selected Message time; relevance, snippets, complete population and linked subagent expansion remain unqualified.".to_owned()
@@ -258,12 +257,12 @@ pub fn execute(
         ));
     }
     Ok(
-        json!({"outcome":outcome,"recovery":recovery,"unit":"sessions","rows":rows,"count":count,"next_cursor":null,"up_to_date":qualification.up_to_date,
+        json!({"outcome":outcome,"recovery":recovery,"unit":"sessions","rows":rows,"count":count,"next_cursor":null,"up_to_date":status.up_to_date,
         "read_as":read_as, "selection":{"limit":plan.limit}, "ranking":{"state":"unavailable","order":"known_last_message_at desc; id desc"},
         "view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()},
         "defaults":{"exclude_subagents":plan.kind.is_none()&&!plan.all_kinds&&plan.id.is_none()},
-        "missing":notes,"notes":notes,"unknown":{"record_errors":qualification.record_errors,"pending_inputs":qualification.pending_inputs,"unavailable_inputs":qualification.unavailable_inputs,"unresolved_inputs":qualification.unresolved_inputs,"unknown_authors":unknown_authors,"pending_messages":pending,"unresolved_message_order":unresolved_order},
-        "settlement":qualification.result(catalog)["settlement"],"searched":{"known_sessions":sessions,"candidate_sessions":candidate_count,"selected_messages":known_messages,"prose_messages":corpus.as_ref().map(ProseSearch::documents),"scope":"pinned retained admission and selected body catalog"}}),
+        "missing":notes,"notes":notes,"unknown":{"record_errors":status.record_errors,"pending_inputs":status.pending_inputs,"unavailable_inputs":status.unavailable_inputs,"unresolved_inputs":status.unresolved_inputs,"unknown_authors":unknown_authors,"pending_messages":pending,"unresolved_message_order":unresolved_order},
+        "settlement":status.result(catalog)["settlement"],"searched":{"known_sessions":sessions,"candidate_sessions":candidate_count,"selected_messages":known_messages,"prose_messages":corpus.as_ref().map(ProseSearch::documents),"scope":"pinned retained admission and selected body catalog"}}),
     )
 }
 

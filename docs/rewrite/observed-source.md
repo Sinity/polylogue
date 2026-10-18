@@ -231,7 +231,7 @@ relationship coverage pending without declaring the requested, independently
 proved Message membership pending. Unknown relevant dependency shapes and
 current selected-source guards continue to constrain reads.
 
-Qualification streams the pinned source catalog. `target_basis.inputs` is a
+Qualification streams the pinned source catalog. `settled_through.inputs` is a
 bounded display sample plus required exact-source witnesses; `inputs_total`,
 `inputs_enumerated` and `inputs_digest` identify whether it enumerates every
 represented basis and commit to all of them. The digest is ordinary BLAKE3 over

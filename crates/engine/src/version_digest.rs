@@ -32,7 +32,7 @@ impl std::fmt::Display for Error {
                 "Codex evidence revision changed: expected {expected}, got {actual}"
             ),
             Self::Framing(e) => std::fmt::Display::fmt(e, f),
-            Self::Finished => f.write_str("version proof driver already finished"),
+            Self::Finished => f.write_str("version digest driver already finished"),
         }
     }
 }
@@ -47,13 +47,13 @@ type Result<T> = std::result::Result<T, Error>;
 /// availability, lineage, or rank. The owning writer must CAS this exact token
 /// and revalidate the evidence head before accepting it for the matching row.
 #[derive(Debug)]
-pub struct Proof {
+pub struct Digest {
     token: Token,
     message: usize,
     head: EvidenceHead,
     digest: BlobHash,
 }
-impl Proof {
+impl Digest {
     pub fn token(&self) -> &Token {
         &self.token
     }
@@ -73,7 +73,7 @@ pub enum Advance {
         hashed_bytes: u64,
         minimum_bytes: Option<u64>,
     },
-    Complete(Proof),
+    Complete(Digest),
 }
 enum Stage {
     Begin,
@@ -182,7 +182,7 @@ impl<'a> Driver<'a> {
                         .ok_or_else(|| Error::Evidence("no selected Codex evidence".into()))?
                         .finish()?;
                     self.finished = true;
-                    return Ok(Advance::Complete(Proof {
+                    return Ok(Advance::Complete(Digest {
                         token: self.snapshot.head.token.clone(),
                         message: self.message,
                         head: self.head.clone(),

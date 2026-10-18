@@ -39,7 +39,7 @@ fn bag(view: &MessageView) -> Option<(RawJson, Value)> {
     }
 }
 #[test]
-fn provider_usage_has_exact_whole_subtree_origin_and_independent_normalized_counts() {
+fn provider_usage_cites_its_whole_subtree_and_keeps_normalized_counts_separate() {
     let usage = r#"{"input_tokens":2,"output_tokens":3,"inference_geo":"provided","iterations":[1.2300,"\ud800"],"server_tool_use":{"n":9007199254740993,"none":null},"speed":"provider value"}"#;
     let raw = row("a", "a", Some(usage));
     let (_world, _, view) = materialize(&raw);

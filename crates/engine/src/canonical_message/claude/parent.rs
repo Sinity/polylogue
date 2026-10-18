@@ -6,17 +6,17 @@ use polylogue_sources::{
     selection::SelectedRaw,
 };
 use std::collections::BTreeSet;
-pub(super) struct Qualified {
+pub(super) struct ResolvedContribution {
     pub contribution: Contribution,
     pub records: Vec<Node>,
 }
-impl std::ops::Deref for Qualified {
+impl std::ops::Deref for ResolvedContribution {
     type Target = Contribution;
     fn deref(&self) -> &Contribution {
         &self.contribution
     }
 }
-pub(super) fn relations(c: &Qualified) -> &[Node] {
+pub(super) fn relations(c: &ResolvedContribution) -> &[Node] {
     &c.records
 }
 fn unresolved(reason: &'static str) -> Error {
@@ -84,7 +84,7 @@ fn walk(
     }
     Ok(None)
 }
-pub(super) fn qualify(
+pub(super) fn resolve(
     view: &View<'_>,
     head: &Head,
     c: &mut Contribution,

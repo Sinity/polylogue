@@ -1,8 +1,8 @@
 //! Direct Session input influence, never inferred from matching Message rows.
 //! Catalog traversal and every receipt read share the caller's pinned Session.
-mod basis;
 mod claude_active;
 mod codex;
+mod contributors;
 use crate::{owner, source_rows, source_turn::SourceContext, state::claude};
 use polylogue_model::settlement::RecordFailureId;
 use polylogue_model::{Session, settlement::SourceRowBasis};
@@ -17,7 +17,7 @@ use std::{
     time::Instant,
 };
 #[derive(Clone, Debug, Default)]
-pub struct Qualification {
+pub struct SessionStatus {
     pub record_errors: u64,
     /// Counted interpreted-text repairs, separate from exclusive record outcomes.
     pub text_repairs: u64,
@@ -28,8 +28,8 @@ pub struct Qualification {
     pub unsupported: BTreeSet<String>,
     pub metadata: Option<Session>,
     pub expected: BTreeMap<String, u64>,
-    pub basis: Vec<SourceRowBasis>,
-    basis_witness: basis::BasisWitness,
+    pub contributors: Vec<SourceRowBasis>,
+    contributor_digest: contributors::ContributorDigest,
     membership_sources: u64,
     input_bytes: usize,
     population_pending_inputs: u64,
@@ -43,10 +43,10 @@ pub struct Qualification {
     own_counting_unknown: bool,
     membership_bytes: usize,
     known_rows_readable: bool,
-    certified_observed_member: bool,
+    observed_member_verified: bool,
     prefix_effects_supported: bool,
 }
-impl Qualification {
+impl SessionStatus {
     pub fn header(
         &self,
         header: &polylogue_store::contributions::SessionHeader,
@@ -81,7 +81,7 @@ impl Qualification {
         self.exact
             && self.unresolved_inputs == 0
             && ((self.known_rows_readable && self.pending_inputs == 0)
-                || (self.certified_observed_member
+                || (self.observed_member_verified
                     && self.membership_sources == 1
                     && self.prefix_effects_supported))
     }
@@ -158,7 +158,7 @@ impl Qualification {
             "notes":self.notes(), "unknown":unknown,
             "diagnostics":{"text_repairs":self.text_repairs},
             "settlement":{"scope":if self.exact{"exact_session"}else{"session_selection"},"operation":if self.document{"normalized_read"}else{"selection"},"state":if self.complete(){"settled"}else if self.pending_inputs>0||self.population_pending_inputs>0{"pending"}else if self.unavailable_inputs>0||self.record_errors>0{"unavailable"}else{"unsupported"},
-                "target_basis":{"archive_counter":catalog.source_archive_counter(),"recipe":"native-session-v3","configuration":if self.basis_witness.observed{"retained-native-context-v1"}else{"fixed-immutable-native-context-v1"},"inputs":self.basis,"inputs_total":self.basis_witness.count,"inputs_enumerated":self.basis.len() as u64==self.basis_witness.count,"inputs_digest":self.basis_witness.digest()},
+                "settled_through":{"archive_counter":catalog.source_archive_counter(),"recipe":"native-session-v3","configuration":if self.contributor_digest.observed{"retained-native-context-v1"}else{"fixed-immutable-native-context-v1"},"inputs":self.contributors,"inputs_total":self.contributor_digest.count,"inputs_enumerated":self.contributors.len() as u64==self.contributor_digest.count,"inputs_digest":self.contributor_digest.digest()},
                 "serving_view":{"index_generation":catalog.position().generation,"index_counter":catalog.position().counter,"archive_counter":catalog.source_archive_counter()}}})
     }
 }
@@ -184,46 +184,46 @@ fn deadline(until: Instant) -> Result<(), Error> {
 /// Each input is visited once in immutable catalog order. Same input replays,
 /// source/candidate fanout and historical citation paths cannot multiply errors.
 /// Whole admitted effect cells remain the existing allocation/work unit.
-pub fn qualify(
+pub fn check(
     session: &SessionView,
     until: Instant,
     allowance: usize,
-) -> Result<Qualification, Error> {
-    qualify_with_cancel(session, until, allowance, &mut || false)
+) -> Result<SessionStatus, Error> {
+    check_with_cancel(session, until, allowance, &mut || false)
 }
-pub fn qualify_with_cancel(
+pub fn check_with_cancel(
     session: &SessionView,
     until: Instant,
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
-) -> Result<Qualification, Error> {
-    qualify_session(session, until, allowance, cancelled, None)
+) -> Result<SessionStatus, Error> {
+    check_session(session, until, allowance, cancelled, None)
 }
 /// Exact member reads preserve unavailable Session context while independently
 /// checking the selected Message's retained body witnesses at handoff.
-pub fn qualify_member_with_cancel(
+pub fn check_member_with_cancel(
     session: &SessionView,
     message: &polylogue_store::contributions::MessageView,
     until: Instant,
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
-) -> Result<Qualification, Error> {
-    qualify_session(session, until, allowance, cancelled, Some(message))
+) -> Result<SessionStatus, Error> {
+    check_session(session, until, allowance, cancelled, Some(message))
 }
-fn qualify_session(
+fn check_session(
     session: &SessionView,
     until: Instant,
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
     member: Option<&polylogue_store::contributions::MessageView>,
-) -> Result<Qualification, Error> {
+) -> Result<SessionStatus, Error> {
     let header = session.header()?;
     let plan = polylogue_model::query::SessionQuery {
         origin: Some(header.origin.as_str().into()),
         id: Some(header.id.as_str().into()),
         ..Default::default()
     };
-    qualify_operation(
+    check_operation(
         &session.catalog(),
         &plan,
         until,
@@ -235,16 +235,16 @@ fn qualify_session(
 }
 /// Qualify every possible retained contributor, including those that published
 /// no Session or matching Message. EOF alone never becomes a query proof.
-pub fn qualify_catalog(
+pub fn check_catalog(
     session: &SessionCatalog,
     plan: &polylogue_model::query::SessionQuery,
     until: Instant,
     allowance: usize,
     cancelled: &mut dyn FnMut() -> bool,
-) -> Result<Qualification, Error> {
-    qualify_operation(session, plan, until, allowance, cancelled, false, None)
+) -> Result<SessionStatus, Error> {
+    check_operation(session, plan, until, allowance, cancelled, false, None)
 }
-fn qualify_operation(
+fn check_operation(
     session: &SessionCatalog,
     plan: &polylogue_model::query::SessionQuery,
     until: Instant,
@@ -252,8 +252,8 @@ fn qualify_operation(
     cancelled: &mut dyn FnMut() -> bool,
     document: bool,
     member: Option<&polylogue_store::contributions::MessageView>,
-) -> Result<Qualification, Error> {
-    let mut result = Qualification {
+) -> Result<SessionStatus, Error> {
+    let mut result = SessionStatus {
         up_to_date: true,
         document,
         known_rows_readable: true,
@@ -296,7 +296,7 @@ fn qualify_operation(
         let caught_up =
             if let (Some(input), Some(head)) = (dependency.registered(), dependency.head()) {
                 if head.acquired_upto == input.input.length
-                    && head.token.basis == owner::parser_basis(&input)
+                    && head.token.basis == owner::parser_identity(&input)
                     && head.parser_version == owner::parser_version(input.format)
                 {
                     match session.dependency_cell(
@@ -321,7 +321,7 @@ fn qualify_operation(
         // Provider-owned source membership is checked before selected row overlap.
         if dependency.format() == InputFormat::CodexRollout {
             if plan.origin.as_deref().is_none_or(|o| o == "codex") {
-                codex::qualify(
+                codex::check(
                     session,
                     &dependency,
                     plan,
@@ -394,7 +394,11 @@ fn qualify_operation(
             {
                 if document {
                     if !caught_up {
-                        result.include_basis(source_rows::basis(&input), false, allowance)?;
+                        result.add_contributor(
+                            source_rows::computed_from(&input),
+                            false,
+                            allowance,
+                        )?;
                         add(&mut result.population_pending_inputs, 1)?;
                     } else {
                         let head = dependency.head().ok_or(Error::Range)?;
@@ -443,7 +447,11 @@ fn qualify_operation(
                             }
                         }
                         if possible {
-                            result.include_basis(source_rows::basis(&input), false, allowance)?;
+                            result.add_contributor(
+                                source_rows::computed_from(&input),
+                                false,
+                                allowance,
+                            )?;
                             result.unsupported.insert("A foreign main input may contribute Session links or unknown records to this document".into());
                             count_record_failures(
                                 session,
@@ -475,14 +483,14 @@ fn qualify_operation(
                 "Required body unavailable in Session context: {error}"
             ));
         }
-        result.include_basis(source_rows::basis(&input), true, allowance)?;
+        result.add_contributor(source_rows::computed_from(&input), true, allowance)?;
         result.own_topology_unknown |= !caught_up;
         let Some(head) = dependency.head() else {
             add(&mut result.pending_inputs, 1)?;
             continue;
         };
         if head.acquired_upto != input.input.length
-            || head.token.basis != owner::parser_basis(&input)
+            || head.token.basis != owner::parser_identity(&input)
             || head.parser_version != owner::parser_version(input.format)
         {
             add(&mut result.pending_inputs, 1)?;
@@ -493,8 +501,8 @@ fn qualify_operation(
             add(&mut result.interpreted_nonempty_inputs, 1)?;
         }
         if let Some(message) = member {
-            result.certified_observed_member |=
-                certified_observed_member(session, &dependency, &input, message, allowance)?;
+            result.observed_member_verified |=
+                observed_member_verified(session, &dependency, &input, message, allowance)?;
         }
         let mut unavailable = dependency.failure().is_some();
         if unavailable {
@@ -542,7 +550,7 @@ fn qualify_operation(
             add(&mut result.unavailable_inputs, 1)?;
         }
         if let Some(target) = exact {
-            qualify_shape(
+            check_shape(
                 session,
                 &dependency,
                 target,
@@ -695,7 +703,7 @@ fn qualify_operation(
     }
     Ok(result)
 }
-fn certified_observed_member(
+fn observed_member_verified(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
     input: &polylogue_store::StoredSource,
@@ -776,7 +784,7 @@ fn claude_membership(
         return Ok(None);
     };
     if head.parser_version != owner::parser_version(input.format)
-        || head.token.basis != owner::parser_basis(input)
+        || head.token.basis != owner::parser_identity(input)
     {
         return Ok(None);
     }
@@ -823,14 +831,14 @@ fn selected_current_projection(
 /// Prove the supported shape from retained interpretation, never from the rows
 /// a search happened to find. Events, lineage/copy and ambiguous metadata keep
 /// their existing degraded qualification until their connected products ship.
-fn qualify_shape(
+fn check_shape(
     catalog: &SessionCatalog,
     dependency: &SessionInputDependency,
     target: &str,
     native: Option<&str>,
     until: Instant,
     allowance: usize,
-    result: &mut Qualification,
+    result: &mut SessionStatus,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<(), Error> {
     let Some(native) = native else { return Ok(()) };
@@ -1136,7 +1144,7 @@ fn qualify_shape(
     Ok(())
 }
 fn admit_membership(
-    result: &mut Qualification,
+    result: &mut SessionStatus,
     id: &str,
     active: bool,
     allowance: usize,
@@ -1159,7 +1167,7 @@ fn count_record_failures(
     dependency: &SessionInputDependency,
     until: Instant,
     allowance: usize,
-    result: &mut Qualification,
+    result: &mut SessionStatus,
     cancelled: &mut dyn FnMut() -> bool,
 ) -> Result<(), Error> {
     let head = dependency.head().ok_or(Error::Range)?;

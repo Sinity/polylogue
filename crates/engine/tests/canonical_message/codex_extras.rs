@@ -16,7 +16,7 @@ fn input() -> Vec<u8> {
     bytes
 }
 #[test]
-fn block_extra_preserves_opaque_metadata_and_exact_original_field_selection() {
+fn block_extra_keeps_opaque_metadata_and_original_field_selection() {
     let mut world = World::new(&input());
     let handle = world.begin();
     let source = world.complete(&handle);

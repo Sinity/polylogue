@@ -40,7 +40,7 @@ fn start(origin: &Value) -> u64 {
         .unwrap()
 }
 #[test]
-fn grouped_repetition_chooses_actual_supplier_even_for_equal_values_and_omissions() {
+fn grouped_repetition_chooses_the_supplying_record_even_for_equal_values_and_omissions() {
     let a = row(
         "a",
         "a",
@@ -165,7 +165,7 @@ fn selected_key_collisions_and_unknown_nested_paths_still_refuse() {
     }
 }
 #[test]
-fn proof_scratch_admission_is_typed_and_does_not_publish_partial_selection() {
+fn scratch_limit_is_a_typed_error_and_publishes_no_partial_selection() {
     let a = row("a", "a", r#""effort":1,"#);
     let b = row("b", "b", r#""effort":2,"#);
     let keys = (0..24)
@@ -233,7 +233,7 @@ fn unchanged_large_extra_keeps_single_whole_record_version_without_metadata_valu
 }
 
 #[test]
-fn selected_donor_is_cited_independently_of_current_effective_contribution_origins() {
+fn selected_supplier_is_cited_independently_of_effective_contribution_origins() {
     let a = row("a", "first", "");
     let b = row("b", "second", r#""effort":null,"#);
     let raw = a.clone() + &b + &b;

@@ -1,7 +1,7 @@
-//! Bounded display witnesses for a streamed, pinned contributor catalog.
+//! Count, digest and display sample of a streamed, pinned contributor catalog.
 use super::*;
 #[derive(Clone)]
-pub(super) struct BasisWitness {
+pub(super) struct ContributorDigest {
     pub count: u64,
     pub observed: bool,
     hash: blake3::Hasher,
@@ -9,15 +9,15 @@ pub(super) struct BasisWitness {
     sample_bytes: usize,
     required_bytes: usize,
 }
-impl std::fmt::Debug for BasisWitness {
+impl std::fmt::Debug for ContributorDigest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BasisWitness")
+        f.debug_struct("ContributorDigest")
             .field("count", &self.count)
             .field("observed", &self.observed)
             .finish()
     }
 }
-impl Default for BasisWitness {
+impl Default for ContributorDigest {
     fn default() -> Self {
         let mut hash = blake3::Hasher::new();
         hash.update(b"polylogue.session.input-bases.v1\0");
@@ -31,7 +31,7 @@ impl Default for BasisWitness {
         }
     }
 }
-impl BasisWitness {
+impl ContributorDigest {
     pub fn include(
         &mut self,
         basis: &SourceRowBasis,
@@ -65,8 +65,8 @@ impl BasisWitness {
         self.hash.finalize().to_hex().to_string()
     }
 }
-impl Qualification {
-    pub(super) fn include_basis(
+impl SessionStatus {
+    pub(super) fn add_contributor(
         &mut self,
         basis: SourceRowBasis,
         member: bool,
@@ -78,10 +78,10 @@ impl Qualification {
             self.membership_sources = self.membership_sources.checked_add(1).ok_or(Error::Range)?;
         }
         if self
-            .basis_witness
+            .contributor_digest
             .include(&basis, self.exact && member, allowance)?
         {
-            self.basis.push(basis);
+            self.contributors.push(basis);
         }
         Ok(())
     }
@@ -106,5 +106,5 @@ impl Qualification {
 }
 
 #[cfg(test)]
-#[path = "basis_tests.rs"]
+#[path = "contributors_tests.rs"]
 mod tests;

@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn point_proof_checks_cancellation_and_admission_before_accessing_unprepared_state() {
+fn point_read_checks_cancellation_and_limits_before_reading_unprepared_state() {
     use polylogue_store::{ImportObservation, InputFormat, Writer};
     let dir = tempfile::tempdir().unwrap();
     let mut writer = Writer::open(dir.path()).unwrap();

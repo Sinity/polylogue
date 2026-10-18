@@ -244,7 +244,7 @@ fn reopen_each_line_preserves_effective_replacement_and_pending_evidence_cells()
 }
 
 #[test]
-fn pending_keyset_is_one_admitted_lookup_with_reopenable_cursor_and_identity_checks() {
+fn pending_keyset_is_one_lookup_with_reopenable_cursor_and_identity_checks() {
     let text: String = fixture().into_iter().map(line).collect();
     let mut world = World::new(text.as_bytes());
     world.parse(text.as_bytes());

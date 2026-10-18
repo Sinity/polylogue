@@ -689,7 +689,7 @@ fn run(
         reference,
     )?;
     let q = stored(if let Some(message) = &selection.exact {
-        polylogue_engine::session_qualification::qualify_member_with_cancel(
+        polylogue_engine::session_status::check_member_with_cancel(
             &selection.session,
             message,
             until,
@@ -697,7 +697,7 @@ fn run(
             cancel,
         )
     } else {
-        polylogue_engine::session_qualification::qualify_with_cancel(
+        polylogue_engine::session_status::check_with_cancel(
             &selection.session,
             until,
             16 * 1024 * 1024,
@@ -727,7 +727,7 @@ fn run(
             .push(json!(polylogue_model::RecoveryRecord::NOTE));
     }
     let authored_basis = if let Some(m) = &selection.exact {
-        Some(stored(polylogue_engine::authored::selected_basis(
+        Some(stored(polylogue_engine::authored::selected_text(
             m,
             selection.slot.as_ref(),
             reference,

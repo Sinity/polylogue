@@ -29,7 +29,7 @@ fn fixture() -> (tempfile::TempDir, Actor, StoredSource, Head) {
             input_pk: source.input.input_pk,
             chain: source.input.chain,
             parser_version: parser_version(source.format),
-            digest: parser_basis(&source),
+            digest: parser_identity(&source),
             acquired_upto: source.input.length,
             companions_json: Some(&context),
             excisions_seen: 0,
@@ -72,7 +72,7 @@ fn stop_between_loop_observation_and_completion_does_not_poison_restart() {
     drop(actor);
 
     let service = owner(&temp.path().join("archive"));
-    let resumed = until_settled(&service.handle(), &input.input.id);
+    let resumed = until_caught_up(&service.handle(), &input.input.id);
     assert!(resumed.failure.is_none());
     assert_eq!(resumed.parser.unwrap().parsed_upto, input.input.length);
     service.shutdown().unwrap();

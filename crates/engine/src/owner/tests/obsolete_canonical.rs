@@ -85,7 +85,7 @@ fn append(actor: &mut Actor, input: &StoredSource, main: &Path) -> StoredSource 
             input_pk: current.input.input_pk,
             chain: current.input.chain,
             parser_version: parser_version(current.format),
-            digest: parser_basis(&current),
+            digest: parser_identity(&current),
             acquired_upto: current.input.length,
             companions_json: Some(&context),
             excisions_seen: 0,
@@ -123,7 +123,7 @@ fn append_during_finalization_discards_only_obsolete_audit_and_restarts_cleanly(
     // appended record and certify all accounting, without the former failure.
     drop(actor);
     let service = owner(&temp.path().join("archive"));
-    let resumed = until_settled(&service.handle(), &input.input.id);
+    let resumed = until_caught_up(&service.handle(), &input.input.id);
     assert!(resumed.failure.is_none(), "{:?}", resumed.failure);
     let head = resumed.parser.unwrap();
     assert_eq!(head.parsed_upto, current.input.length);
@@ -131,7 +131,7 @@ fn append_during_finalization_discards_only_obsolete_audit_and_restarts_cleanly(
     service.shutdown().unwrap();
 }
 #[test]
-fn current_predecessor_rejection_and_changed_source_corruption_are_not_discarded() {
+fn stale_parser_state_and_changed_source_corruption_are_reported() {
     for changed in [false, true] {
         let (_temp, mut actor, receiver, input, main) = fixture();
         if changed {

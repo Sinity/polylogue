@@ -505,7 +505,7 @@ fn textless_reasoning_preserves_unknown_encryption_without_empty_text() {
 }
 
 #[test]
-fn cancelled_and_unadmitted_compute_do_not_advance_the_durable_cursor() {
+fn cancelled_or_over_limit_compute_does_not_advance_the_stored_cursor() {
     let mut world = World::new(&text_input("small"));
     let handle = world.begin();
     let state = m::inspect(&mut world.writer, &handle, 65536).unwrap();
@@ -750,7 +750,7 @@ fn wrong_source_binding_cannot_publish_a_finished_build_after_restart() {
     ));
 }
 #[test]
-fn source_selector_value_and_type_mismatches_never_publish_a_certificate() {
+fn source_selector_value_and_type_mismatches_get_no_certificate() {
     let parsed = text_input("A");
     let changed = text_input("B");
     let numeric = String::from_utf8(parsed.clone())
@@ -824,7 +824,7 @@ fn source_selector_value_and_type_mismatches_never_publish_a_certificate() {
     );
 }
 #[test]
-fn source_set_is_exact_noncontiguous_and_includes_timestamp_only_witness() {
+fn source_set_is_noncontiguous_and_includes_timestamp_only_records() {
     use codex::{
         keyed::{Cell, Key},
         origins::{Origins, RecordRange},

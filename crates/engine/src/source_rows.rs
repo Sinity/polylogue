@@ -85,7 +85,7 @@ impl Receipt {
         Ok(())
     }
 }
-pub fn basis(input: &StoredSource) -> SourceRowBasis {
+pub fn computed_from(input: &StoredSource) -> SourceRowBasis {
     SourceRowBasis {
         input: input.input.id.clone(),
         original_hash: input.original_hash(),
@@ -93,7 +93,7 @@ pub fn basis(input: &StoredSource) -> SourceRowBasis {
         revision: input.revision,
         length: input.input.length,
         parser_version: owner::parser_version(input.format),
-        interpretation: BlobHash::from_bytes(owner::parser_basis(input)),
+        interpretation: BlobHash::from_bytes(owner::parser_identity(input)),
     }
 }
 pub fn pending(input: &StoredSource, obligation: &str) -> SourceRows {
@@ -103,7 +103,7 @@ pub fn pending(input: &StoredSource, obligation: &str) -> SourceRows {
         } else {
             SourceRowScope::ImportedSourceRows
         },
-        basis: basis(input),
+        basis: computed_from(input),
         state: SourceRowState::Pending {
             obligations: vec![obligation.into()],
         },
@@ -132,7 +132,7 @@ pub(crate) fn decode(
 ) -> Result<Receipt> {
     let receipt: Receipt = serde_json::from_slice(value)
         .map_err(|_| Error::Invariant("invalid source row settlement receipt".into()))?;
-    receipt.validate_published(head, &basis(input))?;
+    receipt.validate_published(head, &computed_from(input))?;
     Ok(receipt)
 }
 
@@ -175,7 +175,7 @@ impl Audit {
             || !head.finalization_pending
             || head.parsed_upto != input.input.length
             || head.acquired_upto != input.input.length
-            || head.token.basis != owner::parser_basis(input)
+            || head.token.basis != owner::parser_identity(input)
         {
             return Err(Error::StaleParserState.into());
         }
@@ -412,7 +412,7 @@ impl Audit {
                 } else {
                     SourceRowScope::ImportedSourceRows
                 },
-                basis: basis(input),
+                basis: computed_from(input),
                 state,
             },
         }))
@@ -466,7 +466,7 @@ mod tests {
         )
     }
     #[test]
-    fn receipt_binds_every_predecessor_coordinate_and_source_basis() {
+    fn receipt_rejects_any_changed_parser_state_or_input_version() {
         let (receipt, head) = fixture();
         receipt
             .validate_published(&head, &receipt.rows.basis)
@@ -495,7 +495,7 @@ mod tests {
         assert!(receipt.validate_published(&head, &wrong).is_err());
     }
     #[test]
-    fn same_generation_damaged_status_counts_and_missing_effects_do_not_become_settled() {
+    fn damaged_status_counts_and_missing_effects_stay_unfinished() {
         let (receipt, head) = fixture();
         let mut wrong = head.clone();
         wrong.finalization_pending = true;

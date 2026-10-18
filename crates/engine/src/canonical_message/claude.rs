@@ -48,7 +48,7 @@ pub(crate) fn current_projection(
         .map_err(|e| Error::Source(e.to_string()))?;
     Ok(guard
         == EvidenceGuard {
-            head: EvidenceBasis::Claude(Head {
+            head: ProviderHead::Claude(Head {
                 pending: pending.clone(),
                 context: context.to_vec(),
                 parser_version: source::PARSER_VERSION,
@@ -56,19 +56,19 @@ pub(crate) fn current_projection(
             source_binding,
         })
 }
-pub(super) struct Proof {
+pub(super) struct Digest {
     token: Token,
     head: Head,
     source_binding: BlobHash,
     digest: BlobHash,
 }
-impl Proof {
+impl Digest {
     pub(super) fn validate(&self, h: &Handle) -> Result<BlobHash> {
         if self.token != *h.build.predecessor()
-            || h.head != EvidenceBasis::Claude(self.head.clone())
+            || h.head != ProviderHead::Claude(self.head.clone())
             || self.source_binding != h.request.source_binding
         {
-            return Err(Error::Invariant("Claude evidence proof basis changed"));
+            return Err(Error::Invariant("Claude evidence digest inputs changed"));
         }
         Ok(self.digest)
     }
@@ -105,12 +105,12 @@ fn contribution(
     item: u64,
     b: Budgets,
     flag: &AtomicBool,
-) -> Result<parent::Qualified> {
+) -> Result<parent::ResolvedContribution> {
     let view = View::new(snapshot, b.read)?;
     let mut c = callback(&view, view.contribution(&head.pending.message, item))?
         .ok_or(Error::Unsupported("Claude contribution unavailable"))?;
     let records = if item == 0 {
-        parent::qualify(&view, head, &mut c, b.metadata, flag)?
+        parent::resolve(&view, head, &mut c, b.metadata, flag)?
     } else {
         vec![]
     };
@@ -124,7 +124,7 @@ fn contribution(
             "Claude required companion remains unavailable",
         ));
     }
-    Ok(parent::Qualified {
+    Ok(parent::ResolvedContribution {
         contribution: c,
         records,
     })
@@ -162,7 +162,7 @@ pub fn start(
         logical_key: request.logical_key,
         source_binding: request.source_binding,
     };
-    let basis = EvidenceBasis::Claude(head);
+    let basis = ProviderHead::Claude(head);
     let typed = EvidenceGuard {
         head: basis.clone(),
         source_binding: request.source_binding,
@@ -522,7 +522,7 @@ pub(super) fn compute(
     b: Budgets,
     flag: &AtomicBool,
 ) -> Result<Action> {
-    let EvidenceBasis::Claude(head) = &state.handle.head else {
+    let ProviderHead::Claude(head) = &state.handle.head else {
         return Err(Error::Invariant(
             "Claude materializer has another provider basis",
         ));
@@ -1313,7 +1313,7 @@ pub(super) fn compute(
                 state,
                 b,
                 Change::Finish {
-                    proof: EvidenceProof::Claude(proof),
+                    proof: EvidenceDigest::Claude(proof),
                     finish,
                     next: bounded_json(&cursor, b.metadata)?,
                 },
@@ -1331,7 +1331,7 @@ fn proof(
     source_binding: BlobHash,
     b: Budgets,
     flag: &AtomicBool,
-) -> Result<Proof> {
+) -> Result<Digest> {
     let view = View::new(snapshot, b.read)?;
     let response = response(&view, head)?;
     let mut baseline: [Option<Vec<u8>>; 8] = Default::default();
@@ -1472,7 +1472,7 @@ fn proof(
             feed(&mut framer, unit, false, b, flag)?;
         }
     }
-    Ok(Proof {
+    Ok(Digest {
         token: snapshot.head.token.clone(),
         head: head.clone(),
         source_binding,

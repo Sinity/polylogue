@@ -782,7 +782,7 @@ fn effect_header_payload_cursor_corruption_and_admission_are_fatal_and_fused() {
     assert!(matches!(attempt.take_failure(), Some(Error::Invariant(_))));
 }
 #[test]
-fn legacy_aggregate_receipt_requires_explicit_layout_replay() {
+fn legacy_aggregate_receipt_requires_layout_replay() {
     let mut world = World::new(b"");
     world.install(
         &[raw(
@@ -848,7 +848,7 @@ fn collect_impacts(reader: &adapter::ImpactsReader<'_, '_>) -> Vec<adapter::Impa
     }
 }
 #[test]
-fn message_impacts_union_version_body_presence_result_and_deleted_witness() {
+fn message_impacts_cover_version_body_presence_result_and_deletions() {
     use polylogue_model::merge::{MessageField, Slot};
     let mut delta = obligations(0);
     delta.pending_versions.push(PendingVersion {

@@ -113,7 +113,7 @@ fn repeated_recent_changes_alternate_with_background_and_do_not_skip_inputs() {
 }
 
 #[test]
-fn coalesced_change_hints_are_recovered_by_the_durable_scan_after_restart() {
+fn coalesced_change_hints_are_recovered_by_the_stored_scan_after_restart() {
     let (temp, mut actor, inputs) = fixture();
     for input in &inputs {
         actor.retry(&input.input.id).unwrap();

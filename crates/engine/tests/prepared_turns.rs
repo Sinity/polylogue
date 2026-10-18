@@ -64,7 +64,7 @@ fn changes() -> Vec<CellChange> {
 }
 
 #[test]
-fn provider_turns_preserve_peer_reads_writes_and_never_certify_eof_completion() {
+fn provider_turns_allow_peer_reads_and_writes_and_eof_is_not_completion() {
     let (_dir, mut writer, head) = fixture();
     let pinned = writer.parser_snapshot(&head.token).unwrap();
     let reader = writer.read_handle().unwrap();
@@ -185,7 +185,7 @@ fn crash_child() {
 }
 
 #[test]
-fn process_exit_during_apply_recovers_durable_members_without_replay_or_false_done() {
+fn process_exit_during_apply_finishes_stored_members_without_reparse() {
     let (dir, writer, head) = fixture();
     drop(writer);
     let output = std::process::Command::new(std::env::current_exe().unwrap())

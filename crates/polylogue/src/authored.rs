@@ -244,7 +244,7 @@ pub(crate) fn family_value(
         let mut stale = false;
         for t in &revision.targets {
             let basis =
-                polylogue_engine::authored::current_basis(reader, &t.reference, until, cancel)
+                polylogue_engine::authored::current_text(reader, &t.reference, until, cancel)
                     .map_err(store_error)?;
             let comparison = match (t.seen_hash, basis.seen_hash) {
                 (Some(a), Some(b)) => Some(a != b),

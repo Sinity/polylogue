@@ -1218,8 +1218,10 @@ impl Actor {
                         ));
                     }
                     Ok(CanonicalTurn::Audited(crate::source_rows::Turn::Complete(receipt))) => {
-                        receipt
-                            .validate(&job.head.token, &crate::source_rows::basis(&job.input))?;
+                        receipt.validate(
+                            &job.head.token,
+                            &crate::source_rows::computed_from(&job.input),
+                        )?;
                         let bytes = serde_json::to_vec(&receipt)
                             .map_err(|e| Error::InvalidEvidence(e.to_string()))?;
                         self.writer.publish_source_rows(
@@ -1270,7 +1272,7 @@ impl Actor {
         let mut source_rows = crate::source_rows::pending(&input, obligation);
         if let Some(head) = &parser {
             if head.acquired_upto != input.input.length
-                || head.token.basis != parser_basis(&input)
+                || head.token.basis != parser_identity(&input)
                 || head.parser_version != parser_version(input.format)
             {
                 source_rows =
@@ -1359,7 +1361,7 @@ impl Actor {
         let source_changed = input.revision != previous.revision
             || input.input.chain != previous.input.chain
             || input.input.length != previous.input.length
-            || parser_basis(&input) != parser_basis(&previous);
+            || parser_identity(&input) != parser_identity(&previous);
         let predecessor_changed = head.as_ref().is_some_and(|head| {
             head.token != predecessor.token
                 || head.acquired_upto != predecessor.acquired_upto
@@ -1435,7 +1437,7 @@ impl Actor {
         };
         match active {
             Active::Begin(input) => {
-                let digest = parser_basis(&input);
+                let digest = parser_identity(&input);
                 let context_json = parser_context_json(&input)?;
                 match self.writer.begin_parser(&Basis {
                     input_pk: input.input.input_pk,
@@ -1461,7 +1463,7 @@ impl Actor {
                 match converge::recover_turn(&mut self.writer, &head.token, install_budget()) {
                     Ok(Recovery::Yielded) => self.active = Some(Active::Recover(input, head)),
                     Ok(Recovery::Reparse) => {
-                        if !settled(&head) {
+                        if !caught_up(&head) {
                             self.active = Some(Active::Compute(input, head, None));
                         } else if can_finalize(&input, &head)
                             && crate::source_rows::read(
@@ -1479,7 +1481,7 @@ impl Actor {
                         }
                     }
                     Ok(Recovery::Published(head)) => {
-                        if !settled(&head) {
+                        if !caught_up(&head) {
                             self.active = Some(Active::Compute(input, head, None));
                         } else if can_finalize(&input, &head)
                             && crate::source_rows::read(
@@ -1846,7 +1848,7 @@ impl Actor {
                     }
                     Ok(Turn::Published(published)) => match guard.published(&published) {
                         Ok(continuation) => {
-                            if !settled(&published) {
+                            if !caught_up(&published) {
                                 self.active =
                                     Some(Active::Compute(input, published, Some(continuation)));
                             } else if can_finalize(&input, &published) {
@@ -1993,7 +1995,7 @@ fn can_finalize(input: &StoredSource, head: &Head) -> bool {
             && input.format == InputFormat::ClaudeCodeJsonl
             && head.status == "waiting_tail")
 }
-fn settled(head: &Head) -> bool {
+fn caught_up(head: &Head) -> bool {
     matches!(head.status.as_str(), "waiting_tail" | "done")
         || (head.status == "finalizing" && head.parsed_upto == head.acquired_upto)
 }
@@ -2048,7 +2050,7 @@ fn parser_context_json(input: &StoredSource) -> Result<String> {
     })
     .map_err(|_| Error::InvalidRequest("source context serialization failed"))
 }
-pub(crate) fn parser_basis(input: &StoredSource) -> [u8; 32] {
+pub(crate) fn parser_identity(input: &StoredSource) -> [u8; 32] {
     if input.format == InputFormat::CodexRollout {
         return basis(&input.binding);
     }
@@ -2178,13 +2180,13 @@ mod tests {
             }
         }
     }
-    fn until_settled(handle: &Handle, id: &str) -> Progress {
+    fn until_caught_up(handle: &Handle, id: &str) -> Progress {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             let p = progress(handle, id);
             assert!(p.failure.is_none(), "{:?}", p.failure);
             assert!(p.recovery_error.is_none(), "{:?}", p.recovery_error);
-            if p.parser.as_ref().is_some_and(settled) {
+            if p.parser.as_ref().is_some_and(caught_up) {
                 return p;
             }
             assert!(
@@ -2398,7 +2400,7 @@ mod tests {
         service.shutdown().unwrap();
     }
     #[test]
-    fn actor_selects_a_source_message_but_never_certifies_history_done() {
+    fn actor_selects_a_source_message_but_history_stays_unfinished() {
         use polylogue_sources::{
             codex::keyed::{KeyedRecords, MemoryReadView, Resume},
             frame::drive_jsonl,
@@ -2464,7 +2466,7 @@ mod tests {
         assert!(reader.selected_message(&message).unwrap().is_some());
     }
     #[test]
-    fn retained_receipt_replays_before_missing_source_and_recovers_provider_state() {
+    fn stored_receipt_replays_before_missing_source_and_recovers_provider_state() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("archive");
         let path = dir.path().join("synthetic.jsonl");
@@ -2487,7 +2489,7 @@ mod tests {
         ));
         service.shutdown().unwrap();
         let service = owner(&root);
-        let p = until_settled(&service.handle(), &retained.id);
+        let p = until_caught_up(&service.handle(), &retained.id);
         let head = p.parser.unwrap();
         assert_eq!(head.counts.framed, 2);
         assert_eq!(head.parsed_upto, raw().len() as u64);
@@ -2503,7 +2505,7 @@ mod tests {
         service.shutdown().unwrap();
     }
     #[test]
-    fn partial_tail_is_stable_across_restart_and_explicit_retry() {
+    fn partial_tail_is_stable_across_restart_and_retry() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("archive");
         let path = dir.path().join("synthetic-tail.jsonl");
@@ -2512,7 +2514,7 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
         let service = owner(&root);
         let retained = import(&service.handle(), request(&path, "synthetic-tail-request"));
-        let before = until_settled(&service.handle(), &retained.id)
+        let before = until_caught_up(&service.handle(), &retained.id)
             .parser
             .unwrap();
         assert_eq!(before.status, "waiting_tail");
@@ -2577,7 +2579,7 @@ mod tests {
         service.shutdown().unwrap();
     }
     #[test]
-    fn queue_capacity_request_bytes_and_shutdown_are_explicit() {
+    fn queue_capacity_request_bytes_and_shutdown_return_typed_errors() {
         let (sender, _receiver) = mpsc::sync_channel(1);
         let inner = Arc::new(Inner {
             sender,

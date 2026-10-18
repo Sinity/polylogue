@@ -1,7 +1,7 @@
 //! Synthetic retained SQLite evidence; no canonical publication is certified.
 use polylogue_engine::{
     state::codex as adapter,
-    version_proof::{Advance, Driver, Error},
+    version_digest::{Advance, Driver, Error},
 };
 use polylogue_model::BlobHash;
 use polylogue_sources::codex::{
@@ -156,7 +156,7 @@ fn singleton_raw_exception_keeps_numeric_spelling_and_restarts_from_zero() {
     assert_ne!(BlobHash::of(br#"{"n":1E2}"#), BlobHash::of(br#"{"n":1e2}"#));
 }
 #[test]
-fn compound_matches_independent_exact_unit_preimage_and_tiny_payload_steps() {
+fn compound_digest_matches_unit_preimage_with_tiny_payload_steps() {
     let raw = format!("{{\"text\":\"{}\"}}", "x".repeat(5000));
     let source = (
         Key::Evidence(0, 1, 1),
@@ -210,7 +210,7 @@ fn compound_matches_independent_exact_unit_preimage_and_tiny_payload_steps() {
     }
 }
 #[test]
-fn incomplete_missing_malformed_and_revision_changed_evidence_cannot_prove() {
+fn incomplete_missing_malformed_or_changed_evidence_yields_no_digest() {
     let mut incomplete = head(1);
     incomplete.incomplete = true;
     let world = World::new(incomplete, vec![item(b"{}", true)]);
@@ -267,7 +267,7 @@ fn incomplete_missing_malformed_and_revision_changed_evidence_cannot_prove() {
     }
 }
 #[test]
-fn original_native_admission_is_preserved_and_no_partial_proof_escapes() {
+fn read_limit_errors_pass_through_and_no_partial_digest_escapes() {
     let world = World::new(head(1), vec![item(b"{}", true)]);
     let snapshot = world.writer.parser_snapshot(&world.head.token).unwrap();
     assert!(matches!(
@@ -300,7 +300,7 @@ fn original_native_admission_is_preserved_and_no_partial_proof_escapes() {
 }
 
 #[test]
-fn insufficient_framing_allowance_reports_exact_retry_without_reloading_unit() {
+fn insufficient_framing_allowance_reports_retry_without_reloading_unit() {
     let world = World::new(head(1), vec![item(b"{}", false)]);
     let snapshot = world.writer.parser_snapshot(&world.head.token).unwrap();
     let mut driver = Driver::start(&snapshot, 0, 7, budget()).unwrap();
@@ -314,7 +314,7 @@ fn insufficient_framing_allowance_reports_exact_retry_without_reloading_unit() {
 }
 
 #[test]
-fn last_retained_payload_byte_yields_without_spending_next_slots_read_budget() {
+fn last_payload_byte_yields_without_spending_next_slots_read_budget() {
     let raw = br#"{"x":1}"#;
     for compound in [false, true] {
         let mut units = vec![item(raw, true)];

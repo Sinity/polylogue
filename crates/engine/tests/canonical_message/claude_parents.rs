@@ -204,7 +204,7 @@ fn parent_relation_work_refuses_small_point_and_scratch_allowances_without_insta
     );
 }
 #[test]
-fn relation_value_or_donor_must_match_original_retained_record_before_certification() {
+fn relation_value_or_supplier_must_match_the_original_record_before_certification() {
     let raw = message("a", None)
         + &message("c", None)
         + &event("x", json!("a"), "attachment", json!({}))

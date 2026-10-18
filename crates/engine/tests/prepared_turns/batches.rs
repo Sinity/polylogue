@@ -16,7 +16,7 @@ fn many() -> Vec<CellChange> {
         .collect()
 }
 #[test]
-fn bounded_batches_reduce_turns_and_install_every_exact_cell_without_early_progress() {
+fn batches_reduce_turns_and_install_every_cell_without_early_progress() {
     let (_dir, mut writer, head) = fixture();
     let pinned = writer.parser_snapshot(&head.token).unwrap();
     let changes = many();
@@ -215,7 +215,7 @@ fn interrupted_batches_discard_unsealed_and_finish_sealed_without_replay() {
 }
 
 #[test]
-fn staging_prefix_accounts_for_exact_encoded_framing_before_mutation() {
+fn staging_prefix_counts_encoded_framing_before_mutation() {
     let (_dir, mut writer, head) = fixture();
     let work = writer.prepare_parser(&head, progress()).unwrap();
     let changes = changes();

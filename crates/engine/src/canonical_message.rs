@@ -6,7 +6,7 @@
 //! Each field replays admitted source records/leaf/descriptor serialization on
 //! the worker; this is not a universal CPU/RSS or append-locality bound.
 mod claude;
-use crate::{state::codex::Attempt, version_proof};
+use crate::{state::codex::Attempt, version_digest};
 pub use claude::{ClaudeRequest, start as start_claude};
 use polylogue_model::{
     merge::{FinishState, RouteKind, Slot},
@@ -55,7 +55,7 @@ pub enum Error {
     Store(StoreError),
     Source(String),
     Leaf(source_leaf::Error),
-    Proof(version_proof::Error),
+    Digest(version_digest::Error),
     Unsupported(&'static str),
     UnsupportedField {
         path: Vec<String>,
@@ -84,9 +84,9 @@ impl From<source_leaf::Error> for Error {
         Self::Leaf(e)
     }
 }
-impl From<version_proof::Error> for Error {
-    fn from(e: version_proof::Error) -> Self {
-        Self::Proof(e)
+impl From<version_digest::Error> for Error {
+    fn from(e: version_digest::Error) -> Self {
+        Self::Digest(e)
     }
 }
 impl std::fmt::Display for Error {
@@ -95,7 +95,7 @@ impl std::fmt::Display for Error {
             Self::Store(e) => write!(f, "{e}"),
             Self::Source(e) => f.write_str(e),
             Self::Leaf(e) => write!(f, "{e}"),
-            Self::Proof(e) => write!(f, "{e}"),
+            Self::Digest(e) => write!(f, "{e}"),
             Self::Unsupported(e) | Self::Invariant(e) => f.write_str(e),
             Self::UnsupportedField { path, reason } => write!(f, "{reason}: {path:?}"),
             Self::Selection(e) => write!(f, "{e}"),
@@ -126,7 +126,7 @@ impl std::fmt::Display for ResolveError {
 impl std::error::Error for ResolveError {}
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct EvidenceGuard {
-    head: EvidenceBasis,
+    head: ProviderHead,
     // Retain the existing disposable evidence-guard encoding for immutable
     // inputs; the typed binding also admits a validated observed chain key.
     #[serde(rename = "source_hash")]
@@ -134,11 +134,11 @@ struct EvidenceGuard {
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
-enum EvidenceBasis {
+enum ProviderHead {
     Codex(EvidenceHead),
     Claude(claude::Head),
 }
-impl EvidenceBasis {
+impl ProviderHead {
     fn revision(&self) -> u64 {
         match self {
             Self::Codex(h) => h.revision,
@@ -169,15 +169,15 @@ pub(crate) fn current_codex_projection(
         && source.evidence_revision() == head.revision
         && guard
             == EvidenceGuard {
-                head: EvidenceBasis::Codex(head.clone()),
+                head: ProviderHead::Codex(head.clone()),
                 source_binding,
             })
 }
-enum EvidenceProof {
-    Codex(version_proof::Proof),
-    Claude(claude::Proof),
+enum EvidenceDigest {
+    Codex(version_digest::Digest),
+    Claude(claude::Digest),
 }
-impl EvidenceProof {
+impl EvidenceDigest {
     fn validate(&self, handle: &Handle) -> Result<BlobHash> {
         match self {
             Self::Codex(p)
@@ -224,7 +224,7 @@ pub struct Handle {
     identity: IdentityOwned,
     request: Request,
     build: Build,
-    head: EvidenceBasis,
+    head: ProviderHead,
     guard: Vec<u8>,
     previous: Option<SourceProjection>,
 }
@@ -347,7 +347,7 @@ enum ActionKind {
         identity: IdentityOwned,
         request: Request,
         token: Token,
-        head: EvidenceBasis,
+        head: ProviderHead,
         guard: Vec<u8>,
         previous: Option<SourceProjection>,
         allowance: usize,
@@ -414,7 +414,7 @@ enum Change {
     Command(Vec<u8>),
     Install(Vec<u8>),
     Finish {
-        proof: EvidenceProof,
+        proof: EvidenceDigest,
         finish: FinishState,
         next: Vec<u8>,
     },
@@ -527,7 +527,7 @@ pub fn start(
         return Err(Error::Invariant("Codex Message/Session relation mismatch"));
     }
     let typed_guard = EvidenceGuard {
-        head: EvidenceBasis::Codex(head.clone()),
+        head: ProviderHead::Codex(head.clone()),
         source_binding: request.source_binding,
     };
     let guard = bounded_json(&typed_guard, allowance)?;
@@ -567,7 +567,7 @@ pub fn start(
             },
             request: request.clone(),
             token: snapshot.head.token.clone(),
-            head: EvidenceBasis::Codex(head),
+            head: ProviderHead::Codex(head),
             guard,
             previous: current,
             allowance,
@@ -1275,7 +1275,7 @@ fn compute_one(
     if b.value_chunk == 0 || b.value_chunk > 65536 || b.hash_bytes == 0 {
         return Err(Error::Invariant("invalid materializer byte allowance"));
     }
-    if matches!(state.handle.head, EvidenceBasis::Claude(_)) {
+    if matches!(state.handle.head, ProviderHead::Claude(_)) {
         return claude::compute(snapshot, reader, state, b, flag);
     }
     let attempt = Attempt::new(snapshot, b.read);
@@ -1351,7 +1351,7 @@ fn compute_one(
                     "Codex Message disappeared during projection",
                 )),
                 Step::Done => {
-                    let mut driver = version_proof::Driver::start(
+                    let mut driver = version_digest::Driver::start(
                         snapshot,
                         message,
                         state.handle.head.revision(),
@@ -1360,8 +1360,8 @@ fn compute_one(
                     let proof = loop {
                         cancelled(flag)?;
                         match driver.advance(b.read, b.hash_bytes)? {
-                            version_proof::Advance::Complete(p) => break p,
-                            version_proof::Advance::Progress {
+                            version_digest::Advance::Complete(p) => break p,
+                            version_digest::Advance::Progress {
                                 minimum_bytes: Some(required),
                                 ..
                             } if required > b.hash_bytes => {
@@ -1391,7 +1391,7 @@ fn compute_one(
                         state,
                         b,
                         Change::Finish {
-                            proof: EvidenceProof::Codex(proof),
+                            proof: EvidenceDigest::Codex(proof),
                             finish,
                             next: bounded_json(&cursor, b.metadata)?,
                         },

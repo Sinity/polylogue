@@ -259,7 +259,7 @@ def main():
                 assert page['diagnostics']['text_repairs'] == (1 if expected['session_native'] == 'unicode-main' else 0), page
                 source_name = next(name for name, context in facts['contexts'].items()
                                    if context[1] == expected['session_native'])
-                source_basis = page['settlement']['target_basis']['inputs']
+                source_basis = page['settlement']['settled_through']['inputs']
                 assert len(source_basis) == 1 and source_basis[0]['input'] == bindings[source_name]['id'], source_basis
                 assert source_basis[0]['chain'] == bindings[source_name]['chain']
                 assert source_basis[0]['original_hash'] == bindings[source_name]['original_hash']

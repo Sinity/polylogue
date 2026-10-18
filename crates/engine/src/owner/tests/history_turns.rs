@@ -20,7 +20,7 @@ fn physical(path: &Path, id: &str) -> ImportRequest {
     value
 }
 #[test]
-fn parked_physical_quanta_serve_actual_regular_capture_and_reads_before_selection() {
+fn parked_history_capture_shares_turns_with_regular_capture_and_reads() {
     let temp = tempfile::tempdir().unwrap();
     let mut provider = Writer::open(&temp.path().join("provider")).unwrap();
     provider.put_file_blob(&vec![b'x'; 131072]).unwrap();
