@@ -8,18 +8,23 @@
 //! - `blobs/`: input bytes of 128 KiB and over.
 
 pub mod blobs;
+pub mod context;
 pub mod excise;
 pub mod files;
 pub mod notes;
 pub mod read;
 pub mod schema;
 pub mod search;
+pub mod user;
 pub mod writer;
 
 pub use blobs::{Change, FileFacts, Piece};
+pub use context::{DeliveryRow, Obligations, Prompt};
 pub use files::{Archive, ArchiveLock};
+pub use notes::NoteFilter;
 pub use read::{KnownInput, ReadPool, Reader, SessionSummary, Status};
-pub use writer::{Batch, InputKey, Observation, ParseStep, WriteReport, Writer};
+pub use user::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
+pub use writer::{Batch, InputKey, Observation, ParseStep, WriteReport, Writer, WriterSender};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -43,6 +48,12 @@ pub enum StoreError {
     Counts(#[from] polylogue_model::CountMismatch),
     #[error("the writer has stopped")]
     WriterGone,
+    #[error("request {0} was already used for different content")]
+    Conflict(String),
+    #[error("{0} not found")]
+    NotFound(String),
+    #[error("{0}")]
+    Invalid(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;

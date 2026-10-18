@@ -12,6 +12,7 @@ hashed-blobs.workspace = true
 rusqlite.workspace = true
 blake3.workspace = true
 zstd.workspace = true
+uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

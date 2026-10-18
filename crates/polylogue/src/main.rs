@@ -4,6 +4,7 @@
 
 mod briefing;
 mod cli;
+mod continuation;
 mod daemon;
 mod embeddings;
 mod hook;

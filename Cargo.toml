@@ -34,6 +34,10 @@ libc = "0.2"
 tempfile = "3"
 base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+uuid = { version = "1", features = ["v7"] }
+rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-io"] }
+tokio = { version = "1", features = ["rt"] }
+schemars = "1"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -280,38 +280,35 @@ CREATE TABLE setting (
 CREATE INDEX setting_current ON setting(machine, key, set_at, id);
 
 -- Exactly what was put into a model's context, kept because it cannot be
--- recomputed (architecture 4.3; old 37t.22). Prepared, delivered and used
--- are separate facts.
-
--- Context Polylogue gave to sessions (model.md, Delivery), parsed from the
--- `delivery` lines the sender appends to the hook spool (sources/README.md). A line
--- written twice (a retried recording) has the same id and is one row.
+-- recomputed (architecture 4.3; old 37t.22). Prepared, delivered and used are
+-- separate facts: a delivery row is what was prepared, with its exact bytes;
+-- what happened to it is in delivery_event.
 CREATE TABLE delivery (
-  pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- UUIDv7 chosen at sending; also in the injected reference line
-  recipient_kind    TEXT NOT NULL,          -- session | operator (a signal notice to status or the notifier)
+  id                TEXT PRIMARY KEY,       -- UUIDv7 chosen when prepared; also in the injected reference line
+  recipient_kind    TEXT NOT NULL,          -- session | operator
   recipient_id      TEXT,                   -- session id when recipient_kind = session (the session may arrive later)
-  sender            TEXT NOT NULL,          -- hook | mcp | ping | signal
-  event             TEXT NOT NULL,          -- session_start | resume | compaction | prompt_reference | mcp_brief | ping | advisory | signal
-  rule_id           TEXT,                   -- signal deliveries: the signal note
-  rows_json         TEXT NOT NULL DEFAULT '[]',   -- signal deliveries: references of the rows that fired it
-  author            TEXT,                   -- signal deliveries: the rule's author
-  at                INTEGER NOT NULL,
-  content_hash      BLOB NOT NULL,          -- BLAKE3 of the delivered text; context is in the recipient's transcript,
-                                            --   signal notices in the delivery spool
+  sender            TEXT NOT NULL,          -- hook | mcp | cli | ping | signal
+  event             TEXT NOT NULL,          -- session_start | resume | compaction | takeover | recall | advisory | ping | signal
+  cwd               TEXT,                   -- where the recipient was working, when known
+  at                INTEGER NOT NULL,       -- prepared at
+  content_hash      BLOB NOT NULL,          -- BLAKE3 of the delivered text
   bytes             INTEGER NOT NULL,
+  body              BLOB NOT NULL,          -- the delivered text, zstd
   refs_json         TEXT NOT NULL,          -- references included, in order
-  signal_rules_json TEXT NOT NULL DEFAULT '[]',   -- Polylogue signal rules that filled the watching section (user-data.md)
-  machine_rules_json TEXT NOT NULL DEFAULT '[]',  -- Sinex signal rules that filled the machine section (sources/README.md, delivery lines)
-  left_out_json     TEXT NOT NULL,          -- references and sections left out, each with its reason (`budget` or
-                                            --   `failed:<kind>`) and the command to get each group
-  outcome           TEXT NOT NULL,          -- delivered | failed | unknown | not_sent
-  reason            TEXT,                   -- for failed and not_sent
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  parser_version    INTEGER NOT NULL        -- with input_pk: which parse produced it (convergence.md, rebuilding a session)
+  left_out_json     TEXT NOT NULL DEFAULT '[]',  -- references and sections left out, each with its reason
+  local_seq         INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX delivery_recipient ON delivery(recipient_id, at);
-CREATE INDEX delivery_content   ON delivery(content_hash);
+CREATE INDEX delivery_content ON delivery(content_hash);
+
+-- What happened to a prepared delivery: delivered | failed | not_sent | used.
+CREATE TABLE delivery_event (
+  delivery          TEXT NOT NULL REFERENCES delivery(id),
+  what              TEXT NOT NULL CHECK (what IN ('delivered','failed','not_sent','used')),
+  at                INTEGER NOT NULL,
+  detail            TEXT,                   -- failed/not_sent: the reason; used: the evidence
+  PRIMARY KEY (delivery, what, at)
+) STRICT, WITHOUT ROWID;
 
 -- Which change notices went where (old 1jc).
 CREATE TABLE notice_delivery (

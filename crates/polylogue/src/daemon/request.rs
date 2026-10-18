@@ -2,7 +2,9 @@
 //! command, the browser host and the web reader. A write carries a request
 //! ID so a resent write is a no-op.
 
-use polylogue_model::{Note, SessionId};
+use crate::briefing::Ask;
+use polylogue_model::{Author, NewNote, SessionId};
+use polylogue_store::{DeliveryOutcome, NoteFilter};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -38,17 +40,53 @@ pub enum Request {
     },
     AddNote {
         request_id: String,
-        note: Note,
+        note: NewNote,
     },
-    Brief {
-        session: Option<SessionId>,
-        cwd: Option<PathBuf>,
+    Notes {
+        filter: NoteFilter,
     },
-    Recall {
-        text: String,
+    Withdraw {
+        request_id: String,
+        note: String,
+        author: Author,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// Prepares context: a brief, a takeover or a recall. With a `sender`
+    /// (hook, mcp, ...) it is recorded as a delivery to the recipient
+    /// before it is returned; the request ID becomes the delivery ID.
+    Context {
+        request_id: String,
+        ask: Ask,
+        #[serde(default)]
+        sender: Option<String>,
+    },
+    /// What happened to a delivery after it was handed out.
+    DeliveryEvent {
+        delivery: String,
+        what: DeliveryOutcome,
+        #[serde(default)]
+        detail: Option<String>,
+    },
+    /// Sessions in a directory worth resuming, with what each left open.
+    Candidates {
+        cwd: PathBuf,
+        #[serde(default)]
+        limit: Option<u64>,
     },
     Continue {
         session: SessionId,
+    },
+    /// Reads (`value: None`) or sets a setting.
+    Setting {
+        #[serde(default)]
+        request_id: Option<String>,
+        key: String,
+        #[serde(default)]
+        value: Option<String>,
+        /// Per machine instead of archive-wide.
+        #[serde(default)]
+        machine: bool,
     },
     Measure {
         what: String,
@@ -101,5 +139,23 @@ mod tests {
         assert_eq!(v["op"], "query");
         let back: Request = serde_json::from_value(v).unwrap();
         assert!(matches!(back, Request::Query { .. }));
+    }
+
+    #[test]
+    fn a_context_request_carries_its_ask() {
+        let v = serde_json::json!({
+            "op": "context",
+            "request_id": "r1",
+            "ask": {"ask": "session_start", "cwd": "/x", "source": "resume"},
+            "sender": "hook"
+        });
+        let r: Request = serde_json::from_value(v).unwrap();
+        assert!(matches!(
+            r,
+            Request::Context {
+                ask: Ask::SessionStart { .. },
+                ..
+            }
+        ));
     }
 }

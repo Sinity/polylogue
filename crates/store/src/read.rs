@@ -121,8 +121,26 @@ fn ts(ms: Option<i64>) -> Option<Timestamp> {
     ms.and_then(Timestamp::from_unix_ms)
 }
 
+/// A session summary from a row of (id, kind, title, started_at,
+/// last_activity_at, message count, cwd). A row whose id does not parse is
+/// `None`.
+pub(crate) fn row_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<SessionSummary>> {
+    let Ok(id) = SessionId::parse(&r.get::<_, String>(0)?) else {
+        return Ok(None);
+    };
+    Ok(Some(SessionSummary {
+        id,
+        kind: parse_name(&r.get::<_, String>(1)?).unwrap_or(SessionKind::Main),
+        title: r.get(2)?,
+        started: ts(r.get(3)?),
+        last_activity: ts(r.get(4)?),
+        messages: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
+        cwd: r.get(6)?,
+    }))
+}
+
 impl Reader<'_> {
-    fn conn(&self) -> &Connection {
+    pub(crate) fn conn(&self) -> &Connection {
         self.conn
             .as_ref()
             .expect("reader holds a connection until dropped")
