@@ -41,6 +41,9 @@ schemars = "1"
 unicode-normalization = "0.1"
 strsim = "0.11"
 ureq = { version = "3", features = ["json"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+sha2 = "0.10"
+tower = { version = "0.5", features = ["util"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -67,6 +67,24 @@ const CAPTURE_FIELDS: Fields = &[
     ("session", Rule::Read),
 ];
 
+/// The origin a capture's `session.provider` names: the provider's export
+/// origin, so a capture and an export of one conversation unite.
+pub fn origin_of(provider: &str) -> &str {
+    match provider {
+        "chatgpt" => crate::chatgpt::ORIGIN,
+        "claude-ai" | "claude" => crate::claude_ai::ORIGIN,
+        other => other,
+    }
+}
+
+/// The session a capture of `provider_session_id` from `provider` lands in.
+pub fn session_for(
+    provider: &str,
+    provider_session_id: &str,
+) -> Option<polylogue_model::SessionId> {
+    session_id(origin_of(provider), provider_session_id)
+}
+
 pub struct Capture;
 
 impl DocumentParser for Capture {
@@ -94,11 +112,7 @@ impl DocumentParser for Capture {
         else {
             return sink.record("capture", &Disposition::refused("no session.provider"));
         };
-        let origin = match provider {
-            "chatgpt" => crate::chatgpt::ORIGIN,
-            "claude-ai" | "claude" => crate::claude_ai::ORIGIN,
-            other => other,
-        };
+        let origin = origin_of(provider);
         if polylogue_model::Origin::new(origin).is_err() {
             return sink.record(
                 "capture",
