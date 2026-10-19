@@ -14,7 +14,8 @@ use crate::frame::Record;
 use crate::parse::{MessageRow, Output, Parser, StepParser};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
-    Block, Event, Json, Message, MessageId, PromptKind, Role, Session, SessionKind, ToolOutcome,
+    Block, Event, Json, Message, MessageId, PromptKind, Role, Session, SessionKind, ToolAction,
+    ToolOutcome,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -113,6 +114,19 @@ const FIELDS: Fields = &[
     ),
     ("kind", Rule::Read),
 ];
+
+/// What a Grok CLI tool does, by its name.
+fn action(tool: &str) -> ToolAction {
+    match tool {
+        "run_terminal_command" | "monitor" => ToolAction::Shell,
+        "read_file" => ToolAction::FileRead,
+        "write" => ToolAction::FileWrite,
+        "search_replace" => ToolAction::FileEdit,
+        "grep" | "list_dir" | "search_tool" => ToolAction::Search,
+        "web_fetch" | "web_search" => ToolAction::Web,
+        _ => ToolAction::Other,
+    }
+}
 
 fn text_of(content: Option<&Json>) -> Option<String> {
     match content? {
@@ -226,6 +240,7 @@ impl Parser for GrokCli {
                     blocks.push(Block::ToolCall {
                         call_id: string_of(call, "id"),
                         tool: string_of(call, "name"),
+                        action: action(str_of(call, "name").unwrap_or("")),
                         command: input
                             .get("command")
                             .and_then(Json::as_str)
@@ -234,6 +249,7 @@ impl Parser for GrokCli {
                             .get("target_file")
                             .or_else(|| input.get("path"))
                             .or_else(|| input.get("file_path"))
+                            .or_else(|| input.get("target_directory"))
                             .and_then(Json::as_str)
                             .map(str::to_owned),
                         input,

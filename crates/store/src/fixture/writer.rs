@@ -6,7 +6,7 @@ use crate::writer::{Batch, InputKey, Observation, ParseStep};
 use crate::{Archive, ReadPool, Writer};
 use polylogue_model::{
     Accounting, Block, Disposition, ErrorReason, Json, Message, MessageId, MessageRow, Output,
-    PromptKind, Role, Session, SessionId, SessionKind, Timestamp, ToolOutcome, Usage,
+    PromptKind, Role, Session, SessionId, SessionKind, Timestamp, ToolAction, ToolOutcome, Usage,
 };
 
 /// An archive in a temporary directory with its writer running.
@@ -74,6 +74,13 @@ pub fn call(
         vec![Block::ToolCall {
             call_id: Some(call_id.clone()),
             tool: Some(tool.into()),
+            // A parser decides the action from its tool names; here a call
+            // with a command is a shell call.
+            action: if command.is_some() {
+                ToolAction::Shell
+            } else {
+                ToolAction::Other
+            },
             input,
             command: command.map(Into::into),
             path: None,

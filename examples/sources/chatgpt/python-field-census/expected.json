@@ -67,6 +67,7 @@
           "at": "1970-01-01T00:00:01Z",
           "blocks": [
             {
+              "action": "other",
               "call_id": "node-1",
               "input": "Synthetic assistant turn.",
               "tool": "synthetic-recipient",

@@ -16,7 +16,7 @@ use crate::blobs::{Change, FileFacts, Piece, Stored};
 use crate::{Result, StoreError};
 use polylogue_model::{
     Accounting, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, PromptKind,
-    Role, Session, SessionId, Timestamp, ToolOutcome,
+    Role, Session, SessionId, Timestamp, ToolAction, ToolOutcome,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;

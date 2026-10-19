@@ -44,6 +44,7 @@
               "type": "thinking"
             },
             {
+              "action": "shell",
               "call_id": "toolu_0101",
               "command": "cargo init --lib",
               "input": {
@@ -54,6 +55,7 @@
               "type": "tool_call"
             },
             {
+              "action": "file_write",
               "call_id": "toolu_0102",
               "input": {
                 "content": "[package]\nname = \"morrow\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
@@ -64,6 +66,7 @@
               "type": "tool_call"
             },
             {
+              "action": "file_write",
               "call_id": "toolu_0103",
               "input": {
                 "content": "//! Parse human-written dates.\n\npub mod parse;\n",
@@ -138,6 +141,7 @@
           "at": "2026-10-01T07:11:27Z",
           "blocks": [
             {
+              "action": "shell",
               "call_id": "toolu_0104",
               "command": "cargo build",
               "input": {
@@ -249,6 +253,7 @@
           "at": "2026-10-01T07:26:44Z",
           "blocks": [
             {
+              "action": "file_read",
               "call_id": "toolu_0105",
               "input": {
                 "file_path": "/home/op/morrow/src/lib.rs"
@@ -258,6 +263,7 @@
               "type": "tool_call"
             },
             {
+              "action": "shell",
               "call_id": "toolu_0106",
               "command": "ls -R src",
               "input": {

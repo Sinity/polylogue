@@ -23,6 +23,7 @@
           "at": "2026-03-01T10:00:02Z",
           "blocks": [
             {
+              "action": "code",
               "call_id": "call_x",
               "command": "const r = await tools.exec_command({cmd: 'git status --short'}); text(r.output);",
               "input": "const r = await tools.exec_command({cmd: 'git status --short'}); text(r.output);",
@@ -42,6 +43,7 @@
           "at": "2026-03-01T10:00:03Z",
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_inner",
               "command": "git status --short",
               "input": {
@@ -78,6 +80,7 @@
           "at": "2026-03-01T10:00:04Z",
           "blocks": [
             {
+              "action": "file_edit",
               "call_id": "call_patch",
               "input": {
                 "/work/repo/src/main.rs": {
@@ -131,6 +134,7 @@
           "at": "2026-03-01T10:00:06Z",
           "blocks": [
             {
+              "action": "web",
               "call_id": "ws_1",
               "input": {
                 "action": {

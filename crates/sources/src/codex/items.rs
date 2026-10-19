@@ -11,8 +11,8 @@
 use crate::parse::InlineBlob;
 use base64::Engine;
 use polylogue_model::{
-    Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Json, PromptKind, ToolOutcome,
-    UnknownReason,
+    Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Json, PromptKind, ToolAction,
+    ToolOutcome, UnknownReason,
 };
 
 pub fn str_field<'a>(v: &'a Json, key: &str) -> Option<&'a str> {
@@ -168,6 +168,22 @@ pub fn call_input(item: &Json) -> Json {
         .or_else(|| item.get("action"))
         .cloned()
         .unwrap_or(Json::Null)
+}
+
+/// What a Codex tool does, by its name. Code mode's `exec` runs a script
+/// whose own `exec_command` calls are counted as the shell commands.
+pub fn action(tool: &str) -> ToolAction {
+    match tool {
+        "shell" | "local_shell" | "exec_command" | "shell_command" => ToolAction::Shell,
+        "exec" => ToolAction::Code,
+        "apply_patch" | "file_change" => ToolAction::FileEdit,
+        "view_image" => ToolAction::FileRead,
+        "tool_search" => ToolAction::Search,
+        "web_search" => ToolAction::Web,
+        "spawn_agent" => ToolAction::Subagent,
+        t if t.starts_with("mcp__") => ToolAction::Mcp,
+        _ => ToolAction::Other,
+    }
 }
 
 /// The shell command a call runs, for search over commands.
@@ -489,6 +505,7 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<InlineBlob>) -> Option<Vec<Bl
                 Block::ToolCall {
                     call_id: Some(id.clone()),
                     tool: Some(name),
+                    action: ToolAction::Mcp,
                     input,
                     command: None,
                     path: None,
@@ -512,6 +529,7 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<InlineBlob>) -> Option<Vec<Bl
         Block::ToolCall {
             call_id: Some(id.clone()),
             tool: Some(tool.to_owned()),
+            action: action(tool),
             input,
             command,
             path,

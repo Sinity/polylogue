@@ -92,6 +92,7 @@
               "type": "text"
             },
             {
+              "action": "shell",
               "call_id": "tool-bg",
               "command": "python -m pytest -q tests/unit/sources",
               "input": {
@@ -101,6 +102,7 @@
               "type": "tool_call"
             },
             {
+              "action": "file_read",
               "call_id": "tool-missing",
               "input": {
                 "file_path": "/workspace/polylogue/missing.py"
@@ -251,6 +253,7 @@
               "type": "text"
             },
             {
+              "action": "shell",
               "call_id": "tool-fg",
               "command": "false",
               "input": {

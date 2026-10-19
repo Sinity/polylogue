@@ -66,6 +66,7 @@
               "type": "text"
             },
             {
+              "action": "code",
               "call_id": "code_execution_session#chunk-code-1:code1",
               "command": "print(sum(range(1, 11)))",
               "input": {

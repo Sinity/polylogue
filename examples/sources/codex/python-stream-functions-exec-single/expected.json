@@ -21,6 +21,7 @@
         "message": {
           "blocks": [
             {
+              "action": "code",
               "call_id": "exec-single",
               "command": "const result = await tools.exec_command({\n  cmd: \"git status --short\",\n  workdir: \"/repo\"\n});\ntext(JSON.stringify(result));",
               "input": "const result = await tools.exec_command({\n  cmd: \"git status --short\",\n  workdir: \"/repo\"\n});\ntext(JSON.stringify(result));",

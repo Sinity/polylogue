@@ -42,6 +42,7 @@
           "at": "2026-09-02T10:00:02Z",
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_command_ok",
               "command": "ls sample",
               "input": {
@@ -84,6 +85,7 @@
           "at": "2026-09-02T10:00:04Z",
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_command_fail",
               "command": "cat sample/missing.txt",
               "input": {
@@ -130,6 +132,7 @@
           "at": "2026-09-02T10:00:06Z",
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_command_multiline",
               "command": "printf 'a\nb'",
               "input": {
@@ -172,6 +175,7 @@
           "at": "2026-09-02T10:00:08Z",
           "blocks": [
             {
+              "action": "other",
               "call_id": "call_stdin_running",
               "input": {
                 "chars": "",
@@ -215,6 +219,7 @@
           "at": "2026-09-02T10:00:10Z",
           "blocks": [
             {
+              "action": "file_edit",
               "call_id": "call_patch_fail",
               "input": "*** Begin Patch\n*** End Patch",
               "tool": "apply_patch",
@@ -258,6 +263,7 @@
           "at": "2026-09-02T10:00:12Z",
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_shell_ok",
               "command": "wc -l sample/alpha.txt",
               "input": {
@@ -300,6 +306,7 @@
           "at": "2026-09-02T10:00:14Z",
           "blocks": [
             {
+              "action": "code",
               "call_id": "call_script_ok",
               "command": "text('done')",
               "input": "text('done')",
@@ -340,6 +347,7 @@
           "at": "2026-09-02T10:00:16Z",
           "blocks": [
             {
+              "action": "code",
               "call_id": "call_script_fail",
               "command": "throw new Error('sample')",
               "input": "throw new Error('sample')",
@@ -380,6 +388,7 @@
           "at": "2026-09-02T10:00:18Z",
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_prose_decoy",
               "command": "cat sample/notes.txt",
               "input": {
@@ -426,6 +435,7 @@
           "at": "2026-09-02T10:00:20Z",
           "blocks": [
             {
+              "action": "code",
               "call_id": "call_script_decoy",
               "command": "text('notes')",
               "input": "text('notes')",

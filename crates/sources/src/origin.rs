@@ -121,7 +121,7 @@ macro_rules! reserved {
 pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code",
-        parser_version: 5,
+        parser_version: 6,
         support: Support::Parsed,
         route: Route::Live,
         framing: Framing::Lines,
@@ -157,7 +157,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "codex",
-        parser_version: 3,
+        parser_version: 4,
         support: Support::Parsed,
         route: Route::Live,
         root: crate::codex::ROOT,
@@ -181,7 +181,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "gemini-cli",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Live,
         root: Root::HOME,
@@ -206,7 +206,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "grok-cli",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Live,
         root: Root::HOME,
@@ -242,7 +242,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "browser-capture",
-        parser_version: 2,
+        parser_version: 3,
         support: Support::Parsed,
         route: Route::Spool,
         framing: Framing::Document,
@@ -278,7 +278,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "chatgpt",
-        parser_version: 2,
+        parser_version: 3,
         support: Support::Parsed,
         route: Route::Import,
         framing: Framing::Document,
@@ -290,7 +290,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "claude-ai",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
         framing: Framing::Document,
@@ -302,7 +302,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "claude-design",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
         framing: Framing::Document,
@@ -314,7 +314,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
-        parser_version: 2,
+        parser_version: 3,
         support: Support::Parsed,
         route: Route::Spool,
         framing: Framing::Document,
@@ -339,7 +339,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     reserved!("grok", Import, []),
     OriginSpec {
         name: crate::otel_genai::ORIGIN,
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
         framing: Framing::Document,
@@ -365,7 +365,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     // origin that recognizes the same file is tried first.
     OriginSpec {
         name: crate::openai_chat::ORIGIN,
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
         framing: Framing::Document,

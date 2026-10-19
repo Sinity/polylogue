@@ -651,3 +651,100 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_and_ids() {
     assert_eq!(back.events, original.events);
     assert_eq!(back.links, original.links);
 }
+
+#[test]
+fn every_origin_s_shell_and_file_calls_reach_failing_commands_and_files() {
+    let w = ClaudeHome::new();
+    let chats = w.home.join(".gemini/tmp/proj/chats");
+    fs::create_dir_all(&chats).unwrap();
+    let call = |id: &str, name: &str, args: serde_json::Value, status: &str| {
+        serde_json::json!({"id": id, "name": name, "args": args, "status": status,
+            "result": [{"functionResponse": {"id": id, "name": name,
+                                             "response": {"output": "out"}}}]})
+    };
+    let gemini = serde_json::json!({
+    "startTime": "2026-03-14T18:01:43Z", "directories": ["/work/g"],
+    "messages": [
+        {"id": "u1", "timestamp": "2026-03-14T18:01:43Z", "type": "user",
+         "content": [{"text": "build it"}]},
+        {"id": "m1", "timestamp": "2026-03-14T18:01:50Z", "type": "gemini", "content": "ok",
+         "toolCalls": [
+             call("c1", "run_shell_command", serde_json::json!({"command": "cargo build"}), "error"),
+             call("c2", "read_file", serde_json::json!({"absolute_path": "/work/g/src/main.rs"}), "success"),
+         ]},
+    ]});
+    // The file is recognized by its first key.
+    let gemini = gemini.to_string().replacen('{', r#"{"sessionId":"g1","#, 1);
+    fs::write(chats.join("session-g1.json"), gemini).unwrap();
+
+    let rollouts = w.home.join(".codex/sessions/2026/03/01");
+    fs::create_dir_all(&rollouts).unwrap();
+    let thread = "019a0000-0000-7000-8000-000000000001";
+    let env = |n: u64, ty: &str, payload: serde_json::Value| {
+        serde_json::json!({"timestamp": format!("2026-03-01T10:00:{n:02}.000Z"),
+                           "type": ty, "payload": payload})
+        .to_string()
+            + "\n"
+    };
+    let codex = env(
+        1,
+        "session_meta",
+        serde_json::json!({"id": thread, "timestamp": "2026-03-01T10:00:00.000Z", "cwd": "/work/c"}),
+    ) + &env(
+        2,
+        "response_item",
+        serde_json::json!({"type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "test it"}]}),
+    ) + &env(
+        3,
+        "response_item",
+        serde_json::json!({"type": "function_call",
+            "name": "shell_command", "arguments": "{\"command\":\"cargo test\"}", "call_id": "k1"}),
+    ) + &env(
+        4,
+        "response_item",
+        serde_json::json!({"type": "function_call_output",
+            "call_id": "k1", "output": "Exit code: 1\nWall time: 1 seconds\nOutput:\nfailed"}),
+    );
+    fs::write(
+        rollouts.join(format!("rollout-2026-03-01T10-00-00-{thread}.jsonl")),
+        codex,
+    )
+    .unwrap();
+
+    let (mut e, _lock) = w.engine(64 << 20);
+    let pass = e.converge().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+
+    let reads = w.reads();
+    let reader = reads.reader().unwrap();
+    let calls = reader
+        .query(
+            "SELECT tool, action, command_norm, path FROM tool_call ORDER BY tool",
+            &[],
+        )
+        .unwrap();
+    let row = |tool: &str| {
+        calls
+            .iter()
+            .find(|r| r["tool"] == tool)
+            .unwrap_or_else(|| panic!("no {tool} call in {calls:?}"))
+            .clone()
+    };
+    for tool in ["run_shell_command", "shell_command"] {
+        assert_eq!(row(tool)["action"], "shell", "{tool}");
+        assert!(row(tool)["command_norm"].is_string(), "{tool}: {calls:?}");
+    }
+    // The files unit counts calls whose action is a file action.
+    assert_eq!(row("read_file")["action"], "file_read");
+    assert_eq!(row("read_file")["path"], "/work/g/src/main.rs");
+
+    let failing = polylogue_store::measure::analysis::failing_commands(
+        &reader,
+        &polylogue_store::measure::Scope::default(),
+    )
+    .unwrap();
+    let repositories: Vec<&str> = failing.iter().map(|f| f.repository.as_str()).collect();
+    assert!(repositories.contains(&"cwd:/work/g"), "{repositories:?}");
+    assert!(repositories.contains(&"cwd:/work/c"), "{repositories:?}");
+}

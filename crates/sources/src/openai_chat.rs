@@ -14,7 +14,7 @@ use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Json, Message, PromptKind, Role, Session, SessionKind,
-    TitleSource, ToolOutcome, Usage,
+    TitleSource, ToolAction, ToolOutcome, Usage,
 };
 use std::path::Path;
 
@@ -254,6 +254,7 @@ fn blocks(m: &Json, role: Role) -> Vec<Block> {
         blocks.push(Block::ToolCall {
             call_id: string_of(call, "id"),
             tool: string_of(&function, "name"),
+            action: ToolAction::Other,
             input,
             command: None,
             path: None,

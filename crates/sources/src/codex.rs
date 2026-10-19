@@ -28,7 +28,7 @@ use crate::{Accounting, Disposition};
 use items::{Completed, str_field};
 use polylogue_model::{
     Block, Event, Json, Link, LinkKind, Message, MessageId, NativeId, Origin, Production,
-    PromptKind, Role, Session, SessionId, SessionKind, TitleSource, ToolOutcome, Usage,
+    PromptKind, Role, Session, SessionId, SessionKind, TitleSource, ToolAction, ToolOutcome, Usage,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -514,6 +514,7 @@ impl Rollout {
                 }
                 let block = Block::ToolCall {
                     call_id: id,
+                    action: items::action(&tool),
                     command: items::call_command(&tool, &input),
                     path: items::call_path(&tool, &input),
                     tool: Some(tool),
@@ -552,6 +553,7 @@ impl Rollout {
                     Block::ToolCall {
                         call_id: id.clone(),
                         tool: Some("web_search".into()),
+                        action: ToolAction::Web,
                         input: item.get("action").cloned().unwrap_or(Json::Null),
                         command: None,
                         path: None,

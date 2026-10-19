@@ -197,6 +197,7 @@ fn a_winning_version_from_another_session_moves_the_message_with_its_blocks() {
     open.blocks.push(Block::ToolCall {
         call_id: Some("t1".into()),
         tool: Some("Bash".into()),
+        action: polylogue_model::ToolAction::Shell,
         input: Json::Null,
         command: Some("ls".into()),
         path: None,
@@ -222,6 +223,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
         call.blocks = vec![Block::ToolCall {
             call_id: Some("t1".into()),
             tool: Some("Bash".into()),
+            action: polylogue_model::ToolAction::Shell,
             input: Json::Null,
             command: Some("cargo test".into()),
             path: None,
@@ -676,6 +678,7 @@ fn call_message(id: &str, call: &str) -> Message {
     m.blocks = vec![Block::ToolCall {
         call_id: Some(call.into()),
         tool: Some("Bash".into()),
+        action: polylogue_model::ToolAction::Shell,
         input: Json::Null,
         command: Some("cargo test".into()),
         path: None,

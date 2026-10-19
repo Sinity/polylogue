@@ -20,7 +20,7 @@ fn every_derivation_runs_after_what_it_reads() {
 }
 
 #[test]
-fn tool_calls_are_classified_by_the_derive_step() {
+fn a_shell_call_s_command_is_normalized_by_the_derive_step() {
     let mut w = WriterWorld::new();
     w.write("a", bash("a", 1, 1_000, "cargo test -p x", true, "ok"));
     assert_eq!(

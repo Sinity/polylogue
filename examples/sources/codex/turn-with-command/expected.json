@@ -182,6 +182,7 @@
           "at": "2026-03-01T10:00:08Z",
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_b",
               "command": "cargo build",
               "input": {

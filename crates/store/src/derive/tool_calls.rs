@@ -1,6 +1,6 @@
-//! What each tool call is: its kind of action, its normalized command
-//! (analysis.md), and the outcome reason a call without a result earns once
-//! its session moved on.
+//! A shell call's normalized command (analysis.md), and the outcome reason
+//! a call without a result earns once its session moved on. The call's
+//! action comes from its origin's parser.
 
 use super::Derivation;
 use crate::Result;
@@ -8,50 +8,28 @@ use rusqlite::{Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "tool_calls",
-    version: 1,
+    version: 2,
     after: &[],
     run,
 };
 
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
-    let calls: Vec<(i64, String, Option<String>)> = tx
-        .prepare_cached("SELECT pk, tool, command FROM tool_call WHERE session_pk = ?1")?
-        .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+    let calls: Vec<(i64, Option<String>)> = tx
+        .prepare_cached(
+            "SELECT pk, command FROM tool_call WHERE session_pk = ?1 AND action = 'shell'",
+        )?
+        .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut set = tx.prepare_cached(
-        "UPDATE tool_call SET action = ?2, command_norm = ?3
-         WHERE pk = ?1 AND (action IS NOT ?2 OR command_norm IS NOT ?3)",
+        "UPDATE tool_call SET command_norm = ?2 WHERE pk = ?1 AND command_norm IS NOT ?2",
     )?;
-    for (pk, tool, command) in &calls {
-        let action = action(tool);
-        let norm = (action == "shell")
-            .then(|| {
-                command
-                    .as_deref()
-                    .and_then(polylogue_model::command::normalize)
-            })
-            .flatten();
-        set.execute(params![pk, action, norm])?;
+    for (pk, command) in &calls {
+        let norm = command
+            .as_deref()
+            .and_then(polylogue_model::command::normalize);
+        set.execute(params![pk, norm])?;
     }
     passed_without_result(tx, session_pk)
-}
-
-/// The kind of action a tool performs, from its name.
-pub(crate) fn action(tool: &str) -> &'static str {
-    match tool {
-        "Bash" | "BashOutput" | "KillShell" | "shell" | "exec_command" | "local_shell" => "shell",
-        "Read" | "NotebookRead" => "file_read",
-        "Write" => "file_write",
-        "Edit" | "MultiEdit" | "NotebookEdit" | "apply_patch" => "file_edit",
-        "Grep" | "Glob" | "LS" | "ToolSearch" => "search",
-        "WebFetch" | "WebSearch" | "web_search" => "web",
-        "Task" | "Agent" => "subagent",
-        // Codex code mode: a script whose `exec_command` calls are counted
-        // in its place.
-        "exec" => "code",
-        t if t.starts_with("mcp__") => "mcp",
-        _ => "other",
-    }
 }
 
 /// Model 6 (outcome reasons): a call still without a result once a later

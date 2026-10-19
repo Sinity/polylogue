@@ -57,6 +57,7 @@
         "message": {
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_l",
               "command": "ls",
               "input": {

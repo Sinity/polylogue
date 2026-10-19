@@ -21,7 +21,7 @@ use crate::fields::{Fields, Rule, unaccounted};
 use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, ErrorReason, Event, Json, Link, LinkKind, Message,
-    PromptKind, Role, Session, SessionKind, TitleSource, ToolOutcome, UnknownReason,
+    PromptKind, Role, Session, SessionKind, TitleSource, ToolAction, ToolOutcome, UnknownReason,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -758,6 +758,20 @@ fn metadata_attachments(meta: &Json, direction: AttachmentDirection) -> Vec<Bloc
     out
 }
 
+/// What a ChatGPT tool does, by the recipient name a message is addressed
+/// to.
+fn action(tool: &str) -> ToolAction {
+    match tool {
+        "python" | "container.exec" => ToolAction::Code,
+        t if t.ends_with(".exec") => ToolAction::Code,
+        "file_search" | "myfiles_browser" => ToolAction::Search,
+        "canmore.create_textdoc" => ToolAction::FileWrite,
+        "canmore.update_textdoc" => ToolAction::FileEdit,
+        t if t == "web" || t.starts_with("web.") || t.starts_with("browser") => ToolAction::Web,
+        _ => ToolAction::Other,
+    }
+}
+
 /// An assistant message addressed to a tool. The message is the call; its
 /// own ID is the call ID its results point back to.
 fn tool_call(native: &str, tool: &str, content: &Json) -> Block {
@@ -773,13 +787,14 @@ fn tool_call(native: &str, tool: &str, content: &Json) -> Block {
         "code" => text.clone().map(Json::String).unwrap_or(Json::Null),
         _ => content.clone(),
     };
-    // A code tool's input is the code it runs.
-    let runs_code = matches!(tool, "python" | "container.exec") || tool.ends_with(".exec");
+    let action = action(tool);
     Block::ToolCall {
         call_id: Some(native.to_owned()),
         tool: Some(tool.to_owned()),
+        action,
         input,
-        command: runs_code.then_some(text).flatten(),
+        // A code tool's input is the code it runs.
+        command: (action == ToolAction::Code).then_some(text).flatten(),
         path: None,
     }
 }

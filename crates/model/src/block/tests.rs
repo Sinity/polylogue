@@ -20,11 +20,28 @@ fn blocks_serialize_with_a_type_tag() {
 }
 
 #[test]
+fn a_tool_call_stored_without_an_action_reads_as_other() {
+    // A block stored before calls carried an action reads as `other`.
+    let old: Block = serde_json::from_str(
+        r#"{"type": "tool_call", "call_id": null, "tool": "x", "input": null}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        old,
+        Block::ToolCall {
+            action: ToolAction::Other,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn text_covers_prose_and_thinking_only() {
     assert_eq!(Block::Text { text: "a".into() }.text(), Some("a"));
     let call = Block::ToolCall {
         call_id: None,
         tool: None,
+        action: ToolAction::Other,
         input: Json::Null,
         command: None,
         path: None,

@@ -43,6 +43,7 @@
               "type": "thinking"
             },
             {
+              "action": "shell",
               "call_id": "toolu_1",
               "command": "cargo build",
               "input": {
@@ -103,6 +104,7 @@
           "at": "2026-03-01T10:00:01Z",
           "blocks": [
             {
+              "action": "file_edit",
               "call_id": "toolu_2",
               "input": {
                 "file_path": "/repo/src/lib.rs",

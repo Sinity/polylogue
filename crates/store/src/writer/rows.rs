@@ -655,10 +655,13 @@ impl Ctx<'_, '_> {
             Block::ToolCall {
                 call_id,
                 tool,
+                action,
                 command,
                 path,
                 ..
-            } => self.insert_call(block_pk, session_pk, call_id, tool, command, path, at),
+            } => self.insert_call(
+                block_pk, session_pk, call_id, tool, *action, command, path, at,
+            ),
             Block::ToolResult {
                 call_id: Some(call_id),
                 outcome,
@@ -685,6 +688,7 @@ impl Ctx<'_, '_> {
         session_pk: i64,
         call_id: &Option<String>,
         tool: &Option<String>,
+        action: ToolAction,
         command: &Option<String>,
         path: &Option<String>,
         at: Option<i64>,
@@ -692,12 +696,19 @@ impl Ctx<'_, '_> {
         let tool = tool.as_deref().unwrap_or("unknown");
         self.tx
             .prepare_cached(
-                "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, command, path,
-                     outcome, outcome_reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'unknown', 'no_result')",
+                "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, action,
+                     command, path, outcome, outcome_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'unknown', 'no_result')",
             )?
             .execute(params![
-                session_pk, block_pk, call_id, at, tool, command, path
+                session_pk,
+                block_pk,
+                call_id,
+                at,
+                tool,
+                action.as_str(),
+                command,
+                path
             ])?;
         let pk = self.tx.last_insert_rowid();
         if !self.bulk {
