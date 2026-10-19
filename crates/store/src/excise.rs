@@ -8,8 +8,12 @@
 //!   this session is removed whole; in an input it shares with other
 //!   sessions, the byte ranges of its records are overwritten with spaces
 //!   of the same length (line breaks kept), so every other record keeps its
-//!   offsets. The writer refuses the session's and its messages' rows from
-//!   then on, and the loop stops collecting a removed input's paths.
+//!   offsets. A shared whole document (an export) has no record ranges: the
+//!   session's own texts are blanked where they stand as complete JSON
+//!   string values, quotes kept, so the document still parses. Notes about
+//!   the session go, and briefs that delivered its texts are redacted. The
+//!   writer refuses the session's and its messages' rows from then on, and
+//!   the loop stops collecting a removed input's paths.
 //! - **Input:** the input whole, with every session only it produced.
 //! - **Text:** every stored occurrence of a string (a leaked secret), as
 //!   written and as JSON escapes it, overwritten with spaces; the index
@@ -87,9 +91,20 @@ pub struct Excised {
     pub inputs_removed: Vec<String>,
     /// Inputs whose bytes were overwritten in place, and how many spans.
     pub inputs_overwritten: BTreeMap<String, u64>,
-    /// Inputs whose records have no byte ranges (whole documents such as
-    /// exports): their rows are gone and refused, their bytes are kept.
+    /// Shared whole documents (exports) where some of the session's texts
+    /// could not be found as a complete string value and so still stand
+    /// (`texts_left` counts them); their rows are gone and refused.
     pub inputs_kept: Vec<String>,
+    /// Session texts left in shared whole documents: too short to blank
+    /// safely (under 12 bytes) or not stored as a whole string value.
+    #[serde(default)]
+    pub texts_left: u64,
+    /// Notes whose every target was the excised session or its messages.
+    #[serde(default)]
+    pub notes_removed: u64,
+    /// Delivered briefs whose text held the session's texts, blanked.
+    #[serde(default)]
+    pub deliveries_redacted: u64,
     pub blobs_deleted: u64,
     pub embeddings_deleted: u64,
     /// Paths the loop no longer collects, as `machine:path`.
@@ -244,6 +259,9 @@ struct Plan {
     kept: BTreeSet<String>,
     /// Message IDs of the removed sessions, for the writer's refusal.
     message_ids: Vec<String>,
+    /// Texts only the removed sessions hold (bodies and titles), for
+    /// blanking shared whole documents and delivered briefs.
+    own_texts: BTreeSet<String>,
     text: Option<String>,
 }
 
@@ -256,6 +274,32 @@ impl Plan {
             .query_map([pk], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         self.message_ids.extend(ids);
+        // Its own texts: those no other session's block holds.
+        let bodies: Vec<Vec<u8>> = t
+            .index
+            .prepare(
+                "SELECT DISTINCT t.body FROM block b JOIN text t ON t.id = b.text_id
+                 WHERE b.session_pk = ?1 AND NOT EXISTS
+                   (SELECT 1 FROM block o WHERE o.text_id = b.text_id AND o.session_pk <> ?1)",
+            )?
+            .query_map([pk], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for body in bodies {
+            if let Ok(s) = unpack_text(&body) {
+                self.own_texts.insert(s);
+            }
+        }
+        let title: Option<String> = t
+            .index
+            .query_row(
+                "SELECT title FROM session s WHERE pk = ?1 AND NOT EXISTS
+               (SELECT 1 FROM session o WHERE o.title = s.title AND o.pk <> ?1)",
+                [pk],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        self.own_texts.extend(title);
         // Every input the session's rows came from.
         let inputs: Vec<(i64, String)> = t
             .index
@@ -368,6 +412,31 @@ impl Plan {
         }
         for (input, spans) in &self.spans {
             overwrite(t, input, spans, req, &mut refused, &mut delete_files)?;
+        }
+        if !self.kept.is_empty() {
+            let mut still = BTreeSet::new();
+            for input in &self.kept {
+                let left = blank_document(
+                    t,
+                    input,
+                    &self.own_texts,
+                    req,
+                    &mut refused,
+                    &mut delete_files,
+                    done,
+                )?;
+                done.texts_left += left;
+                if left > 0 {
+                    still.insert(input.clone());
+                }
+            }
+            done.inputs_kept = still.into_iter().collect();
+        }
+        if !self.sessions.is_empty() {
+            let ids: Vec<String> = self.sessions.iter().map(|(_, id)| id.clone()).collect();
+            done.notes_removed = remove_notes(t.archive, &ids, &self.message_ids, req.dry_run)?;
+            done.deliveries_redacted =
+                redact_deliveries(t.archive, &ids, &self.own_texts, req.dry_run)?;
         }
         // Blobs nothing refers to any more: the removed inputs' and the
         // removed blocks' (inline images, large outputs).
@@ -846,6 +915,195 @@ fn overwrite(
     }
     insert_excised_observations(t, input, req, Some(&serde_json::Value::Array(spans_json)))?;
     Ok(())
+}
+
+/// Shortest session text blanked in a shared whole document: a shorter
+/// complete string value ("ok", "user") could be another record's value
+/// or the document's own structure.
+const MIN_BLANKED: usize = 12;
+
+/// The forms a text takes as a complete JSON string value: as `serde_json`
+/// writes it, and with non-ASCII escaped as `\uXXXX` (Python's default).
+fn quoted(text: &str) -> Vec<Vec<u8>> {
+    let Ok(plain) = serde_json::to_string(text) else {
+        return Vec::new();
+    };
+    let mut ascii = String::with_capacity(plain.len());
+    for ch in plain.chars() {
+        if ch.is_ascii() {
+            ascii.push(ch);
+        } else {
+            let mut units = [0u16; 2];
+            for u in ch.encode_utf16(&mut units) {
+                ascii.push_str(&format!("\\u{u:04x}"));
+            }
+        }
+    }
+    let mut out = vec![plain.into_bytes()];
+    if ascii.as_bytes() != out[0].as_slice() {
+        out.push(ascii.into_bytes());
+    }
+    out
+}
+
+/// A shared whole document: blanks the session's own texts where they
+/// stand as complete JSON string values, quotes kept. Returns how many of
+/// those texts are still in it (too short, or not found whole).
+fn blank_document(
+    t: &Txs<'_, '_>,
+    input: &str,
+    texts: &BTreeSet<String>,
+    req: &ExciseRequest,
+    refused: &mut RefusedJson,
+    delete_files: &mut Vec<BlobHash>,
+    done: &mut Excised,
+) -> Result<u64> {
+    let blobs: Vec<Vec<u8>> = t
+        .archive
+        .prepare("SELECT DISTINCT blob FROM extent WHERE input = ?1")?
+        .query_map([input], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut left = texts.iter().filter(|s| s.len() < MIN_BLANKED).count() as u64;
+    let wanted: Vec<Vec<Vec<u8>>> = texts
+        .iter()
+        .filter(|s| s.len() >= MIN_BLANKED)
+        .map(|s| quoted(s))
+        .collect();
+    let mut found = vec![false; wanted.len()];
+    let mut spans_json = Vec::new();
+    for hash in blobs {
+        let Ok(arr) = <[u8; 32]>::try_from(hash.as_slice()) else {
+            continue;
+        };
+        let old = BlobHash(arr);
+        let bytes = crate::blobs::read(t.archive, t.store, &old)?;
+        let mut ranges = Vec::new();
+        for (n, forms) in wanted.iter().enumerate() {
+            let hits = find_all(&bytes, forms);
+            if !hits.is_empty() {
+                found[n] = true;
+            }
+            // The string's inside only: the quotes keep the document valid.
+            ranges.extend(hits.into_iter().map(|(s, e)| (s + 1, e - 1)));
+        }
+        if ranges.is_empty() {
+            continue;
+        }
+        ranges.sort();
+        *done.inputs_overwritten.entry(input.to_owned()).or_default() += ranges.len() as u64;
+        if req.dry_run {
+            continue;
+        }
+        for &(s, e) in &ranges {
+            spans_json.push(serde_json::json!([hex(&hash), s, e - s]));
+        }
+        if let Some(gone) = replace_blob(t, &old, bytes, &ranges)? {
+            refused.blobs.push(hex(&gone.hash));
+            delete_files.extend(gone.file);
+        }
+    }
+    left += found.iter().filter(|f| !**f).count() as u64;
+    if !req.dry_run && !spans_json.is_empty() {
+        insert_excised_observations(t, input, req, Some(&serde_json::Value::Array(spans_json)))?;
+    }
+    Ok(left)
+}
+
+/// Notes about the removed sessions: targets naming a session or one of its
+/// messages go, and a note left with no target goes with its relations.
+fn remove_notes(
+    a: &Transaction<'_>,
+    sessions: &[String],
+    messages: &[String],
+    dry_run: bool,
+) -> Result<u64> {
+    let refs: HashSet<String> = sessions
+        .iter()
+        .map(|s| format!("session:{s}"))
+        .chain(messages.iter().map(|m| format!("message:{m}")))
+        .collect();
+    // Tool calls are named `tool:<session>#<call>`.
+    let tools: Vec<String> = sessions.iter().map(|s| format!("tool:{s}#")).collect();
+    let about = |r: &str| refs.contains(r) || tools.iter().any(|p| r.starts_with(p.as_str()));
+    let mut by_note: BTreeMap<String, (u64, Vec<String>)> = BTreeMap::new();
+    let mut stmt = a.prepare("SELECT note_id, ref FROM note_target")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (note, r) = row?;
+        let e = by_note.entry(note).or_default();
+        e.0 += 1;
+        if about(&r) {
+            e.1.push(r);
+        }
+    }
+    drop(stmt);
+    let mut removed = 0;
+    for (note, (all, hit)) in by_note {
+        if hit.is_empty() {
+            continue;
+        }
+        let whole = hit.len() as u64 == all;
+        if whole {
+            removed += 1;
+        }
+        if dry_run {
+            continue;
+        }
+        for r in &hit {
+            a.execute(
+                "DELETE FROM note_target WHERE note_id = ?1 AND ref = ?2",
+                params![note, r],
+            )?;
+        }
+        if whole {
+            a.execute("DELETE FROM note_relation WHERE note_id = ?1", [&note])?;
+            a.execute("DELETE FROM note WHERE id = ?1", [&note])?;
+        }
+    }
+    Ok(removed)
+}
+
+/// Delivered briefs that named a removed session: the session's own texts
+/// in them are blanked, and the content hash follows the new text.
+fn redact_deliveries(
+    a: &Transaction<'_>,
+    sessions: &[String],
+    texts: &BTreeSet<String>,
+    dry_run: bool,
+) -> Result<u64> {
+    let rows: Vec<(String, Vec<u8>, String)> = a
+        .prepare("SELECT id, body, refs_json FROM delivery")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut n = 0;
+    for (id, body, refs) in rows {
+        if !sessions.iter().any(|s| refs.contains(s.as_str())) {
+            continue;
+        }
+        let Ok(text) = unpack_text(&body) else {
+            continue;
+        };
+        let mut new = text.clone();
+        for s in texts.iter().filter(|s| s.len() >= MIN_BLANKED) {
+            new = new.replace(s.as_str(), &blank(s.as_bytes()));
+        }
+        if new == text {
+            continue;
+        }
+        n += 1;
+        if dry_run {
+            continue;
+        }
+        a.execute(
+            "UPDATE delivery SET body = ?2, content_hash = ?3 WHERE id = ?1",
+            params![
+                id,
+                zstd::bulk::compress(new.as_bytes(), 1)?,
+                &blake3::hash(new.as_bytes()).as_bytes()[..]
+            ],
+        )?;
+    }
+    Ok(n)
 }
 
 /// Removes an input whole: its revisions and extents, and records its
