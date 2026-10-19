@@ -185,6 +185,9 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 },
             }
         }
+        Request::Measure { what, query } => {
+            super::measure::handle(&reader, &what, query.as_deref(), now_ms())
+        }
         Request::Sql { statement } => match reader.query(&statement, &[]) {
             // The connection is read-only: a statement that writes fails.
             Ok(rows) => ok(rows),

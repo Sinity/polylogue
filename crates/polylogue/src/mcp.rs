@@ -74,6 +74,16 @@ pub struct ListArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct MeasureArgs {
+    /// usage, cost, quota, outcomes, survival, survival-turns,
+    /// daily:<tokens|api_cost|sessions|prompts|tool_errors>, process or rhythm.
+    pub what: String,
+    /// A sessions query to measure over (e.g. `repo:polylogue since:7d`);
+    /// everything when absent. `quota` takes none.
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadArgs {
     /// `origin:native_id`, as `list` prints it.
     pub session: String,
@@ -230,6 +240,19 @@ impl Polylogue {
                     for_session: None,
                 },
                 sender: Some("mcp".into()),
+            },
+            &self.socket,
+        )
+    }
+
+    #[tool(
+        description = "Measure usage: token lanes and API-equivalent cost by model, the 5-hour and weekly subscription windows with burn and forecast (`quota`), tool outcomes, survival to the first failed tool call, daily series with level changes, tool-call transitions, and prompt rhythm. Unknown figures are null, never 0."
+    )]
+    async fn measure(&self, Parameters(a): Parameters<MeasureArgs>) -> String {
+        answer(
+            &Request::Measure {
+                what: a.what,
+                query: a.query,
             },
             &self.socket,
         )

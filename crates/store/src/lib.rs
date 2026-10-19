@@ -9,6 +9,7 @@
 
 pub mod blobs;
 pub mod context;
+pub mod cost;
 pub mod excise;
 pub mod export;
 pub mod fault;
@@ -16,6 +17,7 @@ pub mod files;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 pub mod functions;
+pub mod measure;
 pub mod notes;
 pub mod read;
 pub mod rows;

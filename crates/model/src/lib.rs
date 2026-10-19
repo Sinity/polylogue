@@ -8,6 +8,7 @@ pub mod export;
 mod id;
 mod message;
 mod note;
+pub mod price;
 mod session;
 mod time;
 mod usage;
@@ -25,6 +26,7 @@ pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{LogicalDay, Timestamp};
 pub mod text;
+pub use price::{Catalog, Price};
 pub use usage::Usage;
 pub use work::{WorkEdge, WorkEdgeKind, WorkNode, WorkNodeKind};
 
