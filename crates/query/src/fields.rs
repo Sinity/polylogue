@@ -9,6 +9,7 @@
 //! `next.action`) are resolved by [`crate::compile`] with other aliases.
 
 use crate::ast::Unit;
+use crate::compile::ColKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -40,6 +41,74 @@ pub struct Field {
     /// The closed set of values, when there is one.
     pub values: Option<&'static [&'static str]>,
     pub help: &'static str,
+    /// The SQL of the field's value. A `Special` field matches by its own
+    /// rule but may still have a value to group, sort and show by.
+    pub sql: Option<Expr>,
+    /// The column kind of the value when the matching kind does not say.
+    pub value_kind: Option<ColKind>,
+}
+
+/// SQL over a unit's aliases: a template whose `{s}`, `{m}`, `{b}`, `{t}`,
+/// `{cb}` and `{r}` name them, or a function for what a template cannot
+/// say; `Clock` also takes the query's instant.
+#[derive(Clone, Copy)]
+pub enum Expr {
+    Template(&'static str),
+    Fn(fn(&Aliases) -> String),
+    Clock(fn(&Aliases, i64) -> String),
+}
+
+impl Expr {
+    pub fn render(&self, a: &Aliases, now: i64) -> String {
+        match self {
+            Expr::Template(t) => a.expand(t),
+            Expr::Fn(f) => f(a),
+            Expr::Clock(f) => f(a, now),
+        }
+    }
+}
+
+impl Field {
+    const fn sql(mut self, template: &'static str) -> Self {
+        self.sql = Some(Expr::Template(template));
+        self
+    }
+
+    const fn sql_fn(mut self, f: fn(&Aliases) -> String) -> Self {
+        self.sql = Some(Expr::Fn(f));
+        self
+    }
+
+    const fn sql_clock(mut self, f: fn(&Aliases, i64) -> String) -> Self {
+        self.sql = Some(Expr::Clock(f));
+        self
+    }
+
+    /// The value is true or false, though the field matches by its own rule.
+    const fn boolean(mut self) -> Self {
+        self.value_kind = Some(ColKind::Bool);
+        self
+    }
+
+    /// The field's value over `a` at `now`.
+    pub fn expr(&self, a: &Aliases, now: i64) -> Option<String> {
+        self.sql.map(|e| e.render(a, now))
+    }
+
+    /// The kind of the field's value as a column.
+    pub fn column_kind(&self) -> ColKind {
+        if let Some(k) = self.value_kind {
+            return k;
+        }
+        match self.kind {
+            Kind::Number => ColKind::Number,
+            Kind::Money => ColKind::Money,
+            Kind::Duration => ColKind::Duration,
+            Kind::Time => ColKind::Time,
+            Kind::Bool => ColKind::Bool,
+            _ => ColKind::Text,
+        }
+    }
 }
 
 const fn f(unit: Unit, name: &'static str, kind: Kind, help: &'static str) -> Field {
@@ -49,6 +118,8 @@ const fn f(unit: Unit, name: &'static str, kind: Kind, help: &'static str) -> Fi
         kind,
         values: None,
         help,
+        sql: None,
+        value_kind: None,
     }
 }
 
@@ -64,6 +135,8 @@ const fn v(
         kind: Kind::Match,
         values: Some(values),
         help,
+        sql: None,
+        value_kind: None,
     }
 }
 
@@ -80,6 +153,8 @@ const fn sv(
         kind: Kind::Special,
         values: Some(values),
         help,
+        sql: None,
+        value_kind: None,
     }
 }
 
@@ -116,29 +191,29 @@ pub const LINK_KINDS: &[&str] = &["subagent", "continuation", "reference"];
 
 pub static FIELDS: &[Field] = &[
     // sessions
-    f(Sessions, "id", Prefix, "session ID or a unique prefix"),
-    f(Sessions, "origin", Match, "claude-code, codex, chatgpt, …"),
+    f(Sessions, "id", Prefix, "session ID or a unique prefix").sql("{s}.id"),
+    f(Sessions, "origin", Match, "claude-code, codex, chatgpt, …").sql("{s}.origin"),
     v(
         Sessions,
         "kind",
         SESSION_KINDS,
         "main, subagent, sidechain or chat",
-    ),
-    f(Sessions, "title", Substring, "the displayed title"),
+    ).sql("{s}.kind"),
+    f(Sessions, "title", Substring, "the displayed title").sql("{s}.title"),
     f(
         Sessions,
         "repo",
         Special,
         "the repository: name, owner/name or URL",
-    ),
-    f(Sessions, "checkout", Subtree, "the worktree path"),
+    ).sql("{s}.repo"),
+    f(Sessions, "checkout", Subtree, "the worktree path").sql("{s}.checkout"),
     f(
         Sessions,
         "collection",
         Special,
         "the provider's grouping: name or ID",
-    ),
-    f(Sessions, "branch", Match, "the git branch, as recorded"),
+    ).sql("COALESCE({s}.collection_name, {s}.collection_id)"),
+    f(Sessions, "branch", Match, "the git branch, as recorded").sql("{s}.branch"),
     f(
         Sessions,
         "commit",
@@ -156,62 +231,64 @@ pub static FIELDS: &[Field] = &[
         "outcome",
         SESSION_OUTCOMES,
         "the session's outcome note",
-    ),
-    f(Sessions, "hidden", Bool, "has a hidden note"),
+    ).sql_fn(sessions_outcome),
+    f(Sessions, "hidden", Bool, "has a hidden note").sql_fn(sessions_hidden),
     f(
         Sessions,
         "cwd",
         Special,
         "working directory, and the directories below it",
-    ),
+    ).sql("{s}.cwd"),
     v(
         Sessions,
         "source",
         &["present", "missing"],
         "whether a transcript was stored",
-    ),
+    ).sql("CASE WHEN {s}.stub = 1 THEN 'missing' ELSE 'present' END"),
     sv(
         Sessions,
         "live",
         LIVE_STATES,
         "the live state now, from hook and process records and the time",
-    ),
-    f(Sessions, "waiting", Special, "the live state is waiting"),
+    ).sql_clock(sessions_live),
+    f(Sessions, "waiting", Special, "the live state is waiting").sql_clock(sessions_waiting).boolean(),
     f(
         Sessions,
         "running",
         Special,
         "the live state is working, waiting, idle or unknown",
-    ),
+    ).sql_clock(sessions_running).boolean(),
     v(
         Sessions,
         "waiting_on",
         &["permission", "question", "notification"],
         "what a waiting session waits for",
-    ),
+    ).sql("{s}.live_waiting_on"),
     f(
         Sessions,
         "task",
         Match,
         "the live task: a job ID or Bead ID",
-    ),
+    ).sql("{s}.live_task"),
     f(
         Sessions,
         "process_alive",
         Bool,
         "whether the harness process is alive",
-    ),
+    ).sql("{s}.live_root_alive"),
     f(
         Sessions,
         "harness",
         Match,
         "claude-code, codex-tui, codex-exec, …",
-    ),
+    ).sql("{s}.harness"),
     f(
         Sessions,
         "model",
         Special,
         "a model that wrote at least one message",
+    ).sql(
+        "(SELECT x.model FROM message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL GROUP BY x.model ORDER BY count(*) DESC LIMIT 1)",
     ),
     f(
         Sessions,
@@ -225,7 +302,7 @@ pub static FIELDS: &[Field] = &[
         SESSION_HAS,
         "thinking, tool_calls, errors, attachments, compaction, …",
     ),
-    f(Sessions, "temporary", Bool, "temporary web chats"),
+    f(Sessions, "temporary", Bool, "temporary web chats").sql("{s}.temporary"),
     f(
         Sessions,
         "parent",
@@ -263,13 +340,13 @@ pub static FIELDS: &[Field] = &[
         Special,
         "every session connected through links",
     ),
-    f(Sessions, "team", Match, "the agent team"),
+    f(Sessions, "team", Match, "the agent team").sql("{s}.team"),
     f(
         Sessions,
         "agent_name",
         Match,
         "the member's name in an agent team",
-    ),
+    ).sql("{s}.agent_name"),
     f(
         Sessions,
         "path",
@@ -288,116 +365,116 @@ pub static FIELDS: &[Field] = &[
         Special,
         "the session made such a tool call",
     ),
-    f(Sessions, "started", Time, "first own message or event"),
-    f(Sessions, "last_active", Time, "last own message or event"),
+    f(Sessions, "started", Time, "first own message or event").sql("{s}.started_at"),
+    f(Sessions, "last_active", Time, "last own message or event").sql("{s}.last_activity_at"),
     f(Sessions, "since", Special, "active on or after the time"),
     f(Sessions, "until", Special, "begun on or before the time"),
-    f(Sessions, "messages", Number, "own messages"),
-    f(Sessions, "human_prompts", Number, "own prose prompts"),
-    f(Sessions, "human_commands", Number, "own typed commands"),
-    f(Sessions, "words", Number, "words in own prose"),
-    f(Sessions, "tool_calls", Number, "own tool calls"),
+    f(Sessions, "messages", Number, "own messages").sql_fn(sessions_messages),
+    f(Sessions, "human_prompts", Number, "own prose prompts").sql_fn(sessions_human_prompts),
+    f(Sessions, "human_commands", Number, "own typed commands").sql_fn(sessions_human_commands),
+    f(Sessions, "words", Number, "words in own prose").sql_fn(sessions_words),
+    f(Sessions, "tool_calls", Number, "own tool calls").sql_fn(sessions_tool_calls),
     f(
         Sessions,
         "errors",
         Number,
         "own tool calls with outcome error",
-    ),
-    f(Sessions, "input_tokens", Number, "summed over own messages"),
+    ).sql_fn(sessions_errors),
+    f(Sessions, "input_tokens", Number, "summed over own messages").sql_fn(sessions_input_tokens),
     f(
         Sessions,
         "output_tokens",
         Number,
         "summed over own messages",
-    ),
+    ).sql_fn(sessions_output_tokens),
     f(
         Sessions,
         "cache_read_tokens",
         Number,
         "summed over own messages",
-    ),
+    ).sql_fn(sessions_cache_read_tokens),
     f(
         Sessions,
         "cache_write_tokens",
         Number,
         "summed over own messages",
-    ),
+    ).sql_fn(sessions_cache_write_tokens),
     f(
         Sessions,
         "cost",
         Money,
         "own cost; unknown when nothing is priced",
-    ),
+    ).sql_fn(sessions_cost),
     f(
         Sessions,
         "tree_cost",
         Money,
         "own cost plus every session below in the subagent tree",
-    ),
-    f(Sessions, "duration", Duration, "last_active - started"),
+    ).sql_fn(sessions_tree_cost),
+    f(Sessions, "duration", Duration, "last_active - started").sql("({s}.last_activity_at - {s}.started_at)"),
     f(Sessions, "near", Special, "semantic similarity (a ranking)"),
     f(Sessions, "output", Special, "words in tool output"),
     f(Sessions, "thinking", Special, "words in thinking"),
     // messages
-    f(Messages, "id", Prefix, "message ID"),
+    f(Messages, "id", Prefix, "message ID").sql("{m}.id"),
     v(
         Messages,
         "role",
         &["user", "assistant", "system", "tool"],
         "user, assistant, system or tool",
-    ),
+    ).sql("{m}.role"),
     v(
         Messages,
         "written_by",
         &["human", "model", "harness", "unknown"],
         "who wrote it",
-    ),
+    ).sql("{m}.written_by"),
     v(
         Messages,
         "prompt_kind",
         &["prose", "command", "harness"],
         "for human messages: prose or command",
-    ),
+    ).sql("{m}.prompt_kind"),
     v(
         Messages,
         "authorship",
         &["authored", "pasted", "mixed", "unknown"],
         "for human messages",
-    ),
-    f(Messages, "model", Match, "the model that wrote it"),
-    f(Messages, "at", Time, "provider time"),
+    ).sql("COALESCE({m}.authorship, 'unknown')"),
+    f(Messages, "model", Match, "the model that wrote it").sql("{m}.model"),
+    f(Messages, "at", Time, "provider time").sql("{m}.at"),
     f(
         Messages,
         "inherited",
         Bool,
         "a copy of an earlier session's message",
-    ),
-    f(Messages, "active", Bool, "on the active path"),
+    ).sql("({m}.inherited_from IS NOT NULL)"),
+    f(Messages, "active", Bool, "on the active path").sql("COALESCE({m}.on_active_path, 1)"),
     sv(
         Messages,
         "has",
         &["thinking", "tool_calls", "attachments", "code"],
         "thinking, tool_calls, attachments, code",
     ),
-    f(Messages, "words", Number, "words in its text"),
-    f(Messages, "input_tokens", Number, ""),
-    f(Messages, "output_tokens", Number, ""),
-    f(Messages, "cache_read_tokens", Number, ""),
-    f(Messages, "cache_write_tokens", Number, ""),
+    f(Messages, "words", Number, "words in its text").sql("{m}.words"),
+    f(Messages, "input_tokens", Number, "").sql("{m}.input_tokens"),
+    f(Messages, "output_tokens", Number, "").sql("{m}.output_tokens"),
+    f(Messages, "cache_read_tokens", Number, "").sql("{m}.cache_read_tokens"),
+    f(Messages, "cache_write_tokens", Number, "").sql("{m}.cache_write_tokens"),
     f(
         Messages,
         "cost",
         Money,
         "per message; unknown when unpriced",
-    ),
-    f(Messages, "stop_reason", Match, ""),
+    ).sql("{m}.cost_nusd"),
+    f(Messages, "stop_reason", Match, "").sql("{m}.stop_reason"),
     f(
         Messages,
         "from_session",
         Prefix,
         "the sending session of an agent-to-agent message",
-    ),
-    f(Messages, "from_name", Match, "the sender's name as written"),
+    ).sql("{m}.from_session"),
+    f(Messages, "from_name", Match, "the sender's name as written").sql("{m}.from_name"),
     f(Messages, "since", Special, "at or after the time"),
     f(Messages, "until", Special, "at or before the time"),
     f(Messages, "near", Special, "semantic similarity (a ranking)"),
@@ -417,38 +494,40 @@ pub static FIELDS: &[Field] = &[
             "other",
         ],
         "the block kind",
-    ),
-    f(Blocks, "media_type", Match, ""),
-    f(Blocks, "file_name", Substring, ""),
-    f(Blocks, "at", Time, "the message's time"),
+    ).sql("{b}.kind"),
+    f(Blocks, "media_type", Match, "").sql("{b}.media_type"),
+    f(Blocks, "file_name", Substring, "").sql("{b}.file_name"),
+    f(Blocks, "at", Time, "the message's time").sql("{m}.at"),
     f(Blocks, "since", Special, "at or after the time"),
     f(Blocks, "until", Special, "at or before the time"),
     // tool_calls
-    f(ToolCalls, "tool", Match, "the tool name as written"),
+    f(ToolCalls, "tool", Match, "the tool name as written").sql("{t}.tool"),
     f(
         ToolCalls,
         "mcp_server",
         Special,
         "for MCP tools, the server part of the name",
+    ).sql(
+        "CASE WHEN {t}.tool LIKE 'mcp\\_\\_%' ESCAPE '\\' THEN substr({t}.tool, 6, instr(substr({t}.tool, 6), '__') - 1) END",
     ),
     v(
         ToolCalls,
         "action",
         ACTIONS,
         "shell, file_read, file_write, file_edit, search, web, …",
-    ),
+    ).sql("{t}.action"),
     f(
         ToolCalls,
         "command",
         Special,
         "the shell command (substring)",
-    ),
+    ).sql("{t}.command"),
     f(
         ToolCalls,
         "command_norm",
         Match,
         "the normalized command: cargo test, git commit",
-    ),
+    ).sql("{t}.command_norm"),
     f(
         ToolCalls,
         "input",
@@ -461,16 +540,19 @@ pub static FIELDS: &[Field] = &[
         "path",
         Special,
         "a file path in the arguments (substring)",
-    ),
+    ).sql("{t}.path"),
     v(
         ToolCalls,
         "outcome",
         TOOL_OUTCOMES,
         "ok, error, pending or unknown",
+    ).sql(
+        "CASE WHEN {t}.result_block_pk IS NULL AND {t}.outcome = 'unknown' AND {s}.live_root_alive = 1 \
+             THEN 'pending' ELSE {t}.outcome END",
     ),
-    f(ToolCalls, "exit_code", Number, ""),
-    f(ToolCalls, "at", Time, ""),
-    f(ToolCalls, "duration", Duration, ""),
+    f(ToolCalls, "exit_code", Number, "").sql("{t}.exit_code"),
+    f(ToolCalls, "at", Time, "").sql("{t}.at"),
+    f(ToolCalls, "duration", Duration, "").sql("{t}.duration_ms"),
     f(
         ToolCalls,
         "since",
@@ -486,26 +568,26 @@ pub static FIELDS: &[Field] = &[
     ),
     f(ToolCalls, "next", Special, "the session's next tool call"),
     // files
-    f(Files, "path", Substring, "the file path"),
-    f(Files, "reads", Number, ""),
-    f(Files, "writes", Number, ""),
-    f(Files, "edits", Number, ""),
-    f(Files, "first_at", Time, ""),
-    f(Files, "last_at", Time, ""),
+    f(Files, "path", Substring, "the file path").sql("{r}.path"),
+    f(Files, "reads", Number, "").sql("{r}.reads"),
+    f(Files, "writes", Number, "").sql("{r}.writes"),
+    f(Files, "edits", Number, "").sql("{r}.edits"),
+    f(Files, "first_at", Time, "").sql("{r}.first_at"),
+    f(Files, "last_at", Time, "").sql("{r}.last_at"),
     // events
     f(
         Events,
         "kind",
         Match,
         "compaction, model_switch, permission, …",
-    ),
-    f(Events, "at", Time, ""),
+    ).sql("{r}.kind"),
+    f(Events, "at", Time, "").sql("{r}.at"),
     f(
         Events,
         "model_saw",
         Bool,
         "the content was part of the model's context",
-    ),
+    ).sql("{r}.model_saw"),
     f(Events, "since", Special, "at or after the time"),
     f(Events, "until", Special, "at or before the time"),
     // links
@@ -514,7 +596,7 @@ pub static FIELDS: &[Field] = &[
         "kind",
         LINK_KINDS,
         "subagent, continuation or reference",
-    ),
+    ).sql("{r}.kind"),
     v(
         Links,
         "how",
@@ -530,82 +612,82 @@ pub static FIELDS: &[Field] = &[
             "mention",
         ],
         "how the child relates",
-    ),
-    f(Links, "parent", Special, "the parent session"),
-    f(Links, "child", Special, "the child session"),
-    f(Links, "pending", Bool, "the parent is not in the archive"),
+    ).sql("{r}.how"),
+    f(Links, "parent", Special, "the parent session").sql("{r}.parent_id"),
+    f(Links, "child", Special, "the child session").sql("{r}c.id"),
+    f(Links, "pending", Bool, "the parent is not in the archive").sql("(NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = {r}.parent_id))"),
     f(
         Links,
         "evidence",
         Match,
         "the input field that established it",
-    ),
+    ).sql("{r}.evidence"),
     f(
         Links,
         "branch_point",
         Prefix,
         "the message where the child branched off",
-    ),
-    f(Links, "spawned_by", Prefix, "the spawning tool call"),
+    ).sql("{r}.branch_point"),
+    f(Links, "spawned_by", Prefix, "the spawning tool call").sql("{r}.spawned_by"),
     f(
         Links,
         "retry_of",
         Prefix,
         "the earlier spawning call this one retries",
-    ),
+    ).sql("{r}.retry_of"),
     v(
         Links,
         "result_use",
         &["returned", "referenced", "unknown"],
         "how the child's result reached the parent",
-    ),
+    ).sql("COALESCE({r}.result_use, 'unknown')"),
     // notes
-    f(Notes, "kind", Match, "tag, note, title, decision, claim, …"),
-    f(Notes, "key", Match, ""),
-    f(Notes, "value", Substring, ""),
+    f(Notes, "kind", Match, "tag, note, title, decision, claim, …").sql("{r}.kind"),
+    f(Notes, "key", Match, "").sql("{r}.key"),
+    f(Notes, "value", Substring, "").sql("{r}.value"),
     f(
         Notes,
         "author",
         Match,
         "operator, a session ID, agent or script",
-    ),
+    ).sql("{r}.author"),
     f(Notes, "target", Special, "a reference"),
     f(
         Notes,
         "source",
         Prefix,
         "the message an inline marker came from",
-    ),
-    f(Notes, "created_at", Time, ""),
-    f(Notes, "root", Prefix, "the revision family"),
-    f(Notes, "current", Bool, "no later revision replaces it"),
+    ).sql("{r}.source"),
+    f(Notes, "created_at", Time, "").sql("{r}.created_at"),
+    f(Notes, "root", Prefix, "the revision family").sql("{r}.root"),
+    f(Notes, "current", Bool, "no later revision replaces it").sql_fn(notes_current),
     f(
         Notes,
         "withdrawn",
         Bool,
         "a current withdrawal withdraws it",
-    ),
+    ).sql_fn(notes_withdrawn),
     f(Notes, "since", Special, "created at or after the time"),
     f(Notes, "until", Special, "created at or before the time"),
     // runs
-    f(Runs, "id", Prefix, ""),
-    v(Runs, "kind", &["task", "attempt"], ""),
-    f(Runs, "task", Prefix, "an attempt's task"),
+    f(Runs, "id", Prefix, "").sql("{r}.id"),
+    v(Runs, "kind", &["task", "attempt"], "").sql("{r}.kind"),
+    f(Runs, "task", Prefix, "an attempt's task").sql("{r}.task_id"),
     v(
         Runs,
         "state",
         &["running", "completed", "failed", "cancelled", "unknown"],
         "",
-    ),
-    f(Runs, "instruction", Substring, ""),
-    f(Runs, "attempts", Number, "for a task: how many attempts"),
-    f(Runs, "started", Time, ""),
-    f(Runs, "ended", Time, ""),
-    f(Runs, "duration", Duration, ""),
-    f(Runs, "evidence", Match, ""),
+    ).sql("{r}.state"),
+    f(Runs, "instruction", Substring, "").sql("{r}.instruction"),
+    f(Runs, "attempts", Number, "for a task: how many attempts").sql("(SELECT count(*) FROM run ra WHERE ra.task_id = {r}.id)"),
+    f(Runs, "started", Time, "").sql("{r}.started_at"),
+    f(Runs, "ended", Time, "").sql("{r}.ended_at"),
+    f(Runs, "duration", Duration, "").sql("({r}.ended_at - {r}.started_at)"),
+    f(Runs, "evidence", Match, "").sql("{r}.evidence"),
     // deliveries
-    f(Deliveries, "id", Prefix, ""),
-    f(Deliveries, "recipient", Special, "the receiving session"),
+    f(Deliveries, "id", Prefix, "").sql("{r}.id"),
+    f(Deliveries, "recipient", Special, "the receiving session").sql("{r}.recipient_id"),
     v(
         Deliveries,
         "event",
@@ -619,13 +701,13 @@ pub static FIELDS: &[Field] = &[
             "advisory",
         ],
         "",
-    ),
+    ).sql("{r}.event"),
     v(
         Deliveries,
         "outcome",
         &["delivered", "failed", "unknown", "not_sent"],
         "",
-    ),
+    ).sql("{r}.outcome"),
     f(
         Deliveries,
         "refs",
@@ -638,121 +720,121 @@ pub static FIELDS: &[Field] = &[
         Special,
         "a reference left out for budget",
     ),
-    f(Deliveries, "at", Time, ""),
-    f(Deliveries, "bytes", Number, ""),
+    f(Deliveries, "at", Time, "").sql("{r}.at"),
+    f(Deliveries, "bytes", Number, "").sql("{r}.bytes"),
     // turns (spec query.md, turns): computed along the active path
-    f(Turns, "id", Prefix, "its first prompt's message ID"),
-    f(Turns, "start", Time, "the first message's time"),
+    f(Turns, "id", Prefix, "its first prompt's message ID").sql("{r}.id"),
+    f(Turns, "start", Time, "the first message's time").sql("{r}.start"),
     f(
         Turns,
         "end",
         Time,
         "the latest time of any message in the turn",
-    ),
-    f(Turns, "burst", Number, "how many prompts it has"),
-    f(Turns, "slash_command", Bool, "starts with a typed command"),
+    ).sql("{r}.end"),
+    f(Turns, "burst", Number, "how many prompts it has").sql("{r}.burst"),
+    f(Turns, "slash_command", Bool, "starts with a typed command").sql("{r}.slash_command"),
     f(
         Turns,
         "answer",
         Prefix,
         "the model's final message in the turn",
-    ),
+    ).sql("{r}.answer"),
     f(
         Turns,
         "attempts",
         Number,
         "replies under the turn's last prompt, abandoned branches included",
-    ),
+    ).sql("{r}.attempts"),
     v(
         Turns,
         "path",
         &["active", "unknown"],
         "unknown when the session's active path is unknown",
-    ),
+    ).sql("{r}.path"),
     f(
         Turns,
         "latency",
         Duration,
         "from the last prompt to the first model message",
-    ),
-    f(Turns, "tool_calls", Number, ""),
-    f(Turns, "errors", Number, "tool calls with outcome error"),
-    f(Turns, "input_tokens", Number, ""),
-    f(Turns, "output_tokens", Number, ""),
-    f(Turns, "cost", Money, ""),
+    ).sql("{r}.latency"),
+    f(Turns, "tool_calls", Number, "").sql("{r}.tool_calls"),
+    f(Turns, "errors", Number, "tool calls with outcome error").sql("{r}.errors"),
+    f(Turns, "input_tokens", Number, "").sql("{r}.input_tokens"),
+    f(Turns, "output_tokens", Number, "").sql("{r}.output_tokens"),
+    f(Turns, "cost", Money, "").sql("{r}.cost_nusd"),
     f(
         Turns,
         "abandoned",
         Bool,
         "the turn ended the session with no answer",
-    ),
+    ).sql("{r}.abandoned"),
     // processes
-    v(Processes, "role", &["harness", "child"], ""),
-    f(Processes, "comm", Match, "the command name"),
+    v(Processes, "role", &["harness", "child"], "").sql("{r}.role"),
+    f(Processes, "comm", Match, "the command name").sql("{r}.comm"),
     f(
         Processes,
         "argv",
         Substring,
         "the argument list, as observed",
-    ),
-    f(Processes, "alive", Bool, "no end seen yet"),
-    f(Processes, "started_at", Time, ""),
-    f(Processes, "ended_at", Time, ""),
+    ).sql("{r}.argv_json"),
+    f(Processes, "alive", Bool, "no end seen yet").sql("({r}.ended_at IS NULL)"),
+    f(Processes, "started_at", Time, "").sql("{r}.started_at"),
+    f(Processes, "ended_at", Time, "").sql("{r}.ended_at"),
     v(
         Work,
         "kind",
         &["goal", "attempt", "verification", "artifact"],
         "goal: a claimed Bead or a declared todo item; attempt: one session pursuing it; \
          verification: a check command; artifact: a commit or pull request",
-    ),
+    ).sql("{r}.kind"),
     f(
         Work,
         "title",
         Substring,
         "the Bead ID, item text, check command or commit",
-    ),
+    ).sql("{r}.title"),
     f(
         Work,
         "key",
         Prefix,
         "bead:<id>, todo:…, attempt:…, check:…, commit:…, pr:…",
-    ),
+    ).sql("{r}.key"),
     f(
         Work,
         "state",
         Match,
         "attempt: open, closed, released, completed, pending; verification: ok, error, unknown",
-    ),
+    ).sql("{r}.state"),
     f(
         Work,
         "at",
         Time,
         "when the node's first evidence was recorded",
-    ),
+    ).sql("{r}.at"),
     f(
         Work,
         "goal",
         Substring,
         "the goal an attempt pursues, or the goal of the attempts a node checks or was made for",
-    ),
+    ).sql_fn(work_goal_field),
     f(
         Work,
         "checks_passed",
         Number,
         "attempt: passing checks while it was open",
-    ),
+    ).sql("json_extract({r}.attrs_json, '$.checks_passed')"),
     f(
         Work,
         "checks_failed",
         Number,
         "attempt: failing checks while it was open",
-    ),
+    ).sql("json_extract({r}.attrs_json, '$.checks_failed')"),
     f(
         Work,
         "artifacts",
         Number,
         "attempt: commits and pull requests made while it was open",
-    ),
+    ).sql("json_extract({r}.attrs_json, '$.artifacts')"),
 ];
 
 pub fn lookup(unit: Unit, name: &str) -> Option<&'static Field> {
@@ -771,28 +853,12 @@ pub fn names(unit: Unit) -> impl Iterator<Item = &'static str> {
 /// Units with a row that names a session, so `session.<field>` (and a bare
 /// session field) applies to them.
 pub fn has_session(unit: Unit) -> bool {
-    !matches!(
-        unit,
-        Unit::Sessions | Unit::Links | Unit::Notes | Unit::Runs | Unit::Processes
-    )
+    crate::units::spec(unit).in_session
 }
 
 /// The prefixes a unit accepts before a field, with the unit they name.
 pub fn relation(unit: Unit, prefix: &str) -> Option<Unit> {
-    Some(match (unit, prefix) {
-        (u, "session") if has_session(u) || matches!(u, Unit::Runs | Unit::Processes) => {
-            Unit::Sessions
-        }
-        (Unit::Blocks | Unit::ToolCalls, "message") => Unit::Messages,
-        (Unit::Blocks, "call") => Unit::ToolCalls,
-        (Unit::ToolCalls, "child") => Unit::Sessions,
-        (Unit::ToolCalls, "next") => Unit::ToolCalls,
-        (Unit::Links, "parent" | "child") => Unit::Sessions,
-        (Unit::Deliveries, "recipient") => Unit::Sessions,
-        (Unit::Runs, "task") => Unit::Runs,
-        (Unit::Processes, "tool_call") => Unit::ToolCalls,
-        _ => return None,
-    })
+    crate::units::spec(unit).relation(prefix).map(|r| r.target)
 }
 
 /// SQL over the aliases a unit's row is read through.
@@ -816,6 +882,17 @@ impl Aliases {
             cb: "cb".into(),
             row: "r".into(),
         }
+    }
+
+    /// A template with its alias placeholders filled in.
+    pub fn expand(&self, template: &str) -> String {
+        template
+            .replace("{s}", &self.s)
+            .replace("{m}", &self.m)
+            .replace("{cb}", &self.cb)
+            .replace("{b}", &self.b)
+            .replace("{t}", &self.t)
+            .replace("{r}", &self.row)
     }
 
     pub fn suffixed(n: usize) -> Self {
@@ -927,184 +1004,126 @@ pub fn live_until(s: &str, now: i64) -> String {
     )
 }
 
-/// The expression for a plain field (every kind but `Special`).
-pub fn sql(unit: Unit, name: &str, a: &Aliases) -> Option<String> {
-    let s = &a.s;
-    let m = &a.m;
-    let b = &a.b;
-    let t = &a.t;
-    let r = &a.row;
-    let own_sum = |col: &str| {
-        format!(
-            "(SELECT sum(x.{col}) FROM message x WHERE {})",
-            own_messages(s, "x")
-        )
-    };
-    Some(match (unit, name) {
-        (Unit::Sessions, "id") => format!("{s}.id"),
-        (Unit::Sessions, "origin") => format!("{s}.origin"),
-        (Unit::Sessions, "kind") => format!("{s}.kind"),
-        (Unit::Sessions, "title") => format!("{s}.title"),
-        (Unit::Sessions, "checkout") => format!("{s}.checkout"),
-        (Unit::Sessions, "branch") => format!("{s}.branch"),
-        (Unit::Sessions, "hidden") => hidden(s),
-        (Unit::Sessions, "source") => {
-            format!("CASE WHEN {s}.stub = 1 THEN 'missing' ELSE 'present' END")
-        }
-        (Unit::Sessions, "process_alive") => format!("{s}.live_root_alive"),
-        (Unit::Work, "kind") => format!("{r}.kind"),
-        (Unit::Work, "title") => format!("{r}.title"),
-        (Unit::Work, "key") => format!("{r}.key"),
-        (Unit::Work, "state") => format!("{r}.state"),
-        (Unit::Work, "at") => format!("{r}.at"),
-        (Unit::Work, "goal") => work_goal(r),
-        (Unit::Work, "checks_passed") => format!("json_extract({r}.attrs_json, '$.checks_passed')"),
-        (Unit::Work, "checks_failed") => format!("json_extract({r}.attrs_json, '$.checks_failed')"),
-        (Unit::Work, "artifacts") => format!("json_extract({r}.attrs_json, '$.artifacts')"),
-        (Unit::Sessions, "waiting_on") => format!("{s}.live_waiting_on"),
-        (Unit::Sessions, "task") => format!("{s}.live_task"),
-        (Unit::Sessions, "harness") => format!("{s}.harness"),
-        (Unit::Sessions, "temporary") => format!("{s}.temporary"),
-        (Unit::Sessions, "team") => format!("{s}.team"),
-        (Unit::Sessions, "agent_name") => format!("{s}.agent_name"),
-        (Unit::Sessions, "started") => format!("{s}.started_at"),
-        (Unit::Sessions, "last_active") => format!("{s}.last_activity_at"),
-        (Unit::Sessions, "duration") => format!("({s}.last_activity_at - {s}.started_at)"),
-        (Unit::Sessions, "outcome") => format!(
-            "COALESCE((SELECT lower(n.value) FROM a.note n JOIN a.note_target nt ON nt.note_id = n.id \
-             WHERE n.kind = 'outcome' AND nt.ref = 'session:' || {s}.id AND {} ORDER BY n.commit_seq DESC LIMIT 1), 'none')",
-            live_note("n")
-        ),
-        (Unit::Sessions, "messages") => format!(
-            "(SELECT count(*) FROM message x WHERE {})",
-            own_messages(s, "x")
-        ),
-        (Unit::Sessions, "human_prompts") => format!(
-            "(SELECT count(*) FROM message x WHERE {} AND x.written_by = 'human' AND x.prompt_kind = 'prose')",
-            own_messages(s, "x")
-        ),
-        (Unit::Sessions, "human_commands") => format!(
-            "(SELECT count(*) FROM message x WHERE {} AND x.written_by = 'human' AND x.prompt_kind = 'command')",
-            own_messages(s, "x")
-        ),
-        (Unit::Sessions, "words") => format!(
-            "(SELECT COALESCE(sum(x.words), 0) FROM message x WHERE {} AND x.written_by IN ('human', 'model'))",
-            own_messages(s, "x")
-        ),
-        (Unit::Sessions, "tool_calls") => own_calls(s, "tx", ""),
-        (Unit::Sessions, "errors") => own_calls(s, "tx", " AND tx.outcome = 'error'"),
-        (Unit::Sessions, "input_tokens") => own_sum("input_tokens"),
-        (Unit::Sessions, "output_tokens") => own_sum("output_tokens"),
-        (Unit::Sessions, "cache_read_tokens") => own_sum("cache_read_tokens"),
-        (Unit::Sessions, "cache_write_tokens") => own_sum("cache_write_tokens"),
-        (Unit::Sessions, "cost") => own_sum("cost_nusd"),
-        (Unit::Sessions, "tree_cost") => format!(
-            "(SELECT sum(x.cost_nusd) FROM message x WHERE x.inherited_from IS NULL \
-             AND COALESCE(x.on_active_path, 1) = 1 AND x.session_pk IN ({}))",
-            subtree(s)
-        ),
+/// The value of a field over `a` at `now`.
+pub fn sql(unit: Unit, name: &str, a: &Aliases, now: i64) -> Option<String> {
+    lookup(unit, name).and_then(|f| f.expr(a, now))
+}
 
-        (Unit::Messages, "id") => format!("{m}.id"),
-        (Unit::Messages, "role") => format!("{m}.role"),
-        (Unit::Messages, "written_by") => format!("{m}.written_by"),
-        (Unit::Messages, "prompt_kind") => format!("{m}.prompt_kind"),
-        (Unit::Messages, "authorship") => format!("COALESCE({m}.authorship, 'unknown')"),
-        (Unit::Messages, "model") => format!("{m}.model"),
-        (Unit::Messages, "at") => format!("{m}.at"),
-        (Unit::Messages, "inherited") => format!("({m}.inherited_from IS NOT NULL)"),
-        (Unit::Messages, "active") => format!("COALESCE({m}.on_active_path, 1)"),
-        (Unit::Messages, "words") => format!("{m}.words"),
-        (Unit::Messages, "input_tokens") => format!("{m}.input_tokens"),
-        (Unit::Messages, "output_tokens") => format!("{m}.output_tokens"),
-        (Unit::Messages, "cache_read_tokens") => format!("{m}.cache_read_tokens"),
-        (Unit::Messages, "cache_write_tokens") => format!("{m}.cache_write_tokens"),
-        (Unit::Messages, "cost") => format!("{m}.cost_nusd"),
-        (Unit::Messages, "stop_reason") => format!("{m}.stop_reason"),
-        (Unit::Messages, "from_session") => format!("{m}.from_session"),
-        (Unit::Messages, "from_name") => format!("{m}.from_name"),
+/// The sum of a column over session `s`'s own messages.
+fn own_sum(s: &str, col: &str) -> String {
+    format!(
+        "(SELECT sum(x.{col}) FROM message x WHERE {})",
+        own_messages(s, "x")
+    )
+}
 
-        (Unit::Blocks, "kind") => format!("{b}.kind"),
-        (Unit::Blocks, "media_type") => format!("{b}.media_type"),
-        (Unit::Blocks, "file_name") => format!("{b}.file_name"),
-        (Unit::Blocks, "at") => format!("{m}.at"),
+/// Session `s`'s own messages matching `extra`, counted.
+fn own_count(s: &str, extra: &str) -> String {
+    format!(
+        "(SELECT count(*) FROM message x WHERE {}{extra})",
+        own_messages(s, "x")
+    )
+}
 
-        (Unit::ToolCalls, "tool") => format!("{t}.tool"),
-        (Unit::ToolCalls, "action") => format!("{t}.action"),
-        (Unit::ToolCalls, "command_norm") => format!("{t}.command_norm"),
-        (Unit::ToolCalls, "outcome") => format!(
-            "CASE WHEN {t}.result_block_pk IS NULL AND {t}.outcome = 'unknown' AND {s}.live_root_alive = 1 \
-             THEN 'pending' ELSE {t}.outcome END"
-        ),
-        (Unit::ToolCalls, "exit_code") => format!("{t}.exit_code"),
-        (Unit::ToolCalls, "at") => format!("{t}.at"),
-        (Unit::ToolCalls, "duration") => format!("{t}.duration_ms"),
+fn sessions_hidden(a: &Aliases) -> String {
+    hidden(&a.s)
+}
 
-        (Unit::Files, "path") => format!("{r}.path"),
-        (Unit::Files, "reads") => format!("{r}.reads"),
-        (Unit::Files, "writes") => format!("{r}.writes"),
-        (Unit::Files, "edits") => format!("{r}.edits"),
-        (Unit::Files, "first_at") => format!("{r}.first_at"),
-        (Unit::Files, "last_at") => format!("{r}.last_at"),
+fn sessions_outcome(a: &Aliases) -> String {
+    format!(
+        "COALESCE((SELECT lower(n.value) FROM a.note n JOIN a.note_target nt ON nt.note_id = n.id \
+         WHERE n.kind = 'outcome' AND nt.ref = 'session:' || {s}.id AND {} ORDER BY n.commit_seq DESC LIMIT 1), 'none')",
+        live_note("n"),
+        s = a.s
+    )
+}
 
-        (Unit::Events, "kind") => format!("{r}.kind"),
-        (Unit::Events, "at") => format!("{r}.at"),
-        (Unit::Events, "model_saw") => format!("{r}.model_saw"),
+fn sessions_messages(a: &Aliases) -> String {
+    own_count(&a.s, "")
+}
 
-        (Unit::Links, "kind") => format!("{r}.kind"),
-        (Unit::Links, "how") => format!("{r}.how"),
-        (Unit::Links, "pending") => {
-            format!("(NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = {r}.parent_id))")
-        }
-        (Unit::Links, "evidence") => format!("{r}.evidence"),
-        (Unit::Links, "branch_point") => format!("{r}.branch_point"),
-        (Unit::Links, "spawned_by") => format!("{r}.spawned_by"),
-        (Unit::Links, "retry_of") => format!("{r}.retry_of"),
-        (Unit::Links, "result_use") => format!("COALESCE({r}.result_use, 'unknown')"),
+fn sessions_human_prompts(a: &Aliases) -> String {
+    own_count(
+        &a.s,
+        " AND x.written_by = 'human' AND x.prompt_kind = 'prose'",
+    )
+}
 
-        (Unit::Notes, "kind") => format!("{r}.kind"),
-        (Unit::Notes, "key") => format!("{r}.key"),
-        (Unit::Notes, "value") => format!("{r}.value"),
-        (Unit::Notes, "author") => format!("{r}.author"),
-        (Unit::Notes, "source") => format!("{r}.source"),
-        (Unit::Notes, "created_at") => format!("{r}.created_at"),
-        (Unit::Notes, "root") => format!("{r}.root"),
-        (Unit::Notes, "current") => format!("({})", current_note(r)),
-        (Unit::Notes, "withdrawn") => format!("({})", withdrawn_note(r)),
+fn sessions_human_commands(a: &Aliases) -> String {
+    own_count(
+        &a.s,
+        " AND x.written_by = 'human' AND x.prompt_kind = 'command'",
+    )
+}
 
-        (Unit::Runs, "id") => format!("{r}.id"),
-        (Unit::Runs, "kind") => format!("{r}.kind"),
-        (Unit::Runs, "task") => format!("{r}.task_id"),
-        (Unit::Runs, "state") => format!("{r}.state"),
-        (Unit::Runs, "instruction") => format!("{r}.instruction"),
-        (Unit::Runs, "attempts") => {
-            format!("(SELECT count(*) FROM run ra WHERE ra.task_id = {r}.id)")
-        }
-        (Unit::Runs, "started") => format!("{r}.started_at"),
-        (Unit::Runs, "ended") => format!("{r}.ended_at"),
-        (Unit::Runs, "duration") => format!("({r}.ended_at - {r}.started_at)"),
-        (
-            Unit::Turns,
-            "id" | "start" | "end" | "burst" | "slash_command" | "answer" | "attempts" | "path"
-            | "latency" | "tool_calls" | "errors" | "input_tokens" | "output_tokens" | "abandoned",
-        ) => format!("{r}.{name}"),
-        (Unit::Turns, "cost") => format!("{r}.cost_nusd"),
+fn sessions_words(a: &Aliases) -> String {
+    format!(
+        "(SELECT COALESCE(sum(x.words), 0) FROM message x WHERE {} AND x.written_by IN ('human', 'model'))",
+        own_messages(&a.s, "x")
+    )
+}
 
-        (Unit::Runs, "evidence") => format!("{r}.evidence"),
+fn sessions_tool_calls(a: &Aliases) -> String {
+    own_calls(&a.s, "tx", "")
+}
 
-        (Unit::Deliveries, "id") => format!("{r}.id"),
-        (Unit::Deliveries, "event") => format!("{r}.event"),
-        (Unit::Deliveries, "outcome") => format!("{r}.outcome"),
-        (Unit::Deliveries, "at") => format!("{r}.at"),
-        (Unit::Deliveries, "bytes") => format!("{r}.bytes"),
+fn sessions_errors(a: &Aliases) -> String {
+    own_calls(&a.s, "tx", " AND tx.outcome = 'error'")
+}
 
-        (Unit::Processes, "role") => format!("{r}.role"),
-        (Unit::Processes, "comm") => format!("{r}.comm"),
-        (Unit::Processes, "argv") => format!("{r}.argv_json"),
-        (Unit::Processes, "alive") => format!("({r}.ended_at IS NULL)"),
-        (Unit::Processes, "started_at") => format!("{r}.started_at"),
-        (Unit::Processes, "ended_at") => format!("{r}.ended_at"),
-        _ => return None,
-    })
+fn sessions_input_tokens(a: &Aliases) -> String {
+    own_sum(&a.s, "input_tokens")
+}
+
+fn sessions_output_tokens(a: &Aliases) -> String {
+    own_sum(&a.s, "output_tokens")
+}
+
+fn sessions_cache_read_tokens(a: &Aliases) -> String {
+    own_sum(&a.s, "cache_read_tokens")
+}
+
+fn sessions_cache_write_tokens(a: &Aliases) -> String {
+    own_sum(&a.s, "cache_write_tokens")
+}
+
+fn sessions_cost(a: &Aliases) -> String {
+    own_sum(&a.s, "cost_nusd")
+}
+
+fn sessions_tree_cost(a: &Aliases) -> String {
+    format!(
+        "(SELECT sum(x.cost_nusd) FROM message x WHERE x.inherited_from IS NULL \
+         AND COALESCE(x.on_active_path, 1) = 1 AND x.session_pk IN ({}))",
+        subtree(&a.s)
+    )
+}
+
+fn sessions_live(a: &Aliases, now: i64) -> String {
+    live_state(&a.s, now)
+}
+
+fn sessions_waiting(a: &Aliases, now: i64) -> String {
+    format!("({} = 'waiting')", live_state(&a.s, now))
+}
+
+fn sessions_running(a: &Aliases, now: i64) -> String {
+    format!(
+        "({} IN ('working', 'waiting', 'idle', 'unknown'))",
+        live_state(&a.s, now)
+    )
+}
+
+fn notes_current(a: &Aliases) -> String {
+    format!("({})", current_note(&a.row))
+}
+
+fn notes_withdrawn(a: &Aliases) -> String {
+    format!("({})", withdrawn_note(&a.row))
+}
+
+fn work_goal_field(a: &Aliases) -> String {
+    work_goal(&a.row)
 }
 
 /// A note that is its family's current revision and not withdrawn.

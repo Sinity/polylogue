@@ -5,7 +5,7 @@ fn every_non_special_field_has_sql() {
     let a = Aliases::plain();
     for f in FIELDS {
         if f.kind != Kind::Special {
-            assert!(sql(f.unit, f.name, &a).is_some(), "{:?}.{}", f.unit, f.name);
+            assert!(f.expr(&a, 0).is_some(), "{:?}.{}", f.unit, f.name);
         }
     }
 }

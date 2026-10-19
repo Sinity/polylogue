@@ -9,6 +9,7 @@ pub mod compile;
 pub mod fields;
 pub mod parse;
 pub mod time;
+pub mod units;
 
 pub use compile::{
     Attach, ColKind, Column, IdCheck, Near, Options, Param, Program, Shape, WhyClause, compile,

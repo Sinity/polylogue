@@ -63,40 +63,12 @@ impl Unit {
     ];
 
     pub fn name(self) -> &'static str {
-        match self {
-            Unit::Sessions => "sessions",
-            Unit::Messages => "messages",
-            Unit::Blocks => "blocks",
-            Unit::ToolCalls => "tool_calls",
-            Unit::Files => "files",
-            Unit::Events => "events",
-            Unit::Notes => "notes",
-            Unit::Links => "links",
-            Unit::Turns => "turns",
-            Unit::Runs => "runs",
-            Unit::Deliveries => "deliveries",
-            Unit::Processes => "processes",
-            Unit::Work => "work",
-        }
+        crate::units::spec(self).name
     }
 
     /// The singular form `exists` and `seq` use.
     pub fn singular(self) -> &'static str {
-        match self {
-            Unit::Sessions => "session",
-            Unit::Messages => "message",
-            Unit::Blocks => "block",
-            Unit::ToolCalls => "tool_call",
-            Unit::Files => "file",
-            Unit::Events => "event",
-            Unit::Notes => "note",
-            Unit::Links => "link",
-            Unit::Turns => "turn",
-            Unit::Runs => "run",
-            Unit::Deliveries => "delivery",
-            Unit::Processes => "process",
-            Unit::Work => "work",
-        }
+        crate::units::spec(self).singular
     }
 
     pub fn from_name(name: &str) -> Option<Unit> {

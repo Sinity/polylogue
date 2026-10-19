@@ -7,6 +7,7 @@
 use crate::ast::*;
 use crate::fields::{self, Aliases, Kind};
 use crate::time::{self, Clock, Time};
+use crate::units::{self, Via};
 use crate::{COMMAND_WORDS, QueryError, parse};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -646,7 +647,7 @@ impl<'a> Compiler<'a> {
             }
             let wh = and_all(&where_sql);
             let order = order.unwrap_or_else(|| self.default_order(&scope));
-            let (pk, mut cols) = row_columns(unit, &scope.a);
+            let (pk, mut cols) = row_columns(unit, &scope.a, self.opts.clock.now);
             let mut columns: Vec<Column> = cols
                 .iter()
                 .map(|(n, _, k)| Column {
@@ -763,7 +764,7 @@ impl<'a> Compiler<'a> {
         let Some((lim, off)) = selection else {
             return;
         };
-        let (pk, _) = row_columns(scope.unit, &scope.a);
+        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
         let order = order.clone().unwrap_or_else(|| self.default_order(scope));
         let from = self.from(scope).unwrap_or_default();
         let inner = format!(
@@ -778,7 +779,7 @@ impl<'a> Compiler<'a> {
 
     /// The FROM clause of a unit, joining the rows its fields read.
     fn from(&self, scope: &Scope) -> Result<String, QueryError> {
-        base_from(scope.unit, &scope.a)
+        Ok(base_from(scope.unit, &scope.a))
     }
 
     /// The default filters a unit binds, dropped by a top-level condition
@@ -786,76 +787,20 @@ impl<'a> Compiler<'a> {
     fn defaults(&mut self, scope: &Scope, top: &[Cond]) -> Vec<String> {
         let named = named_fields(top, scope.unit);
         let reference = top.iter().any(|c| self.is_reference(c));
-        let has = |f: &str| named.contains(f);
-        let a = &scope.a;
-        let mut out = vec![];
-        let session_defaults = |out: &mut Vec<String>, s: &str| {
-            if !reference && !has("hidden") {
-                out.push(format!("NOT {}", fields::hidden(s)));
-            }
-            out.push(format!("NOT {}", fields::excised(s)));
-        };
-        match scope.unit {
-            Unit::Sessions => {
-                let lineage = [
-                    "kind",
-                    "parent",
-                    "root",
-                    "depth",
-                    "lineage",
-                    "link",
-                    "team",
-                    "agent_name",
-                ];
-                if !reference && !lineage.iter().any(|f| has(f)) {
-                    out.push(format!("{}.kind <> 'subagent'", a.s));
-                }
-                if !has("source") {
-                    out.push(format!("{}.stub = 0", a.s));
-                }
-                session_defaults(&mut out, &a.s);
-            }
-            Unit::Messages | Unit::Blocks | Unit::ToolCalls => {
-                if !reference && !has("inherited") {
-                    out.push(format!("{}.inherited_from IS NULL", a.m));
-                }
-                if !reference && !has("active") {
-                    out.push(format!("COALESCE({}.on_active_path, 1) = 1", a.m));
-                }
-                if scope.unit == Unit::ToolCalls && !has("action") {
-                    out.push(fields::counted_call(&a.t));
-                }
-                session_defaults(&mut out, &a.s);
-            }
-            Unit::Files | Unit::Events | Unit::Turns => session_defaults(&mut out, &a.s),
-            Unit::Deliveries | Unit::Work => {
-                out.push(format!(
-                    "({s}.pk IS NULL OR (NOT {} AND NOT {}))",
-                    fields::hidden(&a.s),
-                    fields::excised(&a.s),
-                    s = a.s
-                ));
-            }
-            Unit::Notes => {
-                if !has("current") && !has("root") && !has("withdrawn") {
-                    out.push(fields::current_note(&a.row));
-                }
-                if !has("withdrawn") {
-                    out.push(format!("NOT {}", fields::withdrawn_note(&a.row)));
-                }
-            }
-            Unit::Links | Unit::Runs | Unit::Processes => {}
-        }
-        out
+        units::spec(scope.unit)
+            .defaults
+            .iter()
+            .filter(|d| !(d.unless_reference && reference))
+            .filter(|d| !d.unless.iter().any(|f| named.contains(*f)))
+            .map(|d| d.sql.render(&scope.a, self.opts.clock.now))
+            .collect()
     }
 
     fn default_order(&self, scope: &Scope) -> Vec<String> {
         let a = &scope.a;
+        let spec = units::spec(scope.unit);
+        let time = a.expand(spec.time);
         if let Some(rank) = &self.rank {
-            let time = match scope.unit {
-                Unit::Sessions => format!("{}.last_activity_at", a.s),
-                _ => format!("{}.at", a.m),
-            };
             return vec![
                 format!("{rank} IS NULL"),
                 rank.clone(),
@@ -863,30 +808,14 @@ impl<'a> Compiler<'a> {
                 format!("{time} DESC"),
             ];
         }
-        let (pk, _) = row_columns(scope.unit, a);
-        let (time, desc) = match scope.unit {
-            Unit::Sessions => (format!("{}.last_activity_at", a.s), true),
-            Unit::Messages | Unit::Blocks => (format!("{}.at", a.m), false),
-            Unit::ToolCalls => (format!("{}.at", a.t), false),
-            Unit::Events | Unit::Deliveries | Unit::Work => (format!("{}.at", a.row), false),
-            Unit::Files => (format!("{}.first_at", a.row), false),
-            Unit::Notes => (format!("{}.created_at", a.row), true),
-            Unit::Links => (format!("{}p.last_activity_at", a.row), false),
-            Unit::Runs => (format!("{}.started_at", a.row), false),
-            Unit::Processes => (format!("{}.started_at", a.row), false),
-            Unit::Turns => (format!("{}.start", a.row), false),
-        };
-        let mut o = vec![format!("{time} IS NULL")];
-        match scope.unit {
-            // Messages and blocks in session order within the same time.
-            Unit::Messages | Unit::Blocks => {
-                o.push(time.clone());
-                o.push(format!("{}.order_input_pk", a.m));
-                o.push(format!("{}.seq", a.m));
-            }
-            _ => o.push(format!("{time}{}", if desc { " DESC" } else { "" })),
+        let desc = if spec.newest_first { " DESC" } else { "" };
+        let mut o = vec![format!("{time} IS NULL"), format!("{time}{desc}")];
+        if spec.session_order {
+            // Rows at the same time keep session order.
+            o.push(format!("{}.order_input_pk", a.m));
+            o.push(format!("{}.seq", a.m));
         }
-        o.push(format!("{pk}{}", if desc { " DESC" } else { "" }));
+        o.push(format!("{}{desc}", a.expand(spec.key)));
         o
     }
 
@@ -1165,31 +1094,13 @@ impl<'a> Compiler<'a> {
     /// The rows of a unit without a session alias that relate to the
     /// sessions `sessions` selects.
     fn session_link(&mut self, scope: &Scope, sessions: &str) -> Result<String, QueryError> {
-        let r = &scope.a.row;
-        Ok(match scope.unit {
-            Unit::Links => format!("({r}.child_pk IN ({sessions}) OR {r}p.pk IN ({sessions}))"),
-            Unit::Notes => format!(
-                "EXISTS (SELECT 1 FROM a.note_target snt JOIN session ss ON 'session:' || ss.id = snt.ref \
-                 WHERE snt.note_id = {r}.id AND ss.pk IN ({sessions}))"
-            ),
-            Unit::Runs => format!(
-                "EXISTS (SELECT 1 FROM run_session rs WHERE rs.run_pk = {r}.pk AND rs.session_pk IN ({sessions}))"
-            ),
-            Unit::Processes => format!(
-                "EXISTS (SELECT 1 FROM process_session ps WHERE ps.process_pk = {r}.pk AND ps.session_pk IN ({sessions}))"
-            ),
-            Unit::Work => format!(
-                "({r}.session_pk IN ({sessions}) OR EXISTS (SELECT 1 FROM work_edge we \
-                 JOIN work_node wa ON wa.pk = we.from_pk \
-                 WHERE we.to_pk = {r}.pk AND wa.session_pk IN ({sessions})))"
-            ),
-            other => {
-                return Err(not_built(
-                    &format!("scoping {} to sessions", other.name()),
-                    "architecture 7",
-                ));
-            }
-        })
+        let Some(t) = units::spec(scope.unit).session_scope else {
+            return Err(not_built(
+                &format!("scoping {} to sessions", scope.unit.name()),
+                "architecture 7",
+            ));
+        };
+        Ok(scope.a.expand(t).replace("{sessions}", sessions))
     }
 
     fn exists(
@@ -1228,7 +1139,7 @@ impl<'a> Compiler<'a> {
         w.push(self.cond(cond, &child, false)?);
         Ok(format!(
             "EXISTS (SELECT 1 FROM {} WHERE {})",
-            base_from(unit, &child.a)?,
+            base_from(unit, &child.a),
             and_all(&w)
         ))
     }
@@ -1347,9 +1258,6 @@ impl<'a> Compiler<'a> {
             && fields::lookup(Unit::Sessions, &lower).is_some()
         {
             (Unit::Sessions, scope.a.clone())
-        } else if lower == "session" && scope.unit != Unit::Sessions {
-            // `session:ID` handled above; `session` alone is a group key.
-            return Err(self.unknown_field(field, scope.unit, span));
         } else {
             return Err(self.unknown_field(field, scope.unit, span));
         };
@@ -1357,9 +1265,11 @@ impl<'a> Compiler<'a> {
         if def.kind == Kind::Special {
             return self.special(unit, def.name, op, &Scope { unit, a }, span, top);
         }
-        let expr = fields::sql(unit, def.name, &a).expect("non-special fields have SQL");
+        let expr = def
+            .expr(&a, self.opts.clock.now)
+            .expect("non-special fields have SQL");
         if top && matches!(op, FieldOp::Compare(..) | FieldOp::Between(..)) {
-            self.show(def.name, &expr, col_kind(def.kind));
+            self.show(def.name, &expr, def.column_kind());
         }
         self.typed(def, &expr, op, span)
     }
@@ -1429,37 +1339,31 @@ impl<'a> Compiler<'a> {
             end: span.end,
         };
         let a = &scope.a;
-        match (scope.unit, prefix) {
-            (_, "session") if fields::has_session(scope.unit) => {
+        let rel = units::spec(scope.unit)
+            .relation(prefix)
+            .ok_or_else(|| QueryError::Invalid {
+                message: format!("{prefix}.{rest} does not apply to {}", scope.unit.name()),
+                position: span.start,
+            })?;
+        match rel.via {
+            Via::Same => {
                 let sc = Scope {
-                    unit: Unit::Sessions,
+                    unit: target,
                     a: a.clone(),
                 };
                 self.field_cond(rest, op, &sc, sub, false)
             }
-            (Unit::Blocks | Unit::ToolCalls, "message") => {
-                let sc = Scope {
-                    unit: Unit::Messages,
-                    a: a.clone(),
-                };
-                self.field_cond(rest, op, &sc, sub, false)
-            }
-            (Unit::Links, "parent" | "child") => {
-                let s = format!("{}{}", a.row, if prefix == "parent" { "p" } else { "c" });
+            Via::Session(alias) => {
                 let sc = Scope {
                     unit: Unit::Sessions,
-                    a: Aliases { s, ..a.clone() },
+                    a: Aliases {
+                        s: a.expand(alias),
+                        ..a.clone()
+                    },
                 };
                 self.field_cond(rest, op, &sc, sub, false)
             }
-            (Unit::Deliveries, "recipient") => {
-                let sc = Scope {
-                    unit: Unit::Sessions,
-                    a: a.clone(),
-                };
-                self.field_cond(rest, op, &sc, sub, false)
-            }
-            _ => {
+            Via::Exists { cond: template, .. } => {
                 let n = self.fresh();
                 let inner = Scope {
                     unit: target,
@@ -1478,59 +1382,7 @@ impl<'a> Compiler<'a> {
                 } else {
                     self.field_cond(rest, op, &inner, sub, false)?
                 };
-                let from = base_from(target, &n)?;
-                Ok(match (scope.unit, prefix) {
-                    (Unit::Blocks, "call") => format!(
-                        "EXISTS (SELECT 1 FROM {from} WHERE ({t}.call_block_pk = {b}.pk OR {t}.result_block_pk = {b}.pk) AND {cond})",
-                        t = n.t,
-                        b = a.b
-                    ),
-                    (Unit::ToolCalls, "child") => format!(
-                        "EXISTS (SELECT 1 FROM link lc JOIN {from} ON {s}.pk = lc.child_pk \
-                         WHERE lc.kind = 'subagent' AND lc.parent_id = {ps}.id \
-                         AND (lc.spawning_call = {t}.call_id OR lc.spawned_by = {cb}.pk) AND {cond})",
-                        s = n.s,
-                        ps = a.s,
-                        t = a.t,
-                        cb = a.cb
-                    ),
-                    (Unit::ToolCalls, "next") => format!(
-                        "EXISTS (SELECT 1 FROM {from} WHERE {nt}.pk = ({}) AND {cond})",
-                        next_call(a),
-                        nt = n.t
-                    ),
-                    (Unit::Runs | Unit::Processes, "session") => {
-                        let (table, col) = if scope.unit == Unit::Runs {
-                            ("run_session", "run_pk")
-                        } else {
-                            ("process_session", "process_pk")
-                        };
-                        format!(
-                            "EXISTS (SELECT 1 FROM {table} rs JOIN {from} ON {s}.pk = rs.session_pk WHERE rs.{col} = {r}.pk AND {cond})",
-                            s = n.s,
-                            r = a.row
-                        )
-                    }
-                    (Unit::Runs, "task") => format!(
-                        "EXISTS (SELECT 1 FROM {from} WHERE {nr}.id = {r}.task_id AND {cond})",
-                        nr = n.row,
-                        r = a.row
-                    ),
-                    (Unit::Processes, "tool_call") => format!(
-                        "EXISTS (SELECT 1 FROM {from} WHERE {t}.pk = {r}.tool_call_pk AND {cond})",
-                        t = n.t,
-                        r = a.row
-                    ),
-                    _ => {
-                        return Err(QueryError::Invalid {
-                            message: format!(
-                                "{prefix}.{rest} does not apply to {}",
-                                scope.unit.name()
-                            ),
-                            position: span.start,
-                        });
-                    }
-                })
+                Ok(relation_sql(template, a, &n, target, &cond))
             }
         }
     }
@@ -1824,31 +1676,16 @@ impl<'a> Compiler<'a> {
                 };
                 self.text(&[(text, quoted, span)], scope, index, false)?
             }
-            (_, "since") => {
+            (_, "since" | "until") => {
                 let t = self.time(name, &one(&op).ok_or_else(|| need_value(name))?, span)?;
-                match unit {
-                    Unit::Sessions => format!("{s}.last_activity_at >= {}", t.start()),
-                    Unit::Messages | Unit::Blocks => format!("{}.at >= {}", a.m, t.start()),
-                    Unit::ToolCalls => format!(
-                        "(COALESCE({t}.at + {t}.duration_ms, {t}.at) >= {} OR {t}.result_block_pk IS NULL)",
-                        t.start(),
-                        t = a.t
-                    ),
-                    Unit::Events => format!("{}.at >= {}", a.row, t.start()),
-                    Unit::Notes => format!("{}.created_at >= {}", a.row, t.start()),
-                    _ => return Err(self.unknown_field(name, unit, span)),
-                }
-            }
-            (_, "until") => {
-                let t = self.time(name, &one(&op).ok_or_else(|| need_value(name))?, span)?;
-                match unit {
-                    Unit::Sessions => format!("{s}.started_at < {}", t.end()),
-                    Unit::Messages | Unit::Blocks => format!("{}.at < {}", a.m, t.end()),
-                    Unit::ToolCalls => format!("{}.at < {}", a.t, t.end()),
-                    Unit::Events => format!("{}.at < {}", a.row, t.end()),
-                    Unit::Notes => format!("{}.created_at < {}", a.row, t.end()),
-                    _ => return Err(self.unknown_field(name, unit, span)),
-                }
+                let spec = units::spec(unit);
+                let (window, at) = if name == "since" {
+                    (spec.since, t.start())
+                } else {
+                    (spec.until, t.end())
+                };
+                let window = window.ok_or_else(|| self.unknown_field(name, unit, span))?;
+                a.expand(window).replace("{v}", &at.to_string())
             }
             (Unit::Sessions, "repo")
                 if matches!(&op, FieldOp::Match(Value::One { text, quoted: false })
@@ -2090,6 +1927,8 @@ impl<'a> Compiler<'a> {
                     kind: Kind::Number,
                     values: None,
                     help: "",
+                    sql: None,
+                    value_kind: None,
                 };
                 if top {
                     self.show("depth", &expr, ColKind::Number);
@@ -2320,7 +2159,7 @@ impl<'a> Compiler<'a> {
         scope: &Scope,
         at: usize,
     ) -> Result<Vec<String>, QueryError> {
-        let (pk, _) = row_columns(scope.unit, &scope.a);
+        let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
         Ok(match key {
             SortKey::Random { seed: None } => vec!["random()".into()],
             SortKey::Random { seed: Some(seed) } => {
@@ -2356,49 +2195,39 @@ impl<'a> Compiler<'a> {
             return Ok((format!("{}.id", a.s), ColKind::Text));
         }
         if let Some((prefix, rest)) = lower.split_once('.')
-            && let Some(target) = fields::relation(scope.unit, prefix)
+            && let Some(rel) = units::spec(scope.unit).relation(prefix)
         {
-            let sub = match (scope.unit, prefix) {
-                (_, "session") if fields::has_session(scope.unit) => Scope {
-                    unit: Unit::Sessions,
+            let sub = match rel.via {
+                Via::Same => Scope {
+                    unit: rel.target,
                     a: a.clone(),
                 },
-                (Unit::Blocks | Unit::ToolCalls, "message") => Scope {
-                    unit: Unit::Messages,
-                    a: a.clone(),
-                },
-                (Unit::Links, "parent" | "child") => Scope {
+                Via::Session(alias) => Scope {
                     unit: Unit::Sessions,
                     a: Aliases {
-                        s: format!("{}{}", a.row, if prefix == "parent" { "p" } else { "c" }),
+                        s: a.expand(alias),
                         ..a.clone()
                     },
                 },
-                (Unit::Deliveries, "recipient") => Scope {
-                    unit: Unit::Sessions,
-                    a: a.clone(),
-                },
-                (Unit::ToolCalls, "next") => {
+                Via::Exists {
+                    value: Some(template),
+                    ..
+                } => {
                     let n = self.fresh();
                     let (e, k) = self.expr(
                         rest,
                         &Scope {
-                            unit: target,
+                            unit: rel.target,
                             a: n.clone(),
                         },
                         at,
                     )?;
-                    let from = base_from(target, &n)?;
                     return Ok((
-                        format!(
-                            "(SELECT {e} FROM {from} WHERE {}.pk = ({}))",
-                            n.t,
-                            next_call(a)
-                        ),
+                        relation_sql(template, a, &n, rel.target, "").replace("{e}", &e),
                         k,
                     ));
                 }
-                _ => {
+                Via::Exists { value: None, .. } => {
                     return Err(not_built(
                         &format!(
                             "grouping or sorting by {prefix}.{rest} on {}",
@@ -2410,69 +2239,22 @@ impl<'a> Compiler<'a> {
             };
             return self.expr(rest, &sub, at);
         }
-        let (unit, def) = if let Some(d) = fields::lookup(scope.unit, &lower) {
-            (scope.unit, d)
+        let def = if let Some(d) = fields::lookup(scope.unit, &lower) {
+            d
         } else if fields::has_session(scope.unit)
             && let Some(d) = fields::lookup(Unit::Sessions, &lower)
         {
-            (Unit::Sessions, d)
+            d
         } else {
             return Err(self.unknown_field(field, scope.unit, span));
         };
-        if def.kind == Kind::Special {
-            return match (unit, def.name) {
-                (Unit::Sessions, "repo") => Ok((format!("{}.repo", a.s), ColKind::Text)),
-                (Unit::Sessions, "live") => {
-                    Ok((fields::live_state(&a.s, self.opts.clock.now), ColKind::Text))
-                }
-                (Unit::Sessions, "waiting") => Ok((
-                    format!(
-                        "({} = 'waiting')",
-                        fields::live_state(&a.s, self.opts.clock.now)
-                    ),
-                    ColKind::Bool,
-                )),
-                (Unit::Sessions, "running") => Ok((
-                    format!(
-                        "({} IN ('working', 'waiting', 'idle', 'unknown'))",
-                        fields::live_state(&a.s, self.opts.clock.now)
-                    ),
-                    ColKind::Bool,
-                )),
-                (Unit::Sessions, "cwd") => Ok((format!("{}.cwd", a.s), ColKind::Text)),
-                (Unit::Sessions, "collection") => Ok((
-                    format!("COALESCE({s}.collection_name, {s}.collection_id)", s = a.s),
-                    ColKind::Text,
-                )),
-                (Unit::Sessions, "model") => Ok((
-                    format!(
-                        "(SELECT x.model FROM message x WHERE x.session_pk = {}.pk AND x.model IS NOT NULL GROUP BY x.model ORDER BY count(*) DESC LIMIT 1)",
-                        a.s
-                    ),
-                    ColKind::Text,
-                )),
-                (Unit::ToolCalls, "command") => Ok((format!("{}.command", a.t), ColKind::Text)),
-                (Unit::ToolCalls, "path") => Ok((format!("{}.path", a.t), ColKind::Text)),
-                (Unit::ToolCalls, "mcp_server") => Ok((
-                    format!(
-                        "CASE WHEN {t}.tool LIKE 'mcp\\_\\_%' ESCAPE '\\' THEN substr({t}.tool, 6, instr(substr({t}.tool, 6), '__') - 1) END",
-                        t = a.t
-                    ),
-                    ColKind::Text,
-                )),
-                (Unit::Links, "parent") => Ok((format!("{}.parent_id", a.row), ColKind::Text)),
-                (Unit::Links, "child") => Ok((format!("{}c.id", a.row), ColKind::Text)),
-                (Unit::Deliveries, "recipient") => {
-                    Ok((format!("{}.recipient_id", a.row), ColKind::Text))
-                }
-                _ => Err(QueryError::Invalid {
-                    message: format!("{} cannot be grouped or sorted by", def.name),
-                    position: span.start,
-                }),
-            };
-        }
-        let expr = fields::sql(unit, def.name, a).expect("non-special fields have SQL");
-        Ok((expr, col_kind(def.kind)))
+        let Some(expr) = def.expr(a, self.opts.clock.now) else {
+            return Err(QueryError::Invalid {
+                message: format!("{} cannot be grouped or sorted by", def.name),
+                position: span.start,
+            });
+        };
+        Ok((expr, def.column_kind()))
     }
 
     fn group_key(
@@ -2707,7 +2489,7 @@ impl<'a> Compiler<'a> {
             } else {
                 select.join(", ")
             },
-            base_from(child.unit, &sc.a)?,
+            base_from(child.unit, &sc.a),
             and_all(&w),
             order.join(", ")
         )
@@ -2789,10 +2571,7 @@ fn named_fields(top: &[Cond], unit: Unit) -> HashSet<String> {
 }
 
 fn text_unit(unit: Unit) -> bool {
-    matches!(
-        unit,
-        Unit::Sessions | Unit::Messages | Unit::Blocks | Unit::Notes
-    )
+    units::spec(unit).text
 }
 
 /// At least 8 characters of hex digits and dashes, containing a digit or
@@ -2818,17 +2597,6 @@ fn alternatives(v: &Value) -> Vec<String> {
         Value::One { text, .. } => vec![text.clone()],
         Value::Alternatives { any } => any.clone(),
         Value::Any => vec![],
-    }
-}
-
-fn col_kind(k: Kind) -> ColKind {
-    match k {
-        Kind::Number => ColKind::Number,
-        Kind::Money => ColKind::Money,
-        Kind::Duration => ColKind::Duration,
-        Kind::Time => ColKind::Time,
-        Kind::Bool => ColKind::Bool,
-        _ => ColKind::Text,
     }
 }
 
@@ -2906,285 +2674,34 @@ fn group_sort(
     Ok(vec![format!("g.{name} IS NULL"), format!("g.{name}{dir}")])
 }
 
-/// One row per turn (spec query.md, turns): along the active path (or file
-/// order when it is unknown), a turn starts at a human prompt that does not
-/// follow another prompt, or at a typed command, and runs until the next
-/// such start; a session with no prompt is one turn. Copies are counted in
-/// the session that originated them, so inherited messages are left out.
-const TURNS: &str = "(SELECT g.*, \
-     (SELECT count(*) FROM message ax WHERE ax.parent_id = g.last_prompt \
-        AND ax.written_by = 'model') AS attempts, \
-     (SELECT min(lx.at) FROM message lx WHERE lx.session_pk = g.session_pk \
-        AND lx.written_by = 'model' AND lx.at >= g.last_prompt_at) - g.last_prompt_at AS latency, \
-     (g.answer IS NULL AND g.turn = max(g.turn) OVER (PARTITION BY g.session_pk)) AS abandoned \
-   FROM (SELECT tm.session_pk AS session_pk, tm.turn AS turn, min(tm.pk) AS pk, \
-       substr(min(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14) AS first_prompt, \
-       substr(min(printf('%012d ', tm.ord) || tm.id), 14) AS first_id, \
-       COALESCE(substr(min(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14), \
-                substr(min(printf('%012d ', tm.ord) || tm.id), 14)) AS id, \
-       substr(max(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14) AS last_prompt, \
-       max(CASE WHEN tm.hp THEN tm.at END) AS last_prompt_at, \
-       min(tm.at) AS start, max(COALESCE(tm.completed_at, tm.at)) AS \"end\", \
-       sum(tm.hp) AS burst, \
-       substr(min(printf('%012d ', tm.ord) || COALESCE(tm.prompt_kind, '')), 14) = 'command' AS slash_command, \
-       substr(max(CASE WHEN tm.written_by = 'model' THEN printf('%012d ', tm.ord) || tm.id END), 14) AS answer, \
-       CASE WHEN min(COALESCE(tm.on_active_path, -1)) < 0 THEN 'unknown' ELSE 'active' END AS path, \
-       sum(tm.tc) AS tool_calls, sum(tm.te) AS errors, \
-       sum(tm.input_tokens) AS input_tokens, sum(tm.output_tokens) AS output_tokens, \
-       sum(tm.cost_nusd) AS cost_nusd \
-     FROM (SELECT o.*, \
-         sum(CASE WHEN o.hp AND (o.prompt_kind = 'command' OR NOT o.prev_hp) THEN 1 ELSE 0 END) \
-           OVER (PARTITION BY o.session_pk ORDER BY o.order_input_pk, o.seq \
-                 ROWS UNBOUNDED PRECEDING) AS turn, \
-         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_pk, o.seq) AS ord \
-       FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_pk, m.seq, m.written_by, m.prompt_kind, \
-             m.at, m.completed_at, m.on_active_path, m.input_tokens, m.output_tokens, m.cost_nusd, \
-             (m.written_by = 'human') AS hp, \
-             COALESCE(lag(m.written_by = 'human') OVER (PARTITION BY m.session_pk \
-               ORDER BY m.order_input_pk, m.seq), 0) AS prev_hp, \
-             (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
-               WHERE cb.message_pk = m.pk) AS tc, \
-             (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
-               WHERE cb.message_pk = m.pk AND c.outcome = 'error') AS te \
-           FROM message m WHERE COALESCE(m.on_active_path, 1) = 1 AND m.inherited_from IS NULL \
-             AND m.written_by IN ('human', 'model')) o) tm \
-     GROUP BY tm.session_pk, tm.turn) g)";
-
 /// The FROM clause of a unit over the given aliases.
-fn base_from(unit: Unit, a: &Aliases) -> Result<String, QueryError> {
-    let (s, m, b, t, cb, r) = (&a.s, &a.m, &a.b, &a.t, &a.cb, &a.row);
-    Ok(match unit {
-        Unit::Sessions => format!("session {s}"),
-        Unit::Messages => format!("message {m} JOIN session {s} ON {s}.pk = {m}.session_pk"),
-        Unit::Blocks => format!(
-            "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk"
-        ),
-        Unit::ToolCalls => format!(
-            "tool_call {t} JOIN block {cb} ON {cb}.pk = {t}.call_block_pk \
-             JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk"
-        ),
-        Unit::Files => format!(
-            "(SELECT ft.session_pk AS session_pk, ft.path AS path, min(ft.pk) AS pk, \
-             sum(ft.action = 'file_read') AS reads, sum(ft.action = 'file_write') AS writes, \
-             sum(ft.action = 'file_edit') AS edits, min(ft.at) AS first_at, max(ft.at) AS last_at \
-             FROM tool_call ft WHERE ft.path IS NOT NULL \
-             AND ft.action IN ('file_read', 'file_write', 'file_edit') GROUP BY ft.session_pk, ft.path) {r} \
-             JOIN session {s} ON {s}.pk = {r}.session_pk"
-        ),
-        Unit::Events => format!("event {r} JOIN session {s} ON {s}.pk = {r}.session_pk"),
-        Unit::Links => format!(
-            "link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk"
-        ),
-        Unit::Notes => format!("a.note {r}"),
-        Unit::Runs => format!("run {r}"),
-        Unit::Processes => format!("process {r}"),
-        Unit::Deliveries => {
-            format!("a.delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id")
-        }
-        Unit::Work => format!("work_node {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk"),
-        Unit::Turns => format!("{} {r} JOIN session {s} ON {s}.pk = {r}.session_pk", TURNS),
-    })
+fn base_from(unit: Unit, a: &Aliases) -> String {
+    units::spec(unit).from(a)
 }
 
 /// The alias of the table whose `session_pk` names a row's session.
 fn child_session_column(unit: Unit, a: &Aliases) -> String {
-    match unit {
-        Unit::Messages => a.m.clone(),
-        Unit::Blocks => a.b.clone(),
-        Unit::ToolCalls => a.t.clone(),
-        _ => a.row.clone(),
-    }
-}
-
-/// The session's next tool call after `a.t`, in session order.
-fn next_call(a: &Aliases) -> String {
-    format!(
-        "SELECT tq.pk FROM tool_call tq JOIN block qb ON qb.pk = tq.call_block_pk \
-         JOIN message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {t}.session_pk \
-         AND (qm.order_input_pk, qm.seq, qb.idx) > ({m}.order_input_pk, {m}.seq, {cb}.idx) \
-         ORDER BY qm.order_input_pk, qm.seq, qb.idx LIMIT 1",
-        t = a.t,
-        m = a.m,
-        cb = a.cb
-    )
+    a.expand(units::spec(unit).session_pk)
 }
 
 /// The key and default columns of each unit's rows.
-fn row_columns(unit: Unit, a: &Aliases) -> (String, Vec<(String, String, ColKind)>) {
-    use ColKind::*;
-    let c = |n: &str, e: String, k: ColKind| (n.to_owned(), e, k);
-    let (s, m, b, t, r) = (&a.s, &a.m, &a.b, &a.t, &a.row);
-    match unit {
-        Unit::Sessions => (
-            format!("{s}.pk"),
-            vec![
-                c("id", format!("{s}.id"), Text),
-                c("origin", format!("{s}.origin"), Text),
-                c("kind", format!("{s}.kind"), Text),
-                c("title", format!("{s}.title"), Text),
-                c("started", format!("{s}.started_at"), Time),
-                c("last_active", format!("{s}.last_activity_at"), Time),
-                c("cwd", format!("{s}.cwd"), Text),
-                c("repo", format!("{s}.repo"), Text),
-            ],
-        ),
-        Unit::Messages => (
-            format!("{m}.pk"),
-            vec![
-                c("id", format!("{m}.id"), Text),
-                c("session", format!("{s}.id"), Text),
-                c("role", format!("{m}.role"), Text),
-                c("written_by", format!("{m}.written_by"), Text),
-                c("at", format!("{m}.at"), Time),
-                c("model", format!("{m}.model"), Text),
-                c(
-                    "inherited",
-                    format!("({m}.inherited_from IS NOT NULL)"),
-                    Bool,
-                ),
-            ],
-        ),
-        Unit::Blocks => (
-            format!("{b}.pk"),
-            vec![
-                c("session", format!("{s}.id"), Text),
-                c("message", format!("{m}.id"), Text),
-                c("kind", format!("{b}.kind"), Text),
-                c("idx", format!("{b}.idx"), Number),
-                c("at", format!("{m}.at"), Time),
-            ],
-        ),
-        Unit::ToolCalls => (
-            format!("{t}.pk"),
-            vec![
-                c("session", format!("{s}.id"), Text),
-                c("message", format!("{m}.id"), Text),
-                c("tool", format!("{t}.tool"), Text),
-                c("action", format!("{t}.action"), Text),
-                c("command", format!("{t}.command"), Text),
-                c("path", format!("{t}.path"), Text),
-                c("outcome", format!("{t}.outcome"), Text),
-                c("exit_code", format!("{t}.exit_code"), Number),
-                c("at", format!("{t}.at"), Time),
-                c("duration", format!("{t}.duration_ms"), Duration),
-            ],
-        ),
-        Unit::Files => (
-            format!("{r}.pk"),
-            vec![
-                c("session", format!("{s}.id"), Text),
-                c("path", format!("{r}.path"), Text),
-                c("reads", format!("{r}.reads"), Number),
-                c("writes", format!("{r}.writes"), Number),
-                c("edits", format!("{r}.edits"), Number),
-                c("first_at", format!("{r}.first_at"), Time),
-                c("last_at", format!("{r}.last_at"), Time),
-            ],
-        ),
-        Unit::Events => (
-            format!("{r}.pk"),
-            vec![
-                c("id", format!("{r}.id"), Text),
-                c("session", format!("{s}.id"), Text),
-                c("kind", format!("{r}.kind"), Text),
-                c("at", format!("{r}.at"), Time),
-            ],
-        ),
-        Unit::Links => (
-            format!("{r}.pk"),
-            vec![
-                c("parent", format!("{r}.parent_id"), Text),
-                c("child", format!("{r}.child_id"), Text),
-                c("kind", format!("{r}.kind"), Text),
-                c("how", format!("{r}.how"), Text),
-                c("evidence", format!("{r}.evidence"), Text),
-                c("pending", format!("({r}p.pk IS NULL)"), Bool),
-            ],
-        ),
-        Unit::Notes => (
-            format!("{r}.rowid"),
-            vec![
-                c("id", format!("{r}.id"), Text),
-                c("kind", format!("{r}.kind"), Text),
-                c("key", format!("{r}.key"), Text),
-                c("value", format!("{r}.value"), Text),
-                c("author", format!("{r}.author"), Text),
-                c("created_at", format!("{r}.created_at"), Time),
-                c("root", format!("{r}.root"), Text),
-                c(
-                    "target",
-                    format!(
-                        "(SELECT group_concat(nt.ref, ' ') FROM a.note_target nt WHERE nt.note_id = {r}.id)"
-                    ),
-                    Text,
-                ),
-            ],
-        ),
-        Unit::Runs => (
-            format!("{r}.pk"),
-            vec![
-                c("id", format!("{r}.id"), Text),
-                c("kind", format!("{r}.kind"), Text),
-                c("state", format!("{r}.state"), Text),
-                c("instruction", format!("{r}.instruction"), Text),
-                c("started", format!("{r}.started_at"), Time),
-                c("ended", format!("{r}.ended_at"), Time),
-            ],
-        ),
-        Unit::Processes => (
-            format!("{r}.pk"),
-            vec![
-                c("role", format!("{r}.role"), Text),
-                c("comm", format!("{r}.comm"), Text),
-                c("pid", format!("{r}.pid"), Number),
-                c("started_at", format!("{r}.started_at"), Time),
-                c("ended_at", format!("{r}.ended_at"), Time),
-            ],
-        ),
-        Unit::Work => (
-            format!("{r}.pk"),
-            vec![
-                c("kind", format!("{r}.kind"), Text),
-                c("title", format!("{r}.title"), Text),
-                c("state", format!("{r}.state"), Text),
-                c("session", format!("{s}.id"), Text),
-                c("at", format!("{r}.at"), Time),
-                c("goal", fields::work_goal(r), Text),
-            ],
-        ),
-        Unit::Deliveries => (
-            format!("{r}.pk"),
-            vec![
-                c("id", format!("{r}.id"), Text),
-                c("recipient", format!("{r}.recipient_id"), Text),
-                c("event", format!("{r}.event"), Text),
-                c("outcome", format!("{r}.outcome"), Text),
-                c("at", format!("{r}.at"), Time),
-                c("bytes", format!("{r}.bytes"), Number),
-            ],
-        ),
-        Unit::Turns => (
-            format!("{r}.pk"),
-            vec![
-                c("id", format!("{r}.id"), Text),
-                c("session", format!("{s}.id"), Text),
-                c("start", format!("{r}.start"), Time),
-                c("end", format!("{r}.end"), Time),
-                c("burst", format!("{r}.burst"), Number),
-                c("slash_command", format!("{r}.slash_command"), Number),
-                c("answer", format!("{r}.answer"), Text),
-                c("attempts", format!("{r}.attempts"), Number),
-                c("path", format!("{r}.path"), Text),
-                c("latency", format!("{r}.latency"), Number),
-                c("tool_calls", format!("{r}.tool_calls"), Number),
-                c("errors", format!("{r}.errors"), Number),
-                c("input_tokens", format!("{r}.input_tokens"), Number),
-                c("output_tokens", format!("{r}.output_tokens"), Number),
-                c("cost", format!("{r}.cost_nusd"), Number),
-                c("abandoned", format!("{r}.abandoned"), Number),
-            ],
-        ),
-    }
+fn row_columns(unit: Unit, a: &Aliases, now: i64) -> (String, Vec<(String, String, ColKind)>) {
+    let spec = units::spec(unit);
+    let cols = spec
+        .columns
+        .iter()
+        .map(|(name, e, k)| ((*name).to_owned(), e.render(a, now), *k))
+        .collect();
+    (a.expand(spec.key), cols)
+}
+
+/// A relation's template over the outer aliases `a` and the target's `n`,
+/// with the target's FROM clause and the condition `cond` on it.
+fn relation_sql(template: &str, a: &Aliases, n: &Aliases, target: Unit, cond: &str) -> String {
+    units::expand_pair(template, a, n)
+        .replace("{next}", &a.expand(units::NEXT_CALL))
+        .replace("{from}", &base_from(target, n))
+        .replace("{cond}", cond)
 }
 
 /// The session ID a provider conversation URL names.
