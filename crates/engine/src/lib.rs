@@ -169,6 +169,9 @@ struct InputState {
     parser_version: Option<u32>,
     carry: Option<Json>,
     tail: Option<Vec<u8>>,
+    /// The revision chain whose bytes are stored, when known from the
+    /// archive; `None` once this run stored a new chain.
+    chain: Option<i64>,
 }
 
 /// One input's work in this pass, advanced job by job.
@@ -193,8 +196,8 @@ struct Plan {
     failed: bool,
     /// The bytes after `parse_pos` are an incomplete last record.
     waiting: bool,
-    /// The input's bytes when it is not a file (a zip member).
-    source: Option<Arc<Vec<u8>>>,
+    /// Where the input's bytes come from.
+    source: pool::Bytes,
 }
 
 impl Plan {
@@ -431,6 +434,7 @@ impl Engine {
                     parser_version: k.parser_version,
                     carry: None,
                     tail: None,
+                    chain: k.chain,
                 },
             );
         }
@@ -532,6 +536,7 @@ impl Engine {
                         parser_version: None,
                         carry: None,
                         tail: None,
+                        chain: None,
                     },
                 );
             }
@@ -571,6 +576,19 @@ impl Engine {
             };
             self.writer.send(batch)?;
         }
+        // Inputs whose files are gone or moved are parsed from what the
+        // archive stored, when the index is behind it.
+        let unseen: Vec<PathBuf> = self
+            .inputs
+            .keys()
+            .filter(|p| !seen.contains(*p))
+            .cloned()
+            .collect();
+        for path in unseen {
+            if let Some(plan) = self.stored_plan(&path)? {
+                plans.push(plan);
+            }
+        }
         pass.inputs_changed = plans.len() as u64;
         if plans.is_empty() {
             let report = self.writer.flush()?;
@@ -602,6 +620,7 @@ impl Engine {
             Change::First | Change::Rewritten => {
                 st.stored = 0;
                 st.parsed_upto = 0;
+                st.chain = None;
                 (0, 0, None, Priority::Bulk)
             }
             Change::Appended { .. } => {
@@ -612,10 +631,7 @@ impl Engine {
                     (st.stored, 0, None, Priority::Live)
                 }
             }
-            Change::Unchanged if version_changed && st.stored > 0 => {
-                (st.stored, 0, None, Priority::Bulk)
-            }
-            Change::Unchanged | Change::Disappeared => return Ok(None),
+            Change::Unchanged | Change::Disappeared => return self.stored_plan(path),
         };
         // A document is parsed whole: any change parses it from its start.
         let (parse_pos, carry) = match st.origin.framing {
@@ -645,7 +661,53 @@ impl Engine {
             tracked: true,
             failed: false,
             waiting: false,
-            source: None,
+            source: pool::Bytes::File,
+        }))
+    }
+
+    /// A parse-only plan over the bytes the archive stored for an input,
+    /// when the index is behind them: a new parser version, a fresh index,
+    /// or a file that moved or went. The same loop builds the index from
+    /// stored bytes as from files, so a rebuild needs no command of its own.
+    fn stored_plan(&mut self, path: &Path) -> Result<Option<Plan>, EngineError> {
+        let Some(st) = self.inputs.get(path) else {
+            return Ok(None);
+        };
+        let parsed = st.origin.support == Support::Parsed;
+        let version_changed = st.parser_version != Some(st.origin.parser_version);
+        let behind = st.parsed_upto < st.stored || version_changed;
+        let Some(chain) = st.chain else {
+            return Ok(None);
+        };
+        if !parsed || st.stored == 0 || !behind {
+            return Ok(None);
+        }
+        let (input_id, origin, stored, facts) = (st.input_id.clone(), st.origin, st.stored, st.facts);
+        let bytes = self.reads.reader()?.stored_chain(&input_id, chain, stored)?;
+        Ok(Some(Plan {
+            path: path.to_path_buf(),
+            origin,
+            input: InputKey {
+                id: input_id,
+                format: origin.name.into(),
+                route_rank: 0,
+            },
+            change: Change::Unchanged,
+            observation: None,
+            facts,
+            size: stored,
+            piece_pos: stored,
+            parse_pos: 0,
+            piece_started: false,
+            carry: None,
+            tail: None,
+            span: span(origin, self.config.chunk),
+            chunk: self.config.chunk,
+            priority: Priority::Bulk,
+            tracked: true,
+            failed: false,
+            waiting: false,
+            source: pool::Bytes::Stored(Arc::new(bytes)),
         }))
     }
 
@@ -841,7 +903,7 @@ impl Engine {
             tracked: false,
             failed: false,
             waiting: false,
-            source: Some(bytes),
+            source: pool::Bytes::Memory(bytes),
         }))
     }
 

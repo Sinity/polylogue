@@ -39,9 +39,21 @@ pub struct Job {
     pub length: u64,
     pub carry: Option<Json>,
     pub priority: Priority,
-    /// The input's bytes when they are not a file of their own (a member
-    /// of an imported zip); `None` reads `path`.
-    pub source: Option<Arc<Vec<u8>>>,
+    /// Where the bytes come from.
+    pub source: Bytes,
+}
+
+/// Where a job's bytes come from.
+#[derive(Clone, Debug, Default)]
+pub enum Bytes {
+    /// The file at the job's path.
+    #[default]
+    File,
+    /// Bytes that are not a file of their own (a member of an imported zip).
+    Memory(Arc<Vec<u8>>),
+    /// What the archive stored for the input: its file changed, moved or
+    /// went, or the index is being built again.
+    Stored(Arc<polylogue_store::blobs::StoredChain>),
 }
 
 impl Job {
@@ -195,7 +207,7 @@ fn work(shared: &Shared, writer: &WriterSender, store: &hashed_blobs::Store, don
         };
         let size = job.bytes();
         let live = job.priority == Priority::Live;
-        let (batch, result) = run(job, &mut group.blobs);
+        let (batch, result) = run(job, &mut group.blobs, store);
         group.held.push((batch, result));
         group.bytes += size;
         if (live || group.bytes >= GROUP_BYTES) && !flush(&mut group, shared, writer, store, done) {
@@ -252,7 +264,11 @@ fn flush<'s>(
     true
 }
 
-fn run(job: Job, blobs: &mut hashed_blobs::Batch<'_>) -> (Option<Batch>, Done) {
+fn run(
+    job: Job,
+    blobs: &mut hashed_blobs::Batch<'_>,
+    store: &hashed_blobs::Store,
+) -> (Option<Batch>, Done) {
     let mut out = Done {
         path: job.path.clone(),
         start: job.start,
@@ -264,8 +280,11 @@ fn run(job: Job, blobs: &mut hashed_blobs::Batch<'_>) -> (Option<Batch>, Done) {
         error: None,
     };
     let read = match &job.source {
-        Some(all) => Ok(all[job.start as usize..job.end as usize].to_vec()),
-        None => stage::read_range(&job.path, job.start, job.end),
+        Bytes::Memory(all) => Ok(all[job.start as usize..job.end as usize].to_vec()),
+        Bytes::Stored(chain) => chain
+            .read_range(store, job.start, job.end)
+            .map_err(|e| std::io::Error::other(e.to_string())),
+        Bytes::File => stage::read_range(&job.path, job.start, job.end),
     };
     let bytes = match read {
         Ok(b) => b,

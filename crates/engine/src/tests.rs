@@ -214,6 +214,49 @@ fn a_vanished_file_is_observed_gone_and_its_messages_stay() {
     );
 }
 
+/// Deletes `index.db` (and its WAL files) of a closed archive.
+fn delete_index(root: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = fs::remove_file(root.join(format!("index.db{suffix}")));
+    }
+}
+
+#[test]
+fn a_deleted_index_is_built_again_from_stored_bytes_even_when_the_files_are_gone() {
+    let w = World::new();
+    w.append("s1.jsonl", &user("u1", "s1", "first"));
+    {
+        let (mut e, _lock) = w.engine(64 << 20);
+        e.converge().unwrap();
+        // An append stored as its own piece, so the chain has two extents.
+        w.append("s1.jsonl", &assistant("a1", "s1", "second"));
+        e.converge().unwrap();
+    }
+    fs::remove_file(w.file("s1.jsonl")).unwrap();
+    delete_index(&w.root);
+    let (mut e, _lock) = w.engine(64 << 20);
+    e.converge().unwrap();
+    assert_eq!(w.texts("s1"), ["first", "second"]);
+}
+
+#[test]
+fn a_stored_input_is_parsed_from_its_stored_bytes_in_chunks() {
+    let w = World::new();
+    for i in 0..20 {
+        w.append("s2.jsonl", &user(&format!("u{i}"), "s2", &format!("m{i}")));
+    }
+    {
+        let (mut e, _lock) = w.engine(64 << 20);
+        e.converge().unwrap();
+    }
+    fs::remove_file(w.file("s2.jsonl")).unwrap();
+    delete_index(&w.root);
+    // A chunk far smaller than the file: the stored bytes are read by range.
+    let (mut e, _lock) = w.engine(300);
+    e.converge().unwrap();
+    assert_eq!(w.texts("s2").len(), 20);
+}
+
 #[test]
 fn importing_the_same_bytes_twice_stores_them_once() {
     let w = World::new();
