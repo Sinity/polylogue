@@ -23,9 +23,10 @@ const FORMATTED: &[&str] = &[
 #[derive(Parser)]
 #[command(name = "xtask", about = "Polylogue development checks")]
 enum Cli {
-    /// Formatting, crate boundaries and `cargo check` of every target.
+    /// Formatting, crate boundaries and clippy (warnings denied) of every
+    /// target.
     Fast,
-    /// Formatting, crate boundaries and the full test suite.
+    /// Formatting, crate boundaries, clippy and the full test suite.
     Check,
     /// The end-to-end tests: the real daemon, CLI and MCP server.
     Scenarios,
@@ -132,6 +133,23 @@ fn boundaries_step(run: &mut Run) -> devkit::Result {
     })
 }
 
+/// Clippy over every target, warnings denied: it also compiles everything,
+/// so it replaces a separate `cargo check`.
+fn clippy(run: &mut Run) -> devkit::Result {
+    run.cargo(
+        "clippy",
+        &[
+            "clippy",
+            "--locked",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )
+}
+
 fn nextest(args: Vec<String>) -> Nextest {
     Nextest {
         args,
@@ -151,14 +169,12 @@ fn main() -> ExitCode {
         Cli::Fast => run("fast", &[], |run| {
             fmt_check(run)?;
             boundaries_step(run)?;
-            run.cargo(
-                "check",
-                &["check", "--locked", "--workspace", "--all-targets"],
-            )
+            clippy(run)
         }),
         Cli::Check => run("check", &[], |run| {
             fmt_check(run)?;
             boundaries_step(run)?;
+            clippy(run)?;
             run.nextest(
                 "test",
                 &nextest(vec!["--locked".into(), "--workspace".into()]),

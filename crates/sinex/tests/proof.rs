@@ -54,7 +54,7 @@ fn answers(root: &Path) -> String {
     let reader = pool.reader().unwrap();
     let mut out = String::new();
     let mut sessions = reader.list(u64::MAX, None).unwrap();
-    sessions.sort_by(|a, b| a.id.to_string().cmp(&b.id.to_string()));
+    sessions.sort_by_key(|a| a.id.to_string());
     for s in sessions {
         out.push_str(&format!("{s:?}\n"));
         for m in reader.messages(&s.id, false).unwrap() {

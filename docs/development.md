@@ -13,8 +13,9 @@ inside `nix develop`.
 | Package build | `nix flake check` | after dependency or packaging changes | about 2.5 min |
 
 - **Fast check:** formatting, crate boundaries (`xtask boundaries`) and
-  `cargo check` of every target, tests included.
-- **Full suite:** formatting, boundaries and `cargo nextest run --workspace`
+  clippy of every target, tests included, with warnings denied. The pre-push
+  hook runs it, so a lint cannot land.
+- **Full suite:** formatting, boundaries, clippy and `cargo nextest run --workspace`
   (configuration in `.config/nextest.toml`). Each test runs in its own
   process, all binaries in parallel; a test still running after two minutes
   is terminated and fails. Then the laws that inject failures (laws 7, 45,

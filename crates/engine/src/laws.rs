@@ -41,7 +41,7 @@ fn corpus(shape: &Shape) -> Corpus {
     let mut uuids = BTreeSet::new();
     let mut resumes = Vec::new();
     let line = |i: usize, sid: &str, uuid: &str| {
-        if i % 2 == 0 {
+        if i.is_multiple_of(2) {
             user(uuid, sid, &format!("{sid} says {i}"))
         } else {
             assistant(uuid, sid, &format!("{sid} answers {i}"))

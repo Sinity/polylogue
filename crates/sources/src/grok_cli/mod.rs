@@ -261,8 +261,10 @@ impl Parser for GrokCli {
         else {
             return Disposition::refused("unusable message ID");
         };
-        let mut production = polylogue_model::Production::default();
-        production.effort = string_of(value, "reasoning_effort");
+        let production = polylogue_model::Production {
+            effort: string_of(value, "reasoning_effort"),
+            ..Default::default()
+        };
         out.messages.push(MessageRow {
             offset: record.offset,
             end,
