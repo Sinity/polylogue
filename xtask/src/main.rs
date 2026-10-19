@@ -1,3 +1,5 @@
+mod bench;
+
 use clap::Parser;
 use devkit::{Nextest, Run, select::Selection};
 use serde_json::Value;
@@ -42,6 +44,9 @@ enum Cli {
     },
     /// Crate dependency boundaries only.
     Boundaries,
+    /// The first build on a frozen representative sample of the corpus.
+    #[command(subcommand)]
+    Bench(bench::Bench),
     #[command(flatten)]
     Shared(devkit::cli::Command),
 }
@@ -236,6 +241,7 @@ fn main() -> ExitCode {
                 run.nextest("test", &nextest(nextest_args))
             })
         }
+        Cli::Bench(command) => bench::execute(command),
         Cli::Shared(command) => devkit::cli::execute("polylogue", command),
     }
 }

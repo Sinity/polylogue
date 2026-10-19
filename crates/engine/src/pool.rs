@@ -288,6 +288,7 @@ fn run(
     blobs: &mut hashed_blobs::Batch<'_>,
     store: &hashed_blobs::Store,
 ) -> (Option<Batch>, Done) {
+    use polylogue_store::timing::{Stage, add, time};
     let mut out = Done {
         path: job.path.clone(),
         start: job.start,
@@ -298,6 +299,7 @@ fn run(
         stored: 0,
         error: None,
     };
+    let started = std::time::Instant::now();
     let read = match &job.source {
         Bytes::Memory(all) => Ok(all[job.start as usize..job.end as usize].to_vec()),
         Bytes::Stored(chain) => chain
@@ -305,6 +307,7 @@ fn run(
             .map_err(|e| std::io::Error::other(e.to_string())),
         Bytes::File => stage::read_range(&job.path, job.start, job.end),
     };
+    add(Stage::Read, started.elapsed());
     let bytes = match read {
         Ok(b) => b,
         Err(e) => {
@@ -314,7 +317,9 @@ fn run(
     };
     out.tail = stage::tail_of(&bytes);
     let piece = match job.piece_from {
-        Some(from) => match Piece::prepare_in(blobs, &bytes[(from - job.start) as usize..]) {
+        Some(from) => match time(Stage::Store, || {
+            Piece::prepare_in(blobs, &bytes[(from - job.start) as usize..])
+        }) {
             Ok(p) => {
                 out.stored = p.size;
                 Some(p)
@@ -333,9 +338,10 @@ fn run(
         let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             polylogue_store::fault::check("parse", &job.path.to_string_lossy())
                 .map_err(|e| e.to_string())?;
-            parser
-                .step(job.carry.as_ref(), &bytes, job.start)
-                .map_err(|e| e.to_string())
+            time(Stage::Parse, || {
+                parser.step(job.carry.as_ref(), &bytes, job.start)
+            })
+            .map_err(|e| e.to_string())
         }))
         .unwrap_or_else(|panic| {
             let why = panic
@@ -348,7 +354,7 @@ fn run(
         match step {
             Ok((mut step, carry)) => {
                 for blob in std::mem::take(&mut step.output.blobs) {
-                    match Piece::prepare_in(blobs, &blob.bytes) {
+                    match time(Stage::Store, || Piece::prepare_in(blobs, &blob.bytes)) {
                         Ok(p) => extra.push(p),
                         Err(e) => out.error = Some(format!("store inline bytes: {e}")),
                     }
@@ -366,7 +372,10 @@ fn run(
                     bodies: Vec::new(),
                     events: Vec::new(),
                 };
+                // Packing for the writer is store work, not parsing.
+                let packed = std::time::Instant::now();
                 p.prepare();
+                add(Stage::Store, packed.elapsed());
                 Some(p)
             }
             Err(e) => {

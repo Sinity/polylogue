@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-devkit.workspace = true
+devkit = { workspace = true, features = ["bench"] }
 serde_json.workspace = true
 
 [dev-dependencies]
