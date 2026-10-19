@@ -1670,6 +1670,12 @@ impl<'a> Compiler<'a> {
                     _ => return Err(self.unknown_field(name, unit, span)),
                 }
             }
+            (Unit::Sessions, "repo")
+                if matches!(&op, FieldOp::Match(Value::One { text, quoted: false })
+                    if text.eq_ignore_ascii_case("unknown")) =>
+            {
+                format!("{s}.repo IS NULL")
+            }
             (Unit::Sessions, "repo") => {
                 let mut parts = vec![];
                 for v in values(&op) {
@@ -1765,8 +1771,11 @@ impl<'a> Compiler<'a> {
                     if vs.is_empty() {
                         return Err(need_value(name));
                     }
+                    // Unknown when no message records a model, so neither
+                    // the condition nor its NOT matches (three-valued, law 132).
                     format!(
-                        "EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND lower(x.model) IN ({}))",
+                        "CASE WHEN EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL) \
+                         THEN EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND lower(x.model) IN ({})) END",
                         vs.join(", ")
                     )
                 }

@@ -8,7 +8,7 @@
 
 use super::*;
 use polylogue_testkit::{Morrow, Set, morrow_dir, short};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// 2026-10-08 12:00 Europe/Warsaw (`FACTS.md`, the examples' clock).
 const NOW: i64 = 1_791_453_600_000;
@@ -247,4 +247,128 @@ fn counts_match_the_rows_paged() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+fn q(r: &Reader<'_>, text: &str) -> Value {
+    run(r, ask(text)).unwrap_or_else(|f| panic!("{text}: {} {}", f.kind, f.message))
+}
+
+fn ids(v: &Value) -> Vec<String> {
+    rows(v).iter().map(row_session).collect()
+}
+
+/// Law 129: a grouped result is rows. `limit`, `where` and `sort` after a
+/// group act on the groups, never on the ungrouped rows.
+#[test]
+fn law_129_a_grouped_result_is_rows() {
+    let w = Morrow::build(Set::Main);
+    let pool = w.reads();
+    let r = pool.reader().unwrap();
+    let base = "tool_calls | group by action | count";
+    let all: Vec<(String, u64)> = rows(&q(&r, base))
+        .iter()
+        .map(|g| (group_key(g), g["count"].as_u64().unwrap()))
+        .collect();
+    assert!(all.len() > 2, "{all:?}");
+    let limited: Vec<String> = rows(&q(&r, &format!("{base} | limit 1"))).iter().map(group_key).collect();
+    assert_eq!(limited, [all[0].0.clone()]);
+    let mut big: Vec<String> = rows(&q(&r, &format!("{base} | where count >= 6")))
+        .iter()
+        .map(group_key)
+        .collect();
+    let mut want: Vec<String> = all.iter().filter(|(_, c)| *c >= 6).map(|(k, _)| k.clone()).collect();
+    big.sort();
+    want.sort();
+    assert_eq!(big, want);
+    let asc: Vec<u64> = rows(&q(&r, &format!("{base} | sort by count asc")))
+        .iter()
+        .map(|g| g["count"].as_u64().unwrap())
+        .collect();
+    assert_eq!(asc.len(), all.len());
+    assert!(asc.windows(2).all(|w| w[0] <= w[1]), "{asc:?}");
+}
+
+/// Law 132: three-valued filters. `U where C`, `U where NOT C` and
+/// `U where F:unknown` partition U; no owner matches both `exists` and
+/// `NOT exists`.
+#[test]
+fn law_132_three_valued_filters_partition() {
+    let w = Morrow::build(Set::Main);
+    let pool = w.reads();
+    let r = pool.reader().unwrap();
+    let all: BTreeSet<String> = ids(&q(&r, "kind:*")).into_iter().collect();
+    assert_eq!(all.len(), 8);
+    for (c, unknown) in [
+        ("model:claude-fable-5-1", "model:unknown"),
+        ("cost > 1", "cost:unknown"),
+        ("repo:morrow", "repo:unknown"),
+    ] {
+        let yes: BTreeSet<String> = ids(&q(&r, &format!("kind:* {c}"))).into_iter().collect();
+        let no: BTreeSet<String> = ids(&q(&r, &format!("kind:* NOT {c}"))).into_iter().collect();
+        let unk: BTreeSet<String> = ids(&q(&r, &format!("kind:* {unknown}"))).into_iter().collect();
+        assert!(yes.is_disjoint(&no) && yes.is_disjoint(&unk) && no.is_disjoint(&unk), "{c}: overlap {yes:?} {no:?} {unk:?}");
+        let union: BTreeSet<String> = yes.union(&no).chain(&unk).cloned().collect();
+        assert_eq!(union, all, "{c}: the three results do not cover every session");
+    }
+    let top: BTreeSet<String> = ids(&q(&r, "sessions")).into_iter().collect();
+    let has: BTreeSet<String> = ids(&q(&r, "sessions where exists tool_call(outcome:error)")).into_iter().collect();
+    let hasnt: BTreeSet<String> = ids(&q(&r, "sessions where NOT exists tool_call(outcome:error)")).into_iter().collect();
+    assert!(has.is_disjoint(&hasnt), "{has:?} {hasnt:?}");
+    assert_eq!(has.union(&hasnt).cloned().collect::<BTreeSet<_>>(), top, "{has:?} {hasnt:?}");
+}
+
+/// Law 133: defaults are bound once. A condition every row satisfies,
+/// nested where it is not a top-level condition, leaves the rows unchanged.
+#[test]
+fn law_133_a_nested_condition_does_not_drop_a_default() {
+    let w = Morrow::build(Set::Main);
+    let pool = w.reads();
+    let r = pool.reader().unwrap();
+    let count = |text: &str| rows(&q(&r, text))[0]["count"].as_u64().unwrap();
+    assert_eq!(count("tool_calls | agg count"), 37);
+    assert_eq!(count("tool_calls where (action:shell OR NOT action:shell) | agg count"), 37);
+    let chrono = |text: &str| rows(&q(&r, text)).len();
+    assert_eq!(chrono(r#"messages where written_by:human "chrono""#), 2);
+    assert_eq!(
+        chrono(r#"messages where written_by:human (inherited:true OR NOT inherited:true) "chrono""#),
+        2
+    );
+}
+
+/// Law 137: a value outside a field's closed set is refused, never an empty
+/// answer; every value of the set, `*` and `unknown` (where allowed) pass.
+#[test]
+fn law_137_a_value_outside_a_closed_set_is_refused() {
+    let w = Morrow::build(Set::Main);
+    let pool = w.reads();
+    let r = pool.reader().unwrap();
+    for bad in [
+        "tool_calls where outcome:solved",
+        "messages where role:asistant",
+        "kind:continuation",
+        "kind:mian",
+    ] {
+        match run(&r, ask(bad)) {
+            Err(f) => assert!(
+                f.message.contains(',') || f.detail.is_some(),
+                "{bad}: the refusal does not name the set: {}",
+                f.message
+            ),
+            Ok(v) => panic!("{bad} was answered ({}) instead of refused", v["outcome"]),
+        }
+    }
+    for good in [
+        "tool_calls where outcome:ok",
+        "tool_calls where outcome:error",
+        "tool_calls where outcome:unknown",
+        "messages where role:assistant",
+        "messages where role:user",
+        "kind:subagent",
+        "kind:main",
+        "kind:*",
+    ] {
+        if let Err(f) = run(&r, ask(good)) {
+            panic!("{good} refused: {} {}", f.kind, f.message);
+        }
+    }
 }
