@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
 fn ctx(w: &TestDaemon) -> Arc<Ctx> {
-    Arc::new(Ctx::at(&w.daemon.state, &w.daemon.archive).unwrap())
+    Arc::new(Ctx::at(&w.daemon.config, &w.daemon.archive).unwrap())
 }
 
 struct Answer {
@@ -146,11 +146,19 @@ fn a_capture_is_spooled_durably_and_archived_by_the_loop() {
     }
 }
 
+/// Settings that read only a home under `dir`.
+fn config_at(dir: &std::path::Path) -> polylogue_engine::Config {
+    let mut c = polylogue_engine::Config::from_env();
+    c.home = dir.join("home");
+    c.tool_dirs.clear();
+    c
+}
+
 #[test]
 fn without_the_daemon_the_index_is_unknown_not_missing() {
     let dir = tempfile::tempdir().unwrap();
     let archive = polylogue_store::Archive::at(&dir.path().join("archive"));
-    let ctx = Arc::new(Ctx::at(&dir.path().join("state"), &archive).unwrap());
+    let ctx = Arc::new(Ctx::at(&config_at(dir.path()), &archive).unwrap());
     let a = exchange(
         &ctx,
         "POST",
@@ -185,7 +193,7 @@ fn without_the_daemon_the_index_is_unknown_not_missing() {
 fn malformed_exchanges_are_refused_with_an_error_frame() {
     let dir = tempfile::tempdir().unwrap();
     let archive = polylogue_store::Archive::at(&dir.path().join("archive"));
-    let ctx = Arc::new(Ctx::at(&dir.path().join("state"), &archive).unwrap());
+    let ctx = Arc::new(Ctx::at(&config_at(dir.path()), &archive).unwrap());
     let run = |frames: &[Value]| {
         let mut input = Vec::new();
         for f in frames {

@@ -117,3 +117,26 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     assert_eq!(out.status.code(), Some(6));
     assert_eq!(json(&out)["error"]["kind"], "daemon_required");
 }
+
+#[test]
+fn the_hook_spools_where_the_daemon_reads_never_outside_polylogue_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let elsewhere = dir.path().join("xdg");
+    let mut child = Command::new(crate::BIN)
+        .args(["hook", "Stop"])
+        .env("POLYLOGUE_HOME", &home)
+        .env("XDG_STATE_HOME", &elsewhere)
+        .env("POLYLOGUE_ARCHIVE", dir.path().join("archive"))
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(child.stdin.as_mut().unwrap(), br#"{"session_id": "s1"}"#).unwrap();
+    assert!(child.wait().unwrap().success());
+    let spool = home.join(".local/state/polylogue/hooks");
+    let carriers: Vec<_> = std::fs::read_dir(&spool)
+        .unwrap_or_else(|e| panic!("{}: {e}", spool.display()))
+        .collect();
+    assert_eq!(carriers.len(), 1);
+    assert!(!elsewhere.exists(), "the tools' own state is not touched");
+}

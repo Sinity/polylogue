@@ -2,7 +2,7 @@
 //! live, how a file is recognized and which parser reads it.
 
 use crate::parse::StepParser;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Support {
@@ -55,7 +55,17 @@ impl Root {
         env: None,
         default: "",
     };
+    /// The root of Polylogue's own state directory ([`STATE_DIR`] under
+    /// it): the spools its hook, browser host and collectors write.
+    pub const STATE: Root = Root {
+        env: Some("XDG_STATE_HOME"),
+        default: ".local/state",
+    };
 }
+
+/// Polylogue's own directory under [`Root::STATE`]. Every spool origin's
+/// locations lie under it.
+pub const STATE_DIR: &str = "polylogue";
 
 /// What is stored for a file found at an origin's location.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +77,10 @@ pub enum Capture {
     /// page images (architecture 4.2).
     LogicalExport,
 }
+
+/// A tool's resume command line (program first) from a session's native
+/// ID, or `None` when that session cannot be resumed on its own.
+pub type Resume = fn(&str) -> Option<Vec<String>>;
 
 pub struct OriginSpec {
     pub name: &'static str,
@@ -88,6 +102,40 @@ pub struct OriginSpec {
     /// The parser for one input, or `None` when the path is not one this
     /// origin parses.
     pub open: fn(&Path) -> Option<Box<dyn StepParser>>,
+    /// The tool's own command line that reopens a session, from its
+    /// native ID; `None` inside when that session cannot be resumed on its
+    /// own.
+    pub resume: Option<Resume>,
+    /// Whether a bare UUID the operator pastes can name one of this
+    /// origin's sessions.
+    pub bare_uuid_ids: bool,
+}
+
+impl OriginSpec {
+    /// Where Polylogue's own writer puts a spool origin's files, relative
+    /// to its root: the directory every location lies under, up to the
+    /// first wildcard (`polylogue/hooks`). `None` for other routes.
+    pub fn spool_dir(&self) -> Option<PathBuf> {
+        if self.route != Route::Spool {
+            return None;
+        }
+        fn fixed(l: &'static str) -> Vec<&'static str> {
+            let segs: Vec<&str> = l.split('/').collect();
+            // The last segment names files, never the directory.
+            segs[..segs.len() - 1]
+                .iter()
+                .take_while(|s| !s.contains('*'))
+                .copied()
+                .collect()
+        }
+        let mut shared = fixed(self.locations.first()?);
+        for l in &self.locations[1..] {
+            let mine = fixed(l);
+            let n = shared.iter().zip(&mine).take_while(|(a, b)| a == b).count();
+            shared.truncate(n);
+        }
+        Some(shared.iter().collect())
+    }
 }
 
 fn never(_: &Path, _: &[u8]) -> bool {
@@ -114,6 +162,8 @@ macro_rules! reserved {
             capture: Capture::Bytes,
             recognize: never,
             open: none,
+            resume: None,
+            bare_uuid_ids: false,
         }
     };
 }
@@ -130,6 +180,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::claude_code::recognize,
         open: crate::claude_code::open,
+        resume: Some(crate::claude_code::resume),
+        bare_uuid_ids: true,
     },
     OriginSpec {
         name: "claude-code-side",
@@ -142,6 +194,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::claude_code::side::recognize_side,
         open: crate::claude_code::side::open_side,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: "claude-code-history",
@@ -154,6 +208,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::claude_code::side::recognize_history,
         open: crate::claude_code::side::open_history,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: "codex",
@@ -166,6 +222,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Lines,
         recognize: crate::codex::recognize,
         open: crate::codex::open,
+        resume: Some(crate::codex::resume),
+        bare_uuid_ids: true,
     },
     OriginSpec {
         name: "codex-database",
@@ -178,6 +236,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Lines,
         recognize: crate::codex::database::recognize,
         open: crate::codex::database::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: "gemini-cli",
@@ -190,6 +250,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Document,
         recognize: crate::gemini_cli::recognize,
         open: crate::gemini_cli::open,
+        resume: Some(crate::gemini_cli::resume),
+        bare_uuid_ids: false,
     },
     reserved!("antigravity", Live, [".gemini/antigravity/**"]),
     OriginSpec {
@@ -203,6 +265,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Lines,
         recognize: crate::hermes::recognize,
         open: crate::hermes::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: "grok-cli",
@@ -215,42 +279,50 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Lines,
         recognize: crate::grok_cli::recognize,
         open: crate::grok_cli::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: "polylogue-repo-lookup",
         parser_version: 1,
         support: Support::Parsed,
         route: Route::Spool,
-        root: crate::repo_lookup::ROOT,
+        root: Root::STATE,
         locations: crate::repo_lookup::LOCATIONS,
         capture: Capture::Bytes,
         framing: Framing::Document,
         recognize: crate::repo_lookup::recognize,
         open: crate::repo_lookup::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
-        name: "hook-spool",
+        name: crate::hook_spool::ORIGIN,
         parser_version: 1,
         support: Support::Parsed,
         route: Route::Spool,
-        root: crate::hook_spool::ROOT,
+        root: Root::STATE,
         locations: crate::hook_spool::LOCATIONS,
         capture: Capture::Bytes,
         framing: Framing::Lines,
         recognize: crate::hook_spool::recognize,
         open: crate::hook_spool::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
-        name: "browser-capture",
+        name: crate::browser_capture::ORIGIN,
         parser_version: 3,
         support: Support::Parsed,
         route: Route::Spool,
         framing: Framing::Document,
-        root: crate::browser_capture::ROOT,
+        root: Root::STATE,
         locations: crate::browser_capture::LOCATIONS,
         capture: Capture::Bytes,
         recognize: crate::browser_capture::recognize,
         open: crate::browser_capture::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: "export-file",
@@ -263,6 +335,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: never,
         open: none,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: crate::polylogue_export::ORIGIN,
@@ -275,6 +349,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::polylogue_export::recognize,
         open: crate::polylogue_export::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: "chatgpt",
@@ -287,6 +363,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::chatgpt::recognize,
         open: crate::chatgpt::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: "claude-ai",
@@ -299,6 +377,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::claude_ai::recognize,
         open: crate::claude_ai::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: "claude-design",
@@ -311,6 +391,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::claude_ai::recognize_design,
         open: crate::claude_ai::open_design,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
@@ -318,11 +400,13 @@ pub static ORIGINS: &[OriginSpec] = &[
         support: Support::Parsed,
         route: Route::Spool,
         framing: Framing::Document,
-        root: crate::ai_studio::ROOT,
+        root: Root::STATE,
         locations: crate::ai_studio::LOCATIONS,
         capture: Capture::Bytes,
         recognize: crate::ai_studio::recognize,
         open: crate::ai_studio::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: crate::gemini_app::ORIGIN,
@@ -335,6 +419,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::gemini_app::recognize,
         open: crate::gemini_app::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     reserved!("grok", Import, []),
     OriginSpec {
@@ -348,6 +434,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::otel_genai::recognize,
         open: crate::otel_genai::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     OriginSpec {
         name: crate::openrouter::ORIGIN,
@@ -360,6 +448,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::openrouter::recognize,
         open: crate::openrouter::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
     // Last of the imports: its shapes are the most generic, so a specific
     // origin that recognizes the same file is tried first.
@@ -374,6 +464,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         recognize: crate::openai_chat::recognize,
         open: crate::openai_chat::open,
+        resume: None,
+        bare_uuid_ids: false,
     },
 ];
 

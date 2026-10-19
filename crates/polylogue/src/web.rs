@@ -42,7 +42,7 @@ pub fn start(daemon: Arc<Daemon>) -> std::io::Result<u16> {
     let token = access::new_token()?;
     let dir = access::runtime_dir(&key);
     access::publish(&dir, &token, port)?;
-    let browser = Arc::new(crate::browser::Ctx::at(&daemon.state, &daemon.archive)?);
+    let browser = Arc::new(crate::browser::Ctx::at(&daemon.config, &daemon.archive)?);
     let web = Arc::new(Web {
         daemon,
         key,

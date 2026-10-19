@@ -47,6 +47,7 @@ pub enum EngineError {
     Watch(#[from] notify::Error),
 }
 
+#[derive(Debug, Clone)]
 pub struct Config {
     /// The home directory origins' locations are relative to.
     pub home: PathBuf,
@@ -72,8 +73,6 @@ pub struct Config {
 }
 
 impl Config {
-    /// The running machine's settings. `POLYLOGUE_HOME` replaces the home
-    /// directory for tests and measurements.
     /// The directory an origin's locations are relative to.
     pub fn root(&self, root: polylogue_sources::origin::Root) -> PathBuf {
         match root.env.and_then(|var| self.tool_dirs.get(var)) {
@@ -83,6 +82,29 @@ impl Config {
         }
     }
 
+    /// Polylogue's own state directory (`$XDG_STATE_HOME/polylogue`): the
+    /// spools, and what their writers keep beside them.
+    pub fn state_dir(&self) -> PathBuf {
+        self.root(polylogue_sources::origin::Root::STATE)
+            .join(polylogue_sources::origin::STATE_DIR)
+    }
+
+    /// Where Polylogue's own writer puts the files of the spool origin
+    /// `origin`, which the loop then collects.
+    ///
+    /// # Panics
+    /// When `origin` is not a spool origin: the names are constants.
+    pub fn spool_dir(&self, origin: &str) -> PathBuf {
+        let spec = polylogue_sources::origin::by_name(origin)
+            .unwrap_or_else(|| panic!("no origin {origin}"));
+        let dir = spec
+            .spool_dir()
+            .unwrap_or_else(|| panic!("{origin} is not a spool origin"));
+        self.root(spec.root).join(dir)
+    }
+
+    /// The running machine's settings. `POLYLOGUE_HOME` replaces the home
+    /// directory for tests and measurements.
     pub fn from_env() -> Self {
         let read = |p: &str| {
             std::fs::read_to_string(p)
@@ -489,8 +511,7 @@ impl Engine {
             .map_err(|e| format!("repository lookups: {e}"))?;
         let dir = self
             .config
-            .root(polylogue_sources::repo_lookup::ROOT)
-            .join("polylogue/repo-lookup");
+            .spool_dir(polylogue_sources::repo_lookup::ORIGIN);
         let read_at = polylogue_model::Timestamp::from_unix_ms(now_ms())
             .map(|t| t.to_string())
             .unwrap_or_default();
@@ -505,10 +526,6 @@ impl Engine {
     }
 
     fn sync_drive(&self) -> Option<String> {
-        let state = polylogue_sources::origin::Root {
-            env: Some("XDG_STATE_HOME"),
-            default: ".local/state",
-        };
         let on = self
             .reads
             .reader()
@@ -520,11 +537,8 @@ impl Engine {
         }
         let collector = ai_studio_drive::Collector {
             endpoints: ai_studio_drive::Endpoints::default(),
-            token_path: self.config.root(state).join("polylogue/token.json"),
-            spool: self
-                .config
-                .root(polylogue_sources::ai_studio::ROOT)
-                .join("polylogue/drive/ai-studio"),
+            token_path: self.config.state_dir().join("token.json"),
+            spool: self.config.spool_dir(polylogue_sources::ai_studio::ORIGIN),
         };
         collector
             .sync()

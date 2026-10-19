@@ -14,7 +14,6 @@
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule, unaccounted};
-use crate::origin::Root;
 use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, StepParser, Whole};
 use crate::{Accounting, Disposition};
 use base64::Engine as _;
@@ -28,10 +27,6 @@ pub const ORIGIN: &str = "ai-studio";
 
 /// Where the Drive collector writes prompts it fetched, one file per
 /// prompt named by its Drive file ID.
-pub const ROOT: Root = Root {
-    env: Some("XDG_STATE_HOME"),
-    default: ".local/state",
-};
 pub const LOCATIONS: &[&str] = &["polylogue/drive/ai-studio/*.json"];
 
 /// The Drive collector's listing of the prompts folder, `files.json`:

@@ -14,7 +14,6 @@
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule, unaccounted};
-use crate::origin::Root;
 use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, StepParser, Whole};
 use crate::{Accounting, Disposition};
 use base64::Engine as _;
@@ -24,10 +23,7 @@ use polylogue_model::{
 };
 use std::path::Path;
 
-pub const ROOT: Root = Root {
-    env: Some("XDG_STATE_HOME"),
-    default: ".local/state",
-};
+pub const ORIGIN: &str = "browser-capture";
 
 pub const LOCATIONS: &[&str] = &["polylogue/browser-capture/*/*.json"];
 

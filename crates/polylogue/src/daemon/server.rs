@@ -21,9 +21,9 @@ use std::time::Instant;
 pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
-    /// `$XDG_STATE_HOME/polylogue` as the loop sees it: where the browser
-    /// host spools captures for the loop to read.
-    pub state: std::path::PathBuf,
+    /// The loop's settings: where the browser host spools captures for
+    /// the loop to read.
+    pub config: Config,
     /// User writes (notes, deliveries, settings) through the one writer.
     writes: WriterSender,
     loop_tx: Mutex<Sender<LoopMsg>>,
@@ -755,9 +755,7 @@ pub fn start(
 ) -> std::io::Result<(Arc<Daemon>, polylogue_store::ArchiveLock)> {
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
     let (archive, lock) = Archive::open_or_create(root).map_err(|e| to_io(&e))?;
-    let state = config
-        .root(polylogue_sources::browser_capture::ROOT)
-        .join("polylogue");
+    let paths = config.clone();
     #[allow(unused_mut)]
     let mut config = config;
     #[cfg(feature = "sinex")]
@@ -770,7 +768,7 @@ pub fn start(
     let daemon = Arc::new(Daemon {
         archive,
         reads,
-        state,
+        config: paths,
         writes,
         loop_tx: Mutex::new(tx.clone()),
         status: Arc::clone(&status),

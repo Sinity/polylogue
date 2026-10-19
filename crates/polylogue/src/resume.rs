@@ -26,22 +26,11 @@ pub struct Command {
 
 /// The harness's own resume command for a session, when it has one.
 pub fn native_resume(session: &SessionId, cwd: Option<&str>) -> Option<Command> {
-    let native = session.native().as_str();
-    let (program, args): (&str, Vec<String>) = match session.origin().as_str() {
-        "claude-code" => {
-            // Subagents and sidechains are not resumable on their own.
-            if native.starts_with("agent-") || native.ends_with("/sidechain") {
-                return None;
-            }
-            ("claude", vec!["--resume".into(), native.into()])
-        }
-        "codex" => ("codex", vec!["resume".into(), native.into()]),
-        "gemini-cli" => ("gemini", vec!["--resume".into(), native.into()]),
-        _ => return None,
-    };
+    let resume = polylogue_sources::origin::by_name(session.origin().as_str())?.resume?;
+    let mut argv = resume(session.native().as_str())?.into_iter();
     Some(Command {
-        program: program.into(),
-        args,
+        program: argv.next()?,
+        args: argv.collect(),
         cwd: cwd.map(str::to_owned),
     })
 }

@@ -17,6 +17,7 @@ pub mod native;
 pub mod routes;
 
 use crate::daemon::{Request, Response};
+use polylogue_engine::Config;
 use polylogue_store::Archive;
 use std::fs;
 use std::io::Write;
@@ -42,11 +43,11 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// The extension's files under `state` (`$XDG_STATE_HOME/polylogue` as
-    /// the daemon's loop sees it) for the archive at `archive`.
-    pub fn at(state: &Path, archive: &Archive) -> std::io::Result<Self> {
-        let spool = state.join("browser-capture");
-        let actions = state.join("browser-actions");
+    /// The extension's files in Polylogue's state directory as the
+    /// daemon's loop sees it (`config`), for the archive at `archive`.
+    pub fn at(config: &Config, archive: &Archive) -> std::io::Result<Self> {
+        let spool = config.spool_dir(polylogue_sources::browser_capture::ORIGIN);
+        let actions = config.state_dir().join("browser-actions");
         fs::create_dir_all(&spool)?;
         fs::create_dir_all(actions.join("inputs"))?;
         fs::create_dir_all(actions.join("capture-health"))?;
@@ -64,11 +65,7 @@ impl Ctx {
     /// The running user's: the default archive and the state root its
     /// daemon's loop reads.
     pub fn for_user() -> std::io::Result<Self> {
-        let config = polylogue_engine::Config::from_env();
-        let state = config
-            .root(polylogue_sources::browser_capture::ROOT)
-            .join("polylogue");
-        Self::at(&state, &Archive::at(&Archive::default_root()))
+        Self::at(&Config::from_env(), &Archive::at(&Archive::default_root()))
     }
 
     /// Asks the daemon. `None` when it is not running: callers report what
