@@ -1,7 +1,102 @@
-//! Commands that set Polylogue up outside the archive: the browser
-//! extension's host manifest, and opening the web reader.
+//! Commands that run in the calling process rather than in the daemon:
+//! the daemon itself, the MCP server, the hook command, the browser host,
+//! setup outside the archive and completions.
 
-use super::*;
+use super::fail;
+use crate::commands::{Command, Values};
+use std::process::ExitCode;
+
+pub fn daemon(_: &Command, _: &Values, _: bool) -> ExitCode {
+    match crate::daemon::server::serve() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("polylogue: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+pub fn mcp(_: &Command, _: &Values, _: bool) -> ExitCode {
+    match crate::mcp::serve_stdio() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("polylogue mcp: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+pub fn hook(_: &Command, v: &Values, _: bool) -> ExitCode {
+    crate::hook::run(&v.text("event").unwrap_or_default())
+}
+
+pub fn web(_: &Command, _: &Values, json: bool) -> ExitCode {
+    open_reader(json)
+}
+
+pub fn browser_host(_: &Command, _: &Values, _: bool) -> ExitCode {
+    crate::browser::native::run()
+}
+
+pub fn completions(_: &Command, v: &Values, _: bool) -> ExitCode {
+    use std::str::FromStr;
+    let shell = v.text("shell").unwrap_or_default();
+    let Ok(shell) = clap_complete::Shell::from_str(&shell) else {
+        return fail(false, "bad_request", &format!("unknown shell {shell:?}"), 2);
+    };
+    clap_complete::generate(
+        shell,
+        &mut super::command(),
+        "polylogue",
+        &mut std::io::stdout(),
+    );
+    ExitCode::SUCCESS
+}
+
+pub fn hooks_install(_: &Command, v: &Values, json: bool) -> ExitCode {
+    hooks(v, json, true)
+}
+
+pub fn hooks_uninstall(_: &Command, v: &Values, json: bool) -> ExitCode {
+    hooks(v, json, false)
+}
+
+fn hooks(v: &Values, json: bool, on: bool) -> ExitCode {
+    let path = v
+        .text("settings")
+        .map_or_else(crate::hook::settings_path, std::path::PathBuf::from);
+    match crate::hook::install(&path, on) {
+        Ok(()) => {
+            println!(
+                "{} Polylogue's hooks {} {}",
+                if on { "installed" } else { "removed" },
+                if on { "in" } else { "from" },
+                path.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(json, "io", &e.to_string(), 1),
+    }
+}
+
+/// A command declared but not built: a typed refusal.
+pub fn not_built(c: &Command, _: &Values, json: bool) -> ExitCode {
+    fail(
+        json,
+        "not_built",
+        &format!("`{}` is not built yet", c.name),
+        2,
+    )
+}
+
+pub fn install_agent(_: &Command, v: &Values, json: bool) -> ExitCode {
+    install_chrome(
+        json,
+        &v.text("harness").unwrap_or_default(),
+        v.text("extension_id").as_deref(),
+        v.flag("remove"),
+    )
+}
 
 /// Chrome's and Chromium's host manifest directories under `config`. An
 /// existing browser config directory gets the manifest; with none, Chrome's
@@ -22,12 +117,7 @@ pub fn host_manifest_dirs(config: &std::path::Path) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-pub(super) fn install_agent(
-    json: bool,
-    harness: &str,
-    extension_id: Option<&str>,
-    remove: bool,
-) -> ExitCode {
+fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove: bool) -> ExitCode {
     if harness != "chrome" {
         return fail(
             json,
@@ -102,7 +192,7 @@ pub(super) fn install_agent(
 /// Opens the web reader: reads the running daemon's port and token, checks
 /// that the port's listener is this user's, and opens `/auth#<token>` in
 /// the browser. The fragment never reaches a server log or history.
-pub(super) fn open_reader(json: bool) -> ExitCode {
+fn open_reader(json: bool) -> ExitCode {
     use crate::web::access;
     let root = polylogue_store::Archive::default_root();
     let dir = access::runtime_dir(&access::archive_key(&root));

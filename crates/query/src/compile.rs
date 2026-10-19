@@ -8,7 +8,7 @@ use crate::ast::*;
 use crate::fields::{self, Aliases, Kind};
 use crate::time::{self, Clock, Time};
 use crate::units::{self, Via};
-use crate::{COMMAND_WORDS, QueryError, parse};
+use crate::{QueryError, parse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -28,6 +28,9 @@ pub struct Options {
     /// Origin names (`claude-code`, `codex`, …): a word whose part before
     /// the first `:` is one of these is a session reference, not a field.
     pub origins: Vec<String>,
+    /// The CLI's command names: a query starting with one, or a near miss
+    /// of one, is refused rather than searched for.
+    pub command_words: Vec<String>,
     /// Rows per page when the query sets none: 20 sessions, 50 otherwise.
     pub page_size: Option<u64>,
     /// Whether vectors exist to rank `near:` by.
@@ -225,11 +228,11 @@ fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), Quer
         return Ok(());
     }
     let rest = text[first.span.end..].trim_start();
-    if COMMAND_WORDS.contains(&lower.as_str()) {
+    if opts.command_words.contains(&lower) {
         return Err(QueryError::NotAQuery {
             word: word.clone(),
             message: format!(
-                "\"{word}\" is a command, not a query; to search for the word, quote it or use find"
+                "\"{word}\" is a command, not a query; to search for the word, quote it"
             ),
             suggestion: Some(format!("\"{word}\" {rest}").trim_end().to_owned()),
         });
@@ -243,7 +246,7 @@ fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), Quer
         return Ok(());
     }
     let units = Unit::ALL.iter().map(|u| u.name());
-    for candidate in units.chain(COMMAND_WORDS.iter().copied()) {
+    for candidate in units.chain(opts.command_words.iter().map(String::as_str)) {
         if candidate != lower && strsim::damerau_levenshtein(&lower, candidate) <= allowed {
             return Err(QueryError::NotAQuery {
                 word: word.clone(),

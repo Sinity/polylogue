@@ -6,8 +6,8 @@ ChatGPT, claude.ai, AI Studio, the Gemini app and others) in one local
 archive, exactly as written, and lets you and your agents search, read,
 measure and annotate it from the command line, over MCP or in a web reader.
 
-This repository is the Rust rewrite. The Python Polylogue is still the
-deployed version; the rewrite uses its own archive.
+This repository is the Rust rewrite. The Python predecessor is kept for
+reference; the rewrite uses its own archive.
 
 ## Build
 
@@ -46,11 +46,16 @@ changes), `embeddings.db` and `blobs/`.
 
 ## Commands
 
-`polylogue --help` lists them all; each takes `--json`.
+`polylogue --help` lists them all; each takes `--json`. One command table
+(`crates/polylogue/src/commands.rs`) declares them; the CLI, its
+completions, the MCP tools and the HTTP API under `/api/v1/` are built from
+it.
 
 | Command | What it does |
 |---|---|
 | `QUERY` | Run a query: sessions, messages, blocks, tool calls, files, events, notes, links, turns, runs, deliveries, processes, work and changes, with conditions, `\| sort by`, `\| group by`, `\| matches` and `\| measure`. `--why` explains an empty result; `--fields` picks columns; `@N` names row N of the last list. |
+| `status` | What the archive holds and what the daemon is doing. |
+| `daemon` | Run the daemon in the foreground. |
 | `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). |
 | `import PATH` | Bring in an export or a directory of them. |
 | `export SESSION…` | Write sessions out as JSON (read back by `import`), Markdown, HTML or terminal text. |
@@ -60,6 +65,7 @@ changes), `embeddings.db` and `blobs/`.
 | `continue [SESSION]` | Resume a session with its tool's own command; without one, the sessions in this directory that left something open. |
 | `measure usage\|cost\|sessions\|quota\|outcomes\|failing\|drift\|unanswered\|survival\|daily\|process\|rhythm` | Tokens by kind and cost, subscription quota windows, tool outcomes, commands failing now, format drift and other analyses. Unknown figures stay unknown, never 0. |
 | `live`, `notices`, `changes`, `work` | Sessions running now, signal notices, what changed since a cursor, the work graph. |
+| `sql STATEMENT` | Read-only SQL over the stable views. |
 | `excise TARGET` | Remove a session, input or text from every file and derived product, for good. |
 | `embed preview\|build\|status` | Opt-in embeddings for semantic search, with a cost preview. |
 | `setting KEY [VALUE]` | Read or set a setting. |
@@ -67,6 +73,7 @@ changes), `embeddings.db` and `blobs/`.
 | `mcp` | Serve MCP over stdio. |
 | `hooks install\|uninstall`, `hook EVENT` | Claude Code hooks: live state and the session-start brief. |
 | `install-agent chrome` | Register the browser extension's native messaging host. |
+| `completions SHELL` | Shell completions for bash, elvish, fish, PowerShell or zsh. |
 | `sinex status\|cutover` | The optional Sinex backend (built with the `sinex` feature). |
 
 Exit codes: 0 success, 1 an error the daemon reported or an I/O error, 2 an

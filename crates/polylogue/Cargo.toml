@@ -31,7 +31,6 @@ axum.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 tower.workspace = true
-schemars.workspace = true
 base64.workspace = true
 blake3.workspace = true
 thiserror.workspace = true

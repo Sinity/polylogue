@@ -1,666 +1,187 @@
-//! The command tree. A bare query (`polylogue repo:x since:7d`) runs the
-//! query language; subcommands cover everything else. Every command takes
-//! `--json` for programs and agents.
+//! The command line, built from the command table. A bare query
+//! (`polylogue repo:x since:7d`) runs the query language; subcommands cover
+//! everything else. Every command takes `--json` for programs and agents.
 
+pub mod local;
 mod print;
-mod setup;
 
-use crate::briefing::{Ask, StartSource};
+use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};
 use crate::daemon::{Request, Response};
-use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
-use polylogue_model::{Author, NewNote, NoteKind, SessionId, Target};
-use polylogue_store::{Archive, NoteFilter};
+use clap::ArgAction;
+use clap::parser::{ArgMatches, ValueSource};
+use polylogue_store::Archive;
 use print::print_plain;
-use setup::{install_agent, open_reader};
+use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "polylogue",
-    version,
-    about = "Search, read and measure your AI sessions"
-)]
-pub struct Args {
-    /// Machine-readable output.
-    #[arg(long, global = true)]
-    pub json: bool,
-    #[command(subcommand)]
-    pub command: Option<Command>,
-    /// Explain an empty result: how many rows each condition keeps.
-    #[arg(long, global = true)]
-    pub why: bool,
-    /// Continue from a previous page's `next`.
-    #[arg(long, global = true)]
-    pub cursor: Option<String>,
-    /// The columns to show instead of the unit's defaults, comma-separated
-    /// (`--fields id,cost,repo`).
-    #[arg(long, global = true, value_delimiter = ',')]
-    pub fields: Vec<String>,
-    /// A query, when no subcommand is given.
-    #[arg(trailing_var_arg = true)]
-    pub query: Vec<String>,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum Command {
-    /// What the archive holds and what the daemon is doing.
-    Status,
-    /// Run the daemon in the foreground.
-    Daemon,
-    /// Bring in an export (ChatGPT, claude.ai, Gemini, a Polylogue export).
-    Import { paths: Vec<PathBuf> },
-    /// Sessions matching a query, newest first.
-    List(QueryArgs),
-    /// Read one session.
-    Read(ReadArgs),
-    /// Write sessions out as files.
-    Export {
-        sessions: Vec<String>,
-        #[arg(long, value_enum, default_value_t = ExportFormat::Json)]
-        format: ExportFormat,
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
-    /// Notes and tags on sessions, messages and tool calls.
-    #[command(subcommand)]
-    Note(NoteCommand),
-    /// The session-start brief for a directory or session.
-    Brief {
-        #[arg(long)]
-        session: Option<String>,
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-        /// Why the session starts: startup, resume, clear or compact.
-        #[arg(long, default_value = "startup")]
-        source: String,
-    },
-    /// Context for taking over another session: its prompts, notes, what
-    /// it left open and its last answer.
-    Takeover { session: String },
-    /// Resume a session through its tool's own command. Without a session,
-    /// the sessions in this directory that left something open.
-    Continue {
-        session: Option<String>,
-        /// Run the native resume command instead of printing it.
-        #[arg(long)]
-        exec: bool,
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-    },
-    /// Search past work for something relevant now, with a receipt.
-    Recall {
-        query: Vec<String>,
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-    },
-    /// Read or set a setting (`briefing.session_start off`).
-    Setting {
-        key: String,
-        value: Option<String>,
-        /// Only on this machine.
-        #[arg(long)]
-        machine: bool,
-    },
-    /// Token use, cost and subscription windows: `QUERY | measure WHAT`
-    /// over the sessions a query selects.
-    #[command(subcommand)]
-    Measure(MeasureCommand),
-    /// The work graph: goals, attempts, verifications and artifacts, by a
-    /// query over the `work` unit (`polylogue work kind:attempt state:open`).
-    Work(QueryArgs),
-    /// Sessions running now and what each is doing: the query
-    /// `sessions where -live:ended | sort by live_rank, last_event_at desc`.
-    Live,
-    /// What changed since a cursor: the query `changes where after:CURSOR`.
-    Changes {
-        /// A previous answer's `view.cursor`.
-        #[arg(long)]
-        since: Option<String>,
-    },
-    /// Signal notices and what happened to each: the query
-    /// `deliveries where sender:signal | sort by at desc`.
-    Notices {
-        #[arg(long)]
-        limit: Option<u64>,
-    },
-    /// Run a query and keep the rows it returned, to read back later as
-    /// `result:<id>` (or `result:<id>.matches`) exactly as they were.
-    Keep {
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(trailing_var_arg = true, required = true)]
-        query: Vec<String>,
-    },
-    /// Read-only SQL over the stable views.
-    Sql { statement: String },
-    /// Remove content permanently from every file and derived product:
-    /// `session:<id>`, `input:<id>` or `text:<string>`. Without `--yes`,
-    /// shows what would go and changes nothing.
-    Excise {
-        target: String,
-        #[arg(long)]
-        yes: bool,
-        #[arg(long)]
-        reason: Option<String>,
-    },
-    /// Embeddings: cost preview, build, status.
-    #[command(subcommand)]
-    Embed(EmbedCommand),
-    /// The Sinex backend: status and the one-time move to primary.
-    #[command(subcommand)]
-    Sinex(SinexCommand),
-    /// Open the web reader.
-    Web,
-    /// Register Polylogue with a browser: `chrome` writes the extension's
-    /// native messaging host manifest, admitting only `--extension-id`.
-    InstallAgent {
-        harness: String,
-        #[arg(long)]
-        extension_id: Option<String>,
-        /// Delete the manifest instead.
-        #[arg(long)]
-        remove: bool,
-    },
-    /// The browser extension's native messaging host; Chrome starts it.
-    #[command(hide = true)]
-    BrowserHost,
-    /// Serve MCP over stdio.
-    Mcp,
-    /// Called by a harness hook; reads the event from stdin.
-    Hook { event: String },
-    /// Add or remove Polylogue's hooks in Claude Code's settings.
-    #[command(subcommand)]
-    Hooks(HooksCommand),
-    /// Shell completions.
-    Completions { shell: clap_complete::Shell },
-}
-
-#[derive(Debug, ClapArgs)]
-pub struct QueryArgs {
-    pub query: Vec<String>,
-    #[arg(long)]
-    pub limit: Option<u64>,
-}
-
-#[derive(Debug, ClapArgs)]
-pub struct ReadArgs {
-    pub session: String,
-    #[arg(long, value_enum, default_value_t = ViewArg::Full)]
-    pub view: ViewArg,
-    /// Default: terminal text, or JSON messages with `--json`.
-    #[arg(long, value_enum)]
-    pub format: Option<ExportFormat>,
-    /// Pages sized for a model, at most this many tokens each.
-    #[arg(long)]
-    pub budget: Option<usize>,
-    #[arg(long)]
-    pub cursor: Option<String>,
-    /// Include messages inherited from a parent session.
-    #[arg(long)]
-    pub logical: bool,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum ExportFormat {
-    Terminal,
-    Markdown,
-    Html,
-    Json,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum ViewArg {
-    Full,
-    Dialogue,
-    Prompts,
-    Actions,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum NoteCommand {
-    /// Add a note to one or more targets: session:<id>, message:<id>,
-    /// tool:<session>#<call>, repo:<name>, cwd:<path>, work:<n>.
-    Add {
-        #[arg(required = true, num_args = 1..)]
-        targets: Vec<String>,
-        /// The note's text.
-        #[arg(long, short = 'm')]
-        body: String,
-        /// note, lesson, handoff, decision, blocker, goal, question, finding,
-        /// outcome, correction, judgment, title, claim, problem, forecast.
-        #[arg(long, default_value = "note")]
-        kind: String,
-        /// Replace an earlier note: the new one joins its revision family.
-        #[arg(long)]
-        revises: Option<String>,
-        /// Written by an agent (by its session when given).
-        #[arg(long)]
-        agent: Option<Option<String>>,
-    },
-    /// Tag targets: `key` or `key:value`.
-    Tag {
-        #[arg(required = true, num_args = 1..)]
-        targets: Vec<String>,
-        #[arg(long)]
-        tag: String,
-        /// Confidence or affinity, as JSON (`{"confidence": 0.8}`).
-        #[arg(long)]
-        value: Option<String>,
-    },
-    /// Withdraw a note and every revision of it.
-    Withdraw {
-        note: String,
-        #[arg(long)]
-        reason: Option<String>,
-    },
-    /// Notes, current revisions only unless --history.
-    List {
-        targets: Vec<String>,
-        #[arg(long)]
-        kind: Vec<String>,
-        /// Only notes agents wrote.
-        #[arg(long)]
-        agents: bool,
-        #[arg(long)]
-        history: bool,
-        #[arg(long)]
-        withdrawn: bool,
-        /// Notes on this directory and its repository.
-        #[arg(long)]
-        cwd: Option<PathBuf>,
-        #[arg(long)]
-        limit: Option<u64>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub enum HooksCommand {
-    /// Merge Polylogue's hook entries into the settings file, keeping
-    /// everything else. Installing twice changes nothing.
-    Install {
-        /// Default: `$CLAUDE_CONFIG_DIR/settings.json` or
-        /// `~/.claude/settings.json`.
-        #[arg(long)]
-        settings: Option<PathBuf>,
-    },
-    /// Remove Polylogue's hook entries, keeping everything else.
-    Uninstall {
-        #[arg(long)]
-        settings: Option<PathBuf>,
-    },
-}
-
-/// The live view as a query: what `polylogue live` runs.
-pub const LIVE: &str = "sessions where -live:ended | sort by live_rank, last_event_at desc";
-/// Signal notices as a query: what `polylogue notices` runs.
-pub const NOTICES: &str = "deliveries where sender:signal | sort by at desc";
-
-#[derive(Debug, Subcommand)]
-pub enum MeasureCommand {
-    /// Tokens by kind and cost by model, over a sessions query or everything.
-    Usage(QueryArgs),
-    /// The same report as `usage`: cost sits beside the tokens it prices.
-    Cost(QueryArgs),
-    /// Each session's tokens and cost, physical (its own responses) and
-    /// logical (what it shows, inherited responses included).
-    Sessions(QueryArgs),
-    /// The 5-hour and weekly subscription windows: burn and forecast.
-    Quota,
-    /// Tool outcomes: ok, error, no result and unknown, never one rate.
-    Outcomes(QueryArgs),
-    /// Per repository, the commands whose most recent run failed.
-    Failing(QueryArgs),
-    /// Record types and fields each format's parser did not know, newest
-    /// first: where the tools' formats moved.
-    Drift,
-    /// Time to a session ending on an unanswered prompt (Kaplan-Meier).
-    Unanswered(QueryArgs),
-    /// Time to a session's first failed tool call (Kaplan-Meier).
-    Survival {
-        /// Count human prompts instead of minutes.
-        #[arg(long)]
-        turns: bool,
-        query: Vec<String>,
-    },
-    /// A daily series with its 7-day baseline and level changes:
-    /// tokens, api_cost, sessions, prompts or tool_errors.
-    Daily { metric: String, query: Vec<String> },
-    /// Which tool call follows which, and what follows a failure.
-    Process(QueryArgs),
-    /// Prompts by weekday and hour.
-    Rhythm(QueryArgs),
-}
-
-#[derive(Debug, Subcommand)]
-pub enum EmbedCommand {
-    /// What a build would embed and what it would cost.
-    Preview(EmbedArgs),
-    /// Embed the texts not yet embedded. A paid provider needs `--yes`.
-    Build(EmbedArgs),
-    /// Vectors per model, and the provider settings.
-    Status,
-}
-
-#[derive(Debug, ClapArgs)]
-pub struct EmbedArgs {
-    /// A sessions query limiting the texts (default: every prose text).
-    pub query: Vec<String>,
-    /// At most this many texts.
-    #[arg(long)]
-    pub limit: Option<u64>,
-    #[arg(long)]
-    pub yes: bool,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum SinexCommand {
-    Status,
-    Cutover,
-}
-
-pub fn run(args: Args) -> ExitCode {
-    let json = args.json;
-    let mut exec_native = false;
-    let mut export_out: Option<PathBuf> = None;
-    let request = match args.command {
-        Some(Command::Daemon) => {
-            return match crate::daemon::server::serve() {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("polylogue: {e}");
-                    ExitCode::FAILURE
+/// The clap command tree: one subcommand per table command, grouped by
+/// their first word, and the bare query as the root's own arguments.
+pub fn command() -> clap::Command {
+    let mut root = clap::Command::new("polylogue")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Search, read and measure your AI sessions")
+        .arg(
+            clap::Arg::new("json")
+                .long("json")
+                .global(true)
+                .action(ArgAction::SetTrue)
+                .help("Machine-readable output"),
+        );
+    let mut globals: Vec<&str> = Vec::new();
+    for a in COMMANDS.iter().flat_map(|c| c.args).filter(|a| a.global) {
+        if !globals.contains(&a.name) {
+            globals.push(a.name);
+            root = root.arg(clap_arg(a).global(true));
+        }
+    }
+    for c in COMMANDS {
+        match c.cli {
+            Cli::NoSubcommand => {
+                for a in c.args.iter().filter(|a| !a.global) {
+                    root = root.arg(clap_arg(a));
                 }
-            };
-        }
-        Some(Command::Completions { shell }) => {
-            use clap::CommandFactory;
-            clap_complete::generate(
-                shell,
-                &mut Args::command(),
-                "polylogue",
-                &mut std::io::stdout(),
-            );
-            return ExitCode::SUCCESS;
-        }
-        Some(Command::Mcp) => {
-            return match crate::mcp::serve_stdio() {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("polylogue mcp: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        Some(Command::Hook { event }) => return crate::hook::run(&event),
-        Some(Command::Web) => return open_reader(json),
-        Some(Command::BrowserHost) => return crate::browser::native::run(),
-        Some(Command::InstallAgent {
-            harness,
-            extension_id,
-            remove,
-        }) => return install_agent(json, &harness, extension_id.as_deref(), remove),
-        Some(Command::Hooks(h)) => {
-            let (path, on) = match h {
-                HooksCommand::Install { settings } => (settings, true),
-                HooksCommand::Uninstall { settings } => (settings, false),
-            };
-            let path = path.unwrap_or_else(crate::hook::settings_path);
-            return match crate::hook::install(&path, on) {
-                Ok(()) => {
-                    println!(
-                        "{} Polylogue's hooks {} {}",
-                        if on { "installed" } else { "removed" },
-                        if on { "in" } else { "from" },
-                        path.display()
-                    );
-                    ExitCode::SUCCESS
-                }
-                Err(e) => fail(json, "io", &e.to_string(), 1),
-            };
-        }
-        Some(Command::Status) => Request::Status,
-        Some(Command::Keep { name, query }) => Request::Keep {
-            request_id: request_id(),
-            text: query.join(" "),
-            name,
-        },
-        Some(Command::List(q)) if q.query.is_empty() => Request::List {
-            limit: q.limit.unwrap_or(50),
-            before: None,
-        },
-        Some(Command::List(q)) => Request::Query {
-            text: q.query.join(" "),
-            cursor: args.cursor.clone(),
-            page_size: q.limit,
-            why: args.why,
-            session: None,
-            fields: args.fields.clone(),
-        },
-        Some(Command::Read(r)) => {
-            let session = match SessionId::parse(&r.session) {
-                Ok(s) => s,
-                Err(e) => return fail(json, "bad_request", &e.to_string(), 2),
-            };
-            Request::Read {
-                session,
-                view: format!("{:?}", r.view).to_lowercase(),
-                format: match r.format {
-                    Some(f) => format!("{f:?}").to_lowercase(),
-                    None if json => "json".into(),
-                    None => "terminal".into(),
-                },
-                logical: r.logical,
-                budget: r.budget,
-                cursor: r.cursor,
+            }
+            Cli::Subcommand | Cli::Hidden => {
+                let sub = subcommand(c);
+                root = match c.name.split_once(' ') {
+                    None => root.subcommand(sub),
+                    Some((group, _)) => {
+                        if root.find_subcommand(group).is_none() {
+                            let help = GROUPS
+                                .iter()
+                                .find(|g| g.name == group)
+                                .map_or("", |g| g.help);
+                            root = root.subcommand(
+                                clap::Command::new(group)
+                                    .about(help)
+                                    .subcommand_required(true)
+                                    .arg_required_else_help(true),
+                            );
+                        }
+                        root.mut_subcommand(group, |g| g.subcommand(sub))
+                    }
+                };
             }
         }
-        Some(Command::Import { paths }) => Request::Import {
-            request_id: request_id(),
-            paths: paths
-                .into_iter()
-                .map(|p| std::path::absolute(&p).unwrap_or(p))
-                .collect(),
-        },
-        Some(Command::Export {
-            sessions,
-            format,
-            out,
-        }) => {
-            let ids: Result<Vec<SessionId>, _> =
-                sessions.iter().map(|s| SessionId::parse(s)).collect();
-            let ids = match ids {
-                Ok(ids) if !ids.is_empty() => ids,
-                Ok(_) => return fail(json, "bad_request", "name at least one session", 2),
-                Err(e) => return fail(json, "bad_request", &e.to_string(), 2),
-            };
-            export_out = out;
-            Request::Export {
-                sessions: ids,
-                format: format!("{format:?}").to_lowercase(),
-            }
+    }
+    root
+}
+
+fn subcommand(c: &Command) -> clap::Command {
+    let word = c.name.rsplit(' ').next().unwrap_or(c.name);
+    let mut sub = clap::Command::new(word)
+        .about(c.help)
+        .hide(c.cli == Cli::Hidden);
+    for a in c.args.iter().filter(|a| !a.global) {
+        sub = sub.arg(clap_arg(a));
+    }
+    sub
+}
+
+fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
+    let mut arg = clap::Arg::new(a.name)
+        .help(a.help)
+        .value_name(a.name.to_uppercase());
+    if !a.positional {
+        arg = arg.long(a.name.replace('_', "-"));
+        if let Some(s) = a.short {
+            arg = arg.short(s);
         }
-        Some(Command::Embed(e)) => {
-            let (what, args) = match e {
-                EmbedCommand::Status => ("status", None),
-                EmbedCommand::Preview(a) => ("preview", Some(a)),
-                EmbedCommand::Build(a) => ("build", Some(a)),
-            };
-            Request::Embed {
-                what: what.into(),
-                query: args.as_ref().map(|a| a.query.join(" ")),
-                limit: args.as_ref().and_then(|a| a.limit),
-                yes: args.as_ref().is_some_and(|a| a.yes),
+    }
+    arg = match a.kind {
+        Kind::Bool => arg.action(ArgAction::SetTrue),
+        Kind::Integer => arg.value_parser(clap::value_parser!(u64)),
+        Kind::Text => arg,
+        Kind::Choice(choices) => arg.value_parser(clap::builder::PossibleValuesParser::new(
+            choices.iter().copied(),
+        )),
+        Kind::Words => arg.num_args(1..),
+        Kind::Rest => arg.num_args(1..).trailing_var_arg(true),
+        Kind::List if a.positional => arg.num_args(1..),
+        Kind::List => arg.action(ArgAction::Append).value_delimiter(','),
+        Kind::FlagOrText => arg.num_args(0..=1),
+    };
+    if let Some(d) = a.default {
+        arg = arg.default_value(d);
+    }
+    arg.required(a.required && a.default.is_none() && a.kind != Kind::Bool)
+}
+
+/// The table command the matches chose, and the matches holding its
+/// arguments.
+fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
+    let Some((word, sub)) = matches.subcommand() else {
+        return COMMANDS
+            .iter()
+            .find(|c| c.cli == Cli::NoSubcommand)
+            .map(|c| (c, matches));
+    };
+    let (name, leaf) = match sub.subcommand() {
+        Some((second, leaf)) => (format!("{word} {second}"), leaf),
+        None => (word.to_owned(), sub),
+    };
+    crate::commands::command(&name).map(|c| (c, leaf))
+}
+
+/// A command's values from its matches.
+fn values(c: &Command, m: &ArgMatches) -> Values {
+    let mut out = serde_json::Map::new();
+    for a in c.args {
+        let value = match a.kind {
+            Kind::Bool => m.get_flag(a.name).then_some(Value::Bool(true)),
+            Kind::Integer => m.get_one::<u64>(a.name).map(|n| Value::from(*n)),
+            Kind::Text | Kind::Choice(_) => m.get_one::<String>(a.name).cloned().map(Value::String),
+            Kind::Words | Kind::Rest => m
+                .get_many::<String>(a.name)
+                .map(|words| Value::String(words.cloned().collect::<Vec<_>>().join(" "))),
+            Kind::List => m
+                .get_many::<String>(a.name)
+                .map(|vs| Value::Array(vs.cloned().map(Value::String).collect())),
+            Kind::FlagOrText => {
+                (m.value_source(a.name) == Some(ValueSource::CommandLine)).then(|| {
+                    m.get_one::<String>(a.name)
+                        .map_or(Value::Bool(true), |s| Value::String(s.clone()))
+                })
             }
+        };
+        if let Some(v) = value {
+            out.insert(a.name.to_owned(), v);
         }
-        Some(Command::Excise {
-            target,
-            yes,
-            reason,
-        }) => Request::Excise {
-            request_id: request_id(),
-            target,
-            reason,
-            dry_run: !yes,
-        },
-        Some(Command::Sql { statement }) => Request::Sql { statement },
-        Some(Command::Work(q)) => Request::Query {
-            text: if q.query.is_empty() {
-                "work".into()
-            } else {
-                format!("work where {}", q.query.join(" "))
-            },
-            cursor: args.cursor.clone(),
-            page_size: q.limit,
-            why: args.why,
-            session: None,
-            fields: args.fields.clone(),
-        },
-        Some(Command::Live) => Request::Query {
-            text: LIVE.into(),
-            cursor: args.cursor.clone(),
-            page_size: None,
-            why: args.why,
-            session: None,
-            fields: args.fields.clone(),
-        },
-        Some(Command::Notices { limit }) => Request::Query {
-            text: NOTICES.into(),
-            cursor: args.cursor.clone(),
-            page_size: Some(limit.unwrap_or(50)),
-            why: args.why,
-            session: None,
-            fields: args.fields.clone(),
-        },
-        Some(Command::Changes { since }) => Request::Query {
-            text: since.map_or_else(|| "changes".into(), |c| format!("changes where after:{c}")),
-            cursor: args.cursor.clone(),
-            page_size: None,
-            why: args.why,
-            session: None,
-            fields: args.fields.clone(),
-        },
-        Some(Command::Recall { query, cwd }) => Request::Context {
-            request_id: request_id(),
-            ask: Ask::Recall {
-                text: query.join(" "),
-                cwd: Some(cwd.unwrap_or_else(current_dir)),
-                for_session: None,
-            },
-            sender: None,
-        },
-        Some(Command::Brief {
-            session,
-            cwd,
-            source,
-        }) => {
-            let session = match session.map(|s| SessionId::parse(&s)).transpose() {
-                Ok(s) => s,
-                Err(e) => return fail(json, "bad_request", &e.to_string(), 2),
-            };
-            Request::Context {
-                request_id: request_id(),
-                ask: Ask::SessionStart {
-                    cwd: cwd.unwrap_or_else(current_dir),
-                    session,
-                    source: StartSource::parse(&source),
-                },
-                sender: None,
-            }
-        }
-        Some(Command::Takeover { session }) => match SessionId::parse(&session) {
-            Ok(session) => Request::Context {
-                request_id: request_id(),
-                ask: Ask::Takeover {
-                    session,
-                    for_session: None,
-                },
-                sender: None,
-            },
-            Err(e) => return fail(json, "bad_request", &e.to_string(), 2),
-        },
-        Some(Command::Continue {
-            session: None, cwd, ..
-        }) => Request::Resumable {
-            cwd: cwd.unwrap_or_else(current_dir),
-            limit: None,
-        },
-        Some(Command::Continue {
-            session: Some(session),
-            exec,
-            ..
-        }) => match SessionId::parse(&session) {
-            Ok(session) => {
-                exec_native = exec;
-                Request::Continue { session }
-            }
-            Err(e) => return fail(json, "bad_request", &e.to_string(), 2),
-        },
-        Some(Command::Setting {
-            key,
-            value,
-            machine,
-        }) => Request::Setting {
-            request_id: value.as_ref().map(|_| request_id()),
-            key,
-            value,
-            machine,
-        },
-        Some(Command::Measure(m)) => {
-            let q = |words: Vec<String>| (!words.is_empty()).then(|| words.join(" "));
-            let (what, query) = match m {
-                MeasureCommand::Usage(a) => ("usage".to_owned(), q(a.query)),
-                MeasureCommand::Cost(a) => ("cost".to_owned(), q(a.query)),
-                MeasureCommand::Sessions(a) => ("sessions".to_owned(), q(a.query)),
-                MeasureCommand::Quota => ("quota".to_owned(), None),
-                MeasureCommand::Outcomes(a) => ("outcomes".to_owned(), q(a.query)),
-                MeasureCommand::Failing(a) => ("failing".to_owned(), q(a.query)),
-                MeasureCommand::Drift => ("drift".to_owned(), None),
-                MeasureCommand::Unanswered(a) => ("unanswered".to_owned(), q(a.query)),
-                MeasureCommand::Survival { turns, query } => (
-                    if turns { "survival-turns" } else { "survival" }.to_owned(),
-                    q(query),
-                ),
-                MeasureCommand::Daily { metric, query } => (format!("daily:{metric}"), q(query)),
-                MeasureCommand::Process(a) => ("process".to_owned(), q(a.query)),
-                MeasureCommand::Rhythm(a) => ("rhythm".to_owned(), q(a.query)),
-            };
-            let text = match query {
-                Some(q) => format!("{q} | measure {what}"),
-                None => format!("sessions | measure {what}"),
-            };
-            Request::Query {
-                text,
-                cursor: args.cursor.clone(),
-                page_size: None,
-                why: args.why,
-                session: None,
-                fields: args.fields.clone(),
-            }
-        }
-        Some(Command::Note(n)) => match note_request(n) {
-            Ok(r) => r,
-            Err(message) => return fail(json, "bad_request", &message, 2),
-        },
-        Some(other) => {
-            let name = format!("{other:?}");
-            let name = name
-                .split([' ', '(', '{'])
-                .next()
-                .unwrap_or("")
-                .to_lowercase();
-            return fail(json, "not_built", &format!("`{name}` is not built yet"), 2);
-        }
-        None => Request::Query {
-            text: args.query.join(" "),
-            cursor: args.cursor.clone(),
-            page_size: None,
-            why: args.why,
-            session: None,
-            fields: args.fields.clone(),
-        },
+    }
+    Values(out)
+}
+
+/// The command and values a command line names, for tests.
+#[cfg(test)]
+pub fn parse(argv: &[&str]) -> Result<(&'static Command, Values), String> {
+    let matches = command()
+        .try_get_matches_from(argv)
+        .map_err(|e| e.to_string())?;
+    let (c, m) = chosen(&matches).ok_or("no command")?;
+    Ok((c, values(c, m)))
+}
+
+pub fn run(matches: &ArgMatches) -> ExitCode {
+    let json = matches.get_flag("json");
+    let Some((cmd, m)) = chosen(matches) else {
+        return fail(json, "bad_request", "no such command", 2);
+    };
+    let values = values(cmd, m);
+    let build = match cmd.action {
+        Action::Local(f) => return f(cmd, &values, json),
+        Action::Request(build) => build,
+    };
+    let caller = Caller {
+        surface: Surface::Cli,
+        cwd: Some(current_dir()),
+        json,
+    };
+    let request = match build(cmd, &values, &caller) {
+        Ok(r) => r,
+        Err(message) => return fail(json, "bad_request", &message, 2),
     };
     let root = Archive::default_root();
     let response = match send_when_ready(&Archive::at(&root), &request) {
@@ -679,10 +200,12 @@ pub fn run(args: Args) -> ExitCode {
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
     match response {
-        Response::Ok { data } if matches!(request, Request::Export { .. }) => {
-            write_export(&data, export_out.as_deref(), json)
-        }
-        Response::Ok { data } if exec_native => exec_plan(&data),
+        Response::Ok { data } if matches!(request, Request::Export { .. }) => write_export(
+            &data,
+            values.text("out").map(PathBuf::from).as_deref(),
+            json,
+        ),
+        Response::Ok { data } if values.flag("exec") => exec_plan(&data),
         Response::Ok { data } => {
             if json {
                 println!("{data}");
@@ -724,112 +247,8 @@ fn write_export(data: &serde_json::Value, out: Option<&std::path::Path>, json: b
     }
 }
 
-fn request_id() -> String {
-    polylogue_store::user_writes::new_request_id()
-}
-
 fn current_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
-}
-
-fn targets(texts: &[String]) -> Result<Vec<Target>, String> {
-    texts
-        .iter()
-        .map(|t| Target::parse(t).map_err(|e| e.to_string()))
-        .collect()
-}
-
-/// Builds the request for a `note` subcommand.
-fn note_request(n: NoteCommand) -> Result<Request, String> {
-    let author = |agent: Option<Option<String>>| -> Result<Author, String> {
-        match agent {
-            None => Ok(Author::Operator),
-            Some(None) => Ok(Author::Agent(None)),
-            Some(Some(s)) => SessionId::parse(&s)
-                .map(|s| Author::Agent(Some(s)))
-                .map_err(|e| e.to_string()),
-        }
-    };
-    Ok(match n {
-        NoteCommand::Add {
-            targets: t,
-            body,
-            kind,
-            revises,
-            agent,
-        } => Request::AddNote {
-            request_id: request_id(),
-            note: NewNote {
-                kind: NoteKind::parse(&kind)
-                    .ok_or_else(|| format!("unknown note kind {kind:?}"))?,
-                key: None,
-                value: Some(body),
-                author: author(agent)?,
-                targets: targets(&t)?,
-                relations: vec![],
-                revises,
-                valid_until: None,
-            },
-        },
-        NoteCommand::Tag {
-            targets: t,
-            tag,
-            value,
-        } => Request::AddNote {
-            request_id: request_id(),
-            note: NewNote {
-                kind: NoteKind::Tag,
-                key: Some(tag),
-                value,
-                author: Author::Operator,
-                targets: targets(&t)?,
-                relations: vec![],
-                revises: None,
-                valid_until: None,
-            },
-        },
-        NoteCommand::Withdraw { note, reason } => Request::Withdraw {
-            request_id: request_id(),
-            note,
-            author: Author::Operator,
-            reason,
-        },
-        NoteCommand::List {
-            targets: t,
-            kind,
-            agents,
-            history,
-            withdrawn,
-            cwd,
-            limit,
-        } => {
-            let mut t = targets(&t)?;
-            if let Some(cwd) = cwd {
-                for d in crate::briefing::scope_dirs(&cwd) {
-                    t.push(Target::Cwd(d));
-                }
-                if let Some(name) = cwd.file_name().and_then(|n| n.to_str()) {
-                    t.push(Target::Repo(name.to_owned()));
-                }
-            }
-            Request::Notes {
-                filter: NoteFilter {
-                    targets: t,
-                    kinds: kind
-                        .iter()
-                        .map(|k| {
-                            NoteKind::parse(k).ok_or_else(|| format!("unknown note kind {k:?}"))
-                        })
-                        .collect::<Result<_, _>>()?,
-                    agents: agents.then_some(true),
-                    history,
-                    withdrawn,
-                    after_seq: None,
-                    limit,
-                },
-            }
-        }
-    })
 }
 
 /// Replaces this process with the session's native resume command.

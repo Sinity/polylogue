@@ -75,9 +75,9 @@ fn access_rules() {
         let (s, h, _) = send(&r, get("/").body(Body::empty()).unwrap()).await;
         assert_eq!(s, StatusCode::SEE_OTHER);
         assert_eq!(h[header::LOCATION], "/auth");
-        let req = get("/api/v1/cmd/status").body(Body::empty()).unwrap();
+        let req = get("/api/v1/status").body(Body::empty()).unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::UNAUTHORIZED);
-        let req = get("/api/v1/cmd/status")
+        let req = get("/api/v1/status")
             .header(header::AUTHORIZATION, "Bearer nope")
             .body(Body::empty())
             .unwrap();
@@ -92,28 +92,30 @@ fn access_rules() {
         let csp = h[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
         assert!(csp.contains("script-src 'self'"), "{csp}");
         assert!(h.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
-        let req = get("/api/v1/cmd/status")
+        let req = get("/api/v1/status")
             .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
             .body(Body::empty())
             .unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::OK);
 
         // A write from another origin is refused even with the cookie.
-        let req = authed(post("/api/v1/cmd/setting"))
+        let req = authed(post("/api/v1/setting"))
             .header(header::ORIGIN, "https://evil.example")
             .body(Body::from(r#"{"key":"a","value":"b"}"#))
             .unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::FORBIDDEN);
-        let req = own_origin(authed(post("/api/v1/cmd/setting")))
+        let req = own_origin(authed(post("/api/v1/setting")))
             .body(Body::from(r#"{"key":"a","value":"b"}"#))
             .unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::OK);
 
         // Excision is not offered over HTTP.
-        let req = authed(get("/api/v1/cmd/excise"))
-            .body(Body::empty())
+        let req = own_origin(authed(post("/api/v1/excise")))
+            .body(Body::from(
+                r#"{"target":"session:claude-code:s1","yes":true}"#,
+            ))
             .unwrap();
-        assert_eq!(send(&r, req).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(send(&r, req).await.0, StatusCode::NOT_FOUND);
 
         // Sign-in: the token buys the archive's cookie.
         let req = own_origin(post("/auth"))
@@ -136,9 +138,7 @@ fn pages_and_api_never_carry_the_archive_path() {
     let r = reader();
     let root = r.web.daemon.archive.root.to_string_lossy().into_owned();
     rt().block_on(async {
-        let req = authed(get("/api/v1/cmd/status"))
-            .body(Body::empty())
-            .unwrap();
+        let req = authed(get("/api/v1/status")).body(Body::empty()).unwrap();
         let (s, _, body) = send(&r, req).await;
         assert_eq!(s, StatusCode::OK);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -170,7 +170,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
             "{page}"
         );
         // The same read through the API is the socket's answer.
-        let req = authed(get("/api/v1/read?q=claude-code%3As1"))
+        let req = authed(get("/api/v1/read?session=claude-code%3As1"))
             .body(Body::empty())
             .unwrap();
         let (s, _, body) = send(&r, req).await;
@@ -181,7 +181,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
                 session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
                 view: "full".into(),
                 format: "json".into(),
-                logical: true,
+                logical: false,
                 budget: None,
                 cursor: None,
             },
@@ -248,5 +248,61 @@ fn the_operator_queues_chat_actions_only_while_switched_on() {
         assert_eq!(s, StatusCode::OK);
         let again: serde_json::Value = serde_json::from_str(&again).unwrap();
         assert_eq!(again["action"]["action_id"], v["action"]["action_id"]);
+    });
+}
+
+#[test]
+fn every_http_command_is_served_and_nothing_else() {
+    use crate::commands::{COMMANDS, Kind};
+    let r = reader();
+    rt().block_on(async {
+        for c in COMMANDS {
+            let path = format!("/api/v1{}", c.http_path());
+            let mut object = serde_json::Map::new();
+            for a in c.args.iter().filter(|a| a.required && a.default.is_none()) {
+                let value = match a.kind {
+                    Kind::List => serde_json::json!(["session:claude-code:s1"]),
+                    _ => serde_json::json!("claude-code:s1"),
+                };
+                object.insert(a.name.into(), value);
+            }
+            let req = if c.writes {
+                own_origin(authed(post(&path)))
+                    .body(Body::from(serde_json::Value::Object(object).to_string()))
+                    .unwrap()
+            } else {
+                let query: Vec<String> = object
+                    .iter()
+                    .map(|(k, v)| {
+                        let v = v
+                            .as_str()
+                            .map_or_else(|| v[0].as_str().unwrap().to_owned(), str::to_owned);
+                        format!("{k}={}", v.replace(':', "%3A"))
+                    })
+                    .collect();
+                authed(get(&format!("{path}?{}", query.join("&"))))
+                    .body(Body::empty())
+                    .unwrap()
+            };
+            let (status, _, body) = send(&r, req).await;
+            if c.http {
+                assert!(
+                    status != StatusCode::NOT_FOUND || body.contains("not_found"),
+                    "{path}: {status} {body}"
+                );
+                assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "{path}");
+                assert!(
+                    !body.contains("has no argument") && !body.contains("needs `"),
+                    "{path}: {body}"
+                );
+            } else {
+                assert_eq!(status, StatusCode::NOT_FOUND, "{path} is served");
+            }
+        }
+        // The routes before the table are gone.
+        let req = authed(get("/api/v1/cmd/status"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(send(&r, req).await.0, StatusCode::NOT_FOUND);
     });
 }

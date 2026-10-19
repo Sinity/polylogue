@@ -9,6 +9,7 @@ fn opts(saved: &[(&str, &str)]) -> Options {
             polylogue_model::LogicalDay::named("Europe/Warsaw", 240).unwrap(),
         ),
         origins: vec!["claude-code".into(), "codex".into()],
+        command_words: vec!["list".into(), "brief".into()],
         page_size: None,
         embeddings: false,
         self_session: None,
@@ -139,4 +140,16 @@ fn deliveries_take_their_outcome_from_the_latest_event() {
     let p = c("deliveries where sender:signal | sort by at desc");
     assert!(p.sql.contains("delivery_event"), "{}", p.sql);
     assert!(!p.sql.contains(".outcome"), "{}", p.sql);
+}
+
+#[test]
+fn a_query_starting_with_a_command_is_refused() {
+    assert!(
+        compile_err("list repo:x").contains("is a command"),
+        "{}",
+        compile_err("list repo:x")
+    );
+    let near = compile_err("brife now");
+    assert!(near.contains("\"brief\""), "{near}");
+    assert!(compile(r#""list" repo:x"#, &opts(&[])).is_ok());
 }
