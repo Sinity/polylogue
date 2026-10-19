@@ -83,6 +83,23 @@ pub struct Ask<'a> {
     pub near: Option<&'a dyn Fn(&str) -> Result<String, String>>,
 }
 
+/// The current saved queries by name (`saved_query` notes, newest
+/// revision, not withdrawn), for `query:NAME`.
+fn saved_queries(reader: &Reader<'_>) -> std::collections::BTreeMap<String, String> {
+    let sql = format!(
+        "SELECT n.key AS k, n.value AS v FROM a.note n WHERE n.kind = 'saved_query' \
+         AND n.key IS NOT NULL AND n.value IS NOT NULL AND {} AND NOT {}",
+        polylogue_query::fields::current_note("n"),
+        polylogue_query::fields::withdrawn_note("n"),
+    );
+    reader
+        .query(&sql, &[])
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| Some((r["k"].as_str()?.to_owned(), r["v"].as_str()?.to_owned())))
+        .collect()
+}
+
 pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let cursor = match ask.cursor {
         Some(c) => {
@@ -111,6 +128,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         page_size: ask.page_size,
         embeddings: ask.embeddings,
         self_session: ask.session,
+        saved: saved_queries(reader),
     };
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     if let (Some(near), Some(f)) = (program.near.clone(), ask.near) {

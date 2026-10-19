@@ -24,6 +24,8 @@ pub struct Options {
     pub embeddings: bool,
     /// The calling session, for `self`.
     pub self_session: Option<String>,
+    /// Saved queries by name (current `saved_query` notes): `query:NAME`.
+    pub saved: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -149,9 +151,97 @@ impl Program {
 }
 
 pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
+    let bound = bind_saved_source(text, opts)?;
+    let text = bound.as_deref().unwrap_or(text);
     let query = parse(text)?;
     refuse_commands(text, &query, opts)?;
     Compiler::new(text, opts).program(&query)
+}
+
+/// A query that starts with `query:NAME` reads that saved query as its
+/// source (spec query.md, Saved queries): the rest of the text only narrows
+/// it. A saved relation (`U where C`) takes the rest as further conditions;
+/// a shaped result (with stages) takes only further stages.
+fn bind_saved_source(text: &str, opts: &Options) -> Result<Option<String>, QueryError> {
+    let lead = text.len() - text.trim_start().len();
+    let trimmed = text.trim_start();
+    let Some(after) = trimmed
+        .get(..6)
+        .filter(|p| p.eq_ignore_ascii_case("query:"))
+        .map(|_| &trimmed[6..])
+    else {
+        return Ok(None);
+    };
+    let end = after
+        .find(|c: char| c.is_whitespace() || c == '|')
+        .unwrap_or(after.len());
+    let name = &after[..end];
+    let rest = after[end..].trim();
+    let saved = saved_text(text, lead + 6, name, opts)?;
+    let shape = parse(saved)?;
+    let shaped = !shape.stages.is_empty() || !shape.attach.is_empty();
+    let (conds, stages) = match rest.find('|') {
+        Some(i) => (rest[..i].trim(), &rest[i..]),
+        None => (rest, ""),
+    };
+    if shaped {
+        if !conds.is_empty() {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "query:{name} is a shaped result (it has stages); read it as \
+                     `query:{name} | where …`, it cannot take conditions"
+                ),
+                position: lead,
+            });
+        }
+        return Ok(Some(format!("{saved} {stages}")));
+    }
+    let base = match &shape.source {
+        Source::Unit { unit, cond } => {
+            let c = cond
+                .as_ref()
+                .map(|c| format!(" ({})", &saved[c.span.start..c.span.end]))
+                .unwrap_or_default();
+            format!("{} where{c}", unit.name())
+        }
+        Source::Sessions { cond } => {
+            format!(
+                "sessions where ({})",
+                &saved[cond.span.start..cond.span.end]
+            )
+        }
+        Source::Empty => "sessions where kind:*".to_owned(),
+    };
+    let joined = if conds.is_empty() {
+        base
+    } else {
+        format!("{base} {conds}")
+    };
+    Ok(Some(format!("{joined} {stages}").trim_end().to_owned()))
+}
+
+fn saved_text<'o>(
+    text: &str,
+    position: usize,
+    name: &str,
+    opts: &'o Options,
+) -> Result<&'o str, QueryError> {
+    opts.saved.get(name).map(String::as_str).ok_or_else(|| {
+        let known: Vec<&str> = opts.saved.keys().map(String::as_str).collect();
+        QueryError::syntax(
+            text,
+            position,
+            format!(
+                "no saved query named {name:?}{}",
+                if known.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (saved: {})", known.join(", "))
+                }
+            ),
+            None,
+        )
+    })
 }
 
 /// Words a query may start with only quoted: command names, and near
@@ -249,6 +339,8 @@ struct Compiler<'a> {
     /// Fields shown beside each row because a condition or sort named them.
     shown: Vec<(String, String, ColKind)>,
     aliases: usize,
+    /// Saved queries being expanded, innermost last: a cycle is refused.
+    saved_stack: Vec<String>,
     /// The ranking expression, when a top-level text term ranks the rows.
     rank: Option<String>,
     near: Option<Near>,
@@ -267,9 +359,59 @@ impl<'a> Compiler<'a> {
             id_checks: vec![],
             shown: vec![],
             aliases: 0,
+            saved_stack: vec![],
             rank: None,
             near: None,
         }
+    }
+
+    /// `query:NAME` as a condition: a saved relation over the same unit
+    /// (spec query.md, Saved queries). A shaped result cannot be a
+    /// condition, and units that disagree are an error.
+    fn saved_cond(&mut self, name: &str, scope: &Scope, span: Span) -> Result<String, QueryError> {
+        let opts = self.opts;
+        let saved = saved_text(self.text, span.start, name, opts)?;
+        if self.saved_stack.iter().any(|n| n == name) {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "query:{name} refers to itself (through {})",
+                    self.saved_stack.join(" -> ")
+                ),
+                position: span.start,
+            });
+        }
+        let shape = parse(saved)?;
+        if !shape.stages.is_empty() || !shape.attach.is_empty() {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "query:{name} is a shaped result (it has stages), so it cannot be a condition; \
+                     read it as `query:{name} | where …`"
+                ),
+                position: span.start,
+            });
+        }
+        let (unit, cond) = match shape.source {
+            Source::Unit { unit, cond } => (unit, cond),
+            Source::Sessions { cond } => (Unit::Sessions, Some(cond)),
+            Source::Empty => (Unit::Sessions, None),
+        };
+        if unit != scope.unit {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "query:{name} selects {}, not {}",
+                    unit.name(),
+                    scope.unit.name()
+                ),
+                position: span.start,
+            });
+        }
+        let Some(cond) = cond else {
+            return Ok("1".into());
+        };
+        self.saved_stack.push(name.to_owned());
+        let sql = self.cond(&cond, scope, false);
+        self.saved_stack.pop();
+        Ok(format!("({})", sql?))
     }
 
     fn bind(&mut self, p: Param) -> String {
@@ -1184,12 +1326,7 @@ impl<'a> Compiler<'a> {
                         _ => format!("{s}.pk IN (SELECT session_pk FROM message WHERE id = {p})"),
                     });
                 }
-                "query" => {
-                    return Err(not_built(
-                        "saved queries (query:NAME)",
-                        "architecture 7, query language",
-                    ));
-                }
+                "query" => return self.saved_cond(text, scope, span),
                 "result" | "page" | "note" | "block" | "file" => {
                     return Err(not_built(
                         &format!("{lower}: references"),
