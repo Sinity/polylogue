@@ -25,42 +25,6 @@ use serde::Serialize;
 #[grammar = "query.pest"]
 pub struct Grammar;
 
-/// The CLI's command and verb names. A query whose first unquoted word is
-/// one of these, or a near miss of one, is refused with a suggestion rather
-/// than searched for (spec query.md, principle 2).
-pub const COMMAND_WORDS: &[&str] = &[
-    "status",
-    "daemon",
-    "import",
-    "list",
-    "read",
-    "export",
-    "note",
-    "brief",
-    "continue",
-    "recall",
-    "measure",
-    "live",
-    "notices",
-    "sql",
-    "excise",
-    "embed",
-    "sinex",
-    "web",
-    "mcp",
-    "hook",
-    "completions",
-    "find",
-    "takeover",
-    "setting",
-    "work",
-    "changes",
-    "keep",
-    "hooks",
-    "install-agent",
-    "browser-host",
-];
-
 #[derive(Debug, Clone, PartialEq, thiserror::Error, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum QueryError {

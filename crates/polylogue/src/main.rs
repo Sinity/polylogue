@@ -5,6 +5,7 @@
 mod briefing;
 mod browser;
 mod cli;
+mod commands;
 mod daemon;
 mod embeddings;
 mod hook;
@@ -18,7 +19,6 @@ mod sinex;
 mod test_daemon;
 mod web;
 
-use clap::Parser;
 use std::process::ExitCode;
 
 /// mimalloc instead of glibc's allocator: a first build's sixteen parse
@@ -42,20 +42,20 @@ fn main() -> ExitCode {
     }
     // `@N` names row N of the last list printed in this terminal.
     let argv: Option<Vec<String>> = std::env::args_os().map(|a| a.into_string().ok()).collect();
-    let args = match argv {
+    let matches = match argv {
         Some(argv) if argv.iter().any(|a| a.contains('@')) => {
             let root = polylogue_store::Archive::default_root();
             match row_numbers::rewrite_args(argv, &root) {
-                Ok(argv) => cli::Args::parse_from(argv),
+                Ok(argv) => cli::command().get_matches_from(argv),
                 Err(e) => {
                     eprintln!("polylogue: {e}");
                     return ExitCode::from(2);
                 }
             }
         }
-        _ => cli::Args::parse(),
+        _ => cli::command().get_matches(),
     };
-    cli::run(args)
+    cli::run(&matches)
 }
 
 #[cfg(test)]

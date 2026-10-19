@@ -200,10 +200,8 @@ fn malformed_exchanges_are_refused_with_an_error_frame() {
         "native_request_invalid"
     );
     assert_eq!(
-        run(&[
-            json!({"type": "request", "version": 1, "method": "GET", "path": "/api/v1/cmd/status"})
-        ])
-        .unwrap()["error"],
+        run(&[json!({"type": "request", "version": 1, "method": "GET", "path": "/api/v1/status"})])
+            .unwrap()["error"],
         "native_route_forbidden"
     );
     // A body frame out of sequence.

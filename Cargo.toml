@@ -30,7 +30,7 @@ jiff = { version = "0.2", default-features = false, features = ["std", "serde", 
 rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
 pest = "2.8"
 pest_derive = "2.8"
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["string"] }
 clap_complete = "4.6"
 notify = "8.2"
 libc = "0.2"
@@ -39,9 +39,8 @@ tempfile = "3"
 base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 uuid = { version = "1", features = ["v7"] }
-rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-io"] }
+rmcp = { version = "3.5", default-features = false, features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt"] }
-schemars = "1"
 unicode-normalization = "0.1"
 strsim = "0.11"
 ureq = { version = "3", features = ["json"] }

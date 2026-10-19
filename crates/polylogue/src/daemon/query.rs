@@ -145,6 +145,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
             .iter()
             .map(|o| o.name.to_owned())
             .collect(),
+        command_words: crate::commands::command_words(),
         page_size: None,
         embeddings: false,
         self_session: ask.session,
@@ -204,6 +205,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
             .iter()
             .map(|o| o.name.to_owned())
             .collect(),
+        command_words: crate::commands::command_words(),
         page_size: ask.page_size,
         embeddings: ask.embeddings,
         self_session: ask.session,

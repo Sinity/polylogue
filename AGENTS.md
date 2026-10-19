@@ -3,8 +3,8 @@
 This is the Rust rewrite of Polylogue. The README and CLI help describe what
 works today. The target architecture is
 `/realm/project/polylogue/analysis/architecture-20261018/polylogue-architecture.md`;
-planned work is in Beads (`bd` from this checkout). The Python Polylogue is
-still the deployed version until the operator switches over.
+planned work is in Beads (`bd` from this checkout). The Python predecessor
+is kept for reference; the rewrite uses its own archive.
 
 ## Structure
 
@@ -17,6 +17,9 @@ still the deployed version until the operator switches over.
 - `crates/render`: one block stream in four formats.
 - `crates/polylogue`: configuration, the daemon, CLI, MCP, web reader and
   browser host. Clients get typed store handles, never raw connections.
+  Every command is one entry in the command table (`commands.rs`); the CLI,
+  MCP tools and HTTP API are built from it, so a new operation is a table
+  entry, not code on each surface.
 - `crates/sinex`: the Sinex backend (`primary` mode), behind the `sinex`
   feature.
 - `crates/testkit`: test archives built through the real loop (the synthetic
