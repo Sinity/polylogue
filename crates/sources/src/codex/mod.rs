@@ -865,7 +865,13 @@ fn user_text(item: &Json) -> Option<String> {
     let Json::Array(parts) = item.get("content")? else {
         return None;
     };
-    Some(parts.iter().filter_map(|c| str_field(c, "text")).collect::<Vec<_>>().join("\n"))
+    Some(
+        parts
+            .iter()
+            .filter_map(|c| str_field(c, "text"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 fn unquote(v: &Json) -> String {
@@ -971,31 +977,47 @@ impl Parser for Rollout {
             && let Some(text) = user_text(p)
         {
             if same(&text, true) {
-                return Disposition::unknown("same prompt as the user_message event before it, which is stored");
+                return Disposition::unknown(
+                    "same prompt as the user_message event before it, which is stored",
+                );
             }
             let d = self.response_item(carry, record, p, rec.at, rec.ordinal, out, acc);
             if d == Disposition::Materialized {
-                carry.prompt = Some(Prompt { text, from_event: false });
+                carry.prompt = Some(Prompt {
+                    text,
+                    from_event: false,
+                });
             }
             return d;
         }
         if rec.ty == "event_msg" && str_field(p, "type") == Some("user_message") {
             let text = str_field(p, "message").unwrap_or_default().to_owned();
             if same(&text, false) {
-                return Disposition::unknown("same prompt as the user message item before it, which is stored");
+                return Disposition::unknown(
+                    "same prompt as the user message item before it, which is stored",
+                );
             }
             // A prompt only the event recorded: it is the prompt.
             let mut content = vec![serde_json::json!({"type": "input_text", "text": text})];
             if let Some(Json::Array(images)) = p.get("images") {
-                content.extend(images.iter().filter_map(Json::as_str).map(|url| serde_json::json!({"type": "input_image", "image_url": url})));
+                content.extend(
+                    images
+                        .iter()
+                        .filter_map(Json::as_str)
+                        .map(|url| serde_json::json!({"type": "input_image", "image_url": url})),
+                );
             }
-            let mut item = serde_json::json!({"type": "message", "role": "user", "content": content});
+            let mut item =
+                serde_json::json!({"type": "message", "role": "user", "content": content});
             if let Some(id) = str_field(p, "client_id") {
                 item["id"] = Json::String(id.to_owned());
             }
             let d = self.response_item(carry, record, &item, rec.at, rec.ordinal, out, acc);
             if d == Disposition::Materialized {
-                carry.prompt = Some(Prompt { text, from_event: true });
+                carry.prompt = Some(Prompt {
+                    text,
+                    from_event: true,
+                });
             }
             return d;
         }
