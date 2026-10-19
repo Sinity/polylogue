@@ -48,6 +48,19 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
             })
         }
         Rule::expr_query => {
+            if let Some((start, end)) = shape.clone().kids().next().and_then(bare_where) {
+                // `kind:* where exists …` would search for the word "where"
+                // and answer wrongly; refuse it with the reading meant.
+                let joined = format!("{} {}", text[..start].trim_end(), text[end..].trim_start());
+                return Err(QueryError::syntax(
+                    text,
+                    start,
+                    "`where` follows a unit (`sessions where …`); conditions on sessions are \
+                     joined directly or with AND, and \"where\" in quotes searches the word"
+                        .to_owned(),
+                    Some(joined.trim().to_owned()),
+                ));
+            }
             let mut inner = shape.kids();
             let cond = expr(inner.next().expect("expr"));
             let mut attach = vec![];
@@ -518,6 +531,24 @@ fn agg_fn(p: Pair<'_, Rule>) -> AggFn {
 }
 
 /// The syntax error, with a corrected query when a simple repair parses.
+/// The span of an unquoted `where` read as a search word among session
+/// conditions.
+fn bare_where(p: Pair<'_, Rule>) -> Option<(usize, usize)> {
+    // Row conditions inside `exists`/`seq` are another scope.
+    if matches!(p.as_rule(), Rule::exists | Rule::seq) {
+        return None;
+    }
+    if p.as_rule() == Rule::text {
+        let t = p.clone().into_inner().next()?;
+        if t.as_rule() != Rule::quoted && t.as_str().eq_ignore_ascii_case("where") {
+            let s = t.as_span();
+            return Some((s.start(), s.end()));
+        }
+        return None;
+    }
+    p.into_inner().find_map(bare_where)
+}
+
 fn syntax(text: &str, e: &pest::error::Error<Rule>) -> QueryError {
     let at = match e.location {
         pest::error::InputLocation::Pos(p) => p,
@@ -830,6 +861,30 @@ mod tests {
         assert!(matches!(parse(&deep), Err(QueryError::TooDeep { .. })));
         let ok = format!("{}a{}", "(".repeat(64), ")".repeat(64));
         assert!(parse(&ok).is_ok());
+    }
+
+    #[test]
+    fn a_bare_where_after_session_conditions_is_refused_not_searched() {
+        // It used to search the word "where" and answer wrongly (tuu.7).
+        let QueryError::Syntax {
+            position,
+            suggestion,
+            ..
+        } = parse("kind:* where exists tool_call(outcome:error)").unwrap_err()
+        else {
+            panic!()
+        };
+        assert_eq!(position, 7);
+        assert_eq!(
+            suggestion.as_deref(),
+            Some("kind:* exists tool_call(outcome:error)")
+        );
+        assert!(parse("kind:* NOT where").is_err());
+        // The quoted word is searched; `where` inside a row condition, and
+        // `sessions where …`, keep their meaning.
+        assert!(parse("kind:* \"where\"").is_ok());
+        assert!(parse("exists tool_call(where)").is_ok());
+        assert!(parse("sessions where exists tool_call(outcome:error)").is_ok());
     }
 
     #[test]
