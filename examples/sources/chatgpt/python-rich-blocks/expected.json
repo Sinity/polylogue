@@ -118,7 +118,9 @@
           "blocks": [
             {
               "call_id": "search",
-              "input": "{\"search_query\": \"synthetic\"}",
+              "input": {
+                "search_query": "synthetic"
+              },
               "tool": "web",
               "type": "tool_call"
             }

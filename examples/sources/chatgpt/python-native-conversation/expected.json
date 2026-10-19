@@ -139,7 +139,9 @@
           "blocks": [
             {
               "call_id": "tool-call-message",
-              "input": "{\"query\":\"fixture evidence\"}",
+              "input": {
+                "query": "fixture evidence"
+              },
               "tool": "browser.search",
               "type": "tool_call"
             }

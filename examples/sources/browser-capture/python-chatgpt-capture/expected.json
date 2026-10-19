@@ -162,7 +162,9 @@
           "blocks": [
             {
               "call_id": "tool-call-message",
-              "input": "{\"query\":\"fixture evidence\"}",
+              "input": {
+                "query": "fixture evidence"
+              },
               "tool": "browser.search",
               "type": "tool_call"
             }
@@ -237,6 +239,14 @@
               "source_id": "fixture-output-image",
               "type": "image",
               "url": "file-service://fixture-output-image"
+            },
+            {
+              "direction": "output",
+              "media_type": "application/zip",
+              "name": "fixture-result.zip",
+              "size": 24,
+              "source_id": "sandbox:answer-active-message:/mnt/data/fixture-result.zip",
+              "type": "file"
             }
           ],
           "duration_ms": 5190000,

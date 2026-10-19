@@ -71,7 +71,8 @@
             {
               "call_id": "assistant-message",
               "outcome": {
-                "kind": "ok"
+                "kind": "unknown",
+                "reason": "status_field_unreadable"
               },
               "output": null,
               "type": "tool_result"

@@ -67,6 +67,28 @@ const CAPTURE_FIELDS: Fields = &[
     ("session", Rule::Read),
 ];
 
+/// Fields of the extension's normalized turns. Only read when the page
+/// exposed no provider JSON.
+const TURN_FIELDS: Fields = &[
+    ("provider_turn_id", Rule::Read),
+    ("role", Rule::Read),
+    ("text", Rule::Read),
+    ("timestamp", Rule::Read),
+    ("ordinal", Rule::Read),
+    ("parent_turn_id", Rule::Read),
+    ("model", Rule::Read),
+    ("blocks", Rule::Read),
+    ("attachments", Rule::Read),
+    (
+        "provider_meta",
+        Rule::Kept("the adapter's page observations for the turn; no reader yet"),
+    ),
+    (
+        "identity_observation",
+        Rule::Kept("how the adapter matched the turn to the page; no reader yet"),
+    ),
+];
+
 /// The origin a capture's `session.provider` names: the provider's export
 /// origin, so a capture and an export of one conversation unite.
 pub fn origin_of(provider: &str) -> &str {
@@ -159,7 +181,7 @@ impl DocumentParser for Capture {
                 }),
             });
         }
-        attach_bytes(&capture, origin, first_message, &mut sink);
+        attach_files(&capture, origin, first_message, &mut sink);
     }
 }
 
@@ -192,6 +214,9 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
     list.sort_by_key(|t| t.get("ordinal").and_then(Json::as_i64).unwrap_or(i64::MAX));
     for (i, turn) in list.into_iter().enumerate() {
         let role_name = str_of(turn, "role").unwrap_or("?").to_owned();
+        for path in unaccounted(turn, TURN_FIELDS) {
+            sink.acc.unread("turn", &path);
+        }
         let (role, prompt_kind, direction) = match role_name.as_str() {
             "user" | "human" => (
                 Role::User,
@@ -229,6 +254,14 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             && let Some(text) = string_of(turn, "text")
         {
             blocks.push(Block::Text { text });
+        }
+        for a in turn
+            .get("attachments")
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+        {
+            blocks.extend(attachment(a, direction, None));
         }
         let message = Message {
             id,
@@ -281,26 +314,63 @@ fn turn_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
     })
 }
 
-/// Stores the attachment bytes the extension inlined (`content_base64`)
-/// and points the matching attachment at them: the message by its provider
-/// ID, the attachment by its file ID or, failing that, its name. An
-/// attachment with bytes and no match is added to its message.
-fn attach_bytes(capture: &Json, origin: &str, first_message: usize, sink: &mut Sink<'_>) {
+/// An attachment the extension observed, as the block holding it, and the
+/// text the page extracted from it when it shows one.
+fn attachment(
+    a: &Json,
+    direction: AttachmentDirection,
+    stored: Option<(BlobHash, u64)>,
+) -> Vec<Block> {
+    let media_type = string_of(a, "mime_type");
+    let file = Attachment {
+        name: string_of(a, "name"),
+        size: stored
+            .map(|(_, size)| size)
+            .or_else(|| a.get("size_bytes").and_then(Json::as_u64)),
+        blob: stored.map(|(hash, _)| hash),
+        url: string_of(a, "url"),
+        source_id: string_of(a, "provider_attachment_id"),
+        direction,
+        media_type,
+    };
+    let mut out = vec![if file
+        .media_type
+        .as_deref()
+        .is_some_and(|m| m.starts_with("image/"))
+    {
+        Block::Image(file)
+    } else {
+        Block::File(file)
+    }];
+    if let Some(text) = string_of(a, "extracted_content") {
+        out.push(Block::Other {
+            type_name: "attachment_text".into(),
+            data: serde_json::json!({ "file_name": str_of(a, "name"), "text": text }),
+        });
+    }
+    out
+}
+
+/// Links the session's attachment list to its messages: stores the bytes
+/// the extension inlined (`content_base64`) and points the matching
+/// attachment at them, the message by its provider ID, the attachment by
+/// its file ID or, failing that, its name. An attachment no block of its
+/// message holds yet is added to that message, with or without bytes.
+fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut Sink<'_>) {
     for a in capture
         .pointer("/session/attachments")
         .and_then(Json::as_array)
         .into_iter()
         .flatten()
     {
-        let Some(data) = str_of(a, "content_base64") else {
-            continue;
-        };
-        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
-            continue;
-        };
-        let hash = BlobHash::of(&bytes);
-        let size = bytes.len() as u64;
-        sink.out.blobs.push(InlineBlob { hash, size, bytes });
+        let stored = str_of(a, "content_base64")
+            .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
+            .map(|bytes| {
+                let hash = BlobHash::of(&bytes);
+                let size = bytes.len() as u64;
+                sink.out.blobs.push(InlineBlob { hash, size, bytes });
+                (hash, size)
+            });
         let file_id = str_of(a, "provider_attachment_id");
         let name = str_of(a, "name");
         let Some(msg_id) = str_of(a, "message_provider_id").and_then(|m| message_id(origin, m))
@@ -325,10 +395,14 @@ fn attach_bytes(capture: &Json, origin: &str, first_message: usize, sink: &mut S
                     (Some(s), Some(f)) => s == f || f.ends_with(s) || s.ends_with(f),
                     _ => name.is_some() && x.name.as_deref() == name,
                 };
-                if same && x.blob.is_none() {
-                    x.blob = Some(hash);
-                    x.size.get_or_insert(size);
+                if same {
                     matched = true;
+                    if let Some((hash, size)) = stored
+                        && x.blob.is_none()
+                    {
+                        x.blob = Some(hash);
+                        x.size.get_or_insert(size);
+                    }
                 }
             }
         }
@@ -338,15 +412,7 @@ fn attach_bytes(capture: &Json, origin: &str, first_message: usize, sink: &mut S
             } else {
                 AttachmentDirection::Output
             };
-            row.message.blocks.push(Block::File(Attachment {
-                name: name.map(str::to_owned),
-                media_type: string_of(a, "mime_type"),
-                size: Some(size),
-                blob: Some(hash),
-                url: string_of(a, "url"),
-                source_id: file_id.map(str::to_owned),
-                direction,
-            }));
+            row.message.blocks.extend(attachment(a, direction, stored));
         }
     }
 }

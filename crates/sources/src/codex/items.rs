@@ -257,9 +257,14 @@ fn exit(code: i64) -> ToolOutcome {
     }
 }
 
-fn number_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
-    let at = text.find(marker)? + marker.len();
-    let rest = text[at..].trim_start();
+/// The value after `marker` on a header line that starts with it. The
+/// header is the lines before `Output:`; a marker inside the command's own
+/// output is not the harness speaking.
+fn number_after<'a>(header: &[&'a str], marker: &str) -> Option<&'a str> {
+    let rest = header
+        .iter()
+        .find_map(|l| l.trim_start().strip_prefix(marker))?
+        .trim_start();
     let end = rest
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
         .unwrap_or(rest.len());
@@ -268,7 +273,11 @@ fn number_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
 
 /// The outcome a tool output reports, and the command it left running.
 pub fn output_outcome(tool: &str, output: &str) -> (ToolOutcome, Option<Running>) {
-    let head: String = output.lines().take(8).collect::<Vec<_>>().join("\n");
+    let head: Vec<&str> = output
+        .lines()
+        .take(8)
+        .take_while(|l| l.trim_end() != "Output:")
+        .collect();
     if let Some(code) = number_after(&head, "Process exited with code")
         .or_else(|| number_after(&head, "Exit code:"))
         .and_then(|n| n.parse().ok())
@@ -303,6 +312,14 @@ pub fn output_outcome(tool: &str, output: &str) -> (ToolOutcome, Option<Running>
             .and_then(Json::as_i64)
         {
             return (exit(code), None);
+        }
+        if map.get("timed_out").and_then(Json::as_bool) == Some(true) {
+            return (
+                ToolOutcome::Error {
+                    reason: Some(ErrorReason::TimedOut),
+                },
+                None,
+            );
         }
         if map.get("success").and_then(Json::as_bool) == Some(false) {
             return (ToolOutcome::Error { reason: None }, None);

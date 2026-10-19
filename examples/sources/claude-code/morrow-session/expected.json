@@ -77,6 +77,9 @@
           "id": "claude-code:c1000000-0000-4000-8000-000000000002",
           "model": "claude-fable-5-1",
           "parent": "claude-code:c1000000-0000-4000-8000-000000000001",
+          "production": {
+            "request_id": "req_c10000000002"
+          },
           "role": "assistant",
           "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
           "stop_reason": "tool_use",
@@ -148,6 +151,9 @@
           "id": "claude-code:c1000000-0000-4000-8000-000000000004",
           "model": "claude-fable-5-1",
           "parent": "claude-code:c1000000-0000-4000-8000-000000000003",
+          "production": {
+            "request_id": "req_c10000000004"
+          },
           "role": "assistant",
           "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
           "stop_reason": "tool_use",
@@ -202,6 +208,9 @@
           "id": "claude-code:c1000000-0000-4000-8000-000000000006",
           "model": "claude-fable-5-1",
           "parent": "claude-code:c1000000-0000-4000-8000-000000000005",
+          "production": {
+            "request_id": "req_c10000000006"
+          },
           "role": "assistant",
           "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
           "stop_reason": "end_turn",
@@ -262,6 +271,9 @@
           "id": "claude-code:c1000000-0000-4000-8000-000000000008",
           "model": "claude-fable-5-1",
           "parent": "claude-code:c1000000-0000-4000-8000-000000000007",
+          "production": {
+            "request_id": "req_c10000000008"
+          },
           "role": "assistant",
           "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
           "stop_reason": "tool_use",
@@ -319,6 +331,9 @@
           "id": "claude-code:c1000000-0000-4000-8000-000000000010",
           "model": "claude-fable-5-1",
           "parent": "claude-code:c1000000-0000-4000-8000-000000000009",
+          "production": {
+            "request_id": "req_c10000000010"
+          },
           "role": "assistant",
           "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
           "stop_reason": "end_turn",
@@ -364,6 +379,9 @@
           "id": "claude-code:c1000000-0000-4000-8000-000000000012",
           "model": "claude-fable-5-1",
           "parent": "claude-code:c1000000-0000-4000-8000-000000000011",
+          "production": {
+            "request_id": "req_c10000000012"
+          },
           "role": "assistant",
           "session": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
           "stop_reason": "end_turn",

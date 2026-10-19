@@ -123,6 +123,7 @@ const CHUNK_FIELDS: Fields = &[
     ("parts[].executableCode", Rule::Read),
     ("parts[].codeExecutionResult", Rule::Read),
     ("parts[].inlineData", Rule::Read),
+    ("parts[].fileData", Rule::Read),
     (
         "thoughtSignatures",
         Rule::Kept("the thoughts' signatures, also read from their parts"),
@@ -358,6 +359,19 @@ impl AiStudio {
             }
             if let Some(inline) = item.get("inlineData") {
                 blocks.push(inline_block(inline, role, sink));
+            }
+            // A file the part names by URI (`fileData`) rather than inlines.
+            if let Some(file) = item.get("fileData") {
+                blocks.push(Block::File(Attachment {
+                    media_type: string_of(file, "mimeType"),
+                    url: string_of(file, "fileUri"),
+                    direction: if role == Role::User {
+                        AttachmentDirection::Input
+                    } else {
+                        AttachmentDirection::Output
+                    },
+                    ..Attachment::default()
+                }));
             }
         }
         if let Some(error) = str_of(chunk, "errorMessage") {
