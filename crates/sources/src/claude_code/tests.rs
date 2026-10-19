@@ -209,6 +209,23 @@ fn subagent_and_sidechain_sessions_link_to_their_parent() {
 }
 
 #[test]
+fn an_agent_calls_result_links_the_agent_it_started() {
+    let records = vec![json!({"type":"user","uuid":"r1","sessionId":"s1",
+               "toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"a9"},
+               "message":{"role":"user","content":[
+                   {"type":"tool_result","tool_use_id":"toolu_9","content":"launched"}]}})];
+    let mut carry = Carry::default();
+    let out = run(&main_file("s1"), &mut carry, &jsonl(&records), 0)
+        .unwrap()
+        .output;
+    let l = &out.links[0];
+    assert_eq!(l.kind, LinkKind::Spawn);
+    assert_eq!(l.parent.native().as_str(), "s1");
+    assert_eq!(l.child.native().as_str(), "agent-a9");
+    assert_eq!(l.call_id.as_deref(), Some("toolu_9"));
+}
+
+#[test]
 fn titles_follow_precedence() {
     let records = vec![
         json!({"type":"custom-title","customTitle":"Mine","sessionId":"s1"}),

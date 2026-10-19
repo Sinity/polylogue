@@ -43,8 +43,13 @@ pub enum Side {
     },
     /// `tasks/<session>/<n>.json`: one task of the task list.
     Task { session: String },
-    /// A subagent's `agent-<id>.meta.json`: its type and description.
-    Meta { stem: String },
+    /// A subagent's `agent-<id>.meta.json`: its type, description and
+    /// the call that spawned it; `session` is the directory above
+    /// `subagents`, the spawning session unless `parentAgentId` names one.
+    Meta {
+        stem: String,
+        session: Option<String>,
+    },
     /// `jobs/<short>/state.json`: a background session's job.
     JobState,
     /// `jobs/<short>/timeline.jsonl`: the job's state changes.
@@ -71,8 +76,10 @@ impl Side {
             .collect();
         let dir = |i: usize| dirs.get(i).copied();
         if name.starts_with("agent-") && dirs.contains(&"subagents") {
+            let at = dirs.iter().position(|d| *d == "subagents")?;
             return Some(Side::Meta {
                 stem: name.strip_suffix(".meta.json")?.to_owned(),
+                session: dir(at + 1).map(str::to_owned),
             });
         }
         match (dir(0), dir(1)) {
@@ -187,10 +194,13 @@ impl DocumentParser for SideFile {
             // Type and description only, as an event: the transcript owns
             // the session's kind and title, so a meta file read before or
             // after it never changes them (architecture 5.5a merge order).
-            Side::Meta { stem } => (
+            Side::Meta { stem, session } => (
                 "subagent_meta",
                 match json(bytes) {
-                    Ok(v) => whole(stem, "subagent_meta", v, len, sink.out),
+                    Ok(v) => {
+                        spawn_link(stem, session.as_deref(), &v, sink.out);
+                        whole(stem, "subagent_meta", v, len, sink.out)
+                    }
                     Err(d) => d,
                 },
             ),
@@ -294,6 +304,32 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> Disposition {
     whole(sid, "background_job", v, len, out)
 }
 
+/// The spawn link a subagent's meta file states: the call that started it,
+/// in the parent agent it names or else the session it was filed under.
+fn spawn_link(stem: &str, session: Option<&str>, v: &Json, out: &mut Output) {
+    let Some(call) = v.get("toolUseId").and_then(Json::as_str) else {
+        return;
+    };
+    let parent = match v.get("parentAgentId").and_then(Json::as_str) {
+        Some(agent) => session_id(&format!("agent-{agent}")),
+        None => session.and_then(session_id),
+    };
+    let (Some(parent), Some(child)) = (parent, session_id(stem)) else {
+        return;
+    };
+    if parent == child {
+        return;
+    }
+    out.links.push(Link {
+        kind: LinkKind::Spawn,
+        parent,
+        child,
+        at: None,
+        call_id: Some(call.to_owned()),
+        evidence: "toolUseId".to_owned(),
+    });
+}
+
 /// `history.jsonl`: every prompt the operator typed, with its project and
 /// time. Newer lines name their session.
 struct History;
@@ -376,13 +412,15 @@ mod tests {
         assert_eq!(
             side("/h/.claude/projects/p/s1/subagents/agent-x.meta.json"),
             Side::Meta {
-                stem: "agent-x".into()
+                stem: "agent-x".into(),
+                session: Some("s1".into())
             }
         );
         assert_eq!(
             side("/h/.claude/projects/p/s1/subagents/workflows/r/agent-y.meta.json"),
             Side::Meta {
-                stem: "agent-y".into()
+                stem: "agent-y".into(),
+                session: Some("s1".into())
             }
         );
         assert_eq!(side("/h/.claude/jobs/60eac085/state.json"), Side::JobState);
@@ -435,6 +473,26 @@ mod tests {
         assert!(out.sessions.is_empty());
         assert_eq!(out.events[0].session.to_string(), "claude-code:agent-x");
         assert_eq!(out.events[0].data["agentType"], "Explore");
+        assert!(out.links.is_empty(), "no toolUseId, no link");
+    }
+
+    #[test]
+    fn meta_links_the_subagent_to_the_call_that_spawned_it() {
+        let out = doc(
+            "/h/.claude/projects/p/s1/subagents/agent-x.meta.json",
+            br#"{"agentType":"Explore","toolUseId":"toolu_1"}"#,
+        );
+        let l = &out.links[0];
+        assert_eq!(l.kind, LinkKind::Spawn);
+        assert_eq!(l.parent.to_string(), "claude-code:s1");
+        assert_eq!(l.child.to_string(), "claude-code:agent-x");
+        assert_eq!(l.call_id.as_deref(), Some("toolu_1"));
+        // A nested agent's parent is the agent that spawned it.
+        let out = doc(
+            "/h/.claude/projects/p/s1/subagents/workflows/r/agent-y.meta.json",
+            br#"{"toolUseId":"toolu_2","parentAgentId":"x"}"#,
+        );
+        assert_eq!(out.links[0].parent.to_string(), "claude-code:agent-x");
     }
 
     #[test]

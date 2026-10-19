@@ -435,6 +435,35 @@ impl ClaudeCode {
                 "forkedFrom",
             );
         }
+        // An agent call's result names the agent it started: the parent's
+        // side of the spawn link, with the call.
+        if let Some(agent) = v
+            .get("toolUseResult")
+            .and_then(|r| r.get("agentId"))
+            .and_then(Json::as_str)
+            && let Some(child) = session_id(&format!("agent-{agent}"))
+            && child != session
+        {
+            let call = content.as_array().and_then(|items| {
+                let mut results = items
+                    .iter()
+                    .filter(|i| str_field(i, "type") == Some("tool_result"));
+                let only = results.next();
+                only.filter(|_| results.next().is_none())
+                    .and_then(|i| str_field(i, "tool_use_id"))
+                    .map(str::to_owned)
+            });
+            link_at(
+                carry,
+                out,
+                LinkKind::Spawn,
+                session.clone(),
+                child,
+                None,
+                call,
+                "toolUseResult.agentId",
+            );
+        }
 
         if role == Role::Assistant {
             let key = str_field(msg, "id")
