@@ -10,7 +10,8 @@ use polylogue_store::measure::{self, Scope, analysis, outlook};
 use serde::Serialize;
 
 /// The measurements a request can name, for errors and help.
-pub const WHAT: &str = "usage, cost, sessions, quota, outcomes, survival, survival-turns, \
+pub const WHAT: &str = "usage, cost, sessions, quota, outcomes, frontier, drift, survival, \
+    survival-turns, unanswered, \
     daily:<tokens|api_cost|sessions|prompts|tool_errors>, process, rhythm";
 
 pub fn handle(reader: &Reader<'_>, what: &str, query: Option<&str>, now: i64) -> Response {
@@ -40,6 +41,17 @@ pub fn handle(reader: &Reader<'_>, what: &str, query: Option<&str>, now: i64) ->
         "outcomes" => json(analysis::outcomes(reader, &scope)),
         "survival" => json(analysis::first_failure(reader, &scope, false)),
         "survival-turns" => json(analysis::first_failure(reader, &scope, true)),
+        "frontier" => json(analysis::frontier(reader, &scope)),
+        "drift" => {
+            if query.is_some() {
+                return error(
+                    "bad_request",
+                    "format drift covers every input; it takes no query",
+                );
+            }
+            json(analysis::drift(reader))
+        }
+        "unanswered" => json(analysis::unanswered_end(reader, &scope, now)),
         "process" => json(analysis::process(reader, &scope, 20)),
         "rhythm" => json(analysis::rhythm(reader, &scope, &day)),
         w => match w.strip_prefix("daily:") {

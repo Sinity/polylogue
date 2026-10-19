@@ -515,3 +515,175 @@ mod tests {
         assert!(changepoints(&flat, 7).is_empty());
     }
 }
+
+/// A command whose most recent run in a repository failed: what is left to
+/// triage there (old fcyf, "the triage frontier"). A run counts by its
+/// decided outcome (ok or error); a run with an unknown outcome decides
+/// nothing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Unresolved {
+    /// The repository's root commit, or `cwd:<dir>` for sessions in no
+    /// known repository.
+    pub repository: String,
+    /// Its remote or name, when known.
+    pub repo: Option<String>,
+    pub command: String,
+    /// The failing run: when, in which session, with which exit code.
+    pub at: Option<i64>,
+    pub session: String,
+    pub exit_code: Option<i64>,
+    /// Failed runs since the last run that succeeded.
+    pub failures_since_ok: u64,
+    /// The last run that succeeded, if any did.
+    pub last_ok_at: Option<i64>,
+}
+
+/// Every repository's unresolved commands in the scope, most recent first.
+pub fn frontier(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Unresolved>> {
+    let (cond, params) = scope.condition();
+    let sql = format!(
+        "WITH runs AS (
+           SELECT coalesce(s.repo_root, 'cwd:' || s.cwd) AS repository, s.repo AS repo,
+                  t.command_norm AS command, t.outcome, t.exit_code, coalesce(t.at, m.at) AS at,
+                  t.pk AS call, s.id AS session
+           FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
+           JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = t.session_pk
+           WHERE t.command_norm IS NOT NULL AND t.inherited = 0 AND t.outcome IN ('ok', 'error')
+             AND coalesce(s.repo_root, s.cwd) IS NOT NULL AND {cond}),
+         ranked AS (
+           SELECT *, row_number() OVER (PARTITION BY repository, command
+                                         ORDER BY at DESC NULLS LAST, call DESC) AS rn,
+                  max(CASE WHEN outcome = 'ok' THEN at END)
+                    OVER (PARTITION BY repository, command) AS last_ok
+           FROM runs)
+         SELECT repository, repo, command, at, session, exit_code, last_ok,
+                (SELECT count(*) FROM runs r WHERE r.repository = ranked.repository
+                   AND r.command = ranked.command AND r.outcome = 'error'
+                   AND (ranked.last_ok IS NULL OR r.at > ranked.last_ok))
+         FROM ranked WHERE rn = 1 AND outcome = 'error'
+         ORDER BY at DESC NULLS LAST, repository, command"
+    );
+    let mut stmt = reader.conn().prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
+        Ok(Unresolved {
+            repository: r.get(0)?,
+            repo: r.get(1)?,
+            command: r.get(2)?,
+            at: r.get(3)?,
+            session: r.get(4)?,
+            exit_code: r.get(5)?,
+            last_ok_at: r.get(6)?,
+            failures_since_ok: r.get::<_, i64>(7)? as u64,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// How long a session must have been quiet before it counts as over.
+/// Inside it, a session is censored as possibly still going.
+pub const QUIET: i64 = 6 * 3_600_000;
+
+/// Time to a session ending on an unanswered prompt (old 9l5.9,
+/// abandonment): the session went quiet for [`QUIET`] with its last human
+/// prompt followed by no model message. A session that ended answered is
+/// censored at its end, and so is one still within the quiet period.
+/// Structural only: what the prompt asked is never read.
+pub fn unanswered_end(reader: &Reader<'_>, scope: &Scope, now: i64) -> Result<Survival> {
+    let (cond, params) = scope.condition();
+    let sql = format!(
+        "WITH s AS (
+           SELECT m.session_pk AS pk, min(m.at) AS first_at, max(m.at) AS last_at
+           FROM message m WHERE m.counted_as IS NULL AND {cond} GROUP BY m.session_pk)
+         SELECT s.first_at, s.last_at,
+           EXISTS (SELECT 1 FROM message h WHERE h.session_pk = s.pk
+                   AND h.written_by = 'human' AND h.prompt_kind = 'prose'),
+           NOT EXISTS (
+             SELECT 1 FROM message a WHERE a.session_pk = s.pk AND a.role = 'assistant'
+               AND (a.order_input_pk, a.seq) > (
+                 SELECT h.order_input_pk, h.seq FROM message h WHERE h.session_pk = s.pk
+                   AND h.written_by = 'human' AND h.prompt_kind = 'prose'
+                 ORDER BY h.order_input_pk DESC, h.seq DESC LIMIT 1))
+         FROM s"
+    );
+    let mut obs = vec![];
+    let mut unmeasured = 0;
+    let mut stmt = reader.conn().prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
+        Ok((
+            r.get::<_, Option<i64>>(0)?,
+            r.get::<_, Option<i64>>(1)?,
+            r.get::<_, bool>(2)?,
+            r.get::<_, bool>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (first, last, prompted, unanswered) = row?;
+        let (Some(first), Some(last)) = (first, last) else {
+            unmeasured += 1;
+            continue;
+        };
+        // A session no human prompted (a subagent, a compaction call) has no
+        // prompt to leave unanswered.
+        if !prompted {
+            unmeasured += 1;
+            continue;
+        }
+        let over = now - last >= QUIET;
+        obs.push(((last - first) as f64 / 60_000.0, over && unanswered));
+    }
+    let sessions = obs.len() as u64;
+    let events = obs.iter().filter(|o| o.1).count() as u64;
+    let (curve, median) = kaplan_meier(obs);
+    Ok(Survival {
+        event: "ended on an unanswered prompt",
+        axis: "wall clock",
+        unit: "minutes",
+        sessions,
+        events,
+        censored: sessions - events,
+        unmeasured,
+        median,
+        curve,
+    })
+}
+
+/// Something a format's parser did not know, across every input of that
+/// format: format drift (decision plnext-e3p; spec analysis.md, schema
+/// inference). New record types and fields appear here first.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Drift {
+    pub format: String,
+    /// `record:<type>`, `field:<json path>`, `user:<tag>`, `invalid_utf8`,
+    /// `time_unparsed` or `undecodable`.
+    pub what: String,
+    pub count: u64,
+    pub inputs: u64,
+    /// When it was first and last seen, by record time.
+    pub first_at: Option<i64>,
+    pub last_at: Option<i64>,
+    /// Kept only as a count by design: known, not drift.
+    pub by_design: bool,
+}
+
+/// Every unrecognized item, newest first; items kept as counts by design
+/// come after the rest.
+pub fn drift(reader: &Reader<'_>) -> Result<Vec<Drift>> {
+    let mut stmt = reader.conn().prepare(
+        "SELECT format, what, sum(count), count(DISTINCT input_pk), min(first_at), max(last_at),
+                max(counted_only)
+         FROM unrecognized GROUP BY format, what
+         ORDER BY max(counted_only), min(first_at) DESC NULLS LAST, format, what",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(Drift {
+            format: r.get(0)?,
+            what: r.get(1)?,
+            count: r.get::<_, i64>(2)? as u64,
+            inputs: r.get::<_, i64>(3)? as u64,
+            first_at: r.get(4)?,
+            last_at: r.get(5)?,
+            by_design: r.get::<_, i64>(6)? == 1,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}

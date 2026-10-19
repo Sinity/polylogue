@@ -2155,6 +2155,10 @@ impl Ctx<'_, '_> {
 
     /// One link per kind, parent and child; parts one file lacks are filled
     /// from another (the SQL form of [`Link::merge`]).
+    /// Upserts a link. Several inputs state the same link; what it records
+    /// must not depend on which arrived first (law 41), so where two
+    /// statements differ the smaller value is kept, and the evidence keeps
+    /// the input that stated it.
     fn write_link(&self, l: &Link) -> Result<()> {
         let (kind, how) = l.kind.columns();
         let child = l.child.to_string();
@@ -2170,8 +2174,15 @@ impl Ctx<'_, '_> {
                  VALUES (?1, ?2, ?3, ?4, ?10, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT(parent_id, child_id, kind, how) DO UPDATE SET
                      child_pk = COALESCE(link.child_pk, excluded.child_pk),
-                     branch_point = COALESCE(link.branch_point, excluded.branch_point),
-                     spawning_call = COALESCE(link.spawning_call, excluded.spawning_call)",
+                     branch_point = min(COALESCE(link.branch_point, excluded.branch_point),
+                                        COALESCE(excluded.branch_point, link.branch_point)),
+                     spawning_call = min(COALESCE(link.spawning_call, excluded.spawning_call),
+                                         COALESCE(excluded.spawning_call, link.spawning_call)),
+                     input_pk = CASE WHEN excluded.evidence < link.evidence
+                                     THEN excluded.input_pk ELSE link.input_pk END,
+                     parser_version = CASE WHEN excluded.evidence < link.evidence
+                                           THEN excluded.parser_version ELSE link.parser_version END,
+                     evidence = min(link.evidence, excluded.evidence)",
             )?
             .execute(params![
                 l.parent.to_string(),

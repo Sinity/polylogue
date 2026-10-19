@@ -233,8 +233,8 @@ impl Fixture {
         };
         self.index.execute(
             "INSERT INTO tool_call(session_pk, call_block_pk, call_id, result_block_pk, at, tool,
-                 action, command, path, outcome, exit_code)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 action, command, command_norm, path, outcome, exit_code)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11)",
             params![
                 session_pk,
                 call,
@@ -266,6 +266,31 @@ impl Fixture {
             "INSERT INTO link(parent_id, child_id, child_pk, kind, how, evidence, input_pk, parser_version)
              VALUES (?1, ?2, (SELECT pk FROM session WHERE id = ?2), ?3, ?4, 'fixture', ?5, 1)",
             params![parent, child, kind, how, self.input_pk],
+        )?;
+        Ok(())
+    }
+
+    /// Something a parser did not know, counted for the fixture's input.
+    pub fn unrecognized(
+        &mut self,
+        format: &str,
+        what: &str,
+        count: i64,
+        first_at: i64,
+        counted_only: bool,
+    ) -> Result<()> {
+        self.index.execute(
+            "INSERT INTO unrecognized(input_pk, chain, format, what, count, counted_only, first_at,
+                 last_at, first_offset)
+             VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?6, 0)",
+            params![
+                self.input_pk,
+                format,
+                what,
+                count,
+                i64::from(counted_only),
+                first_at
+            ],
         )?;
         Ok(())
     }

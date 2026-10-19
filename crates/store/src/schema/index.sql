@@ -281,7 +281,7 @@ CREATE INDEX tool_call_tool    ON tool_call(tool);
 CREATE INDEX tool_call_action  ON tool_call(action, outcome);
 CREATE INDEX tool_call_failed  ON tool_call(session_pk) WHERE outcome <> 'ok';
 CREATE INDEX tool_call_path    ON tool_call(path) WHERE path IS NOT NULL;
-CREATE INDEX tool_call_repo_command ON tool_call(command_norm, at) WHERE command_norm IS NOT NULL;   -- repo_command_last recompute
+CREATE INDEX tool_call_repo_command ON tool_call(command_norm, at) WHERE command_norm IS NOT NULL;   -- the triage frontier
 CREATE INDEX tool_call_result  ON tool_call(result_block_pk) WHERE result_block_pk IS NOT NULL;   -- foreign-key check
 
 -- Substring search on short fields (command:, path:) without a scan. Unfolded
@@ -532,27 +532,6 @@ CREATE TABLE repo_lookup (
 ) STRICT, WITHOUT ROWID;
 
 
--- The last run of each normalized command per repository: what briefings list as
--- unresolved failures and failure statistics read. Kept by the writer in the same
--- transaction as the session it writes: for each command that session ran, a row is
--- replaced only by a later run, compared by (at, then tool_call id; a run with no
--- time ranks below every timed one), so a late import of an older session changes
--- nothing. When the writer deletes a session's rows (a rewrite, a rebuild of that
--- session, an excision), every row pointing at one of its tool calls is recomputed
--- in the same transaction from the remaining runs of that (repo_root, command_norm),
--- read through tool_call_repo_command; rebuilt with the file. A law checks it equals
--- a full recompute after shuffled arrival and deletions (law 141). A table because the answer spans every session of a repository, which a
--- briefing cannot rescan within its budget.
-CREATE TABLE repo_command_last (
-  repo_root         TEXT NOT NULL,          -- repository identity (model.md); sessions without one use 'cwd:' || cwd
-  command_norm      TEXT NOT NULL,          -- analysis.md, normalized command
-  tool_call_pk      INTEGER NOT NULL REFERENCES tool_call(pk),
-  at                INTEGER,
-  outcome           TEXT NOT NULL,          -- ok | error | unknown, with tool_call.outcome_reason
-  PRIMARY KEY (repo_root, command_norm)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX repo_command_last_failing ON repo_command_last(repo_root) WHERE outcome <> 'ok';
-CREATE INDEX repo_command_last_call ON repo_command_last(tool_call_pk);   -- foreign-key check
 
 
 -- The work graph (architecture 4.4; old 1vpm, 67ac), derived from structure
