@@ -281,6 +281,13 @@ pub enum MeasureCommand {
     Quota,
     /// Tool outcomes: ok, error, no result and unknown, never one rate.
     Outcomes(QueryArgs),
+    /// Per repository, the commands whose most recent run failed.
+    Frontier(QueryArgs),
+    /// Record types and fields each format's parser did not know, newest
+    /// first: where the tools' formats moved.
+    Drift,
+    /// Time to a session ending on an unanswered prompt (Kaplan-Meier).
+    Unanswered(QueryArgs),
     /// Time to a session's first failed tool call (Kaplan-Meier).
     Survival {
         /// Count human prompts instead of minutes.
@@ -547,6 +554,9 @@ pub fn run(args: Args) -> ExitCode {
                 MeasureCommand::Sessions(a) => ("sessions".to_owned(), q(a.query)),
                 MeasureCommand::Quota => ("quota".to_owned(), None),
                 MeasureCommand::Outcomes(a) => ("outcomes".to_owned(), q(a.query)),
+                MeasureCommand::Frontier(a) => ("frontier".to_owned(), q(a.query)),
+                MeasureCommand::Drift => ("drift".to_owned(), None),
+                MeasureCommand::Unanswered(a) => ("unanswered".to_owned(), q(a.query)),
                 MeasureCommand::Survival { turns, query } => (
                     if turns { "survival-turns" } else { "survival" }.to_owned(),
                     q(query),

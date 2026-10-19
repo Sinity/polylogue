@@ -7,6 +7,8 @@ pub fn render(what: &str, data: &Value) -> String {
     match what {
         "quota" | "outlook" => outlook(data),
         "usage" | "cost" => usage(data, ""),
+        "frontier" => frontier(data),
+        "drift" => drift(data),
         _ => format!(
             "{}\n",
             serde_json::to_string_pretty(data).unwrap_or_default()
@@ -150,6 +152,72 @@ fn outlook(o: &Value) -> String {
             }
             out.push_str(&usage(&w["usage"], "    "));
         }
+    }
+    out
+}
+
+/// Unresolved commands grouped by repository, most recent failure first.
+fn frontier(data: &Value) -> String {
+    let items = data.as_array().map_or(&[][..], Vec::as_slice);
+    if items.is_empty() {
+        return "no command's latest run failed\n".into();
+    }
+    // Repositories in the order of their most recent failure.
+    let mut groups: Vec<(&str, Vec<String>)> = Vec::new();
+    for u in items {
+        let repo = u["repo"]
+            .as_str()
+            .or(u["repository"].as_str())
+            .unwrap_or("?");
+        let exit = u["exit_code"]
+            .as_i64()
+            .map_or(String::new(), |c| format!(" (exit {c})"));
+        let since = match u["last_ok_at"] {
+            Value::Null => "never succeeded".to_owned(),
+            ref at => format!("last ok {}", time(at)),
+        };
+        let line = format!(
+            "  {}  failed {}{exit} in {} · {} failure(s) since ok · {since}\n",
+            u["command"].as_str().unwrap_or("?"),
+            time(&u["at"]),
+            u["session"].as_str().unwrap_or("?"),
+            u["failures_since_ok"],
+        );
+        match groups.iter_mut().find(|(r, _)| *r == repo) {
+            Some((_, lines)) => lines.push(line),
+            None => groups.push((repo, vec![line])),
+        }
+    }
+    let mut out = String::new();
+    for (repo, lines) in groups {
+        out.push_str(&format!("{repo}\n"));
+        out.extend(lines);
+    }
+    out
+}
+
+/// Drift by format: what each parser did not know, newest first.
+fn drift(data: &Value) -> String {
+    let items = data.as_array().map_or(&[][..], Vec::as_slice);
+    if items.is_empty() {
+        return "every record and field was recognized\n".into();
+    }
+    let mut out = String::new();
+    for d in items {
+        let note = if d["by_design"].as_bool() == Some(true) {
+            " (kept as a count by design)"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "{}  {}  {} in {} input(s) · first {} · last {}{note}\n",
+            d["format"].as_str().unwrap_or("?"),
+            d["what"].as_str().unwrap_or("?"),
+            d["count"],
+            d["inputs"],
+            time(&d["first_at"]),
+            time(&d["last_at"]),
+        ));
     }
     out
 }

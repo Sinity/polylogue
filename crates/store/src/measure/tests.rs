@@ -408,3 +408,179 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
     // Priced under the current catalog, at both grains.
     assert!(c.logical.api_cost.known_usd.unwrap() > c.physical.api_cost.known_usd.unwrap());
 }
+
+fn shell(f: &mut Fixture, s: i64, m: i64, cmd: &str, outcome: &str, at: i64) {
+    f.tool_call(
+        s,
+        m,
+        T {
+            tool: "Bash",
+            action: "shell",
+            command: Some(cmd),
+            path: None,
+            outcome,
+            exit_code: (outcome == "error").then_some(1),
+            at: Some(at),
+            output: Some("…"),
+        },
+    )
+    .unwrap();
+}
+
+fn in_dir(f: &mut Fixture, id: &str, cwd: &str) -> i64 {
+    f.session(S {
+        id,
+        kind: "main",
+        cwd: Some(cwd),
+        ..S::default()
+    })
+    .unwrap()
+}
+
+/// The triage frontier: per repository, commands whose latest decided run
+/// failed; a later success resolves a failure, an unknown outcome decides
+/// nothing, and two repositories never mix.
+#[test]
+fn the_frontier_holds_commands_whose_latest_run_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let a1 = in_dir(&mut f, "claude-code:a1", "/work/a");
+    let a2 = in_dir(&mut f, "claude-code:a2", "/work/a");
+    let b1 = in_dir(&mut f, "claude-code:b1", "/work/b");
+    let m = |f: &mut Fixture, s, id, at| {
+        model_message(f, s, id, "claude-opus-5-5", at, &lanes(1, 0, None, 1))
+    };
+    let (ma1, ma2, mb1) = (
+        m(&mut f, a1, "m1", T0),
+        m(&mut f, a2, "m2", T0 + DAY),
+        m(&mut f, b1, "m3", T0),
+    );
+    shell(&mut f, a1, ma1, "cargo test", "error", T0);
+    shell(&mut f, a2, ma2, "cargo test", "ok", T0 + DAY);
+    shell(&mut f, a1, ma1, "cargo clippy", "error", T0 + 1);
+    shell(&mut f, a2, ma2, "cargo clippy", "error", T0 + DAY + 1);
+    shell(&mut f, a2, ma2, "cargo clippy", "unknown", T0 + DAY + 2);
+    shell(&mut f, b1, mb1, "cargo test", "error", T0 + 5);
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let got: Vec<_> = analysis::frontier(&r, &Scope::default())
+        .unwrap()
+        .into_iter()
+        .map(|u| (u.repository, u.command, u.failures_since_ok, u.session))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                "cwd:/work/a".into(),
+                "cargo clippy".into(),
+                2,
+                "claude-code:a2".into()
+            ),
+            (
+                "cwd:/work/b".into(),
+                "cargo test".into(),
+                1,
+                "claude-code:b1".into()
+            ),
+        ]
+    );
+}
+
+/// Ending on an unanswered prompt: an event only once the session has been
+/// quiet for the quiet period; answered and recent sessions are censored;
+/// sessions no human prompted are not in the cohort.
+#[test]
+fn an_unanswered_last_prompt_ends_a_session_only_after_it_goes_quiet() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let human = |f: &mut Fixture, s, id, at| {
+        f.message(
+            s,
+            M {
+                id,
+                role: "user",
+                written_by: "human",
+                prompt_kind: Some("prose"),
+                at: Some(at),
+                ..M::default()
+            },
+        )
+        .unwrap();
+    };
+    let answered = session(&mut f, "claude-code:answered");
+    human(&mut f, answered, "h1", T0);
+    model_message(
+        &mut f,
+        answered,
+        "a1",
+        "claude-opus-5-5",
+        T0 + 60_000,
+        &lanes(1, 0, None, 1),
+    );
+    let left = session(&mut f, "claude-code:left");
+    human(&mut f, left, "h2", T0);
+    model_message(
+        &mut f,
+        left,
+        "a2",
+        "claude-opus-5-5",
+        T0 + 60_000,
+        &lanes(1, 0, None, 1),
+    );
+    human(&mut f, left, "h3", T0 + 120_000);
+    let recent = session(&mut f, "claude-code:recent");
+    let now = T0 + 10 * DAY;
+    human(&mut f, recent, "h4", now - 60_000);
+    let sub = session(&mut f, "claude-code:sub");
+    model_message(
+        &mut f,
+        sub,
+        "a4",
+        "claude-opus-5-5",
+        T0,
+        &lanes(1, 0, None, 1),
+    );
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let s = analysis::unanswered_end(&r, &Scope::default(), now).unwrap();
+    assert_eq!(
+        (s.sessions, s.events, s.censored, s.unmeasured),
+        (3, 1, 2, 1)
+    );
+}
+
+/// Format drift lists what parsers did not know, newest first, with items
+/// kept as counts by design after the rest.
+#[test]
+fn drift_lists_new_unknowns_first_and_design_counts_last() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    f.unrecognized("claude-code", "field:message.effort", 3, T0, false)
+        .unwrap();
+    f.unrecognized("claude-code", "record:launched", 9, T0 + DAY, false)
+        .unwrap();
+    f.unrecognized(
+        "codex",
+        "record:event_msg/item_completed",
+        50,
+        T0 + 2 * DAY,
+        true,
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let got: Vec<_> = analysis::drift(&r)
+        .unwrap()
+        .into_iter()
+        .map(|d| (d.what, d.count, d.by_design))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("record:launched".into(), 9, false),
+            ("field:message.effort".into(), 3, false),
+            ("record:event_msg/item_completed".into(), 50, true),
+        ]
+    );
+}
