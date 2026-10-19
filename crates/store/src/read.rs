@@ -473,6 +473,17 @@ impl Reader<'_> {
     /// Every path this machine observed, with its last facts and how far
     /// its current chain is stored and parsed. The loop compares these with
     /// the files now.
+    /// The stored bytes of an input's revision chain, for parsing them
+    /// again without the file.
+    pub fn stored_chain(
+        &self,
+        input: &str,
+        chain: i64,
+        length: u64,
+    ) -> Result<crate::blobs::StoredChain> {
+        crate::blobs::StoredChain::load(self.conn(), "a.", input, chain, length)
+    }
+
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
         let mut stmt = self.conn().prepare_cached(
             "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,

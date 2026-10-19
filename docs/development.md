@@ -51,6 +51,13 @@ more, each with `--json`. `test --changed` runs the tests of packages changed
 since the merge base with `origin/master` and of everything that depends on
 them.
 
+The Sinex rebuild proof (`crates/sinex/tests/proof.rs`) runs a real `sinexd`,
+so it is ignored by default. Build `sinexd` and `sinex-schema` in a Sinex
+checkout, then run it from Sinex's dev shell, which has PostgreSQL with
+TimescaleDB and `nats-server`:
+`SINEXD=<sinex>/target/debug/sinexd SINEX_SCHEMA=<sinex>/target/debug/sinex-schema
+nix develop <sinex> --command cargo nextest run -p polylogue-sinex --run-ignored all`.
+
 The pre-push hook is `.githooks/pre-push`; enable it with
 `git config core.hooksPath .githooks`. It skips pushes that change no Rust
 build inputs.

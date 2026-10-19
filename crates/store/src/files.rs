@@ -110,6 +110,12 @@ impl Archive {
             schema::create_archive(&a)?;
         }
         schema::migrate_archive(&mut a)?;
+        // The archive's identity: Sinex keys this archive's published rows
+        // by it, so two archives never collide (architecture 7.1).
+        a.execute(
+            "INSERT OR IGNORE INTO meta(key, value) VALUES ('archive_id', ?1)",
+            [uuid::Uuid::now_v7().to_string()],
+        )?;
         set_aside_old_index(&archive)?;
         let i = open_write(&archive.index_db())?;
         schema::ensure_index(&i)?;

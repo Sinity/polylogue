@@ -137,6 +137,122 @@ impl Piece {
     }
 }
 
+/// The stored bytes of one revision chain: its extents in offset order.
+/// Inline blobs are held decompressed (each is under 128 KiB); file blobs
+/// are read by range from `hashed-blobs`, so parsing a large stored input
+/// never holds it whole. This is how the loop parses an input from what the
+/// archive stored, when its file has changed, moved or gone, or when the
+/// index is built again (architecture 4.4, 5.3).
+#[derive(Debug, Clone, Default)]
+pub struct StoredChain {
+    pub length: u64,
+    extents: Vec<StoredExtent>,
+}
+
+#[derive(Debug, Clone)]
+struct StoredExtent {
+    offset: u64,
+    length: u64,
+    blob: BlobHash,
+    blob_offset: u64,
+    inline: Option<std::sync::Arc<Vec<u8>>>,
+}
+
+impl StoredChain {
+    /// The extents of `chain` covering `[0, length)`. `archive` is a
+    /// connection to `archive.db` (`schema` is its prefix: `""` or `"a."`).
+    pub fn load(
+        archive: &rusqlite::Connection,
+        schema: &str,
+        input: &str,
+        chain: i64,
+        length: u64,
+    ) -> Result<Self> {
+        let mut stmt = archive.prepare_cached(&format!(
+            "SELECT e.offset, e.length, e.blob, e.blob_offset, b.place, b.data, b.size
+             FROM {schema}extent e JOIN {schema}blob b ON b.hash = e.blob
+             WHERE e.input = ?1 AND e.chain = ?2 AND e.offset < ?3 ORDER BY e.offset"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![input, chain, length as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<Vec<u8>>>(5)?,
+                r.get::<_, i64>(6)?,
+            ))
+        })?;
+        let mut extents = Vec::new();
+        for row in rows {
+            let (offset, len, blob, blob_offset, place, data, size) = row?;
+            let hash = BlobHash(
+                blob.as_slice()
+                    .try_into()
+                    .map_err(|_| crate::StoreError::Invalid("blob hash is not 32 bytes".into()))?,
+            );
+            let inline = match (place.as_str(), data) {
+                ("inline", Some(data)) => {
+                    let bytes = zstd::bulk::decompress(&data, size as usize)?;
+                    if BlobHash::of(&bytes) != hash {
+                        return Err(crate::StoreError::BlobCorrupt(hash));
+                    }
+                    Some(std::sync::Arc::new(bytes))
+                }
+                _ => None,
+            };
+            extents.push(StoredExtent {
+                offset: offset as u64,
+                length: len as u64,
+                blob: hash,
+                blob_offset: blob_offset as u64,
+                inline,
+            });
+        }
+        Ok(Self { length, extents })
+    }
+
+    /// Bytes `[start, end)` of the chain. A range no extent covers is an
+    /// error, never zeros.
+    pub fn read_range(&self, store: &hashed_blobs::Store, start: u64, end: u64) -> Result<Vec<u8>> {
+        let end = end.min(self.length);
+        let mut out = Vec::with_capacity(end.saturating_sub(start) as usize);
+        let mut at = start;
+        let first = self
+            .extents
+            .partition_point(|e| e.offset + e.length <= start);
+        for e in &self.extents[first..] {
+            if at >= end {
+                break;
+            }
+            if e.offset > at {
+                break;
+            }
+            let from = at - e.offset;
+            let take = (e.length - from).min(end - at);
+            match &e.inline {
+                Some(bytes) => {
+                    let s = (e.blob_offset + from) as usize;
+                    out.extend_from_slice(&bytes[s..s + take as usize]);
+                }
+                None => out.extend_from_slice(&store.read_range(
+                    &hashed_blobs::Hash(e.blob.0),
+                    e.blob_offset + from,
+                    take,
+                )?),
+            }
+            at += take;
+        }
+        if at < end {
+            return Err(crate::StoreError::Invalid(format!(
+                "stored bytes end at {at}, before {end}: an extent is missing"
+            )));
+        }
+        Ok(out)
+    }
+}
+
 /// Reads a stored blob back whole: inline rows decompress, files go
 /// through `hashed-blobs`, which checks the name.
 pub fn read(
