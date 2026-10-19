@@ -1142,7 +1142,24 @@ impl Ctx<'_, '_> {
         if let Some(pk) = cache.get(&key) {
             return Ok(*pk);
         }
-        let pk = self.upsert_session(&Session::new(id.clone(), SessionKind::Main))?;
+        let existing = self
+            .tx
+            .prepare_cached("SELECT pk FROM session WHERE id = ?1")?
+            .query_row([&key], |r| r.get::<_, i64>(0))
+            .optional()?;
+        let pk = match existing {
+            Some(pk) => pk,
+            // Named by an event before any of its own records arrived: a
+            // stub, whose kind the session's first real facts decide
+            // (index.sql, session.stub), whichever file is read first.
+            None => {
+                let pk = self.upsert_session(&Session::new(id.clone(), SessionKind::Main))?;
+                self.tx
+                    .prepare_cached("UPDATE session SET stub = 1 WHERE pk = ?1")?
+                    .execute([pk])?;
+                pk
+            }
+        };
         cache.insert(key, pk);
         Ok(pk)
     }
@@ -1156,7 +1173,7 @@ impl Ctx<'_, '_> {
             .tx
             .prepare_cached(
                 "SELECT pk, kind, title, title_source, cwd_json, branch, harness_version, started_at,
-                     repo
+                     repo, stub
                  FROM session WHERE id = ?1",
             )?
             .query_row([&id], |r| {
@@ -1170,13 +1187,19 @@ impl Ctx<'_, '_> {
                     r.get::<_, Option<String>>(6)?,
                     r.get::<_, Option<i64>>(7)?,
                     r.get::<_, Option<String>>(8)?,
+                    r.get::<_, bool>(9)?,
                 ))
             })
             .optional()?;
         let (pk, merged) = match existing {
-            Some((pk, kind, title, title_source, cwd, branch, version, started, repo)) => {
-                let mut cur =
-                    Session::new(s.id.clone(), parse_name(&kind).unwrap_or(SessionKind::Main));
+            Some((pk, kind, title, title_source, cwd, branch, version, started, repo, stub)) => {
+                // A stub takes the kind its first real facts give it.
+                let kind = if stub {
+                    s.kind
+                } else {
+                    parse_name(&kind).unwrap_or(SessionKind::Main)
+                };
+                let mut cur = Session::new(s.id.clone(), kind);
                 if let (Some(text), Some(source)) = (
                     title,
                     title_source.as_deref().and_then(parse_name::<TitleSource>),
@@ -1192,7 +1215,7 @@ impl Ctx<'_, '_> {
                 cur.started = started.and_then(Timestamp::from_unix_ms);
                 let before = cur.clone();
                 cur.merge(s);
-                if cur == before {
+                if cur == before && !stub {
                     return Ok(pk);
                 }
                 (Some(pk), cur)
@@ -1221,10 +1244,10 @@ impl Ctx<'_, '_> {
             Some(pk) => {
                 self.tx
                     .prepare_cached(
-                        "UPDATE session SET title = ?5, title_source = ?6, cwd_json = ?7, cwd = ?8,
-                             branch = ?9, harness_version = ?10, started_at = ?11, changed = ?12,
-                             repo = ?13
-                         WHERE id = ?1 AND origin = ?2 AND native_id = ?3 AND kind = ?4",
+                        "UPDATE session SET kind = ?4, title = ?5, title_source = ?6,
+                             cwd_json = ?7, cwd = ?8, branch = ?9, harness_version = ?10,
+                             started_at = ?11, changed = ?12, repo = ?13, stub = 0
+                         WHERE id = ?1 AND origin = ?2 AND native_id = ?3",
                     )?
                     .execute(cols)?;
                 Ok(pk)

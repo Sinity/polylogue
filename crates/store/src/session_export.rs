@@ -39,7 +39,10 @@ impl Reader<'_> {
         let mut stmt = self.conn().prepare_cached(
             "SELECT e.kind, e.at, m.id, e.source_start, e.source_end, e.data
              FROM event e LEFT JOIN message m ON m.pk = e.after_message_pk
-             WHERE e.session_pk = ?1 ORDER BY e.seq, e.pk",
+             -- Events at the same position (each file's own byte 0, from
+             -- different inputs) sort by their content-derived ID, not by
+             -- which file was read first.
+             WHERE e.session_pk = ?1 ORDER BY e.seq, e.id",
         )?;
         let rows = stmt.query_map([pk], |r| {
             Ok((
