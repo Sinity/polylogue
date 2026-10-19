@@ -252,9 +252,13 @@ async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
     };
     let sessions = match ask(
         &web,
-        Request::List {
-            limit: 30,
-            before: None,
+        Request::Query {
+            text: "sessions".into(),
+            cursor: None,
+            page_size: Some(30),
+            why: false,
+            session: None,
+            fields: vec![],
         },
     )
     .await

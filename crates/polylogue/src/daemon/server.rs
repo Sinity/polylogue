@@ -279,10 +279,6 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 "signals": d.signals.lock().map(|s| s.clone()).unwrap_or_default(),
             }))
         }
-        Request::List { limit, before } => match reader.list(limit, before) {
-            Ok(rows) => ok(rows),
-            Err(e) => error("store", e),
-        },
         Request::Query {
             text,
             cursor,

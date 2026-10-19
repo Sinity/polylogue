@@ -144,13 +144,14 @@ impl Morrow {
     pub fn view(&self) -> BTreeMap<String, serde_json::Value> {
         let pool = self.reads();
         let r = pool.reader().expect("a reader");
-        r.list(u64::MAX >> 1, None)
+        r.query("SELECT id FROM session", &[])
             .expect("list sessions")
             .into_iter()
-            .filter_map(|s| {
-                let doc = r.session_export(&s.id).expect("export a session")?;
+            .filter_map(|row| {
+                let id = SessionId::parse(row["id"].as_str()?).ok()?;
+                let doc = r.session_export(&id).expect("export a session")?;
                 Some((
-                    s.id.to_string(),
+                    id.to_string(),
                     serde_json::to_value(doc).expect("serialize"),
                 ))
             })

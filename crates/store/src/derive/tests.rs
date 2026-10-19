@@ -72,9 +72,6 @@ fn a_session_without_a_title_is_named_by_its_first_prompt() {
         one(&w, "SELECT title, derived_title FROM session"),
         json!({"title": null, "derived_title": "Fix the flaky crash test"})
     );
-    let pool = crate::ReadPool::open(&w.archive).unwrap();
-    let list = pool.reader().unwrap().list(10, None).unwrap();
-    assert_eq!(list[0].title.as_deref(), Some("Fix the flaky crash test"));
 }
 
 #[test]

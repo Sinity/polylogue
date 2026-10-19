@@ -322,7 +322,7 @@ pub static FIELDS: &[Field] = &[
         SessionKind::NAMES,
         "who started the session: main, or one another session spawned",
     ).sql("{s}.kind"),
-    f(Sessions, "title", Substring, "the displayed title").sql("{s}.title"),
+    f(Sessions, "title", Substring, "the displayed title").sql("COALESCE({s}.title, {s}.derived_title)"),
     f(
         Sessions,
         "repo",

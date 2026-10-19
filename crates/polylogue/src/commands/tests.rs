@@ -322,3 +322,12 @@ fn mcp_schemas_follow_the_arguments() {
     let s = schema(command("note add").unwrap());
     assert!(s["properties"]["request_id"].is_object());
 }
+
+#[test]
+fn list_without_a_query_runs_the_sessions_unit() {
+    let (c, v) = crate::cli::parse(&["polylogue", "list", "--limit", "5"]).unwrap();
+    let r = request_json(c, &v, &cli_caller());
+    assert_eq!(r["op"], "query");
+    assert_eq!(r["text"], "sessions");
+    assert_eq!(r["page_size"], 5);
+}
