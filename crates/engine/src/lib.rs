@@ -126,6 +126,8 @@ pub struct Pass {
     /// New bytes stored.
     pub bytes_stored: u64,
     pub messages_written: u64,
+    /// Sessions whose derived products the pass recomputed.
+    pub sessions_derived: u64,
     pub seconds: f64,
     pub unreadable_roots: Vec<PathBuf>,
     pub errors: Vec<String>,
@@ -624,6 +626,7 @@ impl Engine {
             pass.errors.extend(report.errors);
         }
         self.execute(plans, &mut pass)?;
+        pass.sessions_derived = self.writer.derive()?;
         pass.seconds = started.elapsed().as_secs_f64();
         Ok(pass)
     }
@@ -905,6 +908,7 @@ impl Engine {
             }
         }
         self.execute(group, &mut report.pass)?;
+        report.pass.sessions_derived = self.writer.derive()?;
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
     }

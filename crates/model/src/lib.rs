@@ -3,6 +3,7 @@
 
 pub mod batch;
 mod block;
+pub mod command;
 mod event;
 pub mod export;
 mod id;
@@ -28,7 +29,7 @@ pub use time::{LogicalDay, Timestamp};
 pub mod text;
 pub use price::{Catalog, Price};
 pub use usage::Usage;
-pub use work::{WorkEdge, WorkEdgeKind, WorkNode, WorkNodeKind};
+pub use work::{WorkEdgeKind, WorkNodeKind};
 
 /// Opaque JSON kept exactly as the source wrote it. Numbers are lossless
 /// (`serde_json` with `arbitrary_precision`).

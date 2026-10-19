@@ -284,6 +284,9 @@ enum Msg {
         std::sync::Arc<hashed_blobs::Store>,
         SyncSender<Result<crate::excise::Excised>>,
     ),
+    /// Run the derive step over sessions whose derived rows are stale;
+    /// answered with the number of sessions derived.
+    Derive(SyncSender<Result<u64>>),
 }
 
 /// Handle to the writer thread. Dropping it stops the thread after the
@@ -407,6 +410,12 @@ impl Writer {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
+    /// Derives the products of sessions changed since they were last
+    /// derived (architecture 5.6), after the batches already queued.
+    pub fn derive(&self) -> Result<u64> {
+        derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
+    }
+
     /// Waits until every batch sent before this call is committed, and
     /// returns what was written since the previous flush.
     pub fn flush(&self) -> Result<WriteReport> {
@@ -444,6 +453,18 @@ impl WriterSender {
     pub fn user(&self, request: crate::user::UserRequest) -> Result<crate::user::UserOutcome> {
         user_via(&self.0, request)
     }
+
+    /// As [`Writer::derive`].
+    pub fn derive(&self) -> Result<u64> {
+        derive_via(&self.0)
+    }
+}
+
+fn derive_via(tx: &SyncSender<Msg>) -> Result<u64> {
+    let (reply, wait) = sync_channel(1);
+    tx.send(Msg::Derive(reply))
+        .map_err(|_| StoreError::WriterGone)?;
+    wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
 fn user_via(
@@ -472,6 +493,7 @@ impl Inner {
         let mut flushes = Vec::new();
         let mut users = Vec::new();
         let mut excisions = Vec::new();
+        let mut derives = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut group = Vec::new();
             let mut rows = 0;
@@ -496,6 +518,10 @@ impl Inner {
                         excisions.push((request, store, reply));
                         false
                     }
+                    Msg::Derive(reply) => {
+                        derives.push(reply);
+                        false
+                    }
                 };
             if push(first, &mut group, &mut rows, &mut bytes) {
                 while rows < ROWS_PER_TRANSACTION && bytes < BYTES_PER_TRANSACTION {
@@ -517,6 +543,15 @@ impl Inner {
             }
             for (request, store, reply) in excisions.drain(..) {
                 let _ = reply.send(self.write_excision(&request, &store));
+            }
+            if !derives.is_empty() {
+                let result = crate::work::derive(&mut self.index);
+                for reply in derives.drain(..) {
+                    let _ = reply.send(match &result {
+                        Ok(n) => Ok(*n),
+                        Err(e) => Err(StoreError::Invalid(format!("derive: {e}"))),
+                    });
+                }
             }
             if !flushes.is_empty()
                 && let Err(e) = self.settle()
@@ -1030,6 +1065,7 @@ fn write_rows(
             _ => pack_event(e)?,
         };
         ctx.write_event(e, session_pk, &packed)?;
+        crate::live::apply(tx, session_pk, e, counter)?;
     }
     let leaves: HashSet<i64> = p
         .output
@@ -1686,8 +1722,8 @@ impl Ctx<'_, '_> {
         self.tx
             .prepare_cached(
                 "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, action, command,
-                     path, outcome, outcome_reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'unknown', 'awaiting_result')",
+                     command_norm, path, outcome, outcome_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'unknown', 'awaiting_result')",
             )?
             .execute(params![
                 session_pk,
@@ -1697,6 +1733,7 @@ impl Ctx<'_, '_> {
                 tool,
                 action(tool),
                 command,
+                command_norm(tool, command.as_deref()),
                 path
             ])?;
         let pk = self.tx.last_insert_rowid();
@@ -1961,6 +1998,15 @@ fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>, Option<i64
         ToolOutcome::NoResult => ("unknown", Some("no_result".into()), None),
         ToolOutcome::Unknown { reason } => ("unknown", Some(name(reason)), None),
     }
+}
+
+/// The normalized form of a shell call's command (analysis.md); `None`
+/// for other tools.
+fn command_norm(tool: &str, command: Option<&str>) -> Option<String> {
+    if action(tool) != "shell" {
+        return None;
+    }
+    command.and_then(polylogue_model::command::normalize)
 }
 
 /// The kind of action a tool performs, from its name.

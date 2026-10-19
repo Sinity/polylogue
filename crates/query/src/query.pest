@@ -23,12 +23,12 @@ stages = { ("|" ~ stage)* }
 
 unit = ${
     (^"sessions" | ^"messages" | ^"blocks" | ^"tool_calls" | ^"files" | ^"events"
-     | ^"notes" | ^"links" | ^"turns" | ^"runs" | ^"deliveries" | ^"processes")
+     | ^"notes" | ^"links" | ^"turns" | ^"runs" | ^"deliveries" | ^"processes" | ^"work")
     ~ !ident_char
 }
 row_unit = ${
     (^"message" | ^"block" | ^"tool_call" | ^"file" | ^"event" | ^"note" | ^"link"
-     | ^"turn" | ^"run" | ^"delivery" | ^"process")
+     | ^"turn" | ^"run" | ^"delivery" | ^"process" | ^"work")
     ~ !ident_char
 }
 

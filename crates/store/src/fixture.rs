@@ -79,6 +79,11 @@ impl Fixture {
         })
     }
 
+    /// Runs the work graph's derive step over the rows written so far.
+    pub fn derive(&mut self) -> Result<u64> {
+        crate::work::derive(&mut self.index)
+    }
+
     pub fn reads(&self) -> Result<ReadPool> {
         ReadPool::open(&self.archive)
     }

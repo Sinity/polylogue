@@ -797,3 +797,76 @@ fn a_session_query_scopes_a_row_query() {
     let v = q(&w, "tool_calls | group by day(at) | count | sort by day_at");
     assert_eq!(v["rows"][0]["day_at"], "2026-10-01");
 }
+
+/// A session that claims a Bead, fails then passes its tests, commits and
+/// closes the Bead; derived into the work graph.
+fn worked() -> World {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
+    let s = fx
+        .session(S {
+            id: "claude-code:w1",
+            last: at(2, 13),
+            ..S::default()
+        })
+        .unwrap();
+    let m = fx
+        .message(s, msg("w1a", "assistant", "model", "", at(2, 12)))
+        .unwrap();
+    let calls: [(&str, &str, &str, i64); 5] = [
+        ("bd update plnext-7 --claim", "ok", "", 0),
+        ("cargo test -p store", "error", "FAILED", 1),
+        ("cargo test -p store", "ok", "ok", 2),
+        ("git commit -m fix", "ok", "[main 0123abcd] fix", 3),
+        ("bd close plnext-7", "ok", "", 4),
+    ];
+    for (command, outcome, output, minute) in calls {
+        fx.tool_call(
+            s,
+            m,
+            T {
+                tool: "Bash",
+                action: "shell",
+                command: Some(command),
+                outcome,
+                at: at(2, 12).map(|t| t + minute * 60_000),
+                output: Some(output),
+                ..T::default()
+            },
+        )
+        .unwrap();
+    }
+    fx.derive().unwrap();
+    World { _dir: dir, fx }
+}
+
+#[test]
+fn the_work_unit_reads_the_derived_graph() {
+    let w = worked();
+    let attempts = q(&w, "work where kind:attempt");
+    let row = &attempts["rows"][0];
+    assert_eq!(attempts["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(row["title"], "plnext-7");
+    assert_eq!(row["state"], "closed");
+    assert_eq!(row["goal"], "plnext-7");
+    let checks = q(&w, "work where kind:verification goal:plnext-7");
+    let states: Vec<&str> = checks["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["error", "ok"]);
+    assert_eq!(
+        q(&w, "work where checks_failed:1")["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // The short hash the commit command printed answers a full-hash query.
+    assert_eq!(
+        ids(&q(&w, "commit:0123abcd00112233445566778899aabbccddeeff")),
+        ["claude-code:w1"]
+    );
+}

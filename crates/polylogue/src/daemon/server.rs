@@ -188,6 +188,23 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
         Request::Measure { what, query } => {
             super::measure::handle(&reader, &what, query.as_deref(), now_ms())
         }
+        Request::Live { now } => match crate::live::sessions(&reader, now.unwrap_or_else(now_ms)) {
+            Ok(v) => ok(v),
+            Err(e) => error("store", e),
+        },
+        Request::Changes { since } => {
+            let since = match since.as_deref().map(crate::live::Cursor::parse) {
+                None => crate::live::Cursor::default(),
+                Some(Some(c)) => c,
+                Some(None) => {
+                    return error("bad_request", "a cursor is two numbers, `index.archive`");
+                }
+            };
+            match crate::live::changes(&reader, since) {
+                Ok(v) => ok(v),
+                Err(e) => error("store", e),
+            }
+        }
         Request::Sql { statement } => match reader.query(&statement, &[]) {
             // The connection is read-only: a statement that writes fails.
             Ok(rows) => ok(rows),

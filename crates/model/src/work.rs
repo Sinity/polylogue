@@ -1,27 +1,18 @@
-use crate::{SessionId, Timestamp};
 use serde::{Deserialize, Serialize};
 
+/// What a work-graph node is (spec model.md, The work graph).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkNodeKind {
+    /// Something a session declared it would do: a claimed Bead, a todo or
+    /// plan item.
     Goal,
+    /// One session pursuing one goal.
     Attempt,
+    /// A check command and its outcome.
     Verification,
+    /// A commit or pull request.
     Artifact,
-    Decision,
-}
-
-/// A node of the work graph: what sessions were trying to do, what they
-/// tried, how it was checked, what it produced and what was decided.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkNode {
-    pub id: i64,
-    pub kind: WorkNodeKind,
-    pub title: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session: Option<SessionId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -29,16 +20,29 @@ pub struct WorkNode {
 pub enum WorkEdgeKind {
     /// An attempt toward a goal.
     Pursues,
-    /// A verification of an attempt or artifact.
+    /// A verification run while an attempt was open.
     Checks,
+    /// An artifact made while an attempt was open.
     Produces,
-    Supersedes,
-    DependsOn,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkEdge {
-    pub from: i64,
-    pub to: i64,
-    pub kind: WorkEdgeKind,
+impl WorkNodeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkNodeKind::Goal => "goal",
+            WorkNodeKind::Attempt => "attempt",
+            WorkNodeKind::Verification => "verification",
+            WorkNodeKind::Artifact => "artifact",
+        }
+    }
+}
+
+impl WorkEdgeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkEdgeKind::Pursues => "pursues",
+            WorkEdgeKind::Checks => "checks",
+            WorkEdgeKind::Produces => "produces",
+        }
+    }
 }

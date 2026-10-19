@@ -18,6 +18,7 @@ pub mod files;
 pub mod fixture;
 pub mod functions;
 pub mod measure;
+mod live;
 pub mod notes;
 pub mod read;
 pub mod rows;
@@ -26,6 +27,7 @@ pub mod search;
 pub mod session_export;
 pub mod user;
 pub mod vectors;
+pub mod work;
 pub mod writer;
 
 pub use blobs::{Change, FileFacts, Piece};

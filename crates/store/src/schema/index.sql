@@ -583,23 +583,46 @@ CREATE TABLE session_model_usage (           -- per session and model
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX session_model_usage_model ON session_model_usage(model);   -- model:X
 
--- The work graph: goals, attempts, verifications, artifacts and decisions,
--- linked to the sessions that pursued them (architecture 4.4; old 1vpm, 67ac).
+-- The work graph (architecture 4.4; old 1vpm, 67ac), derived from structure
+-- only (spec model.md, The work graph): goals are what a session declared it
+-- would do (a Bead claimed by a `bd` command, a todo or plan item), attempts
+-- are a session pursuing a goal, verifications are check commands with their
+-- outcomes, artifacts are commits and pull requests. A claim, an observed
+-- effect and an evaluation stay apart: a closed Bead is a claim; the checks
+-- and commits beside it are the effects. Rebuilt per session by the derive
+-- step; a Bead claimed by several sessions is one goal node.
 CREATE TABLE work_node (
   pk                INTEGER PRIMARY KEY,
-  kind              TEXT NOT NULL CHECK (kind IN ('goal','attempt','verification','artifact','decision')),
+  key               TEXT NOT NULL UNIQUE,   -- bead:<id> | todo:<session>:<item> | attempt:<session>:<goal key>
+                                            --   | check:<tool_call pk> | commit:<session>:<hash> | pr:<session>:<repo>#<n>
+  kind              TEXT NOT NULL CHECK (kind IN ('goal','attempt','verification','artifact')),
   title             TEXT NOT NULL,
-  session_pk        INTEGER REFERENCES session(pk),
-  at                INTEGER
+  session_pk        INTEGER REFERENCES session(pk),  -- the session that made it; NULL for a shared goal
+  at                INTEGER,
+  state             TEXT,                   -- attempt: open | closed | released | completed | pending;
+                                            --   verification: the call's outcome
+  tool_call_pk      INTEGER REFERENCES tool_call(pk),  -- the call that is its evidence
+  attrs_json        TEXT                    -- attempt: checks passed and failed and commits while it was open
 ) STRICT;
 CREATE INDEX work_node_session ON work_node(session_pk);
+CREATE INDEX work_node_kind ON work_node(kind, at);
+CREATE INDEX work_node_call ON work_node(tool_call_pk) WHERE tool_call_pk IS NOT NULL;   -- foreign-key check
 
 CREATE TABLE work_edge (
   from_pk           INTEGER NOT NULL REFERENCES work_node(pk),
   to_pk             INTEGER NOT NULL REFERENCES work_node(pk),
-  kind              TEXT NOT NULL CHECK (kind IN ('pursues','checks','produces','supersedes','depends_on')),
+  kind              TEXT NOT NULL CHECK (kind IN ('pursues','checks','produces')),
   PRIMARY KEY (from_pk, to_pk, kind)
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX work_edge_to ON work_edge(to_pk);
+
+-- Which session state each session's work rows were derived from: the derive
+-- step's work is the sessions whose version or `changed` differs.
+CREATE TABLE work_session (
+  session_pk        INTEGER PRIMARY KEY REFERENCES session(pk),
+  version           INTEGER NOT NULL,
+  from_changed      INTEGER NOT NULL
+) STRICT;
 
 -- Files a session's tool calls touched, for the `changes` view.
 CREATE TABLE file_edit (

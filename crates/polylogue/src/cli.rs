@@ -92,9 +92,18 @@ pub enum Command {
     /// Token use, cost and subscription windows.
     #[command(subcommand)]
     Measure(MeasureCommand),
-    /// The work graph: goals, attempts, verifications.
-    #[command(subcommand)]
-    Work(WorkCommand),
+    /// The work graph: goals, attempts, verifications and artifacts, by a
+    /// query over the `work` unit (`polylogue work kind:attempt state:open`).
+    Work(QueryArgs),
+    /// Sessions running now and what each is doing: computed from hook
+    /// and process records and the time.
+    Live,
+    /// What changed since a cursor: sessions, removals and notes.
+    Changes {
+        /// A previous answer's `next`.
+        #[arg(long)]
+        since: Option<String>,
+    },
     /// Change notices and where they were delivered.
     Notices,
     /// Read-only SQL over the stable views.
@@ -282,12 +291,6 @@ pub enum MeasureCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum WorkCommand {
-    List,
-    Show { id: i64 },
-}
-
-#[derive(Debug, Subcommand)]
 pub enum EmbedCommand {
     /// What a build would embed and what it would cost.
     Preview(EmbedArgs),
@@ -449,6 +452,19 @@ pub fn run(args: Args) -> ExitCode {
             dry_run: !yes,
         },
         Some(Command::Sql { statement }) => Request::Sql { statement },
+        Some(Command::Work(q)) => Request::Query {
+            text: if q.query.is_empty() {
+                "work".into()
+            } else {
+                format!("work where {}", q.query.join(" "))
+            },
+            cursor: args.cursor.clone(),
+            page_size: q.limit,
+            why: args.why,
+            session: None,
+        },
+        Some(Command::Live) => Request::Live { now: None },
+        Some(Command::Changes { since }) => Request::Changes { since },
         Some(Command::Recall { query, cwd }) => Request::Context {
             request_id: request_id(),
             ask: Ask::Recall {
