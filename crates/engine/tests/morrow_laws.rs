@@ -51,7 +51,12 @@ fn law_8_raw_bytes_survive_the_source() {
         let before = w.view();
         fs::remove_file(&file).unwrap();
         w.converge();
-        assert_eq!(w.view(), before, "deleting {} changed the view", rel.display());
+        assert_eq!(
+            w.view(),
+            before,
+            "deleting {} changed the view",
+            rel.display()
+        );
         assert_eq!(
             w.stored_bytes(&file).unwrap(),
             bytes,
@@ -120,7 +125,8 @@ fn law_10_ids_and_documents_survive_unrelated_changes() {
 #[test]
 fn law_22_a_corrupt_blob_fails_its_read() {
     let w = Morrow::build(Set::Main);
-    let file = w.file(".claude/projects/-home-op-morrow/7f3a2c10-0002-4000-8000-000000000002.jsonl");
+    let file =
+        w.file(".claude/projects/-home-op-morrow/7f3a2c10-0002-4000-8000-000000000002.jsonl");
     let bytes = fs::read(&file).unwrap();
     assert_eq!(w.stored_bytes(&file).unwrap(), bytes);
     let archive = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
@@ -139,12 +145,17 @@ fn law_22_a_corrupt_blob_fails_its_read() {
     if place == "inline" {
         // Flip one byte of the stored (compressed) data.
         let mut data: Vec<u8> = archive
-            .query_row("SELECT data FROM blob WHERE hash = ?1", [hash], |r| r.get(0))
+            .query_row("SELECT data FROM blob WHERE hash = ?1", [hash], |r| {
+                r.get(0)
+            })
             .unwrap();
         let last = data.len() - 1;
         data[last] ^= 0x01;
         archive
-            .execute("UPDATE blob SET data = ?1 WHERE hash = ?2", rusqlite::params![data, hash])
+            .execute(
+                "UPDATE blob SET data = ?1 WHERE hash = ?2",
+                rusqlite::params![data, hash],
+            )
             .unwrap();
     } else {
         let path = find_blob_file(&w.root, hash).expect("the blob's file");
@@ -154,7 +165,9 @@ fn law_22_a_corrupt_blob_fails_its_read() {
         fs::write(&path, data).unwrap();
     }
     drop(archive);
-    let err = w.stored_bytes(&file).expect_err("a corrupt blob must not read back");
+    let err = w
+        .stored_bytes(&file)
+        .expect_err("a corrupt blob must not read back");
     let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
     assert!(
         err.contains(&hex[..12]) || err.to_lowercase().contains("corrupt") || err.contains("blob"),
@@ -185,7 +198,8 @@ fn find_blob_file(root: &Path, hash: &[u8]) -> Option<PathBuf> {
 fn law_30_a_subagent_has_one_parent() {
     let w = Morrow::lay_out(Set::Main);
     let project = w.file(".claude/projects/-home-op-morrow");
-    let sub = project.join("7f3a2c10-0002-4000-8000-000000000002/subagents/agent-a7f3a2c1000000003.jsonl");
+    let sub = project
+        .join("7f3a2c10-0002-4000-8000-000000000002/subagents/agent-a7f3a2c1000000003.jsonl");
     let other = project.join("7f3a2c10-0001-4000-8000-000000000001/subagents");
     fs::create_dir_all(&other).unwrap();
     std::os::unix::fs::symlink(&sub, other.join("agent-a7f3a2c1000000003.jsonl")).unwrap();

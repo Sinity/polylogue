@@ -17,7 +17,10 @@ inside `nix develop`.
 - **Full suite:** formatting, boundaries and `cargo nextest run --workspace`
   (configuration in `.config/nextest.toml`). Each test runs in its own
   process, all binaries in parallel; a test still running after two minutes
-  is terminated and fails.
+  is terminated and fails. Then the laws that inject failures (laws 7, 45,
+  63): `cargo nextest run -p polylogue-engine --features faults --test
+  faults`. The `faults` feature arms the store's fault points
+  (`polylogue_store::fault`); nothing that ships enables it.
 - **End-to-end scenarios:** the integration tests in `crates/polylogue/tests`
   start the real `polylogue` binary as a daemon over a temporary archive and
   drive it through the CLI and the MCP server (`tests/session_read/mcp_client.rs`).
@@ -50,6 +53,14 @@ outcome with output for failures, and compiler warnings and errors.
 more, each with `--json`. `test --changed` runs the tests of packages changed
 since the merge base with `origin/master` and of everything that depends on
 them.
+
+Tests that need realistic data use `polylogue-testkit`: `Morrow::build(Set::Main)`
+lays the Morrow example archive (`examples/morrow/`, facts in its
+`FACTS.md`) out where each tool writes, converges the engine over it and
+imports its exports. `view()` and `stored_bytes()` give what laws compare.
+The spec's query examples run against it in
+`crates/polylogue/src/daemon/query/morrow.rs`; examples waiting on unbuilt
+features are listed there with the reason.
 
 The Sinex rebuild proof (`crates/sinex/tests/proof.rs`) runs a real `sinexd`,
 so it is ignored by default. Build `sinexd` and `sinex-schema` in a Sinex

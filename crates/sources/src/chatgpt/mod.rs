@@ -6,7 +6,7 @@
 //! answer is a sibling branch. Every branch is kept, each message pointing
 //! at its parent; `current_node` names the leaf the operator last saw and
 //! becomes an `active_leaf` event. Messages are ordered by their creation
-//! time, then by their place in the mapping (the Python parser's order).
+//! time, then by their place in the tree (a walk through `children`).
 //!
 //! Tool use is spread over messages: an assistant message addressed to a
 //! tool (`recipient` other than `all`) is the call; the `role: tool`
@@ -217,9 +217,12 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
     });
 
     let tree = Tree::new(mapping);
+    let places = tree.places();
     let default_model = string_of(conv, "default_model_slug");
     let mut rows: Vec<(f64, usize, Message)> = Vec::new();
-    for (index, (node_id, node)) in mapping.iter().enumerate() {
+    let mut nodes: Vec<(&String, &Json)> = mapping.iter().collect();
+    nodes.sort_by_key(|(id, _)| places.get(id.as_str()).copied());
+    for (index, (node_id, node)) in nodes.into_iter().enumerate() {
         for path in unaccounted(node, NODE_FIELDS) {
             sink.acc.unread("node", &path);
         }
@@ -246,7 +249,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
             Err(d) => sink.record(&kind, &d),
         }
     }
-    // A message without a time keeps its mapping place among its
+    // A message without a time keeps its place in the tree among its
     // neighbours: it takes the time of the message before it.
     let mut last = f64::MIN;
     for row in &mut rows {
@@ -315,6 +318,48 @@ impl<'a> Tree<'a> {
 
     fn parent(&self, node: &str) -> Option<&'a str> {
         self.nodes.get(node)?.get("parent")?.as_str()
+    }
+
+    /// Each node's place in a walk from the roots through every node's
+    /// `children`, in their listed order: the tree's own order, which no
+    /// JSON object's key order changes. Roots, and nodes no walk reaches,
+    /// follow by ID.
+    fn places(&self) -> HashMap<&'a str, usize> {
+        let mut ids: Vec<&'a str> = self.nodes.keys().map(String::as_str).collect();
+        ids.sort_unstable();
+        let mut place = HashMap::new();
+        for root in ids
+            .iter()
+            .copied()
+            .filter(|n| self.parent(n).is_none_or(|p| !self.nodes.contains_key(p)))
+        {
+            let mut stack = vec![root];
+            while let Some(n) = stack.pop() {
+                if place.contains_key(n) {
+                    continue;
+                }
+                place.insert(n, place.len());
+                if let Some(children) = self
+                    .nodes
+                    .get(n)
+                    .and_then(|v| v.get("children"))
+                    .and_then(Json::as_array)
+                {
+                    stack.extend(
+                        children
+                            .iter()
+                            .rev()
+                            .filter_map(Json::as_str)
+                            .filter(|c| self.nodes.contains_key(*c)),
+                    );
+                }
+            }
+        }
+        for n in ids {
+            let next = place.len();
+            place.entry(n).or_insert(next);
+        }
+        place
     }
 
     /// The message ID a node's message has: its own `id`, else the node's.

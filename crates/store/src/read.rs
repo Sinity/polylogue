@@ -569,6 +569,7 @@ impl Reader<'_> {
     /// statement uses are not bound, so one parameter list serves several
     /// statements of one compiled query.
     pub fn query(&self, sql: &str, params: &[SqlValue]) -> Result<Vec<serde_json::Value>> {
+        crate::fault::check("read.query", sql)?;
         let mut stmt = self.conn().prepare_cached(sql)?;
         let names: Vec<String> = stmt
             .column_names()

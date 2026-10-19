@@ -67,18 +67,6 @@
       {
         "end": 3,
         "message": {
-          "at": "2023-11-14T22:13:22Z",
-          "blocks": [],
-          "id": "chatgpt:branch-message",
-          "parent": "chatgpt:user-message",
-          "role": "assistant",
-          "session": "chatgpt:neutral-empty-native"
-        },
-        "offset": 2
-      },
-      {
-        "end": 4,
-        "message": {
           "blocks": [
             {
               "call_id": "assistant-message",
@@ -93,6 +81,18 @@
           "parent": "chatgpt:assistant-message",
           "prompt_kind": "harness",
           "role": "user",
+          "session": "chatgpt:neutral-empty-native"
+        },
+        "offset": 2
+      },
+      {
+        "end": 4,
+        "message": {
+          "at": "2023-11-14T22:13:22Z",
+          "blocks": [],
+          "id": "chatgpt:branch-message",
+          "parent": "chatgpt:user-message",
+          "role": "assistant",
           "session": "chatgpt:neutral-empty-native"
         },
         "offset": 3

@@ -11,6 +11,7 @@ pub mod blobs;
 pub mod context;
 pub mod excise;
 pub mod export;
+pub mod fault;
 pub mod files;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;

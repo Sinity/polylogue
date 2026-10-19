@@ -572,7 +572,9 @@ impl Inner {
         for b in batches.clone() {
             chains.push(write_bytes(&atx, b, seq)?);
         }
+        crate::fault::check("write.archive_commit", "")?;
         atx.commit()?;
+        crate::fault::check("write.between_commits", "")?;
 
         let itx = self.index.transaction()?;
         let counter = bump_counter(&itx)?;
@@ -583,6 +585,7 @@ impl Inner {
             }
             stats.0 += 1;
         }
+        crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
         self.report.batches += stats.0;
         self.report.messages += stats.1;

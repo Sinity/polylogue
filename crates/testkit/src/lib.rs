@@ -115,7 +115,10 @@ impl Morrow {
 
     pub fn engine_with(&self, config: Config) -> (Engine, ArchiveLock) {
         let (archive, lock) = Archive::open_or_create(&self.root).expect("open the archive");
-        (Engine::new(config, archive).expect("start the engine"), lock)
+        (
+            Engine::new(config, archive).expect("start the engine"),
+            lock,
+        )
     }
 
     /// One pass of the loop, then the set's exports imported.
@@ -149,7 +152,10 @@ impl Morrow {
             .into_iter()
             .filter_map(|s| {
                 let doc = r.session_export(&s.id).expect("export a session")?;
-                Some((s.id.to_string(), serde_json::to_value(doc).expect("serialize")))
+                Some((
+                    s.id.to_string(),
+                    serde_json::to_value(doc).expect("serialize"),
+                ))
             })
             .collect()
     }

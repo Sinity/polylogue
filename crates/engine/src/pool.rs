@@ -309,7 +309,24 @@ fn run(
     };
     let mut extra = Vec::new();
     let parse = (job.origin.open)(&job.path).and_then(|parser| {
-        match parser.step(job.carry.as_ref(), &bytes, job.start) {
+        // A parser that panics loses only its own input (law 63): the panic
+        // becomes this input's failure, and every other input is parsed.
+        let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            polylogue_store::fault::check("parse", &job.path.to_string_lossy())
+                .map_err(|e| e.to_string())?;
+            parser
+                .step(job.carry.as_ref(), &bytes, job.start)
+                .map_err(|e| e.to_string())
+        }))
+        .unwrap_or_else(|panic| {
+            let why = panic
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            Err(format!("the parser panicked: {why}"))
+        });
+        match step {
             Ok((mut step, carry)) => {
                 for blob in std::mem::take(&mut step.output.blobs) {
                     match Piece::prepare_in(blobs, &blob.bytes) {

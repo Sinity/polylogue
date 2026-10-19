@@ -18,17 +18,35 @@ const GAPS: &[(&str, &str)] = &[
     ("3", "cost: pricing is not built (measurement lane)"),
     ("8", "cost: pricing is not built (measurement lane)"),
     ("9", "cost: pricing is not built (measurement lane)"),
-    ("6", "tags: the example's annotation notes are not written by the fixture"),
-    ("7", "tags: the example's annotation notes are not written by the fixture"),
-    ("19", "tags: the example's annotation notes are not written by the fixture"),
-    ("31", "notes: the example's annotation notes are not written by the fixture"),
+    (
+        "6",
+        "tags: the example's annotation notes are not written by the fixture",
+    ),
+    (
+        "7",
+        "tags: the example's annotation notes are not written by the fixture",
+    ),
+    (
+        "19",
+        "tags: the example's annotation notes are not written by the fixture",
+    ),
+    (
+        "31",
+        "notes: the example's annotation notes are not written by the fixture",
+    ),
     (
         "11",
         "Codex is stored one message per item, so #5 and #6 have more messages than FACTS counts",
     ),
-    ("14", "inherited:* does not yet return inherited copies as rows"),
+    (
+        "14",
+        "inherited:* does not yet return inherited copies as rows",
+    ),
     ("21", "seq() does not yet take search words over tool calls"),
-    ("34", "an empty repo: result does not yet list the known repositories"),
+    (
+        "34",
+        "an empty repo: result does not yet list the known repositories",
+    ),
     ("38", "tree_cost is not built"),
 ];
 
@@ -89,7 +107,13 @@ fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(
         }
     };
     match want {
-        Value::Number(n) => differ(rows(v).first().map_or(json!(null), |r| r["count"].clone()).to_string(), n.to_string()),
+        Value::Number(n) => differ(
+            rows(v)
+                .first()
+                .map_or(json!(null), |r| r["count"].clone())
+                .to_string(),
+            n.to_string(),
+        ),
         Value::Array(items) if items.iter().all(Value::is_string) => {
             let got: Vec<String> = rows(v).iter().map(row_session).collect();
             let want: Vec<String> = items.iter().map(s).collect();
@@ -102,8 +126,18 @@ fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(
             let mut got: Vec<String> = rows(v)
                 .iter()
                 .map(|r| match number {
-                    "15" => format!("{} {} {}", row_session(r), r["command"].as_str().unwrap_or(""), r["exit_code"]),
-                    "36" => format!("{} {} {}", s(&r["parent"]), s(&r["child"]), r["how"].as_str().unwrap_or("")),
+                    "15" => format!(
+                        "{} {} {}",
+                        row_session(r),
+                        r["command"].as_str().unwrap_or(""),
+                        r["exit_code"]
+                    ),
+                    "36" => format!(
+                        "{} {} {}",
+                        s(&r["parent"]),
+                        s(&r["child"]),
+                        r["how"].as_str().unwrap_or("")
+                    ),
                     _ => row_session(r),
                 })
                 .collect();
@@ -138,7 +172,11 @@ fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(
                     diffs.push(format!("{k}: got {g}, want {w}"));
                 }
             }
-            if diffs.is_empty() { Ok(()) } else { Err(diffs.join("; ")) }
+            if diffs.is_empty() {
+                Ok(())
+            } else {
+                Err(diffs.join("; "))
+            }
         }
         Value::Object(o) if o.contains_key("outcome") => {
             let mut diffs = Vec::new();
@@ -155,7 +193,11 @@ fn compare(number: &str, got: &Result<Value, Failure>, want: &Value) -> Result<(
             if o.contains_key("known repos") && v.get("known_repos").is_none() {
                 diffs.push("no known repositories listed".into());
             }
-            if diffs.is_empty() { Ok(()) } else { Err(diffs.join("; ")) }
+            if diffs.is_empty() {
+                Ok(())
+            } else {
+                Err(diffs.join("; "))
+            }
         }
         Value::Object(o) => {
             // A grouped count: key → count.
@@ -228,7 +270,13 @@ fn counts_match_the_rows_paged() {
     let mut wrong = Vec::new();
     for key in expected["queries"].as_object().unwrap().keys() {
         let text = key.split_once(' ').unwrap().1;
-        let Ok(first) = run(&r, Ask { page_size: Some(1), ..ask(text) }) else {
+        let Ok(first) = run(
+            &r,
+            Ask {
+                page_size: Some(1),
+                ..ask(text)
+            },
+        ) else {
             continue;
         };
         if first["shape"] == "summary" {
@@ -238,7 +286,15 @@ fn counts_match_the_rows_paged() {
         let mut paged = rows(&first).len() as u64;
         let mut cursor = first["next"].as_str().map(str::to_owned);
         while let Some(c) = cursor {
-            let page = run(&r, Ask { page_size: Some(1), cursor: Some(&c), ..ask(text) }).unwrap();
+            let page = run(
+                &r,
+                Ask {
+                    page_size: Some(1),
+                    cursor: Some(&c),
+                    ..ask(text)
+                },
+            )
+            .unwrap();
             paged += rows(&page).len() as u64;
             cursor = page["next"].as_str().map(str::to_owned);
         }
@@ -270,13 +326,20 @@ fn law_129_a_grouped_result_is_rows() {
         .map(|g| (group_key(g), g["count"].as_u64().unwrap()))
         .collect();
     assert!(all.len() > 2, "{all:?}");
-    let limited: Vec<String> = rows(&q(&r, &format!("{base} | limit 1"))).iter().map(group_key).collect();
+    let limited: Vec<String> = rows(&q(&r, &format!("{base} | limit 1")))
+        .iter()
+        .map(group_key)
+        .collect();
     assert_eq!(limited, [all[0].0.clone()]);
     let mut big: Vec<String> = rows(&q(&r, &format!("{base} | where count >= 6")))
         .iter()
         .map(group_key)
         .collect();
-    let mut want: Vec<String> = all.iter().filter(|(_, c)| *c >= 6).map(|(k, _)| k.clone()).collect();
+    let mut want: Vec<String> = all
+        .iter()
+        .filter(|(_, c)| *c >= 6)
+        .map(|(k, _)| k.clone())
+        .collect();
     big.sort();
     want.sort();
     assert_eq!(big, want);
@@ -304,17 +367,35 @@ fn law_132_three_valued_filters_partition() {
         ("repo:morrow", "repo:unknown"),
     ] {
         let yes: BTreeSet<String> = ids(&q(&r, &format!("kind:* {c}"))).into_iter().collect();
-        let no: BTreeSet<String> = ids(&q(&r, &format!("kind:* NOT {c}"))).into_iter().collect();
-        let unk: BTreeSet<String> = ids(&q(&r, &format!("kind:* {unknown}"))).into_iter().collect();
-        assert!(yes.is_disjoint(&no) && yes.is_disjoint(&unk) && no.is_disjoint(&unk), "{c}: overlap {yes:?} {no:?} {unk:?}");
+        let no: BTreeSet<String> = ids(&q(&r, &format!("kind:* NOT {c}")))
+            .into_iter()
+            .collect();
+        let unk: BTreeSet<String> = ids(&q(&r, &format!("kind:* {unknown}")))
+            .into_iter()
+            .collect();
+        assert!(
+            yes.is_disjoint(&no) && yes.is_disjoint(&unk) && no.is_disjoint(&unk),
+            "{c}: overlap {yes:?} {no:?} {unk:?}"
+        );
         let union: BTreeSet<String> = yes.union(&no).chain(&unk).cloned().collect();
-        assert_eq!(union, all, "{c}: the three results do not cover every session");
+        assert_eq!(
+            union, all,
+            "{c}: the three results do not cover every session"
+        );
     }
     let top: BTreeSet<String> = ids(&q(&r, "sessions")).into_iter().collect();
-    let has: BTreeSet<String> = ids(&q(&r, "sessions where exists tool_call(outcome:error)")).into_iter().collect();
-    let hasnt: BTreeSet<String> = ids(&q(&r, "sessions where NOT exists tool_call(outcome:error)")).into_iter().collect();
+    let has: BTreeSet<String> = ids(&q(&r, "sessions where exists tool_call(outcome:error)"))
+        .into_iter()
+        .collect();
+    let hasnt: BTreeSet<String> = ids(&q(&r, "sessions where NOT exists tool_call(outcome:error)"))
+        .into_iter()
+        .collect();
     assert!(has.is_disjoint(&hasnt), "{has:?} {hasnt:?}");
-    assert_eq!(has.union(&hasnt).cloned().collect::<BTreeSet<_>>(), top, "{has:?} {hasnt:?}");
+    assert_eq!(
+        has.union(&hasnt).cloned().collect::<BTreeSet<_>>(),
+        top,
+        "{has:?} {hasnt:?}"
+    );
 }
 
 /// Law 133: defaults are bound once. A condition every row satisfies,
@@ -326,11 +407,16 @@ fn law_133_a_nested_condition_does_not_drop_a_default() {
     let r = pool.reader().unwrap();
     let count = |text: &str| rows(&q(&r, text))[0]["count"].as_u64().unwrap();
     assert_eq!(count("tool_calls | agg count"), 37);
-    assert_eq!(count("tool_calls where (action:shell OR NOT action:shell) | agg count"), 37);
+    assert_eq!(
+        count("tool_calls where (action:shell OR NOT action:shell) | agg count"),
+        37
+    );
     let chrono = |text: &str| rows(&q(&r, text)).len();
     assert_eq!(chrono(r#"messages where written_by:human "chrono""#), 2);
     assert_eq!(
-        chrono(r#"messages where written_by:human (inherited:true OR NOT inherited:true) "chrono""#),
+        chrono(
+            r#"messages where written_by:human (inherited:true OR NOT inherited:true) "chrono""#
+        ),
         2
     );
 }

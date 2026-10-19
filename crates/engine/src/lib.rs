@@ -176,6 +176,9 @@ struct InputState {
     /// The revision chain whose bytes are stored, when known from the
     /// archive; `None` once this run stored a new chain.
     chain: Option<i64>,
+    /// The file facts and parser version a parse failed at: the input is
+    /// tried again only when its bytes or its parser change (law 63).
+    failed: Option<(FileFacts, u32)>,
 }
 
 /// One input's work in this pass, advanced job by job.
@@ -458,6 +461,7 @@ impl Engine {
                     carry: None,
                     tail: None,
                     chain: k.chain,
+                    failed: None,
                 },
             );
         }
@@ -560,6 +564,7 @@ impl Engine {
                         carry: None,
                         tail: None,
                         chain: None,
+                        failed: None,
                     },
                 );
             }
@@ -626,6 +631,9 @@ impl Engine {
     fn plan(&mut self, path: &Path, now: FileFacts) -> Result<Option<Plan>, EngineError> {
         let obs = self.observation(path, Some(now));
         let st = self.inputs.get_mut(path).expect("tracked input");
+        if st.failed == Some((now, st.origin.parser_version)) {
+            return Ok(None);
+        }
         let parsed = st.origin.support == Support::Parsed;
         let mut change = polylogue_store::blobs::classify(st.facts, Some(now));
         if change == Change::Unchanged && st.stored < now.size {
@@ -811,10 +819,13 @@ impl Engine {
         if let Some(st) = self.inputs.get_mut(&plan.path) {
             st.stored = plan.piece_pos.max(st.stored);
             if plan.failed {
-                // Facts stay old, so the next pass looks again.
+                // Tried again when the bytes or the parser change; the facts
+                // stay old, so a change is still seen as one.
                 st.carry = None;
+                st.failed = plan.facts.map(|f| (f, plan.origin.parser_version));
                 return;
             }
+            st.failed = None;
             let recent = plan
                 .facts
                 .is_some_and(|f| i128::from(now_ms()) * 1_000_000 - f.mtime_ns < KEEP_STATE_NS);
