@@ -12,6 +12,7 @@
 use crate::ast::Unit;
 use crate::compile::ColKind;
 use crate::fields::{self, Aliases, Expr};
+use polylogue_model::SessionKind;
 
 pub struct UnitSpec {
     pub unit: Unit,
@@ -165,6 +166,12 @@ fn turns_from(a: &Aliases) -> String {
     )
 }
 
+/// Sessions another session spawned (subagents, sidechains, compactions)
+/// stay out of a sessions list unless a condition asks about structure.
+fn main_sessions(a: &Aliases) -> String {
+    format!("{}.kind = '{}'", a.s, SessionKind::Main.as_str())
+}
+
 /// Hidden and excised sessions stay out (spec query.md, Defaults).
 const SESSION_VISIBLE: &[Default] = &[
     d(Expr::Fn(not_hidden), &["hidden"], true),
@@ -223,7 +230,7 @@ pub static UNITS: &[UnitSpec] = &[
         text: true,
         defaults: &[
             d(
-                Expr::Template("{s}.kind <> 'subagent'"),
+                Expr::Fn(main_sessions),
                 &[
                     "kind",
                     "parent",

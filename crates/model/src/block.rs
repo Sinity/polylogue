@@ -50,7 +50,42 @@ pub enum Block {
     },
 }
 
+/// A block's variant without its contents: what the index stores as the
+/// block's kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlockKind {
+    Text,
+    Thinking,
+    ToolCall,
+    ToolResult,
+    Image,
+    File,
+    Other,
+}
+
+stored_names!(BlockKind {
+    Text => "text",
+    Thinking => "thinking",
+    ToolCall => "tool_call",
+    ToolResult => "tool_result",
+    Image => "image",
+    File => "file",
+    Other => "other",
+});
+
 impl Block {
+    pub fn kind(&self) -> BlockKind {
+        match self {
+            Block::Text { .. } => BlockKind::Text,
+            Block::Thinking { .. } => BlockKind::Thinking,
+            Block::ToolCall { .. } => BlockKind::ToolCall,
+            Block::ToolResult { .. } => BlockKind::ToolResult,
+            Block::Image(_) => BlockKind::Image,
+            Block::File(_) => BlockKind::File,
+            Block::Other { .. } => BlockKind::Other,
+        }
+    }
+
     /// Prose a person or model wrote, for search and display.
     pub fn text(&self) -> Option<&str> {
         match self {

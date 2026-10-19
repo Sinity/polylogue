@@ -26,23 +26,15 @@ pub enum WorkEdgeKind {
     Produces,
 }
 
-impl WorkNodeKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            WorkNodeKind::Goal => "goal",
-            WorkNodeKind::Attempt => "attempt",
-            WorkNodeKind::Verification => "verification",
-            WorkNodeKind::Artifact => "artifact",
-        }
-    }
-}
+stored_names!(WorkNodeKind {
+    Goal => "goal",
+    Attempt => "attempt",
+    Verification => "verification",
+    Artifact => "artifact",
+});
 
-impl WorkEdgeKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            WorkEdgeKind::Pursues => "pursues",
-            WorkEdgeKind::Checks => "checks",
-            WorkEdgeKind::Produces => "produces",
-        }
-    }
-}
+stored_names!(WorkEdgeKind {
+    Pursues => "pursues",
+    Checks => "checks",
+    Produces => "produces",
+});

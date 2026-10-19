@@ -153,3 +153,39 @@ fn a_query_starting_with_a_command_is_refused() {
     assert!(near.contains("\"brief\""), "{near}");
     assert!(compile(r#""list" repo:x"#, &opts(&[])).is_ok());
 }
+
+/// Every value the model stores in a closed-set column can be queried, and
+/// the field offers no value the model never stores.
+#[test]
+fn every_stored_value_can_be_queried() {
+    use polylogue_model::{
+        BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, LinkKind, PromptKind, Role, SessionKind,
+        WorkNodeKind,
+    };
+    let closed: &[(&str, &[&str])] = &[
+        ("sessions where kind:", SessionKind::NAMES),
+        ("messages where role:", Role::NAMES),
+        ("messages where prompt_kind:", PromptKind::NAMES),
+        ("blocks where kind:", BlockKind::NAMES),
+        ("links where kind:", LINK_KIND_NAMES),
+        ("links where how:", LINK_HOW_NAMES),
+        ("work where kind:", WorkNodeKind::NAMES),
+    ];
+    for (query, names) in closed {
+        for name in *names {
+            c(&format!("{query}{name}"));
+        }
+        let (unit, field) = query.trim_end_matches(':').split_once(" where ").unwrap();
+        let unit = crate::ast::Unit::from_name(unit).unwrap();
+        let offered = crate::fields::lookup(unit, field).unwrap().values.unwrap();
+        assert_eq!(offered, *names, "{query}");
+    }
+    for k in LinkKind::ALL {
+        let (kind, _) = k.columns();
+        c(&format!("sessions where link:{kind}"));
+    }
+    c("sessions where link:fork");
+    c("sessions where link:resume");
+    assert!(compile_err("sessions where kind:chat").contains("kind on sessions is one of"));
+    assert!(compile_err("sessions where link:reference").contains("link is one of"));
+}

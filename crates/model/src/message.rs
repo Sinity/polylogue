@@ -9,6 +9,12 @@ pub enum Role {
     System,
 }
 
+stored_names!(Role {
+    User => "user",
+    Assistant => "assistant",
+    System => "system",
+});
+
 /// What kind of user message this is, so counts of "what the operator
 /// typed" exclude what the harness wrote in the user's name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -26,6 +32,13 @@ pub enum PromptKind {
     /// task, a coordinator's follow-up, a peer agent's message.
     Model,
 }
+
+stored_names!(PromptKind {
+    Prose => "prose",
+    Command => "command",
+    Harness => "harness",
+    Model => "model",
+});
 
 /// One message, stored once, in the session where it originated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
