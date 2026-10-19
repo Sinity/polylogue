@@ -8,7 +8,7 @@ use crate::stage;
 use polylogue_model::Json;
 use polylogue_sources::OriginSpec;
 use polylogue_store::writer::WriterSender;
-use polylogue_store::{Batch, Change, InputKey, Observation, ParseStep, Piece};
+use polylogue_store::{Batch, Change, InputKey, Observation, ParseStep, Piece, Release};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -168,14 +168,31 @@ const GROUP_BYTES: u64 = 64 << 20;
 /// drive took far longer than syncing only our files.
 const DURABILITY: hashed_blobs::Durability = hashed_blobs::Durability::PerFile;
 
-/// A worker's finished jobs whose large blobs are not yet durable.
+/// A worker's finished jobs whose large blobs are not yet durable, each
+/// with the bytes its job holds in flight.
 struct Group<'s> {
     blobs: hashed_blobs::Batch<'s>,
-    held: Vec<(Option<Batch>, Done)>,
+    held: Vec<(Option<Batch>, Done, u64)>,
     bytes: u64,
 }
 
-fn work(shared: &Shared, writer: &WriterSender, store: &hashed_blobs::Store, done: &Sender<Done>) {
+/// Gives `bytes` back to the in-flight budget and wakes waiting submitters.
+fn release(shared: &Shared, bytes: u64) {
+    if bytes == 0 {
+        return;
+    }
+    if let Ok(mut q) = shared.queue.lock() {
+        q.in_flight -= bytes;
+    }
+    shared.room.notify_all();
+}
+
+fn work(
+    shared: &Arc<Shared>,
+    writer: &WriterSender,
+    store: &hashed_blobs::Store,
+    done: &Sender<Done>,
+) {
     let mut group = Group {
         blobs: store.batch(DURABILITY),
         held: Vec::new(),
@@ -208,7 +225,7 @@ fn work(shared: &Shared, writer: &WriterSender, store: &hashed_blobs::Store, don
         let size = job.bytes();
         let live = job.priority == Priority::Live;
         let (batch, result) = run(job, &mut group.blobs, store);
-        group.held.push((batch, result));
+        group.held.push((batch, result, size));
         group.bytes += size;
         if (live || group.bytes >= GROUP_BYTES) && !flush(&mut group, shared, writer, store, done) {
             return;
@@ -221,7 +238,7 @@ fn work(shared: &Shared, writer: &WriterSender, store: &hashed_blobs::Store, don
 /// false when the loop has gone away.
 fn flush<'s>(
     group: &mut Group<'s>,
-    shared: &Shared,
+    shared: &Arc<Shared>,
     writer: &WriterSender,
     store: &'s hashed_blobs::Store,
     done: &Sender<Done>,
@@ -232,10 +249,17 @@ fn flush<'s>(
     } else {
         blobs.commit().map(drop)
     };
-    for (batch, mut result) in group.held.drain(..) {
+    for (batch, mut result, size) in group.held.drain(..) {
         match (&committed, batch) {
-            (Err(e), _) => result.error = Some(format!("store blobs: {e}")),
+            (Err(e), _) => {
+                result.error = Some(format!("store blobs: {e}"));
+                release(shared, size);
+            }
             (Ok(()), Some(mut batch)) => {
+                // The job's bytes stay counted until the writer commits the
+                // batch (or drops it unsent).
+                let owner = Arc::clone(shared);
+                batch.release = Release::new(move || release(&owner, size));
                 let settled = batch
                     .piece
                     .iter_mut()
@@ -249,18 +273,13 @@ fn flush<'s>(
                     Err(e) => result.error = Some(e),
                 }
             }
-            (Ok(()), None) => {}
+            (Ok(()), None) => release(shared, size),
         }
         if done.send(result).is_err() {
             return false;
         }
     }
-    {
-        let mut q = shared.queue.lock().expect("pool lock");
-        q.in_flight -= group.bytes;
-    }
     group.bytes = 0;
-    shared.room.notify_all();
     true
 }
 
@@ -365,6 +384,7 @@ fn run(
         blobs: extra,
         length: job.length,
         parse,
+        release: Release::default(),
     };
     (Some(batch), out)
 }

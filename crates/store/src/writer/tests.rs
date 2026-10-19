@@ -96,6 +96,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             bodies: vec![],
             events: vec![],
         }),
+        release: Release::default(),
     }
 }
 
@@ -503,4 +504,24 @@ fn a_copy_in_a_spawned_session_never_takes_the_message_from_its_origin() {
         assert_eq!(texts(&w, "s"), ["original"], "main first: {main_first}");
         assert!(texts(&w, "agent-c").is_empty(), "main first: {main_first}");
     }
+}
+
+#[test]
+fn a_release_runs_once_when_its_batch_is_dropped() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let released = Arc::new(AtomicU64::new(0));
+    let counter = Arc::clone(&released);
+    let mut b = batch("a", 0, 0, vec![], &[]);
+    b.release = Release::new(move || {
+        counter.fetch_add(7, Ordering::SeqCst);
+    });
+    let copy = b.clone();
+    drop(copy);
+    assert_eq!(released.load(Ordering::SeqCst), 0, "a clone holds nothing");
+    // The writer keeps a batch until its transaction commits, then drops it.
+    let w = world();
+    w.writer.send(b).unwrap();
+    w.writer.flush().unwrap();
+    assert_eq!(released.load(Ordering::SeqCst), 7);
 }

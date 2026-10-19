@@ -15,8 +15,8 @@ use crate::blobs::{Change, FileFacts, Piece, Stored};
 use crate::files::{Archive, open_write};
 use crate::{Result, StoreError};
 use polylogue_model::{
-    Accounting, Block, ErrorReason, Event, Link, Message, MessageRow, Output, PromptKind, Role,
-    Session, SessionId, SessionKind, Timestamp, TitleSource, ToolOutcome,
+    Accounting, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, PromptKind,
+    Role, Session, SessionId, SessionKind, Timestamp, TitleSource, ToolOutcome,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::{HashMap, HashSet};
@@ -107,6 +107,37 @@ impl ParseStep {
         let events: Result<Vec<(String, Vec<u8>)>> =
             self.output.events.iter().map(pack_event).collect();
         self.events = events.unwrap_or_default();
+        self.release_packed();
+    }
+
+    /// Drops the parsed copies of what the packed bodies already hold, so a
+    /// batch waiting for the writer keeps its bulky JSON once, compressed.
+    /// The writer reads only text (for the search index), IDs, outcomes,
+    /// commands, paths and attachment facts from parsed blocks.
+    fn release_packed(&mut self) {
+        let packed_all = self.bodies.len() == self.output.messages.len()
+            && self
+                .bodies
+                .iter()
+                .zip(&self.output.messages)
+                .all(|(b, r)| b.len() == r.message.blocks.len());
+        if packed_all {
+            for row in &mut self.output.messages {
+                for block in &mut row.message.blocks {
+                    match block {
+                        Block::ToolCall { input, .. } => *input = Json::Null,
+                        Block::ToolResult { data, .. } => *data = None,
+                        Block::Other { data, .. } => *data = Json::Null,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if self.events.len() == self.output.events.len() {
+            for e in &mut self.output.events {
+                e.data = Json::Null;
+            }
+        }
     }
 }
 
@@ -179,6 +210,53 @@ pub struct Batch {
     /// The chain's stored length after this batch.
     pub length: u64,
     pub parse: Option<ParseStep>,
+    /// Runs when the writer is done with the batch: after its transaction
+    /// commits (the writer keeps a transaction's batches to retry them one
+    /// at a time), or when a batch is dropped unsent.
+    pub release: Release,
+}
+
+/// A callback that runs once, when the value holding it is dropped. The
+/// parse pool puts one in each batch so a job's bytes stay counted in its
+/// bytes-in-flight limit until the writer has committed the batch; parsed
+/// rows waiting for the writer are memory too. A clone holds nothing.
+#[derive(Default)]
+pub struct Release(Option<Box<dyn FnOnce() + Send>>);
+
+impl Release {
+    pub fn new(f: impl FnOnce() + Send + 'static) -> Self {
+        Self(Some(Box::new(f)))
+    }
+}
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
+    }
+}
+
+impl Clone for Release {
+    fn clone(&self) -> Self {
+        Self(None)
+    }
+}
+
+impl PartialEq for Release {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Release {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Release"
+        } else {
+            "Release(none)"
+        })
+    }
 }
 
 /// What the writer did since the last flush.
@@ -229,6 +307,15 @@ pub(crate) fn unpack_text(packed: &[u8]) -> Result<String> {
 /// commits whenever no batch is waiting.
 const ROWS_PER_TRANSACTION: usize = 50_000;
 
+/// Batches waiting for the writer before senders block.
+const QUEUE: usize = 4;
+
+/// Input bytes a transaction covers before committing. A batch's bytes
+/// stay counted against the parse pool's limit until its transaction
+/// commits ([`Release`]); committing well before that limit lets the pool
+/// keep parsing while the writer commits, instead of the two alternating.
+const BYTES_PER_TRANSACTION: u64 = 128 << 20;
+
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
     /// An empty index is built without syncs (architecture 2: "index.db
@@ -237,7 +324,7 @@ impl Writer {
     /// build. The first flush syncs it and clears the mark; an index still
     /// marked when the archive is next opened is set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
-        let index = open_write(&archive.index_db())?;
+        let index = open_write(&archive.index_db(), crate::files::cache::INDEX_WRITER)?;
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
@@ -256,7 +343,7 @@ impl Writer {
             // mark set and the index is rebuilt.
             index.pragma_update(None, "journal_mode", "memory")?;
         }
-        let archive_conn = open_write(&archive.archive_db())?;
+        let archive_conn = open_write(&archive.archive_db(), crate::files::cache::ARCHIVE_WRITER)?;
         let refused = crate::excise::Refused::load(&archive_conn)?;
         let mut inner = Inner {
             archive: archive_conn,
@@ -266,7 +353,13 @@ impl Writer {
             embeddings_db: archive.embeddings_db(),
             refused,
         };
-        let (tx, rx) = sync_channel::<Msg>(256);
+        // Senders block once a few batches wait. The writer is the slowest
+        // stage of a first build, and a parsed batch holds its rows and
+        // packed bodies; a deep queue let finished batches pile up past
+        // the parse pool's bytes-in-flight limit (8.4 GB on the real
+        // corpus). With a short queue the pool keeps a job's bytes counted
+        // until its batch is queued, so memory stays bounded by that limit.
+        let (tx, rx) = sync_channel::<Msg>(QUEUE);
         let handle = std::thread::Builder::new()
             .name("polylogue-writer".into())
             .spawn(move || inner.run(&rx))?;
@@ -381,30 +474,33 @@ impl Inner {
         while let Ok(first) = rx.recv() {
             let mut group = Vec::new();
             let mut rows = 0;
-            let mut push = |m: Msg, group: &mut Vec<Box<Batch>>, rows: &mut usize| match m {
-                Msg::Batch(b) => {
-                    *rows += weight(&b);
-                    group.push(b);
-                    true
-                }
-                Msg::Flush(reply) => {
-                    flushes.push(reply);
-                    false
-                }
-                Msg::User(request, reply) => {
-                    users.push((request, reply));
-                    false
-                }
-                Msg::Excise(request, store, reply) => {
-                    excisions.push((request, store, reply));
-                    false
-                }
-            };
-            if push(first, &mut group, &mut rows) {
-                while rows < ROWS_PER_TRANSACTION {
+            let mut bytes = 0;
+            let mut push =
+                |m: Msg, group: &mut Vec<Box<Batch>>, rows: &mut usize, bytes: &mut u64| match m {
+                    Msg::Batch(b) => {
+                        *rows += weight(&b);
+                        *bytes += input_bytes(&b);
+                        group.push(b);
+                        true
+                    }
+                    Msg::Flush(reply) => {
+                        flushes.push(reply);
+                        false
+                    }
+                    Msg::User(request, reply) => {
+                        users.push((request, reply));
+                        false
+                    }
+                    Msg::Excise(request, store, reply) => {
+                        excisions.push((request, store, reply));
+                        false
+                    }
+                };
+            if push(first, &mut group, &mut rows, &mut bytes) {
+                while rows < ROWS_PER_TRANSACTION && bytes < BYTES_PER_TRANSACTION {
                     match rx.try_recv() {
                         Ok(m) => {
-                            if !push(m, &mut group, &mut rows) {
+                            if !push(m, &mut group, &mut rows, &mut bytes) {
                                 break;
                             }
                         }
@@ -460,7 +556,7 @@ impl Inner {
         store: &hashed_blobs::Store,
     ) -> Result<crate::excise::Excised> {
         let embeddings = if self.embeddings_db.exists() {
-            let e = open_write(&self.embeddings_db)?;
+            let e = open_write(&self.embeddings_db, crate::files::cache::SETUP)?;
             e.execute_batch("BEGIN IMMEDIATE")?;
             Some(e)
         } else {
@@ -678,6 +774,14 @@ fn without_refused(b: &Batch, r: &crate::excise::Refused) -> Batch {
         .background
         .retain(|u| !r.sessions.contains(&u.session.to_string()));
     out
+}
+
+/// The input bytes a batch was parsed from (or stored, when unparsed).
+fn input_bytes(b: &Batch) -> u64 {
+    match &b.parse {
+        Some(p) => p.parsed_upto.saturating_sub(p.start),
+        None => b.piece.as_ref().map_or(0, |p| p.size),
+    }
 }
 
 fn weight(b: &Batch) -> usize {

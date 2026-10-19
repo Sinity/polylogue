@@ -5,6 +5,8 @@
 //! first_build --home <dir with .claude/projects> --dir <scratch>
 //! ```
 //!
+//! `--max-rss-mb N` fails the run when its peak resident memory exceeds N.
+//!
 //! `--generate-mb` writes a corpus shaped like the operator's: file sizes
 //! drawn from the measured size list (`stat.tsv` from the corpus
 //! measurement: kind, bytes, ...; Claude Code session and subagent rows),
@@ -309,6 +311,15 @@ fn main() {
             .unwrap_or(0)
     };
     let (read_bytes, write_bytes) = (io_field("read_bytes:"), io_field("write_bytes:"));
+    // Peak resident memory of the whole run. Memory must stay bounded by
+    // the parse pool's bytes in flight and the writer's cache, not grow
+    // with the corpus; `--max-rss-mb` fails the run when it does not.
+    let peak_rss_mb = fs::read_to_string("/proc/self/status")
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+        .map_or(0, |kb| kb / 1024);
     let index = dir_size(&archive.index_db()) + dir_size(&root.join("index.db-wal"));
     let stored = dir_size(&archive.archive_db()) + dir_size(&archive.blobs_dir());
     println!(
@@ -326,8 +337,15 @@ fn main() {
             "disk_read_mb": read_bytes as f64 / 1e6,
             "disk_written_mb": write_bytes as f64 / 1e6,
             "written_over_kept": write_bytes as f64 / (index + stored).max(1) as f64,
+            "peak_rss_mb": peak_rss_mb,
             "errors": pass.errors.len(),
             "first_errors": pass.errors.iter().take(5).collect::<Vec<_>>(),
         })
     );
+    if let Some(max) = arg("--max-rss-mb").map(|m| m.parse::<u64>().expect("--max-rss-mb MB")) {
+        assert!(
+            peak_rss_mb <= max,
+            "peak resident memory {peak_rss_mb} MB exceeds {max} MB"
+        );
+    }
 }
