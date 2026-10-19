@@ -17,7 +17,7 @@
 //! it leaves out is listed with the command that shows it.
 
 use polylogue_model::{Note, NoteKind, SessionId, Target, Timestamp};
-use polylogue_store::search::{self, Hit};
+use polylogue_store::search;
 use polylogue_store::{LeftOut, NoteFilter, Reader, StoreError};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -189,7 +189,7 @@ pub fn prepare(
             source,
         } => session_start(reader, cwd, session.as_ref(), *source, delivery_id, now),
         Ask::Takeover { session, .. } => takeover(reader, session, delivery_id),
-        Ask::Recall { text, cwd, .. } => recall(reader, text, cwd.as_deref(), delivery_id),
+        Ask::Recall { text, cwd, .. } => recall(reader, text, cwd.as_deref(), delivery_id, now),
     }
 }
 
@@ -490,17 +490,90 @@ fn takeover(
     })
 }
 
+/// One message a recall found.
+struct Hit {
+    session: String,
+    message: String,
+    /// The index it was found in: `prose` or `output`.
+    index: &'static str,
+    snippet: String,
+}
+
+/// The messages holding every word of `words` in one index, best first,
+/// through the query language, so a recall sees what a query sees; and
+/// whether more than a page matched.
+fn search_index(
+    reader: &Reader<'_>,
+    words: &[String],
+    index: &'static str,
+    now: Timestamp,
+) -> Result<(Vec<Hit>, bool), StoreError> {
+    let terms: Vec<String> = words
+        .iter()
+        .map(|w| match index {
+            "output" => format!("output:\"{w}\""),
+            _ => format!("\"{w}\""),
+        })
+        .collect();
+    let text = format!("messages where {}", terms.join(" "));
+    let out = crate::daemon::query::run(
+        reader,
+        crate::daemon::query::Ask {
+            text: &text,
+            cursor: None,
+            page_size: Some(RECALL_HITS as u64 + 1),
+            why: false,
+            session: None,
+            now: now.unix_ms(),
+            day: polylogue_model::LogicalDay::system(),
+            embeddings: false,
+            near: None,
+            fields: &[],
+        },
+    )
+    .map_err(|f| StoreError::Invalid(format!("recall query {text:?}: {}", f.message)))?;
+    let more = out["count"].as_u64().unwrap_or(0) > RECALL_HITS as u64;
+    let hits = out["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            Some(Hit {
+                session: row["session"].as_str()?.to_owned(),
+                message: row["id"].as_str()?.to_owned(),
+                index,
+                snippet: row["snippet"]["text"].as_str().unwrap_or("").to_owned(),
+            })
+        })
+        .collect();
+    Ok((hits, more))
+}
+
 fn recall(
     reader: &Reader<'_>,
     text_in: &str,
     cwd: Option<&Path>,
     delivery_id: &str,
+    now: Timestamp,
 ) -> Result<Prepared, StoreError> {
     let words = search::words(text_in);
-    let mut hits: Vec<Hit> = search::search(reader, text_in, RECALL_HITS + 1, None)?;
-    let more = hits.len() > RECALL_HITS;
+    // Prose hits first, then tool output, one hit per message.
+    let mut hits: Vec<Hit> = Vec::new();
+    let mut more = false;
+    if !words.is_empty() {
+        for index in ["prose", "output"] {
+            let (found, beyond) = search_index(reader, &words, index, now)?;
+            more |= beyond;
+            for h in found {
+                if !hits.iter().any(|x| x.message == h.message) {
+                    hits.push(h);
+                }
+            }
+        }
+    }
+    more |= hits.len() > RECALL_HITS;
     hits.truncate(RECALL_HITS);
-    // Sessions in the current directory first, then by rank.
+    // Sessions in the current directory first, each group best first.
     let local: Vec<String> = match cwd {
         Some(c) => reader
             .sessions_under(&scope_dirs(c), None, 1000)?
@@ -509,15 +582,11 @@ fn recall(
             .collect(),
         None => Vec::new(),
     };
-    hits.sort_by(|a, b| {
-        let la = local.contains(&a.session_id);
-        let lb = local.contains(&b.session_id);
-        lb.cmp(&la).then(a.rank.total_cmp(&b.rank))
-    });
+    hits.sort_by_key(|h| !local.contains(&h.session));
     let mut sessions: Vec<String> = Vec::new();
     for h in &hits {
-        if !sessions.contains(&h.session_id) {
-            sessions.push(h.session_id.clone());
+        if !sessions.contains(&h.session) {
+            sessions.push(h.session.clone());
         }
     }
 
@@ -549,13 +618,13 @@ fn recall(
             .unwrap_or_else(|| "untitled".into());
         let _ = writeln!(out, "\n{sid}  {}", one_line(&title, 100));
         refs.push(format!("session:{sid}"));
-        for h in hits.iter().filter(|h| &h.session_id == sid) {
+        for h in hits.iter().filter(|h| &h.session == sid) {
             let _ = writeln!(
                 out,
                 "  - ({}) {}  message:{}",
-                h.index, h.snippet, h.message_id
+                h.index, h.snippet, h.message
             );
-            refs.push(format!("message:{}", h.message_id));
+            refs.push(format!("message:{}", h.message));
         }
         // Notes on the session: the operator's as they are, agents'
         // fenced and labelled as an agent's note, never as instructions.

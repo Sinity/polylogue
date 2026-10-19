@@ -146,7 +146,7 @@ pub(crate) fn thinking(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String,
 fn words_in(c: &mut Compiler<'_>, x: &Call<'_, '_>, index: Index) -> Result<String, QueryError> {
     let text = x.value()?;
     let quoted = matches!(x.op, FieldOp::Match(Value::One { quoted: true, .. }));
-    c.text(&[(text, quoted, x.span)], x.scope, index, false)
+    c.text(&[(text, quoted, x.span)], x.scope, index, x.top)
 }
 
 pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {

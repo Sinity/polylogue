@@ -145,7 +145,7 @@ impl<'a> Compiler<'a> {
         self.ctes.push(format!(
             "{cte} AS MATERIALIZED (SELECT rowid AS text_id, bm25({table}) AS rank FROM {table} WHERE {table} MATCH {param})"
         ));
-        if top && index == Index::Prose && self.rank.is_none() {
+        if top && index != Index::Thinking && self.rank.is_none() {
             self.rank = Some(rank);
         }
         Ok(cond)
