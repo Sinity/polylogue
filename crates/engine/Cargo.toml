@@ -17,6 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 zip.workspace = true
+ureq.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -276,12 +276,22 @@ pub static ORIGINS: &[OriginSpec] = &[
         recognize: crate::claude_ai::recognize_design,
         open: crate::claude_ai::open_design,
     },
-    reserved!("ai-studio", Import, []),
+    OriginSpec {
+        name: crate::ai_studio::ORIGIN,
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Spool,
+        framing: Framing::Document,
+        root: crate::ai_studio::ROOT,
+        locations: crate::ai_studio::LOCATIONS,
+        capture: Capture::Bytes,
+        recognize: crate::ai_studio::recognize,
+        open: crate::ai_studio::open,
+    },
     reserved!("gemini-app", Import, []),
     reserved!("grok", Import, []),
     reserved!("otel-genai", Import, []),
     reserved!("openai-chat", Import, []),
-    reserved!("polylogue-export", Import, []),
 ];
 
 pub fn by_name(name: &str) -> Option<&'static OriginSpec> {
