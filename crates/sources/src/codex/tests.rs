@@ -195,7 +195,7 @@ fn usage_lands_on_the_item_before_the_count_with_each_token_counted_once() {
             cache_write: None,
             output: Some(30),
             reasoning: Some(20),
-            service_tier: None,
+            ..Usage::default()
         }
     );
     assert_eq!(msgs[5].usage.input, Some(200));
@@ -538,4 +538,28 @@ fn the_index_names_threads_and_the_history_keeps_prompts() {
     };
     assert_eq!(e.kind, "prompt");
     assert_eq!(e.at.unwrap().unix_ms(), 1_772_359_200_000);
+}
+
+#[test]
+fn the_thread_settings_give_later_usage_its_service_tier() {
+    let mut records = turn();
+    records.insert(
+        1,
+        env(
+            1,
+            "event_msg",
+            json!({"type": "thread_settings",
+                   "thread_settings": {"model": "gpt-6.1-sol", "service_tier": "flex"}}),
+        ),
+    );
+    let mut carry = Carry::default();
+    let step = run(&rollout(), &mut carry, &jsonl(&records), 0).unwrap();
+    let msgs = final_messages(&[step]);
+    let priced: Vec<_> = msgs.iter().filter(|m| !m.usage.is_empty()).collect();
+    assert!(!priced.is_empty());
+    assert!(
+        priced
+            .iter()
+            .all(|m| m.usage.service_tier.as_deref() == Some("flex"))
+    );
 }

@@ -525,3 +525,153 @@ fn a_release_runs_once_when_its_batch_is_dropped() {
     w.writer.flush().unwrap();
     assert_eq!(released.load(Ordering::SeqCst), 7);
 }
+
+fn session_in(id: &str, cwd: &str, repo: Option<&str>) -> Session {
+    let mut s = Session::new(sid(id), SessionKind::Main);
+    s.offer_cwd(cwd);
+    s.repo = repo.map(Into::into);
+    s
+}
+
+fn lookup_batch(input: &str, path: &str, remote: Option<&str>, root: &str) -> Batch {
+    let mut b = batch(input, 0, 0, vec![], &[]);
+    b.input.format = "polylogue-repo-lookup".into();
+    let p = b.parse.as_mut().unwrap();
+    p.output.repo_lookups.push(polylogue_model::RepoLookup {
+        path: path.into(),
+        remote: remote.map(Into::into),
+        root_commit: Some(root.into()),
+    });
+    p.accounting = accounting(1);
+    b
+}
+
+fn repo_of(w: &World, session: &str) -> (Option<String>, Option<String>) {
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let rows = pool
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT repo, repo_root FROM session WHERE id = ?1",
+            &[crate::SqlValue::Text(sid(session).to_string())],
+        )
+        .unwrap();
+    let s = |k: &str| rows[0][k].as_str().map(str::to_owned);
+    (s("repo"), s("repo_root"))
+}
+
+#[test]
+fn sessions_take_the_repository_of_the_nearest_lookup_above_their_cwd() {
+    let w = world();
+    let mut b = batch("i1", 0, 0, vec![], &[]);
+    let out = &mut b.parse.as_mut().unwrap().output;
+    out.sessions
+        .push(session_in("deep", "/work/outer/inner/src", None));
+    out.sessions
+        .push(session_in("outer", "/work/outer/docs", None));
+    out.sessions
+        .push(session_in("near", "/work/outer-sibling", None));
+    out.sessions
+        .push(session_in("own", "/work/outer", Some("git@host:o/own.git")));
+    w.writer.send(b).unwrap();
+    // The lookup arrives after its sessions: the writer joins them then.
+    w.writer
+        .send(lookup_batch(
+            "l1",
+            "/work/outer",
+            Some("https://host/o/outer.git"),
+            "r1",
+        ))
+        .unwrap();
+    w.writer.flush().unwrap();
+    assert_eq!(
+        repo_of(&w, "deep"),
+        (Some("https://host/o/outer.git".into()), Some("r1".into()))
+    );
+    // A path prefix that is not a whole component is another directory.
+    assert_eq!(repo_of(&w, "near"), (None, None));
+    // The session's own record names its repository; the root still joins.
+    assert_eq!(
+        repo_of(&w, "own"),
+        (Some("git@host:o/own.git".into()), Some("r1".into()))
+    );
+    // A nested repository is nearer than the outer one.
+    w.writer
+        .send(lookup_batch("l2", "/work/outer/inner", None, "r2"))
+        .unwrap();
+    w.writer.flush().unwrap();
+    // It has no remote, so the outer remote no longer describes the session.
+    assert_eq!(repo_of(&w, "deep"), (None, Some("r2".into())));
+    assert_eq!(
+        repo_of(&w, "outer"),
+        (Some("https://host/o/outer.git".into()), Some("r1".into()))
+    );
+    // A session written after its lookup joins as it is written.
+    let mut b = batch("i2", 0, 0, vec![], &[]);
+    let out = &mut b.parse.as_mut().unwrap().output;
+    out.sessions.push(session_in("late", "/work/outer/x", None));
+    w.writer.send(b).unwrap();
+    w.writer.flush().unwrap();
+    assert_eq!(
+        repo_of(&w, "late"),
+        (Some("https://host/o/outer.git".into()), Some("r1".into()))
+    );
+}
+
+fn call_message(id: &str, call: &str) -> Message {
+    let mut m = text_message(id, "s", Role::Assistant, "", None);
+    m.blocks = vec![Block::ToolCall {
+        call_id: Some(call.into()),
+        tool: Some("Bash".into()),
+        input: Json::Null,
+        command: Some("cargo test".into()),
+        path: None,
+    }];
+    m
+}
+
+fn reasons(w: &World) -> Vec<(String, String)> {
+    let pool = ReadPool::open(&w.archive).unwrap();
+    pool.reader()
+        .unwrap()
+        .query(
+            "SELECT call_id, outcome_reason FROM tool_call ORDER BY call_id",
+            &[],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["call_id"].as_str().unwrap().to_owned(),
+                r["outcome_reason"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_call_the_session_went_past_without_a_result_will_never_get_one() {
+    let w = world();
+    w.writer
+        .send(batch(
+            "i1",
+            0,
+            0,
+            vec![row(10, call_message("a", "c1"))],
+            &["s"],
+        ))
+        .unwrap();
+    w.writer.flush().unwrap();
+    // The last response's call may still be answered.
+    assert_eq!(reasons(&w), [("c1".into(), "no_result".into())]);
+    let later = vec![row(20, call_message("b", "c2"))];
+    w.writer.send(batch("i1", 0, 100, later, &["s"])).unwrap();
+    w.writer.flush().unwrap();
+    assert_eq!(
+        reasons(&w),
+        [
+            ("c1".into(), "passed_without_result".into()),
+            ("c2".into(), "no_result".into())
+        ]
+    );
+}

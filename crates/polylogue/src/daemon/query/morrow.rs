@@ -15,9 +15,11 @@ const NOW: i64 = 1_791_453_600_000;
 
 /// Examples that do not match yet, by number, with what they wait for.
 const GAPS: &[(&str, &str)] = &[
-    ("3", "cost: pricing is not built (measurement lane)"),
-    ("8", "cost: pricing is not built (measurement lane)"),
-    ("9", "cost: pricing is not built (measurement lane)"),
+    (
+        "3",
+        "cost: the example prices from its own table (FACTS.md), not the published catalog, \
+         and counts Codex usage per response where the archive holds one message per item (see 11)",
+    ),
     (
         "6",
         "tags: the example's annotation notes are not written by the fixture",

@@ -173,3 +173,73 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
         hidden_sessions: hidden_sessions(reader, scope)?,
     })
 }
+
+/// One session's usage at both grains (architecture 1, tokens at two
+/// grains): `physical` counts the responses stored in the session, each
+/// response once across the archive; `logical` counts what the session
+/// shows, the responses it inherited through fork and resume included, so a
+/// resumed session's logical figures repeat its parent's.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SessionUsage {
+    pub session: String,
+    pub physical: Totals,
+    pub logical: Totals,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Totals {
+    /// Model messages counted.
+    pub messages: u64,
+    pub lanes: Lanes,
+    pub api_cost: Money,
+}
+
+/// Usage of each session in the scope (by session key), at both grains.
+pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<SessionUsage>> {
+    let (cond, params) = scope.condition();
+    let conn = reader.conn();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT DISTINCT s.pk, s.id FROM message m JOIN session s ON s.pk = m.session_pk
+         WHERE {cond} ORDER BY s.started_at, s.id"
+    ))?;
+    let sessions: Vec<(i64, String)> = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::with_capacity(sessions.len());
+    for (pk, id) in sessions {
+        let Ok(sid) = polylogue_model::SessionId::parse(&id) else {
+            continue;
+        };
+        let physical = totals(reader, &format!("m.session_pk = {pk}"))?;
+        let keys = reader.logical_message_keys(&sid)?;
+        let list = keys
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let logical = totals(reader, &format!("m.pk IN ({list})"))?;
+        out.push(SessionUsage {
+            session: id,
+            physical,
+            logical,
+        });
+    }
+    Ok(out)
+}
+
+/// Lanes and cost over the model messages a condition on `m` selects. The
+/// condition holds only integer keys the store read itself.
+fn totals(reader: &Reader<'_>, cond: &str) -> Result<Totals> {
+    let x = reader.conn().query_row(
+        &format!("SELECT {LANES} FROM message m WHERE m.role = 'assistant' AND {cond}"),
+        [],
+        |r| row(r, 0),
+    )?;
+    Ok(Totals {
+        messages: x.messages,
+        lanes: x.lanes,
+        api_cost: x.api,
+    })
+}

@@ -292,6 +292,6 @@ fn usage(tokens: Option<&Json>) -> Usage {
         cache_write: None,
         output: n("output"),
         reasoning: n("thoughts"),
-        service_tier: None,
+        ..Usage::default()
     }
 }

@@ -153,6 +153,10 @@ pub struct Carry {
     limits: Option<u64>,
     /// Reasoning effort the current turn asked for.
     effort: Option<String>,
+    /// The service tier the thread runs at (`default`, `flex`, `priority`),
+    /// from its settings; prices follow it.
+    #[serde(default)]
+    tier: Option<String>,
     /// The byte range of the record being read, for events.
     #[serde(skip)]
     current: Option<(u64, u64)>,
@@ -746,7 +750,9 @@ impl Rollout {
             cache_write: n("cache_write_input_tokens").filter(|&w| w > 0),
             output: output.map(|o| o.saturating_sub(reasoning.unwrap_or(0))),
             reasoning,
-            service_tier: None,
+            cache_write_1h: None,
+            service_tier: carry.tier.clone(),
+            speed: None,
         };
         if let Some(open) = &mut carry.open {
             open.message.usage = u;
@@ -816,6 +822,15 @@ impl Rollout {
                 Self::close(carry, out);
                 // Calls do not outlive their turn; commands still running do.
                 carry.calls.clear();
+                self.event(carry, p, sub, at, out)
+            }
+            "thread_settings" => {
+                if let Some(tier) = p
+                    .get("thread_settings")
+                    .and_then(|s| str_field(s, "service_tier"))
+                {
+                    carry.tier = Some(tier.to_owned());
+                }
                 self.event(carry, p, sub, at, out)
             }
             "thread_name_updated" => {
@@ -928,6 +943,9 @@ impl Parser for Rollout {
                     carry.model = Some(model.to_owned());
                 }
                 carry.effort = str_field(p, "effort").map(str::to_owned);
+                if let Some(tier) = str_field(p, "service_tier") {
+                    carry.tier = Some(tier.to_owned());
+                }
                 if let (Some(cwd), Some(s)) = (str_field(p, "cwd"), carry.session.as_mut()) {
                     s.offer_cwd(cwd);
                 }

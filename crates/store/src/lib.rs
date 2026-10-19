@@ -21,6 +21,7 @@ mod live;
 pub mod measure;
 pub mod notes;
 pub mod read;
+mod repos;
 pub mod rows;
 pub mod schema;
 pub mod search;

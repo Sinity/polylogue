@@ -24,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 thiserror = "2"
 blake3 = "1"
+gix = { version = "0.89", default-features = false, features = ["sha1"] }
 zstd = "0.13"
 jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }

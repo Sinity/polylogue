@@ -274,6 +274,9 @@ pub enum MeasureCommand {
     Usage(QueryArgs),
     /// The same report as `usage`: cost sits beside the tokens it prices.
     Cost(QueryArgs),
+    /// Each session's tokens and cost, physical (its own responses) and
+    /// logical (what it shows, inherited responses included).
+    Sessions(QueryArgs),
     /// The 5-hour and weekly subscription windows: burn and forecast.
     Quota,
     /// Tool outcomes: ok, error, no result and unknown, never one rate.
@@ -541,6 +544,7 @@ pub fn run(args: Args) -> ExitCode {
             let (what, query) = match m {
                 MeasureCommand::Usage(a) => ("usage".to_owned(), q(a.query)),
                 MeasureCommand::Cost(a) => ("cost".to_owned(), q(a.query)),
+                MeasureCommand::Sessions(a) => ("sessions".to_owned(), q(a.query)),
                 MeasureCommand::Quota => ("quota".to_owned(), None),
                 MeasureCommand::Outcomes(a) => ("outcomes".to_owned(), q(a.query)),
                 MeasureCommand::Survival { turns, query } => (

@@ -25,6 +25,7 @@ pub mod origin;
 pub mod otel_genai;
 pub mod parse;
 pub mod polylogue_export;
+pub mod repo_lookup;
 pub mod time;
 
 pub use account::{Accounting, Disposition};

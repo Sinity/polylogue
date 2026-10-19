@@ -332,3 +332,20 @@ fn a_session_names_its_plan_once_per_slug() {
         .collect();
     assert_eq!(plans, ["quiet-river", "loud-sea"]);
 }
+
+#[test]
+fn usage_keeps_one_hour_cache_writes_and_the_speed() {
+    let rec = json!({"type":"assistant","uuid":"a1","sessionId":"s1","timestamp":"2026-01-01T00:00:00Z",
+        "message":{"id":"msg_1","role":"assistant","model":"claude-opus-5-5",
+                   "content":[{"type":"text","text":"ok"}],
+                   "usage":{"input_tokens":3,"output_tokens":5,"cache_read_input_tokens":100,
+                            "cache_creation_input_tokens":900,
+                            "cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":900},
+                            "service_tier":"standard","speed":"fast"}}});
+    let step = run(&main_file("s1"), &mut Default::default(), &jsonl(&[rec]), 0).unwrap();
+    let u = &final_messages(&[step])[0].usage;
+    assert_eq!(u.cache_write, Some(900));
+    assert_eq!(u.cache_write_1h, Some(900));
+    assert_eq!(u.service_tier.as_deref(), Some("standard"));
+    assert_eq!(u.speed.as_deref(), Some("fast"));
+}

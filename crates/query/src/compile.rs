@@ -1735,7 +1735,7 @@ impl<'a> Compiler<'a> {
                 if matches!(&op, FieldOp::Match(Value::One { text, quoted: false })
                     if text.eq_ignore_ascii_case("unknown")) =>
             {
-                format!("{s}.repo IS NULL")
+                format!("({s}.repo IS NULL AND {s}.repo_root IS NULL)")
             }
             (Unit::Sessions, "repo") => {
                 let mut parts = vec![];
@@ -1746,7 +1746,7 @@ impl<'a> Compiler<'a> {
                     let tail_git = self.text_param(&format!("%/{}.git", like_escape(&v)));
                     parts.push(format!(
                         "(lower(rtrim({s}.repo, '/')) = {p} OR lower(rtrim({s}.repo, '/')) LIKE {tail} ESCAPE '\\' \
-                         OR lower({s}.repo) LIKE {tail_git} ESCAPE '\\')"
+                         OR lower({s}.repo) LIKE {tail_git} ESCAPE '\\' OR {s}.repo_root = {p})"
                     ));
                 }
                 if parts.is_empty() {
