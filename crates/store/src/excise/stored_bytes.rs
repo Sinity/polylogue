@@ -28,19 +28,63 @@ pub fn stored_blobs_containing(archive: &crate::Archive, needle: &str) -> Result
     Ok(out)
 }
 
+/// Every `table.column` of `index.db` holding `needle` in some row, as
+/// written or as JSON escapes it; compressed values are read unpacked,
+/// and the search vocabularies are checked for its words. How a text
+/// excision is checked afterwards: the answer must be empty.
+pub fn index_columns_containing(archive: &crate::Archive, needle: &str) -> Result<Vec<String>> {
+    let conn = crate::archive::open_read(&archive.index_db())?;
+    let needles = needles(needle);
+    let tables: Vec<String> = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%'
+             AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts_%'
+             AND name NOT LIKE 'tool_call_trigram_%'",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
+    for table in tables {
+        let cols: Vec<String> = conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for col in cols {
+            let mut stmt = conn.prepare(&format!("SELECT \"{col}\" FROM \"{table}\""))?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let bytes = match row.get_ref(0)? {
+                    rusqlite::types::ValueRef::Text(t) => t.to_vec(),
+                    rusqlite::types::ValueRef::Blob(b) => {
+                        zstd::stream::decode_all(b).unwrap_or_else(|_| b.to_vec())
+                    }
+                    _ => continue,
+                };
+                if !find_all(&bytes, &needles).is_empty() {
+                    out.push(format!("{table}.{col}"));
+                    break;
+                }
+            }
+        }
+    }
+    let words = crate::search::words(needle);
+    for vocab in ["fts_vocab_text", "fts_vocab_output"] {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT 1 FROM {vocab} WHERE term = ?1 AND cnt > 0"
+        ))?;
+        for w in &words {
+            if stmt.exists([w])? {
+                out.push(format!("{vocab}.term"));
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The same number of spaces as `n` has bytes.
 pub(super) fn blank(n: &[u8]) -> String {
     " ".repeat(n.len())
-}
-
-pub(super) fn replace_all(s: &str, needles: &[Vec<u8>]) -> String {
-    let mut out = s.to_owned();
-    for n in needles {
-        if let Ok(n) = std::str::from_utf8(n) {
-            out = out.replace(n, &blank(n.as_bytes()));
-        }
-    }
-    out
 }
 
 /// The forms a string takes in stored bytes: as written, and as JSON

@@ -333,14 +333,42 @@ impl Engine {
         })
     }
 
-    /// Runs an excision through the writer, then stops collecting the
-    /// paths it removed ([`polylogue_store::excise`]).
+    /// Runs an excision through the writer, stops collecting the paths it
+    /// removed, and parses the inputs whose rows it cleared again from
+    /// their overwritten stored bytes ([`polylogue_store::excise`]).
     pub fn excise(&mut self, request: ExciseRequest) -> Result<Excised, EngineError> {
         self.load()?;
         let done = self.writer.excise(request, Arc::clone(&self.blobs))?;
         if done.dry_run {
             return Ok(done);
         }
+        let mut plans = Vec::new();
+        let known = if done.inputs_reparsed.is_empty() {
+            Vec::new()
+        } else {
+            self.reads.reader()?.known_inputs(&self.config.machine)?
+        };
+        for k in known {
+            if !done.inputs_reparsed.contains(&k.input_id) {
+                continue;
+            }
+            let path = PathBuf::from(&k.path);
+            if let Some(st) = self.inputs.get_mut(&path) {
+                st.chain = k.chain;
+                st.stored = k.stored;
+                st.parsed_upto = k.parsed_upto;
+                st.carry = None;
+                st.tail = None;
+                st.failed = None;
+            }
+            if let Some(plan) = self.stored_plan(&path)? {
+                plans.push(plan);
+            }
+        }
+        // An input that fails here stays behind its stored bytes, so the
+        // next pass parses it again.
+        self.execute(plans, &mut Pass::default())?;
+        self.writer.derive()?;
         let prefix = format!("{}:", self.config.machine);
         for p in &done.refused_paths {
             if let Some(path) = p.strip_prefix(&prefix) {

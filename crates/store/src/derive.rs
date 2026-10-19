@@ -6,8 +6,9 @@
 //! order. The writer's ingest path stores records only and never writes a
 //! derived row, so a first build and an incremental one derive the same
 //! rows from the same records. Excision needs nothing per derivation: a
-//! removed session takes its rows with it, and an excised text marks its
-//! sessions changed, so their rows are derived again from what is left.
+//! removed session takes its rows with it, and an excised text removes the
+//! sessions built from it, which come back from their inputs parsed again
+//! and are derived anew.
 
 use crate::Result;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};

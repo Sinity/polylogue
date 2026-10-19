@@ -16,9 +16,10 @@
 //!   the loop stops collecting a removed input's paths.
 //! - **Input:** the input whole, with every session only it produced.
 //! - **Text:** every stored occurrence of a string (a leaked secret), as
-//!   written and as JSON escapes it, overwritten with spaces; the index
-//!   texts holding it are removed and the inputs that held it are parsed
-//!   again from the overwritten bytes.
+//!   written and as JSON escapes it, overwritten with spaces. The sessions
+//!   built from those records lose every index row, and their inputs are
+//!   parsed again from the overwritten bytes, so no column list decides
+//!   what is cleaned.
 //!
 //! An excised revision keeps its BLAKE3 (the hash of the bytes as first
 //! observed); its blobs are what it is verified by afterwards.
@@ -35,8 +36,8 @@ mod index_rows;
 mod stored_bytes;
 
 use index_rows::*;
-pub use stored_bytes::stored_blobs_containing;
 use stored_bytes::*;
+pub use stored_bytes::{index_columns_containing, stored_blobs_containing};
 
 /// What to remove.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +117,11 @@ pub struct Excised {
     pub embeddings_deleted: u64,
     /// Paths the loop no longer collects, as `machine:path`.
     pub refused_paths: Vec<String>,
+    /// Text scope: inputs whose rows went, to be parsed again from their
+    /// overwritten stored bytes ([`crate::excise`]); the engine does so
+    /// before the excision returns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs_reparsed: Vec<String>,
     /// Text scope: files on disk (`machine:path`) that still hold the text.
     /// Polylogue never edits them; a later full re-read of one (a rewrite,
     /// a parser version change) would bring the text back into the index
@@ -368,6 +374,8 @@ impl Plan {
         let mut refused = RefusedJson::default();
         let mut delete_files = Vec::new();
         let mut removed_texts: BTreeSet<Vec<u8>> = BTreeSet::new();
+        // Blobs the removed blocks named (inline images, large outputs).
+        let mut session_blobs = BTreeSet::new();
         if !req.dry_run {
             // First, so the `excised` observations can name it; what it
             // refused is filled in at the end.
@@ -387,6 +395,7 @@ impl Plan {
                 &mut refused,
                 &mut delete_files,
                 &mut removed_texts,
+                &mut session_blobs,
             )?;
         }
 
@@ -401,7 +410,6 @@ impl Plan {
 
         // Session rows, before the inputs, so a blob a removed block named
         // can be checked against what remains.
-        let mut session_blobs = BTreeSet::new();
         for (pk, id) in &self.sessions {
             delete_session(
                 t,
@@ -410,7 +418,6 @@ impl Plan {
                 req.dry_run,
                 &mut removed_texts,
                 &mut session_blobs,
-                done,
             )?;
         }
 
@@ -537,6 +544,7 @@ impl Plan {
         refused: &mut RefusedJson,
         delete_files: &mut Vec<BlobHash>,
         removed_texts: &mut BTreeSet<Vec<u8>>,
+        session_blobs: &mut BTreeSet<Vec<u8>>,
     ) -> Result<()> {
         let needles = needles(text);
         // Stored bytes: every plain blob an extent uses.
@@ -573,9 +581,10 @@ impl Plan {
                 delete_files.extend(gone.file);
             }
         }
-        // The index is rewritten in place, not parsed again: a live input is
-        // read from the file on disk, which still holds the text.
-        redact_index(t.index, text, &needles, req.dry_run, removed_texts)?;
+        // The rows parsed from the text go; the caller parses their inputs
+        // again from the overwritten stored bytes.
+        done.inputs_reparsed =
+            clear_for_reparse(t, text, &reparse, req.dry_run, removed_texts, session_blobs)?;
         // Files on disk that held it: Polylogue never edits them; the
         // operator scrubs them.
         let mut on_disk = BTreeSet::new();

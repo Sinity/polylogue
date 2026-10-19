@@ -4,147 +4,152 @@
 
 use super::*;
 
-/// Text scope in `index.db`: every value holding the text gets spaces in
-/// its place: texts (with their search entries), block bodies, tool
-/// inputs and outputs, tool-call commands and paths, event payloads,
-/// titles and provider attributes. Texts that changed are recorded so
-/// their embeddings go.
-pub(super) fn redact_index(
-    i: &Transaction<'_>,
+/// Text scope in `index.db`: rather than overwriting the columns that may
+/// hold the text, every row parsed from records that held it goes, and the
+/// inputs are parsed again from their overwritten stored bytes (the caller
+/// runs that parse). The affected sessions are those parsed from an input
+/// whose bytes held the text, and those whose texts hold it; each loses
+/// every row, and each input it was built from is parsed again, so it
+/// comes back whole and clean. Returns the inputs to parse again. Texts
+/// that held the text are recorded so their embeddings go; the session's
+/// other texts come back with the same hash and keep theirs.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn clear_for_reparse(
+    t: &Transactions<'_, '_>,
     text: &str,
-    needles: &[Vec<u8>],
+    holding: &BTreeSet<String>,
     dry_run: bool,
     removed_texts: &mut BTreeSet<Vec<u8>>,
-) -> Result<()> {
-    let texts: Vec<(i64, Vec<u8>, Vec<u8>, i64)> = i
-        .prepare("SELECT id, hash, body, indexed FROM text")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+    blobs: &mut BTreeSet<Vec<u8>>,
+) -> Result<Vec<String>> {
+    let i = t.index;
+    // Texts holding it, and the sessions whose blocks show them.
+    let texts: Vec<(i64, Vec<u8>, Vec<u8>)> = i
+        .prepare("SELECT id, hash, body FROM text")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    for (id, hash, body, indexed) in texts {
-        let Ok(body) = unpack_text(&body) else {
-            continue;
-        };
-        if !body.contains(text) {
+    let mut held = Vec::new();
+    for (id, hash, body) in texts {
+        if unpack_text(&body).is_ok_and(|b| b.contains(text)) {
+            removed_texts.insert(hash);
+            held.push(id);
+        }
+    }
+    let mut sessions: BTreeSet<(i64, String)> = BTreeSet::new();
+    let mut by_text = i.prepare(
+        "SELECT DISTINCT s.pk, s.id FROM block b JOIN session s ON s.pk = b.session_pk
+         WHERE b.text_id = ?1",
+    )?;
+    for id in &held {
+        for row in by_text.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))? {
+            sessions.insert(row?);
+        }
+    }
+    drop(by_text);
+    let mut by_input = i.prepare(
+        "SELECT DISTINCT s.pk, s.id FROM session s WHERE s.pk IN (
+             SELECT p.session_pk FROM parsed p JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1
+             UNION SELECT e.session_pk FROM event e JOIN input_ref r ON r.pk = e.input_pk WHERE r.id = ?1
+             UNION SELECT m.session_pk FROM message_source ms JOIN message m ON m.pk = ms.message_pk
+                   JOIN input_ref r ON r.pk = ms.input_pk WHERE r.id = ?1)",
+    )?;
+    for input in holding {
+        for row in by_input.query_map([input], |r| Ok((r.get(0)?, r.get(1)?)))? {
+            sessions.insert(row?);
+        }
+    }
+    drop(by_input);
+    // Every input the affected sessions were built from; the rows these
+    // inputs gave other sessions stay, and parsing them again rewrites
+    // them unchanged (every write is an upsert).
+    let mut inputs: BTreeSet<(i64, String)> = BTreeSet::new();
+    let mut of_session = i.prepare(
+        "SELECT pk, id FROM input_ref WHERE pk IN (
+             SELECT input_pk FROM parsed WHERE session_pk = ?1
+             UNION SELECT input_pk FROM session_record WHERE session_pk = ?1
+             UNION SELECT input_pk FROM event WHERE session_pk = ?1
+             UNION SELECT ms.input_pk FROM message_source ms JOIN message m ON m.pk = ms.message_pk
+                   WHERE m.session_pk = ?1
+             UNION SELECT p.input_pk FROM process p JOIN process_session ps ON ps.process_pk = p.pk
+                   WHERE ps.session_pk = ?1
+             UNION SELECT r.input_pk FROM run r JOIN run_session rs ON rs.run_pk = r.pk
+                   WHERE rs.session_pk = ?1
+             UNION SELECT l.input_pk FROM link l WHERE l.child_pk = ?1
+                   OR l.parent_id = (SELECT id FROM session WHERE pk = ?1))",
+    )?;
+    for (pk, _) in &sessions {
+        for row in of_session.query_map([pk], |r| Ok((r.get(0)?, r.get(1)?)))? {
+            inputs.insert(row?);
+        }
+    }
+    drop(of_session);
+    for input in holding {
+        if let Some(pk) = input_pk(i, input)? {
+            inputs.insert((pk, input.clone()));
+        }
+    }
+    if dry_run {
+        return Ok(inputs.into_iter().map(|(_, id)| id).collect());
+    }
+    let mut freed = BTreeSet::new();
+    for (pk, id) in &sessions {
+        let (text_ids, session_blobs) = clear_session(i, *pk, id)?;
+        freed.extend(text_ids);
+        blobs.extend(session_blobs);
+    }
+    // Rows of these inputs that belong to no one session (links,
+    // processes, runs, repository lookups, parse positions), with the
+    // rows that refer to them; parsing the inputs again writes them anew.
+    let tables = columns(i)?;
+    let pks: Vec<i64> = inputs.iter().map(|(pk, _)| *pk).collect();
+    let list = pks
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    for (table, cols) in &tables {
+        if table == "input_ref"
+            || !cols.contains("input_pk")
+            || cols.contains("session_pk")
+            || cols.contains("message_pk")
+        {
             continue;
         }
-        removed_texts.insert(hash);
-        if dry_run {
-            continue;
+        let reference = format!("{table}_pk");
+        if cols.contains("pk") {
+            for (other, other_cols) in &tables {
+                if other_cols.contains(&reference) {
+                    i.execute(
+                        &format!(
+                            "DELETE FROM {other} WHERE {reference} IN
+                             (SELECT pk FROM {table} WHERE input_pk IN ({list}))"
+                        ),
+                        [],
+                    )?;
+                }
+            }
         }
-        let new_body = body.replace(text, &blank(text.as_bytes()));
-        let new_hash = blake3::hash(new_body.as_bytes());
-        let existing: Option<i64> = i
+        i.execute(
+            &format!("DELETE FROM {table} WHERE input_pk IN ({list})"),
+            [],
+        )?;
+    }
+    // Texts no block holds any more, and any text left holding it.
+    freed.extend(held);
+    for tid in freed {
+        let row: Option<i64> = i
             .query_row(
-                "SELECT id FROM text WHERE hash = ?1",
-                [&new_hash.as_bytes()[..]],
+                "SELECT indexed FROM text WHERE id = ?1
+                 AND NOT EXISTS (SELECT 1 FROM block WHERE text_id = ?1)",
+                [tid],
                 |r| r.get(0),
             )
             .optional()?;
-        let new_id = match existing {
-            Some(n) => n,
-            None => {
-                i.execute(
-                    "INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, 0)",
-                    params![
-                        &new_hash.as_bytes()[..],
-                        zstd::bulk::compress(new_body.as_bytes(), 1)?
-                    ],
-                )?;
-                i.last_insert_rowid()
-            }
-        };
-        let folded = polylogue_model::text::fold(&new_body);
-        for (bit, table) in [(1, "text_fts"), (2, "output_fts")] {
-            if indexed & bit != 0 {
-                i.execute(
-                    &format!("INSERT INTO {table}(rowid, body) VALUES (?1, ?2)"),
-                    params![new_id, folded],
-                )?;
-            }
-        }
-        i.execute(
-            "UPDATE text SET indexed = indexed | ?2 WHERE id = ?1",
-            params![new_id, indexed],
-        )?;
-        i.execute(
-            "UPDATE block SET text_id = ?2 WHERE text_id = ?1",
-            params![id, new_id],
-        )?;
-        remove_text(i, id, indexed)?;
-    }
-    if dry_run {
-        return Ok(());
-    }
-    // Compressed JSON columns.
-    for (table, key, col) in [("block", "pk", "body"), ("event", "pk", "data")] {
-        let rows: Vec<(i64, Vec<u8>)> = i
-            .prepare(&format!("SELECT {key}, {col} FROM {table}"))?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (pk, packed) in rows {
-            let Ok(json) = zstd::stream::decode_all(&packed[..]) else {
-                continue;
-            };
-            let Ok(s) = String::from_utf8(json) else {
-                continue;
-            };
-            let new = replace_all(&s, needles);
-            if new != s {
-                i.execute(
-                    &format!("UPDATE {table} SET {col} = ?2 WHERE {key} = ?1"),
-                    params![pk, zstd::bulk::compress(new.as_bytes(), 1)?],
-                )?;
-            }
+        if let Some(indexed) = row {
+            remove_text(i, tid, indexed)?;
         }
     }
-    // Plain text columns.
-    let calls: Vec<(i64, Option<String>, Option<String>)> = i
-        .prepare(
-            "SELECT pk, command, path FROM tool_call WHERE instr(command, ?1) OR instr(path, ?1)",
-        )?
-        .query_map([text], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (pk, command, path) in calls {
-        i.execute(
-            "INSERT INTO tool_call_trigram(tool_call_trigram, rowid, command, path)
-             VALUES ('delete', ?1, ?2, ?3)",
-            params![pk, command, path],
-        )?;
-        let fix = |v: Option<String>| v.map(|s| replace_all(&s, needles));
-        let (command, path) = (fix(command), fix(path));
-        i.execute(
-            "UPDATE tool_call SET command = ?2, path = ?3, command_norm = NULL WHERE pk = ?1",
-            params![pk, command, path],
-        )?;
-        i.execute(
-            "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
-            params![pk, command, path],
-        )?;
-    }
-    for (table, col) in [
-        ("block", "input_json"),
-        ("block", "data_json"),
-        ("message", "attrs_json"),
-        ("session", "title"),
-        ("session", "derived_title"),
-        ("session", "attrs_json"),
-    ] {
-        for n in needles {
-            let Ok(n) = std::str::from_utf8(n) else {
-                continue;
-            };
-            i.execute(
-                &format!(
-                    "UPDATE {table} SET {col} = replace({col}, ?1, ?2) WHERE instr({col}, ?1)"
-                ),
-                params![n, blank(n.as_bytes())],
-            )?;
-        }
-    }
-    // Derived rows may quote the text (work-graph titles, derived titles):
-    // every session is derived again from the blanked records.
-    i.execute("DELETE FROM derive_state", [])?;
-    Ok(())
+    Ok(inputs.into_iter().map(|(_, id)| id).collect())
 }
 
 /// Notes about the removed sessions: targets naming a session or one of its
@@ -347,38 +352,65 @@ pub(super) fn delete_session(
     dry_run: bool,
     removed_texts: &mut BTreeSet<Vec<u8>>,
     blobs: &mut BTreeSet<Vec<u8>>,
-    done: &mut Excised,
 ) -> Result<()> {
     let i = t.index;
+    if dry_run {
+        let hashes: Vec<Vec<u8>> = i
+            .prepare(
+                "SELECT DISTINCT t.hash FROM block b JOIN text t ON t.id = b.text_id
+                 WHERE b.session_pk = ?1 AND NOT EXISTS
+                   (SELECT 1 FROM block o WHERE o.text_id = b.text_id AND o.session_pk <> ?1)",
+            )?
+            .query_map([pk], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        removed_texts.extend(hashes);
+        return Ok(());
+    }
+    let (text_ids, session_blobs) = clear_session(i, pk, id)?;
+    blobs.extend(session_blobs);
+    i.execute(
+        "INSERT INTO removed_session(session_id, changed) VALUES (?1, ?2)
+         ON CONFLICT(session_id) DO UPDATE SET changed = excluded.changed",
+        params![id, t.counter],
+    )?;
+    // Texts no remaining block holds.
+    for tid in text_ids {
+        let row: Option<(Vec<u8>, i64)> = i
+            .query_row(
+                "SELECT hash, indexed FROM text WHERE id = ?1
+                 AND NOT EXISTS (SELECT 1 FROM block WHERE text_id = ?1)",
+                [tid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((hash, indexed)) = row {
+            remove_text(i, tid, indexed)?;
+            removed_texts.insert(hash);
+        }
+    }
+    Ok(())
+}
+
+/// Deletes one session's rows from every `index.db` table that names the
+/// session, its messages or its tool calls, whichever component added the
+/// table. Returns the texts its blocks held and the blobs they named.
+pub(super) fn clear_session(
+    i: &Transaction<'_>,
+    pk: i64,
+    id: &str,
+) -> Result<(Vec<i64>, Vec<Vec<u8>>)> {
     let text_ids: Vec<i64> = i
         .prepare(
             "SELECT DISTINCT text_id FROM block WHERE session_pk = ?1 AND text_id IS NOT NULL",
         )?
         .query_map([pk], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    let block_blobs: Vec<Vec<u8>> = i
+    let blobs: Vec<Vec<u8>> = i
         .prepare(
             "SELECT DISTINCT blob_hash FROM block WHERE session_pk = ?1 AND blob_hash IS NOT NULL",
         )?
         .query_map([pk], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    blobs.extend(block_blobs);
-    if dry_run {
-        for tid in text_ids {
-            let shared: bool = i.query_row(
-                "SELECT EXISTS (SELECT 1 FROM block WHERE text_id = ?1 AND session_pk <> ?2)",
-                params![tid, pk],
-                |r| r.get(0),
-            )?;
-            if !shared {
-                let hash: Vec<u8> =
-                    i.query_row("SELECT hash FROM text WHERE id = ?1", [tid], |r| r.get(0))?;
-                removed_texts.insert(hash);
-            }
-        }
-        let _ = done;
-        return Ok(());
-    }
     // Trigram entries before their tool calls.
     let calls: Vec<(i64, Option<String>, Option<String>)> = i
         .prepare("SELECT pk, command, path FROM tool_call WHERE session_pk = ?1")?
@@ -437,29 +469,7 @@ pub(super) fn delete_session(
     )?;
     i.execute("DELETE FROM message WHERE session_pk = ?1", [pk])?;
     i.execute("DELETE FROM session WHERE pk = ?1", [pk])?;
-    i.execute(
-        "INSERT INTO removed_session(session_id, changed) VALUES (?1, ?2)
-         ON CONFLICT(session_id) DO UPDATE SET changed = excluded.changed",
-        params![id, t.counter],
-    )?;
-    // Texts no remaining block holds.
-    for tid in text_ids {
-        let used: bool = i.query_row(
-            "SELECT EXISTS (SELECT 1 FROM block WHERE text_id = ?1)",
-            [tid],
-            |r| r.get(0),
-        )?;
-        if used {
-            continue;
-        }
-        let (hash, indexed): (Vec<u8>, i64) =
-            i.query_row("SELECT hash, indexed FROM text WHERE id = ?1", [tid], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })?;
-        remove_text(i, tid, indexed)?;
-        removed_texts.insert(hash);
-    }
-    Ok(())
+    Ok((text_ids, blobs))
 }
 
 pub(super) fn remove_text(i: &Transaction<'_>, id: i64, indexed: i64) -> Result<()> {
