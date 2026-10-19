@@ -240,31 +240,53 @@ pub fn changepoints(xs: &[f64], min_len: usize) -> Vec<usize> {
     out
 }
 
-/// A daily series of `metric` over logical days: `tokens`, `api_cost`,
-/// `sessions`, `prompts` or `tool_errors`. A day with no activity is 0.
+/// The daily series: name, the value each message (or row) adds, and the
+/// rows it is read from.
+const DAILY: [(&str, &str, &str); 5] = [
+    (
+        "tokens",
+        "coalesce(m.input_tokens,0)+coalesce(m.cache_read_tokens,0)+coalesce(m.cache_write_tokens,0)
+         +coalesce(m.output_tokens,0)+coalesce(m.reasoning_tokens,0)",
+        "message m",
+    ),
+    ("api_cost", "coalesce(m.cost_nusd, 0) / 1e9", "message m"),
+    ("sessions", "0", "message m"),
+    (
+        "prompts",
+        "(m.written_by = 'human' AND m.prompt_kind = 'prose')",
+        "message m",
+    ),
+    (
+        "tool_errors",
+        "(t.outcome = 'error')",
+        "tool_call t JOIN block b ON b.pk = t.call_block_pk JOIN message m ON m.pk = b.message_pk",
+    ),
+];
+
+const fn daily_names() -> [&'static str; DAILY.len()] {
+    let mut out = [""; DAILY.len()];
+    let mut i = 0;
+    while i < DAILY.len() {
+        out[i] = DAILY[i].0;
+        i += 1;
+    }
+    out
+}
+
+static DAILY_NAMES: [&str; DAILY.len()] = daily_names();
+
+/// The metrics [`daily`] takes.
+pub static DAILY_METRICS: &[&str] = &DAILY_NAMES;
+
+/// A daily series of `metric` (one of [`DAILY_METRICS`]) over logical
+/// days. A day with no activity is 0.
 pub fn daily(reader: &Reader<'_>, scope: &Scope, metric: &str, day: &LogicalDay) -> Result<Series> {
     let (cond, params) = scope.condition();
-    let (expr, from) = match metric {
-        "tokens" => (
-            "coalesce(m.input_tokens,0)+coalesce(m.cache_read_tokens,0)+coalesce(m.cache_write_tokens,0)
-             +coalesce(m.output_tokens,0)+coalesce(m.reasoning_tokens,0)",
-            "message m",
-        ),
-        "api_cost" => ("coalesce(m.cost_nusd, 0) / 1e9", "message m"),
-        "prompts" => (
-            "(m.written_by = 'human' AND m.prompt_kind = 'prose')",
-            "message m",
-        ),
-        "sessions" => ("0", "message m"),
-        "tool_errors" => (
-            "(t.outcome = 'error')",
-            "tool_call t JOIN block b ON b.pk = t.call_block_pk JOIN message m ON m.pk = b.message_pk",
-        ),
-        other => {
-            return Err(crate::StoreError::Invalid(format!(
-                "no daily metric `{other}`: tokens, api_cost, sessions, prompts or tool_errors"
-            )));
-        }
+    let Some((_, expr, from)) = DAILY.iter().find(|(name, _, _)| *name == metric) else {
+        return Err(crate::StoreError::Invalid(format!(
+            "no daily metric `{metric}`: {}",
+            DAILY_METRICS.join(", ")
+        )));
     };
     let mut by_day: BTreeMap<jiff::civil::Date, f64> = BTreeMap::new();
     let mut sessions: BTreeMap<jiff::civil::Date, std::collections::HashSet<i64>> = BTreeMap::new();

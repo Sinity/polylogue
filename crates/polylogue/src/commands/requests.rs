@@ -244,11 +244,10 @@ pub fn setting(_: &Command, v: &Values, _: &Caller) -> Built {
 
 /// `measure WHAT` as the query `QUERY | measure WHAT`.
 pub fn measure(c: &Command, v: &Values, _: &Caller) -> Built {
-    let what = c.name.trim_start_matches("measure ");
-    let what = match what {
-        "survival" if v.flag("turns") => "survival-turns".to_owned(),
-        "daily" => format!("daily:{}", v.text("metric").unwrap_or_default()),
-        other => other.to_owned(),
+    let name = c.name.trim_start_matches("measure ");
+    let what = match v.text("metric") {
+        Some(metric) => format!("{name}:{metric}"),
+        None => name.to_owned(),
     };
     let text = match v.text("query").filter(|q| !q.trim().is_empty()) {
         Some(q) => format!("{q} | measure {what}"),

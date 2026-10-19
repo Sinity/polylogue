@@ -3,17 +3,17 @@
 
 use serde_json::Value;
 
-pub fn render(what: &str, data: &Value) -> String {
-    match what {
-        "quota" => quota(data),
-        "usage" | "cost" => usage(data, ""),
-        "failing" => failing(data),
-        "drift" => drift(data),
-        _ => format!(
-            "{}\n",
-            serde_json::to_string_pretty(data).unwrap_or_default()
-        ),
-    }
+/// Any measurement as indented JSON, for those without a text view.
+pub fn json(data: &Value) -> String {
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(data).unwrap_or_default()
+    )
+}
+
+/// `usage` and `cost`: tokens by kind and cost by model.
+pub fn usage(data: &Value) -> String {
+    usage_at(data, "")
 }
 
 fn time(ms: &Value) -> String {
@@ -58,7 +58,7 @@ fn token_count(l: &Value) -> String {
     }
 }
 
-fn usage(u: &Value, indent: &str) -> String {
+fn usage_at(u: &Value, indent: &str) -> String {
     let l = &u["tokens"];
     let mut out = format!(
         "{indent}{} responses in {} sessions · input {} · cached {} · cache write {} · output {} · reasoning {}\n\
@@ -95,7 +95,7 @@ fn usage(u: &Value, indent: &str) -> String {
     out
 }
 
-fn quota(o: &Value) -> String {
+pub fn quota(o: &Value) -> String {
     let mut out = String::new();
     for t in o["tools"].as_array().into_iter().flatten() {
         out.push_str(t["tool"].as_str().unwrap_or(""));
@@ -150,14 +150,14 @@ fn quota(o: &Value) -> String {
                 }
                 out.push('\n');
             }
-            out.push_str(&usage(&w["usage"], "    "));
+            out.push_str(&usage_at(&w["usage"], "    "));
         }
     }
     out
 }
 
 /// FailingCommand commands grouped by repository, most recent failure first.
-fn failing(data: &Value) -> String {
+pub fn failing(data: &Value) -> String {
     let items = data.as_array().map_or(&[][..], Vec::as_slice);
     if items.is_empty() {
         return "no command's latest run failed\n".into();
@@ -197,7 +197,7 @@ fn failing(data: &Value) -> String {
 }
 
 /// Drift by format: what each parser did not know, newest first.
-fn drift(data: &Value) -> String {
+pub fn drift(data: &Value) -> String {
     let items = data.as_array().map_or(&[][..], Vec::as_slice);
     if items.is_empty() {
         return "every record and field was recognized\n".into();

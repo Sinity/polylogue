@@ -13,10 +13,12 @@ mod requests;
 
 use crate::cli::local;
 use crate::daemon::Request;
+use crate::daemon::measure::{MEASURES, Measure};
 use polylogue_model::SessionId;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::LazyLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -273,11 +275,63 @@ pub const GROUPS: &[Group] = &[
     },
 ];
 
-/// Every command, in the order help lists them.
-pub const COMMANDS: &[Command] = &[
+/// Every command, in the order help lists them: the written ones, with a
+/// `measure NAME` for each measurement after `setting`.
+pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
+    let mut all = WRITTEN.to_vec();
+    let at = all
+        .iter()
+        .position(|c| c.name == "setting")
+        .map_or(all.len(), |i| i + 1);
+    all.splice(at..at, MEASURES.iter().map(measure_command));
+    for c in &mut all {
+        if c.name == "query" {
+            c.help = query_help();
+        }
+    }
+    all
+});
+
+/// `measure NAME`: a sessions query (none for a whole-archive measure),
+/// and the series for one that takes it.
+fn measure_command(m: &'static Measure) -> Command {
+    let mut args: Vec<Arg> = Vec::new();
+    if !m.metrics.is_empty() {
+        args.push(pos("metric", Kind::Choice(m.metrics), "The series"));
+    }
+    args.extend_from_slice(if m.whole_archive {
+        MEASURE_ALL
+    } else {
+        MEASURE_ARGS
+    });
+    Command {
+        name: format!("measure {}", m.name).leak(),
+        help: m.help,
+        args: args.leak(),
+        action: Action::Request(requests::measure),
+        ..CLI
+    }
+}
+
+/// The `query` help, naming every unit and measurement.
+fn query_help() -> &'static str {
+    let units: Vec<&str> = polylogue_query::ast::Unit::all()
+        .map(polylogue_query::ast::Unit::name)
+        .collect();
+    format!(
+        "Run a query: rows of a unit ({}) with stages (`| sort by`, `| group by`, `| matches`). \
+         `| measure WHAT` ends a sessions query with a measurement: {}; unknown figures are null, never 0. \
+         Each answer's `view.cursor` continues `changes where after:CURSOR`",
+        units.join(", "),
+        crate::daemon::measure::names()
+    )
+    .leak()
+}
+
+const WRITTEN: &[Command] = &[
     Command {
         name: "query",
-        help: "Run a query: rows of a unit (sessions, messages, blocks, tool_calls, files, events, notes, links, turns, runs, deliveries, processes, work, changes) with stages (`| sort by`, `| group by`, `| matches`). `| measure WHAT` ends a sessions query with a measurement: usage, cost, sessions, quota, outcomes, failing, drift, unanswered, survival, survival-turns, daily:<tokens|api_cost|sessions|prompts|tool_errors>, process or rhythm; unknown figures are null, never 0. Each answer's `view.cursor` continues `changes where after:CURSOR`",
+        help: "Run a query",
         args: &[
             pos_opt("query", Kind::Rest, "A query, when no subcommand is given"),
             LIMIT,
@@ -559,106 +613,6 @@ pub const COMMANDS: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "measure usage",
-        help: "Tokens by kind and cost by model, over a sessions query or everything",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure cost",
-        help: "The same report as `usage`: cost sits beside the tokens it prices",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure sessions",
-        help: "Each session's tokens and cost, physical (its own responses) and logical (what it shows, inherited responses included)",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure quota",
-        help: "The 5-hour and weekly subscription windows: burn and forecast",
-        args: MEASURE_ALL,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure outcomes",
-        help: "Tool outcomes: ok, error, no result and unknown, never one rate",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure failing",
-        help: "Per repository, the commands whose most recent run failed",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure drift",
-        help: "Record types and fields each format's parser did not know, newest first: where the tools' formats moved",
-        args: MEASURE_ALL,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure unanswered",
-        help: "Time to a session ending on an unanswered prompt (Kaplan-Meier)",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure survival",
-        help: "Time to a session's first failed tool call (Kaplan-Meier)",
-        args: &[
-            opt(
-                "turns",
-                Kind::Bool,
-                "Count human prompts instead of minutes",
-            ),
-            MEASURE_ARGS[0],
-            WHY,
-            CURSOR,
-            FIELDS,
-        ],
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure daily",
-        help: "A daily series with its 7-day baseline and level changes: tokens, api_cost, sessions, prompts or tool_errors",
-        args: &[
-            pos("metric", Kind::Text, "The series"),
-            MEASURE_ARGS[0],
-            WHY,
-            CURSOR,
-            FIELDS,
-        ],
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure process",
-        help: "Which tool call follows which, and what follows a failure",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure rhythm",
-        help: "Prompts by weekday and hour",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
         name: "work",
         help: "The work graph: goals, attempts, verifications and artifacts, by a query over the `work` unit (`polylogue work kind:attempt state:open`)",
         args: QUERY_ARGS,
@@ -845,7 +799,7 @@ pub fn command(name: &str) -> Option<&'static Command> {
 /// with one of these is refused rather than searched for.
 pub fn command_words() -> Vec<String> {
     let mut words: Vec<String> = Vec::new();
-    for c in COMMANDS {
+    for c in COMMANDS.iter() {
         if matches!(c.cli, Cli::Subcommand | Cli::Hidden) {
             let first = c.name.split(' ').next().unwrap_or(c.name);
             if !words.iter().any(|w| w == first) {

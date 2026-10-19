@@ -63,7 +63,7 @@ it.
 | `keep QUERY` | Keep a query's rows, to read back later as `result:<id>`. |
 | `brief`, `takeover SESSION`, `recall WORDS` | Context for a model: the session-start brief, what to take over another session with, and a search of past work with a record of how it searched. |
 | `continue [SESSION]` | Resume a session with its tool's own command; without one, the sessions in this directory that left something open. |
-| `measure usage\|cost\|sessions\|quota\|outcomes\|failing\|drift\|unanswered\|survival\|daily\|process\|rhythm` | Tokens by kind and cost, subscription quota windows, tool outcomes, commands failing now, format drift and other analyses. Unknown figures stay unknown, never 0. |
+| `measure usage\|cost\|sessions\|quota\|outcomes\|failing\|drift\|unanswered\|survival\|survival-turns\|daily\|process\|rhythm` | Tokens by kind and cost, subscription quota windows, tool outcomes, commands failing now, format drift and other analyses. Unknown figures stay unknown, never 0. |
 | `live`, `notices`, `changes`, `work` | Sessions running now, signal notices, what changed since a cursor, the work graph. |
 | `sql STATEMENT` | Read-only SQL over the stable views. |
 | `excise TARGET` | Remove a session, input or text from every file and derived product, for good. |

@@ -91,13 +91,13 @@ pub(super) fn print_plain(request: &Request, data: &serde_json::Value) {
             }
             println!("with context:       {}", line(&data["context_assisted"]));
         }
-        Request::Query { .. } if data["outcome"] == "measure" => print!(
-            "{}",
-            polylogue_render::measures::render(
-                data["measure"].as_str().unwrap_or(""),
-                &data["data"]
-            )
-        ),
+        Request::Query { .. } if data["outcome"] == "measure" => {
+            let text = crate::daemon::measure::find(data["measure"].as_str().unwrap_or(""))
+                .map_or(polylogue_render::measures::json as fn(&_) -> _, |(m, _)| {
+                    m.text
+                });
+            print!("{}", text(&data["data"]));
+        }
         Request::Query { .. } => {
             if matches!(data["shape"].as_str(), Some("rows" | "matches")) {
                 crate::row_numbers::remember(

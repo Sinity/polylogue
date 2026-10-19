@@ -37,7 +37,7 @@ pub fn command() -> clap::Command {
             root = root.arg(clap_arg(a).global(true));
         }
     }
-    for c in COMMANDS {
+    for c in COMMANDS.iter() {
         match c.cli {
             Cli::NoSubcommand => {
                 for a in c.args.iter().filter(|a| !a.global) {

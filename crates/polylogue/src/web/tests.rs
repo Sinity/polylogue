@@ -256,7 +256,7 @@ fn every_http_command_is_served_and_nothing_else() {
     use crate::commands::{COMMANDS, Kind};
     let r = reader();
     rt().block_on(async {
-        for c in COMMANDS {
+        for c in COMMANDS.iter() {
             let path = format!("/api/v1{}", c.http_path());
             let mut object = serde_json::Map::new();
             for a in c.args.iter().filter(|a| a.required && a.default.is_none()) {
