@@ -532,3 +532,25 @@ fn a_spawned_session_pursues_the_task_it_was_given() {
         })]
     );
 }
+
+#[test]
+fn a_spawned_task_skips_harness_wrapper_blocks() {
+    let fork = "<fork-boilerplate>\nYou are a worker fork.\n</fork-boilerplate>\n\nYour directive: fix the parser";
+    assert_eq!(
+        super::task_line(fork).as_deref(),
+        Some("Your directive: fix the parser")
+    );
+    let reminder = "<system-reminder>ctx</system-reminder>\nRun the suite";
+    assert_eq!(super::task_line(reminder).as_deref(), Some("Run the suite"));
+    // Text that merely starts with markup is the task.
+    assert_eq!(
+        super::task_line("<b>fix X</b> please").as_deref(),
+        Some("<b>fix X</b> please")
+    );
+    // An unclosed block still yields its first plain line.
+    assert_eq!(
+        super::task_line("<brief>\nDo the thing").as_deref(),
+        Some("Do the thing")
+    );
+    assert_eq!(super::task_line("\n\n"), None);
+}

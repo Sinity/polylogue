@@ -566,12 +566,56 @@ fn spawned_task(tx: &Transaction<'_>, session_pk: i64) -> Result<Option<String>>
         )?
         .query_row([session_pk], |r| r.get(0))
         .optional()?;
-    Ok(first.map(|b| unpack_text(&b)).transpose()?.and_then(|t| {
-        t.lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .map(|l| l.chars().take(200).collect())
-    }))
+    Ok(first
+        .map(|b| unpack_text(&b))
+        .transpose()?
+        .and_then(|t| task_line(&t)))
+}
+
+/// The first line of a prompt that states the task: harness wrapper blocks
+/// (`<fork-boilerplate>…</fork-boilerplate>`, `<system-reminder>…`) and
+/// lone tags are skipped, never taken as the goal.
+fn task_line(prompt: &str) -> Option<String> {
+    let mut inside: Option<String> = None;
+    // A block that never closes still yields its first plain line.
+    let mut fallback: Option<&str> = None;
+    for line in prompt.lines().map(str::trim) {
+        if let Some(tag) = &inside {
+            if line.starts_with(&format!("</{tag}")) {
+                inside = None;
+            } else if fallback.is_none() && !line.is_empty() && tag_name(line).is_none() {
+                fallback = Some(line);
+            }
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(name) = tag_name(line) {
+            if line.ends_with(&format!("</{name}>")) || name.starts_with('/') {
+                // A whole block on one line, or a stray closing tag.
+                continue;
+            }
+            if line.find('>') == Some(line.len() - 1) {
+                // An opening tag alone on its line: its block ends further down.
+                inside = Some(name.to_owned());
+                continue;
+            }
+        }
+        return Some(line.chars().take(200).collect());
+    }
+    fallback.map(|l| l.chars().take(200).collect())
+}
+
+/// The tag name when a line starts with one (`<name`, `</name`).
+fn tag_name(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix('<')?;
+    let name = rest.split(|c: char| c == '>' || c.is_whitespace()).next()?;
+    let ok = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/'));
+    ok.then_some(name)
 }
 
 /// The check a call ran, as its stage's normalized form: the last stage
