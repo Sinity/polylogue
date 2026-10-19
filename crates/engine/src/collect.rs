@@ -205,6 +205,7 @@ mod tests {
             machine: "m".into(),
             host: "h".into(),
             chunk: 1 << 20,
+            blob_roots: Vec::new(),
         }
     }
 

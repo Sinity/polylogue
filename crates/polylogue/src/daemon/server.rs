@@ -421,6 +421,10 @@ pub fn start(
     let state = config
         .root(polylogue_sources::browser_capture::ROOT)
         .join("polylogue");
+    #[allow(unused_mut)]
+    let mut config = config;
+    #[cfg(feature = "sinex")]
+    crate::sinex::start(&archive, &mut config)?;
     let mut engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
     let writes = engine.writer().map_err(|e| to_io(&e))?;
     let reads = ReadPool::open(&archive).map_err(|e| to_io(&e))?;

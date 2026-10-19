@@ -14,6 +14,7 @@ const FORMATTED: &[&str] = &[
     "polylogue-engine",
     "polylogue-query",
     "polylogue-render",
+    "polylogue-sinex",
     "polylogue",
     "xtask",
 ];
@@ -52,6 +53,9 @@ fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
             &["polylogue-model"]
         }
         "polylogue-engine" => &["polylogue-model", "polylogue-sources", "polylogue-store"],
+        // The Sinex adapter publishes and restores through the store; its
+        // rebuild proof drives the engine.
+        "polylogue-sinex" => &["polylogue-model", "polylogue-store", "polylogue-engine"],
         "polylogue" => &[
             "polylogue-model",
             "polylogue-sources",
@@ -59,6 +63,7 @@ fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
             "polylogue-engine",
             "polylogue-query",
             "polylogue-render",
+            "polylogue-sinex",
         ],
         _ => return None,
     })

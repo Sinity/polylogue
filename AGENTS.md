@@ -12,6 +12,8 @@ operator switches over.
 - `crates/store`: every SQLite connection and write. Nothing else touches SQLite.
 - `crates/engine`: parses provider files outside the writer and hands the
   results to the store.
+- `crates/sinex`: the Sinex backend (`primary` mode), behind the `sinex`
+  feature: publishing archive rows and blobs, restoring an archive.
 - `crates/polylogue`: configuration, the daemon and the CLI. Clients get typed
   store handles, never raw connections.
 - `xtask`: developer checks (`fast`, `check`, `boundaries`).

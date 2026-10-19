@@ -28,6 +28,7 @@ impl World {
             machine: "test-machine".into(),
             host: "test".into(),
             chunk,
+            blob_roots: Vec::new(),
         };
         (Engine::new(config, archive).unwrap(), lock)
     }

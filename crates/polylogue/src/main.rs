@@ -12,6 +12,7 @@ mod hook;
 mod live;
 mod mcp;
 mod pricing;
+#[cfg(feature = "sinex")]
 mod sinex;
 #[cfg(test)]
 mod testworld;

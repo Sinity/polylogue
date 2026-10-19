@@ -219,7 +219,9 @@ impl StoredChain {
         let end = end.min(self.length);
         let mut out = Vec::with_capacity(end.saturating_sub(start) as usize);
         let mut at = start;
-        let first = self.extents.partition_point(|e| e.offset + e.length <= start);
+        let first = self
+            .extents
+            .partition_point(|e| e.offset + e.length <= start);
         for e in &self.extents[first..] {
             if at >= end {
                 break;

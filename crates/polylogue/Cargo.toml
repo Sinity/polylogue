@@ -6,7 +6,13 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# Polylogue on Sinex (primary mode); off in the default build, which then
+# has no NATS dependency.
+sinex = ["dep:polylogue-sinex"]
+
 [dependencies]
+polylogue-sinex = { workspace = true, optional = true }
 polylogue-model.workspace = true
 polylogue-sources.workspace = true
 polylogue-store.workspace = true

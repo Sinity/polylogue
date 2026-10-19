@@ -17,6 +17,7 @@ pub mod fixture;
 pub mod functions;
 pub mod notes;
 pub mod read;
+pub mod rows;
 pub mod schema;
 pub mod search;
 pub mod session_export;

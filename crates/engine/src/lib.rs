@@ -65,6 +65,9 @@ pub struct Config {
     /// is stored and parsed in steps. Not a limit: a record longer than
     /// this doubles the range for its input until it fits.
     pub chunk: u64,
+    /// Further directories stored blobs are read from: in `primary` mode,
+    /// Sinex's content store, which holds the archive's bytes.
+    pub blob_roots: Vec<PathBuf>,
 }
 
 impl Config {
@@ -108,6 +111,7 @@ impl Config {
             machine: read("/etc/machine-id"),
             host: read("/proc/sys/kernel/hostname"),
             chunk: 64 << 20,
+            blob_roots: Vec::new(),
         }
     }
 }
@@ -336,7 +340,7 @@ impl Engine {
         let reads = ReadPool::open(&archive)?;
         let blobs = Arc::new(hashed_blobs::Store::open(
             archive.root.clone(),
-            vec![],
+            config.blob_roots.clone(),
             0o600,
         )?);
         Ok(Self {
@@ -682,8 +686,12 @@ impl Engine {
         if !parsed || st.stored == 0 || !behind {
             return Ok(None);
         }
-        let (input_id, origin, stored, facts) = (st.input_id.clone(), st.origin, st.stored, st.facts);
-        let bytes = self.reads.reader()?.stored_chain(&input_id, chain, stored)?;
+        let (input_id, origin, stored, facts) =
+            (st.input_id.clone(), st.origin, st.stored, st.facts);
+        let bytes = self
+            .reads
+            .reader()?
+            .stored_chain(&input_id, chain, stored)?;
         Ok(Some(Plan {
             path: path.to_path_buf(),
             origin,

@@ -1,0 +1,28 @@
+[package]
+name = "polylogue-sinex"
+description = "Polylogue on Sinex (primary mode): publishing archive rows and input bytes, and restoring an archive from Sinex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+polylogue-store.workspace = true
+hashed-blobs.workspace = true
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "5def7012b7295ff305d63b4f40402c56f35d2ff0" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "5def7012b7295ff305d63b4f40402c56f35d2ff0" }
+async-nats = "0.47"
+tokio = { workspace = true, features = ["rt", "time", "macros"] }
+futures-util = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml = "0.9"
+
+[dev-dependencies]
+polylogue-engine.workspace = true
+tempfile.workspace = true
+devkit = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.3.0", default-features = false, features = ["pg", "nats"] }
+
+[lints]
+workspace = true
