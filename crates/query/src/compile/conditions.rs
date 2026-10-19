@@ -108,6 +108,29 @@ impl<'a> Compiler<'a> {
             self.text_terms.push(word.trim_end_matches('*').to_owned());
             phrases.push(p);
         }
+        let refuse = |unit: Unit| QueryError::Invalid {
+            message: format!(
+                "a search word applies to sessions, messages, blocks and notes, not {}; for tool calls use output:\"…\", command:\"…\" or input:\"…\"",
+                unit.name()
+            ),
+            position: words[0].2.start,
+        };
+        let a = &scope.a;
+        let rows = match units::spec(scope.unit).search {
+            Search::Hits { rows, .. } => rows,
+            Search::Substring(column) => {
+                let mut parts = vec![];
+                for (w, _, _) in words {
+                    let p = self.text_param(w);
+                    parts.push(format!(
+                        "instr(pl_key({}), pl_key({p})) > 0",
+                        a.expand(column)
+                    ));
+                }
+                return Ok(format!("({})", parts.join(" AND ")));
+            }
+            Search::None => return Err(refuse(scope.unit)),
+        };
         let match_text = phrases.join(" AND ");
         let table = match index {
             Index::Output => "output_fts",
@@ -115,93 +138,13 @@ impl<'a> Compiler<'a> {
         };
         let param = self.text_param(&match_text);
         let cte = format!("h{}", self.ctes.len() + 1);
+        let Some((cond, rank)) = rows(a, &units::Hits { cte: &cte, index }) else {
+            self.params.pop();
+            return Err(refuse(scope.unit));
+        };
         self.ctes.push(format!(
             "{cte} AS MATERIALIZED (SELECT rowid AS text_id, bm25({table}) AS rank FROM {table} WHERE {table} MATCH {param})"
         ));
-        let block_kind = match index {
-            Index::Prose => "xb.kind = 'text'",
-            Index::Thinking => "xb.kind = 'thinking'",
-            Index::Output => "xb.kind = 'tool_result'",
-        };
-        let writer = match index {
-            Index::Prose => " AND xm.written_by IN ('human', 'model')",
-            _ => "",
-        };
-        let a = &scope.a;
-        let (cond, rank) = match scope.unit {
-            Unit::Sessions => {
-                let scope_sql = format!(
-                    "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
-                     JOIN message xm ON xm.pk = xb.message_pk \
-                     WHERE {block_kind}{writer} AND xm.inherited_from IS NULL \
-                     AND COALESCE(xm.on_active_path, 1) = 1 \
-                     AND xm.session_pk IN ({})",
-                    fields::subtree(&a.s)
-                );
-                (
-                    format!("EXISTS (SELECT 1 {scope_sql})"),
-                    format!("(SELECT min(h.rank) {scope_sql})"),
-                )
-            }
-            Unit::Messages => {
-                let scope_sql = format!(
-                    "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
-                     WHERE xb.message_pk = {m}.pk AND {block_kind}",
-                    m = a.m
-                );
-                let writer_m = match index {
-                    Index::Prose => format!(" AND {}.written_by IN ('human', 'model')", a.m),
-                    _ => String::new(),
-                };
-                (
-                    format!("(EXISTS (SELECT 1 {scope_sql}){writer_m})"),
-                    format!("(SELECT min(h.rank) {scope_sql})"),
-                )
-            }
-            Unit::Blocks => (
-                format!(
-                    "({b}.text_id IN (SELECT text_id FROM {cte}) AND {})",
-                    block_kind.replace("xb.", &format!("{}.", a.b)),
-                    b = a.b
-                ),
-                format!(
-                    "(SELECT h.rank FROM {cte} h WHERE h.text_id = {}.text_id)",
-                    a.b
-                ),
-            ),
-            Unit::ToolCalls if index == Index::Output => {
-                let scope_sql = format!(
-                    "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id WHERE xb.pk = {t}.result_block_pk",
-                    t = a.t
-                );
-                (
-                    format!("EXISTS (SELECT 1 {scope_sql})"),
-                    format!("(SELECT min(h.rank) {scope_sql})"),
-                )
-            }
-            Unit::Notes => {
-                // Notes are few and live in archive.db: a substring test.
-                self.ctes.pop();
-                self.params.pop();
-                let mut parts = vec![];
-                for (w, _, _) in words {
-                    let p = self.text_param(w);
-                    parts.push(format!("instr(pl_key({}.value), pl_key({p})) > 0", a.row));
-                }
-                return Ok(format!("({})", parts.join(" AND ")));
-            }
-            other => {
-                self.ctes.pop();
-                self.params.pop();
-                return Err(QueryError::Invalid {
-                    message: format!(
-                        "a search word applies to sessions, messages, blocks and notes, not {}; for tool calls use output:\"…\", command:\"…\" or input:\"…\"",
-                        other.name()
-                    ),
-                    position: words[0].2.start,
-                });
-            }
-        };
         if top && index == Index::Prose && self.rank.is_none() {
             self.rank = Some(rank);
         }
@@ -292,6 +235,32 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// The condition tying the rows of `child` to one row of `parent`:
+    /// `key` is that row's key and `session` its session's key. A child
+    /// declares the column naming its parent (`UnitSpec::parents`);
+    /// otherwise the two relate through the session.
+    pub(super) fn under_parent(
+        &mut self,
+        parent: Unit,
+        child: &Scope,
+        key: &str,
+        session: Result<String, QueryError>,
+    ) -> Result<String, QueryError> {
+        let spec = units::spec(child.unit);
+        if let Some((_, column)) = spec.parents.iter().find(|(p, _)| *p == parent) {
+            return Ok(format!("{} = {key}", child.a.expand(column)));
+        }
+        let s = session?;
+        if spec.in_session {
+            Ok(format!(
+                "{} = {s}",
+                child_session_column(child.unit, &child.a)
+            ))
+        } else {
+            self.session_link(child, &format!("SELECT {s}"))
+        }
+    }
+
     /// The rows of a unit without a session alias that relate to the
     /// sessions `sessions` selects.
     pub(super) fn session_link(
@@ -372,8 +341,16 @@ impl<'a> Compiler<'a> {
             return Err(self.unknown_field(field, scope.unit, span));
         };
         let def = fields::lookup(unit, &lower).expect("checked");
-        if def.kind == Kind::Special {
-            return self.custom_field(unit, def.name, op, &Scope { unit, a }, span, top);
+        if let Some(compile) = def.compile {
+            let call = custom_fields::Call {
+                unit,
+                name: def.name,
+                op,
+                scope: &Scope { unit, a },
+                span,
+                top,
+            };
+            return compile(self, &call);
         }
         let expr = def
             .expr(&a, self.opts.clock.now)

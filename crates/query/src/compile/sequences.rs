@@ -15,22 +15,9 @@ impl<'a> Compiler<'a> {
             unit,
             a: self.fresh(),
         };
-        let link = match (scope.unit, unit) {
-            (Unit::Messages, Unit::Blocks) => {
-                format!("{}.message_pk = {}.pk", child.a.b, scope.a.m)
-            }
-            (Unit::Messages, Unit::ToolCalls) => {
-                format!("{}.message_pk = {}.pk", child.a.cb, scope.a.m)
-            }
-            _ if fields::has_session(unit) => {
-                let s = self.session_alias(scope, span)?;
-                format!("{} = {s}.pk", child_session_column(unit, &child.a))
-            }
-            _ => {
-                let s = self.session_alias(scope, span)?;
-                self.session_link(&child, &format!("SELECT {s}.pk"))?
-            }
-        };
+        let key = scope.a.expand(units::spec(scope.unit).key);
+        let session = self.session_alias(scope, span).map(|s| format!("{s}.pk"));
+        let link = self.under_parent(scope.unit, &child, &key, session)?;
         let top = top_level(cond);
         let mut w = self.defaults(&child, &top);
         w.push(link);
@@ -124,22 +111,9 @@ impl<'a> Compiler<'a> {
             unit,
             a: self.fresh(),
         };
-        let link = match (owner.unit, unit) {
-            (Unit::Messages, Unit::Blocks) => {
-                format!("{}.message_pk = {}.pk", child.a.b, owner.a.m)
-            }
-            (Unit::Messages, Unit::ToolCalls) => {
-                format!("{}.message_pk = {}.pk", child.a.cb, owner.a.m)
-            }
-            _ if fields::has_session(unit) => {
-                let s = self.session_alias(owner, span)?;
-                format!("{} = {s}.pk", child_session_column(unit, &child.a))
-            }
-            _ => {
-                let s = self.session_alias(owner, span)?;
-                self.session_link(&child, &format!("SELECT {s}.pk"))?
-            }
-        };
+        let key = owner.a.expand(units::spec(owner.unit).key);
+        let session = self.session_alias(owner, span).map(|s| format!("{s}.pk"));
+        let link = self.under_parent(owner.unit, &child, &key, session)?;
         let mut w = self.defaults(&child, &top_level(cond));
         w.push(link);
         w.push(self.cond(cond, &child, false)?);

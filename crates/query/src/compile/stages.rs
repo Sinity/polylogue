@@ -312,20 +312,15 @@ impl<'a> Compiler<'a> {
                 kind,
             });
         }
-        let parent_link = match (parent.unit, child.unit) {
-            (Unit::Sessions, u) if fields::has_session(u) => {
-                format!("{} = ?PARENT", child_session_column(u, &sc.a))
-            }
-            (Unit::Messages, Unit::Blocks) => format!("{}.message_pk = ?PARENT", sc.a.b),
-            (Unit::Messages, Unit::ToolCalls) => format!("{}.message_pk = ?PARENT", sc.a.cb),
-            (Unit::Sessions, _) => self.session_link(&sc, "SELECT ?PARENT")?,
-            (p, c) => {
-                return Err(not_built(
-                    &format!("attaching {} to {}", c.name(), p.name()),
-                    "architecture 7, query language",
-                ));
-            }
+        let session = if parent.unit == Unit::Sessions {
+            Ok("?PARENT".to_owned())
+        } else {
+            Err(not_built(
+                &format!("attaching {} to {}", child.unit.name(), parent.unit.name()),
+                "architecture 7, query language",
+            ))
         };
+        let parent_link = self.under_parent(parent.unit, &sc, "?PARENT", session)?;
         w.push(parent_link);
         let ctes = if self.ctes.is_empty() {
             String::new()

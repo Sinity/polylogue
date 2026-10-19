@@ -13,6 +13,9 @@
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 
 query = { SOI ~ (unit_query ~ EOI | expr_query ~ EOI | EOI) }
+// The same query read as conditions on sessions, for a first word that
+// parsed as a unit but names none.
+conditions_query = { SOI ~ expr_query ~ EOI }
 
 // `messages where …`, or a bare unit selecting all its rows.
 unit_query = { unit ~ (kw_where ~ expr)? ~ attach? ~ stages }
@@ -21,17 +24,10 @@ expr_query = { !(unit ~ kw_where) ~ expr ~ attach? ~ stages }
 
 stages = { ("|" ~ stage)* }
 
-unit = ${
-    (^"sessions" | ^"messages" | ^"blocks" | ^"tool_calls" | ^"files" | ^"events"
-     | ^"notes" | ^"links" | ^"turns" | ^"runs" | ^"deliveries" | ^"processes" | ^"work"
-     | ^"changes")
-    ~ !ident_char
-}
-row_unit = ${
-    (^"message" | ^"block" | ^"tool_call" | ^"file" | ^"event" | ^"note" | ^"link"
-     | ^"turn" | ^"run" | ^"delivery" | ^"process" | ^"work")
-    ~ !ident_char
-}
+// A unit name, plural or singular. Any identifier parses here; the parser
+// resolves it through the unit registry (`Unit::from_name`), and a lone
+// word that names no unit is searched as text instead.
+unit = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* ~ !ident_char }
 
 ident_char = _{ ASCII_ALPHANUMERIC | "_" | "-" | "." }
 
@@ -68,7 +64,7 @@ atom = {
   | text
 }
 
-exists = { kw_exists ~ row_unit ~ "(" ~ expr ~ ")" }
+exists = { kw_exists ~ unit ~ "(" ~ expr ~ ")" }
 
 seq       = { kw_seq ~ "(" ~ step ~ (arrow ~ step)+ ~ ")" }
 arrow     = { "->" ~ gap? }

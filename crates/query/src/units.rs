@@ -1,7 +1,9 @@
 //! The unit registry: everything about a query unit, declared once. The
-//! compiler reads a unit's table, key, default columns, order, defaults,
-//! time window and relations from here; the fields each unit accepts are in
-//! [`crate::fields::FIELDS`]. Adding a unit is adding one [`UnitSpec`].
+//! parser resolves unit names here; the compiler reads a unit's table, key,
+//! default columns, order, defaults, time window, relations, text search
+//! and parent rows from here; the fields each unit accepts are in
+//! [`crate::fields::FIELDS`]. Adding a unit is adding its [`Unit`] variant
+//! and one [`UnitSpec`].
 //!
 //! Templates name the unit's aliases as `{s}` session, `{m}` message, `{b}`
 //! block, `{t}` tool call, `{cb}` its call block and `{r}` the unit's own
@@ -40,11 +42,134 @@ pub struct UnitSpec {
     /// For a unit not in one session: its rows related to the sessions
     /// `{sessions}` selects.
     pub session_scope: Option<&'static str>,
-    /// Plain words search this unit's text.
-    pub text: bool,
+    /// How words search this unit's rows.
+    pub search: Search,
     /// Filters every query of the unit applies (spec query.md, Defaults).
     pub defaults: &'static [Default],
     pub relations: &'static [Relation],
+    /// The column tying a row to a parent row of another unit, for
+    /// `exists` and attached rows: a block's or tool call's message. Rows
+    /// of a unit not listed relate through their session.
+    pub parents: &'static [(Unit, &'static str)],
+}
+
+/// Which full-text index a term searches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Index {
+    /// `text` blocks written by a person or a model.
+    Prose,
+    /// `thinking` blocks.
+    Thinking,
+    /// Tool output.
+    Output,
+}
+
+/// How words search a unit's rows.
+pub enum Search {
+    /// Words do not search this unit.
+    None,
+    /// Full-text hits related to the row, as a condition and a rank (lower
+    /// is better), or `None` when the index does not apply to the unit.
+    /// With `words`, plain words search it; otherwise only `output:` and
+    /// `thinking:` do.
+    Hits {
+        words: bool,
+        rows: fn(&Aliases, &Hits<'_>) -> Option<(String, String)>,
+    },
+    /// Each word is a substring of this column: notes are few and live in
+    /// archive.db, outside the full-text index.
+    Substring(&'static str),
+}
+
+/// The full-text hits of one search: the CTE of `(text_id, rank)` and the
+/// index searched.
+pub struct Hits<'a> {
+    pub cte: &'a str,
+    pub index: Index,
+}
+
+impl Hits<'_> {
+    /// The condition that block alias `b` is of the index's kind.
+    pub fn block_kind(&self, b: &str) -> String {
+        let kind = match self.index {
+            Index::Prose => "text",
+            Index::Thinking => "thinking",
+            Index::Output => "tool_result",
+        };
+        format!("{b}.kind = '{kind}'")
+    }
+
+    /// For prose, the condition that message alias `m` was written by a
+    /// person or a model, after ` AND `; empty for the other indexes.
+    pub fn writer(&self, m: &str) -> String {
+        match self.index {
+            Index::Prose => format!(" AND {m}.written_by IN ('human', 'model')"),
+            _ => String::new(),
+        }
+    }
+}
+
+fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
+    let from = format!(
+        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
+         JOIN message xm ON xm.pk = xb.message_pk \
+         WHERE {}{} AND xm.inherited_from IS NULL \
+         AND COALESCE(xm.on_active_path, 1) = 1 \
+         AND xm.session_pk IN ({})",
+        h.block_kind("xb"),
+        h.writer("xm"),
+        fields::subtree(&a.s),
+        cte = h.cte
+    );
+    Some((
+        format!("EXISTS (SELECT 1 {from})"),
+        format!("(SELECT min(h.rank) {from})"),
+    ))
+}
+
+fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
+    let from = format!(
+        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
+         WHERE xb.message_pk = {m}.pk AND {}",
+        h.block_kind("xb"),
+        cte = h.cte,
+        m = a.m
+    );
+    Some((
+        format!("(EXISTS (SELECT 1 {from}){})", h.writer(&a.m)),
+        format!("(SELECT min(h.rank) {from})"),
+    ))
+}
+
+fn blocks_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
+    Some((
+        format!(
+            "({b}.text_id IN (SELECT text_id FROM {cte}) AND {})",
+            h.block_kind(&a.b),
+            b = a.b,
+            cte = h.cte
+        ),
+        format!(
+            "(SELECT h.rank FROM {cte} h WHERE h.text_id = {b}.text_id)",
+            b = a.b,
+            cte = h.cte
+        ),
+    ))
+}
+
+fn tool_call_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
+    if h.index != Index::Output {
+        return None;
+    }
+    let from = format!(
+        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id WHERE xb.pk = {t}.result_block_pk",
+        cte = h.cte,
+        t = a.t
+    );
+    Some((
+        format!("EXISTS (SELECT 1 {from})"),
+        format!("(SELECT min(h.rank) {from})"),
+    ))
 }
 
 /// A default filter, dropped when a top-level condition names one of
@@ -227,7 +352,10 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: false,
         session_pk: "{r}.session_pk",
         session_scope: None,
-        text: true,
+        search: Search::Hits {
+            words: true,
+            rows: sessions_hits,
+        },
         defaults: &[
             d(
                 Expr::Fn(main_sessions),
@@ -248,6 +376,7 @@ pub static UNITS: &[UnitSpec] = &[
             d(Expr::Fn(not_excised), &[], false),
         ],
         relations: &[],
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Messages,
@@ -272,9 +401,13 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: true,
         session_pk: "{m}.session_pk",
         session_scope: None,
-        text: true,
+        search: Search::Hits {
+            words: true,
+            rows: messages_hits,
+        },
         defaults: MESSAGE_DEFAULTS,
         relations: MESSAGE_RELATIONS,
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Blocks,
@@ -299,7 +432,10 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: true,
         session_pk: "{b}.session_pk",
         session_scope: None,
-        text: true,
+        search: Search::Hits {
+            words: true,
+            rows: blocks_hits,
+        },
         defaults: MESSAGE_DEFAULTS,
         relations: &[
             rel("session", Unit::Sessions, Via::Same),
@@ -313,6 +449,7 @@ pub static UNITS: &[UnitSpec] = &[
                 },
             ),
         ],
+        parents: &[(Unit::Messages, "{b}.message_pk")],
     },
     UnitSpec {
         unit: Unit::ToolCalls,
@@ -345,7 +482,10 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: true,
         session_pk: "{t}.session_pk",
         session_scope: None,
-        text: false,
+        search: Search::Hits {
+            words: false,
+            rows: tool_call_hits,
+        },
         defaults: &[
             d(
                 Expr::Template("{m}.inherited_from IS NULL"),
@@ -383,6 +523,7 @@ pub static UNITS: &[UnitSpec] = &[
                 },
             ),
         ],
+        parents: &[(Unit::Messages, "{cb}.message_pk")],
     },
     UnitSpec {
         unit: Unit::Files,
@@ -414,9 +555,10 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: true,
         session_pk: "{r}.session_pk",
         session_scope: None,
-        text: false,
+        search: Search::None,
         defaults: SESSION_VISIBLE,
         relations: MESSAGE_RELATIONS,
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Events,
@@ -438,9 +580,10 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: true,
         session_pk: "{r}.session_pk",
         session_scope: None,
-        text: false,
+        search: Search::None,
         defaults: SESSION_VISIBLE,
         relations: MESSAGE_RELATIONS,
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Notes,
@@ -475,7 +618,7 @@ pub static UNITS: &[UnitSpec] = &[
             "EXISTS (SELECT 1 FROM a.note_target snt JOIN session ss ON 'session:' || ss.id = snt.ref \
              WHERE snt.note_id = {r}.id AND ss.pk IN ({sessions}))",
         ),
-        text: true,
+        search: Search::Substring("{r}.value"),
         defaults: &[
             d(
                 Expr::Fn(current_note),
@@ -485,6 +628,7 @@ pub static UNITS: &[UnitSpec] = &[
             d(Expr::Fn(not_withdrawn), &["withdrawn"], false),
         ],
         relations: &[],
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Links,
@@ -510,12 +654,13 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: false,
         session_pk: "{r}.session_pk",
         session_scope: Some("({r}.child_pk IN ({sessions}) OR {r}p.pk IN ({sessions}))"),
-        text: false,
+        search: Search::None,
         defaults: &[],
         relations: &[
             rel("parent", Unit::Sessions, Via::Session("{r}p")),
             rel("child", Unit::Sessions, Via::Session("{r}c")),
         ],
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Turns,
@@ -550,9 +695,10 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: true,
         session_pk: "{r}.session_pk",
         session_scope: None,
-        text: false,
+        search: Search::None,
         defaults: SESSION_VISIBLE,
         relations: MESSAGE_RELATIONS,
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Runs,
@@ -578,7 +724,7 @@ pub static UNITS: &[UnitSpec] = &[
         session_scope: Some(
             "EXISTS (SELECT 1 FROM run_session rs WHERE rs.run_pk = {r}.pk AND rs.session_pk IN ({sessions}))",
         ),
-        text: false,
+        search: Search::None,
         defaults: &[],
         relations: &[
             rel(
@@ -599,6 +745,7 @@ pub static UNITS: &[UnitSpec] = &[
                 },
             ),
         ],
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Deliveries,
@@ -622,12 +769,13 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: true,
         session_pk: "{s}.pk",
         session_scope: None,
-        text: false,
+        search: Search::None,
         defaults: &[d(Expr::Fn(maybe_session_visible), &[], false)],
         relations: &[
             rel("session", Unit::Sessions, Via::Same),
             rel("recipient", Unit::Sessions, Via::Same),
         ],
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Processes,
@@ -652,7 +800,7 @@ pub static UNITS: &[UnitSpec] = &[
         session_scope: Some(
             "EXISTS (SELECT 1 FROM process_session ps WHERE ps.process_pk = {r}.pk AND ps.session_pk IN ({sessions}))",
         ),
-        text: false,
+        search: Search::None,
         defaults: &[],
         relations: &[
             rel(
@@ -673,6 +821,7 @@ pub static UNITS: &[UnitSpec] = &[
                 },
             ),
         ],
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Work,
@@ -700,9 +849,10 @@ pub static UNITS: &[UnitSpec] = &[
              JOIN work_node wa ON wa.pk = we.from_pk \
              WHERE we.to_pk = {r}.pk AND wa.session_pk IN ({sessions})))",
         ),
-        text: false,
+        search: Search::None,
         defaults: &[d(Expr::Fn(maybe_session_visible), &[], false)],
         relations: &[rel("session", Unit::Sessions, Via::Same)],
+        parents: &[],
     },
     UnitSpec {
         unit: Unit::Changes,
@@ -732,9 +882,10 @@ pub static UNITS: &[UnitSpec] = &[
         in_session: false,
         session_pk: "{r}.session_pk",
         session_scope: Some("({r}.kind = 'session' AND {r}.session_pk IN ({sessions}))"),
-        text: false,
+        search: Search::None,
         defaults: &[],
         relations: &[],
+        parents: &[],
     },
 ];
 

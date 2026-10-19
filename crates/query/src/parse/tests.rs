@@ -239,3 +239,36 @@ fn the_empty_query_is_every_session() {
     assert!(matches!(p("").source, Source::Empty));
     assert!(matches!(p("   ").source, Source::Empty));
 }
+
+#[test]
+fn unit_names_resolve_through_the_registry() {
+    for (text, unit) in [
+        ("messages where role:user", Unit::Messages),
+        ("message where role:user", Unit::Messages),
+        ("TOOL_CALLS", Unit::ToolCalls),
+        ("work | count", Unit::Work),
+    ] {
+        match p(text).source {
+            Source::Unit { unit: u, .. } => assert_eq!(u, unit, "{text}"),
+            other => panic!("{text:?}: {other:?}"),
+        }
+    }
+    // A lone word that names no unit is searched.
+    for text in ["crash", "crash | count", "crash with messages(id)"] {
+        assert!(matches!(p(text).source, Source::Sessions { .. }), "{text}");
+    }
+    // A word before `where`, after `exists` or in a stage must be a unit.
+    for (text, fix) in [
+        ("mesages where role:user", Some("messages where role:user")),
+        ("frobs where x:1", None),
+        ("sessions where exists frob(x:1)", None),
+        (
+            "crash | tool_cals where outcome:error",
+            Some("crash | tool_calls where outcome:error"),
+        ),
+    ] {
+        let e = parse(text).unwrap_err();
+        assert!(e.to_string().contains("is not a unit"), "{text}: {e}");
+        assert_eq!(e.suggestion(), fix, "{text}");
+    }
+}

@@ -3,10 +3,9 @@ use crate::fields::FIELDS;
 
 #[test]
 fn every_unit_is_declared_once() {
-    for u in Unit::ALL {
+    for u in Unit::all() {
         assert_eq!(UNITS.iter().filter(|s| s.unit == u).count(), 1, "{u:?}");
     }
-    assert_eq!(UNITS.len(), Unit::ALL.len());
 }
 
 #[test]

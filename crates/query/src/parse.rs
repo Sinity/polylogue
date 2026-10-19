@@ -18,7 +18,19 @@ pub fn parse(text: &str) -> Result<Query, QueryError> {
         return Err(QueryError::TooDeep { max: MAX_DEPTH });
     }
     let mut pairs = Grammar::parse(Rule::query, text).map_err(|e| syntax(text, &e))?;
-    let query = pairs.next().expect("query rule");
+    let mut query = pairs.next().expect("query rule");
+    if let Some(bad) = unknown_unit(query.clone()) {
+        if !lone_word(query.clone(), &bad) {
+            return Err(not_a_unit(text, &bad));
+        }
+        query = Grammar::parse(Rule::conditions_query, text)
+            .map_err(|e| syntax(text, &e))?
+            .next()
+            .expect("conditions_query rule");
+        if let Some(bad) = unknown_unit(query.clone()) {
+            return Err(not_a_unit(text, &bad));
+        }
+    }
     let Some(shape) = query.kids().find(|p| p.as_rule() != Rule::EOI) else {
         return Ok(Query {
             source: Source::Empty,
@@ -144,7 +156,43 @@ fn span(p: &Pair<'_, Rule>) -> Span {
 }
 
 fn unit(p: Pair<'_, Rule>) -> Unit {
-    Unit::from_name(p.as_str().trim()).expect("grammar lists only units")
+    Unit::from_name(p.as_str().trim()).expect("unit names are resolved before the tree is read")
+}
+
+/// The first unit name in the tree that names no unit.
+fn unknown_unit(p: Pair<'_, Rule>) -> Option<Pair<'_, Rule>> {
+    p.into_inner()
+        .flatten()
+        .find(|q| q.as_rule() == Rule::unit && Unit::from_name(q.as_str().trim()).is_none())
+}
+
+/// Whether `bad` is the first word of a query with no `where` after it, so
+/// the word is meant as text (`crash`, `crash | count`).
+fn lone_word(query: Pair<'_, Rule>, bad: &Pair<'_, Rule>) -> bool {
+    let Some(shape) = query.kids().find(|p| p.as_rule() == Rule::unit_query) else {
+        return false;
+    };
+    let mut kids = shape.kids();
+    kids.next().is_some_and(|u| u.as_span() == bad.as_span())
+        && kids.all(|k| k.as_rule() != Rule::expr)
+}
+
+fn not_a_unit(text: &str, bad: &Pair<'_, Rule>) -> QueryError {
+    let word = bad.as_str().trim();
+    let lower = word.to_ascii_lowercase();
+    let near = Unit::all()
+        .flat_map(|u| [u.name(), u.singular()])
+        .map(|n| (strsim::damerau_levenshtein(&lower, n), n))
+        .filter(|(d, n)| *d <= 2.max(n.len() / 4))
+        .min_by_key(|(d, _)| *d);
+    let start = bad.as_span().start();
+    let names: Vec<&str> = Unit::all().map(Unit::name).collect();
+    QueryError::syntax(
+        text,
+        start,
+        format!("{word:?} is not a unit; the units are {}", names.join(", ")),
+        near.map(|(_, n)| format!("{}{n}{}", &text[..start], &text[bad.as_span().end()..])),
+    )
 }
 
 fn number(p: Pair<'_, Rule>) -> u64 {
@@ -599,7 +647,7 @@ fn rule_name(r: Rule) -> Option<&'static str> {
         Rule::mvalue | Rule::bare | Rule::scalar => "a value",
         Rule::quoted | Rule::inner => "a closing quote",
         Rule::number => "a number",
-        Rule::unit | Rule::row_unit => "a unit name",
+        Rule::unit => "a unit name",
         Rule::stage => "a stage",
         Rule::step | Rule::step_atom => "a step",
         Rule::duration => "a duration such as 5m",

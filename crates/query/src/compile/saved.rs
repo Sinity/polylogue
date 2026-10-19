@@ -111,9 +111,7 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
     };
     let stages = format!("sessions {rest}");
     let query = parse(&stages)?;
-    let unit = Unit::ALL
-        .iter()
-        .copied()
+    let unit = Unit::all()
         .find(|u| u.name() == kept.unit)
         .unwrap_or(Unit::Sessions);
     let mut c = Compiler::new(text, opts);
