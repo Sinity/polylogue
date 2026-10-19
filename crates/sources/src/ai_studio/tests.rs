@@ -104,6 +104,29 @@ fn inline_bytes_are_stored_and_drive_files_keep_their_id() {
 }
 
 #[test]
+fn code_and_images_inside_parts_are_read() {
+    let bytes = prompt(vec![json!({"role": "model", "text": "plot", "parts": [
+        {"text": "plot"},
+        {"executableCode": {"language": "PYTHON", "code": "plot()"}},
+        {"codeExecutionResult": {"outcome": "OUTCOME_FAILED", "output": "boom"}},
+        {"inlineData": {"mimeType": "image/png", "data": "aGVsbG8="}}
+    ], "safetyRatings": [], "thoughtSignatures": ["s"], "isEdited": true})]);
+    let step = parse("p", &bytes);
+    let m = &step.output.messages[1].message;
+    assert!(matches!(&m.blocks[1], Block::ToolCall { call_id: Some(c), .. } if c == "p#0:code1"));
+    assert!(matches!(
+        &m.blocks[2],
+        Block::ToolResult { call_id: Some(c), outcome: ToolOutcome::Error { .. }, .. } if c == "p#0:code1"
+    ));
+    assert!(matches!(&m.blocks[3], Block::Image(a) if a.blob.is_some()));
+    assert!(
+        step.accounting.unread_fields.is_empty(),
+        "{:?}",
+        step.accounting.unread_fields
+    );
+}
+
+#[test]
 fn a_branched_prompt_links_to_the_prompt_it_came_from() {
     let bytes = prompt(vec![json!({"role": "user", "text": "go on",
                                    "branchParent": {"promptId": "1Parent"}})]);

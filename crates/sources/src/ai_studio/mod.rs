@@ -108,6 +108,7 @@ const DOCUMENT_FIELDS: Fields = &[
         "chunkedPrompt.pendingInputs",
         Rule::Kept("the unsent draft in the input box"),
     ),
+    ("citations", Rule::Kept("sources the replies cited")),
 ];
 
 const CHUNK_FIELDS: Fields = &[
@@ -119,6 +120,22 @@ const CHUNK_FIELDS: Fields = &[
     ("parts[].text", Rule::Read),
     ("parts[].thought", Rule::Read),
     ("parts[].thoughtSignature", Rule::Read),
+    ("parts[].executableCode", Rule::Read),
+    ("parts[].codeExecutionResult", Rule::Read),
+    ("parts[].inlineData", Rule::Read),
+    (
+        "thoughtSignatures",
+        Rule::Kept("the thoughts' signatures, also read from their parts"),
+    ),
+    ("isEdited", Rule::Kept("the operator edited the chunk")),
+    (
+        "safetyRatings",
+        Rule::Kept("the model's safety classification of the reply"),
+    ),
+    (
+        "videoMetadata",
+        Rule::Kept("the clip range of an attached video"),
+    ),
     ("isThought", Rule::Read),
     ("tokenCount", Rule::Read),
     ("finishReason", Rule::Read),
@@ -307,28 +324,41 @@ impl AiStudio {
 
         let mut blocks = text_blocks(chunk, thought);
         blocks.extend(media_blocks(chunk, role, sink));
-        if let Some(code) = chunk.get("executableCode") {
-            blocks.push(Block::ToolCall {
-                call_id: Some(format!("{native}:code")),
-                tool: Some("code_execution".into()),
-                input: code.clone(),
-                command: string_of(code, "code"),
-                path: None,
-            });
-        }
-        if let Some(result) = chunk.get("codeExecutionResult") {
-            let outcome = match str_of(result, "outcome") {
-                Some("OUTCOME_OK") => ToolOutcome::Ok,
-                Some(_) => ToolOutcome::Error { reason: None },
-                None => ToolOutcome::Ok,
-            };
-            blocks.push(Block::ToolResult {
-                call_id: Some(format!("{native}:code")),
-                outcome,
-                output: string_of(result, "output"),
-                data: Some(result.clone()),
-                attachments: Vec::new(),
-            });
+        // Code execution and generated files sit on the chunk or in its
+        // parts; each result answers the call before it.
+        let parts = chunk
+            .get("parts")
+            .and_then(Json::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut calls = 0;
+        for item in std::iter::once(chunk).chain(parts) {
+            if let Some(code) = item.get("executableCode") {
+                calls += 1;
+                blocks.push(Block::ToolCall {
+                    call_id: Some(format!("{native}:code{calls}")),
+                    tool: Some("code_execution".into()),
+                    input: code.clone(),
+                    command: string_of(code, "code"),
+                    path: None,
+                });
+            }
+            if let Some(result) = item.get("codeExecutionResult") {
+                let outcome = match str_of(result, "outcome") {
+                    Some("OUTCOME_OK") | None => ToolOutcome::Ok,
+                    Some(_) => ToolOutcome::Error { reason: None },
+                };
+                blocks.push(Block::ToolResult {
+                    call_id: Some(format!("{native}:code{}", calls.max(1))),
+                    outcome,
+                    output: string_of(result, "output"),
+                    data: Some(result.clone()),
+                    attachments: Vec::new(),
+                });
+            }
+            if let Some(inline) = item.get("inlineData") {
+                blocks.push(inline_block(inline, role, sink));
+            }
         }
         if let Some(error) = str_of(chunk, "errorMessage") {
             blocks.push(Block::Other {
@@ -439,6 +469,42 @@ fn text_blocks(chunk: &Json, thought: bool) -> Vec<Block> {
         });
     }
     blocks
+}
+
+/// Inline bytes (`{mimeType, data}`), stored as a blob: an image when the
+/// type says so, else a file.
+fn inline_block(inline: &Json, role: Role, sink: &mut Sink<'_>) -> Block {
+    let mut a = Attachment {
+        media_type: string_of(inline, "mimeType"),
+        name: string_of(inline, "name"),
+        direction: if role == Role::User {
+            AttachmentDirection::Input
+        } else {
+            AttachmentDirection::Output
+        },
+        ..Attachment::default()
+    };
+    if let Some(bytes) = str_of(inline, "data")
+        .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
+    {
+        let hash = BlobHash::of(&bytes);
+        a.size = Some(bytes.len() as u64);
+        a.blob = Some(hash.clone());
+        sink.out.blobs.push(InlineBlob {
+            hash,
+            size: bytes.len() as u64,
+            bytes,
+        });
+    }
+    let image = a
+        .media_type
+        .as_deref()
+        .is_some_and(|m| m.starts_with("image/"));
+    if image {
+        Block::Image(a)
+    } else {
+        Block::File(a)
+    }
 }
 
 /// Drive files, inline bytes and YouTube videos attached to a chunk.
