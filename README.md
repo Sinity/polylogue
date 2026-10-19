@@ -19,8 +19,8 @@ version; the rewrite runs against fresh, separate archives.
 - **Export.** Export one session as JSON into a directory.
 - **Notes and corrections.** Attach a note or correction to a message or block,
   revise it, or withdraw it. Notes keep their full history.
-- **MCP.** `polylogue mcp` serves `status`, `search`, `read` and `note` over
-  stdio.
+- **MCP.** `polylogue mcp` serves `status`, `list`, `read`, `query` (the
+  query language, `| measure` included), notes and briefs over stdio.
 - **Recovery.** `recover` copies a stopped archive whose last write-ahead log
   segment is damaged; `daemon --prepare-copy restore` reopens a stopped local
   copy of an archive.
@@ -69,7 +69,8 @@ migrate.
 | `import PATH --format FORMAT [--context FILE] [--wait]` | Store one file. Formats: `claude-code-jsonl`, `codex-rollout`, `codex-history-sqlite`. Claude files need `--context FILE`. `--wait` waits until the file's messages are parsed. |
 | `progress INPUT` / `retry INPUT` | Show parsing progress for an imported file, or retry a failed parse. |
 | `input cat INPUT` | Print a stored file, with credentials masked. |
-| `[QUERY] [--json]` | List sessions. A query may use `origin:`, `kind:`, `id:`, words, `"phrases"`, `prefix*`, `\| sort by last_active desc` and `\| limit N`. |
+| `[QUERY] [--json] [--fields A,B]` | List sessions. A query may use `origin:`, `kind:`, `id:`, words, `"phrases"`, `prefix*`, `\| sort by last_active desc` and `\| limit N`. `--fields` chooses the columns. `QUERY \| measure usage` measures the sessions selected. |
+| `live` / `notices` / `changes [--since CURSOR]` | Queries: running sessions by live state, signal notices, and what changed after an answer's `view.cursor`. |
 | `find QUERY [--json]` | Search message text. |
 | `SESSION read [--format json\|terminal]` | Read a whole session. |
 | `message:ID read` | Read one message in the terminal. |

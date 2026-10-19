@@ -31,6 +31,9 @@ pub enum Request {
         /// The calling session, which `self` names.
         #[serde(default)]
         session: Option<String>,
+        /// The columns to show instead of the unit's defaults.
+        #[serde(default)]
+        fields: Vec<String>,
     },
     Read {
         session: SessionId,
@@ -105,10 +108,6 @@ pub enum Request {
         #[serde(default)]
         machine: bool,
     },
-    Measure {
-        what: String,
-        query: Option<String>,
-    },
     Sql {
         statement: String,
     },
@@ -141,23 +140,6 @@ pub enum Request {
     },
     Cancel {
         request_id: String,
-    },
-    /// Sessions with live evidence and their live state at `now` (the
-    /// daemon's clock when absent).
-    Live {
-        #[serde(default)]
-        now: Option<i64>,
-    },
-    /// The most recent signal notices and what happened to each.
-    Notices {
-        #[serde(default)]
-        limit: Option<u64>,
-    },
-    /// The change feed: what changed after `since` (a cursor from a
-    /// previous answer's `next`; everything when absent).
-    Changes {
-        #[serde(default)]
-        since: Option<String>,
     },
 }
 

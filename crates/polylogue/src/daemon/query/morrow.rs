@@ -63,6 +63,7 @@ fn ask(text: &str) -> Ask<'_> {
         day: LogicalDay::named("Europe/Warsaw", 240).unwrap(),
         embeddings: false,
         near: None,
+        fields: &[],
     }
 }
 

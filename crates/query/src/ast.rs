@@ -43,10 +43,11 @@ pub enum Unit {
     Deliveries,
     Processes,
     Work,
+    Changes,
 }
 
 impl Unit {
-    pub const ALL: [Unit; 13] = [
+    pub const ALL: [Unit; 14] = [
         Unit::Sessions,
         Unit::Messages,
         Unit::Blocks,
@@ -60,6 +61,7 @@ impl Unit {
         Unit::Deliveries,
         Unit::Processes,
         Unit::Work,
+        Unit::Changes,
     ];
 
     pub fn name(self) -> &'static str {
@@ -229,6 +231,9 @@ pub enum StageKind {
     SortBy {
         key: SortKey,
         descending: bool,
+        /// Tie-breaking fields, in order, each with its direction.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        then: Vec<(String, bool)>,
     },
     GroupBy {
         keys: Vec<GroupKey>,
@@ -248,6 +253,10 @@ pub enum StageKind {
     },
     Distinct,
     Matches,
+    /// `| measure WHAT`: the measurement named, over the selected sessions.
+    Measure {
+        what: String,
+    },
     /// `| UNIT [where COND]`: rows of another unit within the matched
     /// sessions.
     Scope {

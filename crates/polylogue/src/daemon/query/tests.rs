@@ -388,6 +388,7 @@ fn ask(text: &str) -> Ask<'_> {
         day: LogicalDay::named("UTC", 0).unwrap(),
         embeddings: false,
         near: None,
+        fields: &[],
     }
 }
 

@@ -17,7 +17,16 @@ fn opts(saved: &[(&str, &str)]) -> Options {
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect(),
         kept: Default::default(),
+        fields: vec![],
     }
+}
+
+fn c(text: &str) -> Program {
+    compile(text, &opts(&[])).unwrap_or_else(|e| panic!("{text}: {e}"))
+}
+
+fn compile_err(text: &str) -> String {
+    compile(text, &opts(&[])).unwrap_err().to_string()
 }
 
 fn same(a: &str, b: &str, o: &Options) {
@@ -74,4 +83,60 @@ fn a_saved_query_that_cannot_stand_there_is_refused() {
     ] {
         assert!(compile(bad, &o).is_err(), "{bad}");
     }
+}
+
+#[test]
+fn sort_takes_tie_breaking_keys() {
+    let p = c("sessions | sort by live_rank, last_event_at desc");
+    let order = p.sql.rsplit("ORDER BY").next().unwrap();
+    let rank = order.find("WHEN 'waiting'").expect("live_rank first");
+    let last = order
+        .find("live_last_event_at) DESC")
+        .expect("then last_event_at");
+    assert!(rank < last, "{order}");
+    assert!(compile_err("sessions | group by repo | sort by count, repo").contains("one key"));
+}
+
+#[test]
+fn measure_ends_a_session_query() {
+    let p = c("repo:polylogue | measure usage");
+    let m = p.measure.expect("measure");
+    assert_eq!(m.what, "usage");
+    assert!(!m.everything);
+    assert!(
+        c("sessions | measure daily:tokens")
+            .measure
+            .unwrap()
+            .everything
+    );
+    assert!(compile_err("messages | measure usage").contains("session query"));
+    assert!(compile_err("sessions | measure usage | sort by cost").contains("last stage"));
+}
+
+#[test]
+fn fields_choose_the_columns() {
+    let p = compile(
+        "sessions",
+        &Options {
+            fields: vec!["id".into(), "cost".into(), "repo".into()],
+            ..opts(&[])
+        },
+    )
+    .unwrap();
+    let names: Vec<&str> = p.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["id", "cost", "repo"]);
+}
+
+#[test]
+fn changes_continue_from_a_cursor() {
+    let p = c("changes where after:12.3");
+    assert!(p.sql.contains("> 12") && p.sql.contains("> 3"), "{}", p.sql);
+    assert!(compile_err("changes where after:12").contains("INDEX.ARCHIVE"));
+}
+
+#[test]
+fn deliveries_take_their_outcome_from_the_latest_event() {
+    let p = c("deliveries where sender:signal | sort by at desc");
+    assert!(p.sql.contains("delivery_event"), "{}", p.sql);
+    assert!(!p.sql.contains(".outcome"), "{}", p.sql);
 }

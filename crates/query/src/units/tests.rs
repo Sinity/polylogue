@@ -58,3 +58,21 @@ fn templates_name_only_known_aliases() {
         }
     }
 }
+
+#[test]
+fn the_grammar_names_every_unit() {
+    for s in UNITS {
+        let q = crate::parse(s.name).unwrap_or_else(|e| panic!("{}: {e}", s.name));
+        assert!(
+            matches!(q.source, crate::ast::Source::Unit { unit, .. } if unit == s.unit),
+            "{} parses as {:?}",
+            s.name,
+            q.source
+        );
+        // `exists UNIT(…)` names the row units by their singular.
+        if !matches!(s.unit, Unit::Sessions | Unit::Changes) {
+            let text = format!("exists {}(x)", s.singular);
+            crate::parse(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        }
+    }
+}

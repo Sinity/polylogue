@@ -9,7 +9,6 @@ mod continuation;
 mod daemon;
 mod embeddings;
 mod hook;
-mod live;
 mod mcp;
 mod measure_text;
 mod positions;

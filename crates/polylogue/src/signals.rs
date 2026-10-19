@@ -364,20 +364,5 @@ pub fn summary(rules: &[Rule], unusable: &[Unusable]) -> Value {
     })
 }
 
-/// The most recent signal deliveries, newest first, each with the notice
-/// text and what happened to it.
-pub fn recent(reader: &polylogue_store::Reader<'_>, limit: u64) -> polylogue_store::Result<Value> {
-    let rows = reader.query(
-        "SELECT d.id, d.at, pl_text(d.body) AS text, d.refs_json,
-             (SELECT e.what FROM a.delivery_event e WHERE e.delivery = d.id
-              ORDER BY e.at DESC LIMIT 1) AS outcome,
-             (SELECT e.detail FROM a.delivery_event e WHERE e.delivery = d.id
-              ORDER BY e.at DESC LIMIT 1) AS detail
-         FROM a.delivery d WHERE d.sender = 'signal' ORDER BY d.at DESC LIMIT ?1",
-        &[polylogue_store::SqlValue::Int(limit as i64)],
-    )?;
-    Ok(json!({ "notices": rows }))
-}
-
 #[cfg(test)]
 mod tests;

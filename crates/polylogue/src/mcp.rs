@@ -74,13 +74,18 @@ pub struct ListArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct MeasureArgs {
-    /// usage, cost, sessions, quota, outcomes, frontier, drift, unanswered, survival, survival-turns,
-    /// daily:<tokens|api_cost|sessions|prompts|tool_errors>, process or rhythm.
-    pub what: String,
-    /// A sessions query to measure over (e.g. `repo:polylogue since:7d`);
-    /// everything when absent. `quota` takes none.
-    pub query: Option<String>,
+pub struct QueryArgs {
+    /// A query in the query language: `repo:polylogue since:7d`,
+    /// `messages where …`, `sessions | measure usage`, `changes where
+    /// after:CURSOR`, `deliveries where sender:signal`.
+    pub text: String,
+    /// The columns to show instead of the unit's defaults.
+    #[serde(default)]
+    pub fields: Vec<String>,
+    /// Rows per page.
+    pub page_size: Option<u64>,
+    /// A previous page's `next`.
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -246,13 +251,17 @@ impl Polylogue {
     }
 
     #[tool(
-        description = "Measure usage: token lanes and API-equivalent cost by model, each session at the physical and logical grain (`sessions`), the 5-hour and weekly subscription windows with burn and forecast (`quota`), tool outcomes, the commands whose latest run failed per repository (`frontier`), format drift (`drift`), survival to the first failed tool call and to an unanswered last prompt (`unanswered`), daily series with level changes, tool-call transitions, and prompt rhythm. Unknown figures are null, never 0."
+        description = "Run a query: rows of a unit (sessions, messages, blocks, tool_calls, files, events, notes, links, turns, runs, deliveries, processes, work, changes) with stages (`| sort by`, `| group by`, `| matches`). `| measure WHAT` ends a sessions query with a measurement: usage, cost, sessions, quota, outcomes, frontier, drift, unanswered, survival, survival-turns, daily:<tokens|api_cost|sessions|prompts|tool_errors>, process or rhythm; unknown figures are null, never 0. Each answer's `view.cursor` continues `changes where after:CURSOR`."
     )]
-    async fn measure(&self, Parameters(a): Parameters<MeasureArgs>) -> String {
+    async fn query(&self, Parameters(a): Parameters<QueryArgs>) -> String {
         answer(
-            &Request::Measure {
-                what: a.what,
-                query: a.query,
+            &Request::Query {
+                text: a.text,
+                cursor: a.cursor,
+                page_size: a.page_size,
+                why: true,
+                session: None,
+                fields: a.fields,
             },
             &self.socket,
         )

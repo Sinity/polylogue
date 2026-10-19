@@ -111,6 +111,26 @@ impl Fixture {
         Ok(self.index.last_insert_rowid())
     }
 
+    /// Sets a session's live facts and git identity: `event` is the latest
+    /// hook event (`hook_stop`, …) at `at`; `waiting_on` marks a wait.
+    pub fn live(
+        &mut self,
+        session_pk: i64,
+        event: &str,
+        at: i64,
+        waiting_on: Option<&str>,
+        repo_root: Option<&str>,
+    ) -> Result<()> {
+        self.index.execute(
+            "UPDATE session SET live_last_event = ?2, live_last_event_at = ?3,
+                 live_waiting_on = ?4, live_waiting_since = CASE WHEN ?4 IS NULL THEN NULL ELSE ?3 END,
+                 repo_root = ?5
+             WHERE pk = ?1",
+            params![session_pk, event, at, waiting_on, repo_root],
+        )?;
+        Ok(())
+    }
+
     fn text(&self, body: &str, bit: i64) -> Result<i64> {
         let hash = blake3::hash(body.as_bytes());
         let packed = zstd::bulk::compress(body.as_bytes(), 3)?;

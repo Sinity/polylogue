@@ -12,8 +12,8 @@ pub mod time;
 pub mod units;
 
 pub use compile::{
-    Attach, ColKind, Column, IdCheck, Kept, Near, Options, Param, Program, Shape, WhyClause,
-    compile,
+    Attach, ColKind, Column, IdCheck, Kept, Measure, Near, Options, Param, Program, Shape,
+    WhyClause, compile,
 };
 pub use parse::parse;
 pub use time::Clock;
@@ -41,7 +41,6 @@ pub const COMMAND_WORDS: &[&str] = &[
     "recall",
     "measure",
     "live",
-    "changes",
     "notices",
     "sql",
     "excise",
