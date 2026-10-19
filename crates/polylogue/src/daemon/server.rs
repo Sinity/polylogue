@@ -25,15 +25,15 @@ pub struct Daemon {
     /// the loop to read.
     pub config: Config,
     /// User writes (notes, deliveries, settings) through the one writer.
-    writes: WriterSender,
+    pub(crate) writes: WriterSender,
     loop_tx: Mutex<Sender<LoopMsg>>,
     status: Arc<Mutex<Pass>>,
     started: Instant,
     /// The signal rules in force and the ones refused, for `status`.
-    signals: Mutex<serde_json::Value>,
+    pub(crate) signals: Mutex<serde_json::Value>,
 }
 
-fn error(kind: &str, message: impl ToString) -> Response {
+pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
     Response::Error {
         kind: kind.into(),
         message: message.to_string(),
@@ -41,7 +41,7 @@ fn error(kind: &str, message: impl ToString) -> Response {
     }
 }
 
-fn store_error(e: &StoreError) -> Response {
+pub(crate) fn store_error(e: &StoreError) -> Response {
     match e {
         StoreError::Conflict(_) => error("conflict", e),
         StoreError::NotFound(_) => error("not_found", e),
@@ -107,152 +107,16 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
     }
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-fn ok(data: impl serde::Serialize) -> Response {
+pub(crate) fn ok(data: impl serde::Serialize) -> Response {
     match serde_json::to_value(data) {
         Ok(data) => Response::Ok { data },
         Err(e) => error("internal", e),
-    }
-}
-
-/// Signal deliveries already recorded, for the evaluator to start from.
-fn signal_history(d: &Daemon) -> Vec<crate::signals::Sent> {
-    let Ok(r) = d.reads.reader() else {
-        return vec![];
-    };
-    let rows = r
-        .query(
-            "SELECT at, refs_json FROM a.delivery WHERE sender = 'signal' ORDER BY at",
-            &[],
-        )
-        .unwrap_or_default();
-    rows.iter()
-        .filter_map(|row| {
-            let refs: Vec<String> = serde_json::from_str(row["refs_json"].as_str()?).ok()?;
-            let agent = refs.iter().any(|r| r == "interrupt:agent");
-            crate::signals::sent_from(&refs, row["at"].as_i64()?, agent)
-        })
-        .collect()
-}
-
-/// Evaluates the signal rules after each change and at each `for`
-/// deadline, so a duration fires with no new data (law 140), and records
-/// every handoff as a delivery.
-fn signal_loop(d: &Daemon) {
-    use crate::signals::{self, How, Rule, Unusable};
-    use polylogue_model::{LogicalDay, NoteKind};
-    let day = LogicalDay::system();
-    let mut eval = signals::Evaluator::new(&signal_history(d));
-    loop {
-        let now = now_ms();
-        let Ok(reader) = d.reads.reader() else {
-            std::thread::sleep(std::time::Duration::from_secs(30));
-            continue;
-        };
-        let filter = polylogue_store::NoteFilter {
-            kinds: vec![NoteKind::Signal],
-            ..Default::default()
-        };
-        let mut rules: Vec<Rule> = vec![];
-        let mut unusable: Vec<Unusable> = vec![];
-        for note in reader.notes(&filter).unwrap_or_default() {
-            match signals::rule(&note) {
-                Ok(r) => rules.push(r),
-                Err(u) => unusable.push(u),
-            }
-        }
-        let mut matches = std::collections::HashMap::new();
-        let mut usable = vec![];
-        for rule in rules {
-            let ask = super::query::Ask {
-                text: &rule.query,
-                cursor: None,
-                page_size: Some(1_000),
-                why: false,
-                session: None,
-                now,
-                day: day.clone(),
-                embeddings: false,
-                near: None,
-                fields: &[],
-            };
-            match super::query::run(&reader, ask) {
-                Ok(v) => {
-                    let rows = v["rows"]
-                        .as_array()
-                        .map(|rows| rows.iter().map(signals::row_key).collect())
-                        .unwrap_or_default();
-                    matches.insert(rule.id.clone(), rows);
-                    usable.push(rule);
-                }
-                Err(f) => unusable.push(Unusable {
-                    id: rule.id.clone(),
-                    reason: format!("its query fails: {}", f.message),
-                }),
-            }
-        }
-        if let Ok(mut s) = d.signals.lock() {
-            *s = signals::summary(&usable, &unusable);
-        }
-        for h in eval.step(now, &usable, &matches, |t| day.local_hour(t)) {
-            let Some(rule) = usable.iter().find(|r| r.id == h.rule) else {
-                continue;
-            };
-            let mut refs = signals::refs(&h.rule, &h.row);
-            if h.how == How::Interrupt && !rule.operator {
-                refs.push("interrupt:agent".into());
-            }
-            let id = polylogue_store::user_writes::new_request_id();
-            let delivery = Delivery {
-                recipient_kind: "operator".into(),
-                recipient_id: None,
-                sender: "signal".into(),
-                event: "signal".into(),
-                cwd: None,
-                text: signals::notice(rule, &h),
-                refs,
-                left_out: vec![],
-            };
-            if d.writes
-                .user(UserRequest::now(id.clone(), UserWrite::Deliver(delivery)))
-                .is_err()
-            {
-                continue;
-            }
-            // A notice is shown by `status`, briefings and the change feed;
-            // an interrupt needs the notifier `signals.toml` names, which is
-            // not built, so it stays a notice and says so.
-            let event = match h.how {
-                How::Notice => None,
-                How::Interrupt => Some((
-                    polylogue_store::DeliveryOutcome::NotSent,
-                    "no notifier is configured",
-                )),
-                How::Deferred => Some((
-                    polylogue_store::DeliveryOutcome::NotSent,
-                    "rate limit: kept for the next briefing",
-                )),
-            };
-            if let Some((what, detail)) = event {
-                let _ = d.writes.user(UserRequest::now(
-                    polylogue_store::user_writes::new_request_id(),
-                    UserWrite::DeliveryEvent {
-                        delivery: id,
-                        what,
-                        detail: Some(detail.into()),
-                    },
-                ));
-            }
-        }
-        let wait = eval
-            .next_due()
-            .map_or(30_000, |due| (due - now_ms()).clamp(1_000, 30_000));
-        std::thread::sleep(std::time::Duration::from_millis(wait as u64));
     }
 }
 
@@ -367,7 +231,7 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
             query,
             limit,
             yes,
-        } => embed(d, &reader, &what, query.as_deref(), limit, yes),
+        } => crate::embeddings::handle(d, &reader, &what, query.as_deref(), limit, yes),
         Request::Excise {
             request_id,
             target,
@@ -540,101 +404,6 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
     }
 }
 
-/// Embedding status, cost preview and build ([`crate::embeddings`]).
-fn embed(
-    d: &Daemon,
-    reader: &polylogue_store::Reader<'_>,
-    what: &str,
-    query: Option<&str>,
-    limit: Option<u64>,
-    yes: bool,
-) -> Response {
-    use crate::embeddings::{self, ProviderKind};
-    let provider = match embeddings::Provider::from_settings(reader, &machine_id()) {
-        Ok(p) => p,
-        Err(e) => return error("bad_request", e),
-    };
-    if what == "status" {
-        let vectors =
-            polylogue_store::vectors::Vectors::open_read(&d.archive).and_then(|v| v.status());
-        return match vectors {
-            Ok(s) => ok(serde_json::json!({
-                "provider": provider.as_ref().map(|p| serde_json::json!({
-                    "endpoint": p.endpoint, "model": p.model,
-                })),
-                "vectors": s,
-            })),
-            Err(e) => store_error(&e),
-        };
-    }
-    let Some(provider) = provider else {
-        return error(
-            "embeddings_off",
-            "embeddings are off; `polylogue setting embed.provider local` (or `voyage`) turns them on",
-        );
-    };
-    // A query limits the work to the sessions it finds.
-    let sessions: Option<Vec<String>> = match query.filter(|q| !q.trim().is_empty()) {
-        None => None,
-        Some(q) => {
-            let ask = super::query::Ask {
-                text: q,
-                cursor: None,
-                page_size: Some(1_000_000),
-                why: false,
-                session: None,
-                now: now_ms(),
-                day: polylogue_model::LogicalDay::system(),
-                embeddings: false,
-                near: None,
-                fields: &[],
-            };
-            match super::query::run(reader, ask) {
-                Ok(v) if v["unit"] == "sessions" => Some(
-                    v["rows"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|r| r["id"].as_str().map(str::to_owned))
-                        .collect(),
-                ),
-                Ok(_) => return error("bad_request", "embed takes a sessions query"),
-                Err(f) => {
-                    return Response::Error {
-                        kind: f.kind,
-                        message: f.message,
-                        detail: f.detail,
-                    };
-                }
-            }
-        }
-    };
-    let result = match what {
-        "preview" => embeddings::preview(&d.archive, reader, &provider, sessions.as_deref(), limit)
-            .map(|p| serde_json::to_value(p).unwrap_or_default()),
-        "build" => {
-            if provider.kind == ProviderKind::Voyage && !yes {
-                return error(
-                    "confirm",
-                    "Voyage is paid: `polylogue embed preview` shows the cost; build with --yes",
-                );
-            }
-            embeddings::build(&d.archive, reader, &provider, sessions.as_deref(), limit)
-                .map(|b| serde_json::to_value(b).unwrap_or_default())
-        }
-        other => {
-            return error(
-                "bad_request",
-                format!("embed {other}: status, preview or build"),
-            );
-        }
-    };
-    match result {
-        Ok(v) => ok(v),
-        Err(e) => error("embed", e),
-    }
-}
-
 /// One session in a view: as JSON messages, rendered in a format, or, with
 /// a token budget, as one page of text for a model with the cursor of the
 /// next.
@@ -779,7 +548,7 @@ pub fn start(
         let d = Arc::clone(&daemon);
         std::thread::Builder::new()
             .name("polylogue-signals".into())
-            .spawn(move || signal_loop(&d))?;
+            .spawn(move || crate::signals::run(&d))?;
     }
     std::thread::Builder::new()
         .name("polylogue-loop".into())

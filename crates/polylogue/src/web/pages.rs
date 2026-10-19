@@ -5,7 +5,7 @@
 //! text.
 
 use polylogue_model::{Block, Message, Session};
-use polylogue_render::{Format, View, outcome_label, pieces, results};
+use polylogue_render::{Format, View, outcome_label, pieces, results, shell_quote};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -36,17 +36,6 @@ pub fn encode_id(id: &str) -> String {
         }
     }
     out
-}
-
-fn shell_quote(s: &str) -> String {
-    if !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_.:/@%+=,".contains(&b))
-    {
-        s.to_owned()
-    } else {
-        format!("'{}'", s.replace('\'', r"'\''"))
-    }
 }
 
 /// The page frame: one stylesheet, one script, a search box on every page,

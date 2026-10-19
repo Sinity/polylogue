@@ -74,7 +74,7 @@ it.
 | `hooks install\|uninstall`, `hook EVENT` | Claude Code hooks: live state and the session-start brief. |
 | `install-agent chrome` | Register the browser extension's native messaging host. |
 | `completions SHELL` | Shell completions for bash, elvish, fish, PowerShell or zsh. |
-| `sinex status\|cutover` | The optional Sinex backend (built with the `sinex` feature). |
+| `sinex status\|cutover` | Not built yet, so hidden from help: the optional Sinex backend's state and the move to it. |
 
 Exit codes: 0 success, 1 an error the daemon reported or an I/O error, 2 an
 invalid request, 6 no daemon running.

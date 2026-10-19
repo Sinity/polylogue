@@ -11,7 +11,7 @@
 
 mod requests;
 
-use crate::cli::local;
+use crate::cli::{local, print};
 use crate::daemon::Request;
 use crate::daemon::measure::{MEASURES, Measure};
 use polylogue_model::SessionId;
@@ -123,6 +123,12 @@ pub struct Command {
     /// and MCP and HTTP callers may pass a `request_id` so a resent call
     /// applies once.
     pub writes: bool,
+    /// The answer as text for a person on the command line; `--json`
+    /// prints the answer itself.
+    pub print: fn(&Value) -> String,
+    /// What the command line does with the answer in place of printing it
+    /// (`export` writes a file, `continue --exec` runs the plan).
+    pub output: Option<fn(&Values, &Value, bool) -> ExitCode>,
 }
 
 impl Command {
@@ -250,6 +256,8 @@ const CLI: Command = Command {
     mcp: false,
     http: false,
     writes: false,
+    print: print::json,
+    output: None,
 };
 
 pub const GROUPS: &[Group] = &[
@@ -309,6 +317,7 @@ fn measure_command(m: &'static Measure) -> Command {
         help: m.help,
         args: args.leak(),
         action: Action::Request(requests::measure),
+        print: print::query,
         ..CLI
     }
 }
@@ -340,6 +349,7 @@ const WRITTEN: &[Command] = &[
             FIELDS,
         ],
         action: Action::Request(requests::query),
+        print: print::query,
         cli: Cli::NoSubcommand,
         mcp: true,
         http: true,
@@ -372,6 +382,7 @@ const WRITTEN: &[Command] = &[
         help: "Sessions matching a query, newest first",
         args: QUERY_ARGS,
         action: Action::Request(requests::list),
+        print: print::query,
         mcp: true,
         http: true,
         ..CLI
@@ -407,6 +418,7 @@ const WRITTEN: &[Command] = &[
             ),
         ],
         action: Action::Request(requests::read),
+        print: print::read,
         mcp: true,
         http: true,
         ..CLI
@@ -430,6 +442,7 @@ const WRITTEN: &[Command] = &[
             },
         ],
         action: Action::Request(requests::export),
+        output: Some(crate::cli::write_export),
         ..CLI
     },
     Command {
@@ -524,6 +537,7 @@ const WRITTEN: &[Command] = &[
             opt("limit", Kind::Integer, "At most this many notes"),
         ],
         action: Action::Request(requests::note_list),
+        print: print::notes,
         mcp: true,
         http: true,
         ..CLI
@@ -548,6 +562,7 @@ const WRITTEN: &[Command] = &[
             },
         ],
         action: Action::Request(requests::brief),
+        print: print::context,
         mcp: true,
         ..CLI
     },
@@ -556,6 +571,7 @@ const WRITTEN: &[Command] = &[
         help: "Context for taking over another session: its prompts, notes, what it left open and its last answer",
         args: &[pos("session", Kind::Text, "`origin:native_id`")],
         action: Action::Request(requests::takeover),
+        print: print::context,
         mcp: true,
         ..CLI
     },
@@ -576,6 +592,8 @@ const WRITTEN: &[Command] = &[
             opt("limit", Kind::Integer, "At most this many sessions"),
         ],
         action: Action::Request(requests::resume),
+        print: print::resume,
+        output: Some(crate::cli::resume_output),
         mcp: true,
         http: true,
         ..CLI
@@ -592,6 +610,7 @@ const WRITTEN: &[Command] = &[
             CWD,
         ],
         action: Action::Request(requests::recall),
+        print: print::context,
         mcp: true,
         ..CLI
     },
@@ -617,6 +636,7 @@ const WRITTEN: &[Command] = &[
         help: "The work graph: goals, attempts, verifications and artifacts, by a query over the `work` unit (`polylogue work kind:attempt state:open`)",
         args: QUERY_ARGS,
         action: Action::Request(requests::work),
+        print: print::query,
         ..CLI
     },
     Command {
@@ -624,6 +644,7 @@ const WRITTEN: &[Command] = &[
         help: "Sessions running now and what each is doing: the query `sessions where -live:ended | sort by live_rank, last_event_at desc`",
         args: &[WHY, CURSOR, FIELDS],
         action: Action::Request(requests::live),
+        print: print::query,
         ..CLI
     },
     Command {
@@ -636,6 +657,7 @@ const WRITTEN: &[Command] = &[
             FIELDS,
         ],
         action: Action::Request(requests::changes),
+        print: print::query,
         ..CLI
     },
     Command {
@@ -651,6 +673,7 @@ const WRITTEN: &[Command] = &[
             FIELDS,
         ],
         action: Action::Request(requests::notices),
+        print: print::query,
         ..CLI
     },
     Command {
@@ -710,12 +733,14 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "sinex status",
-        help: "The Sinex backend's state",
+        help: "The Sinex backend's state (not built yet)",
+        cli: Cli::Hidden,
         ..CLI
     },
     Command {
         name: "sinex cutover",
-        help: "Make Sinex the primary store, once",
+        help: "Make Sinex the primary store, once (not built yet)",
+        cli: Cli::Hidden,
         ..CLI
     },
     Command {

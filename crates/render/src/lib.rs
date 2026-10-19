@@ -79,6 +79,18 @@ pub enum Rendered<'a> {
     Event(&'a Event),
 }
 
+/// A word as the shell reads it back: bare when it is plain, else quoted.
+pub fn shell_quote(w: &str) -> String {
+    if !w.is_empty()
+        && w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
+    {
+        w.to_owned()
+    } else {
+        format!("'{}'", w.replace('\'', r"'\''"))
+    }
+}
+
 /// Text with credentials masked, as one block.
 pub fn mask(text: &str) -> String {
     let mut m = credential_masking::Masker::new();
