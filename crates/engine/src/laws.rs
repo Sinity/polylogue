@@ -94,6 +94,39 @@ fn view(w: &World) -> Vec<SessionExport> {
         .collect()
 }
 
+/// What the search indexes hold, by content rather than row id: for each
+/// index the hashes of the texts in it, and each term's document and
+/// occurrence counts. A first build writes the entries in bulk when it ends
+/// and a live pass through the search queue; both must give the same index.
+fn search_index(w: &World) -> Vec<serde_json::Value> {
+    let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
+    let r = pool.reader().unwrap();
+    let mut out = Vec::new();
+    for (fts, vocab) in [
+        ("text_fts", "fts_vocab_text"),
+        ("output_fts", "fts_vocab_output"),
+    ] {
+        out.extend(
+            r.query(
+                &format!(
+                    "SELECT '{fts}' AS idx, hex(t.hash) AS h FROM text t
+                     WHERE t.id IN (SELECT rowid FROM {fts}) ORDER BY h"
+                ),
+                &[],
+            )
+            .unwrap(),
+        );
+        out.extend(
+            r.query(
+                &format!("SELECT '{vocab}' AS idx, term, doc, cnt FROM {vocab} ORDER BY term"),
+                &[],
+            )
+            .unwrap(),
+        );
+    }
+    out
+}
+
 /// Row count of every archive.db table.
 fn archive_row_counts(w: &World) -> Vec<(String, i64)> {
     let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
@@ -164,7 +197,9 @@ proptest! {
     #[test]
     fn law_2_append_equivalence(s in shape(), pick in 0usize..8, cut in 0usize..8) {
         let c = corpus(&s);
-        let (_, whole) = converge_all_at_once(&c);
+        let (whole_world, whole) = converge_all_at_once(&c);
+        let whole_search = search_index(&whole_world);
+        prop_assert!(whole_search.iter().any(|v| v["idx"] == "text_fts"));
         let f = pick % c.files.len();
         let (name, lines) = &c.files[f];
         let k = cut % (lines.len() + 1);
@@ -182,6 +217,8 @@ proptest! {
         prop_assert!(pass.errors.is_empty());
         prop_assert_eq!(pass.bytes_read, lines[k..].concat().len() as u64);
         prop_assert_eq!(&view(&w), &whole);
+        drop((e, _lock));
+        prop_assert_eq!(search_index(&w), whole_search);
     }
 
     /// L4: files arriving one by one in any order, a convergence after each,

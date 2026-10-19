@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc cddc68694e1f99e341737d83ee8e96d52044d143c724e8684293d064ea6ebdce # shrinks to s = Shape { parents: [2, 2, 4], children: [(7, 3, 1), (4, 1, 2)] }, files_gone = true
 cc 50b286f47cfa582bfe2630a278bed5f9ae61b9e9bac905a8fbf227f7a209d02d # shrinks to s = Shape { parents: [1], children: [(7, 5, 3), (2, 4, 1)] }, pick = 7, cut = 3
+cc ba574f63a14f75660464e37a8662104b900fa9de378f90c88eebe03eb21a29a7 # shrinks to s = Shape { parents: [2], children: [(3, 4, 2)] }, pick = 1, cut = 2

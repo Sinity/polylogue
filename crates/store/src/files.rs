@@ -209,6 +209,8 @@ pub mod cache {
     /// merges; at 256 MB a first build read back from disk more than twice
     /// its input.
     pub const INDEX_WRITER: i64 = 1536;
+    /// The search thread's `index.db` connection (writer.rs, `Search`).
+    pub const SEARCH: i64 = 64;
     /// The writer's `archive.db` connection: inputs, revisions, extents.
     pub const ARCHIVE_WRITER: i64 = 256;
     /// Schema setup and one-off maintenance.

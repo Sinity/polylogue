@@ -18,7 +18,7 @@ use polylogue_model::{
     Accounting, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, PromptKind,
     Role, Session, SessionId, SessionKind, Timestamp, TitleSource, ToolOutcome,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::JoinHandle;
@@ -310,6 +310,44 @@ pub(crate) fn unpack_text(packed: &[u8]) -> Result<String> {
 /// commits whenever no batch is waiting.
 const ROWS_PER_TRANSACTION: usize = 50_000;
 
+/// Secondary indexes no statement of the writer uses: a first build drops
+/// them and builds each once at its end ([`Inner::build_deferred`]).
+/// Checked with `EXPLAIN QUERY PLAN` over the store's statements
+/// (2026-10-19).
+const READ_ONLY_INDEXES: &[&str] = &[
+    "session_activity",
+    "session_started",
+    "session_cwd",
+    "session_repo",
+    "session_collection",
+    "session_live",
+    "session_live_checkout",
+    "message_prose",
+    "message_unseen",
+    "message_branch",
+    "message_copy",
+    "message_response",
+    "message_native",
+    "block_secret",
+    "tool_call_tool",
+    "tool_call_action",
+    "tool_call_failed",
+    "tool_call_path",
+    "tool_call_repo_command",
+    "message_disagreement_input",
+    "link_child",
+    "event_after",
+    "event_kind",
+    "commit_link_hash",
+    "pr_link_number",
+    "session_facts_cost",
+    "session_facts_repo_root",
+    "session_model_usage_model",
+    "work_node_session",
+    "marker_message",
+    "removed_session_changed",
+];
+
 /// Batches waiting for the writer before senders block.
 const QUEUE: usize = 4;
 
@@ -347,6 +385,29 @@ impl Writer {
             // mark set and the index is rebuilt.
             index.pragma_update(None, "journal_mode", "memory")?;
         }
+        // A first build inserts rows without maintaining the indexes only
+        // reads use; each is built once from a sorted scan when the build
+        // ends. Indexes the writer's own statements use stay, and an index
+        // missing from this list is kept, which is the safe default.
+        let deferred_indexes = if empty {
+            let mut defs = Vec::new();
+            for name in READ_ONLY_INDEXES {
+                let sql: Option<String> = index
+                    .query_row(
+                        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                        [name],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if let Some(sql) = sql {
+                    index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                    defs.push(sql);
+                }
+            }
+            defs
+        } else {
+            Vec::new()
+        };
         let archive_conn = open_write(&archive.archive_db(), crate::files::cache::ARCHIVE_WRITER)?;
         let refused = crate::excise::Refused::load(&archive_conn)?;
         let mut inner = Inner {
@@ -354,6 +415,8 @@ impl Writer {
             index,
             report: WriteReport::default(),
             unsynced: empty,
+            deferred_indexes,
+            search: Search::start(archive.index_db(), !empty)?,
             embeddings_db: archive.embeddings_db(),
             refused,
         };
@@ -483,6 +546,11 @@ struct Inner {
     report: WriteReport,
     /// The index is being built without syncs ([`Writer::start`]).
     unsynced: bool,
+    /// Secondary indexes dropped for a first build, recreated when it ends.
+    deferred_indexes: Vec<String>,
+    /// The search thread ([`search_thread`]): woken after each commit, and
+    /// allowed to write once the index is out of a first build.
+    search: Search,
     embeddings_db: std::path::PathBuf,
     /// Sessions and messages excised: their rows are never written again.
     refused: crate::excise::Refused,
@@ -558,6 +626,14 @@ impl Inner {
             {
                 self.report.errors.push(format!("sync the index: {e}"));
             }
+            // Whatever a flush reports written is also searchable.
+            if !flushes.is_empty()
+                && let Err(e) = write_pending_search(&self.index, i64::MAX)
+            {
+                self.report
+                    .errors
+                    .push(format!("write search entries: {e}"));
+            }
             for reply in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
             }
@@ -571,6 +647,7 @@ impl Inner {
         if !self.unsynced {
             return Ok(());
         }
+        self.build_deferred()?;
         let i = &self.index;
         i.pragma_update(None, "synchronous", "full")?;
         // Back to WAL, so readers and the writer stop waiting on each
@@ -579,6 +656,70 @@ impl Inner {
         i.execute("UPDATE meta SET value = '0' WHERE key = 'unsynced'", [])?;
         i.pragma_update(None, "synchronous", "normal")?;
         self.unsynced = false;
+        self.search.ready();
+        Ok(())
+    }
+
+    /// Ends a first build's bulk load: writes the search entries the build
+    /// marked, rebuilds the trigram index from `tool_call`, and creates the
+    /// secondary indexes it dropped. Each from one ordered scan, so the
+    /// indexes are written once instead of rewritten through the build.
+    fn build_deferred(&mut self) -> Result<()> {
+        const CHUNK: i64 = 100_000;
+        for (bit, table) in [(1i64, "text_fts"), (2, "output_fts")] {
+            let mut after = 0i64;
+            loop {
+                let tx = self.index.transaction()?;
+                let rows: Vec<(i64, Vec<u8>)> = tx
+                    .prepare_cached(
+                        "SELECT id, body FROM text WHERE id > ?1 AND indexed & ?2 ORDER BY id LIMIT ?3",
+                    )?
+                    .query_map(params![after, bit, CHUNK], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?;
+                let Some(&(last, _)) = rows.last() else {
+                    break;
+                };
+                // Unpacking and folding run on every core; FTS5 inserts
+                // them in id order on this thread.
+                let folded: Vec<(i64, String)> = std::thread::scope(|s| {
+                    let parts: Vec<_> = rows
+                        .chunks(rows.len().div_ceil(8).max(1))
+                        .map(|part| {
+                            s.spawn(move || {
+                                part.iter()
+                                    .map(|(id, packed)| {
+                                        unpack_text(packed)
+                                            .map(|b| (*id, polylogue_model::text::fold(&b)))
+                                    })
+                                    .collect::<Result<Vec<_>>>()
+                            })
+                        })
+                        .collect();
+                    parts
+                        .into_iter()
+                        .map(|h| h.join().expect("fold thread"))
+                        .collect::<Result<Vec<Vec<_>>>>()
+                        .map(|v| v.into_iter().flatten().collect())
+                })?;
+                {
+                    let mut ins = tx.prepare_cached(&format!(
+                        "INSERT INTO {table}(rowid, body) VALUES (?1, ?2)"
+                    ))?;
+                    for (id, body) in &folded {
+                        ins.execute(params![id, body])?;
+                    }
+                }
+                tx.commit()?;
+                after = last;
+            }
+        }
+        self.index.execute(
+            "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
+            [],
+        )?;
+        for sql in std::mem::take(&mut self.deferred_indexes) {
+            self.index.execute(&sql, [])?;
+        }
         Ok(())
     }
 
@@ -599,7 +740,9 @@ impl Inner {
             None
         };
         let atx = self.archive.transaction()?;
-        let itx = self.index.transaction()?;
+        let itx = self
+            .index
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let seq = bump_counter(&atx)?;
         let counter = bump_counter(&itx)?;
         let txs = crate::excise::Txs {
@@ -708,17 +851,20 @@ impl Inner {
         atx.commit()?;
         crate::fault::check("write.between_commits", "")?;
 
-        let itx = self.index.transaction()?;
+        let itx = self
+            .index
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&itx)?;
         let mut stats = (0u64, 0u64);
         for (b, chain) in batches.zip(chains) {
             if let (Some(p), Some(chain)) = (&b.parse, chain) {
-                stats.1 += write_rows(&itx, b, p, chain, counter)?;
+                stats.1 += write_rows(&itx, b, p, chain, counter, self.unsynced)?;
             }
             stats.0 += 1;
         }
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
+        self.search.wake();
         self.report.batches += stats.0;
         self.report.messages += stats.1;
         self.report.transactions += 1;
@@ -997,6 +1143,130 @@ fn insert_observation(
     Ok(())
 }
 
+/// The search thread's handle: it writes the entries in `search_pending`
+/// shortly after the writer commits them (architecture 5.5c), in its own
+/// transactions on its own connection, so search indexing is off the
+/// writer's thread.
+struct Search {
+    wake: Option<SyncSender<()>>,
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Search {
+    fn start(index_db: std::path::PathBuf, ready: bool) -> Result<Self> {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(ready));
+        let (wake, rx) = sync_channel::<()>(1);
+        let seen = flag.clone();
+        let handle = std::thread::Builder::new()
+            .name("polylogue-search".into())
+            .spawn(move || search_thread(&index_db, &seen, &rx))?;
+        Ok(Self {
+            wake: Some(wake),
+            ready: flag,
+            handle: Some(handle),
+        })
+    }
+
+    fn wake(&self) {
+        if let Some(w) = &self.wake {
+            let _ = w.try_send(());
+        }
+    }
+
+    /// The index has left its first build: the thread may open it.
+    fn ready(&self) {
+        self.ready.store(true, std::sync::atomic::Ordering::Release);
+        self.wake();
+    }
+}
+
+impl Drop for Search {
+    fn drop(&mut self) {
+        self.wake.take();
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// Writes waiting search entries whenever woken, and once a second. The
+/// connection opens only after a first build, whose index is not in WAL
+/// mode and has one connection.
+fn search_thread(
+    index_db: &std::path::Path,
+    ready: &std::sync::atomic::AtomicBool,
+    wake: &Receiver<()>,
+) {
+    let mut conn: Option<Connection> = None;
+    loop {
+        match wake.recv_timeout(std::time::Duration::from_secs(1)) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+        if !ready.load(std::sync::atomic::Ordering::Acquire) {
+            continue;
+        }
+        if conn.is_none() {
+            match open_write(index_db, crate::files::cache::SEARCH) {
+                Ok(c) => conn = Some(c),
+                Err(e) => {
+                    eprintln!("polylogue: search thread: open the index: {e}");
+                    continue;
+                }
+            }
+        }
+        if let Some(c) = &conn
+            && let Err(e) = write_pending_search(c, SEARCH_BATCH)
+        {
+            eprintln!("polylogue: search thread: {e}");
+        }
+    }
+}
+
+/// Search entries written per transaction by the search thread.
+const SEARCH_BATCH: i64 = 2_000;
+
+/// Writes waiting search entries, at most `limit` per transaction, until
+/// none wait; returns how many it wrote.
+fn write_pending_search(conn: &Connection, limit: i64) -> Result<u64> {
+    let mut written = 0;
+    loop {
+        // Immediate: it writes, and a deferred transaction that has read
+        // cannot wait for the writer's lock to upgrade.
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let rows: Vec<(i64, i64, Vec<u8>)> = tx
+            .prepare_cached(
+                "SELECT p.text_id, p.bit, t.body FROM search_pending p JOIN text t ON t.id = p.text_id
+                 ORDER BY p.text_id, p.bit LIMIT ?1",
+            )?
+            .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        if rows.is_empty() {
+            // Entries whose text was removed meanwhile (excision) are dropped.
+            tx.execute(
+                "DELETE FROM search_pending WHERE text_id NOT IN (SELECT id FROM text)",
+                [],
+            )?;
+            tx.commit()?;
+            return Ok(written);
+        }
+        for (id, bit, packed) in &rows {
+            let folded = polylogue_model::text::fold(&unpack_text(packed)?);
+            let sql = if *bit == 1 {
+                "INSERT INTO text_fts(rowid, body) VALUES (?1, ?2)"
+            } else {
+                "INSERT INTO output_fts(rowid, body) VALUES (?1, ?2)"
+            };
+            tx.prepare_cached(sql)?.execute(params![id, folded])?;
+            tx.prepare_cached("DELETE FROM search_pending WHERE text_id = ?1 AND bit = ?2")?
+                .execute(params![id, bit])?;
+        }
+        written += rows.len() as u64;
+        tx.commit()?;
+    }
+}
+
 // ------------------------------------------------------------------ index.db
 
 /// Writes a parse step's rows; returns the number of message rows written.
@@ -1006,6 +1276,7 @@ fn write_rows(
     p: &ParseStep,
     chain: i64,
     counter: i64,
+    bulk: bool,
 ) -> Result<u64> {
     tx.prepare_cached("INSERT OR IGNORE INTO input_ref(id) VALUES (?1)")?
         .execute([&b.input.id])?;
@@ -1020,6 +1291,7 @@ fn write_rows(
         parser_version: i64::from(p.parser_version),
         counter,
         packed: &p.packed,
+        bulk,
     };
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
@@ -1122,6 +1394,10 @@ struct Ctx<'a, 't> {
     parser_version: i64,
     counter: i64,
     packed: &'a HashMap<[u8; 32], Vec<u8>>,
+    /// A first build ([`Writer::start`]): search entries, trigram entries
+    /// and secondary indexes are built once, in bulk, when it ends
+    /// ([`Inner::build_deferred`]).
+    bulk: bool,
 }
 
 /// The preferred version of a message, as compared with a new one.
@@ -1593,12 +1869,14 @@ impl Ctx<'_, '_> {
             .query_map([message_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?;
         for (pk, command, path) in old_calls {
-            self.tx
-                .prepare_cached(
-                    "INSERT INTO tool_call_trigram(tool_call_trigram, rowid, command, path)
-                     VALUES ('delete', ?1, ?2, ?3)",
-                )?
-                .execute(params![pk, command, path])?;
+            if !self.bulk {
+                self.tx
+                    .prepare_cached(
+                        "INSERT INTO tool_call_trigram(tool_call_trigram, rowid, command, path)
+                         VALUES ('delete', ?1, ?2, ?3)",
+                    )?
+                    .execute(params![pk, command, path])?;
+            }
             self.tx
                 .prepare_cached("DELETE FROM tool_call WHERE pk = ?1")?
                 .execute([pk])?;
@@ -1754,11 +2032,13 @@ impl Ctx<'_, '_> {
                 path
             ])?;
         let pk = self.tx.last_insert_rowid();
-        self.tx
-            .prepare_cached(
-                "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
-            )?
-            .execute(params![pk, command, path])?;
+        if !self.bulk {
+            self.tx
+                .prepare_cached(
+                    "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
+                )?
+                .execute(params![pk, command, path])?;
+        }
         // The result may have been stored first (a late call record, or a
         // message replaced after its result arrived).
         let Some(call_id) = call_id else {
@@ -1804,21 +2084,26 @@ impl Ctx<'_, '_> {
                     Some(p) => std::borrow::Cow::Borrowed(p.as_slice()),
                     None => zstd::bulk::compress(body.as_bytes(), TEXT_LEVEL)?.into(),
                 };
+                // A first build marks the text for its search index now and
+                // writes the entry when the build ends.
+                let claimed = if self.bulk { bit } else { 0 };
                 self.tx
-                    .prepare_cached("INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, 0)")?
-                    .execute(params![&hash.as_bytes()[..], &*packed])?;
-                (self.tx.last_insert_rowid(), 0)
+                    .prepare_cached("INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, ?3)")?
+                    .execute(params![&hash.as_bytes()[..], &*packed, claimed])?;
+                (self.tx.last_insert_rowid(), claimed)
             }
         };
+        // `indexed` marks a text for its search index; the entry itself is
+        // written after this transaction commits: by the search thread, or by
+        // a first build in bulk when it ends.
         if indexed & bit == 0 {
-            let sql = if bit == 1 {
-                "INSERT INTO text_fts(rowid, body) VALUES (?1, ?2)"
-            } else {
-                "INSERT INTO output_fts(rowid, body) VALUES (?1, ?2)"
-            };
-            self.tx
-                .prepare_cached(sql)?
-                .execute(params![id, polylogue_model::text::fold(body)])?;
+            if !self.bulk {
+                self.tx
+                    .prepare_cached(
+                        "INSERT OR IGNORE INTO search_pending(text_id, bit) VALUES (?1, ?2)",
+                    )?
+                    .execute(params![id, bit])?;
+            }
             self.tx
                 .prepare_cached("UPDATE text SET indexed = indexed | ?2 WHERE id = ?1")?
                 .execute(params![id, bit])?;

@@ -272,7 +272,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
 }
 
 #[test]
-fn prose_and_tool_output_are_searchable_in_the_same_transaction() {
+fn prose_and_tool_output_are_searchable_after_a_flush() {
     let w = world();
     let mut m = text_message("a", "s", Role::User, "find the walrus", None);
     m.blocks.push(Block::ToolResult {
@@ -301,6 +301,57 @@ fn prose_and_tool_output_are_searchable_in_the_same_transaction() {
         n("SELECT COUNT(*) AS n FROM text_fts WHERE text_fts MATCH 'narwhal'"),
         0
     );
+}
+
+/// After a first build, new text reaches the search index from the search
+/// thread, without a flush, within the architecture's 2 s (5.5c); `status`
+/// counts it as pending until then.
+#[test]
+fn the_search_thread_indexes_live_writes_without_a_flush() {
+    let w = world();
+    w.writer
+        .send(batch(
+            "i",
+            0,
+            0,
+            vec![row(0, text_message("a", "s", Role::User, "first", None))],
+            &["s"],
+        ))
+        .unwrap();
+    w.writer.flush().unwrap(); // ends the first build
+    w.writer
+        .send(batch(
+            "j",
+            0,
+            0,
+            vec![row(
+                0,
+                text_message("b", "t", Role::User, "the okapi grazes", None),
+            )],
+            &["t"],
+        ))
+        .unwrap();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let started = std::time::Instant::now();
+    loop {
+        let r = pool.reader().unwrap();
+        let hits = r
+            .query(
+                "SELECT COUNT(*) AS n FROM text_fts WHERE text_fts MATCH 'okapi'",
+                &[],
+            )
+            .unwrap()[0]["n"]
+            .clone();
+        if hits == 1 {
+            assert_eq!(r.status().unwrap().search_pending, 0);
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "not indexed after 5 s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 #[test]

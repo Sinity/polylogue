@@ -72,6 +72,9 @@ pub struct Status {
     pub parse_states: BTreeMap<String, u64>,
     /// The most frequent record kinds and fields parsers did not read.
     pub unrecognized: Vec<(String, u64)>,
+    /// Texts stored but not yet in the search index: how far search lags
+    /// the writer (architecture 5.5c).
+    pub search_pending: u64,
 }
 
 impl ReadPool {
@@ -538,6 +541,7 @@ impl Reader<'_> {
             stored_bytes: count("SELECT COALESCE(SUM(size), 0) FROM a.blob")?,
             parse_states,
             unrecognized,
+            search_pending: count("SELECT COUNT(*) FROM search_pending")?,
         })
     }
 

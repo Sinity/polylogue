@@ -1331,6 +1331,7 @@ fn remove_text(i: &Transaction<'_>, id: i64, indexed: i64) -> Result<()> {
     if indexed & 2 != 0 {
         i.execute("DELETE FROM output_fts WHERE rowid = ?1", [id])?;
     }
+    i.execute("DELETE FROM search_pending WHERE text_id = ?1", [id])?;
     i.execute("DELETE FROM text WHERE id = ?1", [id])?;
     Ok(())
 }

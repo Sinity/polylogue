@@ -1,7 +1,8 @@
 //! Full-text search over prose (`text_fts`) and tool output (`output_fts`),
-//! and trigram search over commands and paths. The entries are written in
-//! the message transaction, so a record is searchable as soon as it is
-//! stored.
+//! and trigram search over commands and paths. A first build writes the
+//! entries in bulk when it ends; afterwards the search thread writes them
+//! shortly after their text commits (`search_pending`, architecture 5.5c),
+//! and a flush writes every waiting entry before it returns.
 //!
 //! The indexes are contentless: a hit is a `text.id`, and its snippet is
 //! cut from the stored (compressed) text. Text is folded the same way when
