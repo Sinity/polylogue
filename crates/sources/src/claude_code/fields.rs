@@ -53,7 +53,7 @@ pub const MESSAGE_FIELDS: Fields = &[
         "permissionMode",
         Excluded("mode changes arrive as permission-mode records"),
     ),
-    ("teamName", Excluded("not read yet")),
+    ("teamName", Read),
     ("forkedFrom", Read),
     ("sessionKind", Read),
     ("effort", Read),

@@ -160,6 +160,7 @@
               "status": "allowed"
             },
             "request": "r-1",
+            "request_id": "req_1",
             "requested_model": "model-a[1m]",
             "thinking_ms": 1200
           },

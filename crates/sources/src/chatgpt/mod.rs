@@ -24,7 +24,7 @@ use crate::fields::{Fields, Rule, unaccounted};
 use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, ErrorReason, Event, Json, Link, LinkKind, Message,
-    PromptKind, Role, Session, SessionKind, TitleSource, ToolOutcome,
+    PromptKind, Role, Session, SessionKind, TitleSource, ToolOutcome, UnknownReason,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -490,9 +490,11 @@ fn message(
         }
     }
 
+    // The model that answered, else the message's default, else the
+    // conversation's.
     let model = string_of(meta, "model_slug").or_else(|| {
         (role == Role::Assistant && recipient.is_none())
-            .then(|| default_model.map(str::to_owned))
+            .then(|| string_of(meta, "default_model_slug").or(default_model.map(str::to_owned)))
             .flatten()
     });
     Ok(Message {
@@ -549,6 +551,30 @@ fn content_text(content: &Json) -> Option<String> {
     None
 }
 
+/// Text without ChatGPT's inline citation marks: private-use characters
+/// around a reference (`\u{e200}cite\u{e202}turn0search1\u{e201}`). The
+/// references themselves stay in the message metadata.
+fn without_cite_marks(text: &str) -> String {
+    if !text.contains('\u{e200}') {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('\u{e200}') {
+        out.push_str(&rest[..start]);
+        match rest[start..].find('\u{e201}') {
+            Some(end) => rest = &rest[start + end + '\u{e201}'.len_utf8()..],
+            None => {
+                // An opener never closed is kept as written.
+                out.push_str(&rest[start..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn content_type(content: &Json) -> &str {
     content
         .get("content_type")
@@ -562,7 +588,9 @@ fn content_blocks(content: &Json, direction: AttachmentDirection) -> Vec<Block> 
     match content_type(content) {
         "text" => {
             if let Some(text) = content_text(content) {
-                blocks.push(Block::Text { text });
+                blocks.push(Block::Text {
+                    text: without_cite_marks(&text),
+                });
             }
         }
         "multimodal_text" => {
@@ -575,7 +603,7 @@ fn content_blocks(content: &Json, direction: AttachmentDirection) -> Vec<Block> 
                 if let Some(text) = part.as_str() {
                     if !text.is_empty() {
                         blocks.push(Block::Text {
-                            text: text.to_owned(),
+                            text: without_cite_marks(text),
                         });
                     }
                     continue;
@@ -645,6 +673,11 @@ fn part_block(part: &Json, direction: AttachmentDirection) -> Block {
         .and_then(Json::as_str)
         .unwrap_or("");
     match kind {
+        // A media part whose pointer is missing names no file to attach.
+        k if k.ends_with("asset_pointer") && part.get("asset_pointer").is_none() => Block::Other {
+            type_name: kind.to_owned(),
+            data: part.clone(),
+        },
         "image_asset_pointer" => Block::Image(asset(part, direction)),
         "audio_transcription" => match string_of(part, "text") {
             Some(text) => Block::Text { text },
@@ -733,7 +766,14 @@ fn metadata_attachments(meta: &Json, direction: AttachmentDirection) -> Vec<Bloc
 fn tool_call(native: &str, tool: &str, content: &Json) -> Block {
     let text = content_text(content);
     let input = match content_type(content) {
-        "code" | "text" => text.clone().map(Json::String).unwrap_or(Json::Null),
+        // A tool's arguments are often JSON written as text.
+        "text" => text
+            .as_deref()
+            .and_then(|t| serde_json::from_str::<Json>(t).ok())
+            .filter(Json::is_object)
+            .or_else(|| text.clone().map(Json::String))
+            .unwrap_or(Json::Null),
+        "code" => text.clone().map(Json::String).unwrap_or(Json::Null),
         _ => content.clone(),
     };
     // A code tool's input is the code it runs.
@@ -808,7 +848,10 @@ fn outcome(kind: &str, msg: &Json, meta: &Json) -> ToolOutcome {
         }
     }
     match str_of(msg, "status") {
-        Some("finished_successfully") | None => ToolOutcome::Ok,
+        Some("finished_successfully") => ToolOutcome::Ok,
+        None => ToolOutcome::Unknown {
+            reason: UnknownReason::StatusFieldUnreadable,
+        },
         Some("in_progress") => ToolOutcome::NoResult,
         Some(_) => ToolOutcome::Error {
             reason: Some(ErrorReason::Interrupted),

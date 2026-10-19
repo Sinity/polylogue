@@ -162,10 +162,11 @@ pub struct Carry {
     /// children follow their parents closely.
     #[serde(default)]
     aliases: VecDeque<(String, Option<MessageId>)>,
-    /// The plan name (`slug`) last recorded per session, so a session's
-    /// `plan` event is sent once per name, not with every record.
+    /// The session-wide names (plan `slug`, `teamName`) last recorded, by
+    /// kind and session, so each event is sent once per name, not with
+    /// every record.
     #[serde(default)]
-    slugs: BTreeMap<String, String>,
+    names: BTreeMap<String, String>,
 }
 
 /// How many record aliases a parser keeps.
@@ -330,31 +331,51 @@ impl ClaudeCode {
         Some(id)
     }
 
-    /// A session names its plan file (`plans/<slug>.md`) by `slug` on its
-    /// records. Sent as a `plan` event when the name first appears or
-    /// changes, so readers find the plan from the session.
-    fn plan(&self, carry: &mut Carry, record: Record<'_>, v: &Json, out: &mut Output) {
-        let Some(slug) = str_field(v, "slug") else {
-            return;
-        };
+    /// Session-wide names carried on every record: the plan file the
+    /// session writes (`slug`, as `plans/<slug>.md`) and the agent team it
+    /// belongs to (`teamName`). Each is sent as an event when it first
+    /// appears or changes, so readers find it from the session.
+    fn names(&self, carry: &mut Carry, record: Record<'_>, v: &Json, out: &mut Output) {
+        if let Some(slug) = str_field(v, "slug") {
+            let data = serde_json::json!({ "slug": slug, "file": format!("plans/{slug}.md") });
+            self.name_event(carry, record, v, out, "plan", slug, data);
+        }
+        if let Some(team) = str_field(v, "teamName") {
+            let data = serde_json::json!({ "team": team });
+            self.name_event(carry, record, v, out, "team", team, data);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn name_event(
+        &self,
+        carry: &mut Carry,
+        record: Record<'_>,
+        v: &Json,
+        out: &mut Output,
+        kind: &str,
+        name: &str,
+        data: Json,
+    ) {
         let Some(stem) = str_field(v, "sessionId").or(match &self.file {
             File::Main { stem } | File::Subagent { stem } => Some(stem.as_str()),
             File::Journal { .. } => None,
         }) else {
             return;
         };
-        if carry.slugs.get(stem).map(String::as_str) == Some(slug) {
+        let key = format!("{kind}\u{0}{stem}");
+        if carry.names.get(&key).map(String::as_str) == Some(name) {
             return;
         }
-        carry.slugs.insert(stem.to_owned(), slug.to_owned());
+        carry.names.insert(key, name.to_owned());
         if let Some(session) = session_id(stem) {
             out.events.push(Event {
                 session,
-                kind: "plan".to_owned(),
+                kind: kind.to_owned(),
                 at: v.get("timestamp").and_then(time::rfc3339),
                 after: carry.last.clone(),
                 range: Some(range(record)),
-                data: serde_json::json!({ "slug": slug, "file": format!("plans/{slug}.md") }),
+                data,
             });
         }
     }
@@ -714,6 +735,7 @@ fn production(v: &Json, msg: &Json) -> Production {
         refusal: kept(msg.get("stop_details")),
         permission: kept(v.get("permissionDecision")),
         request: s("requestRef"),
+        request_id: s("requestId"),
         turn_origin: s("turnOrigin"),
         quota: kept(v.get("quotaLimits")),
     }
@@ -813,7 +835,7 @@ impl Parser for ClaudeCode {
                 .and_then(|p| carry.resolve(p));
             carry.alias(uuid, target);
         }
-        self.plan(carry, record, v, out);
+        self.names(carry, record, v, out);
         match ty {
             "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {
                 self.event(carry, record, v, "compaction_summary", out)

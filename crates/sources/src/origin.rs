@@ -121,7 +121,7 @@ macro_rules! reserved {
 pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code",
-        parser_version: 4,
+        parser_version: 5,
         support: Support::Parsed,
         route: Route::Live,
         framing: Framing::Lines,
@@ -242,7 +242,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "browser-capture",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Spool,
         framing: Framing::Document,
@@ -278,7 +278,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "chatgpt",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
         framing: Framing::Document,
@@ -314,7 +314,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Spool,
         framing: Framing::Document,

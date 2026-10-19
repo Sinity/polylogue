@@ -98,6 +98,9 @@ pub struct Production {
     /// which its request records carry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<String>,
+    /// The model API's own ID for the request (Anthropic `requestId`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     /// What started the turn, when not a person at the terminal (`sdk`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_origin: Option<String>,
@@ -136,6 +139,7 @@ impl Production {
         take(&mut self.refusal, later.refusal);
         take(&mut self.permission, later.permission);
         take(&mut self.request, later.request);
+        take(&mut self.request_id, later.request_id);
         take(&mut self.turn_origin, later.turn_origin);
         take(&mut self.quota, later.quota);
     }
