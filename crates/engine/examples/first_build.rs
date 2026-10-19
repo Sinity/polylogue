@@ -349,6 +349,11 @@ fn main() {
             "written_over_input": wchar as f64 / input.max(1) as f64,
             "exports_mb": dir_size(&archive.exports_dir()) as f64 / 1e6,
             "peak_rss_mb": peak_rss_mb,
+            // Seconds per stage; pool stages are thread-seconds.
+            "stages": polylogue_store::timing::snapshot()
+                .into_iter()
+                .map(|(s, secs)| (s.name().to_owned(), serde_json::json!(secs)))
+                .collect::<serde_json::Map<_, _>>(),
             "errors": pass.errors.len(),
             "first_errors": pass.errors.iter().take(5).collect::<Vec<_>>(),
         })

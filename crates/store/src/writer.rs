@@ -604,11 +604,13 @@ impl Inner {
                 }
             }
             if !group.is_empty() {
-                self.write_group(&group);
+                crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&group));
                 // Derived rows follow every commit; a first build derives
                 // once, after its indexes exist.
                 if !self.unsynced
-                    && let Err(e) = crate::derive::run(&mut self.index)
+                    && let Err(e) = crate::timing::time(crate::timing::Stage::Derive, || {
+                        crate::derive::run(&mut self.index)
+                    })
                 {
                     self.report.errors.push(format!("derive: {e}"));
                 }
@@ -622,9 +624,11 @@ impl Inner {
             if !derives.is_empty() {
                 // A first build's indexes exist before anything is derived
                 // from its rows.
-                let result = self
-                    .settle()
-                    .and_then(|()| crate::derive::run(&mut self.index));
+                let result = self.settle().and_then(|()| {
+                    crate::timing::time(crate::timing::Stage::Derive, || {
+                        crate::derive::run(&mut self.index)
+                    })
+                });
                 for reply in derives.drain(..) {
                     let _ = reply.send(match &result {
                         Ok(n) => Ok(*n),
@@ -639,7 +643,9 @@ impl Inner {
             }
             // Whatever a flush reports written is also derived.
             if !flushes.is_empty()
-                && let Err(e) = crate::derive::run(&mut self.index)
+                && let Err(e) = crate::timing::time(crate::timing::Stage::Derive, || {
+                    crate::derive::run(&mut self.index)
+                })
             {
                 self.report.errors.push(format!("derive: {e}"));
             }
@@ -665,6 +671,7 @@ impl Inner {
             return Ok(());
         }
         self.build_deferred()?;
+        let synced = std::time::Instant::now();
         let i = &self.index;
         i.pragma_update(None, "synchronous", "full")?;
         // Back to WAL, so readers and the writer stop waiting on each
@@ -672,6 +679,7 @@ impl Inner {
         i.query_row("PRAGMA journal_mode = wal", [], |_| Ok(()))?;
         i.execute("UPDATE meta SET value = '0' WHERE key = 'unsynced'", [])?;
         i.pragma_update(None, "synchronous", "normal")?;
+        crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
         self.unsynced = false;
         self.search.ready();
         Ok(())
@@ -682,7 +690,9 @@ impl Inner {
     /// secondary indexes it dropped. Each from one ordered scan, so the
     /// indexes are written once instead of rewritten through the build.
     fn build_deferred(&mut self) -> Result<()> {
+        use crate::timing::{Stage, add};
         const CHUNK: i64 = 100_000;
+        let started = std::time::Instant::now();
         for (bit, table) in [(1i64, "text_fts"), (2, "output_fts")] {
             let mut after = 0i64;
             loop {
@@ -730,13 +740,18 @@ impl Inner {
                 after = last;
             }
         }
+        add(Stage::SearchIndex, started.elapsed());
+        let started = std::time::Instant::now();
         self.index.execute(
             "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
             [],
         )?;
+        add(Stage::TrigramIndex, started.elapsed());
+        let started = std::time::Instant::now();
         for sql in std::mem::take(&mut self.deferred_indexes) {
             self.index.execute(&sql, [])?;
         }
+        add(Stage::SecondaryIndexes, started.elapsed());
         Ok(())
     }
 
