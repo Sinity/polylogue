@@ -31,6 +31,7 @@
           "at": "2026-03-01T10:00:02Z",
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_r",
               "command": "cargo test",
               "input": {
@@ -74,6 +75,7 @@
           "at": "2026-03-01T10:00:04Z",
           "blocks": [
             {
+              "action": "other",
               "call_id": "call_w",
               "input": {
                 "chars": "",

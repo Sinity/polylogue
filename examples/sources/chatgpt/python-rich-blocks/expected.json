@@ -58,6 +58,7 @@
           "at": "1970-01-01T00:00:02Z",
           "blocks": [
             {
+              "action": "code",
               "call_id": "call",
               "command": "6 * 7",
               "input": "6 * 7",
@@ -117,6 +118,7 @@
           "at": "1970-01-01T00:00:05Z",
           "blocks": [
             {
+              "action": "web",
               "call_id": "search",
               "input": {
                 "search_query": "synthetic"

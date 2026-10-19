@@ -13,7 +13,7 @@ use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     Block, ErrorReason, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource,
-    ToolOutcome, Usage,
+    ToolAction, ToolOutcome, Usage,
 };
 use std::path::Path;
 
@@ -206,6 +206,22 @@ fn text_of(content: Option<&Json>) -> Option<String> {
     }
 }
 
+/// What a Gemini CLI tool does, by its name. MCP tools are named
+/// `mcp_<server>_<tool>`.
+fn action(tool: &str) -> ToolAction {
+    match tool {
+        "run_shell_command" => ToolAction::Shell,
+        "read_file" | "read_many_files" => ToolAction::FileRead,
+        "write_file" => ToolAction::FileWrite,
+        "replace" | "edit" => ToolAction::FileEdit,
+        "glob" | "grep_search" | "search_file_content" | "list_directory" => ToolAction::Search,
+        "google_web_search" | "web_fetch" => ToolAction::Web,
+        "codebase_investigator" => ToolAction::Subagent,
+        t if t.starts_with("mcp_") => ToolAction::Mcp,
+        _ => ToolAction::Other,
+    }
+}
+
 fn blocks(m: &Json) -> Vec<Block> {
     let mut out = Vec::new();
     for t in m
@@ -237,6 +253,7 @@ fn blocks(m: &Json) -> Vec<Block> {
         out.push(Block::ToolCall {
             call_id: string_of(call, "id"),
             tool: string_of(call, "name"),
+            action: action(str_of(call, "name").unwrap_or("")),
             command: args
                 .get("command")
                 .and_then(Json::as_str)

@@ -50,6 +50,7 @@ pub(crate) fn conversation() -> Vec<Message> {
                 Block::ToolCall {
                     call_id: Some("c1".into()),
                     tool: Some("Bash".into()),
+                    action: polylogue_model::ToolAction::Shell,
                     input: serde_json::json!({"command": "cargo test"}),
                     command: Some("cargo test".into()),
                     path: None,

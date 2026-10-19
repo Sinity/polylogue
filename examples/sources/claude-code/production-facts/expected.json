@@ -130,6 +130,7 @@
           "at": "2026-09-01T08:00:05Z",
           "blocks": [
             {
+              "action": "shell",
               "call_id": "tu1",
               "command": "make check",
               "input": {

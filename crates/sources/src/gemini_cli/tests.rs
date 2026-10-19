@@ -36,7 +36,12 @@ fn a_turn_with_a_tool_call_and_its_result() {
     assert_eq!(msgs[1].usage.cached_input, Some(60));
     assert_eq!(msgs[1].usage.reasoning, Some(20));
     match &msgs[1].blocks[2] {
-        Block::ToolCall { command, .. } => assert_eq!(command.as_deref(), Some("ls")),
+        Block::ToolCall {
+            command, action, ..
+        } => {
+            assert_eq!(command.as_deref(), Some("ls"));
+            assert_eq!(*action, polylogue_model::ToolAction::Shell);
+        }
         other => panic!("{other:?}"),
     }
     match &msgs[1].blocks[3] {

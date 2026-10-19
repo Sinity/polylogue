@@ -23,7 +23,8 @@ pub use batch::{
     Output, RepoLookup,
 };
 pub use block::{
-    Attachment, AttachmentDirection, Block, BlockKind, ErrorReason, ToolOutcome, UnknownReason,
+    Attachment, AttachmentDirection, Block, BlockKind, ErrorReason, ToolAction, ToolOutcome,
+    UnknownReason,
 };
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
 pub use id::{BlobHash, IdError, MessageId, NativeId, Origin, SessionId};

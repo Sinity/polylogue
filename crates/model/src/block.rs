@@ -20,6 +20,10 @@ pub enum Block {
     ToolCall {
         call_id: Option<String>,
         tool: Option<String>,
+        /// What the call does, decided by the origin's parser from its own
+        /// tool names.
+        #[serde(default)]
+        action: ToolAction,
         input: Json,
         /// The shell command, when the call runs one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,6 +74,42 @@ stored_names!(BlockKind {
     ToolResult => "tool_result",
     Image => "image",
     File => "file",
+    Other => "other",
+});
+
+/// What a tool call does. Each origin's parser maps its own tool names to
+/// one of these; everything after the parser reads only the action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAction {
+    /// Runs a shell command; `command` holds it.
+    Shell,
+    /// Runs code in a sandbox (a Python cell, a code-mode script).
+    Code,
+    FileRead,
+    FileWrite,
+    FileEdit,
+    /// Searches files, symbols or tools.
+    Search,
+    Web,
+    /// Starts another agent.
+    Subagent,
+    /// A tool an MCP server provides.
+    Mcp,
+    #[default]
+    Other,
+}
+
+stored_names!(ToolAction {
+    Shell => "shell",
+    Code => "code",
+    FileRead => "file_read",
+    FileWrite => "file_write",
+    FileEdit => "file_edit",
+    Search => "search",
+    Web => "web",
+    Subagent => "subagent",
+    Mcp => "mcp",
     Other => "other",
 });
 

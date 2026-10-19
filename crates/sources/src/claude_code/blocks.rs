@@ -4,8 +4,8 @@
 use crate::parse::InlineBlob;
 use base64::Engine;
 use polylogue_model::{
-    Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Json, PromptKind, ToolOutcome,
-    UnknownReason,
+    Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Json, PromptKind, ToolAction,
+    ToolOutcome, UnknownReason,
 };
 
 /// The blocks of `message.content`, which is a string or an array.
@@ -31,6 +31,23 @@ fn string(v: &Json, key: &str) -> Option<String> {
     v.get(key).and_then(Json::as_str).map(str::to_owned)
 }
 
+/// What a Claude Code tool does, by its name. Server tools (`web_search`,
+/// `code_execution`) run on the API side under their own names.
+pub fn action(tool: &str) -> ToolAction {
+    match tool {
+        "Bash" | "BashOutput" | "KillShell" => ToolAction::Shell,
+        "Read" | "NotebookRead" => ToolAction::FileRead,
+        "Write" => ToolAction::FileWrite,
+        "Edit" | "MultiEdit" | "NotebookEdit" => ToolAction::FileEdit,
+        "Grep" | "Glob" | "LS" | "ToolSearch" => ToolAction::Search,
+        "WebFetch" | "WebSearch" | "web_search" | "web_fetch" => ToolAction::Web,
+        "code_execution" | "bash_code_execution" => ToolAction::Code,
+        "Task" | "Agent" => ToolAction::Subagent,
+        t if t.starts_with("mcp__") => ToolAction::Mcp,
+        _ => ToolAction::Other,
+    }
+}
+
 fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<InlineBlob>) -> Block {
     match ty(item) {
         "text" => Block::Text {
@@ -48,9 +65,11 @@ fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<InlineBl
         },
         "tool_use" | "server_tool_use" => {
             let input = item.get("input").cloned().unwrap_or(Json::Null);
+            let tool = string(item, "name");
             Block::ToolCall {
                 call_id: string(item, "id"),
-                tool: string(item, "name"),
+                action: action(tool.as_deref().unwrap_or("")),
+                tool,
                 command: string(&input, "command"),
                 path: ["file_path", "notebook_path", "path"]
                     .iter()

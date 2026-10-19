@@ -263,7 +263,7 @@ CREATE TABLE tool_call (
   result_block_pk   INTEGER,                -- NULL until the result is seen
   at                INTEGER,
   tool              TEXT NOT NULL,
-  action            TEXT,                   -- derived (tool_calls); NULL until derived: shell | code | file_read | file_write | file_edit | search | web | subagent | mcp | other
+  action            TEXT,                   -- the parser's ToolAction: shell | code | file_read | file_write | file_edit | search | web | subagent | mcp | other
   command           TEXT,                   -- as given
   command_norm      TEXT,                   -- derived (tool_calls): 'cargo test', 'git commit' (analysis.md)
   path              TEXT,                   -- file path argument, when the tool has one

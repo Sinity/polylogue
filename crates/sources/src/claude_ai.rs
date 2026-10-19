@@ -15,7 +15,7 @@ use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Event, Json, Message, PromptKind, Role, Session,
-    SessionId, SessionKind, TitleSource, ToolOutcome,
+    SessionId, SessionKind, TitleSource, ToolAction, ToolOutcome,
 };
 use std::path::Path;
 
@@ -311,6 +311,7 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
         "tool_use" => Block::ToolCall {
             call_id: string_of(b, "id"),
             tool: string_of(b, "name"),
+            action: action(str_of(b, "name").unwrap_or("")),
             input: b.get("input").cloned().unwrap_or(Json::Null),
             command: b
                 .pointer("/input/command")
@@ -329,6 +330,16 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
             data: b.clone(),
         },
     })
+}
+
+/// What a claude.ai tool does, by its name.
+fn action(tool: &str) -> ToolAction {
+    match tool {
+        "web_search" | "web_fetch" => ToolAction::Web,
+        "repl" | "analysis" => ToolAction::Code,
+        "google_drive_search" | "conversation_search" | "recent_chats" => ToolAction::Search,
+        _ => ToolAction::Other,
+    }
 }
 
 fn tool_result(b: &Json, direction: AttachmentDirection) -> Block {

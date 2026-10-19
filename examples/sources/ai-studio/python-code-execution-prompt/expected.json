@@ -62,6 +62,7 @@
           "at": "2025-02-02T09:00:10Z",
           "blocks": [
             {
+              "action": "code",
               "call_id": "code_execution_prompt#2:code1",
               "command": "print(2+2)",
               "input": {

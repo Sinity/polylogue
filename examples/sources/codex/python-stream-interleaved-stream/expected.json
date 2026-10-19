@@ -82,6 +82,7 @@
         "message": {
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_git",
               "command": "git status",
               "input": {
@@ -139,6 +140,7 @@
         "message": {
           "blocks": [
             {
+              "action": "other",
               "call_id": "call_read",
               "input": {
                 "path": "README.md"

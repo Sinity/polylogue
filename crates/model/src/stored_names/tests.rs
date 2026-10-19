@@ -1,6 +1,6 @@
 use crate::{
     Block, BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, LinkKind, PromptKind, Role, SessionKind,
-    WorkEdgeKind, WorkNodeKind,
+    ToolAction, WorkEdgeKind, WorkNodeKind,
 };
 
 fn serde_name<T: serde::Serialize>(v: T) -> String {
@@ -29,6 +29,7 @@ fn stored_names_are_the_serde_names() {
     check!(PromptKind);
     check!(WorkNodeKind);
     check!(WorkEdgeKind);
+    check!(ToolAction);
 }
 
 #[test]
@@ -43,6 +44,7 @@ fn block_kind_names_are_the_serde_tags() {
         Block::ToolCall {
             call_id: None,
             tool: None,
+            action: ToolAction::Other,
             input: serde_json::Value::Null,
             command: None,
             path: None,

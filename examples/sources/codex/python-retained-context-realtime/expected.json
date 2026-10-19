@@ -43,6 +43,7 @@
           "at": "2026-09-01T10:00:02Z",
           "blocks": [
             {
+              "action": "other",
               "call_id": "call_sample_question",
               "input": {
                 "questions": [

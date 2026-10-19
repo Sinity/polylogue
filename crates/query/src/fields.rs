@@ -299,18 +299,6 @@ static MESSAGE_HAS_NAMES: [&str; 4] = has_names(&MESSAGE_HAS);
 
 pub const TOOL_OUTCOMES: &[&str] = &["ok", "error", "pending", "unknown"];
 pub const SESSION_OUTCOMES: &[&str] = &["solved", "partial", "abandoned", "none"];
-pub const ACTIONS: &[&str] = &[
-    "shell",
-    "code",
-    "file_read",
-    "file_write",
-    "file_edit",
-    "search",
-    "web",
-    "subagent",
-    "mcp",
-    "other",
-];
 
 pub static FIELDS: &[Field] = &[
     // sessions
@@ -654,7 +642,7 @@ pub static FIELDS: &[Field] = &[
     v(
         ToolCalls,
         "action",
-        ACTIONS,
+        polylogue_model::ToolAction::NAMES,
         "shell, file_read, file_write, file_edit, search, web, …",
     ).sql("{t}.action"),
     f(

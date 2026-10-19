@@ -22,6 +22,7 @@
         "message": {
           "blocks": [
             {
+              "action": "code",
               "call_id": "call-a",
               "command": "const r = await tools.exec_command({\"cmd\":\"pytest -q\",\"workdir\":\"/repo\"});\ntext(r.output);",
               "input": "const r = await tools.exec_command({\"cmd\":\"pytest -q\",\"workdir\":\"/repo\"});\ntext(r.output);",
@@ -40,6 +41,7 @@
         "message": {
           "blocks": [
             {
+              "action": "shell",
               "call_id": "exec-aaaa1111",
               "command": "pytest -q",
               "input": {
@@ -104,6 +106,7 @@
         "message": {
           "blocks": [
             {
+              "action": "code",
               "call_id": "call-b",
               "command": "const r = await tools.exec_command({\"cmd\":\"build.sh\",\"workdir\":\"/repo\",\"yield_time_ms\":1000});\ntext(r.output);",
               "input": "const r = await tools.exec_command({\"cmd\":\"build.sh\",\"workdir\":\"/repo\",\"yield_time_ms\":1000});\ntext(r.output);",
@@ -143,6 +146,7 @@
         "message": {
           "blocks": [
             {
+              "action": "shell",
               "call_id": "exec-bbbb2222",
               "command": "build.sh",
               "input": {
@@ -183,6 +187,7 @@
         "message": {
           "blocks": [
             {
+              "action": "code",
               "call_id": "call-c",
               "command": "for (const p of paths) {\n  await tools.exec_command({cmd: \"wc -l \" + p});\n}",
               "input": "for (const p of paths) {\n  await tools.exec_command({cmd: \"wc -l \" + p});\n}",
@@ -201,6 +206,7 @@
         "message": {
           "blocks": [
             {
+              "action": "shell",
               "call_id": "exec-cccc3333",
               "command": "wc -l alpha.py",
               "input": {
@@ -241,6 +247,7 @@
         "message": {
           "blocks": [
             {
+              "action": "shell",
               "call_id": "exec-dddd4444",
               "command": "wc -l beta.py",
               "input": {
@@ -305,6 +312,7 @@
         "message": {
           "blocks": [
             {
+              "action": "code",
               "call_id": "call-d",
               "command": "await tools.apply_patch({input: \"*** Begin Patch\\n*** Update File: alpha.py\\n*** End Patch\"});",
               "input": "await tools.apply_patch({input: \"*** Begin Patch\\n*** Update File: alpha.py\\n*** End Patch\"});",
@@ -323,6 +331,7 @@
         "message": {
           "blocks": [
             {
+              "action": "file_edit",
               "call_id": "exec-eeee5555",
               "input": {
                 "/repo/alpha.py": {

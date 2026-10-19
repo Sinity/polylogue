@@ -20,7 +20,7 @@ use crate::{Accounting, Disposition};
 use base64::Engine as _;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Link, LinkKind, Message,
-    PromptKind, Role, Session, SessionKind, TitleSource, ToolOutcome, Usage,
+    PromptKind, Role, Session, SessionKind, TitleSource, ToolAction, ToolOutcome, Usage,
 };
 use std::path::Path;
 
@@ -336,6 +336,7 @@ impl AiStudio {
                 blocks.push(Block::ToolCall {
                     call_id: Some(format!("{native}:code{calls}")),
                     tool: Some("code_execution".into()),
+                    action: ToolAction::Code,
                     input: code.clone(),
                     command: string_of(code, "code"),
                     path: None,

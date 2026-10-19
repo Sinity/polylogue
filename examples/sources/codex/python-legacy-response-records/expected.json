@@ -56,6 +56,7 @@
         "message": {
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_sample_ok",
               "command": "ls sample",
               "input": {
@@ -99,6 +100,7 @@
         "message": {
           "blocks": [
             {
+              "action": "shell",
               "call_id": "call_sample_fail",
               "command": "cat sample/missing.txt",
               "input": {
