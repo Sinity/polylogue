@@ -205,6 +205,7 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 Err(_) => error("internal", "the convergence loop has stopped"),
             }
         }
+        Request::Export { sessions, format } => export(&reader, &sessions, &format),
         Request::AddNote { request_id, note } => {
             drop(reader);
             write(d, request_id, UserWrite::AddNote { note })
@@ -302,6 +303,48 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
             error("not_built", format!("`{op}` is not built yet"))
         }
     }
+}
+
+/// Whole sessions in the export format (`json`, lossless and read back by
+/// `import`) or rendered as Markdown or HTML.
+fn export(
+    reader: &polylogue_store::Reader<'_>,
+    ids: &[polylogue_model::SessionId],
+    format: &str,
+) -> Response {
+    let mut sessions = Vec::new();
+    for id in ids {
+        match reader.session_export(id) {
+            Ok(Some(s)) => sessions.push(s),
+            Ok(None) => return error("not_found", format!("no session {id}")),
+            Err(e) => return store_error(&e),
+        }
+    }
+    let doc = polylogue_model::export::Document::new(sessions);
+    if format == "json" {
+        return match serde_json::to_value(&doc) {
+            Ok(v) => Response::Ok { data: v },
+            Err(e) => error("internal", e),
+        };
+    }
+    let Some(f) = polylogue_render::Format::parse(format) else {
+        return error("bad_request", format!("unknown export format {format:?}"));
+    };
+    let mut items = Vec::new();
+    for s in &doc.sessions {
+        items.push(polylogue_render::Rendered::SessionHeader(&s.session));
+        for m in &s.messages {
+            items.push(polylogue_render::Rendered::Message(m));
+        }
+        for e in &s.events {
+            items.push(polylogue_render::Rendered::Event(e));
+        }
+    }
+    let mut out = Vec::new();
+    if let Err(e) = polylogue_render::render(&items, f, polylogue_render::View::Full, &mut out) {
+        return error("internal", e);
+    }
+    ok(serde_json::json!({ "format": format, "content": String::from_utf8_lossy(&out) }))
 }
 
 fn serve_client(stream: UnixStream, d: &Daemon) {
