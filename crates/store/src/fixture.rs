@@ -284,6 +284,40 @@ impl Fixture {
         Ok(())
     }
 
+    /// A model message's token lanes, priced by the build's catalog the way
+    /// the writer prices them, and the quota state the tool sent with it.
+    pub fn usage(
+        &mut self,
+        message_pk: i64,
+        usage: &polylogue_model::Usage,
+        quota: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let model: Option<String> = self.index.query_row(
+            "SELECT model FROM message WHERE pk = ?1",
+            [message_pk],
+            |r| r.get(0),
+        )?;
+        let cost = polylogue_model::Catalog::builtin().cost_nusd(model.as_deref(), usage);
+        let n = |x: Option<u64>| x.map(|x| x as i64);
+        let attrs = quota.map(|q| serde_json::json!({"production": {"quota": q}}).to_string());
+        self.index.execute(
+            "UPDATE message SET input_tokens = ?2, cache_read_tokens = ?3, cache_write_tokens = ?4,
+                 output_tokens = ?5, reasoning_tokens = ?6, cost_nusd = ?7, attrs_json = ?8
+             WHERE pk = ?1",
+            params![
+                message_pk,
+                n(usage.input),
+                n(usage.cached_input),
+                n(usage.cache_write),
+                n(usage.output),
+                n(usage.reasoning),
+                cost,
+                attrs
+            ],
+        )?;
+        Ok(())
+    }
+
     /// A note on `target` (`session:<id>`, `message:<id>`, `note:<root>`).
     /// Returns its ID, which is also its family's root.
     pub fn note(

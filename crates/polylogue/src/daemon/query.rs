@@ -181,7 +181,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     Ok(out)
 }
 
-fn values(params: &[Param]) -> Vec<SqlValue> {
+pub(crate) fn values(params: &[Param]) -> Vec<SqlValue> {
     params
         .iter()
         .map(|p| match p {

@@ -325,6 +325,7 @@ impl Writer {
     /// marked when the archive is next opened is set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
         let index = open_write(&archive.index_db(), crate::files::cache::INDEX_WRITER)?;
+        crate::cost::reprice(&index, polylogue_model::Catalog::builtin())?;
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
@@ -1474,16 +1475,16 @@ impl Ctx<'_, '_> {
                  source_end = ?27, in_progress = ?15, input_tokens = ?16, output_tokens = ?17,
                  cache_read_tokens = ?18, cache_write_tokens = ?19, reasoning_tokens = ?20,
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
-                 words = ?25, parser_version = ?26
+                 words = ?25, parser_version = ?26, cost_nusd = ?28, provider_cost_nusd = ?29
              WHERE pk = ?1"
         } else {
             "INSERT INTO message(id, session_pk, order_input_pk, seq, route_rank, role, written_by,
                  prompt_kind, model, at, parent_id, input_pk, source_chain, source_start,
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
-                 attrs_json, words, parser_version)
+                 attrs_json, words, parser_version, cost_nusd, provider_cost_nusd)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?27, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)"
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?28, ?29)"
         };
         let first: rusqlite::types::Value = match pk {
             Some(pk) => pk.into(),
@@ -1517,6 +1518,8 @@ impl Ctx<'_, '_> {
             words,
             self.parser_version,
             v.end,
+            polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
+            crate::cost::reported_nusd(m.reported_cost_usd.as_ref()),
         ])?;
         Ok(pk.unwrap_or_else(|| self.tx.last_insert_rowid()))
     }

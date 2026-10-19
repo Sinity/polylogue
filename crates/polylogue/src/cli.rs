@@ -257,10 +257,28 @@ pub enum HooksCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum MeasureCommand {
+    /// Token lanes and cost by model, over a sessions query or everything.
     Usage(QueryArgs),
+    /// The same report as `usage`: cost sits beside the tokens it prices.
     Cost(QueryArgs),
     /// The 5-hour and weekly subscription windows: burn and forecast.
     Quota,
+    /// Tool outcomes: ok, error, no result and unknown, never one rate.
+    Outcomes(QueryArgs),
+    /// Time to a session's first failed tool call (Kaplan-Meier).
+    Survival {
+        /// Count human prompts instead of minutes.
+        #[arg(long)]
+        turns: bool,
+        query: Vec<String>,
+    },
+    /// A daily series with its 7-day baseline and level changes:
+    /// tokens, api_cost, sessions, prompts or tool_errors.
+    Daily { metric: String, query: Vec<String> },
+    /// Which tool call follows which, and what follows a failure.
+    Process(QueryArgs),
+    /// Prompts by weekday and hour.
+    Rhythm(QueryArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -497,6 +515,23 @@ pub fn run(args: Args) -> ExitCode {
             value,
             machine,
         },
+        Some(Command::Measure(m)) => {
+            let q = |words: Vec<String>| (!words.is_empty()).then(|| words.join(" "));
+            let (what, query) = match m {
+                MeasureCommand::Usage(a) => ("usage".to_owned(), q(a.query)),
+                MeasureCommand::Cost(a) => ("cost".to_owned(), q(a.query)),
+                MeasureCommand::Quota => ("quota".to_owned(), None),
+                MeasureCommand::Outcomes(a) => ("outcomes".to_owned(), q(a.query)),
+                MeasureCommand::Survival { turns, query } => (
+                    if turns { "survival-turns" } else { "survival" }.to_owned(),
+                    q(query),
+                ),
+                MeasureCommand::Daily { metric, query } => (format!("daily:{metric}"), q(query)),
+                MeasureCommand::Process(a) => ("process".to_owned(), q(a.query)),
+                MeasureCommand::Rhythm(a) => ("rhythm".to_owned(), q(a.query)),
+            };
+            Request::Measure { what, query }
+        }
         Some(Command::Note(n)) => match note_request(n) {
             Ok(r) => r,
             Err(message) => return fail(json, "bad_request", &message, 2),
@@ -985,6 +1020,7 @@ fn print_plain(request: &Request, data: &serde_json::Value) {
         Request::Context { .. } => {
             print!("{}", s(&data["prepared"]["text"]));
         }
+        Request::Measure { what, .. } => print!("{}", crate::measure_text::render(what, data)),
         Request::Notes { .. } => {
             for n in data.as_array().into_iter().flatten() {
                 let targets: Vec<String> = n["targets"]
