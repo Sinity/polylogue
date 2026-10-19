@@ -16,6 +16,7 @@ fn opts(saved: &[(&str, &str)]) -> Options {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect(),
+        kept: Default::default(),
     }
 }
 

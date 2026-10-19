@@ -95,6 +95,7 @@ fn sessions(
         embeddings: false,
         self_session: None,
         saved: Default::default(),
+        kept: Default::default(),
     };
     let program = polylogue_query::compile(text, &opts).map_err(|e| error(e.kind(), e))?;
     if program.unit != Unit::Sessions || program.shape != Shape::Rows {

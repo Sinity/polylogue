@@ -522,6 +522,7 @@ pub static UNITS: &[UnitSpec] = &[
             ("start", T("{r}.start"), Time),
             ("end", T("{r}.end"), Time),
             ("burst", T("{r}.burst"), Number),
+            ("prompts", T("{r}.prompts"), Text),
             ("slash_command", T("{r}.slash_command"), Number),
             ("answer", T("{r}.answer"), Text),
             ("attempts", T("{r}.attempts"), Number),
@@ -699,8 +700,10 @@ pub static UNITS: &[UnitSpec] = &[
 ];
 
 /// One row per turn (spec query.md, turns): along the active path (or file
-/// order), a turn starts at a human prompt that follows a non-human message
-/// or is a slash command, and runs until the next one.
+/// order when it is unknown), a turn starts at a human prompt that does not
+/// follow another prompt, or at a typed command, and runs until the next
+/// such start; a session with no prompt is one turn. Copies are counted in
+/// the session that originated them, so inherited messages are left out.
 const TURNS: &str = "(SELECT g.*, \
      (SELECT count(*) FROM message ax WHERE ax.parent_id = g.last_prompt \
         AND ax.written_by = 'model') AS attempts, \
@@ -716,6 +719,7 @@ const TURNS: &str = "(SELECT g.*, \
        max(CASE WHEN tm.hp THEN tm.at END) AS last_prompt_at, \
        min(tm.at) AS start, max(COALESCE(tm.completed_at, tm.at)) AS \"end\", \
        sum(tm.hp) AS burst, \
+       json_group_array(tm.id ORDER BY tm.ord) FILTER (WHERE tm.hp) AS prompts, \
        substr(min(printf('%012d ', tm.ord) || COALESCE(tm.prompt_kind, '')), 14) = 'command' AS slash_command, \
        substr(max(CASE WHEN tm.written_by = 'model' THEN printf('%012d ', tm.ord) || tm.id END), 14) AS answer, \
        CASE WHEN min(COALESCE(tm.on_active_path, -1)) < 0 THEN 'unknown' ELSE 'active' END AS path, \

@@ -110,6 +110,14 @@ pub enum Command {
         #[arg(long)]
         limit: Option<u64>,
     },
+    /// Run a query and keep the rows it returned, to read back later as
+    /// `result:<id>` (or `result:<id>.matches`) exactly as they were.
+    Keep {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(trailing_var_arg = true, required = true)]
+        query: Vec<String>,
+    },
     /// Read-only SQL over the stable views.
     Sql { statement: String },
     /// Remove content permanently from every file and derived product:
@@ -392,6 +400,11 @@ pub fn run(args: Args) -> ExitCode {
             };
         }
         Some(Command::Status) => Request::Status,
+        Some(Command::Keep { name, query }) => Request::Keep {
+            request_id: request_id(),
+            text: query.join(" "),
+            name,
+        },
         Some(Command::List(q)) if q.query.is_empty() => Request::List {
             limit: q.limit.unwrap_or(50),
             before: None,
@@ -1012,15 +1025,29 @@ fn fail_detail(
     ExitCode::from(code)
 }
 
+/// A word as the shell reads it back: bare when it is plain, else quoted.
+fn shell_quote(w: &str) -> String {
+    if !w.is_empty()
+        && w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
+    {
+        w.to_owned()
+    } else {
+        format!("'{}'", w.replace('\'', r"'\''"))
+    }
+}
+
 /// Plain terminal output until the renderer (architecture 7, `render`)
 /// takes these over: one line per session, one paragraph per message.
 fn print_plain(request: &Request, data: &serde_json::Value) {
     let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_owned();
     match request {
         Request::List { .. } => {
-            for row in data.as_array().into_iter().flatten() {
+            crate::positions::remember(&Archive::default_root(), &crate::positions::row_ids(data));
+            for (n, row) in data.as_array().into_iter().flatten().enumerate() {
                 println!(
-                    "{:<25} {:>6}  {}  {}",
+                    "@{:<3} {:<25} {:>6}  {}  {}",
+                    n + 1,
                     s(&row["last_activity"]),
                     row["messages"],
                     s(&row["id"]),
@@ -1107,11 +1134,17 @@ fn print_plain(request: &Request, data: &serde_json::Value) {
         }
         Request::Continue { .. } => {
             let line = |c: &serde_json::Value| -> String {
-                let mut words = vec![s(&c["program"])];
-                words.extend(c["args"].as_array().into_iter().flatten().map(s));
+                let mut words = vec![shell_quote(&s(&c["program"]))];
+                words.extend(
+                    c["args"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|a| shell_quote(&s(a))),
+                );
                 let cmd = words.join(" ");
                 match c["cwd"].as_str() {
-                    Some(d) => format!("cd {d} && {cmd}"),
+                    Some(d) => format!("cd {} && {cmd}", shell_quote(d)),
                     None => cmd,
                 }
             };
@@ -1121,6 +1154,12 @@ fn print_plain(request: &Request, data: &serde_json::Value) {
             println!("with context:       {}", line(&data["context_assisted"]));
         }
         Request::Query { .. } => {
+            if matches!(data["shape"].as_str(), Some("rows" | "matches")) {
+                crate::positions::remember(
+                    &Archive::default_root(),
+                    &crate::positions::row_ids(&data["rows"]),
+                );
+            }
             let _ = polylogue_render::results::render(
                 data,
                 polylogue_render::Format::Terminal,

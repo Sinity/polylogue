@@ -9,7 +9,7 @@ use crate::fields::{self, Aliases, Kind};
 use crate::time::{self, Clock, Time};
 use crate::units::{self, Via};
 use crate::{COMMAND_WORDS, QueryError, parse};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 /// What compiling needs besides the text.
@@ -27,6 +27,19 @@ pub struct Options {
     pub self_session: Option<String>,
     /// Saved queries by name (current `saved_query` notes): `query:NAME`.
     pub saved: std::collections::BTreeMap<String, String>,
+    /// Kept results by ID (`result:<id>`): what their stored rows hold.
+    pub kept: std::collections::BTreeMap<String, Kept>,
+}
+
+/// A kept result's stored shape (spec user-data.md, kept results): the unit
+/// its rows are, their columns, and the columns of its match rows when it
+/// stored them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Kept {
+    pub unit: String,
+    pub columns: Vec<Column>,
+    #[serde(default)]
+    pub match_columns: Vec<Column>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -46,9 +59,12 @@ pub enum Shape {
     Groups,
     /// One summary row of aggregates.
     Summary,
+    /// One row per match of an `exists` or `seq` (`| matches`): the grain
+    /// is the (owner, matching row) pair or the matched step tuple.
+    Matches,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ColKind {
     Text,
@@ -62,7 +78,7 @@ pub enum ColKind {
     Bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
     pub kind: ColKind,
@@ -152,11 +168,93 @@ impl Program {
 }
 
 pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
+    if let Some(program) = compile_kept(text, opts)? {
+        return Ok(program);
+    }
     let bound = bind_saved_source(text, opts)?;
     let text = bound.as_deref().unwrap_or(text);
     let query = parse(text)?;
     refuse_commands(text, &query, opts)?;
     Compiler::new(text, opts).program(&query)
+}
+
+/// A query whose source is a kept result (`result:<id>`, `.rows` or
+/// `.matches`): its stored values, read as they were kept, never re-run.
+/// Only stages may follow.
+fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>, QueryError> {
+    let lead = text.len() - text.trim_start().len();
+    let trimmed = text.trim_start();
+    let Some(after) = trimmed
+        .get(..7)
+        .filter(|p| p.eq_ignore_ascii_case("result:"))
+        .map(|_| &trimmed[7..])
+    else {
+        return Ok(None);
+    };
+    let end = after
+        .find(|c: char| c.is_whitespace() || c == '|')
+        .unwrap_or(after.len());
+    let word = &after[..end];
+    let (id, part) = match word.rsplit_once('.') {
+        Some((id, p @ ("rows" | "matches"))) => (id, p),
+        _ => (word, "rows"),
+    };
+    let rest = after[end..].trim();
+    if !rest.is_empty() && !rest.starts_with('|') {
+        return Err(QueryError::Invalid {
+            message: format!(
+                "result:{id} is a kept result: read it with stages (`result:{id} | group by …`), not conditions"
+            ),
+            position: lead,
+        });
+    }
+    let kept = opts.kept.get(id).ok_or_else(|| {
+        QueryError::syntax(
+            text,
+            lead + 7,
+            format!("no kept result has the ID {id:?}"),
+            None,
+        )
+    })?;
+    let columns = if part == "matches" {
+        if kept.match_columns.is_empty() {
+            return Err(QueryError::Invalid {
+                message: format!("result:{id} kept no match rows (its query has no exists or seq)"),
+                position: lead,
+            });
+        }
+        &kept.match_columns
+    } else {
+        &kept.columns
+    };
+    let stages = format!("sessions {rest}");
+    let query = parse(&stages)?;
+    let unit = Unit::ALL
+        .iter()
+        .copied()
+        .find(|u| u.name() == kept.unit)
+        .unwrap_or(Unit::Sessions);
+    let mut c = Compiler::new(text, opts);
+    let id_param = c.text_param(id);
+    let select: Vec<String> = columns
+        .iter()
+        .map(|col| format!("json_extract(j.value, '$.\"{0}\"') AS \"{0}\"", col.name))
+        .collect();
+    let rel = MatchRel {
+        sql: format!(
+            "SELECT j.key AS _pk, {} FROM a.kept_result k, json_each(k.rows_json, '$.{part}') j \
+             WHERE k.id = {id_param} ORDER BY j.key",
+            select.join(", ")
+        ),
+        columns: columns.iter().map(|c| (c.name.clone(), c.kind)).collect(),
+        recursive: false,
+    };
+    let mut program = c.program_over(&query, rel)?;
+    if part == "rows" && program.shape == Shape::Matches {
+        program.shape = Shape::Rows;
+        program.unit = unit;
+    }
+    Ok(Some(program))
 }
 
 /// A query that starts with `query:NAME` reads that saved query as its
@@ -328,6 +426,14 @@ enum Index {
     Output,
 }
 
+/// The rows of `| matches`: an SQL body selecting `_pk` and `columns`,
+/// ordered, and whether it needs `WITH RECURSIVE`.
+struct MatchRel {
+    sql: String,
+    columns: Vec<(String, ColKind)>,
+    recursive: bool,
+}
+
 struct Compiler<'a> {
     text: &'a str,
     opts: &'a Options,
@@ -429,7 +535,16 @@ impl<'a> Compiler<'a> {
         Aliases::suffixed(self.aliases)
     }
 
-    fn program(mut self, q: &Query) -> Result<Program, QueryError> {
+    fn program(self, q: &Query) -> Result<Program, QueryError> {
+        self.program_with(q, None)
+    }
+
+    /// The stages of `q` over stored rows, its source ignored.
+    fn program_over(self, q: &Query, rel: MatchRel) -> Result<Program, QueryError> {
+        self.program_with(q, Some(rel))
+    }
+
+    fn program_with(mut self, q: &Query, preset: Option<MatchRel>) -> Result<Program, QueryError> {
         let (mut scope, wheres, top) = match &q.source {
             Source::Empty => (Scope::plain(Unit::Sessions), vec![], vec![]),
             Source::Sessions { cond } => {
@@ -467,8 +582,66 @@ impl<'a> Compiler<'a> {
         let mut selection: Option<(Option<u64>, Option<u64>)> = None;
         let mut distinct = false;
 
+        let mut matched: Option<MatchRel> = preset;
         for stage in &q.stages {
             let grouped = group.is_some() || aggs.is_some();
+            if let Some(rel) = &matched {
+                match &stage.kind {
+                    StageKind::Limit { n } => {
+                        let (_, off) = selection.unwrap_or((None, None));
+                        selection = Some((Some(*n), off));
+                    }
+                    StageKind::Offset { n } => {
+                        let (lim, _) = selection.unwrap_or((None, None));
+                        selection = Some((lim, Some(*n)));
+                    }
+                    StageKind::Count | StageKind::Agg { .. } if aggs.is_some() => {
+                        return Err(QueryError::Invalid {
+                            message: "a query aggregates once".into(),
+                            position: stage.span.start,
+                        });
+                    }
+                    StageKind::Count => {
+                        aggs = Some(vec![("count".into(), "count(*)".into(), ColKind::Number)]);
+                    }
+                    StageKind::Agg { fns } => {
+                        let mut cols = vec![];
+                        for f in fns {
+                            cols.extend(match_agg(f, rel, stage.span.start)?);
+                        }
+                        aggs = Some(cols);
+                    }
+                    StageKind::GroupBy { keys } if !grouped => {
+                        let mut cols = vec![];
+                        for k in keys {
+                            let (name, kind) = match_column(rel, &k.field, stage.span.start)?;
+                            if k.bucket.is_some() {
+                                return Err(not_built(
+                                    "time buckets after `| matches`",
+                                    "architecture 7, query language",
+                                ));
+                            }
+                            cols.push((name.clone(), name, kind));
+                        }
+                        group = Some(cols);
+                    }
+                    StageKind::SortBy {
+                        key: SortKey::Field { field },
+                        descending,
+                    } if !grouped => {
+                        let (name, _) = match_column(rel, field, stage.span.start)?;
+                        let dir = if *descending { " DESC" } else { "" };
+                        order = Some(vec![format!("{name} IS NULL"), format!("{name}{dir}")]);
+                    }
+                    _ => {
+                        return Err(not_built(
+                            "this stage after `| matches` (limit, offset, sort by, group by, count and agg are built)",
+                            "architecture 7, query language",
+                        ));
+                    }
+                }
+                continue;
+            }
             match &stage.kind {
                 StageKind::Scope { unit, cond } => {
                     if grouped || scope.unit != Unit::Sessions {
@@ -574,16 +747,50 @@ impl<'a> Compiler<'a> {
                 }
                 StageKind::Distinct => distinct = true,
                 StageKind::Matches => {
-                    return Err(not_built(
-                        "the matches stage",
-                        "architecture 7, query language",
-                    ));
+                    if grouped || selection.is_some() || distinct {
+                        return Err(QueryError::Invalid {
+                            message:
+                                "`| matches` comes before limit, offset, distinct and grouping"
+                                    .into(),
+                            position: stage.span.start,
+                        });
+                    }
+                    let found: Vec<&Cond> = top
+                        .iter()
+                        .filter(|c| {
+                            matches!(c.kind, CondKind::Exists { .. } | CondKind::Seq { .. })
+                        })
+                        .collect();
+                    let [c] = found.as_slice() else {
+                        return Err(QueryError::Invalid {
+                            message: format!(
+                                "`| matches` needs exactly one top-level exists(...) or seq(...); this query has {}",
+                                found.len()
+                            ),
+                            position: stage.span.start,
+                        });
+                    };
+                    let owners = and_all(&where_sql);
+                    matched = Some(match &c.kind {
+                        CondKind::Exists { unit, cond } => {
+                            self.exists_matches(*unit, cond, &scope, &owners, c.span)?
+                        }
+                        CondKind::Seq { steps, gaps } => {
+                            self.seq_matches(steps, gaps, &scope, &owners, c.span)?
+                        }
+                        _ => unreachable!("filtered above"),
+                    });
+                    order = None;
+                    self.notes.push("one row per match".into());
                 }
             }
         }
 
+        let recursive = matched.as_ref().is_some_and(|m| m.recursive);
         let ctes = if self.ctes.is_empty() {
             String::new()
+        } else if recursive {
+            format!("WITH RECURSIVE {} ", self.ctes.join(", "))
         } else {
             format!("WITH {} ", self.ctes.join(", "))
         };
@@ -591,7 +798,75 @@ impl<'a> Compiler<'a> {
         let wh = and_all(&where_sql);
         let unit = scope.unit;
 
-        let (sql, shape, columns) = if group.is_some() || aggs.is_some() {
+        let (sql, shape, columns) = if let Some(rel) = matched {
+            let limit = |sql: String| match selection {
+                Some((lim, off)) => format!(
+                    "SELECT * FROM ({sql}) LIMIT {} OFFSET {}",
+                    lim.map_or(-1, |n| n.min(i64::MAX as u64) as i64),
+                    off.unwrap_or(0)
+                ),
+                None => sql,
+            };
+            if group.is_some() || aggs.is_some() {
+                let keys = group.clone().unwrap_or_default();
+                let aggs = aggs
+                    .unwrap_or_else(|| vec![("count".into(), "count(*)".into(), ColKind::Number)]);
+                let mut select: Vec<String> =
+                    keys.iter().map(|(n, e, _)| format!("{e} AS {n}")).collect();
+                select.extend(aggs.iter().map(|(n, e, _)| format!("{e} AS {n}")));
+                let columns: Vec<Column> = keys
+                    .iter()
+                    .chain(aggs.iter())
+                    .map(|(n, _, k)| Column {
+                        name: n.clone(),
+                        kind: *k,
+                    })
+                    .collect();
+                if keys.is_empty() {
+                    let sql = format!("{ctes}SELECT {} FROM ({}) mr", select.join(", "), rel.sql);
+                    (sql, Shape::Summary, columns)
+                } else {
+                    let group_by = keys
+                        .iter()
+                        .map(|(n, _, _)| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let order = order.unwrap_or_else(|| {
+                        let mut o = vec!["count DESC".to_owned()];
+                        o.extend(keys.iter().map(|(n, _, _)| format!("{n} IS NULL, {n}")));
+                        o.retain(|x| {
+                            x != "count DESC" || aggs.iter().any(|(n, _, _)| n == "count")
+                        });
+                        o
+                    });
+                    let sql = format!(
+                        "{ctes}SELECT {} FROM ({}) mr GROUP BY {group_by} ORDER BY {}",
+                        select.join(", "),
+                        rel.sql,
+                        order.join(", ")
+                    );
+                    (limit(sql), Shape::Groups, columns)
+                }
+            } else {
+                let columns: Vec<Column> = rel
+                    .columns
+                    .iter()
+                    .map(|(n, k)| Column {
+                        name: n.clone(),
+                        kind: *k,
+                    })
+                    .collect();
+                let sql = match order {
+                    Some(o) => format!(
+                        "{ctes}SELECT * FROM ({}) mr ORDER BY {}",
+                        rel.sql,
+                        o.join(", ")
+                    ),
+                    None => format!("{ctes}{}", rel.sql),
+                };
+                (limit(sql), Shape::Matches, columns)
+            }
+        } else if group.is_some() || aggs.is_some() {
             let keys = group.clone().unwrap_or_default();
             let aggs =
                 aggs.unwrap_or_else(|| vec![("count".into(), "count(*)".into(), ColKind::Number)]);
@@ -1212,6 +1487,254 @@ impl<'a> Compiler<'a> {
         Ok(inner)
     }
 
+    /// `| matches` of `exists unit(cond)`: one row per owner and matching
+    /// child, numbered within the owner in the child's order.
+    fn exists_matches(
+        &mut self,
+        unit: Unit,
+        cond: &Cond,
+        owner: &Scope,
+        owners: &str,
+        span: Span,
+    ) -> Result<MatchRel, QueryError> {
+        let child = Scope {
+            unit,
+            a: self.fresh(),
+        };
+        let link = match (owner.unit, unit) {
+            (Unit::Messages, Unit::Blocks) => {
+                format!("{}.message_pk = {}.pk", child.a.b, owner.a.m)
+            }
+            (Unit::Messages, Unit::ToolCalls) => {
+                format!("{}.message_pk = {}.pk", child.a.cb, owner.a.m)
+            }
+            _ if fields::has_session(unit) => {
+                let s = self.session_alias(owner, span)?;
+                format!(
+                    "{}.session_pk = {s}.pk",
+                    child_session_column(unit, &child.a)
+                )
+            }
+            _ => {
+                let s = self.session_alias(owner, span)?;
+                self.session_link(&child, &format!("SELECT {s}.pk"))?
+            }
+        };
+        let mut w = self.defaults(&child, &top_level(cond));
+        w.push(link);
+        w.push(self.cond(cond, &child, false)?);
+        w.push(format!("({owners})"));
+        let (owner_pk, owner_cols) = row_columns(owner.unit, &owner.a, self.opts.clock.now);
+        let (child_pk, child_cols) = row_columns(unit, &child.a, self.opts.clock.now);
+        let mut columns = vec![];
+        let mut select = vec![format!("{child_pk} AS _pk")];
+        let child_names: Vec<&str> = child_cols.iter().map(|(n, _, _)| n.as_str()).collect();
+        if !(owner.unit == Unit::Sessions && child_names.contains(&"session")) {
+            let id = owner_cols
+                .iter()
+                .find(|(n, _, _)| n == "id")
+                .map_or_else(|| owner_pk.clone(), |(_, e, _)| e.clone());
+            select.push(format!("{id} AS owner"));
+            columns.push(("owner".to_owned(), ColKind::Text));
+        }
+        let child_order = self.default_order(&child);
+        let owner_order = self.default_order(owner);
+        select.push(format!(
+            "row_number() OVER (PARTITION BY {owner_pk} ORDER BY {}) AS match",
+            child_order.join(", ")
+        ));
+        columns.push(("match".to_owned(), ColKind::Number));
+        for (n, e, k) in &child_cols {
+            select.push(format!("{e} AS {n}"));
+            columns.push((n.clone(), *k));
+        }
+        let sql = format!(
+            "SELECT {} FROM {}, {} WHERE {} ORDER BY {}, {}",
+            select.join(", "),
+            base_from(owner.unit, &owner.a),
+            base_from(unit, &child.a),
+            and_all(&w),
+            owner_order.join(", "),
+            child_order.join(", ")
+        );
+        Ok(MatchRel {
+            sql,
+            columns,
+            recursive: false,
+        })
+    }
+
+    /// `| matches` of `seq(...)`: per session, the earliest match first,
+    /// then the next match after its last step, never overlapping. Each
+    /// step takes the earliest call that still lets the rest complete.
+    fn seq_matches(
+        &mut self,
+        steps: &[Cond],
+        gaps: &[Gap],
+        owner: &Scope,
+        owners: &str,
+        span: Span,
+    ) -> Result<MatchRel, QueryError> {
+        let s = self.session_alias(owner, span)?;
+        let ord = "tc_order";
+        let k = steps.len();
+        let mut al = vec![];
+        let mut conds = vec![];
+        for step in steps {
+            let a = self.fresh();
+            let sc = Scope {
+                unit: Unit::ToolCalls,
+                a: a.clone(),
+            };
+            conds.push(self.cond(step, &sc, false)?);
+            al.push(a);
+        }
+        let o = |i: usize| format!("o{}", al[i].t);
+        let src = |i: usize| {
+            let a = &al[i];
+            format!(
+                "{ord} {o} JOIN tool_call {t} ON {t}.pk = {o}.pk JOIN block {cb} ON {cb}.pk = {t}.call_block_pk \
+                 JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {sa} ON {sa}.pk = {o}.session_pk",
+                o = o(i),
+                t = a.t,
+                cb = a.cb,
+                m = a.m,
+                sa = a.s
+            )
+        };
+        let gap = |i: usize, prev_n: &str, prev_at: &str| -> Vec<String> {
+            let oi = o(i);
+            match gaps[i - 1] {
+                Gap::Later => vec![format!("{oi}.n > {prev_n}")],
+                Gap::Next => vec![format!("{oi}.n = {prev_n} + 1")],
+                Gap::Within { ms } => vec![
+                    format!("{oi}.n > {prev_n}"),
+                    format!("{oi}.at > {prev_at}"),
+                    format!("{oi}.at - {prev_at} <= {ms}"),
+                ],
+            }
+        };
+        // rest[i]: steps i.. can still follow step i-1 (alias o(i-1)).
+        let mut rest = vec![String::new(); k + 1];
+        for i in (1..k).rev() {
+            let prev = o(i - 1);
+            let mut w = vec![
+                format!("{}.session_pk = {prev}.session_pk", o(i)),
+                conds[i].clone(),
+            ];
+            w.extend(gap(i, &format!("{prev}.n"), &format!("{prev}.at")));
+            if !rest[i + 1].is_empty() {
+                w.push(rest[i + 1].clone());
+            }
+            rest[i] = format!("EXISTS (SELECT 1 FROM {} WHERE {})", src(i), and_all(&w));
+        }
+        let pick = |i: usize, sess: &str, prev_n: &str, prev_at: &str| {
+            let mut w = vec![format!("{}.session_pk = {sess}", o(i)), conds[i].clone()];
+            if i == 0 {
+                w.push(format!("{}.n > {prev_n}", o(i)));
+            } else {
+                w.extend(gap(i, prev_n, prev_at));
+            }
+            if !rest[i + 1].is_empty() {
+                w.push(rest[i + 1].clone());
+            }
+            format!(
+                "(SELECT {oi}.n FROM {} WHERE {} ORDER BY {oi}.n LIMIT 1)",
+                src(i),
+                and_all(&w),
+                oi = o(i)
+            )
+        };
+        let name = format!("seqm{}", self.aliases);
+        let owners_sql = format!(
+            "SELECT DISTINCT {s}.pk AS pk FROM {} WHERE {owners}",
+            base_from(owner.unit, &owner.a)
+        );
+        let mut next = vec![];
+        for i in 1..k {
+            next.push(format!(
+                "WHEN {} THEN {}",
+                i - 1,
+                pick(i, "r.session_pk", "r.n", "r.at")
+            ));
+        }
+        next.push(format!(
+            "WHEN {} THEN {}",
+            k - 1,
+            pick(0, "r.session_pk", "r.n", "NULL")
+        ));
+        let last = k - 1;
+        self.ctes.push(format!(
+            "{name}(session_pk, mt, step, n, at, pk) AS (\
+             SELECT ox.session_pk, 1, 0, ox.n, ox.at, ox.pk FROM ({owners_sql}) ow \
+             JOIN {ord} ox ON ox.session_pk = ow.pk AND ox.n = {first} \
+             UNION ALL \
+             SELECT r.session_pk, CASE WHEN r.step = {last} THEN r.mt + 1 ELSE r.mt END, \
+             CASE WHEN r.step = {last} THEN 0 ELSE r.step + 1 END, ox.n, ox.at, ox.pk \
+             FROM {name} r JOIN {ord} ox ON ox.session_pk = r.session_pk AND ox.n = CASE r.step {cases} END)",
+            first = pick(0, "ow.pk", "0", "NULL"),
+            cases = next.join(" ")
+        ));
+        let mut inner = vec![
+            "q.session_pk AS session_pk".to_owned(),
+            "q.mt AS mt".to_owned(),
+            "min(CASE WHEN q.step = 0 THEN q.pk END) AS _pk".to_owned(),
+        ];
+        for i in 0..k {
+            inner.push(format!("max(CASE WHEN q.step = {i} THEN q.pk END) AS p{i}"));
+            inner.push(format!("max(CASE WHEN q.step = {i} THEN q.n END) AS n{i}"));
+            inner.push(format!("max(CASE WHEN q.step = {i} THEN q.at END) AS a{i}"));
+        }
+        let mut select = vec![
+            "g._pk AS _pk".to_owned(),
+            "(SELECT ss.id FROM session ss WHERE ss.pk = g.session_pk) AS session".to_owned(),
+            "g.mt AS match".to_owned(),
+        ];
+        let mut columns = vec![
+            ("session".to_owned(), ColKind::Text),
+            ("match".to_owned(), ColKind::Number),
+        ];
+        for i in 0..k {
+            let n = i + 1;
+            select.push(format!(
+                "(SELECT mm.id FROM tool_call tt JOIN block bb ON bb.pk = tt.call_block_pk \
+                 JOIN message mm ON mm.pk = bb.message_pk WHERE tt.pk = g.p{i}) AS step{n}_message"
+            ));
+            select.push(format!(
+                "(SELECT tt.command FROM tool_call tt WHERE tt.pk = g.p{i}) AS step{n}_command"
+            ));
+            select.push(format!(
+                "(SELECT tt.outcome FROM tool_call tt WHERE tt.pk = g.p{i}) AS step{n}_outcome"
+            ));
+            select.push(format!("g.a{i} AS step{n}_at"));
+            columns.push((format!("step{n}_message"), ColKind::Text));
+            columns.push((format!("step{n}_command"), ColKind::Text));
+            columns.push((format!("step{n}_outcome"), ColKind::Text));
+            columns.push((format!("step{n}_at"), ColKind::Time));
+        }
+        for i in 1..k {
+            let (steps_col, time_col) = if k == 2 {
+                ("gap_steps".to_owned(), "gap_time".to_owned())
+            } else {
+                (format!("gap{i}_steps"), format!("gap{i}_time"))
+            };
+            select.push(format!("g.n{i} - g.n{} - 1 AS {steps_col}", i - 1));
+            select.push(format!("g.a{i} - g.a{} AS {time_col}", i - 1));
+            columns.push((steps_col, ColKind::Number));
+            columns.push((time_col, ColKind::Duration));
+        }
+        let sql = format!(
+            "SELECT {} FROM (SELECT {} FROM {name} q GROUP BY q.session_pk, q.mt) g ORDER BY g.session_pk, g.mt",
+            select.join(", "),
+            inner.join(", ")
+        );
+        Ok(MatchRel {
+            sql,
+            columns,
+            recursive: true,
+        })
+    }
+
     /// A condition on a field: plain, related (`session.repo`), or special.
     fn field_cond(
         &mut self,
@@ -1238,7 +1761,21 @@ impl<'a> Compiler<'a> {
                     });
                 }
                 "query" => return self.saved_cond(text, scope, span),
-                "result" | "page" | "note" | "block" | "file" => {
+                "result" => {
+                    return Err(QueryError::Invalid {
+                        message: "result:<id> is a source: start the query with it \
+                                  (`result:<id> | count`); it cannot be a condition"
+                            .into(),
+                        position: span.start,
+                    });
+                }
+                "page" => {
+                    return Err(not_built(
+                        "page: references (pages are not built yet)",
+                        "spec user-data.md, pages",
+                    ));
+                }
+                "note" | "block" | "file" => {
                     return Err(not_built(
                         &format!("{lower}: references"),
                         "architecture 7, query language",
@@ -2522,6 +3059,56 @@ enum FieldOp<'q> {
     Match(&'q Value),
     Compare(Op, &'q str),
     Between(&'q str, &'q str),
+}
+
+/// A column of `| matches` rows, by name.
+fn match_column(rel: &MatchRel, name: &str, at: usize) -> Result<(String, ColKind), QueryError> {
+    rel.columns
+        .iter()
+        .find(|(n, _)| n == name)
+        .cloned()
+        .ok_or_else(|| QueryError::Invalid {
+            message: format!(
+                "match rows have no field {name:?}; they have {}",
+                rel.columns
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            position: at,
+        })
+}
+
+/// An aggregate over `| matches` rows: computed over the pairs or tuples.
+fn match_agg(
+    f: &AggFn,
+    rel: &MatchRel,
+    at: usize,
+) -> Result<Vec<(String, String, ColKind)>, QueryError> {
+    let col = f.column();
+    let Some(field) = f.field() else {
+        return Ok(vec![(col, "count(*)".into(), ColKind::Number)]);
+    };
+    let (name, kind) = match_column(rel, field, at)?;
+    let unknown = (
+        format!("unknown_{name}"),
+        format!("sum({name} IS NULL)"),
+        ColKind::Number,
+    );
+    Ok(match f {
+        AggFn::Count => unreachable!("handled above"),
+        AggFn::Sum { .. } => vec![(col, format!("sum({name})"), kind), unknown],
+        AggFn::Avg { .. } => vec![(col, format!("avg({name})"), kind), unknown],
+        AggFn::Min { .. } => vec![(col, format!("min({name})"), kind), unknown],
+        AggFn::Max { .. } => vec![(col, format!("max({name})"), kind), unknown],
+        AggFn::Percentile { p, .. } => {
+            vec![(col, format!("pl_percentile({name}, {p})"), kind), unknown]
+        }
+        AggFn::CountDistinct { .. } => {
+            vec![(col, format!("count(DISTINCT {name})"), ColKind::Number)]
+        }
+    })
 }
 
 fn not_built(what: &str, section: &str) -> QueryError {
