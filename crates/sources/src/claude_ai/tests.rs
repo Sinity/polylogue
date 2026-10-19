@@ -198,3 +198,53 @@ fn a_design_chat_is_a_linear_session() {
     assert_eq!(msgs[1].text(), "Done.");
     assert_eq!(step.accounting.framed, 3);
 }
+
+#[test]
+fn a_compaction_summary_marks_the_discontinuity_before_its_message() {
+    let mut later = m(
+        "u2",
+        "human",
+        "a1",
+        "2026-01-01T00:05:00Z",
+        json!([{"type": "text", "text": "go on"}]),
+    );
+    later["compaction_summary"] = json!([{"type": "text", "text": "Summary of earlier turns.",
+                                          "citations": []}]);
+    let step = run(vec![conv(vec![
+        m(
+            "u1",
+            "human",
+            ROOT_PARENT,
+            "2026-01-01T00:00:00Z",
+            json!([{"type": "text", "text": "hi"}]),
+        ),
+        m(
+            "a1",
+            "assistant",
+            "u1",
+            "2026-01-01T00:00:05Z",
+            json!([{"type": "text", "text": "hello"}]),
+        ),
+        later,
+    ])]);
+    let event = step
+        .output
+        .events
+        .iter()
+        .find(|e| e.kind == "compaction")
+        .unwrap();
+    assert_eq!(event.after.as_ref().unwrap().native().as_str(), "a1");
+    assert_eq!(
+        event.data.pointer("/summary/0/text").and_then(Json::as_str),
+        Some("Summary of earlier turns.")
+    );
+    assert!(
+        !step
+            .accounting
+            .unread_fields
+            .keys()
+            .any(|k| k.contains("compaction_summary")),
+        "{:?}",
+        step.accounting.unread_fields
+    );
+}

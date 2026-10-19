@@ -103,6 +103,7 @@ const MESSAGE_FIELDS: Fields = &[
     ("parent_message_uuid", Rule::Read),
     ("stop_reason", Rule::Read),
     ("input_mode", Rule::Kept("how the prompt was entered")),
+    ("compaction_summary", Rule::Read),
 ];
 
 /// One claude.ai conversation object, shared with browser captures.
@@ -158,6 +159,21 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         }
         match message(&sid, native, i, m, model.as_deref()) {
             Ok(msg) => {
+                // The summary claude.ai wrote when it compacted the
+                // conversation: a marked discontinuity before this message.
+                if let Some(summary) = m
+                    .get("compaction_summary")
+                    .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+                {
+                    sink.out.events.push(Event {
+                        session: sid.clone(),
+                        kind: "compaction".into(),
+                        at: msg.at,
+                        after: msg.parent.clone(),
+                        range: None,
+                        data: serde_json::json!({ "summary": summary }),
+                    });
+                }
                 let at = msg.at.map(|t| t.unix_ms());
                 let index = m.get("index").and_then(Json::as_i64).unwrap_or(i as i64);
                 rows.push((at, index, i, msg));
