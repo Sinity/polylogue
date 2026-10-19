@@ -1,0 +1,122 @@
+{
+  "manifest_version": 3,
+  "name": "Polylogue Browser Capture",
+  "version": "0.3.0",
+  "description": "Capture supported web LLM sessions into the local Polylogue inbox.",
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "scripting",
+    "storage",
+    "tabs",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://*.claudeusercontent.com/*",
+    "https://grok.com/*",
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "https://gemini.google.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "optional_host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Polylogue Capture",
+    "default_popup": "src/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "src/content/asset_stream.js",
+        "src/content/chatgpt_bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "src/content/asset_stream.js",
+        "src/common.js",
+        "src/operator_status.js",
+        "src/content/message_layer.js",
+        "src/content/ambient_surface.js",
+        "src/content/chatgpt.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "src/content/asset_stream.js",
+        "src/content/claude_bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "src/common.js",
+        "src/operator_status.js",
+        "src/content/message_layer.js",
+        "src/content/ambient_surface.js",
+        "src/content/asset_stream.js",
+        "src/content/claude.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://grok.com/*"
+      ],
+      "js": [
+        "src/content/asset_stream.js",
+        "src/content/grok_bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://grok.com/*"
+      ],
+      "js": [
+        "src/content/asset_stream.js",
+        "src/common.js",
+        "src/content/grok.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "src/common.js",
+        "src/operator_status.js",
+        "src/content/message_layer.js",
+        "src/content/ambient_surface.js",
+        "src/content/gemini.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
