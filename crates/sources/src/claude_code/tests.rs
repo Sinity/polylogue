@@ -310,3 +310,25 @@ fn file_roles_come_from_the_path() {
     assert!(recognize(path, b"  {\"type\""));
     assert!(!recognize(path, b"[1,2]"));
 }
+
+#[test]
+fn a_session_names_its_plan_once_per_slug() {
+    let rec = |uuid: &str, slug: &str| {
+        json!({"type":"permission-mode","uuid":uuid,"sessionId":"s1","slug":slug,
+               "timestamp":"2026-01-01T00:00:00Z","permissionMode":"plan"})
+    };
+    let bytes = jsonl(&[
+        rec("u1", "quiet-river"),
+        rec("u2", "quiet-river"),
+        rec("u3", "loud-sea"),
+    ]);
+    let step = run(&main_file("s1"), &mut Carry::default(), &bytes, 0).unwrap();
+    let plans: Vec<_> = step
+        .output
+        .events
+        .iter()
+        .filter(|e| e.kind == "plan")
+        .map(|e| e.data["slug"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(plans, ["quiet-river", "loud-sea"]);
+}

@@ -36,10 +36,7 @@ pub const MESSAGE_FIELDS: Fields = &[
         "entrypoint",
         Excluded("launch surface (cli, sdk); not used by any view yet"),
     ),
-    (
-        "slug",
-        Excluded("display label the tool derives from the title"),
-    ),
+    ("slug", Read),
     (
         "isVisibleInTranscriptOnly",
         Excluded("display hint for the tool's own UI"),

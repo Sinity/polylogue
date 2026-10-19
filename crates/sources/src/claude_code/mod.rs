@@ -16,6 +16,7 @@
 
 mod blocks;
 mod fields;
+pub mod side;
 
 use crate::account::{Accounting, Disposition};
 use crate::fields::unaccounted;
@@ -161,6 +162,10 @@ pub struct Carry {
     /// children follow their parents closely.
     #[serde(default)]
     aliases: VecDeque<(String, Option<MessageId>)>,
+    /// The plan name (`slug`) last recorded per session, so a session's
+    /// `plan` event is sent once per name, not with every record.
+    #[serde(default)]
+    slugs: BTreeMap<String, String>,
 }
 
 /// How many record aliases a parser keeps.
@@ -323,6 +328,35 @@ impl ClaudeCode {
             .entry(stem.to_owned())
             .or_insert_with(|| Session::new(id.clone(), kind));
         Some(id)
+    }
+
+    /// A session names its plan file (`plans/<slug>.md`) by `slug` on its
+    /// records. Sent as a `plan` event when the name first appears or
+    /// changes, so readers find the plan from the session.
+    fn plan(&self, carry: &mut Carry, record: Record<'_>, v: &Json, out: &mut Output) {
+        let Some(slug) = str_field(v, "slug") else {
+            return;
+        };
+        let Some(stem) = str_field(v, "sessionId").or(match &self.file {
+            File::Main { stem } | File::Subagent { stem } => Some(stem.as_str()),
+            File::Journal { .. } => None,
+        }) else {
+            return;
+        };
+        if carry.slugs.get(stem).map(String::as_str) == Some(slug) {
+            return;
+        }
+        carry.slugs.insert(stem.to_owned(), slug.to_owned());
+        if let Some(session) = session_id(stem) {
+            out.events.push(Event {
+                session,
+                kind: "plan".to_owned(),
+                at: v.get("timestamp").and_then(time::rfc3339),
+                after: carry.last.clone(),
+                range: Some(range(record)),
+                data: serde_json::json!({ "slug": slug, "file": format!("plans/{slug}.md") }),
+            });
+        }
     }
 
     fn event(
@@ -745,6 +779,7 @@ impl Parser for ClaudeCode {
                 .and_then(|p| carry.resolve(p));
             carry.alias(uuid, target);
         }
+        self.plan(carry, record, v, out);
         match ty {
             "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {
                 self.event(carry, record, v, "compaction_summary", out)
