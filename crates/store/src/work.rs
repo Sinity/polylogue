@@ -15,13 +15,19 @@ use polylogue_model::{Block, Json, WorkEdgeKind, WorkNodeKind};
 use rusqlite::{OptionalExtension, Transaction, params};
 use std::collections::BTreeMap;
 
-/// Bumped when the derivation's rules change; sessions derived at another
-/// version are derived again.
-pub const VERSION: i64 = 1;
-
-/// Sessions derived per transaction, so a first build's derive step does not
-/// hold the writer for minutes.
-const SESSIONS_PER_TRANSACTION: usize = 200;
+pub(crate) const DERIVATION: crate::derive::Derivation = crate::derive::Derivation {
+    name: "work",
+    // Bumped when the rules change; every session is derived again.
+    version: 1,
+    // Reads tool calls' commands and outcome reasons.
+    after: &["tool_calls"],
+    run: |tx, session_pk| {
+        let id: String = tx
+            .prepare_cached("SELECT id FROM session WHERE pk = ?1")?
+            .query_row([session_pk], |r| r.get(0))?;
+        derive_session(tx, session_pk, &id)
+    },
+};
 
 /// Commands whose outcome checks work: tests, builds, lints and the
 /// repository's own check runners. A grouping by command shape, never by
@@ -157,45 +163,15 @@ impl Pursuit {
     }
 }
 
-/// Derives the work graph for every session whose stored rows are older
-/// than its `changed` or the rules. Returns the number of sessions done.
-pub fn derive(index: &mut rusqlite::Connection) -> Result<u64> {
-    // An excision removes a session's nodes (and, by cascade, their edges)
-    // but leaves a shared goal no attempt pursues any more.
+/// An excision removes a session's nodes (and, by cascade, their edges)
+/// but leaves a shared goal no attempt pursues any more.
+pub(crate) fn sweep(index: &rusqlite::Connection) -> Result<()> {
     index.execute(
         "DELETE FROM work_node WHERE session_pk IS NULL AND kind = 'goal'
              AND NOT EXISTS (SELECT 1 FROM work_edge WHERE to_pk = work_node.pk)",
         [],
     )?;
-    let mut done = 0;
-    loop {
-        let tx = index.transaction()?;
-        let todo: Vec<(i64, String, i64)> = tx
-            .prepare_cached(
-                "SELECT s.pk, s.id, s.changed FROM session s
-                 LEFT JOIN work_session w ON w.session_pk = s.pk
-                 WHERE w.session_pk IS NULL OR w.version <> ?1 OR w.from_changed <> s.changed
-                 LIMIT ?2",
-            )?
-            .query_map(params![VERSION, SESSIONS_PER_TRANSACTION as i64], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        if todo.is_empty() {
-            tx.commit()?;
-            return Ok(done);
-        }
-        for (pk, id, changed) in &todo {
-            derive_session(&tx, *pk, id)?;
-            tx.prepare_cached(
-                "INSERT INTO work_session(session_pk, version, from_changed) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(session_pk) DO UPDATE SET version = ?2, from_changed = ?3",
-            )?
-            .execute(params![pk, VERSION, changed])?;
-        }
-        tx.commit()?;
-        done += todo.len() as u64;
-    }
+    Ok(())
 }
 
 fn calls(tx: &Transaction<'_>, session_pk: i64) -> Result<Vec<Call>> {

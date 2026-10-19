@@ -10,6 +10,7 @@
 pub mod blobs;
 pub mod context;
 pub mod cost;
+pub mod derive;
 pub mod excise;
 pub mod export;
 pub mod fault;
@@ -26,6 +27,8 @@ pub mod rows;
 pub mod schema;
 pub mod search;
 pub mod session_export;
+#[cfg(test)]
+mod test_world;
 pub mod user;
 pub mod vectors;
 pub mod work;

@@ -24,6 +24,8 @@ CREATE TABLE session (
                                             --   transcript yet, so its live state exists; cleared when its messages arrive
   title             TEXT,                   -- provider title only
   title_source      TEXT,                   -- custom | generated | summary | agent_name (precedence, model Session)
+  derived_title     TEXT,                   -- derived (title): first line of the first typed prompt; shown when
+                                            --   title is NULL, never exported as recorded
   title_at          INTEGER,                -- the provider time of the title (model.md, Session, rule 6 input)
   cwd_json          TEXT,                   -- every working directory in order (model Session.cwd); `cwd` is the last
   attrs_json        TEXT,                   -- provider fields with no column (account IDs, job facts: name, intent,
@@ -32,9 +34,10 @@ CREATE TABLE session (
                                             --   Session: a copy counts while its source is absent)
   last_activity_at  INTEGER,
   cwd               TEXT,
-  repo              TEXT,                   -- name or URL, for display: the record's own git evidence, else the
-                                            --   remote of the repo_lookup holding the session's cwd
-  repo_root         TEXT,                   -- the repository's identity, its root commit hash, from repo_lookup
+  repo              TEXT,                   -- name or URL, for display: record_repo, else the remote of the
+                                            --   repo_lookup holding the session's cwd (derived: repository)
+  record_repo       TEXT,                   -- the repository the session's own records name
+  repo_root         TEXT,                   -- the repository's identity, its root commit hash, from repo_lookup (derived)
   checkout          TEXT,                   -- worktree path, when it differs from cwd's repository root
   collection_id     TEXT,                   -- provider grouping: ChatGPT project or custom GPT, claude.ai project
   collection_name   TEXT,
@@ -260,9 +263,9 @@ CREATE TABLE tool_call (
   result_block_pk   INTEGER,                -- NULL until the result is seen
   at                INTEGER,
   tool              TEXT NOT NULL,
-  action            TEXT NOT NULL,          -- shell | code | file_read | file_write | file_edit | search | web | subagent | mcp | other
+  action            TEXT,                   -- derived (tool_calls); NULL until derived: shell | code | file_read | file_write | file_edit | search | web | subagent | mcp | other
   command           TEXT,                   -- as given
-  command_norm      TEXT,                   -- 'cargo test', 'git commit' (analysis.md)
+  command_norm      TEXT,                   -- derived (tool_calls): 'cargo test', 'git commit' (analysis.md)
   path              TEXT,                   -- file path argument, when the tool has one
   outcome           TEXT NOT NULL,          -- ok | error | unknown: facts of the records, never of the clock;
                                             --   `pending` is computed at read time from live state (model.md)
@@ -573,11 +576,28 @@ CREATE INDEX work_edge_to ON work_edge(to_pk);
 
 -- Which session state each session's work rows were derived from: the derive
 -- step's work is the sessions whose version or `changed` differs.
-CREATE TABLE work_session (
-  session_pk        INTEGER PRIMARY KEY REFERENCES session(pk),
+-- What each input states about a session (model Session, as JSON), merged
+-- within the input in file order. The session's own columns are derived
+-- from all of them (derive/session.rs), never from arrival order.
+CREATE TABLE session_record (
+  session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  facts             TEXT NOT NULL,
+  PRIMARY KEY (session_pk, input_pk)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX session_record_input ON session_record(input_pk);   -- excision scope, foreign-key check
+
+-- Which derivation (derive/mod.rs) made a session's derived rows, at which
+-- version and from which state of the session; a session is derived again
+-- when either moves.
+CREATE TABLE derive_state (
+  name              TEXT NOT NULL,
+  session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
   version           INTEGER NOT NULL,
-  from_changed      INTEGER NOT NULL
-) STRICT;
+  from_changed      INTEGER NOT NULL,
+  PRIMARY KEY (name, session_pk)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX derive_state_session ON derive_state(session_pk);
 
 -- Files a session's tool calls touched, for the `changes` view.
 CREATE TABLE file_edit (

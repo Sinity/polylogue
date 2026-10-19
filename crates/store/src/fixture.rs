@@ -81,7 +81,7 @@ impl Fixture {
 
     /// Runs the work graph's derive step over the rows written so far.
     pub fn derive(&mut self) -> Result<u64> {
-        crate::work::derive(&mut self.index)
+        crate::derive::run(&mut self.index)
     }
 
     pub fn reads(&self) -> Result<ReadPool> {
@@ -92,9 +92,9 @@ impl Fixture {
         let (origin, native) = s.id.split_once(':').unwrap_or(("test", s.id));
         let kind = if s.kind.is_empty() { "main" } else { s.kind };
         self.index.execute(
-            "INSERT INTO session(id, origin, native_id, kind, title, cwd, cwd_json, repo, started_at,
-                 last_activity_at, changed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)",
+            "INSERT INTO session(id, origin, native_id, kind, title, cwd, cwd_json, repo, record_repo,
+                 started_at, last_activity_at, changed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, 1)",
             params![
                 s.id,
                 origin,

@@ -1,6 +1,6 @@
 use super::*;
 use crate::ReadPool;
-use polylogue_model::{Disposition, Json, LinkKind, MessageId, Usage};
+use polylogue_model::{Disposition, Json, LinkKind, MessageId, SessionKind, TitleSource, Usage};
 
 struct World {
     _dir: tempfile::TempDir,
@@ -598,6 +598,8 @@ fn lookup_batch(input: &str, path: &str, remote: Option<&str>, root: &str) -> Ba
 }
 
 fn repo_of(w: &World, session: &str) -> (Option<String>, Option<String>) {
+    // Repository attribution is derived.
+    w.writer.derive().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let rows = pool
         .reader()
@@ -682,6 +684,8 @@ fn call_message(id: &str, call: &str) -> Message {
 }
 
 fn reasons(w: &World) -> Vec<(String, String)> {
+    // Outcome reasons of calls left behind are derived.
+    w.writer.derive().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     pool.reader()
         .unwrap()

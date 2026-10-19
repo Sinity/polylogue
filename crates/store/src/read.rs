@@ -214,7 +214,7 @@ impl Reader<'_> {
     /// after the last activity time (Unix ms) the previous page ended at.
     pub fn list(&self, limit: u64, before: Option<i64>) -> Result<Vec<SessionSummary>> {
         let mut stmt = self.conn().prepare_cached(
-            "SELECT s.id, s.kind, s.title, s.started_at, s.last_activity_at, s.cwd,
+            "SELECT s.id, s.kind, coalesce(s.title, s.derived_title), s.started_at, s.last_activity_at, s.cwd,
                     (SELECT COUNT(*) FROM message m WHERE m.session_pk = s.pk)
              FROM session s
              WHERE ?2 IS NULL OR s.last_activity_at < ?2

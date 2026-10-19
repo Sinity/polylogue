@@ -749,6 +749,7 @@ fn redact_index(
         ("block", "data_json"),
         ("message", "attrs_json"),
         ("session", "title"),
+        ("session", "derived_title"),
         ("session", "attrs_json"),
     ] {
         for n in needles {
@@ -763,6 +764,9 @@ fn redact_index(
             )?;
         }
     }
+    // Derived rows may quote the text (work-graph titles, derived titles):
+    // every session is derived again from the blanked records.
+    i.execute("DELETE FROM derive_state", [])?;
     Ok(())
 }
 
