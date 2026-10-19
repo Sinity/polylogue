@@ -117,10 +117,10 @@ pub struct Production {
     /// What started the turn, when not a person at the terminal (`sdk`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_origin: Option<String>,
-    /// The subscription's rate-limit state the API returned with this
-    /// response: which window, whether it was exceeded, when it resets.
+    /// The subscription's quota state the tool reported with this
+    /// response: which windows, how used, when they reset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quota: Option<serde_json::Value>,
+    pub quota: Option<crate::QuotaReading>,
 }
 
 impl Production {

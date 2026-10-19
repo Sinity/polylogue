@@ -2,6 +2,7 @@
 //! live, how a file is recognized and which parser reads it.
 
 use crate::parse::StepParser;
+use polylogue_model::QuotaLimit;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +110,10 @@ pub struct OriginSpec {
     /// Whether a bare UUID the operator pastes can name one of this
     /// origin's sessions.
     pub bare_uuid_ids: bool,
+    /// When the tool runs under a subscription quota: the limits it always
+    /// has, whether or not a response reported them (others come with the
+    /// readings its parser stores).
+    pub quota: Option<&'static [QuotaLimit]>,
 }
 
 impl OriginSpec {
@@ -164,6 +169,7 @@ macro_rules! reserved {
             open: none,
             resume: None,
             bare_uuid_ids: false,
+            quota: None,
         }
     };
 }
@@ -171,7 +177,7 @@ macro_rules! reserved {
 pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code",
-        parser_version: 6,
+        parser_version: 7,
         support: Support::Parsed,
         route: Route::Live,
         framing: Framing::Lines,
@@ -182,6 +188,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::claude_code::open,
         resume: Some(crate::claude_code::resume),
         bare_uuid_ids: true,
+        quota: Some(crate::claude_code::QUOTA_LIMITS),
     },
     OriginSpec {
         name: "claude-code-side",
@@ -196,6 +203,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::claude_code::side::open_side,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: "claude-code-history",
@@ -210,10 +218,11 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::claude_code::side::open_history,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: "codex",
-        parser_version: 4,
+        parser_version: 5,
         support: Support::Parsed,
         route: Route::Live,
         root: crate::codex::ROOT,
@@ -224,6 +233,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::codex::open,
         resume: Some(crate::codex::resume),
         bare_uuid_ids: true,
+        quota: Some(&[]),
     },
     OriginSpec {
         name: "codex-database",
@@ -238,6 +248,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::codex::database::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: "gemini-cli",
@@ -252,6 +263,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::gemini_cli::open,
         resume: Some(crate::gemini_cli::resume),
         bare_uuid_ids: false,
+        quota: None,
     },
     reserved!("antigravity", Live, [".gemini/antigravity/**"]),
     OriginSpec {
@@ -267,6 +279,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::hermes::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: "grok-cli",
@@ -281,6 +294,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::grok_cli::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: "polylogue-repo-lookup",
@@ -295,6 +309,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::repo_lookup::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: crate::hook_spool::ORIGIN,
@@ -309,6 +324,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::hook_spool::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: crate::browser_capture::ORIGIN,
@@ -323,6 +339,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::browser_capture::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: "export-file",
@@ -337,6 +354,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: none,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: crate::polylogue_export::ORIGIN,
@@ -351,6 +369,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::polylogue_export::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: "chatgpt",
@@ -365,6 +384,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::chatgpt::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: "claude-ai",
@@ -379,6 +399,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::claude_ai::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: "claude-design",
@@ -393,6 +414,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::claude_ai::open_design,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
@@ -407,6 +429,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::ai_studio::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: crate::gemini_app::ORIGIN,
@@ -421,6 +444,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::gemini_app::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     reserved!("grok", Import, []),
     OriginSpec {
@@ -436,6 +460,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::otel_genai::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     OriginSpec {
         name: crate::openrouter::ORIGIN,
@@ -450,6 +475,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::openrouter::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
     // Last of the imports: its shapes are the most generic, so a specific
     // origin that recognizes the same file is tried first.
@@ -466,6 +492,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: crate::openai_chat::open,
         resume: None,
         bare_uuid_ids: false,
+        quota: None,
     },
 ];
 

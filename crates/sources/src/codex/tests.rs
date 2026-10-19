@@ -563,3 +563,28 @@ fn the_thread_settings_give_later_usage_its_service_tier() {
             .all(|m| m.usage.service_tier.as_deref() == Some("flex"))
     );
 }
+
+#[test]
+fn rate_limits_read_as_windows_classified_by_length_not_name() {
+    let at = polylogue_model::Timestamp::from_unix_ms(1_790_000_000_000);
+    let q = json!({"limit_id": "codex", "plan_type": "pro", "credits": {"balance": "12.5"},
+        "primary": {"used_percent": 42.0, "window_minutes": 10080, "resets_at": 1_790_600_000},
+        "secondary": null});
+    let r = quota(&q, at).unwrap();
+    assert_eq!(
+        (r.plan.as_deref(), r.credits.as_deref()),
+        (Some("pro"), Some("12.5"))
+    );
+    assert_eq!(r.windows.len(), 1);
+    let w = &r.windows[0];
+    assert_eq!((w.limit.limit.as_ref(), w.limit.minutes), ("codex", 10_080));
+    assert!(!w.limit.from_first_response);
+    assert_eq!(w.used_percent, Some(42.0));
+    assert_eq!(w.resets_at.map(|t| t.unix_ms()), Some(1_790_600_000_000));
+    // Older rollouts give the reset in seconds after the record.
+    let q =
+        json!({"primary": {"used_percent": "1", "window_minutes": 300, "resets_in_seconds": 60}});
+    let w = &quota(&q, at).unwrap().windows[0];
+    assert_eq!(w.resets_at.map(|t| t.unix_ms()), Some(1_790_000_060_000));
+    assert_eq!(w.used_percent, Some(1.0));
+}

@@ -39,7 +39,11 @@ pub fn run(
         "sessions" => json(measure::sessions(reader, &scope)),
         "quota" => {
             whole("quota")?;
-            json(quota::quota(reader, now))
+            let known: Vec<_> = polylogue_sources::ORIGINS
+                .iter()
+                .filter_map(|o| Some((o.name, o.quota?)))
+                .collect();
+            json(quota::quota(reader, now, &known))
         }
         "outcomes" => json(analysis::outcomes(reader, &scope)),
         "survival" => json(analysis::first_failure(reader, &scope, false)),
