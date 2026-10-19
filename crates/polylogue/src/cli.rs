@@ -117,6 +117,19 @@ pub enum Command {
     Sinex(SinexCommand),
     /// Open the web reader.
     Web,
+    /// Register Polylogue with a browser: `chrome` writes the extension's
+    /// native messaging host manifest, admitting only `--extension-id`.
+    InstallAgent {
+        harness: String,
+        #[arg(long)]
+        extension_id: Option<String>,
+        /// Delete the manifest instead.
+        #[arg(long)]
+        remove: bool,
+    },
+    /// The browser extension's native messaging host; Chrome starts it.
+    #[command(hide = true)]
+    BrowserHost,
     /// Serve MCP over stdio.
     Mcp,
     /// Called by a harness hook; reads the event from stdin.
@@ -303,6 +316,13 @@ pub fn run(args: Args) -> ExitCode {
             };
         }
         Some(Command::Hook { event }) => return crate::hook::run(&event),
+        Some(Command::Web) => return open_reader(json),
+        Some(Command::BrowserHost) => return crate::browser::native::run(),
+        Some(Command::InstallAgent {
+            harness,
+            extension_id,
+            remove,
+        }) => return install_agent(json, &harness, extension_id.as_deref(), remove),
         Some(Command::Hooks(h)) => {
             let (path, on) = match h {
                 HooksCommand::Install { settings } => (settings, true),
@@ -719,6 +739,145 @@ pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Resp
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply)?;
     serde_json::from_str(&reply).map_err(std::io::Error::other)
+}
+
+/// Chrome's and Chromium's host manifest directories under `config`. An
+/// existing browser config directory gets the manifest; with none, Chrome's
+/// does.
+pub fn host_manifest_dirs(config: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let dirs: Vec<_> = ["google-chrome", "chromium"]
+        .iter()
+        .map(|b| config.join(b))
+        .filter(|d| d.is_dir())
+        .collect();
+    let dirs = if dirs.is_empty() {
+        vec![config.join("google-chrome")]
+    } else {
+        dirs
+    };
+    dirs.into_iter()
+        .map(|d| d.join("NativeMessagingHosts"))
+        .collect()
+}
+
+fn install_agent(json: bool, harness: &str, extension_id: Option<&str>, remove: bool) -> ExitCode {
+    if harness != "chrome" {
+        return fail(
+            json,
+            "not_built",
+            &format!(
+                "`install-agent {harness}` is not built yet; for Claude Code hooks use `polylogue hooks install`"
+            ),
+            1,
+        );
+    }
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let file = format!("{}.json", crate::browser::HOST_NAME);
+    let mut changed = Vec::new();
+    for dir in host_manifest_dirs(&config) {
+        let path = dir.join(&file);
+        let result = if remove {
+            match std::fs::remove_file(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                other => other,
+            }
+        } else {
+            let Some(id) = extension_id
+                .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase()))
+            else {
+                return fail(
+                    json,
+                    "bad_request",
+                    "`--extension-id` (the ID chrome://extensions shows) is required",
+                    2,
+                );
+            };
+            let binary = std::env::current_exe().and_then(std::fs::canonicalize);
+            let Ok(binary) = binary else {
+                return fail(json, "io", "cannot resolve this binary's path", 1);
+            };
+            let manifest = crate::browser::native::manifest(&binary, id);
+            std::fs::create_dir_all(&dir).and_then(|()| {
+                std::fs::write(
+                    &path,
+                    serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
+                )
+            })
+        };
+        if let Err(e) = result {
+            return fail(json, "io", &format!("{}: {e}", path.display()), 1);
+        }
+        changed.push(path);
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "removed": remove, "files": changed })
+        );
+    } else {
+        for p in &changed {
+            println!(
+                "{} {}",
+                if remove { "removed" } else { "wrote" },
+                p.display()
+            );
+        }
+        if changed.is_empty() {
+            println!("nothing to remove");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Opens the web reader: reads the running daemon's port and token, checks
+/// that the port's listener is this user's, and opens `/auth#<token>` in
+/// the browser. The fragment never reaches a server log or history.
+fn open_reader(json: bool) -> ExitCode {
+    use crate::web::access;
+    let root = polylogue_store::Archive::default_root();
+    let dir = access::runtime_dir(&access::archive_key(&root));
+    let (Ok(token), Ok(port)) = (
+        std::fs::read_to_string(dir.join("token")),
+        std::fs::read_to_string(dir.join("port")),
+    ) else {
+        return fail(
+            json,
+            "daemon_required",
+            "the daemon is not serving the web reader; start `polylogue daemon`",
+            crate::EXIT_DAEMON_REQUIRED,
+        );
+    };
+    let Ok(port) = port.trim().parse::<u16>() else {
+        return fail(json, "io", "the port file is unreadable", 1);
+    };
+    if access::listener_owner(port).is_none() || access::listener_owner(port) != access::my_uid() {
+        return fail(
+            json,
+            "refused",
+            &format!("port {port} is not served by this user's daemon; not sending the token"),
+            1,
+        );
+    }
+    let url = format!("http://127.0.0.1:{port}/");
+    let auth = format!("http://127.0.0.1:{port}/auth#{}", token.trim());
+    let opened = std::process::Command::new("xdg-open")
+        .arg(&auth)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if json {
+        println!("{}", serde_json::json!({ "url": url, "opened": opened }));
+    } else if opened {
+        println!("opened {url}");
+    } else {
+        // The operator's own terminal: the sign-in link may be shown here.
+        eprintln!("polylogue: could not start a browser; open {auth}");
+    }
+    ExitCode::SUCCESS
 }
 
 fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {

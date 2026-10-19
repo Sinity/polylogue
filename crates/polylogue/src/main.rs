@@ -3,6 +3,7 @@
 //! when it is not running, commands exit with code 6 (`daemon_required`).
 
 mod briefing;
+mod browser;
 mod cli;
 mod continuation;
 mod daemon;
@@ -12,6 +13,9 @@ mod live;
 mod mcp;
 mod pricing;
 mod sinex;
+#[cfg(test)]
+mod testworld;
+mod web;
 
 use clap::Parser;
 use std::process::ExitCode;
@@ -20,6 +24,14 @@ use std::process::ExitCode;
 pub const EXIT_DAEMON_REQUIRED: u8 = 6;
 
 fn main() -> ExitCode {
+    // Chrome runs a native messaging host with the calling extension's
+    // origin as its only argument; the host manifest names this binary.
+    if std::env::args()
+        .nth(1)
+        .is_some_and(|a| a.starts_with("chrome-extension://"))
+    {
+        return browser::native::run();
+    }
     let args = cli::Args::parse();
     cli::run(args)
 }

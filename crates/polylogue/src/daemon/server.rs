@@ -21,6 +21,9 @@ use std::time::Instant;
 pub struct Daemon {
     pub archive: Archive,
     pub reads: ReadPool,
+    /// `$XDG_STATE_HOME/polylogue` as the loop sees it: where the browser
+    /// host spools captures for the loop to read.
+    pub state: std::path::PathBuf,
     /// User writes (notes, deliveries, settings) through the one writer.
     writes: WriterSender,
     loop_tx: Mutex<Sender<LoopMsg>>,
@@ -406,20 +409,27 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
     }
 }
 
-/// Runs the daemon until it is killed: takes the archive lock, starts the
-/// loop and serves clients.
-pub fn serve() -> std::io::Result<()> {
+/// Opens the archive at `root`, starts its convergence loop on a thread of
+/// its own and returns the shared daemon state. The lock is held for as
+/// long as the returned value lives.
+pub fn start(
+    root: &std::path::Path,
+    config: Config,
+) -> std::io::Result<(Arc<Daemon>, polylogue_store::ArchiveLock)> {
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
-    let root = Archive::default_root();
-    let (archive, _lock) = Archive::open_or_create(&root).map_err(|e| to_io(&e))?;
-    let mut engine = Engine::new(Config::from_env(), archive.clone()).map_err(|e| to_io(&e))?;
+    let (archive, lock) = Archive::open_or_create(root).map_err(|e| to_io(&e))?;
+    let state = config
+        .root(polylogue_sources::browser_capture::ROOT)
+        .join("polylogue");
+    let mut engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
     let writes = engine.writer().map_err(|e| to_io(&e))?;
     let reads = ReadPool::open(&archive).map_err(|e| to_io(&e))?;
     let (tx, rx) = channel();
     let status = Arc::new(Mutex::new(Pass::default()));
     let daemon = Arc::new(Daemon {
-        archive: archive.clone(),
+        archive,
         reads,
+        state,
         writes,
         loop_tx: Mutex::new(tx.clone()),
         status: Arc::clone(&status),
@@ -432,25 +442,48 @@ pub fn serve() -> std::io::Result<()> {
                 eprintln!("polylogue: the convergence loop stopped: {e}");
             }
         })?;
+    Ok((daemon, lock))
+}
 
-    let socket = archive.socket();
-    // A socket file nobody answers on is left from a stopped daemon; the
-    // archive lock above proves no other daemon owns this archive.
-    if socket.exists() {
-        std::fs::remove_file(&socket)?;
-    }
-    let listener = UnixListener::bind(&socket)?;
+/// Runs the daemon until it is killed: takes the archive lock, starts the
+/// loop and serves clients.
+pub fn serve() -> std::io::Result<()> {
+    let root = Archive::default_root();
+    let (daemon, _lock) = start(&root, Config::from_env())?;
+    let listener = bind(&daemon)?;
     eprintln!(
         "polylogue: serving {} on {}",
         root.display(),
-        socket.display()
+        daemon.archive.socket().display()
     );
+    // The browser's port. If it cannot be served (the port is taken), the
+    // socket still serves every other client.
+    match crate::web::start(Arc::clone(&daemon)) {
+        Ok(port) => eprintln!("polylogue: web reader on http://127.0.0.1:{port}/"),
+        Err(e) => eprintln!("polylogue: web reader not started: {e}"),
+    }
+    listen(&listener, &daemon);
+    Ok(())
+}
+
+/// Binds the archive's socket. A socket file nobody answers on is left
+/// from a stopped daemon; the archive lock held by `daemon` proves no
+/// other daemon owns this archive.
+pub fn bind(daemon: &Daemon) -> std::io::Result<UnixListener> {
+    let socket = daemon.archive.socket();
+    if socket.exists() {
+        std::fs::remove_file(&socket)?;
+    }
+    UnixListener::bind(&socket)
+}
+
+/// Serves clients on `listener`, one thread each, until it fails.
+pub fn listen(listener: &UnixListener, daemon: &Arc<Daemon>) {
     for stream in listener.incoming() {
         let Ok(stream) = stream else {
             continue;
         };
-        let d = Arc::clone(&daemon);
+        let d = Arc::clone(daemon);
         std::thread::spawn(move || serve_client(stream, &d));
     }
-    Ok(())
 }

@@ -2,3 +2,6 @@
 /result
 /result-*
 /.direnv/
+
+# The browser extension's npm dependencies.
+extension/node_modules/

@@ -1,0 +1,405 @@
+import { readFileSync } from "node:fs";
+
+import { JSDOM } from "jsdom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { trustedClick } from "../support/trusted_events.js";
+
+const operatorSource = readFileSync("src/operator_status.js", "utf8");
+const ambientSource = readFileSync("src/content/ambient_surface.js", "utf8");
+const manifest = JSON.parse(readFileSync("manifest.json", "utf8"));
+const openDoms = [];
+const mounted = [];
+
+function missionFixture(overrides = {}) {
+  return {
+    ok: true,
+    state: {
+      online: true,
+      captured: true,
+      provider: "chatgpt",
+      provider_session_id: "conversation-1",
+      archive_state: { state: "archived" },
+      ...overrides.state,
+    },
+    receiver: {
+      configured_url: "http://127.0.0.1:8765",
+      health: { status: "ok", endpoint: "http://127.0.0.1:8765" },
+      pairing: {
+        state: "online",
+        receiver_id: "rx-ambient",
+        api_schema: "polylogue-browser-capture/v1",
+        endpoint: "http://127.0.0.1:8765",
+      },
+      ...overrides.receiver,
+    },
+    timeline: [{
+      at: "2026-07-16T12:00:00Z",
+      event: "observed_no_action",
+      reason: "tab_activated",
+      detail: "already_safe",
+    }],
+    assertions: { selection_candidate_supported: true, persistence_supported: false },
+    intelligence: {
+      status: "available",
+      archive: {
+        status: "available",
+        session_id: "chatgpt:conversation-1",
+        ref: "session:chatgpt:conversation-1",
+        url: "http://127.0.0.1:8765/?q=chatgpt%3Aconversation-1",
+      },
+      cost: { status: "exact", total_usd: 0.125, provenance: ["provider_reported"] },
+      assertions: {
+        status: "available",
+        items: [{ body_text: "Use typed receiver identity", status: "active", confidence: 0.9 }],
+      },
+    },
+    ambient: { enabled: true, site_enabled: true, site: "chatgpt.com" },
+    ...overrides,
+  };
+}
+
+function freshDom(
+  html = "<!doctype html><html><body><main>Provider content</main></body></html>",
+  url = "https://chatgpt.com/c/conversation-1",
+) {
+  const dom = new JSDOM(html, {
+    url,
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  openDoms.push(dom);
+  dom.window.eval(operatorSource);
+  // Auto-mount sees no chrome.runtime and exits. Tests then supply the exact
+  // runtime contract explicitly, which keeps network and browser globals out.
+  dom.window.eval(ambientSource);
+  return dom;
+}
+
+function manifestDom(url) {
+  const dom = new JSDOM("<!doctype html><html><body><main>Claude conversation</main></body></html>", {
+    url,
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  openDoms.push(dom);
+  const runtime = {
+    sendMessage: vi.fn(async () => missionFixture()),
+    getManifest: () => manifest,
+    onMessage: { addListener: vi.fn() },
+  };
+  dom.window.chrome = { runtime };
+  const scripts = manifest.content_scripts
+    .filter((entry) => entry.matches.includes("https://claude.ai/*") && entry.world !== "MAIN")
+    .flatMap((entry) => entry.js);
+  for (const path of scripts) dom.window.eval(readFileSync(path, "utf8"));
+  return dom;
+}
+
+function mount(dom, response = missionFixture(), options = {}) {
+  const runtime = {
+    sendMessage: vi.fn(async (message) => {
+      if (message.type === "polylogue.missionControl.status") return response;
+      return { ok: true };
+    }),
+  };
+  const api = dom.window.PolylogueAmbientSurface.mount({
+    doc: dom.window.document,
+    runtime,
+    selectionSource: dom.window,
+    locationSource: dom.window.location,
+    ...options,
+  });
+  mounted.push(api);
+  return { api, runtime };
+}
+
+afterEach(() => {
+  while (mounted.length) mounted.pop()?.stop?.();
+  while (openDoms.length) openDoms.pop().window.close();
+  vi.restoreAllMocks();
+});
+
+describe("ambient capture status surface", () => {
+  it("mounts one zero-layout-shift closed shadow surface with no remote assets", async () => {
+    const dom = freshDom();
+    const bodyChildrenBefore = dom.window.document.body.children.length;
+    const { api, runtime } = mount(dom);
+
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+
+    expect(dom.window.document.body.children.length).toBe(bodyChildrenBefore);
+    expect(api.host.parentElement).toBe(dom.window.document.documentElement);
+    expect(api.host.style.position).toBe("fixed");
+    expect(api.host.style.width).toBe("0px");
+    expect(api.host.style.height).toBe("0px");
+    expect(api.host.style.overflow).toBe("visible");
+    expect(api.host.style.contain).toBe("style");
+    expect(api.host.style.contain).not.toContain("paint");
+    expect(api.shadow.querySelector(".root").hidden).toBe(false);
+    expect(api.host.shadowRoot).toBeNull();
+    expect(dom.window.document.querySelectorAll("#polylogue-ambient-surface")).toHaveLength(1);
+
+    const style = api.shadow.querySelector("style").textContent;
+    expect(style).toContain("prefers-color-scheme: dark");
+    expect(style).toContain("prefers-reduced-motion: reduce");
+    expect(style).not.toMatch(/https?:|@import|url\s*\(/i);
+
+    const panel = api.shadow.querySelector("[role='dialog']");
+    const labelledHeading = api.shadow.getElementById(panel.getAttribute("aria-labelledby"));
+    expect(labelledHeading?.tagName).toBe("H2");
+    expect(labelledHeading.textContent).toContain("Polylogue capture status");
+    expect(panel.getAttribute("aria-modal")).toBe("true");
+    expect(runtime.sendMessage).toHaveBeenCalledWith({
+      type: "polylogue.missionControl.status",
+      refresh: true,
+    });
+  });
+
+  it("renders the same conversation, receiver, event, and assertion contracts as the popup", async () => {
+    const dom = freshDom();
+    const { api } = mount(dom);
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+
+    const text = api.shadow.textContent;
+    expect(text).toContain("Safe / current");
+    expect(text).toContain("Paired receiver rx-ambient");
+    expect(text).toContain("Observed; no action needed");
+    expect(text).toContain("Archive was already current");
+    expect(text).toContain("Save assertion — receiver API unavailable");
+
+    const chip = api.shadow.querySelector(".chip");
+    expect(chip.getAttribute("aria-label")).toContain("Safe / current");
+    expect(api.shadow.querySelector(".count").textContent).toBe("");
+    const assertion = [...api.shadow.querySelectorAll("button")]
+      .find((button) => button.textContent.includes("Save assertion"));
+    expect(assertion.disabled).toBe(true);
+  });
+
+  it("renders the daemon projection with provenance and never treats unknown cost as zero", async () => {
+    const dom = freshDom();
+    const { api } = mount(dom);
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+    api.open();
+    expect(api.shadow.textContent).toContain("$0.125");
+    expect(api.shadow.textContent).toContain("Provenance: provider_reported");
+    expect(api.shadow.textContent).toContain("Use typed receiver identity");
+    expect(api.shadow.textContent).toContain("Policy: display-only");
+
+    api.render({
+      ...missionFixture(),
+      intelligence: {
+        status: "offline",
+        archive: { status: "uncaptured" },
+        cost: { status: "unknown", total_usd: null, provenance: [] },
+        assertions: { status: "unknown", items: [] },
+      },
+    });
+    expect(api.shadow.textContent).toContain("Offline — archive projection unavailable");
+    expect(api.shadow.textContent).toContain("Session cost: unknown");
+    expect(api.shadow.textContent).not.toContain("Session cost: $0.000");
+  });
+
+  it("toggles with Alt+P and traps Tab focus inside the slide-over", async () => {
+    const dom = freshDom();
+    const { api } = mount(dom);
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "p", altKey: true, bubbles: true }));
+    const panel = api.shadow.querySelector(".panel");
+    expect(panel.hidden).toBe(false);
+    // Dialog-scoped: the chip lives outside `[role="dialog"]`, so including it
+    // here would assert that forward-Tab wraps from a control the trap must
+    // never treat as inside the modal.
+    const nodes = [...panel.querySelectorAll("button:not([disabled]), a[href]")].filter((node) => !node.hidden);
+    nodes.at(-1).focus();
+    panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, composed: true }));
+    expect(api.shadow.activeElement).toBe(nodes[0]);
+    expect(panel.contains(api.shadow.activeElement)).toBe(true);
+  });
+
+  it("opens as a modal slide-over, closes on Escape, and restores focus to the chip", async () => {
+    const dom = freshDom();
+    const { api, runtime } = mount(dom);
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+
+    const panel = api.shadow.querySelector(".panel");
+    const chip = api.shadow.querySelector(".chip");
+    expect(panel.hidden).toBe(true);
+
+    trustedClick(chip);
+    expect(panel.hidden).toBe(false);
+    expect(chip.getAttribute("aria-expanded")).toBe("true");
+    expect(api.shadow.activeElement?.getAttribute("aria-label")).toBe("Close Polylogue capture status");
+
+    panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      composed: true,
+    }));
+    expect(panel.hidden).toBe(true);
+    expect(chip.getAttribute("aria-expanded")).toBe("false");
+    expect(api.shadow.activeElement).toBe(chip);
+    expect(runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ include_intelligence: true }));
+  });
+
+  it("creates an ephemeral assertion candidate only for text selected inside a supported message", async () => {
+    const dom = freshDom(`<!doctype html><html><body>
+      <article data-message-author-role="assistant"><span id="inside">A supported message selection</span></article>
+      <p id="outside">Page chrome selection</p>
+    </body></html>`);
+    const { api } = mount(dom);
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+
+    const selectNode = (node) => {
+      const range = dom.window.document.createRange();
+      range.selectNodeContents(node);
+      const selection = dom.window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      dom.window.document.dispatchEvent(new dom.window.Event("selectionchange"));
+      return selection;
+    };
+
+    const insideSelection = selectNode(dom.window.document.getElementById("inside"));
+    expect(api.getSelectionCandidate()).toEqual({
+      kind: "selection_assertion_candidate",
+      provider: "chatgpt",
+      source_url: "https://chatgpt.com/c/conversation-1",
+      captured_at: expect.any(String),
+      text: "A supported message selection",
+      truncated: false,
+      persistence: "not_supported",
+      // Set by the mounted surface once identity is resolved; both stay null
+      // while the receiver has accepted no native identity for this message.
+      message_ref: null,
+      evidence_ref: null,
+    });
+    expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(insideSelection)?.text)
+      .toBe("A supported message selection");
+
+    const outsideSelection = selectNode(dom.window.document.getElementById("outside"));
+    expect(api.getSelectionCandidate()).toBeNull();
+    expect(api.shadow.querySelector(".editor").hidden).toBe(true);
+    expect(api.shadow.querySelector("button.disabled").disabled).toBe(true);
+    expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(outsideSelection)).toBeNull();
+
+    const crossMessageRange = dom.window.document.createRange();
+    crossMessageRange.setStart(dom.window.document.getElementById("inside").firstChild, 2);
+    crossMessageRange.setEnd(dom.window.document.getElementById("outside").firstChild, 4);
+    const crossMessageSelection = dom.window.getSelection();
+    crossMessageSelection.removeAllRanges();
+    crossMessageSelection.addRange(crossMessageRange);
+    dom.window.document.dispatchEvent(new dom.window.Event("selectionchange"));
+    expect(api.getSelectionCandidate()).toBeNull();
+    expect(dom.window.PolylogueAmbientSurface.deriveSelectionCandidate(crossMessageSelection)).toBeNull();
+  });
+
+  it("enables saving for every accepted native message identity in the conversation", async () => {
+    const messageRef = "chatgpt:conversation-1:n:message-2";
+    const evidenceRef = "browser-capture:artifact#message:message-2";
+    const dom = freshDom(`<!doctype html><html><body>
+      <article data-message-author-role="assistant" data-message-id="message-2"><span id="inside">Accepted turn</span></article>
+    </body></html>`);
+    const observation = {
+      origin: "chatgpt",
+      provider_conversation_id: "conversation-1",
+      provider_message_id: "message-2",
+      adapter_name: "ambient-selection",
+      fidelity: "native",
+    };
+    const { api } = mount(dom, missionFixture({ assertions: {
+      selection_candidate_supported: true,
+      persistence_supported: true,
+      accepted_identities: { [messageRef]: { message_ref: messageRef, evidence_ref: evidenceRef, fidelity: "native" } },
+    } }), { identityForNode: () => observation });
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+    const range = dom.window.document.createRange();
+    range.selectNodeContents(dom.window.document.getElementById("inside"));
+    dom.window.getSelection().addRange(range);
+    dom.window.document.dispatchEvent(new dom.window.Event("selectionchange"));
+
+    expect(api.getSelectionCandidate().evidence_ref).toBe(evidenceRef);
+  });
+
+  it.each([
+    ["ChatGPT", "https://chatgpt.com/c/conversation-1"],
+    ["Claude.ai", "https://claude.ai/chat/conversation-1"],
+  ])("keeps the slide-over keyboard reachable and labelled on %s", async (_name, url) => {
+    const dom = url.startsWith("https://claude.ai/") ? manifestDom(url) : freshDom(undefined, url);
+    const { api } = mount(dom);
+    await vi.waitFor(() => expect(api.getSnapshot()?.ok).toBe(true));
+
+    const panel = api.shadow.querySelector("[role='dialog']");
+    const chip = api.shadow.querySelector(".chip");
+    expect(chip.getAttribute("aria-controls")).toBe(panel.id);
+    expect(chip.getAttribute("aria-label")).toContain("Polylogue capture status");
+    const labelledHeading = api.shadow.getElementById(panel.getAttribute("aria-labelledby"));
+    expect(labelledHeading?.tagName).toBe("H2");
+    expect(labelledHeading.textContent).toContain("Polylogue capture status");
+    expect(api.shadow.getElementById(panel.getAttribute("aria-describedby")).textContent)
+      .toContain("never treated as instructions");
+
+    dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "p", altKey: true, bubbles: true }));
+    expect(panel.hidden).toBe(false);
+    expect(api.shadow.activeElement?.getAttribute("aria-label")).toBe("Close Polylogue capture status");
+
+    // Scoped to the dialog on purpose. The chip is rendered after the panel,
+    // so a shadow-root-wide query makes `nodes.at(-1)` the chip -- outside the
+    // aria-modal dialog -- and the assertion would bless the focus escape it
+    // exists to detect. Anti-vacuity: restore `focusables()` to
+    // `shadow.querySelectorAll` and the wrap lands on the chip, failing both
+    // the identity and the containment assertion below.
+    const nodes = [...panel.querySelectorAll("button:not([disabled]), a[href]")].filter((node) => !node.hidden);
+    expect(nodes.at(-1)).not.toBe(chip);
+    nodes[0].focus();
+    panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, composed: true }));
+    expect(api.shadow.activeElement).toBe(nodes.at(-1));
+    expect(panel.contains(api.shadow.activeElement)).toBe(true);
+
+    panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true }));
+    expect(panel.hidden).toBe(true);
+    expect(api.shadow.activeElement).toBe(chip);
+  });
+
+  it("bounds the selection idempotency key below the receiver limit", async () => {
+    // `_archive_capture_assertion_candidate` refuses a key over 240
+    // characters, and the previous `selection:<ref>:<kind>:<body>` template
+    // exceeded that for an ordinary paragraph selection, so every save
+    // returned `idempotency_key exceeds 240 characters`.
+    //
+    // Anti-vacuity: restore the raw concatenation and the length assertion
+    // fails at 2,000+ characters; a key that ignored the body would fail the
+    // "different drafts differ" assertion.
+    const dom = freshDom();
+    const { selectionIdempotencyKey } = dom.window.PolylogueAmbientSurface;
+    const evidenceRef = `browser-capture/chatgpt/${"c".repeat(200)}.json#message:msg-1`;
+    const body = "paragraph ".repeat(200);
+
+    const key = selectionIdempotencyKey(evidenceRef, "selection_assertion_candidate", body);
+
+    expect(body.length).toBeGreaterThan(240);
+    expect(key.length).toBeLessThanOrEqual(240);
+    expect(key).toMatch(/^selection:[0-9a-f]{16}$/);
+    expect(selectionIdempotencyKey(evidenceRef, "selection_assertion_candidate", body)).toBe(key);
+    expect(selectionIdempotencyKey(evidenceRef, "selection_assertion_candidate", `${body}!`)).not.toBe(key);
+    expect(selectionIdempotencyKey(`${evidenceRef}x`, "selection_assertion_candidate", body)).not.toBe(key);
+  });
+
+  it("removes itself calmly when globally disabled or hidden for the current site", async () => {
+    const disabledDom = freshDom();
+    mount(disabledDom, missionFixture({ ambient: { enabled: false, site_enabled: true } }));
+    await vi.waitFor(() => expect(disabledDom.window.document.getElementById("polylogue-ambient-surface")).toBeNull());
+
+    const hiddenDom = freshDom();
+    const hidden = mount(hiddenDom);
+    await vi.waitFor(() => expect(hidden.api.getSnapshot()?.ok).toBe(true));
+    const hideButton = [...hidden.api.shadow.querySelectorAll("button")]
+      .find((button) => button.textContent === "Hide on this site");
+    trustedClick(hideButton);
+    await vi.waitFor(() => expect(hiddenDom.window.document.getElementById("polylogue-ambient-surface")).toBeNull());
+    expect(hidden.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "polylogue.ambient.configure",
+      hostname: "chatgpt.com",
+      site_enabled: false,
+    });
+  });
+});

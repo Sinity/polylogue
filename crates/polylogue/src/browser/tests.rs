@@ -1,0 +1,359 @@
+//! The browser host as the extension uses it: whole native messaging
+//! exchanges against a real daemon on a temporary home.
+
+use super::native::{read_frame, serve, write_frame};
+use super::*;
+use crate::testworld::{World, world};
+use base64::Engine as _;
+use serde_json::{Value, json};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+
+fn ctx(w: &World) -> Arc<Ctx> {
+    Arc::new(Ctx::at(&w.daemon.state, &w.daemon.archive).unwrap())
+}
+
+struct Answer {
+    status: u16,
+    headers: Value,
+    body: Vec<u8>,
+    frames: Vec<Value>,
+}
+
+impl Answer {
+    fn json(&self) -> Value {
+        serde_json::from_slice(&self.body).unwrap_or(Value::Null)
+    }
+}
+
+/// One exchange as the extension's `nativeFetch` makes it.
+fn exchange(ctx: &Arc<Ctx>, method: &str, path: &str, body: &[u8]) -> Answer {
+    let mut input = Vec::new();
+    write_frame(
+        &mut input,
+        &json!({ "type": "request", "version": 1, "endpoint": "http://127.0.0.1:8765",
+                 "receiver_id": null, "method": method, "path": path,
+                 "headers": {"content-type": "application/json", "x-request-id": "req-1"} }),
+    )
+    .unwrap();
+    for (i, chunk) in body.chunks(64 * 1024).enumerate() {
+        write_frame(
+            &mut input,
+            &json!({ "type": "body", "sequence": i, "data": B64.encode(chunk) }),
+        )
+        .unwrap();
+    }
+    write_frame(&mut input, &json!({ "type": "body_end" })).unwrap();
+    for _ in 0..64 {
+        write_frame(&mut input, &json!({ "type": "response_next" })).unwrap();
+    }
+    let mut out = Vec::new();
+    serve(Arc::clone(ctx), &mut input.as_slice(), &mut out).unwrap();
+    let mut frames = Vec::new();
+    let mut reader = out.as_slice();
+    while let Some(f) = read_frame(&mut reader).unwrap() {
+        frames.push(f);
+    }
+    let response = frames
+        .iter()
+        .find(|f| f["type"] == "response")
+        .cloned()
+        .unwrap_or_else(|| panic!("no response frame: {frames:?}"));
+    let mut body = Vec::new();
+    for f in frames.iter().filter(|f| f["type"] == "response_body") {
+        body.extend(B64.decode(f["data"].as_str().unwrap()).unwrap());
+    }
+    Answer {
+        status: response["status"].as_u64().unwrap() as u16,
+        headers: response["headers"].clone(),
+        body,
+        frames,
+    }
+}
+
+fn capture(provider_session: &str, text: &str) -> Vec<u8> {
+    json!({
+        "polylogue_capture_kind": "browser_capture",
+        "schema_version": 1,
+        "capture_id": format!("chatgpt:{provider_session}"),
+        "source": "browser-extension",
+        "provenance": {"captured_at": "2026-03-01T10:00:00Z", "url": "https://chatgpt.com/c/x"},
+        "session": {
+            "provider": "chatgpt",
+            "provider_session_id": provider_session,
+            "title": "captured",
+            "turns": [{"provider_turn_id": "t1", "role": "user", "text": text}]
+        }
+    })
+    .to_string()
+    .into_bytes()
+}
+
+#[test]
+fn a_capture_is_spooled_durably_and_archived_by_the_loop() {
+    let w = world("x");
+    let ctx = ctx(&w);
+    let status = exchange(&ctx, "GET", "/v1/status", b"");
+    assert_eq!(status.status, 200);
+    let frames = &status.frames;
+    assert_eq!(frames[0]["type"], "response");
+    assert_eq!(frames[0]["api_schema"], API_SCHEMA);
+    assert_eq!(frames[0]["receiver_id"], ctx.receiver_id.as_str());
+    assert_eq!(status.json()["daemon"], "running");
+
+    // A body over one 64 KiB frame arrives whole, acknowledged piece by piece.
+    let text = "captured in the browser ".repeat(5000);
+    let bytes = capture("conv-1", &text);
+    assert!(bytes.len() > 64 * 1024);
+    let a = exchange(&ctx, "POST", "/v1/browser-captures", &bytes);
+    assert_eq!(a.status, 200, "{:?}", a.json());
+    let acks = a.frames.iter().filter(|f| f["type"] == "body_ack").count();
+    assert_eq!(acks, bytes.len().div_ceil(64 * 1024));
+    assert_eq!(a.headers["x-request-id"], "req-1");
+    let ack = a.json();
+    let sha = sha256_hex(&bytes);
+    assert_eq!(ack["outcome"], "accepted");
+    assert_eq!(ack["content_hash"], sha.as_str());
+    assert_eq!(ack["submitted_content_hash"], sha.as_str());
+    let spooled = ctx.spool.join(ack["artifact_ref"].as_str().unwrap());
+    assert_eq!(std::fs::read(&spooled).unwrap(), bytes);
+    assert!(spooled.starts_with(w.home.join(".local/state/polylogue/browser-capture")));
+    // The same bytes again change nothing.
+    let again = exchange(&ctx, "POST", "/v1/browser-captures", &bytes);
+    assert_eq!(again.json()["outcome"], "noop");
+
+    // The daemon's loop reads the spool; archive state follows it.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let s = exchange(
+            &ctx,
+            "GET",
+            "/v1/archive-state?provider=chatgpt&provider_session_id=conv-1",
+            b"",
+        )
+        .json();
+        assert_eq!(s["spooled"], true);
+        if s["state"] == "archived" {
+            assert_eq!(s["indexed_session_id"], "chatgpt:conv-1");
+            assert_eq!(s["indexed_message_count"], 1);
+            break;
+        }
+        assert_eq!(s["state"], "spooled_only");
+        assert!(Instant::now() < deadline, "the capture was never archived");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn without_the_daemon_the_index_is_unknown_not_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = polylogue_store::Archive::at(&dir.path().join("archive"));
+    let ctx = Arc::new(Ctx::at(&dir.path().join("state"), &archive).unwrap());
+    let a = exchange(
+        &ctx,
+        "POST",
+        "/v1/browser-captures",
+        &capture("conv-2", "hi"),
+    );
+    assert_eq!(a.status, 200);
+    let s = exchange(
+        &ctx,
+        "GET",
+        "/v1/archive-state?provider=chatgpt&provider_session_id=conv-2",
+        b"",
+    )
+    .json();
+    assert_eq!(s["state"], "spooled_unknown_index");
+    assert_eq!(s["indexed_message_count"], Value::Null);
+    let s = exchange(
+        &ctx,
+        "GET",
+        "/v1/archive-state?provider=chatgpt&provider_session_id=never",
+        b"",
+    )
+    .json();
+    assert_eq!(s["state"], "unknown");
+    assert_eq!(
+        exchange(&ctx, "GET", "/v1/status", b"").json()["daemon"],
+        "not_running"
+    );
+}
+
+#[test]
+fn malformed_exchanges_are_refused_with_an_error_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = polylogue_store::Archive::at(&dir.path().join("archive"));
+    let ctx = Arc::new(Ctx::at(&dir.path().join("state"), &archive).unwrap());
+    let run = |frames: &[Value]| {
+        let mut input = Vec::new();
+        for f in frames {
+            write_frame(&mut input, f).unwrap();
+        }
+        let mut out = Vec::new();
+        serve(Arc::clone(&ctx), &mut input.as_slice(), &mut out).unwrap();
+        read_frame(&mut out.as_slice()).unwrap()
+    };
+    assert_eq!(
+        run(&[json!({"type": "body"})]).unwrap()["error"],
+        "native_request_invalid"
+    );
+    assert_eq!(
+        run(&[
+            json!({"type": "request", "version": 1, "method": "GET", "path": "/api/v1/cmd/status"})
+        ])
+        .unwrap()["error"],
+        "native_route_forbidden"
+    );
+    // A body frame out of sequence.
+    assert_eq!(
+        run(&[
+            json!({"type": "request", "version": 1, "method": "POST", "path": "/v1/browser-captures"}),
+            json!({"type": "body", "sequence": 3, "data": ""}),
+        ])
+        .unwrap()["error"],
+        "native_request_frame_invalid"
+    );
+    // A spool entry that is a symlink is not followed.
+    let rel = artifact_ref("chatgpt", "conv-3");
+    let target = dir.path().join("elsewhere");
+    std::fs::write(&target, b"untouched").unwrap();
+    std::fs::create_dir_all(ctx.spool.join("chatgpt")).unwrap();
+    std::os::unix::fs::symlink(&target, ctx.spool.join(&rel)).unwrap();
+    let a = exchange(
+        &ctx,
+        "POST",
+        "/v1/browser-captures",
+        &capture("conv-3", "x"),
+    );
+    assert_eq!(a.status, 500);
+    assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+}
+
+fn request(op: &str, conversation: &str, policy: &str, key: &str) -> actions::ActionRequest {
+    serde_json::from_value(json!({
+        "idempotency_key": key,
+        "provider": "chatgpt",
+        "operation": op,
+        "target": {"conversation_id": conversation},
+        "text": "summarize this",
+        "presentation": {"model_slug": "gpt-x", "model_label": "GPT X", "effort_label": "standard"},
+        "submit_policy": policy
+    }))
+    .unwrap()
+}
+
+fn report(ctx: &Arc<Ctx>, id: &str, who: &str, outcome: &str) -> Answer {
+    exchange(
+        ctx,
+        "POST",
+        &format!("/v1/browser-actions/{id}/events"),
+        json!({"owner_instance_id": who, "outcome": outcome, "phase": outcome})
+            .to_string()
+            .as_bytes(),
+    )
+}
+
+#[test]
+fn the_extension_claims_and_reports_actions_the_operator_queued() {
+    let w = world("x");
+    let ctx = ctx(&w);
+    let claim = |who: &str| {
+        exchange(
+            &ctx,
+            "GET",
+            &format!("/v1/browser-actions?claim_by={who}"),
+            b"",
+        )
+        .json()
+    };
+    // Off by default: nothing queues and nothing is handed out.
+    assert_eq!(
+        actions::enqueue(
+            &ctx,
+            &request("conversation.create", "new", "stage_only", "k1"),
+            false
+        )
+        .unwrap_err(),
+        actions::Refused(409, "browser_actions_off")
+    );
+    w.set("browser.actions", "on");
+    assert!(ctx.actions_enabled());
+    let (_, a) = actions::enqueue(
+        &ctx,
+        &request("conversation.create", "new", "stage_only", "k1"),
+        true,
+    )
+    .unwrap();
+    // The extension cannot queue.
+    let body =
+        serde_json::to_vec(&request("conversation.create", "new", "stage_only", "k0")).unwrap();
+    assert_eq!(
+        exchange(&ctx, "POST", "/v1/browser-actions", &body).status,
+        403
+    );
+
+    let got = claim("tab-a");
+    assert_eq!(got["actions"][0]["action_id"], a.action_id.as_str());
+    assert_eq!(got["actions"][0]["status"], "leased");
+    // One action out at a time.
+    let (_, b) = actions::enqueue(
+        &ctx,
+        &request("conversation.create", "new", "stage_only", "k2"),
+        true,
+    )
+    .unwrap();
+    assert_eq!(claim("tab-b")["actions"], json!([]));
+
+    // Only the owner reports; a draft-only action cannot submit.
+    assert_eq!(report(&ctx, &a.action_id, "tab-b", "drafted").status, 409);
+    assert_eq!(report(&ctx, &a.action_id, "tab-a", "submitted").status, 409);
+    let done = report(&ctx, &a.action_id, "tab-a", "drafted");
+    assert_eq!(done.status, 200);
+    assert_eq!(done.json()["action"]["status"], "drafted");
+    assert_eq!(
+        claim("tab-b")["actions"][0]["action_id"],
+        b.action_id.as_str()
+    );
+
+    // A submit into an existing conversation waits for the operator.
+    let (_, held) = actions::enqueue(
+        &ctx,
+        &request("conversation.reply", "conv-9", "submit_once", "k3"),
+        true,
+    )
+    .unwrap();
+    assert_eq!(held.status, actions::Status::AwaitingApproval);
+    report(&ctx, &b.action_id, "tab-b", "failed");
+    assert_eq!(claim("tab-a")["actions"], json!([]));
+    let approve = exchange(
+        &ctx,
+        "POST",
+        &format!("/v1/browser-actions/{}/approval", held.action_id),
+        br#"{"extension_instance_id":"popup","decision":"approve"}"#,
+    );
+    assert_eq!(approve.status, 200);
+
+    // The kill switch: nothing is handed out once the setting is off.
+    w.set("browser.actions", "off");
+    let v = claim("tab-a");
+    assert_eq!(v["actions"], json!([]));
+    assert_eq!(v["enabled"], false);
+    w.set("browser.actions", "on");
+    assert_eq!(
+        claim("tab-a")["actions"][0]["action_id"],
+        held.action_id.as_str()
+    );
+}
+
+#[test]
+fn the_host_manifest_admits_only_the_named_extension() {
+    let m = native::manifest(std::path::Path::new("/bin/polylogue"), "abcdefghijklmnop");
+    assert_eq!(m["name"], HOST_NAME);
+    assert_eq!(m["type"], "stdio");
+    assert_eq!(
+        m["allowed_origins"],
+        json!(["chrome-extension://abcdefghijklmnop/"])
+    );
+}
