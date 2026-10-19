@@ -268,6 +268,7 @@ pub enum SinexCommand {
 pub fn run(args: Args) -> ExitCode {
     let json = args.json;
     let mut exec_native = false;
+    let mut export_out: Option<PathBuf> = None;
     let request = match args.command {
         Some(Command::Daemon) => {
             return match crate::daemon::server::serve() {
@@ -350,6 +351,24 @@ pub fn run(args: Args) -> ExitCode {
                 .map(|p| std::path::absolute(&p).unwrap_or(p))
                 .collect(),
         },
+        Some(Command::Export {
+            sessions,
+            format,
+            out,
+        }) => {
+            let ids: Result<Vec<SessionId>, _> =
+                sessions.iter().map(|s| SessionId::parse(s)).collect();
+            let ids = match ids {
+                Ok(ids) if !ids.is_empty() => ids,
+                Ok(_) => return fail(json, "bad_request", "name at least one session", 2),
+                Err(e) => return fail(json, "bad_request", &e.to_string(), 2),
+            };
+            export_out = out;
+            Request::Export {
+                sessions: ids,
+                format: format!("{format:?}").to_lowercase(),
+            }
+        }
         Some(Command::Sql { statement }) => Request::Sql { statement },
         Some(Command::Recall { query, cwd }) => Request::Context {
             request_id: request_id(),
@@ -455,6 +474,9 @@ pub fn run(args: Args) -> ExitCode {
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
     match response {
+        Response::Ok { data } if matches!(request, Request::Export { .. }) => {
+            write_export(&data, export_out.as_deref(), json)
+        }
         Response::Ok { data } if exec_native => exec_plan(&data),
         Response::Ok { data } => {
             if json {
@@ -473,6 +495,27 @@ pub fn run(args: Args) -> ExitCode {
             message,
             detail,
         } => fail_detail(json, &kind, &message, detail, 1),
+    }
+}
+
+/// Writes an export to `out`, or to standard output.
+fn write_export(data: &serde_json::Value, out: Option<&std::path::Path>, json: bool) -> ExitCode {
+    let text = match data.get("content").and_then(|c| c.as_str()) {
+        Some(content) => content.to_owned(),
+        None => match serde_json::to_string_pretty(data) {
+            Ok(t) => t,
+            Err(e) => return fail(json, "internal", &e.to_string(), 1),
+        },
+    };
+    match out {
+        Some(path) => match std::fs::write(path, text.as_bytes()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(json, "io", &format!("{}: {e}", path.display()), 1),
+        },
+        None => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
     }
 }
 

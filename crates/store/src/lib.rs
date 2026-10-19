@@ -19,6 +19,7 @@ pub mod notes;
 pub mod read;
 pub mod schema;
 pub mod search;
+pub mod session_export;
 pub mod user;
 pub mod writer;
 

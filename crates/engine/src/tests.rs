@@ -352,3 +352,38 @@ fn an_imported_file_keeps_the_origin_whose_layout_it_sits_in() {
     let loose = Path::new("/backup/s1.jsonl");
     assert_eq!(recognize_import(loose, head).unwrap().name, "claude-code");
 }
+
+fn export_of(root: &Path, session: &str) -> polylogue_model::export::SessionExport {
+    let pool = ReadPool::open(&Archive::at(root)).unwrap();
+    pool.reader()
+        .unwrap()
+        .session_export(&SessionId::parse(session).unwrap())
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_and_ids() {
+    let w = World::new();
+    w.append(
+        "s1.jsonl",
+        &(user("u1", "s1", "hello") + &assistant("a1", "s1", "hi") + &user("u2", "s1", "more")),
+    );
+    let (mut e, _lock) = w.engine(64 << 20);
+    assert!(e.converge().unwrap().errors.is_empty());
+    let original = export_of(&w.root, "claude-code:s1");
+    let doc = polylogue_model::export::Document::new(vec![original.clone()]);
+    let file = w.dir.path().join("export.json");
+    fs::write(&file, doc.to_json().unwrap()).unwrap();
+
+    let fresh = World::new();
+    let (mut e2, _lock2) = fresh.engine(64 << 20);
+    let report = e2.import(std::slice::from_ref(&file)).unwrap();
+    assert_eq!(report.imported, std::slice::from_ref(&file), "{report:?}");
+    let back = export_of(&fresh.root, "claude-code:s1");
+    assert_eq!(back.session.id, original.session.id);
+    assert_eq!(back.session.title, original.session.title);
+    assert_eq!(back.messages, original.messages);
+    assert_eq!(back.events, original.events);
+    assert_eq!(back.links, original.links);
+}

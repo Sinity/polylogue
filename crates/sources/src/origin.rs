@@ -229,6 +229,18 @@ pub static ORIGINS: &[OriginSpec] = &[
         open: none,
     },
     OriginSpec {
+        name: crate::polylogue_export::ORIGIN,
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Import,
+        framing: Framing::Document,
+        root: Root::HOME,
+        locations: &[],
+        capture: Capture::Bytes,
+        recognize: crate::polylogue_export::recognize,
+        open: crate::polylogue_export::open,
+    },
+    OriginSpec {
         name: "chatgpt",
         parser_version: 1,
         support: Support::Parsed,
