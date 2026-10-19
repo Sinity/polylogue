@@ -2581,6 +2581,7 @@ dependencies = [
  "futures-util",
  "hashed-blobs",
  "polylogue-engine",
+ "polylogue-model",
  "polylogue-store",
  "serde",
  "serde_json",

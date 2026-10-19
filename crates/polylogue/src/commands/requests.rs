@@ -63,15 +63,13 @@ pub fn import(_: &Command, v: &Values, caller: &Caller) -> Built {
     })
 }
 
-/// Without a query, sessions by latest activity; with one, the query.
+/// The query; without one, the `sessions` unit with its defaults.
 pub fn list(_: &Command, v: &Values, _: &Caller) -> Built {
-    Ok(match v.text("query").filter(|q| !q.trim().is_empty()) {
-        None => Request::List {
-            limit: v.integer("limit").unwrap_or(50),
-            before: None,
-        },
-        Some(text) => query_request(text, v.integer("limit"), v),
-    })
+    let text = v
+        .text("query")
+        .filter(|q| !q.trim().is_empty())
+        .unwrap_or_else(|| "sessions".into());
+    Ok(query_request(text, v.integer("limit"), v))
 }
 
 pub fn read(_: &Command, v: &Values, caller: &Caller) -> Built {

@@ -1,11 +1,41 @@
 //! Reads that context assembly needs: sessions by working directory, a
 //! session's own prompts, earlier deliveries and settings.
 
-use crate::read::{SessionSummary, row_summary};
+use crate::read::{parse_name, ts};
 use crate::{Reader, Result};
-use polylogue_model::Timestamp;
+use polylogue_model::{SessionId, SessionKind, Timestamp};
 use rusqlite::params;
 use serde::Serialize;
+
+/// A session that worked in or below a directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NearbySession {
+    pub id: SessionId,
+    pub kind: SessionKind,
+    pub title: Option<String>,
+    pub started: Option<Timestamp>,
+    pub last_activity: Option<Timestamp>,
+    pub messages: u64,
+    pub cwd: Option<String>,
+}
+
+/// A nearby session from a row of (id, kind, title, started_at,
+/// last_activity_at, message count, cwd). A row whose id does not parse is
+/// `None`.
+fn nearby_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<NearbySession>> {
+    let Ok(id) = SessionId::parse(&r.get::<_, String>(0)?) else {
+        return Ok(None);
+    };
+    Ok(Some(NearbySession {
+        id,
+        kind: parse_name(&r.get::<_, String>(1)?).unwrap_or(SessionKind::Main),
+        title: r.get(2)?,
+        started: ts(r.get(3)?),
+        last_activity: ts(r.get(4)?),
+        messages: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
+        cwd: r.get(6)?,
+    }))
+}
 
 /// A delivery as stored, without its text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -62,11 +92,11 @@ impl Reader<'_> {
         dirs: &[String],
         exclude: Option<&str>,
         limit: u64,
-    ) -> Result<Vec<SessionSummary>> {
-        let mut out: Vec<SessionSummary> = Vec::new();
+    ) -> Result<Vec<NearbySession>> {
+        let mut out: Vec<NearbySession> = Vec::new();
         let conn = self.conn();
         let mut stmt = conn.prepare_cached(
-            "SELECT s.id, s.kind, s.title, s.started_at, s.last_activity_at,
+            "SELECT s.id, s.kind, coalesce(s.title, s.derived_title), s.started_at, s.last_activity_at,
                     (SELECT count(*) FROM message m WHERE m.session_pk = s.pk), s.cwd
                FROM session s
               WHERE s.kind = 'main' AND s.stub = 0
@@ -77,7 +107,7 @@ impl Reader<'_> {
         )?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         for dir in dirs {
-            for row in stmt.query_map(params![dir, exclude, limit], row_summary)? {
+            for row in stmt.query_map(params![dir, exclude, limit], nearby_session)? {
                 if let Some(s) = row?
                     && !out.iter().any(|o| o.id == s.id)
                 {

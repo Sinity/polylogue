@@ -95,41 +95,10 @@ pub fn home(status: &Value, sessions: &Value) -> String {
         }
     }
     body.push_str("</dl><h2>Latest sessions</h2>");
-    body.push_str(&session_list(sessions));
+    body.push_str(&results_table(sessions));
     layout("Overview", "", "polylogue", &body)
 }
 
-fn session_list(rows: &Value) -> String {
-    let Some(rows) = rows.as_array() else {
-        return "<p class=\"empty\">No sessions.</p>".into();
-    };
-    if rows.is_empty() {
-        return "<p class=\"empty\">No sessions.</p>".into();
-    }
-    let mut out = String::from(
-        "<table class=\"sessions results\"><thead><tr><th>Session</th><th>Kind</th><th>Last activity</th><th>Messages</th><th>Directory</th></tr></thead><tbody>",
-    );
-    for r in rows {
-        let id = r["id"].as_str().unwrap_or_default();
-        let title = r["title"].as_str().unwrap_or(id);
-        let _ = write!(
-            out,
-            "<tr class=\"hit\"><td><a href=\"/s/{}\">{}</a></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-            encode_id(id),
-            esc(title),
-            esc(r["kind"].as_str().unwrap_or("")),
-            esc(r["last_activity"].as_str().unwrap_or("unknown")),
-            r["messages"]
-                .as_u64()
-                .map_or_else(|| "unknown".into(), |n| n.to_string()),
-            esc(r["cwd"].as_str().unwrap_or("")),
-        );
-    }
-    out.push_str("</tbody></table>");
-    out
-}
-
-/// `/search?q=…`: the CLI's result table, with every session ID a link.
 pub fn search(query: &str, data: Option<&Value>, error: Option<&Value>) -> String {
     let cli = format!("polylogue list {}", shell_quote(query));
     let mut body = format!("<h1>Results for <code>{}</code></h1>", esc(query));
@@ -150,11 +119,16 @@ pub fn search(query: &str, data: Option<&Value>, error: Option<&Value>) -> Strin
         body.push_str("</div>");
     }
     if let Some(data) = data {
-        let mut table = Vec::new();
-        let _ = results::render(data, Format::Html, &mut table);
-        body.push_str(&link_sessions(&String::from_utf8_lossy(&table), data));
+        body.push_str(&results_table(data));
     }
     layout(&format!("Search: {query}"), query, &cli, &body)
+}
+
+/// A query's answer as a table, each session ID linked to its page.
+fn results_table(data: &Value) -> String {
+    let mut table = Vec::new();
+    let _ = results::render(data, Format::Html, &mut table);
+    link_sessions(&String::from_utf8_lossy(&table), data)
 }
 
 /// Wraps each session ID that appears as a table cell in a link to its

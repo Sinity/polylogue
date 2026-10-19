@@ -8,22 +8,6 @@ use super::*;
 pub(super) fn print_plain(request: &Request, data: &serde_json::Value) {
     let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_owned();
     match request {
-        Request::List { .. } => {
-            crate::row_numbers::remember(
-                &Archive::default_root(),
-                &crate::row_numbers::row_ids(data),
-            );
-            for (n, row) in data.as_array().into_iter().flatten().enumerate() {
-                println!(
-                    "@{:<3} {:<25} {:>6}  {}  {}",
-                    n + 1,
-                    s(&row["last_activity"]),
-                    row["messages"],
-                    s(&row["id"]),
-                    s(&row["title"])
-                );
-            }
-        }
         Request::Read { .. } => match data["next"].as_str() {
             _ if data["content"].is_string() => print!("{}", s(&data["content"])),
             Some(next) => println!("{}\n(next page: --cursor {next})", s(&data["text"])),

@@ -74,7 +74,7 @@ pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError
 /// A session worth resuming and why.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Candidate {
-    pub session: polylogue_store::SessionSummary,
+    pub session: polylogue_store::NearbySession,
     pub open: OpenItems,
     /// Operator notes on it that ask for follow-up (handoffs, blockers).
     pub follow_ups: Vec<String>,

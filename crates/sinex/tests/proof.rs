@@ -53,11 +53,17 @@ fn answers(root: &Path) -> String {
     let pool = ReadPool::open(&Archive::at(root)).unwrap();
     let reader = pool.reader().unwrap();
     let mut out = String::new();
-    let mut sessions = reader.list(u64::MAX, None).unwrap();
-    sessions.sort_by_key(|a| a.id.to_string());
+    let sessions = reader
+        .query(
+            "SELECT id, kind, coalesce(title, derived_title) AS title, started_at, last_activity_at, cwd \
+             FROM session ORDER BY id",
+            &[],
+        )
+        .unwrap();
     for s in sessions {
-        out.push_str(&format!("{s:?}\n"));
-        for m in reader.messages(&s.id, false).unwrap() {
+        out.push_str(&format!("session {s}\n"));
+        let id = polylogue_model::SessionId::parse(s["id"].as_str().unwrap()).unwrap();
+        for m in reader.messages(&id, false).unwrap() {
             out.push_str(&format!("  {m:?}\n"));
         }
     }
@@ -87,7 +93,7 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     converge(&a, &home, vec![]);
     let expected = answers(&a);
     assert!(
-        expected.contains("SessionSummary"),
+        expected.contains("session {"),
         "the examples produced sessions"
     );
 

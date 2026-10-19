@@ -213,7 +213,7 @@ pub static UNITS: &[UnitSpec] = &[
             ("id", T("{s}.id"), Text),
             ("origin", T("{s}.origin"), Text),
             ("kind", T("{s}.kind"), Text),
-            ("title", T("{s}.title"), Text),
+            ("title", T("COALESCE({s}.title, {s}.derived_title)"), Text),
             ("started", T("{s}.started_at"), Time),
             ("last_active", T("{s}.last_activity_at"), Time),
             ("cwd", T("{s}.cwd"), Text),

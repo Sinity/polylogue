@@ -96,7 +96,7 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     assert_eq!(json(&out)["imported"].as_array().unwrap().len(), 1);
 
     let out = cli(&env, &["--json", "list"]);
-    let ids: Vec<String> = json(&out)
+    let ids: Vec<String> = json(&out)["rows"]
         .as_array()
         .unwrap()
         .iter()

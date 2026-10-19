@@ -46,17 +46,6 @@ pub struct KnownInput {
     pub parser_version: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SessionSummary {
-    pub id: SessionId,
-    pub kind: SessionKind,
-    pub title: Option<String>,
-    pub started: Option<Timestamp>,
-    pub last_activity: Option<Timestamp>,
-    pub messages: u64,
-    pub cwd: Option<String>,
-}
-
 /// Totals for `status`. Unknown is never shown as zero: a count that could
 /// not be read is an error, not a 0.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -138,30 +127,12 @@ impl rusqlite::ToSql for SqlValue {
     }
 }
 
-fn parse_name<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
+pub(crate) fn parse_name<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
     serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
 }
 
-fn ts(ms: Option<i64>) -> Option<Timestamp> {
+pub(crate) fn ts(ms: Option<i64>) -> Option<Timestamp> {
     ms.and_then(Timestamp::from_unix_ms)
-}
-
-/// A session summary from a row of (id, kind, title, started_at,
-/// last_activity_at, message count, cwd). A row whose id does not parse is
-/// `None`.
-pub(crate) fn row_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<SessionSummary>> {
-    let Ok(id) = SessionId::parse(&r.get::<_, String>(0)?) else {
-        return Ok(None);
-    };
-    Ok(Some(SessionSummary {
-        id,
-        kind: parse_name(&r.get::<_, String>(1)?).unwrap_or(SessionKind::Main),
-        title: r.get(2)?,
-        started: ts(r.get(3)?),
-        last_activity: ts(r.get(4)?),
-        messages: u64::try_from(r.get::<_, i64>(5)?).unwrap_or(0),
-        cwd: r.get(6)?,
-    }))
 }
 
 impl Reader<'_> {
@@ -208,47 +179,6 @@ impl Reader<'_> {
                 s
             }),
         )
-    }
-
-    /// Sessions by latest activity, newest first. `before` continues a page
-    /// after the last activity time (Unix ms) the previous page ended at.
-    pub fn list(&self, limit: u64, before: Option<i64>) -> Result<Vec<SessionSummary>> {
-        let mut stmt = self.conn().prepare_cached(
-            "SELECT s.id, s.kind, coalesce(s.title, s.derived_title), s.started_at, s.last_activity_at, s.cwd,
-                    (SELECT COUNT(*) FROM message m WHERE m.session_pk = s.pk)
-             FROM session s
-             WHERE ?2 IS NULL OR s.last_activity_at < ?2
-             ORDER BY s.last_activity_at IS NULL, s.last_activity_at DESC
-             LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit as i64, before], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, i64>(6)?,
-            ))
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (id, kind, title, started, last, cwd, n) = row?;
-            let Ok(id) = SessionId::parse(&id) else {
-                continue;
-            };
-            out.push(SessionSummary {
-                id,
-                kind: parse_name(&kind).unwrap_or(SessionKind::Main),
-                title,
-                started: ts(started),
-                last_activity: ts(last),
-                messages: n as u64,
-                cwd,
-            });
-        }
-        Ok(out)
     }
 
     /// The session's messages in order, the preferred version of each. With
