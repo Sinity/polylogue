@@ -196,6 +196,8 @@ pub enum NoteKind {
     Forecast,
     SavedQuery,
     Ping,
+    /// A watch with a delivery rule (spec user-data.md, Signals).
+    Signal,
 }
 
 impl NoteKind {
@@ -220,6 +222,7 @@ impl NoteKind {
             Self::Forecast => "forecast",
             Self::SavedQuery => "saved_query",
             Self::Ping => "ping",
+            Self::Signal => "signal",
         }
     }
 

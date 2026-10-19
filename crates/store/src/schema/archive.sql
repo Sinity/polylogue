@@ -299,6 +299,7 @@ CREATE TABLE delivery (
   local_seq         INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX delivery_recipient ON delivery(recipient_id, at);
+CREATE INDEX delivery_sender ON delivery(sender, at);   -- signal notices; the evaluator's history
 CREATE INDEX delivery_content ON delivery(content_hash);
 
 -- What happened to a prepared delivery: delivered | failed | not_sent | used.
@@ -309,12 +310,3 @@ CREATE TABLE delivery_event (
   detail            TEXT,                   -- failed/not_sent: the reason; used: the evidence
   PRIMARY KEY (delivery, what, at)
 ) STRICT, WITHOUT ROWID;
-
--- Which change notices went where (old 1jc).
-CREATE TABLE notice_delivery (
-  pk                INTEGER PRIMARY KEY,
-  notice            TEXT NOT NULL,
-  recipient         TEXT NOT NULL,
-  at                INTEGER NOT NULL,
-  outcome           TEXT NOT NULL CHECK (outcome IN ('sent','seen','failed'))
-) STRICT;

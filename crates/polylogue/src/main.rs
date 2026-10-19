@@ -12,6 +12,7 @@ mod hook;
 mod live;
 mod mcp;
 mod measure_text;
+mod signals;
 #[cfg(feature = "sinex")]
 mod sinex;
 #[cfg(test)]

@@ -104,8 +104,12 @@ pub enum Command {
         #[arg(long)]
         since: Option<String>,
     },
-    /// Change notices and where they were delivered.
-    Notices,
+    /// Signal notices and what happened to each. A signal is a note of
+    /// kind `signal` whose value names a query and a delivery rule.
+    Notices {
+        #[arg(long)]
+        limit: Option<u64>,
+    },
     /// Read-only SQL over the stable views.
     Sql { statement: String },
     /// Remove content permanently from every file and derived product:
@@ -464,6 +468,7 @@ pub fn run(args: Args) -> ExitCode {
             session: None,
         },
         Some(Command::Live) => Request::Live { now: None },
+        Some(Command::Notices { limit }) => Request::Notices { limit },
         Some(Command::Changes { since }) => Request::Changes { since },
         Some(Command::Recall { query, cwd }) => Request::Context {
             request_id: request_id(),

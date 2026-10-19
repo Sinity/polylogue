@@ -308,3 +308,34 @@ fn live_state_is_total_for_sessions_without_hooks() {
         ]
     );
 }
+
+#[test]
+fn the_change_feed_continues_from_its_cursor() {
+    let mut w = world();
+    w.hooks(&[
+        ("a", "user_prompt_submit", 0, json!({})),
+        ("b", "user_prompt_submit", 0, json!({})),
+    ]);
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let r = pool.reader().unwrap();
+    let all = changes(&r, Cursor::default()).unwrap();
+    let ids = |v: &Value| -> Vec<String> {
+        v["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["session"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(ids(&all), ["claude-code:a", "claude-code:b"]);
+    let next = Cursor::parse(all["next"].as_str().unwrap()).unwrap();
+    assert!(ids(&changes(&r, next).unwrap()).is_empty());
+    drop(r);
+    drop(pool);
+    w.hooks(&[("b", "stop", 1, json!({}))]);
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let r = pool.reader().unwrap();
+    let later = changes(&r, next).unwrap();
+    assert_eq!(ids(&later), ["claude-code:b"]);
+    assert!(later["sessions"][0]["live_changed"].is_i64());
+}

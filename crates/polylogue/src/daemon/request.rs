@@ -141,6 +141,11 @@ pub enum Request {
         #[serde(default)]
         now: Option<i64>,
     },
+    /// The most recent signal notices and what happened to each.
+    Notices {
+        #[serde(default)]
+        limit: Option<u64>,
+    },
     /// The change feed: what changed after `since` (a cursor from a
     /// previous answer's `next`; everything when absent).
     Changes {
