@@ -116,9 +116,9 @@ pub struct Prepared {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Receipt {
     pub words: Vec<String>,
-    /// Search lanes used: `prose` and `output` full-text. The semantic lane
+    /// Full-text indexes searched: `prose` and `output`. The semantic index
     /// is listed when embeddings are on.
-    pub lanes: Vec<&'static str>,
+    pub indexes: Vec<&'static str>,
     pub hits: usize,
     pub sessions: usize,
     /// More hits exist after this page.
@@ -428,7 +428,7 @@ fn takeover(
         agents: Some(false),
         ..NoteFilter::default()
     })?;
-    let obligations = reader.obligations(&id)?.unwrap_or_default();
+    let open_items = reader.open_items(&id)?.unwrap_or_default();
 
     let mut text = String::new();
     let mut refs = vec![format!("session:{id}")];
@@ -443,18 +443,18 @@ fn takeover(
         let _ = writeln!(text, "Working directory: {cwd}");
     }
     let _ = writeln!(text, "Messages: {}", messages.len());
-    if obligations.any() {
+    if open_items.any() {
         let mut open = Vec::new();
-        if obligations.unanswered_prompt {
+        if open_items.unanswered_prompt {
             open.push("the last prompt has no answer".to_owned());
         }
-        if obligations.open_tool_call {
+        if open_items.open_tool_call {
             open.push("a tool call never finished".to_owned());
         }
-        if let Some(t) = &obligations.todo {
+        if let Some(t) = &open_items.todo {
             open.push(format!("todo in progress: {t}"));
         }
-        if let Some(w) = &obligations.waiting_on {
+        if let Some(w) = &open_items.waiting_on {
             open.push(format!("waiting on {w}"));
         }
         let _ = writeln!(text, "Left open: {}.", open.join("; "));
@@ -553,7 +553,7 @@ fn recall(
             let _ = writeln!(
                 out,
                 "  - ({}) {}  message:{}",
-                h.lane, h.snippet, h.message_id
+                h.index, h.snippet, h.message_id
             );
             refs.push(format!("message:{}", h.message_id));
         }
@@ -579,7 +579,7 @@ fn recall(
     }
     let receipt = Receipt {
         words,
-        lanes: vec!["prose", "output"],
+        indexes: vec!["prose", "output"],
         hits: hits.len(),
         sessions: sessions.len(),
         more,

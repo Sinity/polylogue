@@ -531,7 +531,7 @@ fn the_index_names_threads_and_the_history_keeps_prompts() {
     );
     let history =
         jsonl(&[json!({"session_id": THREAD, "ts": 1_772_359_200, "text": "run the tests"})]);
-    let mut carry = index::NoCarry::default();
+    let mut carry = index::NoState::default();
     let step = run(&index::History, &mut carry, &history, 0).unwrap();
     let [e] = step.output.events.as_slice() else {
         panic!()

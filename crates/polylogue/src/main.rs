@@ -5,13 +5,13 @@
 mod briefing;
 mod browser;
 mod cli;
-mod continuation;
 mod daemon;
 mod embeddings;
 mod hook;
 mod mcp;
 mod measure_text;
-mod positions;
+mod resume;
+mod row_numbers;
 mod signals;
 #[cfg(feature = "sinex")]
 mod sinex;
@@ -46,7 +46,7 @@ fn main() -> ExitCode {
     let args = match argv {
         Some(argv) if argv.iter().any(|a| a.contains('@')) => {
             let root = polylogue_store::Archive::default_root();
-            match positions::rewrite_args(argv, &root) {
+            match row_numbers::rewrite_args(argv, &root) {
                 Ok(argv) => cli::Args::parse_from(argv),
                 Err(e) => {
                     eprintln!("polylogue: {e}");

@@ -6,8 +6,8 @@
 //! host writes captures into the spool, which the daemon ingests like any
 //! location, and asks the daemon everything else over its Unix socket.
 //!
-//! The chat-action conduit (operator 2026-07-16; polylogue-ptx, -b1n, -yqof)
-//! is off by default behind two switches: the archive setting
+//! Chat actions (Polylogue asking the extension to start or reply to a
+//! conversation in a chat web page) are off by default behind two switches: the archive setting
 //! `browser.actions` must be `on`, and the extension's own posting switch.
 //! Setting `browser.actions` to anything else stops every claim (the kill
 //! switch). Only the operator, through the CLI or the reader, enqueues.
@@ -77,7 +77,7 @@ impl Ctx {
         crate::cli::send(&self.socket, request).ok()
     }
 
-    /// Whether the operator switched the conduit on. Off when the daemon
+    /// Whether the operator switched chat actions on. Off when the daemon
     /// cannot say.
     pub fn actions_enabled(&self) -> bool {
         let request = Request::Setting {

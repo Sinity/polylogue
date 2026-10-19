@@ -1,4 +1,4 @@
-//! Embeddings, opt-in with a cost preview (architecture 7; `mhx`, `37t.5`):
+//! Embeddings, opt-in with a cost preview (architecture 7):
 //! Voyage, or a local model through an OpenAI-compatible endpoint. Vectors
 //! are keyed by embedding key and NFC text hash in `embeddings.db` and are
 //! never destroyed by a reindex.

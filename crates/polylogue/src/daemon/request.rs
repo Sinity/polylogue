@@ -89,7 +89,7 @@ pub enum Request {
         detail: Option<String>,
     },
     /// Sessions in a directory worth resuming, with what each left open.
-    Candidates {
+    Resumable {
         cwd: PathBuf,
         #[serde(default)]
         limit: Option<u64>,

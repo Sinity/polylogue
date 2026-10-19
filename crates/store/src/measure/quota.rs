@@ -1,4 +1,4 @@
-//! The subscription-window outlook (old u654v, knc7, 64g7): for each tool's
+//! Subscription quota: for each tool's
 //! 5-hour and weekly windows, how much is used, how fast it is burning, and
 //! when it runs out. Windows come from what the tool reported (Codex sends
 //! its windows with every token count; Claude Code records a limit only
@@ -40,11 +40,11 @@ pub struct Credits {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Basis {
+pub enum WindowSource {
     /// The tool reported this window's reset.
     Reported,
     /// Projected from an earlier reported reset by the window's length.
-    Cadence,
+    Projected,
     /// Built from message times alone.
     Inferred,
 }
@@ -54,7 +54,7 @@ pub struct Window {
     pub tool: String,
     pub limit: String,
     pub window_minutes: i64,
-    pub basis: Basis,
+    pub source: WindowSource,
     pub starts_at: i64,
     pub resets_at: i64,
     /// The latest observation inside this window.
@@ -69,7 +69,7 @@ pub struct Window {
     pub lasts_to_reset: bool,
     pub status: Option<String>,
     pub usage: UsageReport,
-    /// Tokens of every lane per hour since the window's first response.
+    /// Tokens of every kind per hour since the window's first response.
     pub tokens_per_hour: Option<f64>,
     /// API-equivalent USD per hour, over priced responses.
     pub api_usd_per_hour: Option<f64>,
@@ -78,7 +78,7 @@ pub struct Window {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct ToolOutlook {
+pub struct ToolQuota {
     pub tool: String,
     pub plan: Option<String>,
     pub credits: Option<Credits>,
@@ -86,9 +86,9 @@ pub struct ToolOutlook {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Outlook {
+pub struct Quota {
     pub now: i64,
-    pub tools: Vec<ToolOutlook>,
+    pub tools: Vec<ToolQuota>,
 }
 
 /// Reads one response's quota record into observations.
@@ -150,17 +150,17 @@ pub fn observations(tool: &str, at: i64, quota: &Value) -> Vec<Observation> {
 
 /// The window containing `now` for one limit, from its observations
 /// (sorted by time). `None` when nothing was ever reported for it.
-pub fn current_window(obs: &[Observation], now: i64) -> Option<(Basis, i64, i64)> {
+pub fn current_window(obs: &[Observation], now: i64) -> Option<(WindowSource, i64, i64)> {
     let len = obs.first()?.window_minutes * MINUTE;
     let latest_reset = obs.iter().filter_map(|o| o.resets_at).max()?;
     if latest_reset > now {
-        return Some((Basis::Reported, latest_reset - len, latest_reset));
+        return Some((WindowSource::Reported, latest_reset - len, latest_reset));
     }
     // Windows of a fixed-schedule limit follow one another; step from the
     // last reported reset to the one after now.
     let steps = (now - latest_reset) / len + 1;
     let end = latest_reset + steps * len;
-    Some((Basis::Cadence, end - len, end))
+    Some((WindowSource::Projected, end - len, end))
 }
 
 /// Five-hour blocks from response times (sorted), the way the tools bill
@@ -169,13 +169,13 @@ pub fn current_window(obs: &[Observation], now: i64) -> Option<(Basis, i64, i64)
 /// fixed and win: a response inside one belongs to it, and an inferred
 /// block ends where a reported one begins, so a response before a reported
 /// reset never moves the windows after it.
-pub fn blocks(times: &[i64], anchors: &[(i64, i64)], len: i64) -> Vec<(Basis, i64, i64)> {
+pub fn blocks(times: &[i64], anchors: &[(i64, i64)], len: i64) -> Vec<(WindowSource, i64, i64)> {
     let mut anchors: Vec<(i64, i64)> = anchors.to_vec();
     anchors.sort_unstable();
     anchors.dedup();
-    let mut out: Vec<(Basis, i64, i64)> = anchors
+    let mut out: Vec<(WindowSource, i64, i64)> = anchors
         .iter()
-        .map(|&(s, e)| (Basis::Reported, s, e))
+        .map(|&(s, e)| (WindowSource::Reported, s, e))
         .collect();
     let mut open: Option<(i64, i64)> = None;
     for &t in times {
@@ -191,14 +191,14 @@ pub fn blocks(times: &[i64], anchors: &[(i64, i64)], len: i64) -> Vec<(Basis, i6
         let next_anchor = anchors.iter().map(|&(s, _)| s).filter(|&s| s > start).min();
         let end = next_anchor.map_or(start + len, |a| a.min(start + len));
         open = Some((start, end));
-        out.push((Basis::Inferred, start, end));
+        out.push((WindowSource::Inferred, start, end));
     }
     out.sort_by_key(|&(_, s, _)| s);
     out
 }
 
-/// Reads every observation and builds the outlook for `now`.
-pub fn outlook(reader: &Reader<'_>, now: i64) -> Result<Outlook> {
+/// Reads every observation and builds the quota report for `now`.
+pub fn quota(reader: &Reader<'_>, now: i64) -> Result<Quota> {
     let conn = reader.conn();
     let mut obs: Vec<Observation> = vec![];
     let mut plans: Vec<(String, String)> = vec![];
@@ -263,7 +263,9 @@ pub fn outlook(reader: &Reader<'_>, now: i64) -> Result<Outlook> {
                 .map(|o| (*o).clone())
                 .collect();
             let window = match current_window(&these, now) {
-                Some(w) if w.0 == Basis::Reported || tool == "codex" || minutes == WEEK => Some(w),
+                Some(w) if w.0 == WindowSource::Reported || tool == "codex" || minutes == WEEK => {
+                    Some(w)
+                }
                 // Claude Code's five-hour windows start with the first
                 // response after the previous one ended.
                 _ if minutes == FIVE_HOURS => {
@@ -277,15 +279,15 @@ pub fn outlook(reader: &Reader<'_>, now: i64) -> Result<Outlook> {
                         .into_iter()
                         .find(|&(_, s, e)| s <= now && now < e)
                 }
-                _ => Some((Basis::Inferred, now - minutes * MINUTE, now)),
+                _ => Some((WindowSource::Inferred, now - minutes * MINUTE, now)),
             };
-            if let Some((basis, start, end)) = window {
+            if let Some((source, start, end)) = window {
                 windows.push(build(
-                    reader, tool, &limit, minutes, basis, start, end, now, &these,
+                    reader, tool, &limit, minutes, source, start, end, now, &these,
                 )?);
             }
         }
-        tools.push(ToolOutlook {
+        tools.push(ToolQuota {
             tool: tool.to_owned(),
             plan: plans
                 .iter()
@@ -300,7 +302,7 @@ pub fn outlook(reader: &Reader<'_>, now: i64) -> Result<Outlook> {
             windows,
         });
     }
-    Ok(Outlook { now, tools })
+    Ok(Quota { now, tools })
 }
 
 fn response_times(reader: &Reader<'_>, tool: &str, since: i64, until: i64) -> Result<Vec<i64>> {
@@ -319,7 +321,7 @@ fn build(
     tool: &str,
     limit: &str,
     minutes: i64,
-    basis: Basis,
+    source: WindowSource,
     start: i64,
     end: i64,
     now: i64,
@@ -363,7 +365,7 @@ fn build(
         tool: tool.to_owned(),
         limit: limit.to_owned(),
         window_minutes: minutes,
-        basis,
+        source,
         starts_at: start,
         resets_at: end,
         observed_at: last.map(|o| o.at),
@@ -393,7 +395,7 @@ fn percent_burn(inside: &[&Observation]) -> Option<f64> {
 }
 
 fn total_tokens(u: &UsageReport) -> u64 {
-    let l = &u.lanes;
+    let l = &u.tokens;
     l.input.tokens
         + l.cached_input.tokens
         + l.cache_write.tokens

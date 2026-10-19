@@ -58,7 +58,7 @@ pub struct Hit {
     /// BM25 rank: lower is better.
     pub rank: f64,
     /// Where the hit was: `prose` or `output`.
-    pub lane: &'static str,
+    pub index: &'static str,
     pub snippet: String,
 }
 
@@ -87,7 +87,7 @@ pub fn search(
                FROM output_fts WHERE output_fts MATCH ?1
          ),
          per_message AS (
-             SELECT b.message_pk, min(h.rank) AS rank, h.lane, h.text_id
+             SELECT b.message_pk, min(h.rank) AS rank, h.index, h.text_id
                FROM hits h JOIN block b ON b.text_id = h.text_id
               GROUP BY b.message_pk
          )
@@ -122,7 +122,7 @@ pub fn search(
             } else {
                 rank
             },
-            lane: if lane == "output" { "output" } else { "prose" },
+            index: if lane == "output" { "output" } else { "prose" },
             snippet: snippet(&text, &words, 160),
         });
     }

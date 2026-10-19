@@ -1,5 +1,5 @@
 use super::*;
-use crate::user::{UserRequest, UserWrite};
+use crate::user_writes::{UserRequest, UserWrite};
 use crate::{Archive, ReadPool, Writer};
 use polylogue_model::{NewNote, SessionId};
 

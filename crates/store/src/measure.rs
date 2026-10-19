@@ -1,14 +1,14 @@
-//! Measurement (architecture 1, "Measure things"; 7): token lanes, cost,
-//! the subscription-window outlook and the analyses over sessions and tool
+//! Measurement (architecture 1, "Measure things"; 7): tokens by kind, cost,
+//! subscription quota and the analyses over sessions and tool
 //! calls. Every figure says how many items it could not count; unknown is
 //! never shown as zero. Hidden sessions stay in every figure: hiding
 //! changes what is listed, not what was used.
 
 pub mod analysis;
-pub mod outlook;
+pub mod quota;
 mod usage;
 
-pub use usage::{Lane, Lanes, ModelUsage, Money, SessionUsage, Totals, UsageReport};
+pub use usage::{ModelUsage, Money, SessionUsage, TokenCount, TokensByKind, Totals, UsageReport};
 
 use crate::{Reader, Result};
 
@@ -66,7 +66,7 @@ impl Scope {
     }
 }
 
-/// Token lanes and cost over the scope, at the physical grain: each model
+/// Tokens by kind and cost over the scope, at the physical grain: each model
 /// response once, however many sessions show it.
 pub fn usage(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> {
     usage::report(reader, scope)

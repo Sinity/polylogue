@@ -23,11 +23,10 @@ pub struct DeliveryRow {
     pub events: Vec<String>,
 }
 
-/// What a session left open: the evidence a resume candidate is ranked on
-/// (old 37t.23: resumability from open obligations, not from how the
-/// session's text ended).
+/// What a session left open: the evidence a resumable session is ranked
+/// on, rather than how its text ended.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct Obligations {
+pub struct OpenItems {
     /// The last message was a person's prompt with no answer after it.
     pub unanswered_prompt: bool,
     /// A tool call started and never finished.
@@ -38,7 +37,7 @@ pub struct Obligations {
     pub waiting_on: Option<String>,
 }
 
-impl Obligations {
+impl OpenItems {
     pub fn any(&self) -> bool {
         self.unanswered_prompt
             || self.open_tool_call
@@ -153,7 +152,7 @@ impl Reader<'_> {
     }
 
     /// What a session left open; `None` for an unknown session.
-    pub fn obligations(&self, session: &str) -> Result<Option<Obligations>> {
+    pub fn open_items(&self, session: &str) -> Result<Option<OpenItems>> {
         use rusqlite::OptionalExtension;
         let conn = self.conn();
         let row = conn
@@ -179,7 +178,7 @@ impl Reader<'_> {
             })
             .optional()?;
         Ok(row.map(
-            |(live_tool, todo, waiting_on, last_by, last_kind, unpaired)| Obligations {
+            |(live_tool, todo, waiting_on, last_by, last_kind, unpaired)| OpenItems {
                 unanswered_prompt: last_by.as_deref() == Some("human")
                     && last_kind.as_deref() != Some("command"),
                 open_tool_call: live_tool || unpaired,

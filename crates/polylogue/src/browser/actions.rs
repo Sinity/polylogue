@@ -4,8 +4,8 @@
 //!
 //! A new action drafts unless it asks to submit; a submit into an existing
 //! conversation waits for the operator's approval. One action is handed out
-//! at a time, under a lease that returns it to the queue if the extension
-//! goes quiet. Replies come back only through ordinary capture.
+//! at a time, as a claim that expires and returns the action to the queue
+//! if the extension goes quiet. Replies come back only through ordinary capture.
 
 use super::{Ctx, new_id, now_iso, now_ms, safe_token, sha256_hex, write_durable};
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 /// How long a claimed action stays with the extension instance that took
 /// it without a report.
-const LEASE_MS: i64 = 180_000;
+const CLAIM_MS: i64 = 180_000;
 const PROVIDERS: &[&str] = &["chatgpt", "claude"];
 const OPERATIONS: &[&str] = &["conversation.create", "conversation.reply"];
 
@@ -39,7 +39,7 @@ pub enum SubmitPolicy {
 pub enum Status {
     AwaitingApproval,
     Queued,
-    Leased,
+    Claimed,
     Drafted,
     Submitted,
     OutcomeUnknown,
@@ -172,9 +172,9 @@ pub struct Action {
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
-    pub lease_owner: Option<String>,
+    pub claimed_by: Option<String>,
     #[serde(default)]
-    pub lease_expires_ms: Option<i64>,
+    pub claim_expires_ms: Option<i64>,
     #[serde(default)]
     pub requires_operator_approval: bool,
     #[serde(default)]
@@ -250,7 +250,7 @@ fn input_path(ctx: &Ctx, digest: &str) -> Option<PathBuf> {
 }
 
 /// Queues an action. The caller has already established it is the
-/// operator; `enabled` is the conduit's switch.
+/// operator; `enabled` is the chat-actions switch.
 pub fn enqueue(ctx: &Ctx, req: &ActionRequest, enabled: bool) -> Result<(bool, Action)> {
     if !enabled {
         return Err(Refused(409, "browser_actions_off"));
@@ -332,8 +332,8 @@ pub fn enqueue(ctx: &Ctx, req: &ActionRequest, enabled: bool) -> Result<(bool, A
         .into(),
         created_at: now.clone(),
         updated_at: now,
-        lease_owner: None,
-        lease_expires_ms: None,
+        claimed_by: None,
+        claim_expires_ms: None,
         requires_operator_approval: needs_approval,
         approved_at: None,
         declined_at: None,
@@ -353,7 +353,7 @@ pub fn read(ctx: &Ctx, id: &str) -> Result<Action> {
     load(ctx, id).ok_or(Refused(404, "unknown_browser_action"))
 }
 
-/// Hands the oldest queued action to `owner`, if the conduit is on and no
+/// Hands the oldest queued action to `owner`, if chat actions are on and no
 /// other action is out.
 pub fn claim(ctx: &Ctx, owner: &str, enabled: bool) -> Result<Option<Action>> {
     if !enabled {
@@ -362,30 +362,30 @@ pub fn claim(ctx: &Ctx, owner: &str, enabled: bool) -> Result<Option<Action>> {
     let _lock = lock(ctx)?;
     let now = now_ms();
     let mut actions = all(ctx);
-    // A lease that ran out returns its action to the queue.
+    // An expired claim returns its action to the queue.
     for a in &mut actions {
-        if a.status == Status::Leased && a.lease_expires_ms.is_some_and(|t| t < now) {
+        if a.status == Status::Claimed && a.claim_expires_ms.is_some_and(|t| t < now) {
             a.status = Status::Queued;
             a.phase = "queued".into();
-            a.lease_owner = None;
-            a.lease_expires_ms = None;
-            a.events.push(event("lease_expired", "queued", None, None));
+            a.claimed_by = None;
+            a.claim_expires_ms = None;
+            a.events.push(event("claim_expired", "queued", None, None));
             save(ctx, a)?;
         }
     }
-    if actions.iter().any(|a| a.status == Status::Leased) {
+    if actions.iter().any(|a| a.status == Status::Claimed) {
         return Ok(None);
     }
     let Some(a) = actions.iter_mut().find(|a| a.status == Status::Queued) else {
         return Ok(None);
     };
-    a.status = Status::Leased;
-    a.phase = "leased".into();
-    a.lease_owner = Some(owner.to_owned());
-    a.lease_expires_ms = Some(now + LEASE_MS);
+    a.status = Status::Claimed;
+    a.phase = "claimed".into();
+    a.claimed_by = Some(owner.to_owned());
+    a.claim_expires_ms = Some(now + CLAIM_MS);
     a.updated_at = now_iso();
     a.events
-        .push(event("claimed", "leased", None, Some(owner.to_owned())));
+        .push(event("claimed", "claimed", None, Some(owner.to_owned())));
     save(ctx, a)?;
     Ok(Some(a.clone()))
 }
@@ -406,13 +406,13 @@ fn progress() -> String {
     "progress".into()
 }
 
-/// A report from the extension instance holding the lease. A final
-/// outcome ends the lease.
+/// A report from the extension instance holding the claim. A final
+/// outcome ends the claim; any other report renews it.
 pub fn report(ctx: &Ctx, id: &str, u: Update) -> Result<Action> {
     let _lock = lock(ctx)?;
     let mut a = load(ctx, id).ok_or(Refused(404, "unknown_browser_action"))?;
-    if a.lease_owner.as_deref() != Some(u.owner_instance_id.as_str()) {
-        return Err(Refused(409, "not_the_lease_owner"));
+    if a.claimed_by.as_deref() != Some(u.owner_instance_id.as_str()) {
+        return Err(Refused(409, "not_the_claimant"));
     }
     if a.status.finished() {
         return Err(Refused(409, "action_finished"));
@@ -435,10 +435,10 @@ pub fn report(ctx: &Ctx, id: &str, u: Update) -> Result<Action> {
     }
     if let Some(s) = next {
         a.status = s;
-        a.lease_owner = None;
-        a.lease_expires_ms = None;
+        a.claimed_by = None;
+        a.claim_expires_ms = None;
     } else {
-        a.lease_expires_ms = Some(now_ms() + LEASE_MS);
+        a.claim_expires_ms = Some(now_ms() + CLAIM_MS);
     }
     if matches!(next, Some(Status::Failed | Status::Blocked)) {
         a.last_error = u.detail.clone().or_else(|| Some(u.outcome.clone()));

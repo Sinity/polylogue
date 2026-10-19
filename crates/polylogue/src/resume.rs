@@ -1,4 +1,4 @@
-//! Continuing a session (architecture 7; old nas1, 37t.23). Two ways are
+//! Resuming a session (architecture 7). Two ways are
 //! kept apart:
 //!
 //! - **native resume**: the harness's own command reopens the session with
@@ -11,7 +11,7 @@
 //! from how their text ended.
 
 use polylogue_model::SessionId;
-use polylogue_store::{Obligations, Reader, StoreError};
+use polylogue_store::{OpenItems, Reader, StoreError};
 use serde::Serialize;
 use std::path::Path;
 
@@ -75,7 +75,7 @@ pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Candidate {
     pub session: polylogue_store::SessionSummary,
-    pub open: Obligations,
+    pub open: OpenItems,
     /// Operator notes on it that ask for follow-up (handoffs, blockers).
     pub follow_ups: Vec<String>,
     pub native: Option<Command>,
@@ -83,7 +83,7 @@ pub struct Candidate {
 
 /// Sessions under `cwd`, newest first, that left something open or carry
 /// a handoff or blocker; sessions with nothing open are left out.
-pub fn candidates(
+pub fn resumable(
     reader: &Reader<'_>,
     cwd: &Path,
     limit: u64,
@@ -94,7 +94,7 @@ pub fn candidates(
     // Look further back than `limit`: most sessions finish cleanly.
     for s in reader.sessions_under(&dirs, None, limit.saturating_mul(10).max(50))? {
         let id = s.id.to_string();
-        let open = reader.obligations(&id)?.unwrap_or_default();
+        let open = reader.open_items(&id)?.unwrap_or_default();
         let follow_ups: Vec<String> = reader
             .notes(&polylogue_store::NoteFilter {
                 targets: vec![Target::Session(s.id.clone())],

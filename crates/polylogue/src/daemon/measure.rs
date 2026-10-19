@@ -1,4 +1,4 @@
-//! `| measure WHAT`: token lanes and cost, the subscription outlook and the
+//! `| measure WHAT`: tokens by kind and cost, subscription quota and the
 //! analyses, over the sessions a query selects (every session when it names
 //! no conditions). The query program chooses the sessions; this runs the
 //! measurement over them.
@@ -6,12 +6,12 @@
 use super::query::Failure;
 use polylogue_model::LogicalDay;
 use polylogue_store::Reader;
-use polylogue_store::measure::{self, Scope, analysis, outlook};
+use polylogue_store::measure::{self, Scope, analysis, quota};
 use serde::Serialize;
 use serde_json::Value;
 
 /// The measurements a query can name, for errors and help.
-pub const WHAT: &str = "usage, cost, sessions, quota, outcomes, frontier, drift, survival, \
+pub const WHAT: &str = "usage, cost, sessions, quota, outcomes, failing, drift, survival, \
     survival-turns, unanswered, \
     daily:<tokens|api_cost|sessions|prompts|tool_errors>, process, rhythm";
 
@@ -37,14 +37,14 @@ pub fn run(
     match what {
         "usage" | "cost" => json(measure::usage(reader, &scope)),
         "sessions" => json(measure::sessions(reader, &scope)),
-        "quota" | "outlook" => {
-            whole("the subscription outlook")?;
-            json(outlook::outlook(reader, now))
+        "quota" => {
+            whole("quota")?;
+            json(quota::quota(reader, now))
         }
         "outcomes" => json(analysis::outcomes(reader, &scope)),
         "survival" => json(analysis::first_failure(reader, &scope, false)),
         "survival-turns" => json(analysis::first_failure(reader, &scope, true)),
-        "frontier" => json(analysis::frontier(reader, &scope)),
+        "failing" => json(analysis::failing_commands(reader, &scope)),
         "drift" => {
             whole("format drift")?;
             json(analysis::drift(reader))

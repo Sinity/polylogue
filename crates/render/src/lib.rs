@@ -2,9 +2,9 @@
 //! rendered blocks; a view is a filter over that stream. Credentials are
 //! masked on output, block by block, never by refusing.
 
-pub mod cards;
-pub mod model_read;
+pub mod model_pages;
 pub mod results;
+pub mod session_summary;
 
 use polylogue_model::{Block, Event, Message, PromptKind, Role, Session, ToolOutcome};
 use serde_json::{Value, json};

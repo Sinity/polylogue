@@ -296,7 +296,7 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
 
     let got = claim("tab-a");
     assert_eq!(got["actions"][0]["action_id"], a.action_id.as_str());
-    assert_eq!(got["actions"][0]["status"], "leased");
+    assert_eq!(got["actions"][0]["status"], "claimed");
     // One action out at a time.
     let (_, b) = actions::enqueue(
         &ctx,

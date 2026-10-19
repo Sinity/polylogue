@@ -48,14 +48,12 @@ CREATE TABLE revision (
   chain         INTEGER NOT NULL,        -- the revision that started this revision chain (itself for first,
                                          --   imported, head_rewritten, rewritten and snapshot revisions)
   base          INTEGER,                 -- snapshot patch: the plain snapshot revision it overlays
-  subsumes      INTEGER,                 -- head_rewritten: the chain it subsumes (storage/blobs.md); a rebuild
-                                         --   never reads a subsumed chain, whose records are all in this one
   length        INTEGER NOT NULL,        -- of the revision's full bytes
   blake3        BLOB,                    -- of the full bytes as observed, once complete; never changed,
                                          --   not even by excision (an excised revision is verified by its blobs)
   commit_seq    INTEGER NOT NULL,        -- local order (Rules): the write counter at the insert; in `primary` mode
-                                         --   the revision event carries it, and Sinex's replicated frontier is the
-                                         --   largest W with every revision at or below W complete (joint #29); the event also carries
+                                         --   the revision event carries it, and Sinex holds the archive up to the
+                                         --   largest W with every revision at or below W complete; the event also carries
                                          --   prev_commit_seq, the commit_seq of the revision stored just before it in
                                          --   this archive's write order (0 for the first), so a gap left by a note or
                                          --   excision is told apart from a missing revision
@@ -100,8 +98,6 @@ CREATE TABLE observation (
   machine       TEXT NOT NULL,           -- machine.id; paths from two machines never collide
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',
                                          --   'zip:<input>/<member>', 'copy:<origin>', or 'capture:<id>'
-  stands_for    TEXT,                    -- 'zip:' and 'copy:' observations: the location path these bytes are an
-                                         --   older copy of, so the file found there later joins this input
   class         TEXT NOT NULL,           -- first | appended | head_rewritten | replaced | rewritten | renamed
                                          -- | deleted | back | imported | excised | download_attempt
   revision      INTEGER,                 -- the revision produced or confirmed (none for deleted and excised)
@@ -125,7 +121,6 @@ CREATE TABLE observation (
 ) STRICT;
 CREATE INDEX observation_input ON observation(input, seen_at);
 CREATE INDEX observation_path ON observation(machine, path, seen_at);
-CREATE INDEX observation_stands_for ON observation(machine, stands_for) WHERE stands_for IS NOT NULL;
 
 -- Notes, tags, titles, saved queries, withdrawals and everything else people
 -- and agents add. Kinds and examples: user-data.md.
@@ -262,7 +257,7 @@ CREATE TABLE variant_alignment (
 -- billing mode: a plan applies from the time it was set). Each key has a fixed
 -- scope in code: per machine (embeddings, signal.interrupts_per_hour)
 -- or archive-wide under machine '*' (subscription.*, which belongs to a provider
--- account; day.logical_start and day.zone, one setting for the operator, joint #15).
+-- account; day.logical_start and day.zone, one setting for the operator).
 -- A machine reads its own rows for per-machine keys and '*' rows for the rest; the current value is its row with the largest (set_at, id), the
 -- value in force at time T the largest (set_at, id) with set_at <= T (both independent of union
 -- arrival order), and a key with no
@@ -280,7 +275,7 @@ CREATE TABLE setting (
 CREATE INDEX setting_current ON setting(machine, key, set_at, id);
 
 -- Exactly what was put into a model's context, kept because it cannot be
--- recomputed (architecture 4.3; old 37t.22). Prepared, delivered and used are
+-- recomputed (architecture 4.3). Prepared, delivered and used are
 -- separate facts: a delivery row is what was prepared, with its exact bytes;
 -- what happened to it is in delivery_event.
 CREATE TABLE delivery (

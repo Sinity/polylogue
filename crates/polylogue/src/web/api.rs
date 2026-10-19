@@ -206,8 +206,8 @@ async fn command_get(
             },
             None => return (StatusCode::BAD_REQUEST, "`key` is required").into_response(),
         },
-        "candidates" => match p.cwd {
-            Some(cwd) => Request::Candidates {
+        "resumable" => match p.cwd {
+            Some(cwd) => Request::Resumable {
                 cwd,
                 limit: p.limit,
             },

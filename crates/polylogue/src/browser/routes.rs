@@ -307,7 +307,7 @@ struct ListQuery {
 }
 
 /// Lists actions, or with `claim_by` hands one queued action to that
-/// extension instance while the conduit is on.
+/// extension instance while chat actions are on.
 async fn actions_list(State(ctx): State<Arc<Ctx>>, Query(q): Query<ListQuery>) -> HttpResponse {
     let c = Arc::clone(&ctx);
     let answer = blocking(move || match q.claim_by.filter(|o| !o.is_empty()) {

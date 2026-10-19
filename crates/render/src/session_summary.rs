@@ -1,5 +1,4 @@
-//! Semantic cards: a compact summary of a session built from outcomes
-//! (old `ap7`): what was run and how it ended, which files were written,
+//! A session summary built from outcomes: what was run and how it ended, which files were written,
 //! the last failure. Facts of the records only; nothing here reads meaning
 //! into the text (the "code selects and structures" rule).
 
@@ -8,12 +7,12 @@ use polylogue_model::{Block, Message, Session, ToolOutcome};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Card {
+pub struct SessionSummary {
     pub title: String,
     pub lines: Vec<String>,
 }
 
-pub fn card(session: &Session, messages: &[Message]) -> Card {
+pub fn summarize(session: &Session, messages: &[Message]) -> SessionSummary {
     let title = session
         .title
         .as_ref()
@@ -133,7 +132,7 @@ pub fn card(session: &Session, messages: &[Message]) -> Card {
     if let Some(f) = last_failure {
         lines.push(format!("last failure: {f}"));
     }
-    Card { title, lines }
+    SessionSummary { title, lines }
 }
 
 #[cfg(test)]

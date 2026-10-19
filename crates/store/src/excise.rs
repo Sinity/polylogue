@@ -1,5 +1,5 @@
 //! Excision: permanent removal from every file and derived product
-//! (architecture 5.6; `27m`, `layg`, `kwsb`). The `excision` row keeps the
+//! (architecture 5.6). The `excision` row keeps the
 //! content from coming back by any route.
 //!
 //! - **Session:** its rows go from every `index.db` table, its texts from
@@ -188,7 +188,7 @@ struct Span {
 
 /// The two transactions an excision runs in, with the blob store. Files of
 /// deleted blobs are removed by the caller after both commit.
-pub struct Txs<'a, 'b> {
+pub struct Transactions<'a, 'b> {
     pub archive: &'a Transaction<'b>,
     pub index: &'a Transaction<'b>,
     pub embeddings: Option<&'a rusqlite::Connection>,
@@ -201,7 +201,7 @@ pub struct Txs<'a, 'b> {
 
 /// Runs an excision. Returns what went and the blob files to delete once
 /// both transactions have committed.
-pub fn apply(t: &Txs<'_, '_>, req: &ExciseRequest) -> Result<(Excised, Vec<BlobHash>)> {
+pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<(Excised, Vec<BlobHash>)> {
     let mut done = Excised {
         dry_run: req.dry_run,
         ..Excised::default()
@@ -266,7 +266,7 @@ struct Plan {
 }
 
 impl Plan {
-    fn session(&mut self, t: &Txs<'_, '_>, pk: i64, id: &str) -> Result<()> {
+    fn session(&mut self, t: &Transactions<'_, '_>, pk: i64, id: &str) -> Result<()> {
         self.sessions.push((pk, id.to_owned()));
         let ids: Vec<String> = t
             .index
@@ -354,7 +354,7 @@ impl Plan {
 
     fn apply(
         mut self,
-        t: &Txs<'_, '_>,
+        t: &Transactions<'_, '_>,
         req: &ExciseRequest,
         done: &mut Excised,
     ) -> Result<(Excised, Vec<BlobHash>)> {
@@ -523,7 +523,7 @@ impl Plan {
     #[allow(clippy::too_many_arguments)]
     fn text_scope(
         &mut self,
-        t: &Txs<'_, '_>,
+        t: &Transactions<'_, '_>,
         text: &str,
         req: &ExciseRequest,
         done: &mut Excised,
@@ -591,7 +591,7 @@ impl Plan {
 /// Stored blobs (input bytes, inline or file) that contain `needle`, as
 /// written or as JSON escapes it: how an excision is checked afterwards.
 pub fn stored_blobs_containing(archive: &crate::Archive, needle: &str) -> Result<Vec<BlobHash>> {
-    let conn = crate::files::open_read(&archive.archive_db())?;
+    let conn = crate::archive::open_read(&archive.archive_db())?;
     let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600)?;
     let needles = needles(needle);
     let hashes: Vec<Vec<u8>> = conn
@@ -812,7 +812,7 @@ struct Gone {
 /// Overwrites `ranges` of a blob's bytes with spaces (line breaks kept),
 /// stores the result, points every extent at it and drops the old row.
 fn replace_blob(
-    t: &Txs<'_, '_>,
+    t: &Transactions<'_, '_>,
     old: &BlobHash,
     mut bytes: Vec<u8>,
     ranges: &[(usize, usize)],
@@ -866,7 +866,7 @@ fn replace_blob(
 
 /// Overwrites a shared input's spans in every blob its chains use.
 fn overwrite(
-    t: &Txs<'_, '_>,
+    t: &Transactions<'_, '_>,
     input: &str,
     spans: &[Span],
     req: &ExciseRequest,
@@ -954,7 +954,7 @@ fn quoted(text: &str) -> Vec<Vec<u8>> {
 /// stand as complete JSON string values, quotes kept. Returns how many of
 /// those texts are still in it (too short, or not found whole).
 fn blank_document(
-    t: &Txs<'_, '_>,
+    t: &Transactions<'_, '_>,
     input: &str,
     texts: &BTreeSet<String>,
     req: &ExciseRequest,
@@ -1113,7 +1113,7 @@ fn redact_deliveries(
 /// Removes an input whole: its revisions and extents, and records its
 /// locations so the loop never collects them again.
 fn remove_input(
-    t: &Txs<'_, '_>,
+    t: &Transactions<'_, '_>,
     input: &str,
     req: &ExciseRequest,
     refused: &mut RefusedJson,
@@ -1174,7 +1174,7 @@ fn remove_input(
 /// One `excised` observation per location of the input, naming the
 /// excision.
 fn insert_excised_observations(
-    t: &Txs<'_, '_>,
+    t: &Transactions<'_, '_>,
     input: &str,
     req: &ExciseRequest,
     spans: Option<&serde_json::Value>,
@@ -1207,7 +1207,7 @@ fn insert_excised_observations(
 
 /// Removes one session's rows from `index.db`.
 fn delete_session(
-    t: &Txs<'_, '_>,
+    t: &Transactions<'_, '_>,
     pk: i64,
     id: &str,
     dry_run: bool,

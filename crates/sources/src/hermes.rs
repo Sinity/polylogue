@@ -1,7 +1,6 @@
-//! Tool databases whose rows are captured but not yet read into sessions:
-//! their logical export (architecture 4.2) is stored in full and each row
-//! line is accounted as kept. Reading Hermes sessions and messages from
-//! these rows is the Hermes parser's job.
+//! Hermes: its `state.db`, captured as a logical export (architecture 4.2)
+//! and stored in full. The rows are not read into sessions yet; each row
+//! line is accounted as kept in the stored export.
 
 use crate::frame::Record;
 use crate::parse::{Output, Parser, StepParser};
@@ -10,9 +9,9 @@ use polylogue_model::Json;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const HERMES_LOCATIONS: &[&str] = &[".hermes/state.db"];
+pub const LOCATIONS: &[&str] = &[".hermes/state.db"];
 
-pub fn recognize_hermes(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &[u8]) -> bool {
     path.file_name().is_some_and(|n| n == "state.db.jsonl")
         && head
             .iter()
@@ -21,16 +20,16 @@ pub fn recognize_hermes(path: &Path, head: &[u8]) -> bool {
 }
 
 pub fn open(_: &Path) -> Option<Box<dyn StepParser>> {
-    Some(Box::new(KeptRows))
+    Some(Box::new(HermesDatabase))
 }
 
-pub struct KeptRows;
+pub struct HermesDatabase;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct NoCarry {}
+pub struct NoState {}
 
-impl Parser for KeptRows {
-    type Carry = NoCarry;
+impl Parser for HermesDatabase {
+    type Carry = NoState;
 
     fn kind(&self, v: &Json) -> String {
         if v.get("schema").is_some() {
@@ -42,7 +41,7 @@ impl Parser for KeptRows {
 
     fn record(
         &self,
-        _: &mut NoCarry,
+        _: &mut NoState,
         _: Record<'_>,
         v: &Json,
         _: &mut Output,
@@ -57,5 +56,5 @@ impl Parser for KeptRows {
         }
     }
 
-    fn flush(&self, _: &mut NoCarry, _: &mut Output) {}
+    fn flush(&self, _: &mut NoState, _: &mut Output) {}
 }

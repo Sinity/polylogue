@@ -10,7 +10,7 @@
 
 pub mod writer;
 
-use crate::files::{Archive, ArchiveLock, open_write};
+use crate::archive::{Archive, ArchiveLock, open_write};
 use crate::{ReadPool, Result};
 use polylogue_model::text::fold;
 use rusqlite::{Connection, params};
@@ -28,7 +28,7 @@ pub struct Fixture {
 
 /// A session's facts; everything not given is unknown.
 #[derive(Debug, Clone, Default)]
-pub struct S<'a> {
+pub struct SessionFacts<'a> {
     pub id: &'a str,
     pub kind: &'a str,
     pub title: Option<&'a str>,
@@ -40,7 +40,7 @@ pub struct S<'a> {
 
 /// A message's facts.
 #[derive(Debug, Clone, Default)]
-pub struct M<'a> {
+pub struct MessageFacts<'a> {
     pub id: &'a str,
     pub role: &'a str,
     pub written_by: &'a str,
@@ -56,7 +56,7 @@ pub struct M<'a> {
 
 /// A tool call's facts, with its result when `outcome` is not `unknown`.
 #[derive(Debug, Clone, Default)]
-pub struct T<'a> {
+pub struct CallFacts<'a> {
     pub tool: &'a str,
     pub action: &'a str,
     pub command: Option<&'a str>,
@@ -70,8 +70,8 @@ pub struct T<'a> {
 impl Fixture {
     pub fn new(root: &Path) -> Result<Self> {
         let (archive, lock) = Archive::open_or_create(root)?;
-        let index = open_write(&archive.index_db(), crate::files::cache::SETUP)?;
-        let notes = open_write(&archive.archive_db(), crate::files::cache::SETUP)?;
+        let index = open_write(&archive.index_db(), crate::archive::cache::SETUP)?;
+        let notes = open_write(&archive.archive_db(), crate::archive::cache::SETUP)?;
         index.execute("INSERT INTO input_ref(id) VALUES ('fixture')", [])?;
         let input_pk = index.last_insert_rowid();
         Ok(Self {
@@ -94,7 +94,7 @@ impl Fixture {
         ReadPool::open(&self.archive)
     }
 
-    pub fn session(&mut self, s: S<'_>) -> Result<i64> {
+    pub fn session(&mut self, s: SessionFacts<'_>) -> Result<i64> {
         let (origin, native) = s.id.split_once(':').unwrap_or(("test", s.id));
         let kind = if s.kind.is_empty() { "main" } else { s.kind };
         self.index.execute(
@@ -176,7 +176,7 @@ impl Fixture {
         Ok(self.index.last_insert_rowid())
     }
 
-    pub fn message(&mut self, session_pk: i64, m: M<'_>) -> Result<i64> {
+    pub fn message(&mut self, session_pk: i64, m: MessageFacts<'_>) -> Result<i64> {
         self.seq += 1;
         let words = m.text.map_or(0, |t| t.split_whitespace().count() as i64);
         self.index.execute(
@@ -228,7 +228,7 @@ impl Fixture {
     }
 
     /// A tool call in its own message, with its result when it has one.
-    pub fn tool_call(&mut self, session_pk: i64, message_pk: i64, t: T<'_>) -> Result<i64> {
+    pub fn tool_call(&mut self, session_pk: i64, message_pk: i64, t: CallFacts<'_>) -> Result<i64> {
         let idx: i64 = self.index.query_row(
             "SELECT COALESCE(max(idx), -1) + 1 FROM block WHERE message_pk = ?1",
             [message_pk],
@@ -340,7 +340,7 @@ impl Fixture {
         Ok(())
     }
 
-    /// A model message's token lanes, priced by the build's catalog the way
+    /// A model message's token counts, priced by the build's catalog the way
     /// the writer prices them, and the quota state the tool sent with it.
     pub fn usage(
         &mut self,

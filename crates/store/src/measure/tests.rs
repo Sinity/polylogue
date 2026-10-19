@@ -1,15 +1,15 @@
 //! Laws for measurement (plnext-r1i.6): L14, L70, L138 here; L109 with the
-//! window rules in `outlook`.
+//! window rules in `quota`.
 
-use super::{Scope, analysis, outlook, usage};
-use crate::fixture::{Fixture, M, S, T};
+use super::{Scope, analysis, quota, usage};
+use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use polylogue_model::Usage;
 use serde_json::json;
 
 const DAY: i64 = 86_400_000;
 const T0: i64 = 1_790_000_000_000;
 
-fn lanes(input: u64, cached: u64, write: Option<u64>, output: u64) -> Usage {
+fn tokens(input: u64, cached: u64, write: Option<u64>, output: u64) -> Usage {
     Usage {
         input: Some(input),
         cached_input: Some(cached),
@@ -23,13 +23,13 @@ fn model_message(f: &mut Fixture, s: i64, id: &str, model: &str, at: i64, u: &Us
     let pk = f
         .message(
             s,
-            M {
+            MessageFacts {
                 id,
                 role: "assistant",
                 written_by: "model",
                 at: Some(at),
                 model: Some(model),
-                ..M::default()
+                ..MessageFacts::default()
             },
         )
         .unwrap();
@@ -38,10 +38,10 @@ fn model_message(f: &mut Fixture, s: i64, id: &str, model: &str, at: i64, u: &Us
 }
 
 fn session(f: &mut Fixture, id: &str) -> i64 {
-    f.session(S {
+    f.session(SessionFacts {
         id,
         kind: "main",
-        ..S::default()
+        ..SessionFacts::default()
     })
     .unwrap()
 }
@@ -60,7 +60,7 @@ fn law_14_usage_counts_each_response_once() {
         "a",
         "claude-opus-4-1",
         T0,
-        &lanes(10, 100, Some(5), 20),
+        &tokens(10, 100, Some(5), 20),
     );
     model_message(
         &mut f,
@@ -68,7 +68,7 @@ fn law_14_usage_counts_each_response_once() {
         "b",
         "claude-opus-4-1",
         T0 + 1,
-        &lanes(1, 2, Some(3), 4),
+        &tokens(1, 2, Some(3), 4),
     );
     f.link("claude-code:p", "claude-code:c", "continuation", "test")
         .unwrap();
@@ -76,13 +76,13 @@ fn law_14_usage_counts_each_response_once() {
     let r = pool.reader().unwrap();
     let u = usage(&r, &Scope::default()).unwrap();
     assert_eq!(u.messages, 2);
-    assert_eq!(u.lanes.input.tokens, 11);
-    assert_eq!(u.lanes.cached_input.tokens, 102);
-    assert_eq!(u.lanes.cache_write.tokens, 8);
-    assert_eq!(u.lanes.output.tokens, 24);
+    assert_eq!(u.tokens.input.tokens, 11);
+    assert_eq!(u.tokens.cached_input.tokens, 102);
+    assert_eq!(u.tokens.cache_write.tokens, 8);
+    assert_eq!(u.tokens.output.tokens, 24);
     // Reasoning was not reported apart: unknown for both, never zero.
-    assert_eq!(u.lanes.reasoning.tokens, 0);
-    assert_eq!(u.lanes.reasoning.unknown_messages, 2);
+    assert_eq!(u.tokens.reasoning.tokens, 0);
+    assert_eq!(u.tokens.reasoning.unknown_messages, 2);
     let by_session: u64 = [parent, child]
         .into_iter()
         .map(|pk| {
@@ -94,12 +94,12 @@ fn law_14_usage_counts_each_response_once() {
                 },
             )
             .unwrap()
-            .lanes
+            .tokens
             .output
             .tokens
         })
         .sum();
-    assert_eq!(by_session, u.lanes.output.tokens);
+    assert_eq!(by_session, u.tokens.output.tokens);
 }
 
 /// Law 70: an unpriced model's cost is unknown, never 0, and totals say how
@@ -118,7 +118,7 @@ fn law_70_unpriced_models_and_credits() {
         "p1",
         "claude-opus-4-1",
         T0,
-        &lanes(1_000_000, 0, Some(0), 0),
+        &tokens(1_000_000, 0, Some(0), 0),
     );
     let credits = json!({"limit_id": "codex", "plan_type": "pro",
         "credits": {"balance": "38816.6156015000"},
@@ -129,16 +129,16 @@ fn law_70_unpriced_models_and_credits() {
         "u1",
         "gpt-9-imaginary",
         T0,
-        &lanes(5, 0, None, 5),
+        &tokens(5, 0, None, 5),
     );
-    f.usage(pk, &lanes(5, 0, None, 5), Some(credits)).unwrap();
+    f.usage(pk, &tokens(5, 0, None, 5), Some(credits)).unwrap();
     model_message(
         &mut f,
         mixed,
         "m1",
         "claude-opus-4-1",
         T0,
-        &lanes(1_000_000, 0, Some(0), 0),
+        &tokens(1_000_000, 0, Some(0), 0),
     );
     model_message(
         &mut f,
@@ -146,7 +146,7 @@ fn law_70_unpriced_models_and_credits() {
         "m2",
         "gpt-9-imaginary",
         T0,
-        &lanes(1, 0, None, 1),
+        &tokens(1, 0, None, 1),
     );
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
@@ -173,7 +173,7 @@ fn law_70_unpriced_models_and_credits() {
     assert_eq!(all.api_cost.unpriced_messages, 2);
 
     // Credits are reported in their own place, never as dollars.
-    let o = outlook::outlook(&r, T0 + 1).unwrap();
+    let o = quota::quota(&r, T0 + 1).unwrap();
     let codex = o.tools.iter().find(|t| t.tool == "codex").unwrap();
     assert_eq!(codex.credits.as_ref().unwrap().balance, "38816.6156015000");
     assert_eq!(codex.plan.as_deref(), Some("pro"));
@@ -195,7 +195,7 @@ fn law_138_hiding_never_changes_a_usage_figure() {
         "a1",
         "claude-opus-4-1",
         T0,
-        &lanes(100, 0, Some(0), 10),
+        &tokens(100, 0, Some(0), 10),
     );
     model_message(
         &mut f,
@@ -203,7 +203,7 @@ fn law_138_hiding_never_changes_a_usage_figure() {
         "b1",
         "claude-opus-4-1",
         T0 + 60_000,
-        &lanes(200, 0, Some(0), 20),
+        &tokens(200, 0, Some(0), 20),
     );
     let now = T0 + 120_000;
     let read = |f: &Fixture| {
@@ -211,7 +211,7 @@ fn law_138_hiding_never_changes_a_usage_figure() {
         let r = pool.reader().unwrap();
         (
             usage(&r, &Scope::default()).unwrap(),
-            outlook::outlook(&r, now).unwrap(),
+            quota::quota(&r, now).unwrap(),
         )
     };
     let (u0, o0) = read(&f);
@@ -221,19 +221,19 @@ fn law_138_hiding_never_changes_a_usage_figure() {
     let (u1, o1) = read(&f);
     assert_eq!(u1.hidden_sessions, 1);
     assert_eq!(
-        (u0.lanes, u0.api_cost, u0.messages),
-        (u1.lanes.clone(), u1.api_cost.clone(), u1.messages)
+        (u0.tokens, u0.api_cost, u0.messages),
+        (u1.tokens.clone(), u1.api_cost.clone(), u1.messages)
     );
-    let five = |o: &outlook::Outlook| {
+    let five = |o: &quota::Quota| {
         o.tools[0]
             .windows
             .iter()
-            .find(|w| w.window_minutes == outlook::FIVE_HOURS)
+            .find(|w| w.window_minutes == quota::FIVE_HOURS)
             .unwrap()
             .usage
             .clone()
     };
-    assert_eq!(five(&o0).lanes, five(&o1).lanes);
+    assert_eq!(five(&o0).tokens, five(&o1).tokens);
     assert_eq!(five(&o1).hidden_sessions, 1);
 }
 
@@ -251,11 +251,11 @@ fn outlook_reads_reported_windows_and_projects_exhaustion() {
             &format!("c{i}"),
             "gpt-5",
             at,
-            &lanes(10, 0, None, 10),
+            &tokens(10, 0, None, 10),
         );
         let q = json!({"primary": {"used_percent": pct, "window_minutes": 300,
                                    "resets_at": reset / 1000}});
-        f.usage(pk, &lanes(10, 0, None, 10), Some(q)).unwrap();
+        f.usage(pk, &tokens(10, 0, None, 10), Some(q)).unwrap();
     }
     let claude = session(&mut f, "claude-code:s");
     let rejected = json!({"status": "rejected", "resetsAt": (T0 + 2 * DAY) / 1000,
@@ -266,16 +266,16 @@ fn outlook_reads_reported_windows_and_projects_exhaustion() {
         "x",
         "claude-opus-4-1",
         T0,
-        &lanes(1, 0, Some(0), 1),
+        &tokens(1, 0, Some(0), 1),
     );
-    f.usage(pk, &lanes(1, 0, Some(0), 1), Some(rejected))
+    f.usage(pk, &tokens(1, 0, Some(0), 1), Some(rejected))
         .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let o = outlook::outlook(&r, T0 + 3_600_000 + 1).unwrap();
+    let o = quota::quota(&r, T0 + 3_600_000 + 1).unwrap();
 
     let cw = &o.tools.iter().find(|t| t.tool == "codex").unwrap().windows[0];
-    assert_eq!(cw.basis, outlook::Basis::Reported);
+    assert_eq!(cw.source, quota::WindowSource::Reported);
     assert_eq!(
         (cw.used_percent, cw.remaining_percent),
         (Some(30.0), Some(70.0))
@@ -290,17 +290,17 @@ fn outlook_reads_reported_windows_and_projects_exhaustion() {
     let week = cc
         .windows
         .iter()
-        .find(|w| w.window_minutes == outlook::WEEK)
+        .find(|w| w.window_minutes == quota::WEEK)
         .unwrap();
-    assert_eq!(week.basis, outlook::Basis::Reported);
+    assert_eq!(week.source, quota::WindowSource::Reported);
     assert_eq!(week.status.as_deref(), Some("rejected"));
     assert_eq!(week.exhausted_at, Some(T0));
     let five = cc
         .windows
         .iter()
-        .find(|w| w.window_minutes == outlook::FIVE_HOURS)
+        .find(|w| w.window_minutes == quota::FIVE_HOURS)
         .unwrap();
-    assert_eq!(five.basis, outlook::Basis::Inferred);
+    assert_eq!(five.source, quota::WindowSource::Inferred);
     assert_eq!(five.used_percent, None, "nothing reported: unknown, not 0");
 }
 
@@ -312,12 +312,12 @@ fn process_keeps_transcript_order_and_outcomes_apart() {
     let m = f
         .message(
             s,
-            M {
+            MessageFacts {
                 id: "m",
                 role: "assistant",
                 written_by: "model",
                 at: Some(T0),
-                ..M::default()
+                ..MessageFacts::default()
             },
         )
         .unwrap();
@@ -329,13 +329,13 @@ fn process_keeps_transcript_order_and_outcomes_apart() {
         f.tool_call(
             s,
             m,
-            T {
+            CallFacts {
                 tool: "Bash",
                 action: "shell",
                 command: Some(cmd),
                 outcome,
                 at: Some(T0),
-                ..T::default()
+                ..CallFacts::default()
             },
         )
         .unwrap();
@@ -346,8 +346,8 @@ fn process_keeps_transcript_order_and_outcomes_apart() {
     assert_eq!((p.sessions, p.calls), (1, 3));
     assert_eq!(p.outcomes.error, 1);
     assert_eq!(p.outcomes.ok, 2);
-    assert_eq!(p.failure_witnesses.len(), 1);
-    assert_eq!(p.motifs.len(), 1);
+    assert_eq!(p.failure_examples.len(), 1);
+    assert_eq!(p.common_sequences.len(), 1);
     let s = analysis::first_failure(&r, &Scope::default(), false).unwrap();
     assert_eq!((s.sessions, s.events), (1, 1));
 }
@@ -367,7 +367,7 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
         "a",
         "claude-opus-5-5",
         T0,
-        &lanes(10, 0, None, 1),
+        &tokens(10, 0, None, 1),
     );
     model_message(
         &mut f,
@@ -375,7 +375,7 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
         "b",
         "claude-opus-5-5",
         T0 + 1,
-        &lanes(20, 0, None, 2),
+        &tokens(20, 0, None, 2),
     );
     model_message(
         &mut f,
@@ -383,7 +383,7 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
         "d",
         "claude-opus-5-5",
         T0 + 2,
-        &lanes(40, 0, None, 4),
+        &tokens(40, 0, None, 4),
     );
     f.link("claude-code:p", "claude-code:c", "continuation", "fork")
         .unwrap();
@@ -398,12 +398,12 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
         "a session with no parent shows only its own"
     );
     assert_eq!((c.physical.messages, c.logical.messages), (1, 3));
-    assert_eq!(c.physical.lanes.input.tokens, 40);
-    assert_eq!(c.logical.lanes.input.tokens, 70);
-    let physical: u64 = all.iter().map(|s| s.physical.lanes.input.tokens).sum();
+    assert_eq!(c.physical.tokens.input.tokens, 40);
+    assert_eq!(c.logical.tokens.input.tokens, 70);
+    let physical: u64 = all.iter().map(|s| s.physical.tokens.input.tokens).sum();
     assert_eq!(
         physical,
-        usage(&r, &Scope::default()).unwrap().lanes.input.tokens
+        usage(&r, &Scope::default()).unwrap().tokens.input.tokens
     );
     // Priced under the current catalog, at both grains.
     assert!(c.logical.api_cost.known_usd.unwrap() > c.physical.api_cost.known_usd.unwrap());
@@ -413,7 +413,7 @@ fn shell(f: &mut Fixture, s: i64, m: i64, cmd: &str, outcome: &str, at: i64) {
     f.tool_call(
         s,
         m,
-        T {
+        CallFacts {
             tool: "Bash",
             action: "shell",
             command: Some(cmd),
@@ -428,27 +428,27 @@ fn shell(f: &mut Fixture, s: i64, m: i64, cmd: &str, outcome: &str, at: i64) {
 }
 
 fn in_dir(f: &mut Fixture, id: &str, cwd: &str) -> i64 {
-    f.session(S {
+    f.session(SessionFacts {
         id,
         kind: "main",
         cwd: Some(cwd),
-        ..S::default()
+        ..SessionFacts::default()
     })
     .unwrap()
 }
 
-/// The triage frontier: per repository, commands whose latest decided run
+/// Failing commands: per repository, commands whose latest decided run
 /// failed; a later success resolves a failure, an unknown outcome decides
 /// nothing, and two repositories never mix.
 #[test]
-fn the_frontier_holds_commands_whose_latest_run_failed() {
+fn failing_holds_commands_whose_latest_run_failed() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let a1 = in_dir(&mut f, "claude-code:a1", "/work/a");
     let a2 = in_dir(&mut f, "claude-code:a2", "/work/a");
     let b1 = in_dir(&mut f, "claude-code:b1", "/work/b");
     let m = |f: &mut Fixture, s, id, at| {
-        model_message(f, s, id, "claude-opus-5-5", at, &lanes(1, 0, None, 1))
+        model_message(f, s, id, "claude-opus-5-5", at, &tokens(1, 0, None, 1))
     };
     let (ma1, ma2, mb1) = (
         m(&mut f, a1, "m1", T0),
@@ -463,7 +463,7 @@ fn the_frontier_holds_commands_whose_latest_run_failed() {
     shell(&mut f, b1, mb1, "cargo test", "error", T0 + 5);
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let got: Vec<_> = analysis::frontier(&r, &Scope::default())
+    let got: Vec<_> = analysis::failing_commands(&r, &Scope::default())
         .unwrap()
         .into_iter()
         .map(|u| (u.repository, u.command, u.failures_since_ok, u.session))
@@ -497,13 +497,13 @@ fn an_unanswered_last_prompt_ends_a_session_only_after_it_goes_quiet() {
     let human = |f: &mut Fixture, s, id, at| {
         f.message(
             s,
-            M {
+            MessageFacts {
                 id,
                 role: "user",
                 written_by: "human",
                 prompt_kind: Some("prose"),
                 at: Some(at),
-                ..M::default()
+                ..MessageFacts::default()
             },
         )
         .unwrap();
@@ -516,7 +516,7 @@ fn an_unanswered_last_prompt_ends_a_session_only_after_it_goes_quiet() {
         "a1",
         "claude-opus-5-5",
         T0 + 60_000,
-        &lanes(1, 0, None, 1),
+        &tokens(1, 0, None, 1),
     );
     let left = session(&mut f, "claude-code:left");
     human(&mut f, left, "h2", T0);
@@ -526,7 +526,7 @@ fn an_unanswered_last_prompt_ends_a_session_only_after_it_goes_quiet() {
         "a2",
         "claude-opus-5-5",
         T0 + 60_000,
-        &lanes(1, 0, None, 1),
+        &tokens(1, 0, None, 1),
     );
     human(&mut f, left, "h3", T0 + 120_000);
     let recent = session(&mut f, "claude-code:recent");
@@ -539,7 +539,7 @@ fn an_unanswered_last_prompt_ends_a_session_only_after_it_goes_quiet() {
         "a4",
         "claude-opus-5-5",
         T0,
-        &lanes(1, 0, None, 1),
+        &tokens(1, 0, None, 1),
     );
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();

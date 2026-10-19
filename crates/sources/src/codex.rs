@@ -755,7 +755,7 @@ impl Rollout {
         let output = n("output_tokens");
         let reasoning = n("reasoning_output_tokens");
         // OpenAI counts cached input inside input and reasoning inside
-        // output; the lanes keep each count once.
+        // output; each kind of token is counted once.
         let u = Usage {
             input: Some(input.saturating_sub(cached.unwrap_or(0))),
             cached_input: cached,

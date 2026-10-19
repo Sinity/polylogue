@@ -2,24 +2,24 @@ use super::{Scope, hidden_sessions};
 use crate::{Reader, Result};
 use serde::Serialize;
 
-/// One token lane: the sum over the messages that reported it, and how
+/// One kind of token: the sum over the messages that reported it, and how
 /// many model messages did not.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct Lane {
+pub struct TokenCount {
     pub tokens: u64,
     pub unknown_messages: u64,
 }
 
-/// The four lanes plus cache writes, which some tools bill apart.
+/// The four tokens plus cache writes, which some tools bill apart.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct Lanes {
+pub struct TokensByKind {
     /// Input not served from a cache.
-    pub input: Lane,
-    pub cached_input: Lane,
-    pub cache_write: Lane,
+    pub input: TokenCount,
+    pub cached_input: TokenCount,
+    pub cache_write: TokenCount,
     /// Output, without reasoning tokens a tool reported apart.
-    pub output: Lane,
-    pub reasoning: Lane,
+    pub output: TokenCount,
+    pub reasoning: TokenCount,
 }
 
 /// Money in USD: the known part, and how many messages it could not price.
@@ -43,7 +43,7 @@ pub struct ModelUsage {
     /// `None` for messages that name no model.
     pub model: Option<String>,
     pub messages: u64,
-    pub lanes: Lanes,
+    pub tokens: TokensByKind,
     pub api_cost: Money,
 }
 
@@ -54,7 +54,7 @@ pub struct UsageReport {
     pub sessions: u64,
     /// Model messages (the ones that can carry usage).
     pub messages: u64,
-    pub lanes: Lanes,
+    pub tokens: TokensByKind,
     /// What the responses would have cost at API list prices, from the price
     /// catalog. Subscription credit is never added to it.
     pub api_cost: Money,
@@ -68,7 +68,7 @@ pub struct UsageReport {
     pub hidden_sessions: u64,
 }
 
-const LANES: &str = "
+const TOKEN_SUMS: &str = "
     count(*), count(DISTINCT m.session_pk),
     coalesce(sum(m.input_tokens), 0), sum(m.input_tokens IS NULL),
     coalesce(sum(m.cache_read_tokens), 0), sum(m.cache_read_tokens IS NULL),
@@ -82,7 +82,7 @@ const LANES: &str = "
 struct Row {
     messages: u64,
     sessions: u64,
-    lanes: Lanes,
+    tokens: TokensByKind,
     api: Money,
     reported: Money,
 }
@@ -91,8 +91,8 @@ fn row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Row> {
     let u = |i: usize| -> rusqlite::Result<u64> {
         Ok(r.get::<_, Option<i64>>(at + i)?.unwrap_or(0) as u64)
     };
-    let lane = |i: usize| -> rusqlite::Result<Lane> {
-        Ok(Lane {
+    let token_count = |i: usize| -> rusqlite::Result<TokenCount> {
+        Ok(TokenCount {
             tokens: u(i)?,
             unknown_messages: u(i + 1)?,
         })
@@ -112,12 +112,12 @@ fn row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Row> {
     Ok(Row {
         messages: u(0)?,
         sessions: u(1)?,
-        lanes: Lanes {
-            input: lane(2)?,
-            cached_input: lane(4)?,
-            cache_write: lane(6)?,
-            output: lane(8)?,
-            reasoning: lane(10)?,
+        tokens: TokensByKind {
+            input: token_count(2)?,
+            cached_input: token_count(4)?,
+            cache_write: token_count(6)?,
+            output: token_count(8)?,
+            reasoning: token_count(10)?,
         },
         api: money(12)?,
         reported: money(15)?,
@@ -128,13 +128,13 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
     let (cond, params) = scope.condition();
     let conn = reader.conn();
     let total = conn.query_row(
-        &format!("SELECT {LANES} FROM message m WHERE m.role = 'assistant' AND {cond}"),
+        &format!("SELECT {TOKEN_SUMS} FROM message m WHERE m.role = 'assistant' AND {cond}"),
         rusqlite::params_from_iter(params.iter()),
         |r| row(r, 0),
     )?;
     let mut by_model = vec![];
     let mut stmt = conn.prepare(&format!(
-        "SELECT m.model, {LANES} FROM message m WHERE m.role = 'assistant' AND {cond}
+        "SELECT m.model, {TOKEN_SUMS} FROM message m WHERE m.role = 'assistant' AND {cond}
          GROUP BY m.model ORDER BY sum(m.cost_nusd) DESC NULLS LAST, count(*) DESC"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
@@ -145,7 +145,7 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
         by_model.push(ModelUsage {
             model,
             messages: x.messages,
-            lanes: x.lanes,
+            tokens: x.tokens,
             api_cost: x.api,
         });
     }
@@ -164,7 +164,7 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
         grain: "physical",
         sessions: total.sessions,
         messages: total.messages,
-        lanes: total.lanes,
+        tokens: total.tokens,
         api_cost: total.api,
         reported_cost: total.reported,
         price_catalog: catalog.version.clone(),
@@ -190,7 +190,7 @@ pub struct SessionUsage {
 pub struct Totals {
     /// Model messages counted.
     pub messages: u64,
-    pub lanes: Lanes,
+    pub tokens: TokensByKind,
     pub api_cost: Money,
 }
 
@@ -229,17 +229,17 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
     Ok(out)
 }
 
-/// Lanes and cost over the model messages a condition on `m` selects. The
+/// TokensByKind and cost over the model messages a condition on `m` selects. The
 /// condition holds only integer keys the store read itself.
 fn totals(reader: &Reader<'_>, cond: &str) -> Result<Totals> {
     let x = reader.conn().query_row(
-        &format!("SELECT {LANES} FROM message m WHERE m.role = 'assistant' AND {cond}"),
+        &format!("SELECT {TOKEN_SUMS} FROM message m WHERE m.role = 'assistant' AND {cond}"),
         [],
         |r| row(r, 0),
     )?;
     Ok(Totals {
         messages: x.messages,
-        lanes: x.lanes,
+        tokens: x.tokens,
         api_cost: x.api,
     })
 }

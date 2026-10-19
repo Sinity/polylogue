@@ -12,16 +12,16 @@
 //! input's state is rebuilt by parsing its bytes again only when that input
 //! next changes, never all at start-up (architecture 2, measured facts).
 
+pub mod ai_studio_drive;
 pub mod collect;
-pub mod drive;
 pub mod pool;
+pub mod read;
 pub mod repo_lookup;
-pub mod stage;
 
 use polylogue_model::Json;
 use polylogue_sources::{Capture, Framing, ORIGINS, OriginSpec, Support};
 pub use polylogue_store::excise::{ExciseRequest, Excised, Scope as ExciseScope};
-use polylogue_store::export::Exporter;
+use polylogue_store::tool_databases::Exporter;
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };
@@ -536,13 +536,13 @@ impl Engine {
             .reads
             .reader()
             .ok()?
-            .setting(drive::SETTING, &self.config.machine)
+            .setting(ai_studio_drive::SETTING, &self.config.machine)
             .ok()??;
         if on != "on" {
             return None;
         }
-        let collector = drive::Collector {
-            endpoints: drive::Endpoints::default(),
+        let collector = ai_studio_drive::Collector {
+            endpoints: ai_studio_drive::Endpoints::default(),
             token_path: self.config.root(state).join("polylogue/token.json"),
             spool: self
                 .config
@@ -689,7 +689,7 @@ impl Engine {
         }
         if let Change::Appended { from } = change
             && let Some(tail) = &st.tail
-            && !stage::tail_intact(path, from, tail)?
+            && !read::tail_intact(path, from, tail)?
         {
             change = Change::Rewritten;
         }

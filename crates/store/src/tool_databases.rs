@@ -1,6 +1,6 @@
-//! Tool databases as typed logical exports (architecture 4.2; operator
-//! 58jjk: "source disappearance must not erase archived material … full
-//! database version history is not a requirement").
+//! Tool databases as typed logical exports (architecture 4.2): a database
+//! that disappears must not take archived rows with it, but every version
+//! of its pages is not needed.
 //!
 //! A tool's SQLite database (Codex `state`, `goals`, `memories` and
 //! thread history; Hermes `state.db`) is never stored as page images.

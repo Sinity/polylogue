@@ -19,7 +19,8 @@ still the deployed version until the operator switches over.
   browser host. Clients get typed store handles, never raw connections.
 - `crates/sinex`: the Sinex backend (`primary` mode), behind the `sinex`
   feature.
-- `crates/testkit`: shared test fixtures (the Morrow world).
+- `crates/testkit`: test archives built through the real loop (the synthetic
+  example archive in `examples/morrow/`, and a Claude Code home).
 - `xtask`: developer checks (`fast`, `check`, `boundaries`), on `devkit`.
 
 ## Development loop

@@ -4,7 +4,7 @@
 //! row by row so the queries are tested apart from any parser.
 
 use super::*;
-use polylogue_store::fixture::{Fixture, M, S, T};
+use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 
 const DAY: i64 = 86_400_000;
 /// 2026-10-01T12:00Z.
@@ -19,15 +19,21 @@ struct World {
     fx: Fixture,
 }
 
-fn msg<'a>(id: &'a str, role: &'a str, by: &'a str, text: &'a str, at: Option<i64>) -> M<'a> {
-    M {
+fn msg<'a>(
+    id: &'a str,
+    role: &'a str,
+    by: &'a str,
+    text: &'a str,
+    at: Option<i64>,
+) -> MessageFacts<'a> {
+    MessageFacts {
         id,
         role,
         written_by: by,
         prompt_kind: (by == "human").then_some("prose"),
         at,
         text: Some(text),
-        ..M::default()
+        ..MessageFacts::default()
     }
 }
 
@@ -41,12 +47,12 @@ fn morrow() -> World {
 
     // #1 claude-code, Oct 1, cost 1.26, 3 prompts, 6 calls.
     let s1 = fx
-        .session(S {
+        .session(SessionFacts {
             id: &ids[0],
             started: at(1, 9),
             last: at(1, 17),
             cwd: Some("/home/op/morrow"),
-            ..S::default()
+            ..SessionFacts::default()
         })
         .unwrap();
     for i in 0..3 {
@@ -65,7 +71,7 @@ fn morrow() -> World {
         let a = fx
             .message(
                 s1,
-                M {
+                MessageFacts {
                     cost_nusd: Some(420_000_000),
                     ..msg(
                         &format!("m1a{i}"),
@@ -82,7 +88,7 @@ fn morrow() -> World {
             fx.tool_call(
                 s1,
                 a,
-                T {
+                CallFacts {
                     tool: "Bash",
                     action: "shell",
                     command: Some("cargo build"),
@@ -90,7 +96,7 @@ fn morrow() -> World {
                     exit_code: Some(0),
                     at: at(1, 9 + i),
                     output: Some("ok"),
-                    ..T::default()
+                    ..CallFacts::default()
                 },
             )
             .unwrap();
@@ -99,12 +105,12 @@ fn morrow() -> World {
     }
     // #2 claude-code, Oct 2, cost 2.85, chrono decision, a failing cargo test.
     let s2 = fx
-        .session(S {
+        .session(SessionFacts {
             id: &ids[1],
             started: at(2, 9),
             last: at(2, 18),
             cwd: Some("/home/op/morrow"),
-            ..S::default()
+            ..SessionFacts::default()
         })
         .unwrap();
     fx.message(
@@ -128,7 +134,7 @@ fn morrow() -> World {
     let a2 = fx
         .message(
             s2,
-            M {
+            MessageFacts {
                 cost_nusd: Some(2_850_000_000),
                 ..msg(
                     "m2a0",
@@ -143,7 +149,7 @@ fn morrow() -> World {
     fx.tool_call(
         s2,
         a2,
-        T {
+        CallFacts {
             tool: "Bash",
             action: "shell",
             command: Some("cargo test"),
@@ -151,27 +157,27 @@ fn morrow() -> World {
             exit_code: Some(101),
             at: at(2, 10),
             output: Some("test failed: weekday_offset"),
-            ..T::default()
+            ..CallFacts::default()
         },
     )
     .unwrap();
     fx.tool_call(
         s2,
         a2,
-        T {
+        CallFacts {
             tool: "Edit",
             action: "file_edit",
             path: Some("src/date.rs"),
             outcome: "ok",
             at: at(2, 11),
-            ..T::default()
+            ..CallFacts::default()
         },
     )
     .unwrap();
     fx.tool_call(
         s2,
         a2,
-        T {
+        CallFacts {
             tool: "Bash",
             action: "shell",
             command: Some("cargo test"),
@@ -179,23 +185,23 @@ fn morrow() -> World {
             exit_code: Some(0),
             at: at(2, 12),
             output: Some("ok"),
-            ..T::default()
+            ..CallFacts::default()
         },
     )
     .unwrap();
     // #3 subagent of #2, Oct 2, uses claude-opus-5-5, cost 0.16.
     let s3 = fx
-        .session(S {
+        .session(SessionFacts {
             id: &ids[2],
             kind: "subagent",
             started: at(2, 13),
             last: at(2, 14),
-            ..S::default()
+            ..SessionFacts::default()
         })
         .unwrap();
     fx.message(
         s3,
-        M {
+        MessageFacts {
             model: Some("claude-opus-5-5"),
             cost_nusd: Some(160_000_000),
             ..msg(
@@ -211,17 +217,17 @@ fn morrow() -> World {
     fx.link(&ids[1], &ids[2], "subagent", "fresh").unwrap();
     // #4 claude-code, Oct 3, continues #2, cost 1.59; an inherited copy.
     let s4 = fx
-        .session(S {
+        .session(SessionFacts {
             id: &ids[3],
             started: at(3, 9),
             last: at(3, 12),
             cwd: Some("/home/op/morrow"),
-            ..S::default()
+            ..SessionFacts::default()
         })
         .unwrap();
     fx.message(
         s4,
-        M {
+        MessageFacts {
             inherited_from: Some("m2p0"),
             ..msg(
                 "m4c0",
@@ -249,7 +255,7 @@ fn morrow() -> World {
     let a4 = fx
         .message(
             s4,
-            M {
+            MessageFacts {
                 cost_nusd: Some(1_590_000_000),
                 ..msg("m4a0", "assistant", "model", "continuing", at(3, 10))
             },
@@ -258,7 +264,7 @@ fn morrow() -> World {
     fx.tool_call(
         s4,
         a4,
-        T {
+        CallFacts {
             tool: "Bash",
             action: "shell",
             command: Some("cargo clippy"),
@@ -266,7 +272,7 @@ fn morrow() -> World {
             exit_code: Some(1),
             at: at(3, 10),
             output: Some("warning"),
-            ..T::default()
+            ..CallFacts::default()
         },
     )
     .unwrap();
@@ -274,29 +280,29 @@ fn morrow() -> World {
     fx.event(s4, "compaction", at(3, 11)).unwrap();
     // #5, #6 codex in morrow; #6 forks #5.
     let s5 = fx
-        .session(S {
+        .session(SessionFacts {
             id: "codex:01a20000-0005-7000-8000-000000000005",
             started: at(5, 9),
             last: at(5, 10),
             repo: Some("https://github.com/op/morrow"),
-            ..S::default()
+            ..SessionFacts::default()
         })
         .unwrap();
     fx.message(
         s5,
-        M {
+        MessageFacts {
             cost_nusd: None,
             ..msg("m5a0", "assistant", "model", "codex answer five", at(5, 9))
         },
     )
     .unwrap();
     let s6 = fx
-        .session(S {
+        .session(SessionFacts {
             id: "codex:01a20000-0006-7000-8000-000000000006",
             started: at(6, 9),
             last: at(6, 10),
             repo: Some("op/morrow"),
-            ..S::default()
+            ..SessionFacts::default()
         })
         .unwrap();
     fx.message(
@@ -313,18 +319,18 @@ fn morrow() -> World {
     .unwrap();
     // #7 chatgpt with an abandoned branch; #8 claude-ai, no model.
     let s7 = fx
-        .session(S {
+        .session(SessionFacts {
             id: "chatgpt:abc-7",
             started: at(4, 9),
             last: at(4, 10),
-            ..S::default()
+            ..SessionFacts::default()
         })
         .unwrap();
     fx.message(s7, msg("m7p0", "user", "human", "dates", at(4, 9)))
         .unwrap();
     fx.message(
         s7,
-        M {
+        MessageFacts {
             on_active_path: Some(false),
             ..msg("m7p1", "user", "human", "edited dates", at(4, 9))
         },
@@ -332,18 +338,18 @@ fn morrow() -> World {
     .unwrap();
     fx.message(
         s7,
-        M {
+        MessageFacts {
             on_active_path: Some(false),
             ..msg("m7a1", "assistant", "model", "abandoned", at(4, 9))
         },
     )
     .unwrap();
     let s8 = fx
-        .session(S {
+        .session(SessionFacts {
             id: "claude-ai:abc-8",
             started: at(7, 9),
             last: at(7, 10),
-            ..S::default()
+            ..SessionFacts::default()
         })
         .unwrap();
     fx.message(
@@ -965,10 +971,10 @@ fn worked() -> World {
     let dir = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
     let s = fx
-        .session(S {
+        .session(SessionFacts {
             id: "claude-code:w1",
             last: at(2, 13),
-            ..S::default()
+            ..SessionFacts::default()
         })
         .unwrap();
     let m = fx
@@ -985,14 +991,14 @@ fn worked() -> World {
         fx.tool_call(
             s,
             m,
-            T {
+            CallFacts {
                 tool: "Bash",
                 action: "shell",
                 command: Some(command),
                 outcome,
                 at: at(2, 12).map(|t| t + minute * 60_000),
                 output: Some(output),
-                ..T::default()
+                ..CallFacts::default()
             },
         )
         .unwrap();

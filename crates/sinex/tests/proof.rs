@@ -156,7 +156,7 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
     assert_eq!((second.units, second.held), (0, first.units), "{second:?}");
 
     // 4. Restore into an empty archive once every unit is confirmed.
-    let id = polylogue_store::rows::Published::open(&a)
+    let id = polylogue_store::sinex_rows::Published::open(&a)
         .unwrap()
         .archive_id()
         .unwrap();

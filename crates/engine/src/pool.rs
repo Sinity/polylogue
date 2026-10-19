@@ -4,11 +4,11 @@
 //! writer one batch. Live appends go before bulk work. One input has at
 //! most one job in flight, so its parser state passes from job to job.
 
-use crate::stage;
+use crate::read;
 use polylogue_model::Json;
 use polylogue_sources::OriginSpec;
 use polylogue_store::writer::WriterSender;
-use polylogue_store::{Batch, Change, InputKey, Observation, ParseStep, Piece, Release};
+use polylogue_store::{Batch, Change, InFlight, InputKey, Observation, ParseStep, Piece};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -259,7 +259,7 @@ fn flush<'s>(
                 // The job's bytes stay counted until the writer commits the
                 // batch (or drops it unsent).
                 let owner = Arc::clone(shared);
-                batch.release = Release::new(move || release(&owner, size));
+                batch.release = InFlight::new(move || release(&owner, size));
                 let settled = batch
                     .piece
                     .iter_mut()
@@ -305,7 +305,7 @@ fn run(
         Bytes::Stored(chain) => chain
             .read_range(store, job.start, job.end)
             .map_err(|e| std::io::Error::other(e.to_string())),
-        Bytes::File => stage::read_range(&job.path, job.start, job.end),
+        Bytes::File => read::read_range(&job.path, job.start, job.end),
     };
     add(Stage::Read, started.elapsed());
     let bytes = match read {
@@ -315,7 +315,7 @@ fn run(
             return (None, out);
         }
     };
-    out.tail = stage::tail_of(&bytes);
+    out.tail = read::tail_of(&bytes);
     let piece = match job.piece_from {
         Some(from) => match time(Stage::Store, || {
             Piece::prepare_in(blobs, &bytes[(from - job.start) as usize..])
@@ -393,7 +393,7 @@ fn run(
         blobs: extra,
         length: job.length,
         parse,
-        release: Release::default(),
+        release: InFlight::default(),
     };
     (Some(batch), out)
 }
