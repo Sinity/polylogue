@@ -1,0 +1,260 @@
+[
+ {
+  "id": "68f0a1b2-0007-8000-8000-000000000007",
+  "conversation_id": "68f0a1b2-0007-8000-8000-000000000007",
+  "title": "Date format edge cases",
+  "create_time": 1791140400.0,
+  "update_time": 1791141600.0,
+  "current_node": "68f0a1b2-0007-4000-8000-000000000008",
+  "default_model_slug": "gpt-6",
+  "is_archived": false,
+  "is_starred": null,
+  "mapping": {
+   "68f0a1b2-0007-4000-8000-000000000000": {
+    "id": "68f0a1b2-0007-4000-8000-000000000000",
+    "message": null,
+    "parent": null,
+    "children": [
+     "68f0a1b2-0007-4000-8000-000000000001"
+    ]
+   },
+   "68f0a1b2-0007-4000-8000-000000000001": {
+    "id": "68f0a1b2-0007-4000-8000-000000000001",
+    "message": {
+     "id": "68f0a1b2-0007-4000-8000-000000000001",
+     "author": {
+      "role": "user",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1791140400.0,
+     "update_time": null,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "How should a date parser handle ambiguous formats like 03/04?"
+      ]
+     },
+     "status": "finished_successfully",
+     "end_turn": null,
+     "weight": 1.0,
+     "metadata": {},
+     "recipient": "all",
+     "channel": null
+    },
+    "parent": "68f0a1b2-0007-4000-8000-000000000000",
+    "children": [
+     "68f0a1b2-0007-4000-8000-000000000002"
+    ]
+   },
+   "68f0a1b2-0007-4000-8000-000000000002": {
+    "id": "68f0a1b2-0007-4000-8000-000000000002",
+    "message": {
+     "id": "68f0a1b2-0007-4000-8000-000000000002",
+     "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1791140460.0,
+     "update_time": null,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "03/04 is March 4 in the US and 3 April in most of Europe. Require an explicit locale or reject it."
+      ]
+     },
+     "status": "finished_successfully",
+     "end_turn": true,
+     "weight": 1.0,
+     "metadata": {
+      "model_slug": "gpt-6"
+     },
+     "recipient": "all",
+     "channel": null
+    },
+    "parent": "68f0a1b2-0007-4000-8000-000000000001",
+    "children": [
+     "68f0a1b2-0007-4000-8000-000000000003",
+     "68f0a1b2-0007-4000-8000-000000000005"
+    ]
+   },
+   "68f0a1b2-0007-4000-8000-000000000003": {
+    "id": "68f0a1b2-0007-4000-8000-000000000003",
+    "message": {
+     "id": "68f0a1b2-0007-4000-8000-000000000003",
+     "author": {
+      "role": "user",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1791140640.0,
+     "update_time": null,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "What do other libraries do?"
+      ]
+     },
+     "status": "finished_successfully",
+     "end_turn": null,
+     "weight": 1.0,
+     "metadata": {},
+     "recipient": "all",
+     "channel": null
+    },
+    "parent": "68f0a1b2-0007-4000-8000-000000000002",
+    "children": [
+     "68f0a1b2-0007-4000-8000-000000000004"
+    ]
+   },
+   "68f0a1b2-0007-4000-8000-000000000004": {
+    "id": "68f0a1b2-0007-4000-8000-000000000004",
+    "message": {
+     "id": "68f0a1b2-0007-4000-8000-000000000004",
+     "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1791140700.0,
+     "update_time": null,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "dateutil guesses month-first by default; chrono refuses ambiguous input."
+      ]
+     },
+     "status": "finished_successfully",
+     "end_turn": true,
+     "weight": 1.0,
+     "metadata": {
+      "model_slug": "gpt-6"
+     },
+     "recipient": "all",
+     "channel": null
+    },
+    "parent": "68f0a1b2-0007-4000-8000-000000000003",
+    "children": []
+   },
+   "68f0a1b2-0007-4000-8000-000000000005": {
+    "id": "68f0a1b2-0007-4000-8000-000000000005",
+    "message": {
+     "id": "68f0a1b2-0007-4000-8000-000000000005",
+     "author": {
+      "role": "user",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1791140880.0,
+     "update_time": null,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "What do other libraries do, and which default is least surprising?"
+      ]
+     },
+     "status": "finished_successfully",
+     "end_turn": null,
+     "weight": 1.0,
+     "metadata": {},
+     "recipient": "all",
+     "channel": null
+    },
+    "parent": "68f0a1b2-0007-4000-8000-000000000002",
+    "children": [
+     "68f0a1b2-0007-4000-8000-000000000006"
+    ]
+   },
+   "68f0a1b2-0007-4000-8000-000000000006": {
+    "id": "68f0a1b2-0007-4000-8000-000000000006",
+    "message": {
+     "id": "68f0a1b2-0007-4000-8000-000000000006",
+     "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1791140940.0,
+     "update_time": null,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "dateutil guesses month-first; chrono refuses. Refusing by default is least surprising for a library."
+      ]
+     },
+     "status": "finished_successfully",
+     "end_turn": true,
+     "weight": 1.0,
+     "metadata": {
+      "model_slug": "gpt-6"
+     },
+     "recipient": "all",
+     "channel": null
+    },
+    "parent": "68f0a1b2-0007-4000-8000-000000000005",
+    "children": [
+     "68f0a1b2-0007-4000-8000-000000000007"
+    ]
+   },
+   "68f0a1b2-0007-4000-8000-000000000007": {
+    "id": "68f0a1b2-0007-4000-8000-000000000007",
+    "message": {
+     "id": "68f0a1b2-0007-4000-8000-000000000007",
+     "author": {
+      "role": "user",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1791141300.0,
+     "update_time": null,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "Write me three test cases for that behaviour."
+      ]
+     },
+     "status": "finished_successfully",
+     "end_turn": null,
+     "weight": 1.0,
+     "metadata": {},
+     "recipient": "all",
+     "channel": null
+    },
+    "parent": "68f0a1b2-0007-4000-8000-000000000006",
+    "children": [
+     "68f0a1b2-0007-4000-8000-000000000008"
+    ]
+   },
+   "68f0a1b2-0007-4000-8000-000000000008": {
+    "id": "68f0a1b2-0007-4000-8000-000000000008",
+    "message": {
+     "id": "68f0a1b2-0007-4000-8000-000000000008",
+     "author": {
+      "role": "assistant",
+      "name": null,
+      "metadata": {}
+     },
+     "create_time": 1791141600.0,
+     "update_time": null,
+     "content": {
+      "content_type": "text",
+      "parts": [
+       "1. \"03/04\" without locale -> error. 2. \"03/04\" with en-US -> March 4. 3. \"2026-03-04\" -> March 4 regardless of locale."
+      ]
+     },
+     "status": "finished_successfully",
+     "end_turn": true,
+     "weight": 1.0,
+     "metadata": {
+      "model_slug": "gpt-6"
+     },
+     "recipient": "all",
+     "channel": null
+    },
+    "parent": "68f0a1b2-0007-4000-8000-000000000007",
+    "children": []
+   }
+  }
+ }
+]

@@ -22,6 +22,9 @@ pub enum PromptKind {
     /// Text the harness wrote: tool results, interruption notices, local
     /// command output, injected reminders.
     Harness,
+    /// Text another model wrote as this session's prompt: a subagent's
+    /// task, a coordinator's follow-up, a peer agent's message.
+    Model,
 }
 
 /// One message, stored once, in the session where it originated.

@@ -1,0 +1,10 @@
+$ polylogue          # run from /home/op/morrow, clock 2026-10-08 12:00
+Polylogue · 13 sessions (6 top-level) · last activity Oct 08 10:15
+daemon    running · up to date
+sources   claude-code 13
+last 14 days  6 sessions · 15 prompts · 44 tool calls · $7.87 API-eq. known
+
+recent in /home/op/morrow
+1  Oct 08 10:15  claude-code:7f3a2c10-0108  Weekday fix                      6 msgs  $0.36
+2  Oct 08 09:30  claude-code:7f3a2c10-0105  Release checklist (review team)  8 msgs  $0.60
+3  Oct 08 08:40  claude-code:7f3a2c10-0101  Release checklist               10 msgs  $0.76

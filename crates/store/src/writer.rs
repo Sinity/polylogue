@@ -19,7 +19,7 @@ use polylogue_model::{
     Session, SessionId, SessionKind, Timestamp, TitleSource, ToolOutcome,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::JoinHandle;
 
@@ -923,6 +923,16 @@ fn write_rows(
         };
         ctx.write_event(e, session_pk, &packed)?;
     }
+    let leaves: HashSet<i64> = p
+        .output
+        .events
+        .iter()
+        .filter(|e| e.kind == "active_leaf")
+        .filter_map(|e| sessions.get(&e.session.to_string()).copied())
+        .collect();
+    for session_pk in leaves {
+        mark_active_path(tx, session_pk)?;
+    }
     for l in &p.output.links {
         ctx.write_link(l)?;
     }
@@ -1295,7 +1305,7 @@ impl Ctx<'_, '_> {
         order: (i64, i64),
     ) -> Result<i64> {
         let written_by = match (m.role, m.prompt_kind) {
-            (Role::Assistant, _) => "model",
+            (Role::Assistant, _) | (Role::User, Some(PromptKind::Model)) => "model",
             (Role::System, _) | (Role::User, Some(PromptKind::Harness)) => "harness",
             (Role::User, Some(_)) => "human",
             (Role::User, None) => "unknown",
@@ -1830,3 +1840,26 @@ fn action(tool: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests;
+
+/// Marks which of a branched session's messages lie on the path from its
+/// newest active leaf to the root (`on_active_path` 1) and which on an
+/// abandoned branch (0). A session whose source names no leaf keeps NULL:
+/// unknown, read as on the path.
+fn mark_active_path(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
+    tx.prepare_cached(
+        "WITH RECURSIVE
+           leaf(id) AS (
+             SELECT m.id FROM event e JOIN message m ON m.pk = e.after_message_pk
+             WHERE e.session_pk = ?1 AND e.kind = 'active_leaf'
+             ORDER BY e.pk DESC LIMIT 1),
+           path(id) AS (
+             SELECT id FROM leaf
+             UNION
+             SELECT m.parent_id FROM message m JOIN path ON m.id = path.id
+             WHERE m.parent_id IS NOT NULL)
+         UPDATE message SET on_active_path = (id IN (SELECT id FROM path))
+         WHERE session_pk = ?1 AND EXISTS (SELECT 1 FROM leaf)",
+    )?
+    .execute([session_pk])?;
+    Ok(())
+}

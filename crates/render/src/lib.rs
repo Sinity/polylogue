@@ -64,9 +64,14 @@ impl View {
     }
 }
 
-/// A prompt the operator typed: a user message that is not harness text.
+/// A prompt the operator typed: a user message neither the harness nor
+/// another model wrote.
 pub fn is_prompt(m: &Message) -> bool {
-    m.role == Role::User && !matches!(m.prompt_kind, Some(PromptKind::Harness))
+    m.role == Role::User
+        && !matches!(
+            m.prompt_kind,
+            Some(PromptKind::Harness | PromptKind::Model)
+        )
 }
 
 /// One rendered unit of the stream every format is built from.
@@ -180,6 +185,7 @@ fn who(m: &Message) -> &'static str {
         (Role::Assistant, _) => "assistant",
         (Role::System, _) => "system",
         (Role::User, Some(PromptKind::Harness)) => "harness",
+        (Role::User, Some(PromptKind::Model)) => "model",
         (Role::User, _) => "user",
     }
 }

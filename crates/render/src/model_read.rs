@@ -46,6 +46,7 @@ fn header(m: &Message) -> String {
         (polylogue_model::Role::Assistant, _) => "assistant",
         (polylogue_model::Role::System, _) => "system",
         (_, Some(polylogue_model::PromptKind::Harness)) => "harness",
+        (_, Some(polylogue_model::PromptKind::Model)) => "model",
         _ => "user",
     };
     match m.at {

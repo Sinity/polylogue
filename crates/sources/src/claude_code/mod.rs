@@ -25,7 +25,8 @@ use crate::parse::{BackgroundUpdate, MessageRow, Output, Parser, StepParser};
 use crate::time;
 use polylogue_model::{
     ApiError, Attribution, ErrorReason, Event, Json, Link, LinkKind, Message, MessageId, NativeId,
-    Origin, Production, Role, Session, SessionId, SessionKind, TitleSource, ToolOutcome, Usage,
+    Origin, Production, PromptKind, Role, Session, SessionId, SessionKind, TitleSource,
+    ToolOutcome, Usage,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -431,7 +432,7 @@ impl ClaudeCode {
                 role,
                 at: v.get("timestamp").and_then(time::rfc3339),
                 model,
-                prompt_kind: Some(blocks::prompt_kind(v, content)),
+                prompt_kind: Some(self.prompt_kind(v, content)),
                 blocks,
                 usage,
                 stop_reason,
@@ -489,6 +490,19 @@ impl ClaudeCode {
             }
         }
         self.event(carry, record, v, kind, out)
+    }
+
+    /// Who wrote a user record. A subagent transcript's root record (no
+    /// parent) is the task its parent model wrote.
+    fn prompt_kind(&self, v: &Json, content: &Json) -> PromptKind {
+        let kind = blocks::prompt_kind(v, content);
+        if matches!(self.file, File::Subagent { .. })
+            && kind == PromptKind::Prose
+            && str_field(v, "parentUuid").is_none()
+        {
+            return PromptKind::Model;
+        }
+        kind
     }
 
     fn title(&self, carry: &mut Carry, v: &Json, field: &str, source: TitleSource) -> Disposition {

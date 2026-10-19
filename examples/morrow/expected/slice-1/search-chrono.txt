@@ -1,0 +1,11 @@
+$ polylogue chrono
+1 session · 5 matching messages
+
+1  Oct 02 10:00  claude-code:7f3a2c10-0002  Date parsing             18 msgs  API-eq. $2.85
+   .1  10:20  ↳ subagent claude-code:7f3a2c10-0002/a7f3a2c1 (Explore)
+              model  Compare the chrono and time crates for relative date arithmetic. …
+   .2  10:26  ↳ subagent claude-code:7f3a2c10-0002/a7f3a2c1 (Explore)
+              model  chrono offers NaiveDateTime plus Duration and weekday helpers; …
+   .3  10:56  you    let's use chrono, not time
+   .4  11:07  model  Switched to chrono. Tests, clippy and build are clean.
+   .5  11:15  model  chrono covers it too: NaiveDate::parse_from_str for ISO dates. …
