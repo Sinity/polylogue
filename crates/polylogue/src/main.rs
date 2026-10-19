@@ -16,7 +16,7 @@ mod signals;
 #[cfg(feature = "sinex")]
 mod sinex;
 #[cfg(test)]
-mod testworld;
+mod test_daemon;
 mod web;
 
 use clap::Parser;

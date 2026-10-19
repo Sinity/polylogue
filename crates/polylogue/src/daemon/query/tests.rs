@@ -1031,3 +1031,6 @@ fn the_work_unit_reads_the_derived_graph() {
         ["claude-code:w1"]
     );
 }
+
+mod live;
+mod spec_examples;

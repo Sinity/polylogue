@@ -1,13 +1,12 @@
-use crate::test_world::*;
-#[allow(unused_imports)]
-use polylogue_model::{Block, Json, Role};
+use crate::fixture::writer::*;
+use polylogue_model::Json;
 use serde_json::json;
 
 #[test]
 fn no_task_from_prose() {
     // Law 90: a Bead ID in a prompt, or read with `bd show`, claims
     // nothing; a successful claim holds until a successful close.
-    let mut w = world();
+    let mut w = WriterWorld::new();
     let mut a = prose("a", 1, 1_000, "please work on plnext-ony.7 next");
     a.extend(bash(
         "a",
@@ -67,7 +66,7 @@ fn no_task_from_prose() {
 
 #[test]
 fn a_failed_claim_claims_nothing() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     w.write(
         "s",
         bash(
@@ -87,7 +86,7 @@ fn a_failed_claim_claims_nothing() {
 
 #[test]
 fn checks_and_commits_while_a_claim_is_open_belong_to_its_attempt() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     let mut m = bash("s", 1, 1_000, "bd update plnext-9 --claim", true, "");
     m.extend(bash(
         "s",
@@ -169,7 +168,7 @@ fn checks_and_commits_while_a_claim_is_open_belong_to_its_attempt() {
 
 #[test]
 fn a_bead_claimed_by_two_sessions_is_one_goal() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     w.write(
         "a",
         bash("a", 1, 1_000, "bd update plnext-5 --claim", true, ""),
@@ -190,7 +189,7 @@ fn a_bead_claimed_by_two_sessions_is_one_goal() {
 
 #[test]
 fn declared_todo_items_are_session_goals() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     let todos = |a: &str, b: &str| {
         json!({"todos": [
             {"content": "port the parser", "status": a, "activeForm": "Porting"},
@@ -237,7 +236,7 @@ fn declared_todo_items_are_session_goals() {
 
 #[test]
 fn deriving_again_changes_nothing() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     w.write(
         "s",
         bash("s", 1, 1_000, "bd update plnext-1 --claim", true, ""),
@@ -253,7 +252,7 @@ fn rows_an_excision_leaves_behind_are_swept() {
     // Excision deletes a session's nodes by their session; their edges go
     // with them, and a shared goal no one pursues any more goes at the next
     // derive.
-    let mut w = world();
+    let mut w = WriterWorld::new();
     w.write(
         "a",
         bash("a", 1, 1_000, "bd update plnext-5 --claim", true, ""),
@@ -295,7 +294,7 @@ fn rows_an_excision_leaves_behind_are_swept() {
 
 #[test]
 fn a_spawned_session_pursues_the_task_it_was_given() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     w.write("parent", prose("parent", 1, 1_000, "coordinate"));
     let mut child = prose(
         "child",

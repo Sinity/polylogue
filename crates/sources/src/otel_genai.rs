@@ -9,10 +9,10 @@
 //! `gen_ai.output.messages` follow it, with the call's token usage. Spans
 //! that are not GenAI spans are counted and set aside.
 
-use crate::account::{Accounting, Disposition};
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
 use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
+use crate::{Accounting, Disposition};
 use polylogue_model::{
     Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, Timestamp, ToolOutcome,
     Usage,

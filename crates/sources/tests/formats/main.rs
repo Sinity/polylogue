@@ -1,0 +1,10 @@
+//! Parsers on bytes written in the test or kept as golden cases: the
+//! format knowledge ported from the Python predecessor's tests, and the
+//! expected rows of every case under `examples/sources/`.
+
+mod attachment_direction;
+mod chatgpt_export;
+mod claude_code_wire;
+mod codex_rollout;
+mod golden;
+mod support;

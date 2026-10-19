@@ -41,11 +41,15 @@ Optimize for fast integration. See `docs/development.md`.
 - Rust, four-space indent, `rustfmt`.
 - Comments state constraints and reasons, briefly. No status, history or spec
   narration in code; Git and Beads hold those.
+- A module is `name.rs`, its child modules in `name/`; no `mod.rs`.
 - Tests live in their own files, never inline: a module's unit tests in
-  `<module>/tests.rs` declared with `#[cfg(test)] mod tests;`, integration
-  tests under the crate's `tests/`. Use synthetic inputs, temporary
-  directories and `polylogue-testkit`. CLI and MCP tests go through the public
-  commands.
+  `name/tests.rs`, declared last with `#[cfg(test)] mod tests;` (more test
+  files go in `name/tests/`). Integration tests are one binary per area,
+  `crates/<crate>/tests/<area>/main.rs` with its other files beside it. Use
+  synthetic inputs, temporary directories and `polylogue-testkit`; helpers
+  that need a crate's private items stay in that crate behind its test
+  feature (`polylogue-store`'s `fixture`). CLI and MCP tests go through the
+  public commands.
 - Unsupported operations return a typed error, never an empty success.
   Unknown times stay unknown. IDs are opaque strings and may contain colons.
   Check the schema version before writing.

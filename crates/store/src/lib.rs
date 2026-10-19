@@ -27,8 +27,6 @@ pub mod rows;
 pub mod schema;
 pub mod search;
 pub mod session_export;
-#[cfg(test)]
-mod test_world;
 pub mod timing;
 pub mod user;
 pub mod vectors;

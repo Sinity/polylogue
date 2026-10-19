@@ -477,9 +477,6 @@ pub fn rhythm(reader: &Reader<'_>, scope: &Scope, day: &LogicalDay) -> Result<Rh
     })
 }
 
-#[cfg(test)]
-mod tests;
-
 /// A command whose most recent run in a repository failed: what is left to
 /// triage there (old fcyf, "the triage frontier"). A run counts by its
 /// decided outcome (ok or error); a run with an unknown outcome decides
@@ -651,3 +648,6 @@ pub fn drift(reader: &Reader<'_>) -> Result<Vec<Drift>> {
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
+
+#[cfg(test)]
+mod tests;

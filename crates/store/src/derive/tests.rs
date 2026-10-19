@@ -1,8 +1,8 @@
-use crate::test_world::*;
+use crate::fixture::writer::*;
 use polylogue_model::{Json, RepoLookup, Session, SessionKind};
 use serde_json::json;
 
-fn one(w: &World, sql: &str) -> Json {
+fn one(w: &WriterWorld, sql: &str) -> Json {
     w.rows(sql).into_iter().next().unwrap_or(Json::Null)
 }
 
@@ -21,7 +21,7 @@ fn every_derivation_runs_after_what_it_reads() {
 
 #[test]
 fn tool_calls_are_classified_by_the_derive_step() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     w.write("a", bash("a", 1, 1_000, "cargo test -p x", true, "ok"));
     assert_eq!(
         one(&w, "SELECT action, command_norm FROM tool_call"),
@@ -33,7 +33,7 @@ fn tool_calls_are_classified_by_the_derive_step() {
 
 #[test]
 fn a_call_left_behind_has_passed_without_result() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     let mut msgs = call(
         "a",
         1,
@@ -63,7 +63,7 @@ fn a_call_left_behind_has_passed_without_result() {
 
 #[test]
 fn a_session_without_a_title_is_named_by_its_first_prompt() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     w.write(
         "a",
         prose("a", 1, 1_000, "\n  Fix the flaky crash test\nplease"),
@@ -79,7 +79,7 @@ fn a_session_without_a_title_is_named_by_its_first_prompt() {
 
 #[test]
 fn a_session_takes_its_repository_from_the_nearest_lookup() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     let mut s = Session::new(sid("a"), SessionKind::Main);
     s.offer_cwd("/r/project/x/sub");
     w.lookups.push(RepoLookup {
@@ -107,7 +107,7 @@ fn a_session_takes_its_repository_from_the_nearest_lookup() {
 
 #[test]
 fn a_repository_the_records_name_wins_over_the_lookup() {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     let mut s = Session::new(sid("a"), SessionKind::Main);
     s.offer_cwd("/r/project/x");
     s.repo = Some("git@own:repo".into());
@@ -125,7 +125,7 @@ fn a_repository_the_records_name_wins_over_the_lookup() {
 
 /// Two inputs about one session, written in the given order.
 fn two_inputs(early_first: bool) -> Json {
-    let mut w = world();
+    let mut w = WriterWorld::new();
     let mut early = Session::new(sid("s"), SessionKind::Subagent);
     early.offer_cwd("/a");
     early.offer_title("early", polylogue_model::TitleSource::Generated);

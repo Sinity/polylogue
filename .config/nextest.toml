@@ -10,5 +10,5 @@ fail-fast = false
 # The engine's property laws run many generated archives each; on a loaded
 # host they legitimately take minutes.
 [[profile.default.overrides]]
-filter = "package(polylogue-engine) and test(/^laws::/)"
+filter = "package(polylogue-engine) and binary(laws)"
 slow-timeout = { period = "60s", terminate-after = 6 }
