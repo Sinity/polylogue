@@ -14,7 +14,7 @@ history; nothing below is kept as a compatibility path.
 | `.githooks` | Whitespace and Rust check hooks. |
 | `.gitignore` | Rust build exclusions. |
 | `AGENTS.md`, `README.md` | Rewritten for the Rust workspace. |
-| `docs` | Notes under `docs/rewrite/`. |
+| `docs` | `docs/development.md`; the design is in the architecture document named in `AGENTS.md`. |
 | `CHANGELOG.md` | Kept as [docs/history/PYTHON-CHANGELOG.md](history/PYTHON-CHANGELOG.md). |
 | `LICENSE` | Unchanged. |
 
@@ -22,10 +22,11 @@ history; nothing below is kept as a compatibility path.
 
 `.agent`, `.circleci`, `.claude`, `.codex`, `.config`, `.dockerignore`,
 `.gitattributes`, `.github`, `.release-please-manifest.json`, `.tokeignore`,
-`CONTRIBUTING.md`, `SECURITY.md`, `TESTING.md`, `browser-extension`,
+`CONTRIBUTING.md`, `SECURITY.md`, `TESTING.md`,
 `contrib`, `devtools`, `experiments`, `nix`, `packaging`, `polylogue`,
 `pyproject.toml`, `release-please-config.json`, `scripts`, `tests`, `uv.lock`
-and `webui`. None of them has a Rust counterpart yet. There is no hosted CI;
+and `webui`. The browser extension now lives in `extension/`, and the web
+reader in `crates/polylogue`. There is no hosted CI;
 checks run locally ([development.md](development.md)).
 
 ## Consumers

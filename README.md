@@ -103,17 +103,23 @@ JSON replies carry the same outcome in `outcome` (`ok`, `empty`, `degraded`,
 ## Repository layout
 
 - `crates/model`: identity, value and outcome types; no I/O.
-- `crates/store`: the SQLite archive. Nothing else opens a database.
-- `crates/sources`, `crates/engine`: provider parsers and the work that turns
-  stored files into sessions and messages.
-- `crates/query`: the query parser.
-- `crates/polylogue`: configuration, daemon, CLI and MCP.
+- `crates/sources`: one parser per origin on a shared framework.
+- `crates/store`: the SQLite archive and the blob store. Nothing else opens a
+  database.
+- `crates/engine`: the convergence loop: collect, store, parse, derive.
+- `crates/query`: the query language, compiled to SQL.
+- `crates/render`: one block stream rendered to terminal, Markdown, HTML and
+  JSON.
+- `crates/polylogue`: configuration, the daemon, CLI, MCP, web reader and
+  browser host.
+- `crates/sinex`: the Sinex backend (`primary` mode), behind the `sinex`
+  feature.
+- `crates/testkit`: shared test fixtures, including the Morrow example world.
+- `extension/`: the browser extension.
 
 The content-addressed file store (`hashed-blobs`), credential masking and the
 `xtask` core (`devkit`) come from
 [polylogue-sinex-common](https://github.com/Sinity/polylogue-sinex-common), shared with Sinex.
 
-[docs/development.md](docs/development.md) describes the development checks,
-[docs/rewrite/](docs/rewrite/README.md) has notes on how parts work, and
-[docs/REPLACEMENT.md](docs/REPLACEMENT.md) lists what the Python version had
-and where it went. The design is in the Polylogue spec repository.
+[docs/development.md](docs/development.md) describes the development checks and
+[docs/REPLACEMENT.md](docs/REPLACEMENT.md) says what replaced the Python version.
