@@ -9,7 +9,6 @@ mod daemon;
 mod embeddings;
 mod hook;
 mod mcp;
-mod measure_text;
 mod resume;
 mod row_numbers;
 mod signals;

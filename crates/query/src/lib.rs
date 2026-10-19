@@ -51,6 +51,14 @@ pub const COMMAND_WORDS: &[&str] = &[
     "hook",
     "completions",
     "find",
+    "takeover",
+    "setting",
+    "work",
+    "changes",
+    "keep",
+    "hooks",
+    "install-agent",
+    "browser-host",
 ];
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error, Serialize)]

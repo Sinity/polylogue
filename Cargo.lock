@@ -2608,6 +2608,7 @@ name = "polylogue-render"
 version = "0.1.0"
 dependencies = [
  "credential-masking",
+ "jiff",
  "polylogue-model",
  "serde_json",
 ]

@@ -6,7 +6,7 @@ fn all_pages(budget: usize) -> Vec<Page> {
     let mut pages = vec![];
     let mut c: Option<String> = None;
     loop {
-        let p = page(&ms, budget, c.as_deref());
+        let p = page(&ms, View::Full, budget, c.as_deref());
         c = p.next.clone();
         pages.push(p);
         if c.is_none() {

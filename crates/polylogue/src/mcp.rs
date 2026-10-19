@@ -95,6 +95,10 @@ pub struct ReadArgs {
     /// Include messages inherited from a parent session.
     #[serde(default)]
     pub logical: bool,
+    /// Read as pages of text of at most this many tokens each.
+    pub budget: Option<usize>,
+    /// The `next` of the previous page.
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -170,7 +174,9 @@ impl Polylogue {
         )
     }
 
-    #[tool(description = "Read one session's messages.")]
+    #[tool(
+        description = "Read one session's messages; with `budget`, as pages of text of at most that many tokens, continued by `cursor`."
+    )]
     async fn read(&self, Parameters(a): Parameters<ReadArgs>) -> String {
         let session = match session(&a.session) {
             Ok(s) => s,
@@ -182,8 +188,8 @@ impl Polylogue {
                 view: "full".into(),
                 format: "json".into(),
                 logical: a.logical,
-                budget: None,
-                cursor: None,
+                budget: a.budget,
+                cursor: a.cursor,
             },
             &self.socket,
         )
