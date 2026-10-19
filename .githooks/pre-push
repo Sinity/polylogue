@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Runs the fast check (formatting, crate boundaries, cargo check of every
-# target) unless the push changes nothing that can affect the Rust build.
+# Seconds-long checks only: formatting and crate boundaries. Clippy and the
+# test suite are heavy and run as agentctl jobs (`agentctl job start polylogue
+# check`), which queue them against the rest of the machine's work.
 set -euo pipefail
 build_inputs=(Cargo.toml Cargo.lock flake.nix flake.lock rust-toolchain
     rust-toolchain.toml .cargo build.rs crates xtask)
@@ -12,7 +13,8 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
     fi
     if [[ -z "$base" || "$local_sha" != "$(git rev-parse HEAD)" ]] ||
         ! git diff --quiet "$base" "$local_sha" -- "${build_inputs[@]}"; then
-        exec nix develop --command cargo run --locked -q -p xtask -- fast
+        nix develop --command cargo fmt --all -- --check
+        exec nix develop --command cargo run --locked -q -p xtask -- boundaries
     fi
 done
 echo "pre-push: no Rust build inputs changed; skipping the fast check."
