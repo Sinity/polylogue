@@ -226,10 +226,15 @@ CREATE VIRTUAL TABLE output_fts USING fts5(body, content='', contentless_delete=
 -- Document frequency of each word, for the search planner.
 CREATE VIRTUAL TABLE fts_vocab_text USING fts5vocab(text_fts, 'row');
 CREATE VIRTUAL TABLE fts_vocab_output USING fts5vocab(output_fts, 'row');
--- Merge segments less eagerly than the default (4): segment merging was
--- about a tenth of the writer's time on a first build.
+-- Merge segments less eagerly than the default (4), and buffer 64 MiB of
+-- pending terms before writing a segment instead of the default 1 MiB: with
+-- the default, flushing tiny segments and merging them was over half of the
+-- writer's time on a first build (perf, 2026-10-19). The buffer is writer
+-- memory, at most 64 MiB per index.
 INSERT INTO text_fts(text_fts, rank) VALUES ('automerge', 16);
 INSERT INTO output_fts(output_fts, rank) VALUES ('automerge', 16);
+INSERT INTO text_fts(text_fts, rank) VALUES ('hashsize', 67108864);
+INSERT INTO output_fts(output_fts, rank) VALUES ('hashsize', 67108864);
 
 -- One row per tool call, paired with its result inside the same session. The
 -- one owner of every derived call fact.
@@ -271,6 +276,8 @@ CREATE INDEX tool_call_result  ON tool_call(result_block_pk) WHERE result_block_
 -- changing a `tool_call` row, in the same transaction.
 CREATE VIRTUAL TABLE tool_call_trigram USING fts5(command, path,
     content='tool_call', content_rowid='pk', tokenize='trigram');
+INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('automerge', 16);
+INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('hashsize', 67108864);
 
 -- Where two versions of one message disagree (sources/README.md, rule 2; model.md,
 -- within-input conflicts; attachment conflicts): written by the writer in the
