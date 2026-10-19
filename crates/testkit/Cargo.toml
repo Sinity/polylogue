@@ -10,6 +10,8 @@ publish.workspace = true
 polylogue-engine.workspace = true
 polylogue-model.workspace = true
 polylogue-store.workspace = true
+hashed-blobs.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

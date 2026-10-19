@@ -22,6 +22,8 @@ ureq.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+polylogue-testkit.workspace = true
+rusqlite.workspace = true
 
 [lints]
 workspace = true

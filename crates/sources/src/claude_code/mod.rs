@@ -154,6 +154,37 @@ pub struct Carry {
     links: BTreeSet<String>,
     /// The latest message, for placing events on the timeline.
     last: Option<MessageId>,
+    /// Record uuids that are not a message's own: a split response's later
+    /// records (its message carries the first one's uuid) and event records
+    /// (compaction boundaries, attachments, progress), each mapped to the
+    /// message a child naming it as parent belongs under. Recent ones only:
+    /// children follow their parents closely.
+    #[serde(default)]
+    aliases: VecDeque<(String, Option<MessageId>)>,
+}
+
+/// How many record aliases a parser keeps.
+const ALIASES: usize = 4096;
+
+impl Carry {
+    fn alias(&mut self, uuid: &str, target: Option<MessageId>) {
+        if self.aliases.len() == ALIASES {
+            self.aliases.pop_front();
+        }
+        self.aliases.push_back((uuid.to_owned(), target));
+    }
+
+    /// The message a record's parent pointer names, through aliases.
+    fn parent(&self, v: &Json) -> Option<MessageId> {
+        self.resolve(str_field(v, "parentUuid")?)
+    }
+
+    fn resolve(&self, uuid: &str) -> Option<MessageId> {
+        match self.aliases.iter().rev().find(|(u, _)| u == uuid) {
+            Some((_, target)) => target.clone(),
+            None => message_id(uuid),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -388,6 +419,13 @@ impl ClaudeCode {
             }
             match &mut carry.open {
                 Some(open) => {
+                    let target = Some(open.message.id.clone());
+                    if native != open.message.id.native().as_str() {
+                        carry.alias(&native, target);
+                    }
+                    let Some(open) = &mut carry.open else {
+                        unreachable!("the open response was just matched")
+                    };
                     open.end = open.end.max(end);
                     let m = &mut open.message;
                     m.blocks.extend(blocks);
@@ -408,7 +446,7 @@ impl ClaudeCode {
                         message: Message {
                             id: id.clone(),
                             session,
-                            parent: str_field(v, "parentUuid").and_then(message_id),
+                            parent: carry.parent(v),
                             role,
                             at: v.get("timestamp").and_then(time::rfc3339),
                             model,
@@ -428,7 +466,7 @@ impl ClaudeCode {
             let message = Message {
                 id: id.clone(),
                 session,
-                parent: str_field(v, "parentUuid").and_then(message_id),
+                parent: carry.parent(v),
                 role,
                 at: v.get("timestamp").and_then(time::rfc3339),
                 model,
@@ -695,6 +733,17 @@ impl Parser for ClaudeCode {
         };
         if let File::Journal { .. } = self.file {
             return self.journal(carry, record, v, ty, out);
+        }
+        let message_record = matches!(ty, "user" | "assistant")
+            && v.get("isCompactSummary").and_then(Json::as_bool) != Some(true);
+        if !message_record && let Some(uuid) = str_field(v, "uuid") {
+            // A child naming this record as its parent belongs under the
+            // nearest message above it; a compaction boundary points there
+            // through `logicalParentUuid`.
+            let target = str_field(v, "logicalParentUuid")
+                .or_else(|| str_field(v, "parentUuid"))
+                .and_then(|p| carry.resolve(p));
+            carry.alias(uuid, target);
         }
         match ty {
             "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {

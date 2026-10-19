@@ -10,6 +10,7 @@
 use polylogue_engine::{Config, Engine, ImportReport, Pass};
 use polylogue_model::SessionId;
 use polylogue_store::{Archive, ArchiveLock, ReadPool};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -136,6 +137,44 @@ impl Morrow {
 
     pub fn reads(&self) -> ReadPool {
         ReadPool::open(&Archive::at(&self.root)).expect("open readers")
+    }
+
+    /// Every session as the export format holds it, by ID: what tests
+    /// compare when they say "the view is unchanged".
+    pub fn view(&self) -> BTreeMap<String, serde_json::Value> {
+        let pool = self.reads();
+        let r = pool.reader().expect("a reader");
+        r.list(u64::MAX >> 1, None)
+            .expect("list sessions")
+            .into_iter()
+            .filter_map(|s| {
+                let doc = r.session_export(&s.id).expect("export a session")?;
+                Some((s.id.to_string(), serde_json::to_value(doc).expect("serialize")))
+            })
+            .collect()
+    }
+
+    /// The bytes stored for the file at `path`'s current revision, read
+    /// back through the blob store. A missing or corrupt blob is an error.
+    pub fn stored_bytes(&self, path: &Path) -> Result<Vec<u8>, String> {
+        let pool = self.reads();
+        let r = pool.reader().map_err(|e| e.to_string())?;
+        let known = r
+            .known_inputs(&self.config().machine)
+            .map_err(|e| e.to_string())?;
+        let input = known
+            .iter()
+            .find(|k| Path::new(&k.path) == path)
+            .ok_or_else(|| format!("{} was never observed", path.display()))?;
+        let chain = input.chain.ok_or("no stored revision")?;
+        let stored = r
+            .stored_chain(&input.input_id, chain, input.stored)
+            .map_err(|e| e.to_string())?;
+        let store = hashed_blobs::Store::open(self.root.clone(), vec![], 0o600)
+            .map_err(|e| e.to_string())?;
+        stored
+            .read_range(&store, 0, input.stored)
+            .map_err(|e| e.to_string())
     }
 
     /// A provider file of this world, by its path under the home.
