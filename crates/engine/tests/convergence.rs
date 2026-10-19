@@ -431,6 +431,87 @@ fn an_excised_text_is_overwritten_in_stored_bytes_and_the_index() {
     assert!(!rows[0]["s"].as_str().unwrap().contains("sk-abc123"));
 }
 
+/// Index columns holding `needle`.
+fn indexed(root: &Path, needle: &str) -> Vec<String> {
+    polylogue_store::excise::index_columns_containing(&Archive::at(root), needle).unwrap()
+}
+
+/// A session whose secret sits in its title, working directory, branch,
+/// prose, a tool command and the tool's output.
+fn secret_session(session: &str, secret: &str) -> String {
+    let line = |v: serde_json::Value| format!("{v}\n");
+    [
+        line(serde_json::json!({
+            "type": "user", "uuid": "u1", "sessionId": session,
+            "timestamp": "2026-03-01T10:00:00Z",
+            "cwd": format!("/work/{secret}/proj"), "gitBranch": format!("fix-{secret}"),
+            "message": {"role": "user", "content": format!("deploy with {secret} please")}
+        })),
+        line(serde_json::json!({
+            "type": "custom-title", "sessionId": session,
+            "customTitle": format!("rotate {secret}")
+        })),
+        line(serde_json::json!({
+            "type": "assistant", "uuid": "a1", "parentUuid": "u1", "sessionId": session,
+            "timestamp": "2026-03-01T10:00:01Z",
+            "message": {"id": "msg_a1", "role": "assistant", "stop_reason": "tool_use",
+                "content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash",
+                             "input": {"command": format!("echo {secret} > key.txt")}}]}
+        })),
+        line(serde_json::json!({
+            "type": "user", "uuid": "u2", "parentUuid": "a1", "sessionId": session,
+            "timestamp": "2026-03-01T10:00:02Z",
+            "message": {"role": "user", "content": [{"type": "tool_result",
+                "tool_use_id": "toolu_1", "content": format!("wrote {secret}")}]}
+        })),
+    ]
+    .concat()
+}
+
+#[test]
+fn an_excised_text_leaves_no_index_row_and_a_later_derive_does_not_bring_it_back() {
+    let secret = "qx7vaultkey";
+    let w = ClaudeHome::new();
+    w.append("s1.jsonl", &secret_session("s1", secret));
+    w.append(
+        "s2.jsonl",
+        &(user("u9", "s2", "unrelated work") + &assistant("a9", "s2", "fine")),
+    );
+    let (mut e, lock) = w.engine(64 << 20);
+    assert!(e.converge().unwrap().errors.is_empty());
+    let before = indexed(&w.root, secret);
+    assert!(before.iter().any(|c| c == "session.title"), "{before:?}");
+    assert!(before.iter().any(|c| c == "session.cwd"), "{before:?}");
+    assert!(
+        before.iter().any(|c| c == "fts_vocab_text.term"),
+        "{before:?}"
+    );
+
+    excise(&mut e, &format!("text:{secret}"), false);
+    assert_eq!(indexed(&w.root, secret), Vec::<String>::new());
+    // The session is still there, parsed again from the overwritten bytes.
+    let texts = w.texts("s1");
+    assert!(
+        texts.iter().any(|t| t.starts_with("deploy with ")),
+        "{texts:?}"
+    );
+    assert_eq!(w.texts("s2"), ["unrelated work", "fine"]);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:s1' AND title LIKE 'rotate %'"),
+        1
+    );
+
+    // Neither a later pass and derive nor a restart brings it back.
+    assert!(e.converge().unwrap().errors.is_empty());
+    assert_eq!(indexed(&w.root, secret), Vec::<String>::new());
+    drop(e);
+    drop(lock);
+    let (mut e, _lock) = w.engine(64 << 20);
+    assert!(e.converge().unwrap().errors.is_empty());
+    assert_eq!(indexed(&w.root, secret), Vec::<String>::new());
+    assert_eq!(w.texts("s2"), ["unrelated work", "fine"]);
+}
+
 #[test]
 fn excising_a_session_from_a_shared_input_overwrites_only_its_records() {
     let w = ClaudeHome::new();
