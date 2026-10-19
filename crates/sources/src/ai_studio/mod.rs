@@ -52,9 +52,10 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
     if is_listing(path) {
         return first_byte(head) == Some(b'{') && first_key(head) == Some("files");
     }
-    let named = path.extension().is_none_or(|e| e == "json");
-    named
-        && first_byte(head) == Some(b'{')
+    // Drive names a prompt by its title, with no extension, and titles
+    // carry dots (`Notes. AI Contest`): the first key decides.
+    let _ = path;
+    first_byte(head) == Some(b'{')
         && matches!(
             first_key(head),
             Some("runSettings" | "systemInstruction" | "chunkedPrompt")
