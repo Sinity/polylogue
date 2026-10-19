@@ -27,6 +27,9 @@ pub struct Options {
     pub self_session: Option<String>,
     /// Saved queries by name (current `saved_query` notes): `query:NAME`.
     pub saved: std::collections::BTreeMap<String, String>,
+    /// The columns to show instead of the unit's defaults (`--fields`):
+    /// field names, `prefix.field` paths included.
+    pub fields: Vec<String>,
     /// Kept results by ID (`result:<id>`): what their stored rows hold.
     pub kept: std::collections::BTreeMap<String, Kept>,
 }
@@ -153,6 +156,16 @@ pub struct Program {
     pub now: i64,
     pub zone: String,
     pub day_start_minutes: u16,
+    /// `| measure WHAT`: the measurement to run over the sessions `sql`
+    /// selects, instead of returning its rows.
+    pub measure: Option<Measure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Measure {
+    pub what: String,
+    /// The query named no conditions: the measurement covers every session.
+    pub everything: bool,
 }
 
 impl Program {
@@ -583,7 +596,14 @@ impl<'a> Compiler<'a> {
         let mut distinct = false;
 
         let mut matched: Option<MatchRel> = preset;
+        let mut measure: Option<Measure> = None;
         for stage in &q.stages {
+            if measure.is_some() {
+                return Err(QueryError::Invalid {
+                    message: "`| measure WHAT` is the last stage".into(),
+                    position: stage.span.start,
+                });
+            }
             let grouped = group.is_some() || aggs.is_some();
             if let Some(rel) = &matched {
                 match &stage.kind {
@@ -628,7 +648,8 @@ impl<'a> Compiler<'a> {
                     StageKind::SortBy {
                         key: SortKey::Field { field },
                         descending,
-                    } if !grouped => {
+                        then,
+                    } if !grouped && then.is_empty() => {
                         let (name, _) = match_column(rel, field, stage.span.start)?;
                         let dir = if *descending { " DESC" } else { "" };
                         order = Some(vec![format!("{name} IS NULL"), format!("{name}{dir}")]);
@@ -679,13 +700,40 @@ impl<'a> Compiler<'a> {
                 StageKind::Where { cond } => {
                     having.push(self.group_cond(cond, group.as_deref(), aggs.as_deref())?);
                 }
-                StageKind::SortBy { key, descending } if !grouped => {
+                StageKind::SortBy {
+                    key,
+                    descending,
+                    then,
+                } if !grouped => {
                     if selection.is_some() {
                         self.apply_selection(&scope, &mut where_sql, &order, selection.take());
                     }
-                    order = Some(self.sort(key, *descending, &scope, stage.span.start)?);
+                    let mut keys = self.sort(key, *descending, &scope, stage.span.start)?;
+                    // The key's own tie-break goes last.
+                    let pk = if !then.is_empty() && keys.len() > 1 {
+                        keys.pop()
+                    } else {
+                        None
+                    };
+                    for (field, desc) in then {
+                        let (expr, kind) = self.expr(field, &scope, stage.span.start)?;
+                        self.show(field, &expr, kind);
+                        let dir = if *desc { " DESC" } else { "" };
+                        keys.push(format!("({expr}) IS NULL"));
+                        keys.push(format!("({expr}){dir}"));
+                    }
+                    keys.extend(pk);
+                    order = Some(keys);
                 }
-                StageKind::SortBy { key, descending } => {
+                StageKind::SortBy { then, .. } if !then.is_empty() => {
+                    return Err(QueryError::Invalid {
+                        message: "a grouped or matched sort takes one key".into(),
+                        position: stage.span.start,
+                    });
+                }
+                StageKind::SortBy {
+                    key, descending, ..
+                } => {
                     group_order = Some(group_sort(
                         key,
                         *descending,
@@ -746,6 +794,18 @@ impl<'a> Compiler<'a> {
                     selection = Some((lim, Some(*n)));
                 }
                 StageKind::Distinct => distinct = true,
+                StageKind::Measure { what } => {
+                    if grouped || scope.unit != Unit::Sessions || measure.is_some() {
+                        return Err(QueryError::Invalid {
+                            message: "`| measure WHAT` follows a session query and ends it".into(),
+                            position: stage.span.start,
+                        });
+                    }
+                    measure = Some(Measure {
+                        what: what.clone(),
+                        everything: wheres.is_empty(),
+                    });
+                }
                 StageKind::Matches => {
                     if grouped || selection.is_some() || distinct {
                         return Err(QueryError::Invalid {
@@ -923,6 +983,15 @@ impl<'a> Compiler<'a> {
             let wh = and_all(&where_sql);
             let order = order.unwrap_or_else(|| self.default_order(&scope));
             let (pk, mut cols) = row_columns(unit, &scope.a, self.opts.clock.now);
+            if !self.opts.fields.is_empty() {
+                cols.clear();
+                let fields = self.opts.fields.clone();
+                for f in &fields {
+                    let (e, k) = self.expr(f, &scope, 0)?;
+                    cols.push((flat(f), e, k));
+                }
+                self.shown.clear();
+            }
             let mut columns: Vec<Column> = cols
                 .iter()
                 .map(|(n, _, k)| Column {
@@ -1024,6 +1093,7 @@ impl<'a> Compiler<'a> {
             now: self.opts.clock.now,
             zone: self.opts.clock.day.zone_name().unwrap_or("UTC").to_owned(),
             day_start_minutes: self.opts.clock.day.start_minutes,
+            measure,
         })
     }
 
@@ -1398,10 +1468,7 @@ impl<'a> Compiler<'a> {
             }
             _ if fields::has_session(unit) => {
                 let s = self.session_alias(scope, span)?;
-                format!(
-                    "{}.session_pk = {s}.pk",
-                    child_session_column(unit, &child.a)
-                )
+                format!("{} = {s}.pk", child_session_column(unit, &child.a))
             }
             _ => {
                 let s = self.session_alias(scope, span)?;
@@ -1510,10 +1577,7 @@ impl<'a> Compiler<'a> {
             }
             _ if fields::has_session(unit) => {
                 let s = self.session_alias(owner, span)?;
-                format!(
-                    "{}.session_pk = {s}.pk",
-                    child_session_column(unit, &child.a)
-                )
+                format!("{} = {s}.pk", child_session_column(unit, &child.a))
             }
             _ => {
                 let s = self.session_alias(owner, span)?;
@@ -2223,6 +2287,26 @@ impl<'a> Compiler<'a> {
                 };
                 let window = window.ok_or_else(|| self.unknown_field(name, unit, span))?;
                 a.expand(window).replace("{v}", &at.to_string())
+            }
+            (Unit::Changes, "after") => {
+                let text = match &op {
+                    FieldOp::Match(Value::One { text, .. }) => text.as_str(),
+                    _ => "",
+                };
+                let cursor = text
+                    .split_once('.')
+                    .and_then(|(i, a)| Some((i.parse::<i64>().ok()?, a.parse::<i64>().ok()?)));
+                let Some((index, archive)) = cursor else {
+                    return Err(QueryError::Invalid {
+                        message: "after: takes a cursor `INDEX.ARCHIVE`, two numbers".into(),
+                        position: span.start,
+                    });
+                };
+                format!(
+                    "(({r}.kind = 'note' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
+                     OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index})))",
+                    r = a.row
+                )
             }
             (Unit::Sessions, "repo")
                 if matches!(&op, FieldOp::Match(Value::One { text, quoted: false })
@@ -2999,7 +3083,7 @@ impl<'a> Compiler<'a> {
         }
         let parent_link = match (parent.unit, child.unit) {
             (Unit::Sessions, u) if fields::has_session(u) => {
-                format!("{}.session_pk = ?PARENT", child_session_column(u, &sc.a))
+                format!("{} = ?PARENT", child_session_column(u, &sc.a))
             }
             (Unit::Messages, Unit::Blocks) => format!("{}.message_pk = ?PARENT", sc.a.b),
             (Unit::Messages, Unit::ToolCalls) => format!("{}.message_pk = ?PARENT", sc.a.cb),
@@ -3266,7 +3350,7 @@ fn base_from(unit: Unit, a: &Aliases) -> String {
     units::spec(unit).from(a)
 }
 
-/// The alias of the table whose `session_pk` names a row's session.
+/// The expression naming a row's session key.
 fn child_session_column(unit: Unit, a: &Aliases) -> String {
     a.expand(units::spec(unit).session_pk)
 }

@@ -278,6 +278,32 @@ pub static FIELDS: &[Field] = &[
     ).sql("{s}.live_root_alive"),
     f(
         Sessions,
+        "live_until",
+        Time,
+        "when the live state changes with no new record; empty when only a new record can change it",
+    )
+    .sql_clock(sessions_live_until),
+    f(Sessions, "last_event", Match, "the latest live record: a hook event").sql("{s}.live_last_event"),
+    f(Sessions, "last_event_at", Time, "when the latest live record happened").sql("{s}.live_last_event_at"),
+    f(Sessions, "waiting_since", Time, "when a waiting session started waiting").sql("{s}.live_waiting_since"),
+    f(Sessions, "todo", Substring, "the live todo list, as recorded").sql("{s}.live_todo"),
+    f(
+        Sessions,
+        "live_rank",
+        Number,
+        "0 waiting, 1 working, 2 idle, 3 unknown, 4 stale, 5 ended: the order the live view lists",
+    )
+    .sql_clock(sessions_live_rank),
+    f(
+        Sessions,
+        "peers",
+        Substring,
+        "other working, waiting or idle sessions sharing its repository, checkout or working directory",
+    )
+    .sql_clock(sessions_peers),
+    f(Sessions, "repo_root", Prefix, "the repository's identity: its root commit hash, when found").sql("{s}.repo_root"),
+    f(
+        Sessions,
         "harness",
         Match,
         "claude-code, codex-tui, codex-exec, …",
@@ -695,19 +721,33 @@ pub static FIELDS: &[Field] = &[
             "session_start",
             "resume",
             "compaction",
-            "prompt_reference",
-            "mcp_brief",
-            "ping",
+            "takeover",
+            "recall",
             "advisory",
+            "ping",
+            "signal",
         ],
-        "",
+        "what the delivery answered",
     ).sql("{r}.event"),
     v(
         Deliveries,
+        "sender",
+        &["hook", "mcp", "cli", "ping", "signal"],
+        "what prepared it; signal notices have sender signal",
+    ).sql("{r}.sender"),
+    v(
+        Deliveries,
         "outcome",
-        &["delivered", "failed", "unknown", "not_sent"],
-        "",
-    ).sql("{r}.outcome"),
+        &["prepared", "delivered", "failed", "not_sent", "used"],
+        "what last happened to it; prepared until a delivery event says more",
+    ).sql_fn(deliveries_outcome),
+    f(
+        Deliveries,
+        "detail",
+        Substring,
+        "the latest event's detail: a failure's reason, or what used it",
+    ).sql_fn(deliveries_detail),
+    f(Deliveries, "text", Substring, "the delivered text").sql("pl_text({r}.body)"),
     f(
         Deliveries,
         "refs",
@@ -722,6 +762,29 @@ pub static FIELDS: &[Field] = &[
     ),
     f(Deliveries, "at", Time, "").sql("{r}.at"),
     f(Deliveries, "bytes", Number, "").sql("{r}.bytes"),
+    // changes (the change feed): sessions written, sessions removed, notes
+    v(
+        Changes,
+        "kind",
+        &["session", "removed", "note"],
+        "what changed",
+    )
+    .sql("{r}.kind"),
+    f(Changes, "ref", Prefix, "the session or note ID").sql("{r}.ref"),
+    f(
+        Changes,
+        "seq",
+        Number,
+        "the write counter of the change: index.db's for sessions, archive.db's for notes",
+    )
+    .sql("{r}.seq"),
+    f(Changes, "note_kind", Match, "a note's kind").sql("{r}.note_kind"),
+    f(
+        Changes,
+        "after",
+        Special,
+        "changes after a cursor `INDEX.ARCHIVE`: the `view` of an earlier answer",
+    ),
     // turns (spec query.md, turns): computed along the active path
     f(Turns, "id", Prefix, "its first prompt's message ID").sql("{r}.id"),
     f(Turns, "start", Time, "the first message's time").sql("{r}.start"),
@@ -1075,6 +1138,24 @@ fn sessions_words(a: &Aliases) -> String {
     )
 }
 
+/// The latest delivery event's `col` for delivery `r`.
+fn latest_delivery_event(r: &str, col: &str) -> String {
+    format!(
+        "(SELECT e.{col} FROM a.delivery_event e WHERE e.delivery = {r}.id ORDER BY e.at DESC LIMIT 1)"
+    )
+}
+
+pub(crate) fn deliveries_outcome(a: &Aliases) -> String {
+    format!(
+        "COALESCE({}, 'prepared')",
+        latest_delivery_event(&a.row, "what")
+    )
+}
+
+fn deliveries_detail(a: &Aliases) -> String {
+    latest_delivery_event(&a.row, "detail")
+}
+
 fn turns_corrected(a: &Aliases) -> String {
     format!(
         "EXISTS (SELECT 1 FROM a.note nc JOIN a.note_target nct ON nct.note_id = nc.id \
@@ -1134,6 +1215,44 @@ fn sessions_running(a: &Aliases, now: i64) -> String {
     format!(
         "({} IN ('working', 'waiting', 'idle', 'unknown'))",
         live_state(&a.s, now)
+    )
+}
+
+fn sessions_live_until(a: &Aliases, now: i64) -> String {
+    live_until(&a.s, now)
+}
+
+fn sessions_live_rank(a: &Aliases, now: i64) -> String {
+    format!(
+        "(CASE {} WHEN 'waiting' THEN 0 WHEN 'working' THEN 1 WHEN 'idle' THEN 2 \
+         WHEN 'unknown' THEN 3 WHEN 'stale' THEN 4 ELSE 5 END)",
+        live_state(&a.s, now)
+    )
+}
+
+/// Peers (spec model.md): the other sessions working, waiting or idle that
+/// share a repository or checkout, or, when either has no git evidence, a
+/// working directory where one lies at or below the other, by whole path
+/// components. Symmetric by construction (law 89).
+fn sessions_peers(a: &Aliases, now: i64) -> String {
+    let s = &a.s;
+    let active = |x: &str| format!("{} IN ('working', 'waiting', 'idle')", live_state(x, now));
+    let below = |outer: &str, inner: &str| {
+        format!(
+            "({inner}.cwd = rtrim({outer}.cwd, '/') OR substr({inner}.cwd, 1, length(rtrim({outer}.cwd, '/')) + 1) = rtrim({outer}.cwd, '/') || '/')"
+        )
+    };
+    format!(
+        "(SELECT group_concat(pe.id, ' ') FROM (SELECT pp.id FROM session pp WHERE pp.pk <> {s}.pk \
+         AND {mine} AND {theirs} AND ((pp.repo_root IS NOT NULL AND pp.repo_root = {s}.repo_root) \
+         OR (pp.checkout IS NOT NULL AND pp.checkout = {s}.checkout) \
+         OR (((pp.repo_root IS NULL AND pp.checkout IS NULL) OR ({s}.repo_root IS NULL AND {s}.checkout IS NULL)) \
+             AND pp.cwd IS NOT NULL AND {s}.cwd IS NOT NULL AND ({a_in_b} OR {b_in_a}))) \
+         ORDER BY pp.id) pe)",
+        mine = active(s),
+        theirs = active("pp"),
+        a_in_b = below(s, "pp"),
+        b_in_a = below("pp", s),
     )
 }
 

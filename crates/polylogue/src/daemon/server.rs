@@ -179,6 +179,7 @@ fn signal_loop(d: &Daemon) {
                 day: day.clone(),
                 embeddings: false,
                 near: None,
+                fields: &[],
             };
             match super::query::run(&reader, ask) {
                 Ok(v) => {
@@ -288,6 +289,7 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
             page_size,
             why,
             session,
+            fields,
         } => {
             let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
                 .ok()
@@ -313,6 +315,7 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 day: polylogue_model::LogicalDay::system(),
                 embeddings,
                 near: Some(&near),
+                fields: &fields,
             };
             match super::query::run(&reader, ask) {
                 Ok(data) => Response::Ok { data },
@@ -321,30 +324,6 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                     message: f.message,
                     detail: f.detail,
                 },
-            }
-        }
-        Request::Measure { what, query } => {
-            super::measure::handle(&reader, &what, query.as_deref(), now_ms())
-        }
-        Request::Live { now } => match crate::live::sessions(&reader, now.unwrap_or_else(now_ms)) {
-            Ok(v) => ok(v),
-            Err(e) => error("store", e),
-        },
-        Request::Notices { limit } => match crate::signals::recent(&reader, limit.unwrap_or(50)) {
-            Ok(v) => ok(v),
-            Err(e) => error("store", e),
-        },
-        Request::Changes { since } => {
-            let since = match since.as_deref().map(crate::live::Cursor::parse) {
-                None => crate::live::Cursor::default(),
-                Some(Some(c)) => c,
-                Some(None) => {
-                    return error("bad_request", "a cursor is two numbers, `index.archive`");
-                }
-            };
-            match crate::live::changes(&reader, since) {
-                Ok(v) => ok(v),
-                Err(e) => error("store", e),
             }
         }
         Request::Sql { statement } => match reader.query(&statement, &[]) {
@@ -437,6 +416,7 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 day: polylogue_model::LogicalDay::system(),
                 embeddings: false,
                 near: None,
+                fields: &[],
             };
             let kept = match super::query::keep(&reader, ask) {
                 Ok(k) => k,
@@ -607,6 +587,7 @@ fn embed(
                 day: polylogue_model::LogicalDay::system(),
                 embeddings: false,
                 near: None,
+                fields: &[],
             };
             match super::query::run(reader, ask) {
                 Ok(v) if v["unit"] == "sessions" => Some(

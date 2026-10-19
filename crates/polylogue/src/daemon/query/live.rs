@@ -1,47 +1,27 @@
+//! The live view, the change feed and the signal notices as queries:
+//! `sessions` with live fields, the `changes` unit and `deliveries`.
+
 use super::*;
 use polylogue_model::{
     Accounting, Disposition, Event, Json, Output, Session, SessionId, SessionKind, Timestamp,
 };
+use polylogue_query::fields::{live_state, live_until};
 use polylogue_store::{Archive, Batch, Change, InputKey, Observation, ParseStep, ReadPool, Writer};
+use serde_json::json;
 
-fn row(id: &str, live: &str, repo: Option<&str>, cwd: &str) -> Value {
-    json!({"id": id, "live": live, "repo_root": repo, "checkout": null, "cwd": cwd})
-}
-
-#[test]
-fn peers_are_symmetric() {
-    // Law 89, with the spec's own examples.
-    let rows = vec![
-        row("a", "working", None, "/src/tide"),
-        row("b", "waiting", None, "/src/tide/web"),
-        row("c", "idle", None, "/src/tidepool"),
-        row("d", "working", Some("r1"), "/x"),
-        row("e", "idle", Some("r1"), "/y"),
-        row("f", "stale", Some("r1"), "/y"),
-    ];
-    let p = peers(&rows);
-    assert_eq!(p[0], ["b"]);
-    assert_eq!(p[1], ["a"]);
-    assert!(p[2].is_empty(), "/src/tide and /src/tidepool are not peers");
-    assert_eq!(p[3], ["e"]);
-    assert!(p[5].is_empty(), "a stale session has no peers");
-    for (i, a) in rows.iter().enumerate() {
-        for (j, b) in rows.iter().enumerate() {
-            let a_has_b = p[i].contains(&b["id"].as_str().unwrap().to_owned());
-            let b_has_a = p[j].contains(&a["id"].as_str().unwrap().to_owned());
-            assert_eq!(a_has_b, b_has_a, "{i} {j}");
-        }
+fn ask(text: &str, now: i64) -> Ask<'_> {
+    Ask {
+        text,
+        cursor: None,
+        page_size: Some(100),
+        why: false,
+        session: None,
+        now,
+        day: LogicalDay::named("UTC", 0).unwrap(),
+        embeddings: false,
+        near: None,
+        fields: &[],
     }
-}
-
-#[test]
-fn cursors_round_trip() {
-    let c = Cursor {
-        index: 12,
-        archive: 3,
-    };
-    assert_eq!(Cursor::parse(&c.render()), Some(c));
-    assert_eq!(Cursor::parse("12"), None);
 }
 
 const MIN: i64 = 60_000;
@@ -311,32 +291,133 @@ fn live_state_is_total_for_sessions_without_hooks() {
 }
 
 #[test]
+fn peers_are_symmetric() {
+    // Law 89, with the spec's own examples, through the live query.
+    use polylogue_store::fixture::{Fixture, S};
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    let now = T0 + MIN;
+    // (id, latest event, waiting on, repo_root, cwd)
+    let rows = [
+        ("a", "hook_pre_tool_use", None, None, "/src/tide"),
+        (
+            "b",
+            "hook_notification",
+            Some("permission"),
+            None,
+            "/src/tide/web",
+        ),
+        ("c", "hook_stop", None, None, "/src/tidepool"),
+        ("d", "hook_pre_tool_use", None, Some("r1"), "/x"),
+        ("e", "hook_stop", None, Some("r1"), "/y"),
+        ("f", "hook_stop", None, Some("r1"), "/y"),
+    ];
+    for (id, event, waiting, repo, cwd) in rows {
+        let pk = f
+            .session(S {
+                id: &format!("claude-code:{id}"),
+                cwd: Some(cwd),
+                last: Some(if id == "f" { T0 - 48 * 60 * MIN } else { T0 }),
+                ..S::default()
+            })
+            .unwrap();
+        // f's evidence is two days old: it has ended.
+        let at = if id == "f" { T0 - 48 * 60 * MIN } else { T0 };
+        f.live(pk, event, at, waiting, repo).unwrap();
+    }
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let fields = ["id".to_owned(), "live".to_owned(), "peers".to_owned()];
+    let out = run(
+        &r,
+        Ask {
+            fields: &fields,
+            ..ask("sessions | sort by id", now)
+        },
+    )
+    .unwrap();
+    let peers: std::collections::BTreeMap<String, Vec<String>> = out["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let id = row["id"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("claude-code:")
+                .to_owned();
+            let p = row["peers"]
+                .as_str()
+                .unwrap_or("")
+                .split_whitespace()
+                .map(|p| p.trim_start_matches("claude-code:").to_owned())
+                .collect();
+            (id, p)
+        })
+        .collect();
+    assert_eq!(peers["a"], ["b"]);
+    assert_eq!(peers["b"], ["a"]);
+    assert!(
+        peers["c"].is_empty(),
+        "/src/tide and /src/tidepool are not peers"
+    );
+    assert_eq!(peers["d"], ["e"]);
+    assert!(peers["f"].is_empty(), "an ended session has no peers");
+    for (a, pa) in &peers {
+        for (b, pb) in &peers {
+            assert_eq!(pa.contains(b), pb.contains(a), "{a} {b}");
+        }
+    }
+    // The live view lists waiting before working before idle, and leaves
+    // ended sessions out.
+    let live = run(&r, ask(crate::cli::LIVE, now)).unwrap();
+    let order: Vec<&str> = live["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            row["id"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("claude-code:")
+        })
+        .collect();
+    assert_eq!(order[0], "b");
+    assert!(!order.contains(&"f"));
+    assert_eq!(order.len(), 5);
+}
+
+#[test]
 fn the_change_feed_continues_from_its_cursor() {
     let mut w = world();
     w.hooks(&[
         ("a", "user_prompt_submit", 0, json!({})),
         ("b", "user_prompt_submit", 0, json!({})),
     ]);
-    let pool = ReadPool::open(&w.archive).unwrap();
-    let r = pool.reader().unwrap();
-    let all = changes(&r, Cursor::default()).unwrap();
-    let ids = |v: &Value| -> Vec<String> {
-        v["sessions"]
+    let refs = |v: &Value| -> Vec<String> {
+        v["rows"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|s| s["session"].as_str().unwrap().to_owned())
+            .filter(|r| r["kind"] == "session")
+            .map(|r| r["ref"].as_str().unwrap().to_owned())
             .collect()
     };
-    assert_eq!(ids(&all), ["claude-code:a", "claude-code:b"]);
-    let next = Cursor::parse(all["next"].as_str().unwrap()).unwrap();
-    assert!(ids(&changes(&r, next).unwrap()).is_empty());
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let r = pool.reader().unwrap();
+    let all = run(&r, ask("changes", T0)).unwrap();
+    assert_eq!(refs(&all), ["claude-code:a", "claude-code:b"]);
+    let cursor = all["view"]["cursor"].as_str().unwrap().to_owned();
+    let after = format!("changes where after:{cursor}");
+    assert!(refs(&run(&r, ask(&after, T0)).unwrap()).is_empty());
     drop(r);
     drop(pool);
     w.hooks(&[("b", "stop", 1, json!({}))]);
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
-    let later = changes(&r, next).unwrap();
-    assert_eq!(ids(&later), ["claude-code:b"]);
-    assert!(later["sessions"][0]["live_changed"].is_i64());
+    let later = run(&r, ask(&after, T0)).unwrap();
+    assert_eq!(refs(&later), ["claude-code:b"]);
+    assert!(later["rows"][0]["live_changed"].is_i64());
+    // A malformed cursor is refused, not read as "from the start".
+    assert!(run(&r, ask("changes where after:12", T0)).is_err());
 }

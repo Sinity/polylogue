@@ -282,6 +282,7 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
         page_size: None,
         why: true,
         session: None,
+        fields: vec![],
     };
     match ask(&web, request).await {
         Response::Ok { data } => page(pages::search(&p.q, Some(&scrubbed(&web, data)), None)),

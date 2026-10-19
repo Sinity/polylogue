@@ -81,6 +81,8 @@ pub struct Ask<'a> {
     /// For `near:`: the nearest texts to a text, as the JSON the query
     /// binds.
     pub near: Option<&'a NearFn<'a>>,
+    /// The columns to show instead of the unit's defaults.
+    pub fields: &'a [String],
 }
 
 /// Looks up the nearest texts to a text, as the JSON the query binds.
@@ -148,6 +150,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         self_session: ask.session,
         saved: saved_queries(reader),
         kept: kept_results(reader),
+        fields: ask.fields.to_vec(),
     };
     let program = polylogue_query::compile(ask.text, &opts)?;
     check_ids(reader, &program)?;
@@ -206,6 +209,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         self_session: ask.session,
         saved: saved_queries(reader),
         kept: kept_results(reader),
+        fields: ask.fields.to_vec(),
     };
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     if let (Some(near), Some(f)) = (program.near.clone(), ask.near) {
@@ -220,6 +224,22 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     }
     check_ids(reader, &program)?;
     let params = values(&program.params);
+    let view = view(reader)?;
+    if let Some(m) = &program.measure {
+        let sessions = if m.everything {
+            None
+        } else {
+            let rows = reader.query(&format!("SELECT _pk FROM ({})", program.sql), &params)?;
+            Some(rows.iter().filter_map(|r| r["_pk"].as_i64()).collect())
+        };
+        let data = super::measure::run(reader, &m.what, sessions, program.now)?;
+        return Ok(json!({
+            "outcome": "measure",
+            "measure": m.what,
+            "data": data,
+            "view": view,
+        }));
+    }
     let count = reader.query(&program.count_sql(), &params)?;
     let count = count
         .first()
@@ -269,11 +289,29 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
             "zone": program.zone,
             "day_start_minutes": program.day_start_minutes,
         },
+        "view": view,
     });
     if ask.why && count == 0 {
         out["why"] = why(reader, &program, &params)?;
     }
     Ok(out)
+}
+
+/// The state the query read (spec query.md, Results, `view`): the write
+/// counters of `index.db` and `archive.db`. `cursor` is the two as
+/// `INDEX.ARCHIVE`, which `changes where after:CURSOR` continues from.
+fn view(reader: &Reader<'_>) -> Result<Value, Failure> {
+    let counter = |db: &str| -> Result<i64, Failure> {
+        let rows = reader.query(
+            &format!(
+                "SELECT CAST(value AS INTEGER) AS n FROM {db}meta WHERE key = 'write_counter'"
+            ),
+            &[],
+        )?;
+        Ok(rows.first().and_then(|r| r["n"].as_i64()).unwrap_or(0))
+    };
+    let (index, archive) = (counter("")?, counter("a.")?);
+    Ok(json!({ "index": index, "archive": archive, "cursor": format!("{index}.{archive}") }))
 }
 
 pub(crate) fn values(params: &[Param]) -> Vec<SqlValue> {
@@ -421,3 +459,6 @@ mod tests;
 
 #[cfg(test)]
 mod morrow;
+
+#[cfg(test)]
+mod live;

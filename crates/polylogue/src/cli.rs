@@ -24,6 +24,10 @@ pub struct Args {
     /// Continue from a previous page's `next`.
     #[arg(long, global = true)]
     pub cursor: Option<String>,
+    /// The columns to show instead of the unit's defaults, comma-separated
+    /// (`--fields id,cost,repo`).
+    #[arg(long, global = true, value_delimiter = ',')]
+    pub fields: Vec<String>,
     /// A query, when no subcommand is given.
     #[arg(trailing_var_arg = true)]
     pub query: Vec<String>,
@@ -89,23 +93,24 @@ pub enum Command {
         #[arg(long)]
         machine: bool,
     },
-    /// Token use, cost and subscription windows.
+    /// Token use, cost and subscription windows: `QUERY | measure WHAT`
+    /// over the sessions a query selects.
     #[command(subcommand)]
     Measure(MeasureCommand),
     /// The work graph: goals, attempts, verifications and artifacts, by a
     /// query over the `work` unit (`polylogue work kind:attempt state:open`).
     Work(QueryArgs),
-    /// Sessions running now and what each is doing: computed from hook
-    /// and process records and the time.
+    /// Sessions running now and what each is doing: the query
+    /// `sessions where -live:ended | sort by live_rank, last_event_at desc`.
     Live,
-    /// What changed since a cursor: sessions, removals and notes.
+    /// What changed since a cursor: the query `changes where after:CURSOR`.
     Changes {
-        /// A previous answer's `next`.
+        /// A previous answer's `view.cursor`.
         #[arg(long)]
         since: Option<String>,
     },
-    /// Signal notices and what happened to each. A signal is a note of
-    /// kind `signal` whose value names a query and a delivery rule.
+    /// Signal notices and what happened to each: the query
+    /// `deliveries where sender:signal | sort by at desc`.
     Notices {
         #[arg(long)]
         limit: Option<u64>,
@@ -276,6 +281,11 @@ pub enum HooksCommand {
     },
 }
 
+/// The live view as a query: what `polylogue live` runs.
+pub const LIVE: &str = "sessions where -live:ended | sort by live_rank, last_event_at desc";
+/// Signal notices as a query: what `polylogue notices` runs.
+pub const NOTICES: &str = "deliveries where sender:signal | sort by at desc";
+
 #[derive(Debug, Subcommand)]
 pub enum MeasureCommand {
     /// Token lanes and cost by model, over a sessions query or everything.
@@ -415,6 +425,7 @@ pub fn run(args: Args) -> ExitCode {
             page_size: q.limit,
             why: args.why,
             session: None,
+            fields: args.fields.clone(),
         },
         Some(Command::Read(r)) => {
             let session = match SessionId::parse(&r.session) {
@@ -489,10 +500,32 @@ pub fn run(args: Args) -> ExitCode {
             page_size: q.limit,
             why: args.why,
             session: None,
+            fields: args.fields.clone(),
         },
-        Some(Command::Live) => Request::Live { now: None },
-        Some(Command::Notices { limit }) => Request::Notices { limit },
-        Some(Command::Changes { since }) => Request::Changes { since },
+        Some(Command::Live) => Request::Query {
+            text: LIVE.into(),
+            cursor: args.cursor.clone(),
+            page_size: None,
+            why: args.why,
+            session: None,
+            fields: args.fields.clone(),
+        },
+        Some(Command::Notices { limit }) => Request::Query {
+            text: NOTICES.into(),
+            cursor: args.cursor.clone(),
+            page_size: Some(limit.unwrap_or(50)),
+            why: args.why,
+            session: None,
+            fields: args.fields.clone(),
+        },
+        Some(Command::Changes { since }) => Request::Query {
+            text: since.map_or_else(|| "changes".into(), |c| format!("changes where after:{c}")),
+            cursor: args.cursor.clone(),
+            page_size: None,
+            why: args.why,
+            session: None,
+            fields: args.fields.clone(),
+        },
         Some(Command::Recall { query, cwd }) => Request::Context {
             request_id: request_id(),
             ask: Ask::Recall {
@@ -578,7 +611,18 @@ pub fn run(args: Args) -> ExitCode {
                 MeasureCommand::Process(a) => ("process".to_owned(), q(a.query)),
                 MeasureCommand::Rhythm(a) => ("rhythm".to_owned(), q(a.query)),
             };
-            Request::Measure { what, query }
+            let text = match query {
+                Some(q) => format!("{q} | measure {what}"),
+                None => format!("sessions | measure {what}"),
+            };
+            Request::Query {
+                text,
+                cursor: args.cursor.clone(),
+                page_size: None,
+                why: args.why,
+                session: None,
+                fields: args.fields.clone(),
+            }
         }
         Some(Command::Note(n)) => match note_request(n) {
             Ok(r) => r,
@@ -599,6 +643,7 @@ pub fn run(args: Args) -> ExitCode {
             page_size: None,
             why: args.why,
             session: None,
+            fields: args.fields.clone(),
         },
     };
     let root = Archive::default_root();
@@ -1082,7 +1127,6 @@ fn print_plain(request: &Request, data: &serde_json::Value) {
         Request::Context { .. } => {
             print!("{}", s(&data["prepared"]["text"]));
         }
-        Request::Measure { what, .. } => print!("{}", crate::measure_text::render(what, data)),
         Request::Notes { .. } => {
             for n in data.as_array().into_iter().flatten() {
                 let targets: Vec<String> = n["targets"]
@@ -1153,6 +1197,10 @@ fn print_plain(request: &Request, data: &serde_json::Value) {
             }
             println!("with context:       {}", line(&data["context_assisted"]));
         }
+        Request::Query { .. } if data["outcome"] == "measure" => print!(
+            "{}",
+            crate::measure_text::render(data["measure"].as_str().unwrap_or(""), &data["data"])
+        ),
         Request::Query { .. } => {
             if matches!(data["shape"].as_str(), Some("rows" | "matches")) {
                 crate::positions::remember(

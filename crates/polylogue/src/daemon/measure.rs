@@ -1,41 +1,44 @@
-//! `Measure` requests: token lanes and cost, the subscription outlook and
-//! the analyses, over the whole archive or the sessions a query selects.
+//! `| measure WHAT`: token lanes and cost, the subscription outlook and the
+//! analyses, over the sessions a query selects (every session when it names
+//! no conditions). The query program chooses the sessions; this runs the
+//! measurement over them.
 
-use super::Response;
+use super::query::Failure;
 use polylogue_model::LogicalDay;
-use polylogue_query::ast::Unit;
-use polylogue_query::{Options, Shape};
 use polylogue_store::Reader;
 use polylogue_store::measure::{self, Scope, analysis, outlook};
 use serde::Serialize;
+use serde_json::Value;
 
-/// The measurements a request can name, for errors and help.
+/// The measurements a query can name, for errors and help.
 pub const WHAT: &str = "usage, cost, sessions, quota, outcomes, frontier, drift, survival, \
     survival-turns, unanswered, \
     daily:<tokens|api_cost|sessions|prompts|tool_errors>, process, rhythm";
 
-pub fn handle(reader: &Reader<'_>, what: &str, query: Option<&str>, now: i64) -> Response {
+pub fn run(
+    reader: &Reader<'_>,
+    what: &str,
+    sessions: Option<Vec<i64>>,
+    now: i64,
+) -> Result<Value, Failure> {
     let day = LogicalDay::system();
-    let scope = match query.filter(|q| !q.trim().is_empty()) {
-        None => Scope::default(),
-        Some(q) => match sessions(reader, q, now, &day) {
-            Ok(pks) => Scope {
-                sessions: Some(pks),
-                ..Scope::default()
-            },
-            Err(r) => return r,
-        },
+    let whole = |what: &str| -> Result<(), Failure> {
+        match sessions {
+            Some(_) => Err(bad_request(format!(
+                "{what} covers every session; measure it without conditions (`sessions | measure {what}`)"
+            ))),
+            None => Ok(()),
+        }
     };
-    let out = match what {
+    let scope = Scope {
+        sessions: sessions.clone(),
+        ..Scope::default()
+    };
+    match what {
         "usage" | "cost" => json(measure::usage(reader, &scope)),
         "sessions" => json(measure::sessions(reader, &scope)),
         "quota" | "outlook" => {
-            if query.is_some() {
-                return error(
-                    "bad_request",
-                    "the subscription outlook covers each tool's whole windows; it takes no query",
-                );
-            }
+            whole("the subscription outlook")?;
             json(outlook::outlook(reader, now))
         }
         "outcomes" => json(analysis::outcomes(reader, &scope)),
@@ -43,12 +46,7 @@ pub fn handle(reader: &Reader<'_>, what: &str, query: Option<&str>, now: i64) ->
         "survival-turns" => json(analysis::first_failure(reader, &scope, true)),
         "frontier" => json(analysis::frontier(reader, &scope)),
         "drift" => {
-            if query.is_some() {
-                return error(
-                    "bad_request",
-                    "format drift covers every input; it takes no query",
-                );
-            }
+            whole("format drift")?;
             json(analysis::drift(reader))
         }
         "unanswered" => json(analysis::unanswered_end(reader, &scope, now)),
@@ -56,57 +54,24 @@ pub fn handle(reader: &Reader<'_>, what: &str, query: Option<&str>, now: i64) ->
         "rhythm" => json(analysis::rhythm(reader, &scope, &day)),
         w => match w.strip_prefix("daily:") {
             Some(metric) => json(analysis::daily(reader, &scope, metric, &day)),
-            None => return error("bad_request", format!("no measurement `{w}`: {WHAT}")),
+            None => Err(bad_request(format!("no measurement `{w}`: {WHAT}"))),
         },
-    };
-    match out {
-        Ok(data) => Response::Ok { data },
-        Err(e) => error("store", e),
     }
 }
 
-fn json<T: Serialize>(r: polylogue_store::Result<T>) -> Result<serde_json::Value, String> {
-    r.map_err(|e| e.to_string())
-        .and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string()))
+fn json<T: Serialize>(r: polylogue_store::Result<T>) -> Result<Value, Failure> {
+    let v = r?;
+    serde_json::to_value(v).map_err(|e| Failure {
+        kind: "store".into(),
+        message: e.to_string(),
+        detail: None,
+    })
 }
 
-fn error(kind: &str, message: impl ToString) -> Response {
-    Response::Error {
-        kind: kind.into(),
-        message: message.to_string(),
+fn bad_request(message: String) -> Failure {
+    Failure {
+        kind: "bad_request".into(),
+        message,
         detail: None,
     }
-}
-
-/// The session keys a sessions query selects.
-fn sessions(
-    reader: &Reader<'_>,
-    text: &str,
-    now: i64,
-    day: &LogicalDay,
-) -> Result<Vec<i64>, Response> {
-    let opts = Options {
-        clock: polylogue_query::Clock::new(now, day.clone()),
-        origins: polylogue_sources::origin::ORIGINS
-            .iter()
-            .map(|o| o.name.to_owned())
-            .collect(),
-        page_size: None,
-        embeddings: false,
-        self_session: None,
-        saved: Default::default(),
-        kept: Default::default(),
-    };
-    let program = polylogue_query::compile(text, &opts).map_err(|e| error(e.kind(), e))?;
-    if program.unit != Unit::Sessions || program.shape != Shape::Rows {
-        return Err(error(
-            "bad_request",
-            "a measurement's query selects sessions (e.g. `repo:polylogue since:7d`)",
-        ));
-    }
-    let params = super::query::values(&program.params);
-    let rows = reader
-        .query(&format!("SELECT _pk FROM ({})", program.sql), &params)
-        .map_err(|e| error("store", e))?;
-    Ok(rows.iter().filter_map(|r| r["_pk"].as_i64()).collect())
 }

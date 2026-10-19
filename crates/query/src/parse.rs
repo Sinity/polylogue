@@ -435,8 +435,17 @@ fn stage(p: Pair<'_, Rule>) -> Stage {
         Rule::sort_by => {
             let mut descending = false;
             let mut key = None;
+            let mut then = vec![];
             for q in s.kids() {
                 match q.as_rule() {
+                    Rule::sort_then => {
+                        let mut i = q.kids();
+                        let field = i.next().expect("field").as_str().to_owned();
+                        let desc = i
+                            .next()
+                            .is_some_and(|d| d.as_str().eq_ignore_ascii_case("desc"));
+                        then.push((field, desc));
+                    }
                     Rule::sort_key => {
                         let k = q.kids().next().expect("sort key");
                         key = Some(match k.as_rule() {
@@ -457,6 +466,7 @@ fn stage(p: Pair<'_, Rule>) -> Stage {
             StageKind::SortBy {
                 key: key.expect("sort key"),
                 descending,
+                then,
             }
         }
         Rule::group_by => StageKind::GroupBy {
@@ -497,6 +507,14 @@ fn stage(p: Pair<'_, Rule>) -> Stage {
         },
         Rule::distinct => StageKind::Distinct,
         Rule::matches => StageKind::Matches,
+        Rule::measure => StageKind::Measure {
+            what: s
+                .kids()
+                .next()
+                .expect("measure_what")
+                .as_str()
+                .to_ascii_lowercase(),
+        },
         Rule::scope_stage => {
             let mut i = s.kids();
             let unit = unit(i.next().expect("unit"));

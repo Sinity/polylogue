@@ -8,6 +8,7 @@ fn requests_round_trip_with_an_op_tag() {
         page_size: None,
         why: false,
         session: None,
+        fields: vec![],
     };
     let v = serde_json::to_value(&r).unwrap();
     assert_eq!(v["op"], "query");

@@ -34,7 +34,7 @@ pub struct UnitSpec {
     /// The row names one session through the `s` alias, so session fields
     /// and `session.FIELD` apply to it.
     pub in_session: bool,
-    /// The alias whose `session_pk` names the row's session.
+    /// The expression naming the row's session key (`session.pk`).
     pub session_pk: &'static str,
     /// For a unit not in one session: its rows related to the sessions
     /// `{sessions}` selects.
@@ -218,7 +218,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: Some("{s}.last_activity_at >= {v}"),
         until: Some("{s}.started_at < {v}"),
         in_session: false,
-        session_pk: "{r}",
+        session_pk: "{r}.session_pk",
         session_scope: None,
         text: true,
         defaults: &[
@@ -263,7 +263,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: Some("{m}.at >= {v}"),
         until: Some("{m}.at < {v}"),
         in_session: true,
-        session_pk: "{m}",
+        session_pk: "{m}.session_pk",
         session_scope: None,
         text: true,
         defaults: MESSAGE_DEFAULTS,
@@ -290,7 +290,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: Some("{m}.at >= {v}"),
         until: Some("{m}.at < {v}"),
         in_session: true,
-        session_pk: "{b}",
+        session_pk: "{b}.session_pk",
         session_scope: None,
         text: true,
         defaults: MESSAGE_DEFAULTS,
@@ -336,7 +336,7 @@ pub static UNITS: &[UnitSpec] = &[
         ),
         until: Some("{t}.at < {v}"),
         in_session: true,
-        session_pk: "{t}",
+        session_pk: "{t}.session_pk",
         session_scope: None,
         text: false,
         defaults: &[
@@ -405,7 +405,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: None,
         until: None,
         in_session: true,
-        session_pk: "{r}",
+        session_pk: "{r}.session_pk",
         session_scope: None,
         text: false,
         defaults: SESSION_VISIBLE,
@@ -429,7 +429,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: Some("{r}.at >= {v}"),
         until: Some("{r}.at < {v}"),
         in_session: true,
-        session_pk: "{r}",
+        session_pk: "{r}.session_pk",
         session_scope: None,
         text: false,
         defaults: SESSION_VISIBLE,
@@ -463,7 +463,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: Some("{r}.created_at >= {v}"),
         until: Some("{r}.created_at < {v}"),
         in_session: false,
-        session_pk: "{r}",
+        session_pk: "{r}.session_pk",
         session_scope: Some(
             "EXISTS (SELECT 1 FROM a.note_target snt JOIN session ss ON 'session:' || ss.id = snt.ref \
              WHERE snt.note_id = {r}.id AND ss.pk IN ({sessions}))",
@@ -501,7 +501,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: None,
         until: None,
         in_session: false,
-        session_pk: "{r}",
+        session_pk: "{r}.session_pk",
         session_scope: Some("({r}.child_pk IN ({sessions}) OR {r}p.pk IN ({sessions}))"),
         text: false,
         defaults: &[],
@@ -541,7 +541,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: None,
         until: None,
         in_session: true,
-        session_pk: "{r}",
+        session_pk: "{r}.session_pk",
         session_scope: None,
         text: false,
         defaults: SESSION_VISIBLE,
@@ -567,7 +567,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: None,
         until: None,
         in_session: false,
-        session_pk: "{r}",
+        session_pk: "{r}.session_pk",
         session_scope: Some(
             "EXISTS (SELECT 1 FROM run_session rs WHERE rs.run_pk = {r}.pk AND rs.session_pk IN ({sessions}))",
         ),
@@ -598,12 +598,12 @@ pub static UNITS: &[UnitSpec] = &[
         name: "deliveries",
         singular: "delivery",
         from: Expr::Template("a.delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id"),
-        key: "{r}.pk",
+        key: "{r}.rowid",
         columns: &[
             ("id", T("{r}.id"), Text),
             ("recipient", T("{r}.recipient_id"), Text),
             ("event", T("{r}.event"), Text),
-            ("outcome", T("{r}.outcome"), Text),
+            ("outcome", Expr::Fn(crate::fields::deliveries_outcome), Text),
             ("at", T("{r}.at"), Time),
             ("bytes", T("{r}.bytes"), Number),
         ],
@@ -613,7 +613,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: None,
         until: None,
         in_session: true,
-        session_pk: "{r}",
+        session_pk: "{s}.pk",
         session_scope: None,
         text: false,
         defaults: &[d(Expr::Fn(maybe_session_visible), &[], false)],
@@ -641,7 +641,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: None,
         until: None,
         in_session: false,
-        session_pk: "{r}",
+        session_pk: "{r}.session_pk",
         session_scope: Some(
             "EXISTS (SELECT 1 FROM process_session ps WHERE ps.process_pk = {r}.pk AND ps.session_pk IN ({sessions}))",
         ),
@@ -687,7 +687,7 @@ pub static UNITS: &[UnitSpec] = &[
         since: None,
         until: None,
         in_session: true,
-        session_pk: "{r}",
+        session_pk: "{r}.session_pk",
         session_scope: Some(
             "({r}.session_pk IN ({sessions}) OR EXISTS (SELECT 1 FROM work_edge we \
              JOIN work_node wa ON wa.pk = we.from_pk \
@@ -696,6 +696,38 @@ pub static UNITS: &[UnitSpec] = &[
         text: false,
         defaults: &[d(Expr::Fn(maybe_session_visible), &[], false)],
         relations: &[rel("session", Unit::Sessions, Via::Same)],
+    },
+    UnitSpec {
+        unit: Unit::Changes,
+        name: "changes",
+        singular: "change",
+        from: Expr::Template(
+            "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
+               MAX(cs.changed, COALESCE(cs.live_changed, 0)) AS seq, cs.changed AS changed, \
+               cs.live_changed AS live_changed, NULL AS note_kind FROM session cs \
+             UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL \
+               FROM removed_session rs \
+             UNION ALL SELECT 'note', cn.id, NULL, cn.commit_seq, NULL, NULL, cn.kind FROM a.note cn) {r}",
+        ),
+        key: "({r}.kind || ':' || {r}.ref)",
+        columns: &[
+            ("kind", T("{r}.kind"), Text),
+            ("ref", T("{r}.ref"), Text),
+            ("seq", T("{r}.seq"), Number),
+            ("live_changed", T("{r}.live_changed"), Number),
+            ("note_kind", T("{r}.note_kind"), Text),
+        ],
+        time: "{r}.seq",
+        newest_first: false,
+        session_order: false,
+        since: None,
+        until: None,
+        in_session: false,
+        session_pk: "{r}.session_pk",
+        session_scope: Some("({r}.kind = 'session' AND {r}.session_pk IN ({sessions}))"),
+        text: false,
+        defaults: &[],
+        relations: &[],
     },
 ];
 

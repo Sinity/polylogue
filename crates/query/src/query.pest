@@ -23,7 +23,8 @@ stages = { ("|" ~ stage)* }
 
 unit = ${
     (^"sessions" | ^"messages" | ^"blocks" | ^"tool_calls" | ^"files" | ^"events"
-     | ^"notes" | ^"links" | ^"turns" | ^"runs" | ^"deliveries" | ^"processes" | ^"work")
+     | ^"notes" | ^"links" | ^"turns" | ^"runs" | ^"deliveries" | ^"processes" | ^"work"
+     | ^"changes")
     ~ !ident_char
 }
 row_unit = ${
@@ -114,9 +115,11 @@ window_n = ${ (^"first" | ^"last") ~ ":" ~ number }
 // Pipeline stages.
 stage = {
     sort_by | group_by | agg | count | limit | offset | where_stage
-  | distinct | matches | scope_stage
+  | distinct | matches | measure | scope_stage
 }
-sort_by     = { ^"sort" ~ ^"by" ~ sort_key ~ direction? }
+sort_by     = { ^"sort" ~ ^"by" ~ sort_key ~ direction? ~ ("," ~ sort_then)* }
+// Later keys break ties left by earlier ones.
+sort_then   = { field ~ direction? }
 sort_key    = { random | field }
 random      = { ^"random" ~ ("(" ~ number ~ ")")? }
 direction   = { ^"asc" | ^"desc" }
@@ -132,5 +135,8 @@ offset      = { ^"offset" ~ number }
 where_stage = { kw_where ~ expr }
 distinct    = { ^"distinct" ~ !ident_char }
 matches     = { ^"matches" ~ !ident_char }
+// `| measure WHAT`: a measurement over the sessions the query selects.
+measure      = { ^"measure" ~ measure_what }
+measure_what = @{ (ASCII_ALPHANUMERIC | "_" | "-" | ":")+ }
 scope_stage = { unit ~ (kw_where ~ expr)? }
 number      = @{ ASCII_DIGIT+ }

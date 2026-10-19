@@ -102,6 +102,7 @@ async fn list(State(web): State<Arc<Web>>, Query(p): Query<ListParams>) -> HttpR
             page_size: p.page_size.or(p.limit),
             why: p.why,
             session: None,
+            fields: vec![],
         }
     };
     json_answer(&web, ask(&web, request).await)
