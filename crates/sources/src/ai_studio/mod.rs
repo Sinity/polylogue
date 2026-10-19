@@ -489,7 +489,7 @@ fn inline_block(inline: &Json, role: Role, sink: &mut Sink<'_>) -> Block {
     {
         let hash = BlobHash::of(&bytes);
         a.size = Some(bytes.len() as u64);
-        a.blob = Some(hash.clone());
+        a.blob = Some(hash);
         sink.out.blobs.push(InlineBlob {
             hash,
             size: bytes.len() as u64,
@@ -550,7 +550,7 @@ fn media_blocks(chunk: &Json, role: Role, sink: &mut Sink<'_>) -> Vec<Block> {
             {
                 let hash = BlobHash::of(&bytes);
                 a.size = Some(bytes.len() as u64);
-                a.blob = Some(hash.clone());
+                a.blob = Some(hash);
                 sink.out.blobs.push(InlineBlob {
                     hash,
                     size: bytes.len() as u64,

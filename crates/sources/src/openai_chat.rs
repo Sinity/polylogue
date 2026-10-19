@@ -24,11 +24,10 @@ pub const ORIGIN: &str = "openai-chat";
 /// key is `messages`.
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     let json = path.extension().is_some_and(|e| e == "json");
-    json && match (first_byte(head), first_key(head)) {
-        (Some(b'['), Some("role")) => true,
-        (Some(b'{'), Some("messages")) => true,
-        _ => false,
-    }
+    json && matches!(
+        (first_byte(head), first_key(head)),
+        (Some(b'['), Some("role")) | (Some(b'{'), Some("messages"))
+    )
 }
 
 pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {

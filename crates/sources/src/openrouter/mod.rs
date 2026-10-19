@@ -271,7 +271,7 @@ fn message(
             let bytes = content.as_bytes().to_vec();
             let hash = BlobHash::of(&bytes);
             attachment.size = Some(bytes.len() as u64);
-            attachment.blob = Some(hash.clone());
+            attachment.blob = Some(hash);
             sink.out.blobs.push(InlineBlob {
                 hash,
                 size: bytes.len() as u64,

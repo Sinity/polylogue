@@ -400,7 +400,8 @@ impl Sinex {
             .messages()
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
-        while last > 0 {
+        let mut done = last == 0;
+        while !done {
             let message = tokio::time::timeout(ACK_WAIT, messages.next())
                 .await
                 .map_err(|_| Error::Unreachable("the confirmed stream stopped".into()))?
@@ -410,6 +411,7 @@ impl Sinex {
                 .info()
                 .map_err(|e| Error::Unreachable(e.to_string()))?
                 .stream_sequence;
+            done = at >= last;
             let confirmed: sinex_protocol::Confirmed = serde_json::from_slice(&message.payload)?;
             let sinex_protocol::Confirmed::Event(event) = confirmed else {
                 continue;
@@ -420,9 +422,6 @@ impl Sinex {
             let unit: PolylogueRows = serde_json::from_value(payload)?;
             if unit.archive == archive {
                 units.push(unit);
-            }
-            if at >= last {
-                break;
             }
         }
         units.sort_by_key(|u| u.position);

@@ -80,8 +80,11 @@ pub struct Ask<'a> {
     pub embeddings: bool,
     /// For `near:`: the nearest texts to a text, as the JSON the query
     /// binds.
-    pub near: Option<&'a dyn Fn(&str) -> Result<String, String>>,
+    pub near: Option<&'a NearFn<'a>>,
 }
+
+/// Looks up the nearest texts to a text, as the JSON the query binds.
+pub type NearFn<'a> = dyn Fn(&str) -> Result<String, String> + 'a;
 
 /// The current saved queries by name (`saved_query` notes, newest
 /// revision, not withdrawn), for `query:NAME`.

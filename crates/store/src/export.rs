@@ -76,7 +76,7 @@ struct DbState {
     /// By key digest ([`row_key`]): the table's digest and the row's
     /// content digest, as in the export; `None` until loaded from the
     /// export file.
-    rows: Option<HashMap<u64, (u64, u64)>>,
+    rows: Option<RowDigests>,
     schema: Option<u64>,
 }
 
@@ -118,8 +118,11 @@ impl Exporter {
     }
 }
 
+/// By key digest: the table's digest and the row's content digest.
+type RowDigests = HashMap<u64, (u64, u64)>;
+
 /// The row digests and schema digest an export file holds.
-fn load(out: &Path) -> Result<(HashMap<u64, (u64, u64)>, Option<u64>), ExportError> {
+fn load(out: &Path) -> Result<(RowDigests, Option<u64>), ExportError> {
     let mut rows = HashMap::new();
     let mut schema = None;
     let file = match fs::File::open(out) {

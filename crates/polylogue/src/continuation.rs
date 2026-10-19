@@ -24,33 +24,6 @@ pub struct Command {
     pub cwd: Option<String>,
 }
 
-impl Command {
-    pub fn shell_line(&self) -> String {
-        let mut words = vec![self.program.clone()];
-        words.extend(self.args.iter().cloned());
-        let line = words
-            .iter()
-            .map(|w| shell_quote(w))
-            .collect::<Vec<_>>()
-            .join(" ");
-        match &self.cwd {
-            Some(dir) => format!("cd {} && {line}", shell_quote(dir)),
-            None => line,
-        }
-    }
-}
-
-fn shell_quote(w: &str) -> String {
-    if !w.is_empty()
-        && w.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
-    {
-        w.to_owned()
-    } else {
-        format!("'{}'", w.replace('\'', r"'\''"))
-    }
-}
-
 /// The harness's own resume command for a session, when it has one.
 pub fn native_resume(session: &SessionId, cwd: Option<&str>) -> Option<Command> {
     let native = session.native().as_str();
@@ -158,11 +131,18 @@ mod tests {
         let s = SessionId::parse("claude-code:7f3e").unwrap();
         let c = native_resume(&s, Some("/realm/project/x repo")).unwrap();
         assert_eq!(
-            c.shell_line(),
-            "cd '/realm/project/x repo' && claude --resume 7f3e"
+            (c.program.as_str(), c.args.as_slice(), c.cwd.as_deref()),
+            (
+                "claude",
+                &["--resume".to_owned(), "7f3e".to_owned()][..],
+                Some("/realm/project/x repo")
+            )
         );
         let c = native_resume(&SessionId::parse("codex:0199").unwrap(), None).unwrap();
-        assert_eq!(c.shell_line(), "codex resume 0199");
+        assert_eq!(
+            (c.program.as_str(), c.args.as_slice(), c.cwd.as_deref()),
+            ("codex", &["resume".to_owned(), "0199".to_owned()][..], None)
+        );
         assert!(native_resume(&SessionId::parse("claude-code:agent-a1").unwrap(), None).is_none());
         assert!(native_resume(&SessionId::parse("chatgpt:abc").unwrap(), None).is_none());
     }

@@ -131,9 +131,11 @@ impl Vectors {
                 )));
             }
             let score: f32 = bytes
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .zip(query)
-                .map(|(b, q)| f32::from_le_bytes([b[0], b[1], b[2], b[3]]) * q)
+                .map(|(b, q)| f32::from_le_bytes(*b) * q)
                 .sum();
             let e = best.entry(hash).or_insert(f32::MIN);
             if score > *e {

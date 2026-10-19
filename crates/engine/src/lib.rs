@@ -16,7 +16,6 @@ pub mod collect;
 pub mod derive;
 pub mod drive;
 pub mod pool;
-pub mod publish;
 pub mod repo_lookup;
 pub mod stage;
 

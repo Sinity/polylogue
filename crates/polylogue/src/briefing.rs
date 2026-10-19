@@ -79,18 +79,6 @@ pub enum Ask {
 }
 
 impl Ask {
-    pub fn event(&self) -> &'static str {
-        match self {
-            Self::SessionStart { source, .. } => match source {
-                StartSource::Startup | StartSource::Clear => "session_start",
-                StartSource::Resume => "resume",
-                StartSource::Compact => "compaction",
-            },
-            Self::Takeover { .. } => "takeover",
-            Self::Recall { .. } => "recall",
-        }
-    }
-
     pub fn recipient(&self) -> Option<&SessionId> {
         match self {
             Self::SessionStart { session, .. } => session.as_ref(),
@@ -644,11 +632,6 @@ mod tests {
     fn start_sources_parse_from_harness_names() {
         assert_eq!(StartSource::parse("compact"), StartSource::Compact);
         assert_eq!(StartSource::parse("anything"), StartSource::Startup);
-        let ask = Ask::SessionStart {
-            cwd: "/x".into(),
-            session: None,
-            source: StartSource::Resume,
-        };
-        assert_eq!(ask.event(), "resume");
+        assert_eq!(StartSource::parse("resume"), StartSource::Resume);
     }
 }
