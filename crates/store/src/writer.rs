@@ -16,10 +16,10 @@ use crate::files::{Archive, open_write};
 use crate::{Result, StoreError};
 use polylogue_model::{
     Accounting, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, PromptKind,
-    Role, Session, SessionId, SessionKind, Timestamp, TitleSource, ToolOutcome,
+    Role, Session, SessionId, Timestamp, ToolOutcome,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::thread::JoinHandle;
 
@@ -605,6 +605,13 @@ impl Inner {
             }
             if !group.is_empty() {
                 self.write_group(&group);
+                // Derived rows follow every commit; a first build derives
+                // once, after its indexes exist.
+                if !self.unsynced
+                    && let Err(e) = crate::derive::run(&mut self.index)
+                {
+                    self.report.errors.push(format!("derive: {e}"));
+                }
             }
             for (request, reply) in users.drain(..) {
                 let _ = reply.send(self.write_user(&request));
@@ -613,7 +620,11 @@ impl Inner {
                 let _ = reply.send(self.write_excision(&request, &store));
             }
             if !derives.is_empty() {
-                let result = crate::work::derive(&mut self.index);
+                // A first build's indexes exist before anything is derived
+                // from its rows.
+                let result = self
+                    .settle()
+                    .and_then(|()| crate::derive::run(&mut self.index));
                 for reply in derives.drain(..) {
                     let _ = reply.send(match &result {
                         Ok(n) => Ok(*n),
@@ -625,6 +636,12 @@ impl Inner {
                 && let Err(e) = self.settle()
             {
                 self.report.errors.push(format!("sync the index: {e}"));
+            }
+            // Whatever a flush reports written is also derived.
+            if !flushes.is_empty()
+                && let Err(e) = crate::derive::run(&mut self.index)
+            {
+                self.report.errors.push(format!("derive: {e}"));
             }
             // Whatever a flush reports written is also searchable.
             if !flushes.is_empty()
@@ -1339,27 +1356,16 @@ fn write_rows(
         ctx.write_event(e, session_pk, &packed)?;
         crate::live::apply(tx, session_pk, e, counter)?;
     }
-    let leaves: HashSet<i64> = p
-        .output
-        .events
-        .iter()
-        .filter(|e| e.kind == "active_leaf")
-        .filter_map(|e| sessions.get(&e.session.to_string()).copied())
-        .collect();
-    for session_pk in leaves {
-        mark_active_path(tx, session_pk)?;
-    }
     for l in &p.output.links {
         ctx.write_link(l)?;
-    }
-    for pk in sessions.values() {
-        passed_without_result(tx, *pk)?;
     }
     for l in &p.output.repo_lookups {
         crate::repos::upsert_lookup(tx, l, input_pk, counter)?;
     }
+    // Every session these records touched is derived again.
     for pk in sessions.values() {
-        crate::repos::assign(tx, *pk, counter, None)?;
+        tx.prepare_cached("UPDATE session SET changed = ?2 WHERE pk = ?1 AND changed IS NOT ?2")?
+            .execute(params![pk, counter])?;
     }
     for u in &p.output.background {
         let (outcome, reason, exit) = outcome_columns(&u.outcome);
@@ -1454,10 +1460,6 @@ fn name<T: serde::Serialize>(v: &T) -> String {
     }
 }
 
-fn parse_name<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
-    serde_json::from_value(serde_json::Value::String(s.to_owned())).ok()
-}
-
 impl Ctx<'_, '_> {
     fn session_pk(&self, cache: &mut HashMap<String, i64>, id: &SessionId) -> Result<i64> {
         let key = id.to_string();
@@ -1474,124 +1476,81 @@ impl Ctx<'_, '_> {
             // Named by an event before any of its own records arrived: a
             // stub, whose kind the session's first real facts decide
             // (index.sql, session.stub), whichever file is read first.
-            None => {
-                let pk = self.upsert_session(&Session::new(id.clone(), SessionKind::Main))?;
-                self.tx
-                    .prepare_cached("UPDATE session SET stub = 1 WHERE pk = ?1")?
-                    .execute([pk])?;
-                pk
-            }
+            None => self.session_row(id, true)?,
         };
         cache.insert(key, pk);
         Ok(pk)
     }
 
-    /// Merges a session's facts into its row (architecture 5.5a), creating
-    /// the row on first sight. Pending links naming it as their child are
-    /// resolved here.
+    /// Stores the facts this input states about a session, merged with
+    /// what the same input stated before (one input's records arrive in
+    /// file order), and creates the session row on first sight. The
+    /// session's own columns are derived from every input's facts
+    /// (derive/session.rs), so no arrival order decides them. Pending links
+    /// naming the session as their child are resolved here.
     fn upsert_session(&self, s: &Session) -> Result<i64> {
-        let id = s.id.to_string();
-        let existing = self
+        let pk = self.session_row(&s.id, false)?;
+        let stored: Option<String> = self
             .tx
             .prepare_cached(
-                "SELECT pk, kind, title, title_source, cwd_json, branch, harness_version, started_at,
-                     repo, stub
-                 FROM session WHERE id = ?1",
+                "SELECT facts FROM session_record WHERE session_pk = ?1 AND input_pk = ?2",
             )?
-            .query_row([&id], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                    r.get::<_, Option<String>>(5)?,
-                    r.get::<_, Option<String>>(6)?,
-                    r.get::<_, Option<i64>>(7)?,
-                    r.get::<_, Option<String>>(8)?,
-                    r.get::<_, bool>(9)?,
-                ))
-            })
+            .query_row(params![pk, self.input_pk], |r| r.get(0))
             .optional()?;
-        let (pk, merged) = match existing {
-            Some((pk, kind, title, title_source, cwd, branch, version, started, repo, stub)) => {
-                // A stub takes the kind its first real facts give it.
-                let kind = if stub {
-                    s.kind
-                } else {
-                    parse_name(&kind).unwrap_or(SessionKind::Main)
-                };
-                let mut cur = Session::new(s.id.clone(), kind);
-                if let (Some(text), Some(source)) = (
-                    title,
-                    title_source.as_deref().and_then(parse_name::<TitleSource>),
-                ) {
-                    cur.offer_title(&text, source);
-                }
-                cur.cwd = cwd
-                    .and_then(|c| serde_json::from_str(&c).ok())
-                    .unwrap_or_default();
-                cur.git_branch = branch;
-                cur.repo = repo;
-                cur.tool_version = version;
-                cur.started = started.and_then(Timestamp::from_unix_ms);
+        let merged = match stored.as_deref().map(serde_json::from_str::<Session>) {
+            Some(Ok(mut cur)) => {
                 let before = cur.clone();
                 cur.merge(s);
-                if cur == before && !stub {
+                if cur == before {
                     return Ok(pk);
                 }
-                (Some(pk), cur)
+                cur
             }
-            None => (None, s.clone()),
+            _ => s.clone(),
         };
-        let cwd_json = serde_json::to_string(&merged.cwd)?;
-        let title = merged.title.as_ref().map(|t| t.text.clone());
-        let title_source = merged.title.as_ref().map(|t| name(&t.source));
-        let cols = params![
-            id,
-            merged.id.origin().as_str(),
-            merged.id.native().as_str(),
-            name(&merged.kind),
-            title,
-            title_source,
-            cwd_json,
-            merged.cwd.last(),
-            merged.git_branch,
-            merged.tool_version,
-            ms(merged.started),
-            self.counter,
-            merged.repo,
-        ];
-        match pk {
-            Some(pk) => {
-                self.tx
-                    .prepare_cached(
-                        "UPDATE session SET kind = ?4, title = ?5, title_source = ?6,
-                             cwd_json = ?7, cwd = ?8, branch = ?9, harness_version = ?10,
-                             started_at = ?11, changed = ?12, repo = ?13, stub = 0
-                         WHERE id = ?1 AND origin = ?2 AND native_id = ?3",
-                    )?
-                    .execute(cols)?;
-                Ok(pk)
-            }
-            None => {
-                self.tx
-                    .prepare_cached(
-                        "INSERT INTO session(id, origin, native_id, kind, title, title_source,
-                             cwd_json, cwd, branch, harness_version, started_at, changed, harness,
-                             repo)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?2, ?13)",
-                    )?
-                    .execute(cols)?;
-                let pk = self.tx.last_insert_rowid();
-                self.tx
-                    .prepare_cached(
-                        "UPDATE link SET child_pk = ?1 WHERE child_id = ?2 AND child_pk IS NULL",
-                    )?
-                    .execute(params![pk, id])?;
-                Ok(pk)
-            }
+        self.tx
+            .prepare_cached(
+                "INSERT INTO session_record(session_pk, input_pk, facts) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_pk, input_pk) DO UPDATE SET facts = excluded.facts",
+            )?
+            .execute(params![pk, self.input_pk, serde_json::to_string(&merged)?])?;
+        self.tx
+            .prepare_cached("UPDATE session SET changed = ?2, stub = 0 WHERE pk = ?1")?
+            .execute(params![pk, self.counter])?;
+        Ok(pk)
+    }
+
+    /// The session's row, created on first sight (`stub` when no record of
+    /// its own has arrived yet).
+    fn session_row(&self, id: &SessionId, stub: bool) -> Result<i64> {
+        let key = id.to_string();
+        if let Some(pk) = self
+            .tx
+            .prepare_cached("SELECT pk FROM session WHERE id = ?1")?
+            .query_row([&key], |r| r.get::<_, i64>(0))
+            .optional()?
+        {
+            return Ok(pk);
         }
+        self.tx
+            .prepare_cached(
+                "INSERT INTO session(id, origin, native_id, kind, cwd_json, changed, harness, stub)
+                 VALUES (?1, ?2, ?3, 'main', '[]', ?4, ?2, ?5)",
+            )?
+            .execute(params![
+                key,
+                id.origin().as_str(),
+                id.native().as_str(),
+                self.counter,
+                stub
+            ])?;
+        let pk = self.tx.last_insert_rowid();
+        self.tx
+            .prepare_cached(
+                "UPDATE link SET child_pk = ?1 WHERE child_id = ?2 AND child_pk IS NULL",
+            )?
+            .execute(params![pk, key])?;
+        Ok(pk)
     }
 
     /// Stores one version of a message and makes it the shown one when it
@@ -2016,20 +1975,12 @@ impl Ctx<'_, '_> {
         let tool = tool.as_deref().unwrap_or("unknown");
         self.tx
             .prepare_cached(
-                "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, action, command,
-                     command_norm, path, outcome, outcome_reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'unknown', 'no_result')",
+                "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, command, path,
+                     outcome, outcome_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'unknown', 'no_result')",
             )?
             .execute(params![
-                session_pk,
-                block_pk,
-                call_id,
-                at,
-                tool,
-                action(tool),
-                command,
-                command_norm(tool, command.as_deref()),
-                path
+                session_pk, block_pk, call_id, at, tool, command, path
             ])?;
         let pk = self.tx.last_insert_rowid();
         if !self.bulk {
@@ -2298,26 +2249,6 @@ pub(crate) fn restore_text(block: &mut Block, text: String) {
     }
 }
 
-/// Model 6 (outcome reasons): a call still without a result once a later
-/// model response exists in its session never gets one, since a harness
-/// answers only after every call of the earlier response has its result.
-/// The reason is a fact of the records; whether a `no_result` call is
-/// pending is decided at read time from live state.
-fn passed_without_result(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
-    tx.prepare_cached(
-        "UPDATE tool_call SET outcome_reason = 'passed_without_result'
-         WHERE session_pk = ?1 AND result_block_pk IS NULL AND outcome = 'unknown'
-           AND outcome_reason = 'no_result'
-           AND EXISTS (
-             SELECT 1 FROM block cb JOIN message cm ON cm.pk = cb.message_pk
-             JOIN message later ON later.session_pk = cm.session_pk
-             WHERE cb.pk = tool_call.call_block_pk AND later.role = 'assistant'
-               AND (later.order_input_pk, later.seq) > (cm.order_input_pk, cm.seq))",
-    )?
-    .execute([session_pk])?;
-    Ok(())
-}
-
 fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>, Option<i64>) {
     match o {
         ToolOutcome::Ok => ("ok", None, None),
@@ -2331,56 +2262,6 @@ fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>, Option<i64
         ToolOutcome::NoResult => ("unknown", Some("no_result".into()), None),
         ToolOutcome::Unknown { reason } => ("unknown", Some(name(reason)), None),
     }
-}
-
-/// The normalized form of a shell call's command (analysis.md); `None`
-/// for other tools.
-fn command_norm(tool: &str, command: Option<&str>) -> Option<String> {
-    if action(tool) != "shell" {
-        return None;
-    }
-    command.and_then(polylogue_model::command::normalize)
-}
-
-/// The kind of action a tool performs, from its name.
-fn action(tool: &str) -> &'static str {
-    match tool {
-        "Bash" | "BashOutput" | "KillShell" | "shell" | "exec_command" | "local_shell" => "shell",
-        "Read" | "NotebookRead" => "file_read",
-        "Write" => "file_write",
-        "Edit" | "MultiEdit" | "NotebookEdit" | "apply_patch" => "file_edit",
-        "Grep" | "Glob" | "LS" | "ToolSearch" => "search",
-        "WebFetch" | "WebSearch" | "web_search" => "web",
-        "Task" | "Agent" => "subagent",
-        // Codex code mode: a script whose `exec_command` calls are counted
-        // in its place.
-        "exec" => "code",
-        t if t.starts_with("mcp__") => "mcp",
-        _ => "other",
-    }
-}
-
-/// Marks which of a branched session's messages lie on the path from its
-/// newest active leaf to the root (`on_active_path` 1) and which on an
-/// abandoned branch (0). A session whose source names no leaf keeps NULL:
-/// unknown, read as on the path.
-fn mark_active_path(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
-    tx.prepare_cached(
-        "WITH RECURSIVE
-           leaf(id) AS (
-             SELECT m.id FROM event e JOIN message m ON m.pk = e.after_message_pk
-             WHERE e.session_pk = ?1 AND e.kind = 'active_leaf'
-             ORDER BY e.pk DESC LIMIT 1),
-           path(id) AS (
-             SELECT id FROM leaf
-             UNION
-             SELECT m.parent_id FROM message m JOIN path ON m.id = path.id
-             WHERE m.parent_id IS NOT NULL)
-         UPDATE message SET on_active_path = (id IN (SELECT id FROM path))
-         WHERE session_pk = ?1 AND EXISTS (SELECT 1 FROM leaf)",
-    )?
-    .execute([session_pk])?;
-    Ok(())
 }
 
 #[cfg(test)]

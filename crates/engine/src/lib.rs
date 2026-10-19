@@ -13,7 +13,6 @@
 //! next changes, never all at start-up (architecture 2, measured facts).
 
 pub mod collect;
-pub mod derive;
 pub mod drive;
 pub mod pool;
 pub mod repo_lookup;
