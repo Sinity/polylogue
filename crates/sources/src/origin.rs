@@ -290,8 +290,44 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     reserved!("gemini-app", Import, []),
     reserved!("grok", Import, []),
-    reserved!("otel-genai", Import, []),
-    reserved!("openai-chat", Import, []),
+    OriginSpec {
+        name: crate::otel_genai::ORIGIN,
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Import,
+        framing: Framing::Document,
+        root: Root::HOME,
+        locations: &[],
+        capture: Capture::Bytes,
+        recognize: crate::otel_genai::recognize,
+        open: crate::otel_genai::open,
+    },
+    OriginSpec {
+        name: crate::openrouter::ORIGIN,
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Import,
+        framing: Framing::Document,
+        root: Root::HOME,
+        locations: &[],
+        capture: Capture::Bytes,
+        recognize: crate::openrouter::recognize,
+        open: crate::openrouter::open,
+    },
+    // Last of the imports: its shapes are the most generic, so a specific
+    // origin that recognizes the same file is tried first.
+    OriginSpec {
+        name: crate::openai_chat::ORIGIN,
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Import,
+        framing: Framing::Document,
+        root: Root::HOME,
+        locations: &[],
+        capture: Capture::Bytes,
+        recognize: crate::openai_chat::recognize,
+        open: crate::openai_chat::open,
+    },
 ];
 
 pub fn by_name(name: &str) -> Option<&'static OriginSpec> {

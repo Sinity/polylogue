@@ -63,3 +63,28 @@ fn recognizes_both_layouts() {
         b"{\"type\": \"user\""
     ));
 }
+
+/// The line `polylogue hook` writes (crates/polylogue/src/hook.rs).
+#[test]
+fn the_hook_commands_carrier_lines_are_read() {
+    let input = lines(&[json!({
+        "at_ns": "1792400000123456789", "event": "PreToolUse", "harness_pid": 4242,
+        "payload": {"session_id": "s9", "cwd": "/repo", "tool_name": "Bash"}
+    })]);
+    assert!(recognize(
+        Path::new("/s/polylogue/hooks/4242.ndjson"),
+        &input[..40]
+    ));
+    let mut carry = Carry::default();
+    let step = run(&HookSpool, &mut carry, &input, 0).unwrap();
+    let e = &step.output.events[0];
+    assert_eq!(e.kind, "hook_pre_tool_use");
+    assert_eq!(e.session.to_string(), "claude-code:s9");
+    assert_eq!(e.at.unwrap().unix_ms(), 1_792_400_000_123);
+    assert!(
+        step.accounting.unread_fields.is_empty(),
+        "{:?}",
+        step.accounting.unread_fields
+    );
+    assert!(LOCATIONS.contains(&"polylogue/hooks/*.ndjson"));
+}

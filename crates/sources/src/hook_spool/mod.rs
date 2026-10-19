@@ -2,7 +2,9 @@
 //! prompt submitted, tool about to run, tool finished, compaction, stop),
 //! appended without a sync (`k3ahm`). Two layouts share the format: a file
 //! per session (`<provider>-<session>.jsonl`) and dated carrier files
-//! (`carriers/<provider>/<date>/*.ndjson`).
+//! (`carriers/<provider>/<date>/*.ndjson`). The `polylogue hook` command
+//! writes a third: one carrier per harness process (`<pid>.ndjson`), lines
+//! `{"at_ns", "event", "harness_pid", "payload"}`, for Claude Code.
 //!
 //! Each line becomes an event on the session it names, kept whole: what
 //! the hook saw (tool input, permission mode, effort, working directory)
@@ -31,6 +33,7 @@ pub const ROOT: Root = Root {
 pub const LOCATIONS: &[&str] = &[
     "polylogue/hooks/*.jsonl",
     "polylogue/hooks/carriers/*/*/*.ndjson",
+    "polylogue/hooks/*.ndjson",
 ];
 
 fn is_spool_file(path: &Path) -> bool {
@@ -38,10 +41,10 @@ fn is_spool_file(path: &Path) -> bool {
         .is_some_and(|e| e == "jsonl" || e == "ndjson")
 }
 
-/// A spool line starts `{"event_type"` (per-session files) or
-/// `{"event_id"` (carriers).
+/// A spool line starts `{"event_type"` (per-session files), `{"event_id"`
+/// (dated carriers) or `{"at_ns"` (the hook command's carriers).
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
-    is_spool_file(path) && matches!(first_key(head), Some("event_type" | "event_id"))
+    is_spool_file(path) && matches!(first_key(head), Some("event_type" | "event_id" | "at_ns"))
 }
 
 pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
@@ -57,6 +60,12 @@ pub struct Carry {}
 const FIELDS: Fields = &[
     ("event_id", Rule::Read),
     ("event_type", Rule::Read),
+    ("event", Rule::Read),
+    ("at_ns", Rule::Read),
+    (
+        "harness_pid",
+        Rule::Kept("the harness process, which the file name also carries"),
+    ),
     ("observed_at_ms", Rule::Read),
     ("timestamp", Rule::Read),
     ("provider", Rule::Read),
@@ -89,7 +98,10 @@ impl Parser for HookSpool {
     type Carry = Carry;
 
     fn kind(&self, value: &Json) -> String {
-        str_of(value, "event_type").unwrap_or("?").to_owned()
+        str_of(value, "event_type")
+            .or_else(|| str_of(value, "event"))
+            .unwrap_or("?")
+            .to_owned()
     }
 
     fn record(
@@ -104,11 +116,16 @@ impl Parser for HookSpool {
         for path in unaccounted(value, FIELDS) {
             acc.unread(&kind, &path);
         }
-        let Some(event_type) = str_of(value, "event_type") else {
+        let Some(event_type) = str_of(value, "event_type").or_else(|| str_of(value, "event"))
+        else {
             return Disposition::refused("no event_type");
         };
-        let Some(provider) = str_of(value, "provider") else {
-            return Disposition::refused("no provider");
+        // The hook command's lines name no provider: it is installed for
+        // Claude Code only.
+        let provider = match str_of(value, "provider") {
+            Some(p) => p,
+            None if value.get("at_ns").is_some() => "claude-code",
+            None => return Disposition::refused("no provider"),
         };
         let native = str_of(value, "session_id")
             .or_else(|| value.pointer("/payload/session_id").and_then(Json::as_str))
@@ -126,6 +143,14 @@ impl Parser for HookSpool {
                 value
                     .get("observed_at_ms")
                     .and_then(crate::time::epoch_millis)
+            })
+            .or_else(|| {
+                let ns = value.get("at_ns")?;
+                let ns = ns
+                    .as_str()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .or_else(|| ns.as_u64())?;
+                polylogue_model::Timestamp::from_unix_ms((ns / 1_000_000) as i64)
             });
         let mut session = Session::new(sid.clone(), SessionKind::Main);
         if let Some(cwd) = value.pointer("/payload/cwd").and_then(Json::as_str) {
