@@ -459,3 +459,40 @@ fn law_137_a_value_outside_a_closed_set_is_refused() {
         }
     }
 }
+
+/// The turns unit on Morrow: every session with a prompt has turns, a
+/// turn's identity is one of its messages, its span is ordered, and the
+/// prompts the turns count are the session's on-path human prompts.
+#[test]
+fn turns_partition_each_sessions_prompts() {
+    let w = Morrow::build(Set::Main);
+    let pool = w.reads();
+    let r = pool.reader().unwrap();
+    let turns = q(&r, "turns | limit 1000");
+    let ts = rows(&turns);
+    assert!(!ts.is_empty(), "{turns}");
+    for t in ts {
+        let id = s(&t["id"]);
+        assert!(!id.is_empty(), "{t}");
+        let one = q(&r, &format!("messages where id:{id}"));
+        assert_eq!(rows(&one).len(), 1, "turn id {id} is a message: {t}");
+        if let (Some(a), Some(b)) = (t["start"].as_i64(), t["end"].as_i64()) {
+            assert!(a <= b, "{t}");
+        }
+        assert!(
+            matches!(s(&t["path"]).as_str(), "active" | "unknown"),
+            "{t}"
+        );
+    }
+    // Every on-path human prompt is counted in exactly one turn.
+    let burst: u64 = ts.iter().map(|t| t["burst"].as_u64().unwrap_or(0)).sum();
+    let prompts = q(&r, "messages where written_by:human | agg count");
+    assert_eq!(
+        Some(burst),
+        rows(&prompts).first().and_then(|g| g["count"].as_u64()),
+        "{prompts}"
+    );
+    // The session prefix narrows them.
+    let scoped = q(&r, "turns where session.kind:main | agg count");
+    assert!(!rows(&scoped).is_empty(), "{scoped}");
+}
