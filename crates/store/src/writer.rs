@@ -1073,7 +1073,7 @@ fn insert_revision(
     seq: i64,
 ) -> Result<()> {
     tx.prepare_cached(
-        "INSERT INTO revision(input, number, produced, chain, length, local_seq)
+        "INSERT INTO revision(input, number, produced, chain, length, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?
     .execute(params![

@@ -972,7 +972,7 @@ pub fn sql(unit: Unit, name: &str, a: &Aliases) -> Option<String> {
         (Unit::Sessions, "duration") => format!("({s}.last_activity_at - {s}.started_at)"),
         (Unit::Sessions, "outcome") => format!(
             "COALESCE((SELECT lower(n.value) FROM a.note n JOIN a.note_target nt ON nt.note_id = n.id \
-             WHERE n.kind = 'outcome' AND nt.ref = 'session:' || {s}.id AND {} ORDER BY n.local_seq DESC LIMIT 1), 'none')",
+             WHERE n.kind = 'outcome' AND nt.ref = 'session:' || {s}.id AND {} ORDER BY n.commit_seq DESC LIMIT 1), 'none')",
             live_note("n")
         ),
         (Unit::Sessions, "messages") => format!(
@@ -1114,7 +1114,7 @@ pub fn live_note(n: &str) -> String {
 
 pub fn current_note(n: &str) -> String {
     format!(
-        "NOT EXISTS (SELECT 1 FROM a.note nr WHERE nr.root = {n}.root AND nr.local_seq > {n}.local_seq)"
+        "NOT EXISTS (SELECT 1 FROM a.note nr WHERE nr.root = {n}.root AND nr.commit_seq > {n}.commit_seq)"
     )
 }
 
@@ -1122,7 +1122,7 @@ pub fn withdrawn_note(n: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM a.note nw JOIN a.note_target nwt ON nwt.note_id = nw.id \
          WHERE nw.kind = 'withdrawal' AND nwt.ref = 'note:' || {n}.root \
-         AND NOT EXISTS (SELECT 1 FROM a.note nw2 WHERE nw2.root = nw.root AND nw2.local_seq > nw.local_seq))"
+         AND NOT EXISTS (SELECT 1 FROM a.note nw2 WHERE nw2.root = nw.root AND nw2.commit_seq > nw.commit_seq))"
     )
 }
 

@@ -53,15 +53,15 @@ CREATE TABLE revision (
   length        INTEGER NOT NULL,        -- of the revision's full bytes
   blake3        BLOB,                    -- of the full bytes as observed, once complete; never changed,
                                          --   not even by excision (an excised revision is verified by its blobs)
-  local_seq     INTEGER NOT NULL,        -- local order (Rules): the write counter at the insert; in `primary` mode
+  commit_seq    INTEGER NOT NULL,        -- local order (Rules): the write counter at the insert; in `primary` mode
                                          --   the revision event carries it, and Sinex's replicated frontier is the
                                          --   largest W with every revision at or below W complete (joint #29); the event also carries
-                                         --   prev_local_seq, the local_seq of the revision stored just before it in
+                                         --   prev_commit_seq, the commit_seq of the revision stored just before it in
                                          --   this archive's write order (0 for the first), so a gap left by a note or
                                          --   excision is told apart from a missing revision
   PRIMARY KEY (input, number)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX revision_local ON revision(local_seq);
+CREATE INDEX revision_commit_seq ON revision(commit_seq);
 
 -- Where bytes come from: ranges of blobs placed at offsets in a revision chain
 -- (appends share their chain's extents; a revision reads the extents covering
@@ -86,7 +86,7 @@ CREATE INDEX extent_blob ON extent(blob);
 -- locations, first_seen, source:gone and message.first_seen are queries over it.
 -- An input's latest observation is the last one inserted locally (the largest
 -- rowid), not the largest seen_at: a rename and an append found in one round
--- share a seen_at. Like local_seq, that order is local and never compared
+-- share a seen_at. Like commit_seq, that order is local and never compared
 -- across archives. Its location is the path of its latest observation at a
 -- location path: a filesystem path, 'drive:<file id>' (a Drive file) or
 -- 'repo-lookup:<directory>' / 'agentctl-job:<job id>' (records the collector reads);
@@ -160,9 +160,9 @@ CREATE TABLE note (
   created_at    INTEGER NOT NULL,        -- the writer's clock: display and the evidence cutoff only, never orders revisions
   valid_until   INTEGER,                 -- optional: shown as expired after it, left out of briefings (user-data.md)
   source        TEXT,                    -- for inline markers: the message it came from
-  local_seq     INTEGER NOT NULL         -- local order (Rules); never copied in a union
+  commit_seq    INTEGER NOT NULL         -- local order (Rules); never copied in a union
 ) STRICT;
-CREATE INDEX note_local ON note(local_seq);              -- the change feed
+CREATE INDEX note_commit_seq ON note(commit_seq);              -- the change feed
 CREATE INDEX note_root ON note(root);
 CREATE INDEX note_kind ON note(kind, key, value);        -- tag:, outcome:, hidden, query:<name>
 
@@ -222,7 +222,7 @@ CREATE TABLE excision (
                                          --   an index rebuild (How excision works)
   applied_upto  TEXT,                    -- text scope: local progress, never copied in a union: the last input
                                          --   ID scanned; 'end' once every input was. A union resets it to NULL.
-  local_seq     INTEGER NOT NULL         -- local order (Rules); never copied in a union
+  commit_seq    INTEGER NOT NULL         -- local order (Rules); never copied in a union
 ) STRICT;
 
 -- Variants: transformed copies of content (model.md, Variant). Content, not
@@ -275,7 +275,7 @@ CREATE TABLE setting (
   value         TEXT NOT NULL,
   author        TEXT NOT NULL,           -- 'operator' or the agent session that set it (user-data.md, who the author is)
   set_at        INTEGER NOT NULL,        -- the writer's clock, shown by `polylogue setting`
-  local_seq     INTEGER NOT NULL         -- local order (Rules): publication only, never a key or an order
+  commit_seq    INTEGER NOT NULL         -- local order (Rules): publication only, never a key or an order
 ) STRICT;
 CREATE INDEX setting_current ON setting(machine, key, set_at, id);
 
@@ -296,7 +296,7 @@ CREATE TABLE delivery (
   body              BLOB NOT NULL,          -- the delivered text, zstd
   refs_json         TEXT NOT NULL,          -- references included, in order
   left_out_json     TEXT NOT NULL DEFAULT '[]',  -- references and sections left out, each with its reason
-  local_seq         INTEGER NOT NULL
+  commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX delivery_recipient ON delivery(recipient_id, at);
 CREATE INDEX delivery_sender ON delivery(sender, at);   -- signal notices; the evaluator's history

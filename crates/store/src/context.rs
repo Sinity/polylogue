@@ -211,11 +211,11 @@ impl Reader<'_> {
     fn deliveries(&self, filter: &str, arg: &str) -> Result<Vec<DeliveryRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare_cached(&format!(
-            "SELECT d.id, d.event, d.sender, d.recipient_id, d.at, d.bytes, d.local_seq,
+            "SELECT d.id, d.event, d.sender, d.recipient_id, d.at, d.bytes, d.commit_seq,
                     (SELECT group_concat(e.what, ',') FROM
                         (SELECT what FROM a.delivery_event e WHERE e.delivery = d.id ORDER BY at) e)
                FROM a.delivery d {filter}
-              ORDER BY d.local_seq DESC"
+              ORDER BY d.commit_seq DESC"
         ))?;
         let rows = stmt.query_map([arg], |r| {
             Ok(DeliveryRow {

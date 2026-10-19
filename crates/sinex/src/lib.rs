@@ -125,7 +125,7 @@ pub struct Restored {
     pub units: u64,
     pub rows: u64,
     /// The archive's write counter after the restore.
-    pub local_seq: i64,
+    pub commit_seq: i64,
 }
 
 /// A connection to Sinex as the producer `config.producer`.
@@ -329,7 +329,8 @@ impl Sinex {
             let event = PolylogueRows {
                 archive: id.clone(),
                 position: position as u64,
-                local_seq: unit.local_seq,
+                // Sinex names this field `local_seq` until its own rename.
+                local_seq: unit.commit_seq,
                 unit: unit.kind.into(),
                 key: unit.key.clone(),
                 batch: format!("blake3:{}", batch_hash.hex()),
@@ -459,9 +460,9 @@ impl Sinex {
             }
             done.rows += restoring.apply(&lines)?;
             done.units += 1;
-            done.local_seq = done.local_seq.max(unit.local_seq);
+            done.commit_seq = done.commit_seq.max(unit.local_seq);
         }
-        restoring.finish(archive, done.local_seq)?;
+        restoring.finish(archive, done.commit_seq)?;
         Ok(done)
     }
 }

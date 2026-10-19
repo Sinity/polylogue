@@ -89,7 +89,7 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, scope: &Scope) -> Result<u64>
            SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id
            WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id
              AND NOT EXISTS (SELECT 1 FROM a.note later WHERE later.root = hn.root
-                             AND later.local_seq > hn.local_seq)
+                             AND later.commit_seq > hn.commit_seq)
              AND NOT EXISTS (SELECT 1 FROM a.note w JOIN a.note_target wt ON wt.note_id = w.id
                              WHERE w.kind = 'withdrawal' AND wt.ref = 'note:' || hn.root))"
     );
