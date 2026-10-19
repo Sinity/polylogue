@@ -640,6 +640,52 @@ pub static FIELDS: &[Field] = &[
     ),
     f(Deliveries, "at", Time, ""),
     f(Deliveries, "bytes", Number, ""),
+    // turns (spec query.md, turns): computed along the active path
+    f(Turns, "id", Prefix, "its first prompt's message ID"),
+    f(Turns, "start", Time, "the first message's time"),
+    f(
+        Turns,
+        "end",
+        Time,
+        "the latest time of any message in the turn",
+    ),
+    f(Turns, "burst", Number, "how many prompts it has"),
+    f(Turns, "slash_command", Bool, "starts with a typed command"),
+    f(
+        Turns,
+        "answer",
+        Prefix,
+        "the model's final message in the turn",
+    ),
+    f(
+        Turns,
+        "attempts",
+        Number,
+        "replies under the turn's last prompt, abandoned branches included",
+    ),
+    v(
+        Turns,
+        "path",
+        &["active", "unknown"],
+        "unknown when the session's active path is unknown",
+    ),
+    f(
+        Turns,
+        "latency",
+        Duration,
+        "from the last prompt to the first model message",
+    ),
+    f(Turns, "tool_calls", Number, ""),
+    f(Turns, "errors", Number, "tool calls with outcome error"),
+    f(Turns, "input_tokens", Number, ""),
+    f(Turns, "output_tokens", Number, ""),
+    f(Turns, "cost", Money, ""),
+    f(
+        Turns,
+        "abandoned",
+        Bool,
+        "the turn ended the session with no answer",
+    ),
     // processes
     v(Processes, "role", &["harness", "child"], ""),
     f(Processes, "comm", Match, "the command name"),
@@ -1036,6 +1082,13 @@ pub fn sql(unit: Unit, name: &str, a: &Aliases) -> Option<String> {
         (Unit::Runs, "started") => format!("{r}.started_at"),
         (Unit::Runs, "ended") => format!("{r}.ended_at"),
         (Unit::Runs, "duration") => format!("({r}.ended_at - {r}.started_at)"),
+        (
+            Unit::Turns,
+            "id" | "start" | "end" | "burst" | "slash_command" | "answer" | "attempts" | "path"
+            | "latency" | "tool_calls" | "errors" | "input_tokens" | "output_tokens" | "abandoned",
+        ) => format!("{r}.{name}"),
+        (Unit::Turns, "cost") => format!("{r}.cost_nusd"),
+
         (Unit::Runs, "evidence") => format!("{r}.evidence"),
 
         (Unit::Deliveries, "id") => format!("{r}.id"),

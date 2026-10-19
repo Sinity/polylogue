@@ -298,12 +298,6 @@ impl<'a> Compiler<'a> {
                 (Scope::plain(*unit), cond.iter().cloned().collect(), top)
             }
         };
-        if scope.unit == Unit::Turns {
-            return Err(not_built(
-                "the turns unit",
-                "architecture 7, query language",
-            ));
-        }
         let mut where_sql: Vec<String> = self.defaults(&scope, &top);
         let defaults_only = where_sql.clone();
         let mut why = vec![];
@@ -339,12 +333,6 @@ impl<'a> Compiler<'a> {
                             message: "a `| UNIT where …` stage follows a session query".into(),
                             position: stage.span.start,
                         });
-                    }
-                    if *unit == Unit::Turns {
-                        return Err(not_built(
-                            "the turns unit",
-                            "architecture 7, query language",
-                        ));
                     }
                     let sessions =
                         format!("SELECT s.pk FROM session s WHERE {}", and_all(&where_sql));
@@ -697,7 +685,7 @@ impl<'a> Compiler<'a> {
                 }
                 session_defaults(&mut out, &a.s);
             }
-            Unit::Files | Unit::Events => session_defaults(&mut out, &a.s),
+            Unit::Files | Unit::Events | Unit::Turns => session_defaults(&mut out, &a.s),
             Unit::Deliveries | Unit::Work => {
                 out.push(format!(
                     "({s}.pk IS NULL OR (NOT {} AND NOT {}))",
@@ -714,7 +702,7 @@ impl<'a> Compiler<'a> {
                     out.push(format!("NOT {}", fields::withdrawn_note(&a.row)));
                 }
             }
-            Unit::Links | Unit::Runs | Unit::Processes | Unit::Turns => {}
+            Unit::Links | Unit::Runs | Unit::Processes => {}
         }
         out
     }
@@ -744,7 +732,7 @@ impl<'a> Compiler<'a> {
             Unit::Links => (format!("{}p.last_activity_at", a.row), false),
             Unit::Runs => (format!("{}.started_at", a.row), false),
             Unit::Processes => (format!("{}.started_at", a.row), false),
-            Unit::Turns => (pk.clone(), false),
+            Unit::Turns => (format!("{}.start", a.row), false),
         };
         let mut o = vec![format!("{time} IS NULL")];
         match scope.unit {
@@ -1069,12 +1057,6 @@ impl<'a> Compiler<'a> {
         scope: &Scope,
         span: Span,
     ) -> Result<String, QueryError> {
-        if unit == Unit::Turns {
-            return Err(not_built(
-                "the turns unit",
-                "architecture 7, query language",
-            ));
-        }
         let child = Scope {
             unit,
             a: self.fresh(),
@@ -2516,12 +2498,6 @@ impl<'a> Compiler<'a> {
     }
 
     fn attach(&mut self, child: &Child, parent: &Scope) -> Result<Attach, QueryError> {
-        if child.unit == Unit::Turns {
-            return Err(not_built(
-                "the turns unit",
-                "architecture 7, query language",
-            ));
-        }
         let saved = std::mem::take(&mut self.params);
         let saved_ctes = std::mem::take(&mut self.ctes);
         let saved_shown = std::mem::take(&mut self.shown);
@@ -2793,6 +2769,50 @@ fn group_sort(
     Ok(vec![format!("g.{name} IS NULL"), format!("g.{name}{dir}")])
 }
 
+/// One row per turn (spec query.md, turns): along the active path (or file
+/// order when it is unknown), a turn starts at a human prompt that does not
+/// follow another prompt, or at a typed command, and runs until the next
+/// such start; a session with no prompt is one turn. Copies are counted in
+/// the session that originated them, so inherited messages are left out.
+const TURNS: &str = "(SELECT g.*, \
+     (SELECT count(*) FROM message ax WHERE ax.parent_id = g.last_prompt \
+        AND ax.written_by = 'model') AS attempts, \
+     (SELECT min(lx.at) FROM message lx WHERE lx.session_pk = g.session_pk \
+        AND lx.written_by = 'model' AND lx.at >= g.last_prompt_at) - g.last_prompt_at AS latency, \
+     (g.answer IS NULL AND g.turn = max(g.turn) OVER (PARTITION BY g.session_pk)) AS abandoned \
+   FROM (SELECT tm.session_pk AS session_pk, tm.turn AS turn, min(tm.pk) AS pk, \
+       substr(min(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14) AS first_prompt, \
+       substr(min(printf('%012d ', tm.ord) || tm.id), 14) AS first_id, \
+       COALESCE(substr(min(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14), \
+                substr(min(printf('%012d ', tm.ord) || tm.id), 14)) AS id, \
+       substr(max(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14) AS last_prompt, \
+       max(CASE WHEN tm.hp THEN tm.at END) AS last_prompt_at, \
+       min(tm.at) AS start, max(COALESCE(tm.completed_at, tm.at)) AS \"end\", \
+       sum(tm.hp) AS burst, \
+       substr(min(printf('%012d ', tm.ord) || COALESCE(tm.prompt_kind, '')), 14) = 'command' AS slash_command, \
+       substr(max(CASE WHEN tm.written_by = 'model' THEN printf('%012d ', tm.ord) || tm.id END), 14) AS answer, \
+       CASE WHEN min(COALESCE(tm.on_active_path, -1)) < 0 THEN 'unknown' ELSE 'active' END AS path, \
+       sum(tm.tc) AS tool_calls, sum(tm.te) AS errors, \
+       sum(tm.input_tokens) AS input_tokens, sum(tm.output_tokens) AS output_tokens, \
+       sum(tm.cost_nusd) AS cost_nusd \
+     FROM (SELECT o.*, \
+         sum(CASE WHEN o.hp AND (o.prompt_kind = 'command' OR NOT o.prev_hp) THEN 1 ELSE 0 END) \
+           OVER (PARTITION BY o.session_pk ORDER BY o.order_input_pk, o.seq \
+                 ROWS UNBOUNDED PRECEDING) AS turn, \
+         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.order_input_pk, o.seq) AS ord \
+       FROM (SELECT m.pk, m.id, m.session_pk, m.order_input_pk, m.seq, m.written_by, m.prompt_kind, \
+             m.at, m.completed_at, m.on_active_path, m.input_tokens, m.output_tokens, m.cost_nusd, \
+             (m.written_by = 'human') AS hp, \
+             COALESCE(lag(m.written_by = 'human') OVER (PARTITION BY m.session_pk \
+               ORDER BY m.order_input_pk, m.seq), 0) AS prev_hp, \
+             (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
+               WHERE cb.message_pk = m.pk) AS tc, \
+             (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
+               WHERE cb.message_pk = m.pk AND c.outcome = 'error') AS te \
+           FROM message m WHERE COALESCE(m.on_active_path, 1) = 1 AND m.inherited_from IS NULL \
+             AND m.written_by IN ('human', 'model')) o) tm \
+     GROUP BY tm.session_pk, tm.turn) g)";
+
 /// The FROM clause of a unit over the given aliases.
 fn base_from(unit: Unit, a: &Aliases) -> Result<String, QueryError> {
     let (s, m, b, t, cb, r) = (&a.s, &a.m, &a.b, &a.t, &a.cb, &a.row);
@@ -2825,12 +2845,7 @@ fn base_from(unit: Unit, a: &Aliases) -> Result<String, QueryError> {
             format!("a.delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id")
         }
         Unit::Work => format!("work_node {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk"),
-        Unit::Turns => {
-            return Err(not_built(
-                "the turns unit",
-                "architecture 7, query language",
-            ));
-        }
+        Unit::Turns => format!("{} {r} JOIN session {s} ON {s}.pk = {r}.session_pk", TURNS),
     })
 }
 
@@ -3011,7 +3026,27 @@ fn row_columns(unit: Unit, a: &Aliases) -> (String, Vec<(String, String, ColKind
                 c("bytes", format!("{r}.bytes"), Number),
             ],
         ),
-        Unit::Turns => ("0".into(), vec![]),
+        Unit::Turns => (
+            format!("{r}.pk"),
+            vec![
+                c("id", format!("{r}.id"), Text),
+                c("session", format!("{s}.id"), Text),
+                c("start", format!("{r}.start"), Time),
+                c("end", format!("{r}.end"), Time),
+                c("burst", format!("{r}.burst"), Number),
+                c("slash_command", format!("{r}.slash_command"), Number),
+                c("answer", format!("{r}.answer"), Text),
+                c("attempts", format!("{r}.attempts"), Number),
+                c("path", format!("{r}.path"), Text),
+                c("latency", format!("{r}.latency"), Number),
+                c("tool_calls", format!("{r}.tool_calls"), Number),
+                c("errors", format!("{r}.errors"), Number),
+                c("input_tokens", format!("{r}.input_tokens"), Number),
+                c("output_tokens", format!("{r}.output_tokens"), Number),
+                c("cost", format!("{r}.cost_nusd"), Number),
+                c("abandoned", format!("{r}.abandoned"), Number),
+            ],
+        ),
     }
 }
 
