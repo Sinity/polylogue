@@ -45,7 +45,7 @@ impl Reader<'_> {
         let mut params: Vec<Value> = Vec::new();
         if !f.history {
             sql.push_str(
-                " AND n.local_seq = (SELECT max(m.local_seq) FROM a.note m WHERE m.root = n.root)",
+                " AND n.commit_seq = (SELECT max(m.commit_seq) FROM a.note m WHERE m.root = n.root)",
             );
         }
         if !f.withdrawn {
@@ -81,9 +81,9 @@ impl Reader<'_> {
         }
         if let Some(after) = f.after_seq {
             params.push(Value::Integer(after));
-            sql.push_str(&format!(" AND n.local_seq > ?{}", params.len()));
+            sql.push_str(&format!(" AND n.commit_seq > ?{}", params.len()));
         }
-        sql.push_str(" ORDER BY n.local_seq DESC");
+        sql.push_str(" ORDER BY n.commit_seq DESC");
         if let Some(limit) = f.limit {
             params.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
             sql.push_str(&format!(" LIMIT ?{}", params.len()));

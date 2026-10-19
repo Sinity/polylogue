@@ -365,7 +365,7 @@ impl Plan {
             // First, so the `excised` observations can name it; what it
             // refused is filled in at the end.
             t.archive.execute(
-                "INSERT INTO excision(id, scope, reason, created_at, local_seq)
+                "INSERT INTO excision(id, scope, reason, created_at, commit_seq)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![req.id, req.scope.label(), req.reason, now_ms(), t.seq],
             )?;

@@ -175,7 +175,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
         } => {
             let root = root_of(tx, note)?;
             tx.execute(
-                "INSERT INTO note(id, root, kind, value, author, machine, created_at, local_seq)
+                "INSERT INTO note(id, root, kind, value, author, machine, created_at, commit_seq)
                  VALUES (?1, ?1, 'withdrawal', ?2, ?3, ?4, ?5, ?6)",
                 params![r.id, reason, author.to_string(), r.machine, at, seq],
             )?;
@@ -192,7 +192,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             let body = zstd::bulk::compress(d.text.as_bytes(), 3)?;
             tx.execute(
                 "INSERT INTO delivery(id, recipient_kind, recipient_id, sender, event, cwd, at,
-                     content_hash, bytes, body, refs_json, left_out_json, local_seq)
+                     content_hash, bytes, body, refs_json, left_out_json, commit_seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     r.id,
@@ -243,7 +243,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             machine,
         } => {
             tx.execute(
-                "INSERT INTO setting(id, machine, key, value, author, set_at, local_seq)
+                "INSERT INTO setting(id, machine, key, value, author, set_at, commit_seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     r.id,
@@ -285,7 +285,7 @@ fn add_note(
         None => r.id.clone(),
     };
     tx.execute(
-        "INSERT INTO note(id, root, kind, key, value, author, machine, created_at, valid_until, local_seq)
+        "INSERT INTO note(id, root, kind, key, value, author, machine, created_at, valid_until, commit_seq)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             r.id,

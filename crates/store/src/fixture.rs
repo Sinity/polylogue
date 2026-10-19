@@ -17,7 +17,7 @@ pub struct Fixture {
     notes: Connection,
     input_pk: i64,
     seq: i64,
-    local_seq: i64,
+    commit_seq: i64,
 }
 
 /// A session's facts; everything not given is unknown.
@@ -75,7 +75,7 @@ impl Fixture {
             notes,
             input_pk,
             seq: 0,
-            local_seq: 0,
+            commit_seq: 0,
         })
     }
 
@@ -357,12 +357,12 @@ impl Fixture {
         value: Option<&str>,
         target: &str,
     ) -> Result<String> {
-        self.local_seq += 1;
-        let id = format!("n{}", self.local_seq);
+        self.commit_seq += 1;
+        let id = format!("n{}", self.commit_seq);
         self.notes.execute(
-            "INSERT INTO note(id, root, kind, key, value, author, machine, created_at, local_seq)
+            "INSERT INTO note(id, root, kind, key, value, author, machine, created_at, commit_seq)
              VALUES (?1, ?1, ?2, ?3, ?4, 'operator', 'test', ?5, ?5)",
-            params![id, kind, key, value, self.local_seq],
+            params![id, kind, key, value, self.commit_seq],
         )?;
         self.notes.execute(
             "INSERT INTO note_target(note_id, ref) VALUES (?1, ?2)",

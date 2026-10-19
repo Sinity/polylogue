@@ -127,7 +127,7 @@ pub fn changes(reader: &Reader<'_>, since: Cursor) -> Result<Value> {
         std::slice::from_ref(&i),
     )?;
     let notes = reader.query(
-        "SELECT id AS note, kind, local_seq FROM a.note WHERE local_seq > ?1 ORDER BY local_seq",
+        "SELECT id AS note, kind, commit_seq FROM a.note WHERE commit_seq > ?1 ORDER BY commit_seq",
         &[SqlValue::Int(since.archive)],
     )?;
     Ok(json!({

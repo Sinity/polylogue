@@ -4,7 +4,7 @@
 //! a revision with its input, the extents it added, the observations that
 //! produced it and the blob rows (without inline bytes) it cites; a note with
 //! its targets and relations; an excision; a setting; a delivery with its
-//! events. Units are ordered by the archive's write counter (`local_seq`).
+//! events. Units are ordered by the archive's write counter (`commit_seq`).
 //! Rows travel as JSON lines, one `{"table": …, "row": {…}}` per line, with
 //! every column under its own name: integers and reals as numbers, text as
 //! strings, blobs as `{"hex": …}`, null as null.
@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 /// One unit of rows, before its rows are read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unit {
-    pub local_seq: i64,
+    pub commit_seq: i64,
     pub kind: &'static str,
     /// `<input>/<number>` for a revision, the row ID otherwise.
     pub key: String,
@@ -24,17 +24,17 @@ pub struct Unit {
 /// The units at or after `after` (exclusive), in write order.
 pub fn units(archive: &Connection, after: i64) -> rusqlite::Result<Vec<Unit>> {
     let mut stmt = archive.prepare(
-        "SELECT local_seq, 'revision', input || '/' || number FROM revision WHERE local_seq > ?1
-         UNION ALL SELECT local_seq, 'note', id FROM note WHERE local_seq > ?1
-         UNION ALL SELECT local_seq, 'excision', id FROM excision WHERE local_seq > ?1
-         UNION ALL SELECT local_seq, 'setting', id FROM setting WHERE local_seq > ?1
-         UNION ALL SELECT local_seq, 'delivery', id FROM delivery WHERE local_seq > ?1
+        "SELECT commit_seq, 'revision', input || '/' || number FROM revision WHERE commit_seq > ?1
+         UNION ALL SELECT commit_seq, 'note', id FROM note WHERE commit_seq > ?1
+         UNION ALL SELECT commit_seq, 'excision', id FROM excision WHERE commit_seq > ?1
+         UNION ALL SELECT commit_seq, 'setting', id FROM setting WHERE commit_seq > ?1
+         UNION ALL SELECT commit_seq, 'delivery', id FROM delivery WHERE commit_seq > ?1
          ORDER BY 1, 2, 3",
     )?;
     let rows = stmt.query_map([after], |r| {
         let kind: String = r.get(1)?;
         Ok(Unit {
-            local_seq: r.get(0)?,
+            commit_seq: r.get(0)?,
             kind: match kind.as_str() {
                 "revision" => "revision",
                 "note" => "note",
@@ -376,10 +376,10 @@ impl Restoring {
     }
 
     /// Takes over the restored archive's identity and write counter.
-    pub fn finish(&self, archive_id: &str, local_seq: i64) -> crate::Result<()> {
+    pub fn finish(&self, archive_id: &str, commit_seq: i64) -> crate::Result<()> {
         for (key, value) in [
             ("archive_id", archive_id.to_owned()),
-            ("write_counter", local_seq.to_string()),
+            ("write_counter", commit_seq.to_string()),
         ] {
             self.conn.execute(
                 "INSERT INTO meta(key, value) VALUES (?1, ?2)
@@ -398,7 +398,7 @@ mod tests {
     fn archive() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
-            "CREATE TABLE note (id TEXT PRIMARY KEY, kind TEXT, body BLOB, local_seq INTEGER);
+            "CREATE TABLE note (id TEXT PRIMARY KEY, kind TEXT, body BLOB, commit_seq INTEGER);
              CREATE TABLE note_target (note_id TEXT, ref TEXT, PRIMARY KEY (note_id, ref));
              CREATE TABLE note_relation (note_id TEXT, kind TEXT, other TEXT);",
         )
@@ -415,7 +415,7 @@ mod tests {
         )
         .unwrap();
         let unit = Unit {
-            local_seq: 7,
+            commit_seq: 7,
             kind: "note",
             key: "n1".into(),
         };
