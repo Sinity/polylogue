@@ -87,7 +87,7 @@ pub fn search(
                FROM output_fts WHERE output_fts MATCH ?1
          ),
          per_message AS (
-             SELECT b.message_pk, min(h.rank) AS rank, h.index, h.text_id
+             SELECT b.message_pk, min(h.rank) AS rank, h.lane, h.text_id
                FROM hits h JOIN block b ON b.text_id = h.text_id
               GROUP BY b.message_pk
          )
