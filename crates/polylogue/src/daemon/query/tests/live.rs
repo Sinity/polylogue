@@ -187,19 +187,19 @@ fn a_wait_ends_with_the_next_event_and_an_idle_notice_is_not_a_wait() {
 fn live_state_is_total_for_sessions_without_hooks() {
     // Law 101: historical sessions with no hook or process evidence have
     // ended; one whose transcript grew within the window is `unknown`.
-    use polylogue_store::fixture::{Fixture, S};
+    use polylogue_store::fixture::{Fixture, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    f.session(S {
+    f.session(SessionFacts {
         id: "claude-code:old",
         last: Some(T0 - 24 * 60 * MIN),
-        ..S::default()
+        ..SessionFacts::default()
     })
     .unwrap();
-    f.session(S {
+    f.session(SessionFacts {
         id: "claude-code:new",
         last: Some(T0),
-        ..S::default()
+        ..SessionFacts::default()
     })
     .unwrap();
     let pool = f.reads().unwrap();
@@ -234,7 +234,7 @@ fn live_state_is_total_for_sessions_without_hooks() {
 #[test]
 fn peers_are_symmetric() {
     // Law 89, with the spec's own examples, through the live query.
-    use polylogue_store::fixture::{Fixture, S};
+    use polylogue_store::fixture::{Fixture, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
     let now = T0 + MIN;
@@ -255,11 +255,11 @@ fn peers_are_symmetric() {
     ];
     for (id, event, waiting, repo, cwd) in rows {
         let pk = f
-            .session(S {
+            .session(SessionFacts {
                 id: &format!("claude-code:{id}"),
                 cwd: Some(cwd),
                 last: Some(if id == "f" { T0 - 48 * 60 * MIN } else { T0 }),
-                ..S::default()
+                ..SessionFacts::default()
             })
             .unwrap();
         // f's evidence is two days old: it has ended.

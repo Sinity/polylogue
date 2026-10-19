@@ -1,35 +1,13 @@
 # Polylogue
 
-Polylogue keeps a local archive of your AI coding sessions (Claude Code and
-Codex) and lets you list, search, read and annotate them from the command line
-or through MCP.
+Polylogue keeps every AI conversation and agent session your tools leave
+behind (Claude Code, Codex, Gemini CLI, Grok CLI, Hermes, and exports from
+ChatGPT, claude.ai, AI Studio, the Gemini app and others) in one local
+archive, exactly as written, and lets you and your agents search, read,
+measure and annotate it from the command line, over MCP or in a web reader.
 
-This repository is the Rust rewrite. The Python Polylogue is still the deployed
-version; the rewrite runs against fresh, separate archives.
-
-## What works today
-
-- **Collecting sessions.** `import` copies one Claude Code or Codex file into the
-  archive. The daemon can also follow one configured source: a Claude Code
-  session file, a Claude Code projects directory, or a Codex home.
-- **Listing and search.** List known sessions and search the human and model
-  text of their messages by words, phrases and prefixes.
-- **Reading.** Read a whole session as JSON or terminal text, read one message,
-  or read in pages sized to a token budget (for agents).
-- **Export.** Export one session as JSON into a directory.
-- **Notes and corrections.** Attach a note or correction to a message or block,
-  revise it, or withdraw it. Notes keep their full history.
-- **MCP.** `polylogue mcp` serves `status`, `list`, `read`, `query` (the
-  query language, `| measure` included), notes and briefs over stdio.
-- **Recovery.** `recover` copies a stopped archive whose last write-ahead log
-  segment is damaged; `daemon --prepare-copy restore` reopens a stopped local
-  copy of an archive.
-
-Credentials in session text (API keys, tokens, private keys and similar) are
-masked in every output. The stored files are not changed.
-
-Not done yet: automatic format detection, a general query language, export of
-more than one session, snippets in search results, and an HTTP interface.
+This repository is the Rust rewrite. The Python Polylogue is still the
+deployed version; the rewrite uses its own archive.
 
 ## Build
 
@@ -43,84 +21,85 @@ nix build .#polylogue          # or: nix develop -c cargo build -p polylogue
 Start the daemon, then talk to it from another terminal:
 
 ```sh
-polylogue daemon
-polylogue import ~/.codex/sessions/2026/10/01/rollout-....jsonl --format codex-rollout --wait
-polylogue                         # list sessions
-polylogue find "flaky test"       # search message text
-polylogue SESSION_ID read         # read a session in the terminal
+polylogue daemon                     # collects from every tool's own location
+polylogue import ~/Downloads/chatgpt-export.zip
+polylogue repo:polylogue since:7d    # a query: sessions in a repository this week
+polylogue read claude-code:SESSION   # read one session
+polylogue measure usage since:30d    # tokens and cost
 ```
 
-The daemon owns the archive: it holds the archive lock, runs the only writer,
-and serves clients over a socket under `$XDG_RUNTIME_DIR` (which must be set
-and absolute). Ctrl-C stops it cleanly. Every other command except `--help`,
-`--version` and `config schema` needs a running daemon.
+The daemon owns the archive: it holds the archive lock, runs the loop that
+collects and parses every input, runs the only writer, and serves clients
+over a Unix socket. Commands that read or write the archive go through a
+running daemon; without one they exit with code 6.
 
-The archive is `$XDG_DATA_HOME/polylogue`, or `~/.local/share/polylogue`;
-`--archive DIR` selects another one. Use a fresh archive for the rewrite; it
-refuses archives written by newer versions and older formats it cannot
-migrate.
+The daemon reads each tool's files where the tool writes them
+(`$CLAUDE_CONFIG_DIR` or `~/.claude`, `$CODEX_HOME` or `~/.codex`, and so on);
+exports come in only by `import`. Every version of every input is kept, so
+a file the tool deletes or rewrites stays in the archive.
 
-### Commands
+The archive is `$XDG_DATA_HOME/polylogue` (`~/.local/share/polylogue`). It
+holds `archive.db` (what cannot be recomputed: inputs and their revisions,
+notes, excisions, settings, delivery records), `index.db` (everything parsed
+and derived, rebuilt from the stored inputs when it is deleted or its format
+changes), `embeddings.db` and `blobs/`.
+
+## Commands
+
+`polylogue --help` lists them all; each takes `--json`.
 
 | Command | What it does |
 |---|---|
-| `daemon` | Run the archive daemon in the foreground. |
-| `daemon --config FILE [--until-idle] [--json]` | Run the daemon and collect from one configured source. `--until-idle` stops once the startup snapshot is stored (not available for a projects directory). `config schema` prints the file's JSON schema. |
-| `import PATH --format FORMAT [--context FILE] [--wait]` | Store one file. Formats: `claude-code-jsonl`, `codex-rollout`, `codex-history-sqlite`. Claude files need `--context FILE`. `--wait` waits until the file's messages are parsed. |
-| `progress INPUT` / `retry INPUT` | Show parsing progress for an imported file, or retry a failed parse. |
-| `input cat INPUT` | Print a stored file, with credentials masked. |
-| `[QUERY] [--json] [--fields A,B]` | List sessions. A query may use `origin:`, `kind:`, `id:`, words, `"phrases"`, `prefix*`, `\| sort by last_active desc` and `\| limit N`. `--fields` chooses the columns. `QUERY \| measure usage` measures the sessions selected. |
-| `live` / `notices` / `changes [--since CURSOR]` | Queries: running sessions by live state, signal notices, and what changed after an answer's `view.cursor`. |
-| `find QUERY [--json]` | Search message text. |
-| `SESSION read [--format json\|terminal]` | Read a whole session. |
-| `message:ID read` | Read one message in the terminal. |
-| `REF read --budget TOKENS` | Read a session, message, block or note as JSON pages that fit the budget. Follow `next` for the following page. `--view dialogue` keeps only human and model text; `--view transcript --tools full --thinking full --harness full` includes everything. |
-| `SESSION export --format json --to DIR` | Export one session into DIR. |
-| `REF note TEXT [--kind note\|correction] [--targets FILE]` | Add a note to a `message:` or `block:` reference. `--targets` names the target and the `seen_hash` you read (a JSON array of `{ref, seen_hash}`; a read returns it as `target_hash.seen_hash`), so later reads can tell when the text changed. |
-| `note:ID revise TEXT` / `note:ID withdraw --reason TEXT` | Change or withdraw a note. |
+| `QUERY` | Run a query: sessions, messages, blocks, tool calls, files, events, notes, links, turns, runs, deliveries, processes, work and changes, with conditions, `\| sort by`, `\| group by`, `\| matches` and `\| measure`. `--why` explains an empty result; `--fields` picks columns; `@N` names row N of the last list. |
+| `list`, `read SESSION` | List sessions; read one in a view (`full`, `dialogue`, `prompts`, `actions`). |
+| `import PATH` | Bring in an export or a directory of them. |
+| `export SESSION…` | Write sessions out as JSON (read back by `import`), Markdown, HTML or terminal text. |
+| `note add\|tag\|withdraw\|list` | Notes and tags on sessions, messages, tool calls, repositories and directories, with revisions. |
+| `keep QUERY` | Keep a query's rows, to read back later as `result:<id>`. |
+| `brief`, `takeover SESSION`, `recall WORDS` | Context for a model: the session-start brief, what to take over another session with, and a search of past work with a record of how it searched. |
+| `continue [SESSION]` | Resume a session with its tool's own command; without one, the sessions in this directory that left something open. |
+| `measure usage\|cost\|sessions\|quota\|outcomes\|failing\|drift\|unanswered\|survival\|daily\|process\|rhythm` | Tokens by kind and cost, subscription quota windows, tool outcomes, commands failing now, format drift and other analyses. Unknown figures stay unknown, never 0. |
+| `live`, `notices`, `changes`, `work` | Sessions running now, signal notices, what changed since a cursor, the work graph. |
+| `excise TARGET` | Remove a session, input or text from every file and derived product, for good. |
+| `embed preview\|build\|status` | Opt-in embeddings for semantic search, with a cost preview. |
+| `setting KEY [VALUE]` | Read or set a setting. |
+| `web` | Open the web reader. |
 | `mcp` | Serve MCP over stdio. |
-| `recover --to NEW_DIR` | Copy a stopped, damaged archive into a new directory. |
+| `hooks install\|uninstall`, `hook EVENT` | Claude Code hooks: live state and the session-start brief. |
+| `install-agent chrome` | Register the browser extension's native messaging host. |
+| `sinex status\|cutover` | The optional Sinex backend (built with the `sinex` feature). |
 
-`import` and note commands print a request ID before sending. After a lost
-reply, repeat the command with the same `--request-id` (and, for `import`, the
-printed `--seen-at`); the archive applies the action once.
+Exit codes: 0 success, 1 an error the daemon reported or an I/O error, 2 an
+invalid request, 6 no daemon running.
 
-### Exit codes
-
-| Code | Meaning |
-|---|---|
-| 0 | Complete result. |
-| 1 | Nothing matched. |
-| 2 | Invalid or not-yet-supported request. |
-| 3 | Refused. |
-| 4 | Not found, conflict or I/O error. |
-| 5 | Partial result: usable, but some data is missing; the reply names what. |
-| 6 | The daemon is not running. |
-| 7 | Timed out. |
-
-JSON replies carry the same outcome in `outcome` (`ok`, `empty`, `degraded`,
-`error`).
+Credentials in session text (API keys, tokens, private keys) are masked in
+every output; the stored bytes are not changed.
 
 ## Repository layout
 
-- `crates/model`: identity, value and outcome types; no I/O.
-- `crates/sources`: one parser per origin on a shared framework.
-- `crates/store`: the SQLite archive and the blob store. Nothing else opens a
-  database.
-- `crates/engine`: the convergence loop: collect, store, parse, derive.
+- `crates/model`: shared types (identities, sessions, messages, blocks,
+  events, notes, prices) and the export format; no I/O.
+- `crates/sources`: one declaration and one parser per origin, on a shared
+  parsing framework.
+- `crates/store`: every SQLite connection and write, and the blob store.
+- `crates/engine`: the loop that collects, stores, parses and derives, and
+  its parse pool.
 - `crates/query`: the query language, compiled to SQL.
-- `crates/render`: one block stream rendered to terminal, Markdown, HTML and
-  JSON.
-- `crates/polylogue`: configuration, the daemon, CLI, MCP, web reader and
-  browser host.
-- `crates/sinex`: the Sinex backend (`primary` mode), behind the `sinex`
-  feature.
-- `crates/testkit`: shared test fixtures, including the Morrow example world.
+- `crates/render`: one stream of rendered blocks in terminal, Markdown, HTML
+  and JSON, and pages sized for models.
+- `crates/polylogue`: the binary: daemon, CLI, MCP, web reader, hooks and the
+  browser extension's host.
+- `crates/sinex`: the Sinex backend, behind the `sinex` feature.
+- `crates/testkit`: test archives built through the real loop, including
+  the synthetic example archive in `examples/morrow/`.
+- `examples/sources/`: golden parser cases, one directory per origin.
 - `extension/`: the browser extension.
 
-The content-addressed file store (`hashed-blobs`), credential masking and the
-`xtask` core (`devkit`) come from
-[polylogue-sinex-common](https://github.com/Sinity/polylogue-sinex-common), shared with Sinex.
+The content-addressed blob store (`hashed-blobs`), credential masking and
+the core of `xtask` (`devkit`) come from
+[polylogue-sinex-common](https://github.com/Sinity/polylogue-sinex-common),
+shared with Sinex.
 
-[docs/development.md](docs/development.md) describes the development checks and
-[docs/REPLACEMENT.md](docs/REPLACEMENT.md) says what replaced the Python version.
+[docs/development.md](docs/development.md) describes the development checks
+and [docs/REPLACEMENT.md](docs/REPLACEMENT.md) says what replaced the Python
+version.

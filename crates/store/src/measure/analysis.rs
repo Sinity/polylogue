@@ -1,6 +1,6 @@
-//! Analyses over sessions and tool calls (old 9l5.8 to .10, avna, xd0ha):
-//! descriptive, with the population each one used stated beside it. Code
-//! selects and structures; it never reads meaning into text.
+//! Analyses over sessions and tool calls, descriptive, with the population
+//! each one used stated beside it. Code selects and structures; it never
+//! reads meaning into text.
 
 use super::Scope;
 use crate::{Reader, Result};
@@ -339,7 +339,7 @@ pub struct Transition {
 /// A failed call and the call that came next in the same session, as both
 /// tools recorded them.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Witness {
+pub struct FailureExample {
     pub session: String,
     pub failed: String,
     pub next: String,
@@ -355,8 +355,8 @@ pub struct Process {
     pub outcomes: Outcomes,
     pub transitions: Vec<Transition>,
     /// The most frequent runs of three consecutive actions.
-    pub motifs: Vec<(String, u64)>,
-    pub failure_witnesses: Vec<Witness>,
+    pub common_sequences: Vec<(String, u64)>,
+    pub failure_examples: Vec<FailureExample>,
 }
 
 /// Directly-follows relations between tool calls within each session, in
@@ -383,7 +383,7 @@ pub fn process(reader: &Reader<'_>, scope: &Scope, top: usize) -> Result<Process
     })?;
     let mut pairs: HashMap<(String, String), (u64, u64)> = HashMap::new();
     let mut triples: HashMap<String, u64> = HashMap::new();
-    let mut witnesses = vec![];
+    let mut examples = vec![];
     let (mut calls, mut untimed, mut sessions) = (0u64, 0u64, 0u64);
     let mut prev: Option<(String, String, String)> = None;
     let mut prev2: Option<String> = None;
@@ -398,8 +398,8 @@ pub fn process(reader: &Reader<'_>, scope: &Scope, top: usize) -> Result<Process
                 e.0 += 1;
                 if o == "error" {
                     e.1 += 1;
-                    if witnesses.len() < top {
-                        witnesses.push(Witness {
+                    if examples.len() < top {
+                        examples.push(FailureExample {
                             session: session.clone(),
                             failed: p.clone(),
                             next: name.clone(),
@@ -429,17 +429,17 @@ pub fn process(reader: &Reader<'_>, scope: &Scope, top: usize) -> Result<Process
         .collect();
     transitions.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.from.cmp(&b.from)));
     transitions.truncate(top);
-    let mut motifs: Vec<(String, u64)> = triples.into_iter().collect();
-    motifs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    motifs.truncate(top);
+    let mut common_sequences: Vec<(String, u64)> = triples.into_iter().collect();
+    common_sequences.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    common_sequences.truncate(top);
     Ok(Process {
         sessions,
         calls,
         calls_without_time: untimed,
         outcomes: outcomes(reader, scope)?,
         transitions,
-        motifs,
-        failure_witnesses: witnesses,
+        common_sequences,
+        failure_examples: examples,
     })
 }
 
@@ -478,11 +478,11 @@ pub fn rhythm(reader: &Reader<'_>, scope: &Scope, day: &LogicalDay) -> Result<Rh
 }
 
 /// A command whose most recent run in a repository failed: what is left to
-/// triage there (old fcyf, "the triage frontier"). A run counts by its
+/// fix there. A run counts by its
 /// decided outcome (ok or error); a run with an unknown outcome decides
 /// nothing.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Unresolved {
+pub struct FailingCommand {
     /// The repository's root commit, or `cwd:<dir>` for sessions in no
     /// known repository.
     pub repository: String,
@@ -500,7 +500,7 @@ pub struct Unresolved {
 }
 
 /// Every repository's unresolved commands in the scope, most recent first.
-pub fn frontier(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Unresolved>> {
+pub fn failing_commands(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<FailingCommand>> {
     let (cond, params) = scope.condition();
     let sql = format!(
         "WITH runs AS (
@@ -526,7 +526,7 @@ pub fn frontier(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Unresolved>> {
     );
     let mut stmt = reader.conn().prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
-        Ok(Unresolved {
+        Ok(FailingCommand {
             repository: r.get(0)?,
             repo: r.get(1)?,
             command: r.get(2)?,
@@ -544,8 +544,8 @@ pub fn frontier(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Unresolved>> {
 /// Inside it, a session is censored as possibly still going.
 pub const QUIET: i64 = 6 * 3_600_000;
 
-/// Time to a session ending on an unanswered prompt (old 9l5.9,
-/// abandonment): the session went quiet for [`QUIET`] with its last human
+/// Time to a session ending on an unanswered prompt (abandonment): the
+/// session went quiet for [`QUIET`] with its last human
 /// prompt followed by no model message. A session that ended answered is
 /// censored at its end, and so is one still within the quiet period.
 /// Structural only: what the prompt asked is never read.
@@ -609,7 +609,7 @@ pub fn unanswered_end(reader: &Reader<'_>, scope: &Scope, now: i64) -> Result<Su
 }
 
 /// Something a format's parser did not know, across every input of that
-/// format: format drift (decision plnext-e3p; spec analysis.md, schema
+/// format: format drift (spec analysis.md, schema
 /// inference). New record types and fields appear here first.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Drift {

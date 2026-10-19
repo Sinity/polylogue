@@ -288,7 +288,7 @@ pub const NOTICES: &str = "deliveries where sender:signal | sort by at desc";
 
 #[derive(Debug, Subcommand)]
 pub enum MeasureCommand {
-    /// Token lanes and cost by model, over a sessions query or everything.
+    /// Tokens by kind and cost by model, over a sessions query or everything.
     Usage(QueryArgs),
     /// The same report as `usage`: cost sits beside the tokens it prices.
     Cost(QueryArgs),
@@ -300,7 +300,7 @@ pub enum MeasureCommand {
     /// Tool outcomes: ok, error, no result and unknown, never one rate.
     Outcomes(QueryArgs),
     /// Per repository, the commands whose most recent run failed.
-    Frontier(QueryArgs),
+    Failing(QueryArgs),
     /// Record types and fields each format's parser did not know, newest
     /// first: where the tools' formats moved.
     Drift,
@@ -567,7 +567,7 @@ pub fn run(args: Args) -> ExitCode {
         },
         Some(Command::Continue {
             session: None, cwd, ..
-        }) => Request::Candidates {
+        }) => Request::Resumable {
             cwd: cwd.unwrap_or_else(current_dir),
             limit: None,
         },
@@ -600,7 +600,7 @@ pub fn run(args: Args) -> ExitCode {
                 MeasureCommand::Sessions(a) => ("sessions".to_owned(), q(a.query)),
                 MeasureCommand::Quota => ("quota".to_owned(), None),
                 MeasureCommand::Outcomes(a) => ("outcomes".to_owned(), q(a.query)),
-                MeasureCommand::Frontier(a) => ("frontier".to_owned(), q(a.query)),
+                MeasureCommand::Failing(a) => ("failing".to_owned(), q(a.query)),
                 MeasureCommand::Drift => ("drift".to_owned(), None),
                 MeasureCommand::Unanswered(a) => ("unanswered".to_owned(), q(a.query)),
                 MeasureCommand::Survival { turns, query } => (
@@ -717,7 +717,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 
 fn request_id() -> String {
-    polylogue_store::user::new_request_id()
+    polylogue_store::user_writes::new_request_id()
 }
 
 fn current_dir() -> PathBuf {
@@ -1088,7 +1088,10 @@ fn print_plain(request: &Request, data: &serde_json::Value) {
     let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_owned();
     match request {
         Request::List { .. } => {
-            crate::positions::remember(&Archive::default_root(), &crate::positions::row_ids(data));
+            crate::row_numbers::remember(
+                &Archive::default_root(),
+                &crate::row_numbers::row_ids(data),
+            );
             for (n, row) in data.as_array().into_iter().flatten().enumerate() {
                 println!(
                     "@{:<3} {:<25} {:>6}  {}  {}",
@@ -1148,7 +1151,7 @@ fn print_plain(request: &Request, data: &serde_json::Value) {
                 );
             }
         }
-        Request::Candidates { .. } => {
+        Request::Resumable { .. } => {
             for c in data.as_array().into_iter().flatten() {
                 let open = &c["open"];
                 let mut why = Vec::new();
@@ -1203,9 +1206,9 @@ fn print_plain(request: &Request, data: &serde_json::Value) {
         ),
         Request::Query { .. } => {
             if matches!(data["shape"].as_str(), Some("rows" | "matches")) {
-                crate::positions::remember(
+                crate::row_numbers::remember(
                     &Archive::default_root(),
-                    &crate::positions::row_ids(&data["rows"]),
+                    &crate::row_numbers::row_ids(&data["rows"]),
                 );
             }
             let _ = polylogue_render::results::render(

@@ -176,7 +176,7 @@ impl<'de> Deserialize<'de> for Author {
 #[serde(rename_all = "snake_case")]
 pub enum NoteKind {
     /// `key` is the tag; `value` optionally carries membership, affinity
-    /// and confidence as JSON (old uh6c).
+    /// and confidence as JSON.
     Tag,
     Note,
     Title,

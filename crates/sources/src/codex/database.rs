@@ -5,7 +5,7 @@
 //!
 //! What becomes rows: thread names, kinds and settings (`threads`), spawn
 //! edges (`thread_spawn_edges`), goals (`thread_goals`) and memories
-//! (`stage1_outputs`). The thread-history tables are a projection of the
+//! (`stage1_outputs`). The thread-history tables are derived from the
 //! rollouts, which are parsed; they stay in the stored export.
 
 use super::{items::str_field, session_id};
@@ -65,14 +65,14 @@ pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
 pub struct Database;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct NoCarry {}
+pub struct NoState {}
 
 fn row_session(row: &Json, field: &str) -> Option<polylogue_model::SessionId> {
     str_field(row, field).and_then(session_id)
 }
 
 impl Parser for Database {
-    type Carry = NoCarry;
+    type Carry = NoState;
 
     fn kind(&self, v: &Json) -> String {
         if v.get("schema").is_some() {
@@ -88,7 +88,7 @@ impl Parser for Database {
 
     fn record(
         &self,
-        _: &mut NoCarry,
+        _: &mut NoState,
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
@@ -190,13 +190,13 @@ impl Parser for Database {
             | "thread_turns"
             | "thread_realtime_items"
             | "thread_history_projection_state" => Disposition::unknown(
-                "a projection of the rollout, which is parsed; kept in the stored export",
+                "derived from the rollout, which is parsed; kept in the stored export",
             ),
             _ => Disposition::unknown("kept in the stored export; not indexed"),
         }
     }
 
-    fn flush(&self, _: &mut NoCarry, _: &mut Output) {}
+    fn flush(&self, _: &mut NoState, _: &mut Output) {}
 }
 
 #[cfg(test)]

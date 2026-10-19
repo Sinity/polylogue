@@ -250,7 +250,7 @@ pub fn open_read(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "cache_size", -65_536)?;
     conn.pragma_update(None, "mmap_size", 1_i64 << 32)?;
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
-    crate::functions::register(&conn)?;
+    crate::sql_functions::register(&conn)?;
     Ok(conn)
 }
 

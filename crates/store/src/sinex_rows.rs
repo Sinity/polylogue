@@ -324,7 +324,7 @@ pub struct Published {
 impl Published {
     pub fn open(root: &std::path::Path) -> crate::Result<Self> {
         Ok(Self {
-            conn: crate::files::open_read(&root.join("archive.db"))?,
+            conn: crate::archive::open_read(&root.join("archive.db"))?,
             blobs: hashed_blobs::Store::open(root.to_path_buf(), vec![], 0o600)?,
         })
     }
@@ -360,9 +360,9 @@ pub struct Restoring {
 impl Restoring {
     pub fn open(archive: &crate::Archive) -> crate::Result<Self> {
         Ok(Self {
-            conn: crate::files::open_write(
+            conn: crate::archive::open_write(
                 &archive.archive_db(),
-                crate::files::cache::ARCHIVE_WRITER,
+                crate::archive::cache::ARCHIVE_WRITER,
             )?,
         })
     }

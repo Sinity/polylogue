@@ -19,7 +19,7 @@
 //! which it reads from Sinex's store (an extra `hashed-blobs` root).
 use async_nats::jetstream;
 use futures_util::StreamExt;
-use polylogue_store::rows::{self, Published as ArchiveRows, Restoring};
+use polylogue_store::sinex_rows::{self, Published as ArchiveRows, Restoring};
 use serde::Deserialize;
 use sinex_model::kinds::polylogue::PolylogueRows;
 use sinex_model::{Class, InputRef, MaterialId, RecordLocation};
@@ -287,7 +287,7 @@ impl Sinex {
             let blob_frames: Vec<String> = batch
                 .blobs
                 .iter()
-                .map(|h| format!("blob:{}", rows::hex(h)))
+                .map(|h| format!("blob:{}", sinex_rows::hex(h)))
                 .collect();
             let known = self.have(&blob_frames).await?;
             for (h, frame) in batch.blobs.iter().zip(blob_frames) {
@@ -338,7 +338,7 @@ impl Sinex {
                 blobs: batch
                     .blobs
                     .iter()
-                    .map(|h| format!("blake3:{}", rows::hex(h)))
+                    .map(|h| format!("blake3:{}", sinex_rows::hex(h)))
                     .collect(),
             };
             self.send(&Ingress::Events {
@@ -442,7 +442,7 @@ impl Sinex {
                 .strip_prefix("blake3:")
                 .ok_or_else(|| Error::Invalid(format!("bad batch name {}", unit.batch)))?;
             let hash = hashed_blobs::Hash(
-                rows::unhex(name)?
+                sinex_rows::unhex(name)?
                     .try_into()
                     .map_err(|_| Error::Invalid(format!("bad batch name {}", unit.batch)))?,
             );

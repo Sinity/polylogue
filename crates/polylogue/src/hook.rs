@@ -2,7 +2,7 @@
 //! <Event>`, the event's JSON on stdin).
 //!
 //! Every event is appended as one line to a carrier file for the calling
-//! harness process, with `O_APPEND` and no fsync (old k3ahm); the daemon
+//! harness process, with `O_APPEND` and no fsync; the daemon
 //! reads carriers through the ordinary append route. Some events also ask
 //! the daemon for context:
 //!
@@ -137,7 +137,7 @@ fn is_uuid(w: &str) -> bool {
 /// Asks for context and returns its text, recording it as delivered once
 /// it is handed to the harness by the caller.
 fn context(ask: Ask) -> Option<(String, String)> {
-    let request_id = polylogue_store::user::new_request_id();
+    let request_id = polylogue_store::user_writes::new_request_id();
     let reply = ask_daemon(
         &Request::Context {
             request_id,

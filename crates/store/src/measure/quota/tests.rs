@@ -45,12 +45,16 @@ fn a_past_reset_is_carried_forward_by_the_window_length() {
     }];
     assert_eq!(
         current_window(&o, T0),
-        Some((Basis::Reported, T0 + HOUR - WEEK * MINUTE, T0 + HOUR))
+        Some((WindowSource::Reported, T0 + HOUR - WEEK * MINUTE, T0 + HOUR))
     );
     let later = T0 + HOUR + 3 * MINUTE;
     assert_eq!(
         current_window(&o, later),
-        Some((Basis::Cadence, T0 + HOUR, T0 + HOUR + WEEK * MINUTE))
+        Some((
+            WindowSource::Projected,
+            T0 + HOUR,
+            T0 + HOUR + WEEK * MINUTE
+        ))
     );
 }
 
@@ -72,25 +76,25 @@ fn law_109_windows_anchor_to_reported_resets() {
     let mut more = times.clone();
     more.insert(0, T0 + 2 * HOUR + 30 * MINUTE);
     let after = blocks(&more, &anchors, five);
-    let after_reset = |b: &[(Basis, i64, i64)]| -> Vec<(Basis, i64, i64)> {
+    let after_reset = |b: &[(WindowSource, i64, i64)]| -> Vec<(WindowSource, i64, i64)> {
         b.iter()
             .copied()
             .filter(|&(_, s, _)| s >= reset - five)
             .collect()
     };
     assert_eq!(after_reset(&before), after_reset(&after));
-    for (basis, s, e) in &after {
+    for (source, s, e) in &after {
         let reported = anchors.contains(&(*s, *e));
         assert_eq!(
-            *basis == Basis::Reported,
+            *source == WindowSource::Reported,
             reported,
-            "{s}..{e} is labelled {basis:?}"
+            "{s}..{e} is labelled {source:?}"
         );
     }
     // The inserted message starts an inferred block cut short where the
     // reported window begins.
     let first = after[0];
-    assert_eq!(first.0, Basis::Inferred);
+    assert_eq!(first.0, WindowSource::Inferred);
     assert_eq!(first.2, reset - five);
 }
 
@@ -102,8 +106,8 @@ fn blocks_start_on_the_hour_and_last_five_hours() {
     assert_eq!(
         b,
         vec![
-            (Basis::Inferred, h, h + 5 * HOUR),
-            (Basis::Inferred, h + 6 * HOUR, h + 11 * HOUR)
+            (WindowSource::Inferred, h, h + 5 * HOUR),
+            (WindowSource::Inferred, h + 6 * HOUR, h + 11 * HOUR)
         ]
     );
 }

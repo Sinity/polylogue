@@ -5,9 +5,9 @@ use serde_json::Value;
 
 pub fn render(what: &str, data: &Value) -> String {
     match what {
-        "quota" | "outlook" => outlook(data),
+        "quota" => quota(data),
         "usage" | "cost" => usage(data, ""),
-        "frontier" => frontier(data),
+        "failing" => failing(data),
         "drift" => drift(data),
         _ => format!(
             "{}\n",
@@ -46,7 +46,7 @@ fn money(m: &Value) -> String {
     }
 }
 
-fn lane(l: &Value) -> String {
+fn token_count(l: &Value) -> String {
     let n = l["tokens"].as_u64().unwrap_or(0);
     let unknown = l["unknown_messages"].as_u64().unwrap_or(0);
     if unknown > 0 && n == 0 {
@@ -59,17 +59,17 @@ fn lane(l: &Value) -> String {
 }
 
 fn usage(u: &Value, indent: &str) -> String {
-    let l = &u["lanes"];
+    let l = &u["tokens"];
     let mut out = format!(
         "{indent}{} responses in {} sessions · input {} · cached {} · cache write {} · output {} · reasoning {}\n\
          {indent}API-equivalent {} · tool-reported {}",
         u["messages"],
         u["sessions"],
-        lane(&l["input"]),
-        lane(&l["cached_input"]),
-        lane(&l["cache_write"]),
-        lane(&l["output"]),
-        lane(&l["reasoning"]),
+        token_count(&l["input"]),
+        token_count(&l["cached_input"]),
+        token_count(&l["cache_write"]),
+        token_count(&l["output"]),
+        token_count(&l["reasoning"]),
         money(&u["api_cost"]),
         money(&u["reported_cost"]),
     );
@@ -83,7 +83,7 @@ fn usage(u: &Value, indent: &str) -> String {
                 "  {:<34} {:>8} responses  out {:>8}  {}\n",
                 m["model"].as_str().unwrap_or("(no model)"),
                 m["messages"],
-                lane(&m["lanes"]["output"]),
+                token_count(&m["tokens"]["output"]),
                 money(&m["api_cost"])
             ));
         }
@@ -95,7 +95,7 @@ fn usage(u: &Value, indent: &str) -> String {
     out
 }
 
-fn outlook(o: &Value) -> String {
+fn quota(o: &Value) -> String {
     let mut out = String::new();
     for t in o["tools"].as_array().into_iter().flatten() {
         out.push_str(t["tool"].as_str().unwrap_or(""));
@@ -124,7 +124,7 @@ fn outlook(o: &Value) -> String {
             out.push_str(&format!(
                 "  {name} {} ({}): {used} · resets {}",
                 w["limit"].as_str().unwrap_or(""),
-                w["basis"].as_str().unwrap_or(""),
+                w["source"].as_str().unwrap_or(""),
                 time(&w["resets_at"]),
             ));
             if let Some(s) = w["status"].as_str() {
@@ -156,8 +156,8 @@ fn outlook(o: &Value) -> String {
     out
 }
 
-/// Unresolved commands grouped by repository, most recent failure first.
-fn frontier(data: &Value) -> String {
+/// FailingCommand commands grouped by repository, most recent failure first.
+fn failing(data: &Value) -> String {
     let items = data.as_array().map_or(&[][..], Vec::as_slice);
     if items.is_empty() {
         return "no command's latest run failed\n".into();

@@ -7,40 +7,40 @@
 //! - `embeddings.db`: purchased vectors, never destroyed by a reindex;
 //! - `blobs/`: input bytes of 128 KiB and over.
 
+pub mod archive;
 pub mod blobs;
 pub mod context;
 pub mod cost;
 pub mod derive;
 pub mod excise;
-pub mod export;
 pub mod fault;
-pub mod files;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
-pub mod functions;
 mod live;
 pub mod measure;
 pub mod notes;
 pub mod read;
-mod repos;
-pub mod rows;
+mod repo_lookup;
 pub mod schema;
 pub mod search;
 pub mod session_export;
+pub mod sinex_rows;
+pub mod sql_functions;
 pub mod timing;
-pub mod user;
+pub mod tool_databases;
+pub mod user_writes;
 pub mod vectors;
 pub mod work;
 pub mod writer;
 
+pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, FileFacts, Piece};
-pub use context::{DeliveryRow, Obligations, Prompt};
-pub use files::{Archive, ArchiveLock};
+pub use context::{DeliveryRow, OpenItems, Prompt};
 pub use notes::NoteFilter;
 pub use read::{KnownInput, ReadPool, Reader, SessionSummary, SqlValue, Status};
-pub use user::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
+pub use user_writes::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
 pub use writer::{
-    Batch, InputKey, Observation, ParseStep, Release, WriteReport, Writer, WriterSender,
+    Batch, InFlight, InputKey, Observation, ParseStep, WriteReport, Writer, WriterSender,
 };
 
 #[derive(Debug, thiserror::Error)]

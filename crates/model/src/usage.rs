@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-/// Token counts for one model response, in four lanes. A lane the source
-/// did not report is `None`, never 0.
+/// Token counts for one model response, by kind: uncached input, cached
+/// input, output and reasoning, plus cache writes. A count the source did
+/// not report is `None`, never 0.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens not served from a cache.
@@ -30,10 +31,10 @@ impl Usage {
         *self == Self::default()
     }
 
-    /// Sum of the input lanes, or `None` when no input lane was reported.
+    /// Sum of the input counts, or `None` when none was reported.
     pub fn total_input(&self) -> Option<u64> {
-        let lanes = [self.input, self.cached_input, self.cache_write];
-        lanes
+        let inputs = [self.input, self.cached_input, self.cache_write];
+        inputs
             .iter()
             .flatten()
             .copied()

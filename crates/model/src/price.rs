@@ -34,7 +34,7 @@ pub struct Price {
 /// The long-context rates of a model whose price rises with prompt size.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct LongContext {
-    /// Prompt tokens (every input lane together) above which these apply.
+    /// Prompt tokens (every kind of input together) above which these apply.
     pub above: u64,
     pub input: f64,
     #[serde(default)]
@@ -105,7 +105,7 @@ impl Catalog {
     }
 
     /// API-equivalent cost of one response in nano-USD, or `None` when the
-    /// model is unpriced or a lane that carries tokens has no price or was
+    /// model is unpriced or a kind of token it carries has no price or was
     /// not reported.
     pub fn cost_nusd(&self, model: Option<&str>, usage: &Usage) -> Option<i64> {
         let price = self.price(model?)?;
@@ -141,7 +141,7 @@ impl Catalog {
             .map(|w| w.saturating_sub(write_1h.unwrap_or(0)));
         let mut usd_e6 = input as f64 * in_rate + output as f64 * out_rate;
         // Reasoning is billed at the output rate; sources that count it
-        // inside output store it in its own lane only.
+        // inside output store it in its own count only.
         usd_e6 += usage.reasoning.unwrap_or(0) as f64 * out_rate;
         for (tokens, rate) in [
             (usage.cached_input, cached_rate),

@@ -9,8 +9,10 @@ pub use polylogue_model::{BackgroundUpdate, InlineBlob, MessageRow, Output};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub trait Parser {
-    /// State carried between records and between appends. Small by design
-    /// (at most a few hundred KB on the real archive).
+    /// The carry: state a parser keeps between records and between
+    /// appends of one input (open tool calls, the current message), so an
+    /// append is parsed without reading the file again. Small by design (at
+    /// most a few hundred KB on the real archive).
     type Carry: Default + Clone + Serialize + DeserializeOwned;
 
     /// The kind name accounting uses for a record (`user`, `progress`).

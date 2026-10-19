@@ -276,7 +276,7 @@ fn blocks(m: &Json) -> Vec<Block> {
     out
 }
 
-/// Gemini reports input including the cached part; the lanes split it.
+/// Gemini reports input including the cached part; the counts split it.
 fn usage(tokens: Option<&Json>) -> Usage {
     let Some(t) = tokens else {
         return Usage::default();

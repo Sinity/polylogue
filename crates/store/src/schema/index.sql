@@ -249,8 +249,8 @@ INSERT INTO output_fts(output_fts, rank) VALUES ('hashsize', 67108864);
 -- builds the search indexes in bulk when it ends.
 CREATE TABLE search_pending (
   text_id           INTEGER NOT NULL,       -- text.id
-  bit               INTEGER NOT NULL,       -- 1 text_fts, 2 output_fts (text.indexed)
-  PRIMARY KEY (text_id, bit)
+  fts_table         INTEGER NOT NULL,       -- which index: 1 text_fts, 2 output_fts (the bits of text.indexed)
+  PRIMARY KEY (text_id, fts_table)
 ) STRICT, WITHOUT ROWID;
 
 -- One row per tool call, paired with its result inside the same session. The
@@ -284,7 +284,7 @@ CREATE INDEX tool_call_tool    ON tool_call(tool);
 CREATE INDEX tool_call_action  ON tool_call(action, outcome);
 CREATE INDEX tool_call_failed  ON tool_call(session_pk) WHERE outcome <> 'ok';
 CREATE INDEX tool_call_path    ON tool_call(path) WHERE path IS NOT NULL;
-CREATE INDEX tool_call_repo_command ON tool_call(command_norm, at) WHERE command_norm IS NOT NULL;   -- the triage frontier
+CREATE INDEX tool_call_repo_command ON tool_call(command_norm, at) WHERE command_norm IS NOT NULL;   -- failing commands
 CREATE INDEX tool_call_result  ON tool_call(result_block_pk) WHERE result_block_pk IS NOT NULL;   -- foreign-key check
 
 -- Substring search on short fields (command:, path:) without a scan. Unfolded
@@ -347,7 +347,6 @@ CREATE TABLE event (
   kind              TEXT NOT NULL,          -- open set; each provider's kinds are listed in sources/
                                             -- (compaction, rate_limit, hook_run, ...), plus marker_not_applied
   at                INTEGER,
-  model_saw         INTEGER NOT NULL DEFAULT 0,  -- 1 if this content was part of the model's context
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   parser_version    INTEGER NOT NULL,       -- with input_pk: which parse produced it (convergence.md, rebuilding a session)
   source_chain      INTEGER,                -- revision chain of the byte range (as message.source_chain)
@@ -537,7 +536,7 @@ CREATE TABLE repo_lookup (
 
 
 
--- The work graph (architecture 4.4; old 1vpm, 67ac), derived from structure
+-- The work graph (architecture 4.4), derived from structure
 -- only (spec model.md, The work graph): goals are what a session declared it
 -- would do (a Bead claimed by a `bd` command, a todo or plan item), attempts
 -- are a session pursuing a goal, verifications are check commands with their

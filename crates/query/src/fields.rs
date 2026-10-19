@@ -608,12 +608,6 @@ pub static FIELDS: &[Field] = &[
         "compaction, model_switch, permission, …",
     ).sql("{r}.kind"),
     f(Events, "at", Time, "").sql("{r}.at"),
-    f(
-        Events,
-        "model_saw",
-        Bool,
-        "the content was part of the model's context",
-    ).sql("{r}.model_saw"),
     f(Events, "since", Special, "at or after the time"),
     f(Events, "until", Special, "at or before the time"),
     // links

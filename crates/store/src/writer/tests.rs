@@ -96,7 +96,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             bodies: vec![],
             events: vec![],
         }),
-        release: Release::default(),
+        release: InFlight::default(),
     }
 }
 
@@ -564,7 +564,7 @@ fn a_release_runs_once_when_its_batch_is_dropped() {
     let released = Arc::new(AtomicU64::new(0));
     let counter = Arc::clone(&released);
     let mut b = batch("a", 0, 0, vec![], &[]);
-    b.release = Release::new(move || {
+    b.release = InFlight::new(move || {
         counter.fetch_add(7, Ordering::SeqCst);
     });
     let copy = b.clone();

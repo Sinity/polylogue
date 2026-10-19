@@ -2,8 +2,8 @@
 //! sees one consistent snapshot of `index.db` with `archive.db` attached.
 
 use crate::Result;
+use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
-use crate::files::{Archive, open_read};
 use crate::writer::{restore_text, unpack_block, unpack_text};
 use polylogue_model::{
     Block, Message, MessageId, PromptKind, Role, Session, SessionId, SessionKind, Timestamp,
@@ -461,7 +461,7 @@ impl Reader<'_> {
                 model,
                 at,
                 parent,
-                lanes,
+                tokens,
                 tier,
                 stop,
                 duration,
@@ -487,11 +487,11 @@ impl Reader<'_> {
                 prompt_kind: kind.as_deref().and_then(parse_name::<PromptKind>),
                 blocks: blocks.remove(&pk).unwrap_or_default(),
                 usage: Usage {
-                    input: n(lanes[0]),
-                    cached_input: n(lanes[1]),
-                    cache_write: n(lanes[2]),
-                    output: n(lanes[3]),
-                    reasoning: n(lanes[4]),
+                    input: n(tokens[0]),
+                    cached_input: n(tokens[1]),
+                    cache_write: n(tokens[2]),
+                    output: n(tokens[3]),
+                    reasoning: n(tokens[4]),
                     cache_write_1h: n(w1h),
                     service_tier: tier,
                     speed,

@@ -1,9 +1,10 @@
 //! The hook spool: one JSON line per harness hook event (session start,
 //! prompt submitted, tool about to run, tool finished, compaction, stop),
-//! appended without a sync (`k3ahm`). Two layouts share the format: a file
+//! appended without a sync. Two layouts share the format: a file
 //! per session (`<provider>-<session>.jsonl`) and dated carrier files
-//! (`carriers/<provider>/<date>/*.ndjson`). The `polylogue hook` command
-//! writes a third: one carrier per harness process (`<pid>.ndjson`), lines
+//! (`carriers/<provider>/<date>/*.ndjson`; a carrier is a file of hook
+//! lines written by one process). The `polylogue hook` command writes a
+//! third: one carrier per harness process (`<pid>.ndjson`), lines
 //! `{"at_ns", "event", "harness_pid", "payload"}`, for Claude Code.
 //!
 //! Each line becomes an event on the session it names, kept whole: what

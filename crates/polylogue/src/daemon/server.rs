@@ -7,7 +7,7 @@ use super::{Request, Response};
 use crate::briefing::{self, Ask};
 use polylogue_engine::{Config, Engine, LoopMsg, Pass};
 use polylogue_model::Author;
-use polylogue_store::user::{self as user_writes, machine_id};
+use polylogue_store::user_writes::{self as user_writes, machine_id};
 use polylogue_store::{
     Archive, Delivery, ReadPool, StoreError, UserRequest, UserWrite, WriterSender,
 };
@@ -207,7 +207,7 @@ fn signal_loop(d: &Daemon) {
             if h.how == How::Interrupt && !rule.operator {
                 refs.push("interrupt:agent".into());
             }
-            let id = polylogue_store::user::new_request_id();
+            let id = polylogue_store::user_writes::new_request_id();
             let delivery = Delivery {
                 recipient_kind: "operator".into(),
                 recipient_id: None,
@@ -240,7 +240,7 @@ fn signal_loop(d: &Daemon) {
             };
             if let Some((what, detail)) = event {
                 let _ = d.writes.user(UserRequest::now(
-                    polylogue_store::user::new_request_id(),
+                    polylogue_store::user_writes::new_request_id(),
                     UserWrite::DeliveryEvent {
                         delivery: id,
                         what,
@@ -309,9 +309,8 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 why,
                 session,
                 now: now_ms(),
-                // The operator's zone and 04:00 day start; the `day.zone`
-                // and `day.logical_start` settings come with the settings
-                // lane.
+                // The operator's zone and 04:00 day start; there are no
+                // `day.zone` or `day.logical_start` settings yet.
                 day: polylogue_model::LogicalDay::system(),
                 embeddings,
                 near: Some(&near),
@@ -490,13 +489,13 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 },
             )
         }
-        Request::Candidates { cwd, limit } => {
-            match crate::continuation::candidates(&reader, &cwd, limit.unwrap_or(10)) {
+        Request::Resumable { cwd, limit } => {
+            match crate::resume::resumable(&reader, &cwd, limit.unwrap_or(10)) {
                 Ok(c) => ok(c),
                 Err(e) => store_error(&e),
             }
         }
-        Request::Continue { session } => match crate::continuation::plan(&reader, &session) {
+        Request::Continue { session } => match crate::resume::plan(&reader, &session) {
             Ok(p) => ok(p),
             Err(e) => store_error(&e),
         },

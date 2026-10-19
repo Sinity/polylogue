@@ -22,20 +22,18 @@ inside `nix develop`.
   63): `cargo nextest run -p polylogue-engine --features faults --test
   faults`. The `faults` feature arms the store's fault points
   (`polylogue_store::fault`); nothing that ships enables it.
-- **End-to-end scenarios:** the integration tests in `crates/polylogue/tests`
+- **End-to-end scenarios:** the `e2e` tests in `crates/polylogue/tests/e2e/`
   start the real `polylogue` binary as a daemon over a temporary archive and
-  drive it through the CLI and the MCP server (`tests/session_read/mcp_client.rs`).
-  They also run as part of the full suite; `xtask scenarios` runs only them.
+  drive it through the CLI, and as the browser extension's native messaging
+  host. They also run as part of the full suite; `xtask scenarios` runs only
+  them.
 - **Package build:** builds the `polylogue` binary from a clean, locked
   source. It does not run tests; the full suite covers them with incremental
   builds.
 
 `xtask check` and `xtask scenarios` set `TMPDIR` to a fresh directory under
 `/dev/shm` and remove it afterwards. Tests write fsync'd archives, and on the
-btrfs work disk those syncs dominated test time. The daemon `World` harness in
-`crates/polylogue/tests/support` puts its archive on tmpfs even when run
-directly. The store's killed-writer WAL reopen test deliberately keeps a real
-filesystem, the one named by `TEST_DURABLE_TMPDIR` (`target/tmp`).
+btrfs work disk those syncs dominated test time.
 
 The dev profile builds dependencies at `opt-level = 2` and workspace crates
 at `opt-level = 1`. Tests spend most of their CPU in SQLite, JSON and the
@@ -54,6 +52,13 @@ outcome with output for failures, and compiler warnings and errors.
 more, each with `--json`. `test --changed` runs the tests of packages changed
 since the merge base with `origin/master` and of everything that depends on
 them.
+
+Tests are laid out as AGENTS.md says: unit tests in `name/tests.rs` beside
+their module, integration tests as one binary per area
+(`crates/<crate>/tests/<area>/main.rs`). The engine's are `convergence` (the
+loop over files a test writes), `laws` (properties every archive keeps, as
+property tests over generated archives and over the example archive) and
+`faults`.
 
 Tests that need realistic data use `polylogue-testkit`: `Morrow::build(Set::Main)`
 lays the Morrow example archive (`examples/morrow/`, facts in its
@@ -98,5 +103,4 @@ only the deadline can end the wait; other tests wait for an event (a reply, a
 child's acknowledgement file, a closed connection) with no deadline of their
 own. A hung test is ended by nextest's slow-timeout (`.config/nextest.toml`),
 so run the suite through `xtask check` or `cargo nextest run`; under plain
-`cargo test` a hung test waits forever. The engine owner tests poll progress
-with a growing pause, because the owner reports progress only on request.
+`cargo test` a hung test waits forever.

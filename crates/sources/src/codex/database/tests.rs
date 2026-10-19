@@ -40,7 +40,7 @@ fn rows_become_sessions_links_and_events() {
         bytes.extend(serde_json::to_vec(l).unwrap());
         bytes.push(b'\n');
     }
-    let step = run(&Database, &mut NoCarry::default(), &bytes, 0).unwrap();
+    let step = run(&Database, &mut NoState::default(), &bytes, 0).unwrap();
     let s = &step.output.sessions[0];
     assert_eq!(s.title.as_ref().unwrap().text, "Fix the build");
     assert_eq!(s.started.unwrap().unix_ms(), 1_772_359_200_123);

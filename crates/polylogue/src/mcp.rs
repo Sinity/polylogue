@@ -141,7 +141,7 @@ pub struct AddNoteArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct CandidatesArgs {
+pub struct ResumableArgs {
     /// The directory to look in.
     pub cwd: String,
 }
@@ -199,7 +199,7 @@ impl Polylogue {
         };
         context_text(
             &Request::Context {
-                request_id: polylogue_store::user::new_request_id(),
+                request_id: polylogue_store::user_writes::new_request_id(),
                 ask: Ask::SessionStart {
                     cwd: a.cwd.into(),
                     session,
@@ -221,7 +221,7 @@ impl Polylogue {
         };
         context_text(
             &Request::Context {
-                request_id: polylogue_store::user::new_request_id(),
+                request_id: polylogue_store::user_writes::new_request_id(),
                 ask: Ask::Takeover {
                     session,
                     for_session: None,
@@ -238,7 +238,7 @@ impl Polylogue {
     async fn recall(&self, Parameters(a): Parameters<RecallArgs>) -> String {
         context_text(
             &Request::Context {
-                request_id: polylogue_store::user::new_request_id(),
+                request_id: polylogue_store::user_writes::new_request_id(),
                 ask: Ask::Recall {
                     text: a.text,
                     cwd: a.cwd.map(PathBuf::from),
@@ -251,7 +251,7 @@ impl Polylogue {
     }
 
     #[tool(
-        description = "Run a query: rows of a unit (sessions, messages, blocks, tool_calls, files, events, notes, links, turns, runs, deliveries, processes, work, changes) with stages (`| sort by`, `| group by`, `| matches`). `| measure WHAT` ends a sessions query with a measurement: usage, cost, sessions, quota, outcomes, frontier, drift, unanswered, survival, survival-turns, daily:<tokens|api_cost|sessions|prompts|tool_errors>, process or rhythm; unknown figures are null, never 0. Each answer's `view.cursor` continues `changes where after:CURSOR`."
+        description = "Run a query: rows of a unit (sessions, messages, blocks, tool_calls, files, events, notes, links, turns, runs, deliveries, processes, work, changes) with stages (`| sort by`, `| group by`, `| matches`). `| measure WHAT` ends a sessions query with a measurement: usage, cost, sessions, quota, outcomes, failing, drift, unanswered, survival, survival-turns, daily:<tokens|api_cost|sessions|prompts|tool_errors>, process or rhythm; unknown figures are null, never 0. Each answer's `view.cursor` continues `changes where after:CURSOR`."
     )]
     async fn query(&self, Parameters(a): Parameters<QueryArgs>) -> String {
         answer(
@@ -306,7 +306,7 @@ impl Polylogue {
         };
         answer(
             &Request::AddNote {
-                request_id: polylogue_store::user::new_request_id(),
+                request_id: polylogue_store::user_writes::new_request_id(),
                 note: NewNote {
                     kind,
                     key: None,
@@ -325,9 +325,9 @@ impl Polylogue {
     #[tool(
         description = "Sessions in a directory that left something open (an unanswered prompt, an unfinished tool call, a todo, a handoff), with their native resume commands."
     )]
-    async fn resume_candidates(&self, Parameters(a): Parameters<CandidatesArgs>) -> String {
+    async fn resumable_sessions(&self, Parameters(a): Parameters<ResumableArgs>) -> String {
         answer(
-            &Request::Candidates {
+            &Request::Resumable {
                 cwd: a.cwd.into(),
                 limit: None,
             },

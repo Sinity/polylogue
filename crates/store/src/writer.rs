@@ -11,8 +11,8 @@
 //! behind its bytes; the loop parses them again, and every write here is an
 //! upsert, so that changes nothing.
 
+use crate::archive::{Archive, open_write};
 use crate::blobs::{Change, FileFacts, Piece, Stored};
-use crate::files::{Archive, open_write};
 use crate::{Result, StoreError};
 use polylogue_model::{
     Accounting, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, PromptKind,
@@ -213,7 +213,7 @@ pub struct Batch {
     /// Runs when the writer is done with the batch: after its transaction
     /// commits (the writer keeps a transaction's batches to retry them one
     /// at a time), or when a batch is dropped unsent.
-    pub release: Release,
+    pub release: InFlight,
 }
 
 /// A callback that runs once, when the value holding it is dropped. The
@@ -221,15 +221,15 @@ pub struct Batch {
 /// bytes-in-flight limit until the writer has committed the batch; parsed
 /// rows waiting for the writer are memory too. A clone holds nothing.
 #[derive(Default)]
-pub struct Release(Option<Box<dyn FnOnce() + Send>>);
+pub struct InFlight(Option<Box<dyn FnOnce() + Send>>);
 
-impl Release {
+impl InFlight {
     pub fn new(f: impl FnOnce() + Send + 'static) -> Self {
         Self(Some(Box::new(f)))
     }
 }
 
-impl Drop for Release {
+impl Drop for InFlight {
     fn drop(&mut self) {
         if let Some(f) = self.0.take() {
             f();
@@ -237,24 +237,24 @@ impl Drop for Release {
     }
 }
 
-impl Clone for Release {
+impl Clone for InFlight {
     fn clone(&self) -> Self {
         Self(None)
     }
 }
 
-impl PartialEq for Release {
+impl PartialEq for InFlight {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
-impl std::fmt::Debug for Release {
+impl std::fmt::Debug for InFlight {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(if self.0.is_some() {
-            "Release"
+            "InFlight"
         } else {
-            "Release(none)"
+            "InFlight(none)"
         })
     }
 }
@@ -275,8 +275,8 @@ enum Msg {
     Flush(SyncSender<WriteReport>),
     /// A note, delivery or setting; answered once committed.
     User(
-        Box<crate::user::UserRequest>,
-        SyncSender<Result<crate::user::UserOutcome>>,
+        Box<crate::user_writes::UserRequest>,
+        SyncSender<Result<crate::user_writes::UserOutcome>>,
     ),
     /// An excision, with the blob store whose files it changes.
     Excise(
@@ -353,7 +353,7 @@ const QUEUE: usize = 4;
 
 /// Input bytes a transaction covers before committing. A batch's bytes
 /// stay counted against the parse pool's limit until its transaction
-/// commits ([`Release`]); committing well before that limit lets the pool
+/// commits ([`InFlight`]); committing well before that limit lets the pool
 /// keep parsing while the writer commits, instead of the two alternating.
 const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 
@@ -365,7 +365,7 @@ impl Writer {
     /// build. The first flush syncs it and clears the mark; an index still
     /// marked when the archive is next opened is set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
-        let index = open_write(&archive.index_db(), crate::files::cache::INDEX_WRITER)?;
+        let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
         crate::cost::reprice(&index, polylogue_model::Catalog::builtin())?;
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
@@ -408,7 +408,8 @@ impl Writer {
         } else {
             Vec::new()
         };
-        let archive_conn = open_write(&archive.archive_db(), crate::files::cache::ARCHIVE_WRITER)?;
+        let archive_conn =
+            open_write(&archive.archive_db(), crate::archive::cache::ARCHIVE_WRITER)?;
         let refused = crate::excise::Refused::load(&archive_conn)?;
         let mut inner = Inner {
             archive: archive_conn,
@@ -453,7 +454,10 @@ impl Writer {
 
     /// Writes one user request (a note, delivery or setting) and waits for
     /// it to commit. It is written after the batches already queued.
-    pub fn user(&self, request: crate::user::UserRequest) -> Result<crate::user::UserOutcome> {
+    pub fn user(
+        &self,
+        request: crate::user_writes::UserRequest,
+    ) -> Result<crate::user_writes::UserOutcome> {
         user_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, request)
     }
 
@@ -513,7 +517,10 @@ impl WriterSender {
     }
 
     /// As [`Writer::user`].
-    pub fn user(&self, request: crate::user::UserRequest) -> Result<crate::user::UserOutcome> {
+    pub fn user(
+        &self,
+        request: crate::user_writes::UserRequest,
+    ) -> Result<crate::user_writes::UserOutcome> {
         user_via(&self.0, request)
     }
 
@@ -532,8 +539,8 @@ fn derive_via(tx: &SyncSender<Msg>) -> Result<u64> {
 
 fn user_via(
     tx: &SyncSender<Msg>,
-    request: crate::user::UserRequest,
-) -> Result<crate::user::UserOutcome> {
+    request: crate::user_writes::UserRequest,
+) -> Result<crate::user_writes::UserOutcome> {
     let (reply, wait) = sync_channel(1);
     tx.send(Msg::User(Box::new(request), reply))
         .map_err(|_| StoreError::WriterGone)?;
@@ -765,7 +772,7 @@ impl Inner {
         store: &hashed_blobs::Store,
     ) -> Result<crate::excise::Excised> {
         let embeddings = if self.embeddings_db.exists() {
-            let e = open_write(&self.embeddings_db, crate::files::cache::SETUP)?;
+            let e = open_write(&self.embeddings_db, crate::archive::cache::SETUP)?;
             e.execute_batch("BEGIN IMMEDIATE")?;
             Some(e)
         } else {
@@ -777,7 +784,7 @@ impl Inner {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let seq = bump_counter(&atx)?;
         let counter = bump_counter(&itx)?;
-        let txs = crate::excise::Txs {
+        let txs = crate::excise::Transactions {
             archive: &atx,
             index: &itx,
             embeddings: embeddings.as_ref(),
@@ -853,11 +860,11 @@ impl Inner {
     /// One user request in its own `archive.db` transaction.
     fn write_user(
         &mut self,
-        request: &crate::user::UserRequest,
-    ) -> Result<crate::user::UserOutcome> {
+        request: &crate::user_writes::UserRequest,
+    ) -> Result<crate::user_writes::UserOutcome> {
         let tx = self.archive.transaction()?;
         let seq = bump_counter(&tx)?;
-        let outcome = crate::user::apply(&tx, request, seq)?;
+        let outcome = crate::user_writes::apply(&tx, request, seq)?;
         if outcome.repeat {
             // A resent request: nothing to keep, not even the counter bump.
             tx.rollback()?;
@@ -1240,7 +1247,7 @@ fn search_thread(
             continue;
         }
         if conn.is_none() {
-            match open_write(index_db, crate::files::cache::SEARCH) {
+            match open_write(index_db, crate::archive::cache::SEARCH) {
                 Ok(c) => conn = Some(c),
                 Err(e) => {
                     eprintln!("polylogue: search thread: open the index: {e}");
@@ -1269,8 +1276,8 @@ fn write_pending_search(conn: &Connection, limit: i64) -> Result<u64> {
         let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
         let rows: Vec<(i64, i64, Vec<u8>)> = tx
             .prepare_cached(
-                "SELECT p.text_id, p.bit, t.body FROM search_pending p JOIN text t ON t.id = p.text_id
-                 ORDER BY p.text_id, p.bit LIMIT ?1",
+                "SELECT p.text_id, p.fts_table, t.body FROM search_pending p JOIN text t ON t.id = p.text_id
+                 ORDER BY p.text_id, p.fts_table LIMIT ?1",
             )?
             .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?;
@@ -1291,7 +1298,7 @@ fn write_pending_search(conn: &Connection, limit: i64) -> Result<u64> {
                 "INSERT INTO output_fts(rowid, body) VALUES (?1, ?2)"
             };
             tx.prepare_cached(sql)?.execute(params![id, folded])?;
-            tx.prepare_cached("DELETE FROM search_pending WHERE text_id = ?1 AND bit = ?2")?
+            tx.prepare_cached("DELETE FROM search_pending WHERE text_id = ?1 AND fts_table = ?2")?
                 .execute(params![id, bit])?;
         }
         written += rows.len() as u64;
@@ -1375,7 +1382,7 @@ fn write_rows(
         ctx.write_link(l)?;
     }
     for l in &p.output.repo_lookups {
-        crate::repos::upsert_lookup(tx, l, input_pk, counter)?;
+        crate::repo_lookup::upsert_lookup(tx, l, input_pk, counter)?;
     }
     // Every session these records touched is derived again.
     for pk in sessions.values() {
@@ -2066,7 +2073,7 @@ impl Ctx<'_, '_> {
             if !self.bulk {
                 self.tx
                     .prepare_cached(
-                        "INSERT OR IGNORE INTO search_pending(text_id, bit) VALUES (?1, ?2)",
+                        "INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (?1, ?2)",
                     )?
                     .execute(params![id, bit])?;
             }

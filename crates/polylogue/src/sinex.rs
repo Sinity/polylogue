@@ -29,7 +29,7 @@ pub fn start(archive: &Archive, config: &mut Config) -> std::io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let empty = polylogue_store::rows::Published::open(&archive.root)
+    let empty = polylogue_store::sinex_rows::Published::open(&archive.root)
         .and_then(|p| p.units(0))
         .map(|u| u.is_empty())
         .unwrap_or(false);

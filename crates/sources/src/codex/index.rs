@@ -16,10 +16,10 @@ use std::collections::BTreeMap;
 pub struct History;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct NoCarry {}
+pub struct NoState {}
 
 impl Parser for History {
-    type Carry = NoCarry;
+    type Carry = NoState;
 
     fn kind(&self, _: &Json) -> String {
         "prompt".into()
@@ -27,7 +27,7 @@ impl Parser for History {
 
     fn record(
         &self,
-        _: &mut NoCarry,
+        _: &mut NoState,
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
@@ -50,7 +50,7 @@ impl Parser for History {
         Disposition::Materialized
     }
 
-    fn flush(&self, _: &mut NoCarry, _: &mut Output) {}
+    fn flush(&self, _: &mut NoState, _: &mut Output) {}
 }
 
 pub struct SessionIndex;
