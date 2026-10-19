@@ -14,6 +14,7 @@ pub mod codex;
 pub mod document;
 pub mod fields;
 pub mod frame;
+pub mod gemini_app;
 pub mod gemini_cli;
 pub mod grok_cli;
 pub mod hook_spool;
