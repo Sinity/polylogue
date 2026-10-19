@@ -314,6 +314,25 @@ fn recognize_import(path: &Path, head: &[u8]) -> Option<&'static OriginSpec> {
 const KEPT: &str = "export-file";
 
 /// The range a plan's first job reads: a document whole, lines by chunk.
+/// `path` itself when it is a file, every file below it when it is a
+/// directory, sorted so an import's order does not depend on the
+/// filesystem. Symbolic links are not followed into directories.
+fn files_under(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_dir() {
+        out.push(path.to_path_buf());
+        return Ok(());
+    }
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(path)?
+        .map(|e| e.map(|e| e.path()))
+        .collect::<std::io::Result<_>>()?;
+    entries.sort();
+    for entry in entries {
+        files_under(&entry, out)?;
+    }
+    Ok(())
+}
+
 fn span(origin: &OriginSpec, chunk: u64) -> u64 {
     match origin.framing {
         Framing::Lines => chunk,
@@ -820,7 +839,13 @@ impl Engine {
         let mut report = ImportReport::default();
         let mut group = Vec::new();
         let mut group_bytes = 0u64;
+        // A directory (an old spool, an unpacked export) imports every file
+        // under it, in path order.
+        let mut files = Vec::new();
         for path in paths {
+            files_under(path, &mut files)?;
+        }
+        for path in &files {
             let mut head = [0u8; 64];
             let n = std::io::Read::read(&mut std::fs::File::open(path)?, &mut head)?;
             let head = &head[..n];

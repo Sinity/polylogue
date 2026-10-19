@@ -272,6 +272,23 @@ fn importing_the_same_bytes_twice_stores_them_once() {
     assert_eq!(second.already_stored, [outside]);
 }
 
+#[test]
+fn importing_a_directory_imports_every_file_under_it() {
+    let w = World::new();
+    let spool = w.dir.path().join("old-spool");
+    fs::create_dir_all(spool.join("nested")).unwrap();
+    fs::write(spool.join("a.jsonl"), user("d1", "sa", "first")).unwrap();
+    fs::write(spool.join("nested/b.jsonl"), user("d2", "sb", "second")).unwrap();
+    let (mut e, _lock) = w.engine(64 << 20);
+    let report = e.import(std::slice::from_ref(&spool)).unwrap();
+    assert_eq!(
+        report.imported,
+        [spool.join("a.jsonl"), spool.join("nested/b.jsonl")]
+    );
+    assert_eq!(w.texts("sa"), ["first"]);
+    assert_eq!(w.texts("sb"), ["second"]);
+}
+
 fn messages_of(root: &Path, session: &str) -> Vec<Message> {
     let pool = ReadPool::open(&Archive::at(root)).unwrap();
     let id = SessionId::parse(session).unwrap();
