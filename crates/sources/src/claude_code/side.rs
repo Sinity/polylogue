@@ -9,7 +9,7 @@ use super::{ROOT, session_id};
 use crate::document::Sink;
 use crate::frame::Record;
 use crate::origin::Root;
-use crate::parse::{DocumentParser, Output, Parser, StepParser, Whole};
+use crate::parse::{DocumentParser, Output, Parse, Parser};
 use crate::time;
 use crate::{Accounting, Disposition};
 use polylogue_model::{Event, Json, Link, LinkKind, Session, SessionKind, Timestamp, TitleSource};
@@ -124,8 +124,8 @@ pub fn recognize_side(path: &Path, _head: &[u8]) -> bool {
     Side::from_path(path).is_some()
 }
 
-pub fn open_side(path: &Path) -> Option<Box<dyn StepParser>> {
-    Side::from_path(path).map(|side| Box::new(Whole(SideFile { side })) as Box<dyn StepParser>)
+pub fn open_side(path: &Path) -> Option<Parse> {
+    Side::from_path(path).map(|side| Parse::Document(Box::new(SideFile { side })))
 }
 
 pub fn recognize_history(path: &Path, head: &[u8]) -> bool {
@@ -136,8 +136,8 @@ pub fn recognize_history(path: &Path, head: &[u8]) -> bool {
             .is_none_or(|&b| b == b'{')
 }
 
-pub fn open_history(path: &Path) -> Option<Box<dyn StepParser>> {
-    recognize_history(path, b"").then(|| Box::new(History) as Box<dyn StepParser>)
+pub fn open_history(path: &Path) -> Option<Parse> {
+    recognize_history(path, b"").then(|| Parse::Lines(Box::new(History)))
 }
 
 struct SideFile {

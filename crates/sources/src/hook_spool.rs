@@ -16,7 +16,7 @@
 use crate::document::{first_key, session_id, str_of};
 use crate::fields::{Fields, Rule, unaccounted};
 use crate::frame::Record;
-use crate::parse::{Output, Parser, StepParser};
+use crate::parse::{Output, Parse, Parser};
 use crate::{Accounting, Disposition};
 use polylogue_model::{Event, Json, Session, SessionKind};
 use serde::{Deserialize, Serialize};
@@ -41,8 +41,8 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
     is_spool_file(path) && matches!(first_key(head), Some("event_type" | "event_id" | "at_ns"))
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
-    is_spool_file(path).then(|| Box::new(HookSpool) as Box<dyn StepParser>)
+pub fn open(path: &Path) -> Option<Parse> {
+    is_spool_file(path).then(|| Parse::Lines(Box::new(HookSpool)))
 }
 
 pub struct HookSpool;

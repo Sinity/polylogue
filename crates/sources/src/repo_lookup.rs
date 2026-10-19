@@ -5,7 +5,7 @@
 //! rebuild gives every session the same repository.
 
 use crate::document::{Sink, str_of, string_of};
-use crate::parse::{DocumentParser, Output, StepParser, Whole};
+use crate::parse::{DocumentParser, Output, Parse};
 use crate::{Accounting, Disposition};
 use polylogue_model::{Json, RepoLookup};
 use std::path::Path;
@@ -20,8 +20,8 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
         && crate::document::first_key(head) == Some("path")
 }
 
-pub fn open(_path: &Path) -> Option<Box<dyn StepParser>> {
-    Some(Box::new(Whole(Lookup)))
+pub fn open(_path: &Path) -> Option<Parse> {
+    Some(Parse::Document(Box::new(Lookup)))
 }
 
 pub struct Lookup;

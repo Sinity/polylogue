@@ -22,7 +22,7 @@ mod items;
 use crate::fields::unaccounted;
 use crate::frame::Record;
 use crate::origin::Root;
-use crate::parse::{BackgroundUpdate, MessageRow, Output, Parser, StepParser};
+use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
 use crate::{Accounting, Disposition};
 use items::{Completed, str_field};
@@ -107,12 +107,12 @@ pub fn resume(native: &str) -> Option<Vec<String>> {
     Some(vec!["codex".into(), "resume".into(), native.into()])
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
-    Some(match File::from_path(path)? {
+pub fn open(path: &Path) -> Option<Parse> {
+    Some(Parse::Lines(match File::from_path(path)? {
         File::Rollout { thread } => Box::new(Rollout { thread }),
         File::History => Box::new(index::History),
         File::SessionIndex => Box::new(index::SessionIndex),
-    })
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

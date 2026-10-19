@@ -5,7 +5,7 @@
 //! document's order, which is the order the export was read in.
 
 use crate::document::Sink;
-use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
+use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{Accounting, Disposition};
 use polylogue_model::export::{Document, FORMAT};
 use std::path::Path;
@@ -20,8 +20,8 @@ pub fn recognize(_path: &Path, head: &[u8]) -> bool {
             .any(|w| w[0] == b'"' && &w[1..=FORMAT.len()] == FORMAT.as_bytes())
 }
 
-pub fn open(_path: &Path) -> Option<Box<dyn StepParser>> {
-    Some(Box::new(Whole(Export)))
+pub fn open(_path: &Path) -> Option<Parse> {
+    Some(Parse::Document(Box::new(Export)))
 }
 
 pub struct Export;

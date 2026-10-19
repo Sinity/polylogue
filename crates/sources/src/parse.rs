@@ -47,8 +47,6 @@ pub enum ParseError {
     Counts(#[from] CountMismatch),
     #[error("carried state is unreadable: {0}")]
     Carry(serde_json::Error),
-    #[error("a document must be parsed whole, from offset 0, not from {0}")]
-    NotWhole(u64),
 }
 
 /// Parses the complete records in `bytes`, which start at `base` in the
@@ -122,7 +120,10 @@ pub trait DocumentParser {
 
 /// Parses a complete document. Each step covers the whole input, so there
 /// is no carry: a changed document is parsed again from its first byte.
-pub fn run_document<D: DocumentParser>(parser: &D, bytes: &[u8]) -> Result<Step, ParseError> {
+pub fn run_document<D: DocumentParser + ?Sized>(
+    parser: &D,
+    bytes: &[u8],
+) -> Result<Step, ParseError> {
     let mut output = Output::default();
     let mut acc = Accounting::default();
     parser.document(bytes, &mut output, &mut acc);
@@ -134,20 +135,37 @@ pub fn run_document<D: DocumentParser>(parser: &D, bytes: &[u8]) -> Result<Step,
     })
 }
 
-/// Adapts a [`DocumentParser`] to the engine's [`StepParser`]. The engine
-/// hands a document origin its whole input in one step from offset 0.
-pub struct Whole<D>(pub D);
+/// The parser an origin opens for one input. Which variant it is decides
+/// how the input's bytes divide into records, so the framing and the
+/// parser cannot disagree.
+pub enum Parse {
+    /// One record per line; appends are parsed from where the last step
+    /// stopped.
+    Lines(Box<dyn StepParser>),
+    /// One document (or archive) read whole: an export, a capture the
+    /// extension rewrites. Any change parses the whole input again.
+    Document(Box<dyn DocumentParser + Send>),
+}
 
-impl<D: DocumentParser + Send> StepParser for Whole<D> {
-    fn step(
+impl Parse {
+    pub fn is_document(&self) -> bool {
+        matches!(self, Parse::Document(_))
+    }
+
+    /// One step over `bytes`, which start at `base` in the input. A
+    /// document is given whole, from its first byte, and has no carry.
+    pub fn step(
         &self,
-        _carry: Option<&Json>,
+        carry: Option<&Json>,
         bytes: &[u8],
         base: u64,
     ) -> Result<(Step, Json), ParseError> {
-        if base != 0 {
-            return Err(ParseError::NotWhole(base));
+        match self {
+            Parse::Lines(p) => p.step(carry, bytes, base),
+            Parse::Document(d) => {
+                debug_assert_eq!(base, 0, "a document is parsed whole");
+                Ok((run_document(&**d, bytes)?, Json::Null))
+            }
         }
-        Ok((run_document(&self.0, bytes)?, Json::Null))
     }
 }

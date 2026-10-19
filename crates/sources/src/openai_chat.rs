@@ -10,7 +10,7 @@
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of};
 use crate::fields::{Fields, Rule, unaccounted};
-use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
+use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Json, Message, PromptKind, Role, Session, SessionKind,
@@ -30,10 +30,10 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
     )
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
+pub fn open(path: &Path) -> Option<Parse> {
     let name = path.file_name()?.to_str()?.rsplit("!/").next()?;
     let stem = name.strip_suffix(".json").unwrap_or(name).to_owned();
-    Some(Box::new(Whole(OpenAiChat { file: stem })))
+    Some(Parse::Document(Box::new(OpenAiChat { file: stem })))
 }
 
 pub struct OpenAiChat {

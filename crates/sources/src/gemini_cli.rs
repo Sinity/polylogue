@@ -9,7 +9,7 @@
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule, unaccounted};
-use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
+use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     Block, ErrorReason, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource,
@@ -38,8 +38,8 @@ pub fn resume(native: &str) -> Option<Vec<String>> {
     Some(vec!["gemini".into(), "--resume".into(), native.into()])
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
-    in_chats_dir(path).then(|| Box::new(Whole(GeminiCli)) as Box<dyn StepParser>)
+pub fn open(path: &Path) -> Option<Parse> {
+    in_chats_dir(path).then(|| Parse::Document(Box::new(GeminiCli)))
 }
 
 pub struct GeminiCli;

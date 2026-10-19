@@ -18,7 +18,7 @@
 use crate::Disposition;
 use crate::document::{Sink, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule, unaccounted};
-use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
+use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, ErrorReason, Event, Json, Link, LinkKind, Message,
     PromptKind, Role, Session, SessionKind, TitleSource, ToolAction, ToolOutcome, UnknownReason,
@@ -57,8 +57,8 @@ pub(crate) fn first_byte(head: &[u8]) -> Option<u8> {
     head.iter().copied().find(|b| !b.is_ascii_whitespace())
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
-    recognize_name(path).then(|| Box::new(Whole(Export)) as Box<dyn StepParser>)
+pub fn open(path: &Path) -> Option<Parse> {
+    recognize_name(path).then(|| Parse::Document(Box::new(Export)))
 }
 
 fn recognize_name(path: &Path) -> bool {

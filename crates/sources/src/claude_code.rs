@@ -21,7 +21,7 @@ pub mod side;
 use crate::fields::unaccounted;
 use crate::frame::Record;
 use crate::origin::Root;
-use crate::parse::{BackgroundUpdate, MessageRow, Output, Parser, StepParser};
+use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
 use crate::{Accounting, Disposition};
 use polylogue_model::{
@@ -60,8 +60,8 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
             .is_none_or(|&b| b == b'{')
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
-    File::from_path(path).map(|file| Box::new(ClaudeCode { file }) as Box<dyn StepParser>)
+pub fn open(path: &Path) -> Option<Parse> {
+    File::from_path(path).map(|file| Parse::Lines(Box::new(ClaudeCode { file })))
 }
 
 /// `claude --resume <id>`. Subagents and sidechains are not resumable on

@@ -1,7 +1,7 @@
 //! The origin table: one declaration per origin, naming where its files
 //! live, how a file is recognized and which parser reads it.
 
-use crate::parse::StepParser;
+use crate::parse::Parse;
 use polylogue_model::QuotaLimit;
 use std::path::{Path, PathBuf};
 
@@ -15,17 +15,6 @@ pub enum Support {
     /// Bytes kept with no records in them: the images, audio and HTML an
     /// export carries beside its conversations. Messages refer to them.
     Kept,
-}
-
-/// How an input's bytes divide into records.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Framing {
-    /// One record per line; appends are parsed from where the last step
-    /// stopped.
-    Lines,
-    /// One JSON document (or archive) read whole: an export, a capture the
-    /// extension rewrites. Any change parses the whole input again.
-    Document,
 }
 
 /// How an input reaches Polylogue.
@@ -91,7 +80,6 @@ pub struct OriginSpec {
     pub parser_version: u32,
     pub support: Support,
     pub route: Route,
-    pub framing: Framing,
     pub root: Root,
     /// Glob patterns relative to `root`, exactly the layout the tool
     /// writes. Empty for imports.
@@ -100,9 +88,10 @@ pub struct OriginSpec {
     /// Whether a file is this origin's, from its path and first bytes. Runs
     /// before the origin is decided; a suffix alone never decides it.
     pub recognize: fn(&Path, &[u8]) -> bool,
-    /// The parser for one input, or `None` when the path is not one this
-    /// origin parses.
-    pub open: fn(&Path) -> Option<Box<dyn StepParser>>,
+    /// The parser for one input, which also says whether the input is read
+    /// line by line or whole; `None` when the path is not one this origin
+    /// parses.
+    pub open: fn(&Path) -> Option<Parse>,
     /// The tool's own command line that reopens a session, from its
     /// native ID; `None` inside when that session cannot be resumed on its
     /// own.
@@ -147,7 +136,7 @@ fn never(_: &Path, _: &[u8]) -> bool {
     false
 }
 
-fn none(_: &Path) -> Option<Box<dyn StepParser>> {
+fn none(_: &Path) -> Option<Parse> {
     None
 }
 
@@ -161,7 +150,6 @@ macro_rules! reserved {
             parser_version: 0,
             support: Support::Reserved,
             route: Route::$route,
-            framing: Framing::Lines,
             root: $root,
             locations: &[$($loc),*],
             capture: Capture::Bytes,
@@ -180,7 +168,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 7,
         support: Support::Parsed,
         route: Route::Live,
-        framing: Framing::Lines,
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::LOCATIONS,
         capture: Capture::Bytes,
@@ -195,7 +182,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 1,
         support: Support::Parsed,
         route: Route::Live,
-        framing: Framing::Document,
         root: crate::claude_code::side::SIDE_ROOT,
         locations: crate::claude_code::side::SIDE_LOCATIONS,
         capture: Capture::Bytes,
@@ -210,7 +196,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 1,
         support: Support::Parsed,
         route: Route::Live,
-        framing: Framing::Lines,
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::side::HISTORY_LOCATIONS,
         capture: Capture::Bytes,
@@ -228,7 +213,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: crate::codex::ROOT,
         locations: crate::codex::LOCATIONS,
         capture: Capture::Bytes,
-        framing: Framing::Lines,
         recognize: crate::codex::recognize,
         open: crate::codex::open,
         resume: Some(crate::codex::resume),
@@ -243,7 +227,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: crate::codex::database::ROOT,
         locations: crate::codex::database::LOCATIONS,
         capture: Capture::LogicalExport,
-        framing: Framing::Lines,
         recognize: crate::codex::database::recognize,
         open: crate::codex::database::open,
         resume: None,
@@ -258,7 +241,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: crate::gemini_cli::LOCATIONS,
         capture: Capture::Bytes,
-        framing: Framing::Document,
         recognize: crate::gemini_cli::recognize,
         open: crate::gemini_cli::open,
         resume: Some(crate::gemini_cli::resume),
@@ -274,7 +256,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: crate::hermes::LOCATIONS,
         capture: Capture::LogicalExport,
-        framing: Framing::Lines,
         recognize: crate::hermes::recognize,
         open: crate::hermes::open,
         resume: None,
@@ -289,7 +270,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: crate::grok_cli::LOCATIONS,
         capture: Capture::Bytes,
-        framing: Framing::Lines,
         recognize: crate::grok_cli::recognize,
         open: crate::grok_cli::open,
         resume: None,
@@ -304,7 +284,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::STATE,
         locations: crate::repo_lookup::LOCATIONS,
         capture: Capture::Bytes,
-        framing: Framing::Document,
         recognize: crate::repo_lookup::recognize,
         open: crate::repo_lookup::open,
         resume: None,
@@ -319,7 +298,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::STATE,
         locations: crate::hook_spool::LOCATIONS,
         capture: Capture::Bytes,
-        framing: Framing::Lines,
         recognize: crate::hook_spool::recognize,
         open: crate::hook_spool::open,
         resume: None,
@@ -331,7 +309,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 3,
         support: Support::Parsed,
         route: Route::Spool,
-        framing: Framing::Document,
         root: Root::STATE,
         locations: crate::browser_capture::LOCATIONS,
         capture: Capture::Bytes,
@@ -346,7 +323,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 0,
         support: Support::Kept,
         route: Route::Import,
-        framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -361,7 +337,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 1,
         support: Support::Parsed,
         route: Route::Import,
-        framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -376,7 +351,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 3,
         support: Support::Parsed,
         route: Route::Import,
-        framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -391,7 +365,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
-        framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -406,7 +379,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
-        framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -421,7 +393,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 3,
         support: Support::Parsed,
         route: Route::Spool,
-        framing: Framing::Document,
         root: Root::STATE,
         locations: crate::ai_studio::LOCATIONS,
         capture: Capture::Bytes,
@@ -436,7 +407,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 1,
         support: Support::Parsed,
         route: Route::Import,
-        framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -452,7 +422,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
-        framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -467,7 +436,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 1,
         support: Support::Parsed,
         route: Route::Import,
-        framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -484,7 +452,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
-        framing: Framing::Document,
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,

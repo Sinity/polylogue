@@ -3,7 +3,7 @@
 //! line is accounted as kept in the stored export.
 
 use crate::frame::Record;
-use crate::parse::{Output, Parser, StepParser};
+use crate::parse::{Output, Parse, Parser};
 use crate::{Accounting, Disposition};
 use polylogue_model::Json;
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,8 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
             .is_none_or(|&b| b == b'{')
 }
 
-pub fn open(_: &Path) -> Option<Box<dyn StepParser>> {
-    Some(Box::new(HermesDatabase))
+pub fn open(_: &Path) -> Option<Parse> {
+    Some(Parse::Lines(Box::new(HermesDatabase)))
 }
 
 pub struct HermesDatabase;

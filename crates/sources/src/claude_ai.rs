@@ -11,7 +11,7 @@
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule, unaccounted};
-use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
+use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Event, Json, Message, PromptKind, Role, Session,
@@ -32,9 +32,9 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
     named && first_byte(head) == Some(b'[') && first_key(head) == Some("uuid")
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
+pub fn open(path: &Path) -> Option<Parse> {
     let named = path.file_name().and_then(|n| n.to_str()) == Some("conversations.json");
-    named.then(|| Box::new(Whole(Export)) as Box<dyn StepParser>)
+    named.then(|| Parse::Document(Box::new(Export)))
 }
 
 /// `design_chats/<uuid>.json`: one Claude Design chat.
@@ -42,8 +42,8 @@ pub fn recognize_design(path: &Path, head: &[u8]) -> bool {
     in_design_dir(path) && first_byte(head) == Some(b'{') && first_key(head) == Some("uuid")
 }
 
-pub fn open_design(path: &Path) -> Option<Box<dyn StepParser>> {
-    in_design_dir(path).then(|| Box::new(Whole(Design)) as Box<dyn StepParser>)
+pub fn open_design(path: &Path) -> Option<Parse> {
+    in_design_dir(path).then(|| Parse::Document(Box::new(Design)))
 }
 
 fn in_design_dir(path: &Path) -> bool {

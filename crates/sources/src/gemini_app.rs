@@ -10,7 +10,7 @@
 //! own. Responses are HTML in the export and are kept as text.
 
 use crate::document::{Sink, message_id, session_id};
-use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
+use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Event, Json, Message, PromptKind, Role, Session,
@@ -26,8 +26,8 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
         && head.trim_ascii_start().starts_with(b"<")
 }
 
-pub fn open(_path: &Path) -> Option<Box<dyn StepParser>> {
-    Some(Box::new(Whole(GeminiApp)))
+pub fn open(_path: &Path) -> Option<Parse> {
+    Some(Parse::Document(Box::new(GeminiApp)))
 }
 
 pub struct GeminiApp;
