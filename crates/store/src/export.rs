@@ -11,7 +11,9 @@
 //! - `{"db", "at_ms", "schema": {table: sql}}` when the schema changes;
 //! - `{"t": table, "k": key, "r": row, "h": digest}` for a row that is new
 //!   or changed since the last export;
-//! - `{"t": table, "k": key, "gone": true}` for a row no longer there.
+//! - `{"t": table, "kh": key digest, "gone": true}` for a row no longer
+//!   there; `kh` is the hex digest of its table and key, as the row line
+//!   that last held it names it (older exports wrote the key as `k`).
 //!
 //! The file is an ordinary input: the loop stores its appended bytes and
 //! the origin's parser reads the lines. A row the tool deletes stays in
@@ -19,16 +21,17 @@
 //!
 //! A database is exported when it has gone quiet (its files unchanged
 //! across one pass) and differs from the last export, and at least hourly
-//! while it keeps changing. The digest of every row exported is kept in
-//! memory; after a restart it is rebuilt from the export file the next
-//! time the database changes.
+//! while it keeps changing. Every row exported is kept in memory as two
+//! 64-bit digests (its table and key, its content), not as strings: a
+//! thread-history database has millions of rows. After a restart they are
+//! rebuilt from the export file the next time the database changes.
 
 use crate::FileFacts;
 use base64::Engine as _;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -70,9 +73,10 @@ struct DbState {
     last_seen: Option<DbFacts>,
     exported: Option<DbFacts>,
     exported_at: Option<Instant>,
-    /// Row digests by `table \0 key`, as in the export; `None` until
-    /// loaded from the export file.
-    rows: Option<HashMap<String, u64>>,
+    /// By key digest ([`row_key`]): the table's digest and the row's
+    /// content digest, as in the export; `None` until loaded from the
+    /// export file.
+    rows: Option<HashMap<u64, (u64, u64)>>,
     schema: Option<u64>,
 }
 
@@ -115,7 +119,7 @@ impl Exporter {
 }
 
 /// The row digests and schema digest an export file holds.
-fn load(out: &Path) -> Result<(HashMap<String, u64>, Option<u64>), ExportError> {
+fn load(out: &Path) -> Result<(HashMap<u64, (u64, u64)>, Option<u64>), ExportError> {
     let mut rows = HashMap::new();
     let mut schema = None;
     let file = match fs::File::open(out) {
@@ -131,10 +135,17 @@ fn load(out: &Path) -> Result<(HashMap<String, u64>, Option<u64>), ExportError> 
             schema = Some(digest(&s.to_string()));
             continue;
         }
-        let (Some(t), Some(k)) = (v.get("t").and_then(Value::as_str), v.get("k")) else {
+        let Some(t) = v.get("t").and_then(Value::as_str) else {
             continue;
         };
-        let key = row_key(t, k);
+        let key = match (v.get("kh").and_then(Value::as_str), v.get("k")) {
+            (Some(kh), _) => match u64::from_str_radix(kh, 16) {
+                Ok(kh) => kh,
+                Err(_) => continue,
+            },
+            (None, Some(k)) => row_key(t, k),
+            (None, None) => continue,
+        };
         if v.get("gone").is_some() {
             rows.remove(&key);
         } else if let Some(h) = v
@@ -142,14 +153,15 @@ fn load(out: &Path) -> Result<(HashMap<String, u64>, Option<u64>), ExportError> 
             .and_then(Value::as_str)
             .and_then(|h| u64::from_str_radix(h, 16).ok())
         {
-            rows.insert(key, h);
+            rows.insert(key, (digest(t), h));
         }
     }
     Ok((rows, schema))
 }
 
-fn row_key(table: &str, key: &Value) -> String {
-    format!("{table}\0{key}")
+/// The digest naming a row: its table and its key.
+fn row_key(table: &str, key: &Value) -> u64 {
+    digest(&format!("{table}\0{key}"))
 }
 
 fn digest(s: &str) -> u64 {
@@ -264,7 +276,8 @@ fn write_export(db: &Path, out: &Path, st: &mut DbState) -> Result<Exported, Exp
             format!("SELECT NULL, * FROM \"{quoted}\"")
         };
         let mut stmt = conn.prepare(&select).map_err(sql_err)?;
-        let mut seen: HashMap<String, ()> = HashMap::new();
+        let table = digest(&t.name);
+        let mut seen: HashSet<u64> = HashSet::new();
         let mut q = stmt.query([]).map_err(sql_err)?;
         while let Some(r) = q.next().map_err(sql_err)? {
             let mut row = Map::new();
@@ -279,28 +292,29 @@ fn write_export(db: &Path, out: &Path, st: &mut DbState) -> Result<Exported, Exp
             let row = Value::Object(row);
             let h = digest(&row.to_string());
             let key = row_key(&t.name, &k);
-            if rows.get(&key) != Some(&h) {
+            if rows.get(&key).map(|&(_, h)| h) != Some(h) {
                 serde_json::to_writer(
                     &mut w,
                     &json!({ "t": t.name, "k": k, "r": row, "h": format!("{h:016x}") }),
                 )
                 .map_err(std::io::Error::from)?;
                 w.write_all(b"\n")?;
-                rows.insert(key.clone(), h);
+                rows.insert(key, (table, h));
                 done.rows += 1;
             }
-            seen.insert(key, ());
+            seen.insert(key);
         }
-        let prefix = format!("{}\0", t.name);
-        let gone: Vec<String> = rows
-            .keys()
-            .filter(|k| k.starts_with(&prefix) && !seen.contains_key(*k))
-            .cloned()
+        let gone: Vec<u64> = rows
+            .iter()
+            .filter(|(k, (tt, _))| *tt == table && !seen.contains(*k))
+            .map(|(k, _)| *k)
             .collect();
         for key in gone {
-            let k: Value = serde_json::from_str(&key[prefix.len()..]).unwrap_or(Value::Null);
-            serde_json::to_writer(&mut w, &json!({ "t": t.name, "k": k, "gone": true }))
-                .map_err(std::io::Error::from)?;
+            serde_json::to_writer(
+                &mut w,
+                &json!({ "t": t.name, "kh": format!("{key:016x}"), "gone": true }),
+            )
+            .map_err(std::io::Error::from)?;
             w.write_all(b"\n")?;
             rows.remove(&key);
             done.gone += 1;
@@ -361,7 +375,8 @@ mod tests {
         let l = lines(&out);
         assert_eq!(l.len(), 6);
         assert_eq!(l[4]["r"]["title"], "renamed");
-        assert_eq!(l[5], json!({"t": "threads", "k": ["b"], "gone": true}));
+        let kh = format!("{:016x}", row_key("threads", &json!(["b"])));
+        assert_eq!(l[5], json!({"t": "threads", "kh": kh, "gone": true}));
     }
 
     #[test]

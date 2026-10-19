@@ -91,6 +91,9 @@ impl Archive {
         fs::create_dir_all(root)?;
         if fresh {
             no_cow(root);
+            let exports = root.join("exports");
+            fs::create_dir_all(&exports)?;
+            compressed(&exports);
         }
         let lock_path = root.join("lock");
         let file = OpenOptions::new()
@@ -170,6 +173,23 @@ fn no_cow(dir: &Path) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
+}
+
+/// Turns transparent compression on for the new, empty exports directory
+/// on btrfs (clearing the copy-on-write flag it inherited, which would
+/// forbid compression). Exports are append-only JSON Lines that the loop
+/// also stores, compressed, as inputs; uncompressed they were 11 GB of a
+/// 51 GB first build. Best effort: other filesystems ignore it.
+fn compressed(dir: &Path) {
+    // Two calls: btrfs refuses clearing one flag and setting the other at once.
+    for flag in ["-C", "+c"] {
+        let _ = std::process::Command::new("chattr")
+            .arg(flag)
+            .arg(dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 fn tune(conn: &Connection) -> Result<()> {
