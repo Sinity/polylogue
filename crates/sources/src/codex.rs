@@ -55,6 +55,11 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
             .is_none_or(|&b| b == b'{')
 }
 
+/// `codex resume <id>`.
+pub fn resume(native: &str) -> Option<Vec<String>> {
+    Some(vec!["codex".into(), "resume".into(), native.into()])
+}
+
 pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
     Some(match File::from_path(path)? {
         File::Rollout { thread } => Box::new(Rollout { thread }),

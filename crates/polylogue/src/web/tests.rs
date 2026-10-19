@@ -17,7 +17,7 @@ struct Reader {
 
 fn reader() -> Reader {
     let w = test_daemon::start("look at <script>alert(1)</script> & the parser");
-    let browser = Arc::new(crate::browser::Ctx::at(&w.daemon.state, &w.daemon.archive).unwrap());
+    let browser = Arc::new(crate::browser::Ctx::at(&w.daemon.config, &w.daemon.archive).unwrap());
     let web = Arc::new(Web {
         daemon: Arc::clone(&w.daemon),
         key: "abc123def456".into(),

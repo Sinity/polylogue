@@ -63,6 +63,15 @@ pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
     File::from_path(path).map(|file| Box::new(ClaudeCode { file }) as Box<dyn StepParser>)
 }
 
+/// `claude --resume <id>`. Subagents and sidechains are not resumable on
+/// their own.
+pub fn resume(native: &str) -> Option<Vec<String>> {
+    if native.starts_with("agent-") || native.ends_with("/sidechain") {
+        return None;
+    }
+    Some(vec!["claude".into(), "--resume".into(), native.into()])
+}
+
 /// Which kind of file is being read, from its place in the directory tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum File {

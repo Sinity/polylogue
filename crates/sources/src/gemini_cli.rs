@@ -33,6 +33,11 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
     in_chats_dir(path) && first_byte(head) == Some(b'{') && first_key(head) == Some("sessionId")
 }
 
+/// `gemini --resume <id>`.
+pub fn resume(native: &str) -> Option<Vec<String>> {
+    Some(vec!["gemini".into(), "--resume".into(), native.into()])
+}
+
 pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
     in_chats_dir(path).then(|| Box::new(Whole(GeminiCli)) as Box<dyn StepParser>)
 }

@@ -16,17 +16,13 @@
 use crate::document::{first_key, session_id, str_of};
 use crate::fields::{Fields, Rule, unaccounted};
 use crate::frame::Record;
-use crate::origin::Root;
 use crate::parse::{Output, Parser, StepParser};
 use crate::{Accounting, Disposition};
 use polylogue_model::{Event, Json, Session, SessionKind};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const ROOT: Root = Root {
-    env: Some("XDG_STATE_HOME"),
-    default: ".local/state",
-};
+pub const ORIGIN: &str = "hook-spool";
 
 pub const LOCATIONS: &[&str] = &[
     "polylogue/hooks/*.jsonl",

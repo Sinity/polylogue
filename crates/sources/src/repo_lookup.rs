@@ -5,18 +5,12 @@
 //! rebuild gives every session the same repository.
 
 use crate::document::{Sink, str_of, string_of};
-use crate::origin::Root;
 use crate::parse::{DocumentParser, Output, StepParser, Whole};
 use crate::{Accounting, Disposition};
 use polylogue_model::{Json, RepoLookup};
 use std::path::Path;
 
 pub const ORIGIN: &str = "polylogue-repo-lookup";
-
-pub const ROOT: Root = Root {
-    env: Some("XDG_STATE_HOME"),
-    default: ".local/state",
-};
 
 pub const LOCATIONS: &[&str] = &["polylogue/repo-lookup/*.json"];
 

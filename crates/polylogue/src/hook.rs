@@ -18,6 +18,8 @@
 use crate::briefing::{Ask, StartSource};
 use crate::daemon::{Request, Response};
 use polylogue_model::SessionId;
+use polylogue_sources::origin::by_name;
+use polylogue_sources::{ORIGINS, Support};
 use polylogue_store::{Archive, DeliveryOutcome};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -42,14 +44,9 @@ pub const EVENTS: &[&str] = &[
     "SessionEnd",
 ];
 
-/// Where carrier files go: `$XDG_STATE_HOME/polylogue/hooks`, or
-/// `~/.local/state/polylogue/hooks`.
+/// Where carrier files go: the hook spool the daemon's loop reads.
 pub fn carrier_dir() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("polylogue/hooks")
+    polylogue_engine::Config::from_env().spool_dir(polylogue_sources::hook_spool::ORIGIN)
 }
 
 /// Appends one event line to the carrier of the harness process that
@@ -98,7 +95,8 @@ fn session_of(payload: &Value) -> Option<SessionId> {
 }
 
 /// Session IDs pasted into a prompt: `origin:native` forms Polylogue
-/// prints, and bare UUIDs, which name Claude Code and Codex sessions.
+/// prints, and bare UUIDs, which name a session of each origin that takes
+/// them.
 pub fn pasted_session_ids(prompt: &str) -> Vec<SessionId> {
     let mut out: Vec<SessionId> = Vec::new();
     let mut push = |id: SessionId| {
@@ -109,14 +107,14 @@ pub fn pasted_session_ids(prompt: &str) -> Vec<SessionId> {
     for word in prompt.split(|c: char| c.is_whitespace() || "`'\"()[]<>,;".contains(c)) {
         let word = word.trim_end_matches(['.', ':']);
         if let Some((origin, native)) = word.split_once(':')
-            && ["claude-code", "codex", "gemini-cli", "chatgpt", "claude-ai"].contains(&origin)
+            && by_name(origin).is_some_and(|o| o.support == Support::Parsed)
             && let Ok(id) = SessionId::parse(word)
             && !native.is_empty()
         {
             push(id);
         } else if is_uuid(word) {
-            for origin in ["claude-code", "codex"] {
-                if let Ok(id) = SessionId::parse(&format!("{origin}:{word}")) {
+            for origin in ORIGINS.iter().filter(|o| o.bare_uuid_ids) {
+                if let Ok(id) = SessionId::parse(&format!("{}:{word}", origin.name)) {
                     push(id);
                 }
             }
@@ -236,13 +234,11 @@ pub fn run(event: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The Claude Code settings file: `$CLAUDE_CONFIG_DIR/settings.json`, or
-/// `~/.claude/settings.json`.
+/// The Claude Code settings file: `settings.json` in Claude Code's own
+/// directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`).
 pub fn settings_path() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".claude")))
-        .unwrap_or_else(|| PathBuf::from(".claude"))
+    polylogue_engine::Config::from_env()
+        .root(polylogue_sources::claude_code::ROOT)
         .join("settings.json")
 }
 
