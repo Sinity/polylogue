@@ -239,6 +239,17 @@ INSERT INTO output_fts(output_fts, rank) VALUES ('automerge', 16);
 INSERT INTO text_fts(text_fts, rank) VALUES ('hashsize', 67108864);
 INSERT INTO output_fts(output_fts, rank) VALUES ('hashsize', 67108864);
 
+-- Search entries still to write (architecture 5.5c). The writer records a
+-- text here in the transaction that stores it, and the search thread writes
+-- the entry shortly after, outside the writer's transaction; a flush writes
+-- every waiting entry before it returns. A first build writes none: it
+-- builds the search indexes in bulk when it ends.
+CREATE TABLE search_pending (
+  text_id           INTEGER NOT NULL,       -- text.id
+  bit               INTEGER NOT NULL,       -- 1 text_fts, 2 output_fts (text.indexed)
+  PRIMARY KEY (text_id, bit)
+) STRICT, WITHOUT ROWID;
+
 -- One row per tool call, paired with its result inside the same session. The
 -- one owner of every derived call fact.
 CREATE TABLE tool_call (
@@ -276,7 +287,8 @@ CREATE INDEX tool_call_result  ON tool_call(result_block_pk) WHERE result_block_
 -- Substring search on short fields (command:, path:) without a scan. Unfolded
 -- text, so it can read its content from tool_call. The writer issues the FTS5
 -- `delete` command with the row's old `command` and `path` before deleting or
--- changing a `tool_call` row, in the same transaction.
+-- changing a `tool_call` row, in the same transaction. A first build writes
+-- no entries and rebuilds the index from tool_call when it ends.
 CREATE VIRTUAL TABLE tool_call_trigram USING fts5(command, path,
     content='tool_call', content_rowid='pk', tokenize='trigram');
 INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('automerge', 16);
