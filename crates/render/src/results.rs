@@ -130,9 +130,11 @@ fn terminal(
             .trim_end()
             .to_owned()
     };
-    writeln!(out, "\x1b[2m{}\x1b[0m", line(columns))?;
-    for (r, row) in cells.iter().zip(rows) {
-        writeln!(out, "{}", line(r))?;
+    // Rows are numbered: `@N` names row N of this list in a later command.
+    let num = cells.len().to_string().len() + 1;
+    writeln!(out, "\x1b[2m{:num$}  {}\x1b[0m", "", line(columns))?;
+    for (n, (r, row)) in cells.iter().zip(rows).enumerate() {
+        writeln!(out, "{:<num$}  {}", format!("@{}", n + 1), line(r))?;
         if let Some(s) = marked(&row["snippet"], "\x1b[1m", "\x1b[0m", plain) {
             writeln!(out, "    {s}")?;
         }

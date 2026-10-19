@@ -12,6 +12,7 @@ mod hook;
 mod live;
 mod mcp;
 mod measure_text;
+mod positions;
 mod signals;
 #[cfg(feature = "sinex")]
 mod sinex;
@@ -41,7 +42,21 @@ fn main() -> ExitCode {
     {
         return browser::native::run();
     }
-    let args = cli::Args::parse();
+    // `@N` names row N of the last list printed in this terminal.
+    let argv: Option<Vec<String>> = std::env::args_os().map(|a| a.into_string().ok()).collect();
+    let args = match argv {
+        Some(argv) if argv.iter().any(|a| a.contains('@')) => {
+            let root = polylogue_store::Archive::default_root();
+            match positions::rewrite_args(argv, &root) {
+                Ok(argv) => cli::Args::parse_from(argv),
+                Err(e) => {
+                    eprintln!("polylogue: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        _ => cli::Args::parse(),
+    };
     cli::run(args)
 }
 

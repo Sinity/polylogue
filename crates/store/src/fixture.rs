@@ -350,6 +350,15 @@ impl Fixture {
 
     /// A note on `target` (`session:<id>`, `message:<id>`, `note:<root>`).
     /// Returns its ID, which is also its family's root.
+    /// A kept result, as the writer stores one.
+    pub fn kept_result(&mut self, id: &str, query: &str, rows_json: &str) -> Result<()> {
+        self.notes.execute(
+            "INSERT INTO kept_result(id, query, ran_at, view, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
+            params![id, query, rows_json],
+        )?;
+        Ok(())
+    }
+
     pub fn note(
         &mut self,
         kind: &str,

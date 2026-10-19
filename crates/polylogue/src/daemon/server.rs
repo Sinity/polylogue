@@ -422,6 +422,45 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 Err(_) => error("internal", "the convergence loop has stopped"),
             }
         }
+        Request::Keep {
+            request_id,
+            text,
+            name,
+        } => {
+            let ask = super::query::Ask {
+                text: &text,
+                cursor: None,
+                page_size: None,
+                why: false,
+                session: None,
+                now: now_ms(),
+                day: polylogue_model::LogicalDay::system(),
+                embeddings: false,
+                near: None,
+            };
+            let kept = match super::query::keep(&reader, ask) {
+                Ok(k) => k,
+                Err(f) => {
+                    return Response::Error {
+                        kind: f.kind,
+                        message: f.message,
+                        detail: f.detail,
+                    };
+                }
+            };
+            drop(reader);
+            let view = serde_json::json!({ "now": kept["now"] }).to_string();
+            write(
+                d,
+                request_id,
+                UserWrite::KeepResult {
+                    name,
+                    query: text,
+                    rows_json: kept.to_string(),
+                    view,
+                },
+            )
+        }
         Request::AddNote { request_id, note } => {
             drop(reader);
             write(d, request_id, UserWrite::AddNote { note })

@@ -52,6 +52,13 @@ pub enum Request {
         request_id: String,
         note: NewNote,
     },
+    /// Runs a query and keeps the rows it returned, as `result:<id>`.
+    Keep {
+        request_id: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
     Notes {
         filter: NoteFilter,
     },

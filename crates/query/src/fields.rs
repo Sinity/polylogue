@@ -732,6 +732,12 @@ pub static FIELDS: &[Field] = &[
         "the latest time of any message in the turn",
     ).sql("{r}.end"),
     f(Turns, "burst", Number, "how many prompts it has").sql("{r}.burst"),
+    f(
+        Turns,
+        "prompts",
+        Substring,
+        "the human prompt messages of the turn, in order (`prompts:ID` holds that message)",
+    ).sql("{r}.prompts"),
     f(Turns, "slash_command", Bool, "starts with a typed command").sql("{r}.slash_command"),
     f(
         Turns,
@@ -768,6 +774,12 @@ pub static FIELDS: &[Field] = &[
         Bool,
         "the turn ended the session with no answer",
     ).sql("{r}.abandoned"),
+    f(
+        Turns,
+        "corrected",
+        Bool,
+        "a current correction note targets the turn's answer",
+    ).sql_fn(turns_corrected),
     // processes
     v(Processes, "role", &["harness", "child"], "").sql("{r}.role"),
     f(Processes, "comm", Match, "the command name").sql("{r}.comm"),
@@ -1060,6 +1072,17 @@ fn sessions_words(a: &Aliases) -> String {
     format!(
         "(SELECT COALESCE(sum(x.words), 0) FROM message x WHERE {} AND x.written_by IN ('human', 'model'))",
         own_messages(&a.s, "x")
+    )
+}
+
+fn turns_corrected(a: &Aliases) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM a.note nc JOIN a.note_target nct ON nct.note_id = nc.id \
+         WHERE nc.kind = 'correction' AND nct.ref = 'message:' || {r}.answer \
+         AND {} AND NOT {})",
+        current_note("nc"),
+        withdrawn_note("nc"),
+        r = a.row
     )
 }
 

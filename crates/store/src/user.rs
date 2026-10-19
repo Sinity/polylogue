@@ -34,6 +34,17 @@ pub enum UserWrite {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
+    /// The exact rows a query returned, kept to be read back as
+    /// `result:<id>` (spec user-data.md, kept results).
+    KeepResult {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        query: String,
+        /// The stored rows, match rows and their columns, as JSON.
+        rows_json: String,
+        /// What the query read: its resolved time, as JSON.
+        view: String,
+    },
     SetSetting {
         key: String,
         value: String,
@@ -233,6 +244,22 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             )?;
             Ok(UserOutcome {
                 id: delivery.clone(),
+                repeat: false,
+            })
+        }
+        UserWrite::KeepResult {
+            name,
+            query,
+            rows_json,
+            view,
+        } => {
+            tx.execute(
+                "INSERT INTO kept_result(id, name, query, ran_at, view, rows_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![r.id, name, query, at, view, rows_json],
+            )?;
+            Ok(UserOutcome {
+                id: r.id.clone(),
                 repeat: false,
             })
         }

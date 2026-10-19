@@ -103,6 +103,79 @@ fn saved_queries(reader: &Reader<'_>) -> std::collections::BTreeMap<String, Stri
         .collect()
 }
 
+/// Kept results by ID, with the shape of their stored rows, for
+/// `result:<id>`.
+fn kept_results(reader: &Reader<'_>) -> std::collections::BTreeMap<String, polylogue_query::Kept> {
+    reader
+        .query(
+            "SELECT id, json_extract(rows_json, '$.unit') AS unit, \
+             json_extract(rows_json, '$.columns') AS columns, \
+             json_extract(rows_json, '$.match_columns') AS match_columns FROM a.kept_result",
+            &[],
+        )
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| {
+            let parse = |k: &str| -> Vec<polylogue_query::Column> {
+                r[k].as_str()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default()
+            };
+            Some((
+                r["id"].as_str()?.to_owned(),
+                polylogue_query::Kept {
+                    unit: r["unit"].as_str().unwrap_or("sessions").to_owned(),
+                    columns: parse("columns"),
+                    match_columns: parse("match_columns"),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Runs a query in full for keeping: its rows, and, when it has one
+/// top-level exists or seq and no stages, its match rows too. The values
+/// are what was shown; a kept result is read back, never re-run.
+pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
+    let opts = Options {
+        clock: polylogue_query::Clock::new(ask.now, ask.day.clone()),
+        origins: polylogue_sources::origin::ORIGINS
+            .iter()
+            .map(|o| o.name.to_owned())
+            .collect(),
+        page_size: None,
+        embeddings: false,
+        self_session: ask.session,
+        saved: saved_queries(reader),
+        kept: kept_results(reader),
+    };
+    let program = polylogue_query::compile(ask.text, &opts)?;
+    check_ids(reader, &program)?;
+    let mut rows = reader.query(&program.sql, &values(&program.params))?;
+    for row in &mut rows {
+        present(&program, row);
+    }
+    let mut kept = json!({
+        "unit": if program.shape == Shape::Matches { "matches" } else { program.unit.name() },
+        "shape": program.shape,
+        "columns": program.columns,
+        "rows": rows,
+        "query": ask.text,
+        "now": program.now,
+    });
+    if !ask.text.contains('|')
+        && let Ok(m) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
+    {
+        let mut matches = reader.query(&m.sql, &values(&m.params))?;
+        for row in &mut matches {
+            present(&m, row);
+        }
+        kept["match_columns"] = json!(m.columns);
+        kept["matches"] = json!(matches);
+    }
+    Ok(kept)
+}
+
 pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let cursor = match ask.cursor {
         Some(c) => {
@@ -132,6 +205,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         embeddings: ask.embeddings,
         self_session: ask.session,
         saved: saved_queries(reader),
+        kept: kept_results(reader),
     };
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     if let (Some(near), Some(f)) = (program.near.clone(), ask.near) {
@@ -181,7 +255,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     };
     let mut out = json!({
         "outcome": outcome,
-        "unit": program.unit.name(),
+        "unit": if program.shape == Shape::Matches { "matches" } else { program.unit.name() },
         "shape": program.shape,
         "columns": program.columns,
         "rows": rows,

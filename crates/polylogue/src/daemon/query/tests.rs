@@ -605,6 +605,166 @@ fn exists_and_seq_match_one_call_and_an_order() {
 }
 
 #[test]
+fn matches_return_the_rows_that_matched() {
+    let w = morrow();
+    // seq: one row per step tuple, with the gap between the steps.
+    let v = q(
+        &w,
+        "sessions where seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok) | matches",
+    );
+    assert_eq!(v["unit"], "matches");
+    assert_eq!(v["shape"], "matches");
+    assert_eq!(ids(&v), ["#2"]);
+    let row = &v["rows"][0];
+    assert_eq!(row["match"], 1);
+    assert_eq!(row["step1_outcome"], "error");
+    assert_eq!(row["step2_outcome"], "ok");
+    assert_eq!(row["gap_steps"], 1, "the Edit between them");
+    assert_eq!(row["gap_time"], 3_600_000 * 2);
+    // An aggregate after `| matches` is over the tuples.
+    let v = q(
+        &w,
+        "sessions where seq(command:\"cargo test\" AND outcome:error -> command:\"cargo test\" AND outcome:ok) | matches | agg p50:gap_time, count",
+    );
+    assert_eq!(v["shape"], "summary");
+    assert_eq!(v["rows"][0]["count"], 1);
+    // exists: one row per owner and matching child.
+    let v = q(
+        &w,
+        "sessions where exists tool_call(action:shell AND outcome:error) | matches",
+    );
+    assert_eq!(v["unit"], "matches");
+    let rows = v["rows"].as_array().unwrap();
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter()
+            .all(|r| r["outcome"] == "error" && r["match"].as_u64() >= Some(1))
+    );
+    // Without one exists or seq, there is nothing to return as matches.
+    let err = run_q(&w, ask("sessions where repo:morrow | matches")).unwrap_err();
+    assert_eq!(err.kind, "invalid_query");
+}
+
+#[test]
+fn seq_matches_are_earliest_first_and_never_overlap() {
+    let w = worked();
+    // Five shell calls: (1, 2), then (3, 4); the fifth starts no match.
+    let v = q(
+        &w,
+        "sessions where seq(action:shell -> action:shell) | matches",
+    );
+    let rows = v["rows"].as_array().unwrap();
+    let pairs: Vec<(String, String)> = rows
+        .iter()
+        .map(|r| {
+            (
+                r["step1_command"].as_str().unwrap().to_owned(),
+                r["step2_command"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        pairs,
+        [
+            (
+                "bd update plnext-7 --claim".to_owned(),
+                "cargo test -p store".to_owned()
+            ),
+            (
+                "cargo test -p store".to_owned(),
+                "git commit -m fix".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(rows[1]["match"], 2);
+    // `[next]` with a condition that no later call meets: no match.
+    let v = q(
+        &w,
+        "sessions where seq(command:\"git commit -m fix\" -> [next] outcome:error) | matches",
+    );
+    assert_eq!(v["outcome"], "empty");
+}
+
+#[test]
+fn turns_list_their_prompts_and_whether_their_answer_was_corrected() {
+    let mut w = morrow();
+    let v = q(&w, "turns | limit 100");
+    let turns = v["rows"].as_array().unwrap().clone();
+    assert!(!turns.is_empty());
+    for t in &turns {
+        let prompts: Vec<String> =
+            serde_json::from_str(t["prompts"].as_str().unwrap_or("[]")).unwrap();
+        assert_eq!(
+            prompts.len() as u64,
+            t["burst"].as_u64().unwrap_or(0),
+            "{t}"
+        );
+    }
+    let answered = turns
+        .iter()
+        .find(|t| t["answer"].as_str().is_some_and(|a| !a.is_empty()))
+        .expect("a turn with an answer");
+    let answer = answered["answer"].as_str().unwrap().to_owned();
+    assert_eq!(q(&w, "turns where corrected:true")["outcome"], "empty");
+    w.fx.note(
+        "correction",
+        None,
+        Some("that is wrong"),
+        &format!("message:{answer}"),
+    )
+    .unwrap();
+    let v = q(&w, "turns where corrected:true");
+    let rows = v["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{v}");
+    assert_eq!(rows[0]["answer"], answer.as_str());
+    let first = serde_json::from_str::<Vec<String>>(answered["prompts"].as_str().unwrap())
+        .unwrap()
+        .into_iter()
+        .next();
+    if let Some(p) = first {
+        let v = q(&w, &format!("turns where prompts:{p}"));
+        assert!(!v["rows"].as_array().unwrap().is_empty(), "{v}");
+    }
+}
+
+#[test]
+fn kept_results_read_back_as_they_were_kept() {
+    let mut w = morrow();
+    let kept_of = |w: &World, text: &str| {
+        let pool = w.fx.reads().unwrap();
+        let r = pool.reader().unwrap();
+        keep(&r, ask(text)).unwrap()
+    };
+    let kept = kept_of(
+        &w,
+        "sessions where exists tool_call(action:shell AND outcome:error)",
+    );
+    assert_eq!(ids(&kept), ["#4", "#2"]);
+    assert!(kept["match_columns"].is_array(), "match rows kept too");
+    w.fx.kept_result(
+        "0199-kept",
+        "sessions where exists tool_call(action:shell AND outcome:error)",
+        &kept.to_string(),
+    )
+    .unwrap();
+    let v = q(&w, "result:0199-kept");
+    assert_eq!(v["unit"], "sessions");
+    assert_eq!(ids(&v), ["#4", "#2"]);
+    let v = q(&w, "result:0199-kept | count");
+    assert_eq!(v["rows"][0]["count"], 2);
+    let v = q(&w, "result:0199-kept.matches | agg count");
+    assert_eq!(
+        v["rows"][0]["count"].as_u64(),
+        Some(kept["matches"].as_array().unwrap().len() as u64)
+    );
+    // Conditions do not narrow a kept result; stages do.
+    let err = run_q(&w, ask("result:0199-kept repo:morrow")).unwrap_err();
+    assert_eq!(err.kind, "invalid_query");
+    let err = run_q(&w, ask("result:nope")).unwrap_err();
+    assert!(err.message.contains("no kept result"), "{}", err.message);
+}
+
+#[test]
 fn links_and_lineage() {
     let w = morrow();
     // 24: parent drops the subagent default.
