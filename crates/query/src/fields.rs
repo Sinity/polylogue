@@ -10,6 +10,9 @@
 
 use crate::ast::Unit;
 use crate::compile::ColKind;
+use polylogue_model::{
+    BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role, SessionKind, WorkNodeKind,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -161,18 +164,139 @@ const fn sv(
 use Kind::*;
 use Unit::*;
 
-pub const SESSION_KINDS: &[&str] = &["main", "subagent", "sidechain", "chat"];
-pub const SESSION_HAS: &[&str] = &[
-    "thinking",
-    "tool_calls",
-    "errors",
-    "attachments",
-    "compaction",
-    "branches",
-    "note",
-    "conflict",
-    "secret",
+/// One value of a `has:` field and the condition it stands for, over the
+/// row's alias (`s` for sessions, `m` for messages).
+pub struct Has {
+    pub name: &'static str,
+    pub sql: fn(&str) -> String,
+}
+
+const fn has_names<const N: usize>(table: &[Has; N]) -> [&'static str; N] {
+    let mut out = [""; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = table[i].name;
+        i += 1;
+    }
+    out
+}
+
+pub const SESSION_HAS: [Has; 9] = [
+    Has {
+        name: "thinking",
+        sql: |s| {
+            format!(
+                "EXISTS (SELECT 1 FROM block xb JOIN message xm ON xm.pk = xb.message_pk WHERE {} AND xb.kind = 'thinking')",
+                own_messages(s, "xm")
+            )
+        },
+    },
+    Has {
+        name: "tool_calls",
+        sql: |s| format!("EXISTS (SELECT 1 FROM tool_call xt WHERE xt.session_pk = {s}.pk)"),
+    },
+    Has {
+        name: "errors",
+        sql: |s| {
+            format!(
+                "EXISTS (SELECT 1 FROM tool_call xt WHERE xt.session_pk = {s}.pk AND xt.outcome = 'error')"
+            )
+        },
+    },
+    Has {
+        name: "attachments",
+        sql: |s| {
+            format!(
+                "EXISTS (SELECT 1 FROM block xb WHERE xb.session_pk = {s}.pk AND xb.kind IN ('image', 'file'))"
+            )
+        },
+    },
+    Has {
+        name: "compaction",
+        sql: |s| {
+            format!(
+                "EXISTS (SELECT 1 FROM event xe WHERE xe.session_pk = {s}.pk AND xe.kind = 'compaction')"
+            )
+        },
+    },
+    Has {
+        name: "branches",
+        sql: |s| {
+            format!(
+                "EXISTS (SELECT 1 FROM message xm WHERE xm.session_pk = {s}.pk AND xm.on_active_path = 0)"
+            )
+        },
+    },
+    Has {
+        name: "note",
+        sql: |s| {
+            format!(
+                "EXISTS (SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id \
+                 WHERE (ht.ref = 'session:' || {s}.id OR ht.ref IN (SELECT 'message:' || xm.id FROM message xm WHERE xm.session_pk = {s}.pk)) \
+                 AND {})",
+                live_note("hn")
+            )
+        },
+    },
+    Has {
+        name: "conflict",
+        sql: |s| {
+            format!(
+                "EXISTS (SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id \
+                 WHERE ht.ref = 'session:' || {s}.id AND {} \
+                 GROUP BY hn.root HAVING count(*) > 1)",
+                current_note("hn")
+            )
+        },
+    },
+    Has {
+        name: "secret",
+        sql: |s| {
+            format!(
+                "EXISTS (SELECT 1 FROM block xb WHERE xb.session_pk = {s}.pk AND xb.looks_like_secret = 1)"
+            )
+        },
+    },
 ];
+static SESSION_HAS_NAMES: [&str; 9] = has_names(&SESSION_HAS);
+
+pub const MESSAGE_HAS: [Has; 4] = [
+    Has {
+        name: "thinking",
+        sql: |m| {
+            format!(
+                "EXISTS (SELECT 1 FROM block xb WHERE xb.message_pk = {m}.pk AND xb.kind = 'thinking')"
+            )
+        },
+    },
+    Has {
+        name: "tool_calls",
+        sql: |m| {
+            format!(
+                "EXISTS (SELECT 1 FROM block xb WHERE xb.message_pk = {m}.pk AND xb.kind = 'tool_call')"
+            )
+        },
+    },
+    Has {
+        name: "attachments",
+        sql: |m| {
+            format!(
+                "EXISTS (SELECT 1 FROM block xb WHERE xb.message_pk = {m}.pk AND xb.kind IN ('image', 'file'))"
+            )
+        },
+    },
+    Has {
+        name: "code",
+        sql: |m| {
+            format!(
+                "EXISTS (SELECT 1 FROM block xb JOIN text tx ON tx.id = xb.text_id WHERE xb.message_pk = {m}.pk \
+                 AND xb.kind = 'text' AND instr(pl_text(tx.body), char(96, 96, 96)) > 0)"
+            )
+        },
+    },
+];
+static MESSAGE_HAS_NAMES: [&str; 4] = has_names(&MESSAGE_HAS);
+
 pub const TOOL_OUTCOMES: &[&str] = &["ok", "error", "pending", "unknown"];
 pub const SESSION_OUTCOMES: &[&str] = &["solved", "partial", "abandoned", "none"];
 pub const ACTIONS: &[&str] = &[
@@ -187,7 +311,6 @@ pub const ACTIONS: &[&str] = &[
     "mcp",
     "other",
 ];
-pub const LINK_KINDS: &[&str] = &["subagent", "continuation", "reference"];
 
 pub static FIELDS: &[Field] = &[
     // sessions
@@ -196,8 +319,8 @@ pub static FIELDS: &[Field] = &[
     v(
         Sessions,
         "kind",
-        SESSION_KINDS,
-        "main, subagent, sidechain or chat",
+        SessionKind::NAMES,
+        "who started the session: main, or one another session spawned",
     ).sql("{s}.kind"),
     f(Sessions, "title", Substring, "the displayed title").sql("{s}.title"),
     f(
@@ -325,8 +448,8 @@ pub static FIELDS: &[Field] = &[
     sv(
         Sessions,
         "has",
-        SESSION_HAS,
-        "thinking, tool_calls, errors, attachments, compaction, …",
+        &SESSION_HAS_NAMES,
+        "the session has thinking, tool calls, errors, …",
     ),
     f(Sessions, "temporary", Bool, "temporary web chats").sql("{s}.temporary"),
     f(
@@ -446,8 +569,8 @@ pub static FIELDS: &[Field] = &[
     v(
         Messages,
         "role",
-        &["user", "assistant", "system", "tool"],
-        "user, assistant, system or tool",
+        Role::NAMES,
+        "who the source says spoke",
     ).sql("{m}.role"),
     v(
         Messages,
@@ -458,8 +581,8 @@ pub static FIELDS: &[Field] = &[
     v(
         Messages,
         "prompt_kind",
-        &["prose", "command", "harness"],
-        "for human messages: prose or command",
+        PromptKind::NAMES,
+        "for user messages: prose, command, or text the harness or another model wrote",
     ).sql("{m}.prompt_kind"),
     v(
         Messages,
@@ -479,8 +602,8 @@ pub static FIELDS: &[Field] = &[
     sv(
         Messages,
         "has",
-        &["thinking", "tool_calls", "attachments", "code"],
-        "thinking, tool_calls, attachments, code",
+        &MESSAGE_HAS_NAMES,
+        "the message has thinking, tool calls, attachments or code",
     ),
     f(Messages, "words", Number, "words in its text").sql("{m}.words"),
     f(Messages, "input_tokens", Number, "").sql("{m}.input_tokens"),
@@ -510,15 +633,7 @@ pub static FIELDS: &[Field] = &[
     v(
         Blocks,
         "kind",
-        &[
-            "text",
-            "thinking",
-            "tool_call",
-            "tool_result",
-            "image",
-            "file",
-            "other",
-        ],
+        BlockKind::NAMES,
         "the block kind",
     ).sql("{b}.kind"),
     f(Blocks, "media_type", Match, "").sql("{b}.media_type"),
@@ -614,23 +729,13 @@ pub static FIELDS: &[Field] = &[
     v(
         Links,
         "kind",
-        LINK_KINDS,
-        "subagent, continuation or reference",
+        LINK_KIND_NAMES,
+        "the link's family: subagent or continuation",
     ).sql("{r}.kind"),
     v(
         Links,
         "how",
-        &[
-            "fresh",
-            "copied",
-            "summarized",
-            "resume",
-            "fork",
-            "after_compaction",
-            "briefing",
-            "ping",
-            "mention",
-        ],
+        LINK_HOW_NAMES,
         "how the child relates",
     ).sql("{r}.how"),
     f(Links, "parent", Special, "the parent session").sql("{r}.parent_id"),
@@ -852,7 +957,7 @@ pub static FIELDS: &[Field] = &[
     v(
         Work,
         "kind",
-        &["goal", "attempt", "verification", "artifact"],
+        WorkNodeKind::NAMES,
         "goal: a claimed Bead or a declared todo item; attempt: one session pursuing it; \
          verification: a check command; artifact: a commit or pull request",
     ).sql("{r}.kind"),

@@ -219,8 +219,9 @@ impl<'a> Compiler<'a> {
         let s = self.session_alias(scope, span)?;
         Ok(match word {
             "last" | "latest" => format!(
-                "{s}.pk = (SELECT pk FROM session WHERE kind <> 'subagent' AND stub = 0 \
-                 ORDER BY last_activity_at IS NULL, last_activity_at DESC, pk DESC LIMIT 1)"
+                "{s}.pk = (SELECT pk FROM session WHERE kind = '{main}' AND stub = 0 \
+                 ORDER BY last_activity_at IS NULL, last_activity_at DESC, pk DESC LIMIT 1)",
+                main = polylogue_model::SessionKind::Main.as_str()
             ),
             "self" => {
                 let Some(me) = self.opts.self_session.clone() else {

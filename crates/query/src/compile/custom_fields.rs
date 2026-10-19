@@ -3,6 +3,7 @@
 //! shape, a check against other conditions).
 
 use super::*;
+use polylogue_model::{LINK_HOW_NAMES, LINK_KIND_NAMES};
 
 impl<'a> Compiler<'a> {
     /// A field whose SQL is written here, by its own rule.
@@ -308,33 +309,28 @@ impl<'a> Compiler<'a> {
                 }
                 format!("({})", parts.join(" OR "))
             }
-            (Unit::Sessions, "has") => {
+            (Unit::Sessions, "has") | (Unit::Messages, "has") => {
+                let (table, alias) = if unit == Unit::Sessions {
+                    (&fields::SESSION_HAS[..], s)
+                } else {
+                    (&fields::MESSAGE_HAS[..], &a.m)
+                };
                 let mut parts = vec![];
                 for v in values(&op) {
-                    parts.push(self.session_has(s, &v, span)?);
-                }
-                format!("({})", parts.join(" OR "))
-            }
-            (Unit::Messages, "has") => {
-                let mut parts = vec![];
-                for v in values(&op) {
-                    let m = &a.m;
-                    parts.push(match v.to_ascii_lowercase().as_str() {
-                        "thinking" => format!("EXISTS (SELECT 1 FROM block xb WHERE xb.message_pk = {m}.pk AND xb.kind = 'thinking')"),
-                        "tool_calls" => format!("EXISTS (SELECT 1 FROM block xb WHERE xb.message_pk = {m}.pk AND xb.kind = 'tool_call')"),
-                        "attachments" => format!("EXISTS (SELECT 1 FROM block xb WHERE xb.message_pk = {m}.pk AND xb.kind IN ('image', 'file'))"),
-                        "code" => format!(
-                            "EXISTS (SELECT 1 FROM block xb JOIN text tx ON tx.id = xb.text_id WHERE xb.message_pk = {m}.pk AND xb.kind = 'text' AND instr(pl_text(tx.body), char(96, 96, 96)) > 0)"
-                        ),
-                        other => {
-                            return Err(QueryError::BadValue {
-                                field: "has".into(),
-                                value: other.into(),
-                                position: span.start,
-                                message: format!("has on messages is one of thinking, tool_calls, attachments, code; not {other:?}"),
-                            });
-                        }
-                    });
+                    let has = table
+                        .iter()
+                        .find(|h| h.name.eq_ignore_ascii_case(&v))
+                        .ok_or_else(|| QueryError::BadValue {
+                            field: "has".into(),
+                            value: v.clone(),
+                            position: span.start,
+                            message: format!(
+                                "has on {} is one of {}; not {v:?}",
+                                unit.name(),
+                                table.iter().map(|h| h.name).collect::<Vec<_>>().join(", ")
+                            ),
+                        })?;
+                    parts.push((has.sql)(alias));
                 }
                 format!("({})", parts.join(" OR "))
             }
@@ -383,21 +379,25 @@ impl<'a> Compiler<'a> {
             (Unit::Sessions, "link") => {
                 let mut parts = vec![];
                 for v in values(&op) {
-                    let cond = match v.to_ascii_lowercase().as_str() {
-                        "fork" => "((l.kind = 'continuation' AND l.how = 'fork') OR (l.kind = 'subagent' AND l.how = 'copied'))".to_owned(),
-                        "resume" => "(l.kind = 'continuation' AND l.how = 'resume')".to_owned(),
-                        k @ ("subagent" | "continuation" | "reference") => format!("l.kind = '{k}'"),
-                        other => {
-                            return Err(QueryError::BadValue {
-                                field: "link".into(),
-                                value: other.into(),
-                                position: span.start,
-                                message: format!("link is one of subagent, continuation, reference, fork, resume; not {other:?}"),
-                            });
-                        }
+                    let v = v.to_ascii_lowercase();
+                    let column = if LINK_KIND_NAMES.contains(&v.as_str()) {
+                        "kind"
+                    } else if LINK_HOW_NAMES.contains(&v.as_str()) {
+                        "how"
+                    } else {
+                        return Err(QueryError::BadValue {
+                            field: "link".into(),
+                            position: span.start,
+                            message: format!(
+                                "link is one of {}, or how it was made: {}; not {v:?}",
+                                LINK_KIND_NAMES.join(", "),
+                                LINK_HOW_NAMES.join(", ")
+                            ),
+                            value: v,
+                        });
                     };
                     parts.push(format!(
-                        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND {cond})"
+                        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND l.{column} = '{v}')"
                     ));
                 }
                 format!("({})", parts.join(" OR "))
@@ -545,60 +545,5 @@ impl<'a> Compiler<'a> {
         let e = self.text_param(v);
         let p = self.text_param(&like_prefix(v));
         (e, p)
-    }
-
-    pub(super) fn session_has(
-        &mut self,
-        s: &str,
-        v: &str,
-        span: Span,
-    ) -> Result<String, QueryError> {
-        let own = fields::own_messages(s, "xm");
-        Ok(match v.to_ascii_lowercase().as_str() {
-            "thinking" => format!(
-                "EXISTS (SELECT 1 FROM block xb JOIN message xm ON xm.pk = xb.message_pk WHERE {own} AND xb.kind = 'thinking')"
-            ),
-            "tool_calls" => {
-                format!("EXISTS (SELECT 1 FROM tool_call xt WHERE xt.session_pk = {s}.pk)")
-            }
-            "errors" => format!(
-                "EXISTS (SELECT 1 FROM tool_call xt WHERE xt.session_pk = {s}.pk AND xt.outcome = 'error')"
-            ),
-            "attachments" => format!(
-                "EXISTS (SELECT 1 FROM block xb WHERE xb.session_pk = {s}.pk AND xb.kind IN ('image', 'file'))"
-            ),
-            "compaction" => format!(
-                "EXISTS (SELECT 1 FROM event xe WHERE xe.session_pk = {s}.pk AND xe.kind = 'compaction')"
-            ),
-            "branches" => format!(
-                "EXISTS (SELECT 1 FROM message xm WHERE xm.session_pk = {s}.pk AND xm.on_active_path = 0)"
-            ),
-            "secret" => format!(
-                "EXISTS (SELECT 1 FROM block xb WHERE xb.session_pk = {s}.pk AND xb.looks_like_secret = 1)"
-            ),
-            "note" => format!(
-                "EXISTS (SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id \
-                 WHERE (ht.ref = 'session:' || {s}.id OR ht.ref IN (SELECT 'message:' || xm.id FROM message xm WHERE xm.session_pk = {s}.pk)) \
-                 AND {})",
-                fields::live_note("hn")
-            ),
-            "conflict" => format!(
-                "EXISTS (SELECT 1 FROM a.note hn JOIN a.note_target ht ON ht.note_id = hn.id \
-                 WHERE ht.ref = 'session:' || {s}.id AND {} \
-                 GROUP BY hn.root HAVING count(*) > 1)",
-                fields::current_note("hn")
-            ),
-            other => {
-                return Err(QueryError::BadValue {
-                    field: "has".into(),
-                    value: other.into(),
-                    position: span.start,
-                    message: format!(
-                        "has on sessions is one of {}; not {other:?}",
-                        fields::SESSION_HAS.join(", ")
-                    ),
-                });
-            }
-        })
     }
 }

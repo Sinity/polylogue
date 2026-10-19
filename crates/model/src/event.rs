@@ -38,9 +38,11 @@ pub enum LinkKind {
 }
 
 impl LinkKind {
+    pub const ALL: &'static [LinkKind] = &[Self::Fork, Self::Spawn, Self::Continuation, Self::Copy];
+
     /// The stored `(kind, how)` pair: the link table and the query language
     /// name a link's family (`subagent`, `continuation`) and how it was made.
-    pub fn columns(self) -> (&'static str, &'static str) {
+    pub const fn columns(self) -> (&'static str, &'static str) {
         match self {
             Self::Spawn => ("subagent", "fresh"),
             Self::Fork => ("continuation", "fork"),
@@ -51,15 +53,34 @@ impl LinkKind {
 
     /// The kind a stored `(kind, how)` pair names, if this version knows it.
     pub fn from_columns(kind: &str, how: &str) -> Option<Self> {
-        Some(match (kind, how) {
-            ("subagent", _) => Self::Spawn,
-            ("continuation", "fork") => Self::Fork,
-            ("continuation", "resume") => Self::Copy,
-            ("continuation", "after_compaction") => Self::Continuation,
-            _ => return None,
+        Self::ALL.iter().copied().find(|&k| {
+            let (family, made) = k.columns();
+            // Any subagent link is a spawn, however it was made.
+            family == kind && (made == how || k == Self::Spawn)
         })
     }
 }
+
+const LINK_COUNT: usize = LinkKind::ALL.len();
+
+const fn link_column(second: bool) -> ([&'static str; LINK_COUNT], usize) {
+    let mut out = [""; LINK_COUNT];
+    let mut i = 0;
+    while i < LINK_COUNT {
+        let (kind, how) = LinkKind::ALL[i].columns();
+        out[i] = if second { how } else { kind };
+        i += 1;
+    }
+    crate::stored_names::distinct(out)
+}
+
+static LINK_KINDS: ([&str; LINK_COUNT], usize) = link_column(false);
+static LINK_HOWS: ([&str; LINK_COUNT], usize) = link_column(true);
+
+/// Every stored link `kind` (the first of [`LinkKind::columns`]).
+pub static LINK_KIND_NAMES: &[&str] = LINK_KINDS.0.split_at(LINK_KINDS.1).0;
+/// Every stored link `how` (the second of [`LinkKind::columns`]).
+pub static LINK_HOW_NAMES: &[&str] = LINK_HOWS.0.split_at(LINK_HOWS.1).0;
 
 /// A relationship between two sessions, from an explicit marker in the
 /// source, never from guessing.

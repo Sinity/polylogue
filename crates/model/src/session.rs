@@ -16,6 +16,13 @@ pub enum SessionKind {
     Compaction,
 }
 
+stored_names!(SessionKind {
+    Main => "main",
+    Subagent => "subagent",
+    Sidechain => "sidechain",
+    Compaction => "compaction",
+});
+
 impl SessionKind {
     /// Sessions another session started. A message copied into one of
     /// these from its parent still belongs to the parent.
