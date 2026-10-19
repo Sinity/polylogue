@@ -1,22 +1,26 @@
 # Repository Guidelines
 
 This is the Rust rewrite of Polylogue. The README and CLI help describe what
-works today. The design lives in the spec repository
-(`/realm/inbox/spec/polylogue-spec/`); `docs/rewrite/` holds notes on parts
-already built. The Python Polylogue is still the deployed version until the
-operator switches over.
+works today. The target architecture is
+`/realm/project/polylogue/analysis/architecture-20261018/polylogue-architecture.md`;
+planned work is in Beads (`bd` from this checkout). The Python Polylogue is
+still the deployed version until the operator switches over.
 
 ## Structure
 
-- `crates/model`: pure identity, value and outcome types; no IO, no storage.
-- `crates/store`: every SQLite connection and write. Nothing else touches SQLite.
-- `crates/engine`: parses provider files outside the writer and hands the
-  results to the store.
+- `crates/model`: identity, value and outcome types; no I/O.
+- `crates/sources`: one declaration and one parser per origin on the shared
+  framework (`origin.rs`, `parse.rs`, `document.rs`).
+- `crates/store`: every SQLite connection and write; the blob store.
+- `crates/engine`: the convergence loop and the parse pool.
+- `crates/query`: the query language and its compiler to SQL.
+- `crates/render`: one block stream in four formats.
+- `crates/polylogue`: configuration, the daemon, CLI, MCP, web reader and
+  browser host. Clients get typed store handles, never raw connections.
 - `crates/sinex`: the Sinex backend (`primary` mode), behind the `sinex`
-  feature: publishing archive rows and blobs, restoring an archive.
-- `crates/polylogue`: configuration, the daemon and the CLI. Clients get typed
-  store handles, never raw connections.
-- `xtask`: developer checks (`fast`, `check`, `boundaries`).
+  feature.
+- `crates/testkit`: shared test fixtures (the Morrow world).
+- `xtask`: developer checks (`fast`, `check`, `boundaries`), on `devkit`.
 
 ## Development loop
 
@@ -37,10 +41,11 @@ Optimize for fast integration. See `docs/development.md`.
 - Rust, four-space indent, `rustfmt`.
 - Comments state constraints and reasons, briefly. No status, history or spec
   narration in code; Git and Beads hold those.
-- Tests go in separate files (`src/tests.rs` or `tests/`) using `#[cfg(test)]`
-  modules when they need private access; small tests may stay inline. Use
-  synthetic inputs and temporary directories. CLI and MCP tests go through the
-  public commands.
+- Tests live in their own files, never inline: a module's unit tests in
+  `<module>/tests.rs` declared with `#[cfg(test)] mod tests;`, integration
+  tests under the crate's `tests/`. Use synthetic inputs, temporary
+  directories and `polylogue-testkit`. CLI and MCP tests go through the public
+  commands.
 - Unsupported operations return a typed error, never an empty success.
   Unknown times stay unknown. IDs are opaque strings and may contain colons.
   Check the schema version before writing.
