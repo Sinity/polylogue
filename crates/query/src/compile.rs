@@ -698,7 +698,7 @@ impl<'a> Compiler<'a> {
                 session_defaults(&mut out, &a.s);
             }
             Unit::Files | Unit::Events => session_defaults(&mut out, &a.s),
-            Unit::Deliveries => {
+            Unit::Deliveries | Unit::Work => {
                 out.push(format!(
                     "({s}.pk IS NULL OR (NOT {} AND NOT {}))",
                     fields::hidden(&a.s),
@@ -738,7 +738,7 @@ impl<'a> Compiler<'a> {
             Unit::Sessions => (format!("{}.last_activity_at", a.s), true),
             Unit::Messages | Unit::Blocks => (format!("{}.at", a.m), false),
             Unit::ToolCalls => (format!("{}.at", a.t), false),
-            Unit::Events | Unit::Deliveries => (format!("{}.at", a.row), false),
+            Unit::Events | Unit::Deliveries | Unit::Work => (format!("{}.at", a.row), false),
             Unit::Files => (format!("{}.first_at", a.row), false),
             Unit::Notes => (format!("{}.created_at", a.row), true),
             Unit::Links => (format!("{}p.last_activity_at", a.row), false),
@@ -1047,6 +1047,11 @@ impl<'a> Compiler<'a> {
             ),
             Unit::Processes => format!(
                 "EXISTS (SELECT 1 FROM process_session ps WHERE ps.process_pk = {r}.pk AND ps.session_pk IN ({sessions}))"
+            ),
+            Unit::Work => format!(
+                "({r}.session_pk IN ({sessions}) OR EXISTS (SELECT 1 FROM work_edge we \
+                 JOIN work_node wa ON wa.pk = we.from_pk \
+                 WHERE we.to_pk = {r}.pk AND wa.session_pk IN ({sessions})))"
             ),
             other => {
                 return Err(not_built(
@@ -1759,6 +1764,49 @@ impl<'a> Compiler<'a> {
                 }
                 format!("({})", parts.join(" OR "))
             }
+            (Unit::Sessions, "live") => {
+                let now = self.opts.clock.now;
+                let mut states = vec![];
+                for v in values(&op) {
+                    let v = v.to_ascii_lowercase();
+                    if !fields::LIVE_STATES.contains(&v.as_str()) {
+                        return Err(QueryError::BadValue {
+                            field: name.into(),
+                            value: v,
+                            position: span.start,
+                            message: format!("live is one of {}", fields::LIVE_STATES.join(", ")),
+                        });
+                    }
+                    states.push(format!("'{v}'"));
+                }
+                if states.is_empty() {
+                    return Err(need_value(name));
+                }
+                format!("{} IN ({})", fields::live_state(s, now), states.join(", "))
+            }
+            (Unit::Sessions, "waiting" | "running") => {
+                let now = self.opts.clock.now;
+                let v = one(&op).ok_or_else(|| need_value(name))?;
+                let want = match v.to_ascii_lowercase().as_str() {
+                    "true" | "yes" | "1" => true,
+                    "false" | "no" | "0" => false,
+                    _ => {
+                        return Err(QueryError::BadValue {
+                            field: name.into(),
+                            value: v,
+                            position: span.start,
+                            message: format!("{name} is true or false"),
+                        });
+                    }
+                };
+                let states = if name == "waiting" {
+                    "('waiting')"
+                } else {
+                    "('working', 'waiting', 'idle', 'unknown')"
+                };
+                let not = if want { "" } else { "NOT " };
+                format!("{} {not}IN {states}", fields::live_state(s, now))
+            }
             (Unit::Sessions, "commit") => {
                 let v = one(&op).ok_or_else(|| need_value(name))?;
                 if v.len() < 7 || !v.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -1770,8 +1818,12 @@ impl<'a> Compiler<'a> {
                     });
                 }
                 let p = self.text_param(&format!("{}%", v.to_lowercase()));
+                let q = self.text_param(&v.to_lowercase());
+                // A hash is stored as the command printed it, often short:
+                // either may be a prefix of the other.
                 format!(
-                    "EXISTS (SELECT 1 FROM commit_link cl WHERE cl.session_pk = {s}.pk AND cl.commit_hash LIKE {p})"
+                    "EXISTS (SELECT 1 FROM commit_link cl WHERE cl.session_pk = {s}.pk \
+                     AND (cl.commit_hash LIKE {p} OR {q} LIKE cl.commit_hash || '%'))"
                 )
             }
             (Unit::Sessions, "pr") => {
@@ -2251,6 +2303,23 @@ impl<'a> Compiler<'a> {
         if def.kind == Kind::Special {
             return match (unit, def.name) {
                 (Unit::Sessions, "repo") => Ok((format!("{}.repo", a.s), ColKind::Text)),
+                (Unit::Sessions, "live") => {
+                    Ok((fields::live_state(&a.s, self.opts.clock.now), ColKind::Text))
+                }
+                (Unit::Sessions, "waiting") => Ok((
+                    format!(
+                        "({} = 'waiting')",
+                        fields::live_state(&a.s, self.opts.clock.now)
+                    ),
+                    ColKind::Bool,
+                )),
+                (Unit::Sessions, "running") => Ok((
+                    format!(
+                        "({} IN ('working', 'waiting', 'idle', 'unknown'))",
+                        fields::live_state(&a.s, self.opts.clock.now)
+                    ),
+                    ColKind::Bool,
+                )),
                 (Unit::Sessions, "cwd") => Ok((format!("{}.cwd", a.s), ColKind::Text)),
                 (Unit::Sessions, "collection") => Ok((
                     format!("COALESCE({s}.collection_name, {s}.collection_id)", s = a.s),
@@ -2755,6 +2824,7 @@ fn base_from(unit: Unit, a: &Aliases) -> Result<String, QueryError> {
         Unit::Deliveries => {
             format!("a.delivery {r} LEFT JOIN session {s} ON {s}.id = {r}.recipient_id")
         }
+        Unit::Work => format!("work_node {r} LEFT JOIN session {s} ON {s}.pk = {r}.session_pk"),
         Unit::Turns => {
             return Err(not_built(
                 "the turns unit",
@@ -2917,6 +2987,17 @@ fn row_columns(unit: Unit, a: &Aliases) -> (String, Vec<(String, String, ColKind
                 c("pid", format!("{r}.pid"), Number),
                 c("started_at", format!("{r}.started_at"), Time),
                 c("ended_at", format!("{r}.ended_at"), Time),
+            ],
+        ),
+        Unit::Work => (
+            format!("{r}.pk"),
+            vec![
+                c("kind", format!("{r}.kind"), Text),
+                c("title", format!("{r}.title"), Text),
+                c("state", format!("{r}.state"), Text),
+                c("session", format!("{s}.id"), Text),
+                c("at", format!("{r}.at"), Time),
+                c("goal", fields::work_goal(r), Text),
             ],
         ),
         Unit::Deliveries => (

@@ -170,8 +170,19 @@ pub static FIELDS: &[Field] = &[
         &["present", "missing"],
         "whether a transcript was stored",
     ),
-    f(Sessions, "waiting", Bool, "the live state is waiting"),
-    f(Sessions, "running", Bool, "the harness process is alive"),
+    sv(
+        Sessions,
+        "live",
+        LIVE_STATES,
+        "the live state now, from hook and process records and the time",
+    ),
+    f(Sessions, "waiting", Special, "the live state is waiting"),
+    f(
+        Sessions,
+        "running",
+        Special,
+        "the live state is working, waiting, idle or unknown",
+    ),
     v(
         Sessions,
         "waiting_on",
@@ -641,6 +652,61 @@ pub static FIELDS: &[Field] = &[
     f(Processes, "alive", Bool, "no end seen yet"),
     f(Processes, "started_at", Time, ""),
     f(Processes, "ended_at", Time, ""),
+    v(
+        Work,
+        "kind",
+        &["goal", "attempt", "verification", "artifact"],
+        "goal: a claimed Bead or a declared todo item; attempt: one session pursuing it; \
+         verification: a check command; artifact: a commit or pull request",
+    ),
+    f(
+        Work,
+        "title",
+        Substring,
+        "the Bead ID, item text, check command or commit",
+    ),
+    f(
+        Work,
+        "key",
+        Prefix,
+        "bead:<id>, todo:…, attempt:…, check:…, commit:…, pr:…",
+    ),
+    f(
+        Work,
+        "state",
+        Match,
+        "attempt: open, closed, released, completed, pending; verification: ok, error, unknown",
+    ),
+    f(
+        Work,
+        "at",
+        Time,
+        "when the node's first evidence was recorded",
+    ),
+    f(
+        Work,
+        "goal",
+        Substring,
+        "the goal an attempt pursues, or the goal of the attempts a node checks or was made for",
+    ),
+    f(
+        Work,
+        "checks_passed",
+        Number,
+        "attempt: passing checks while it was open",
+    ),
+    f(
+        Work,
+        "checks_failed",
+        Number,
+        "attempt: failing checks while it was open",
+    ),
+    f(
+        Work,
+        "artifacts",
+        Number,
+        "attempt: commits and pull requests made while it was open",
+    ),
 ];
 
 pub fn lookup(unit: Unit, name: &str) -> Option<&'static Field> {
@@ -744,6 +810,77 @@ fn own_calls(s: &str, x: &str, extra: &str) -> String {
     )
 }
 
+/// The title of the goal a work node belongs to: an attempt's goal, or the
+/// goal of the attempt a verification checks or an artifact was made for.
+pub fn work_goal(r: &str) -> String {
+    format!(
+        "COALESCE(\
+         (SELECT g.title FROM work_edge e JOIN work_node g ON g.pk = e.to_pk \
+          WHERE e.from_pk = {r}.pk AND e.kind = 'pursues'), \
+         (SELECT g.title FROM work_edge e JOIN work_edge p ON p.from_pk = e.to_pk AND p.kind = 'pursues' \
+          JOIN work_node g ON g.pk = p.to_pk WHERE e.from_pk = {r}.pk AND e.kind = 'checks' LIMIT 1), \
+         (SELECT g.title FROM work_edge e JOIN work_edge p ON p.from_pk = e.from_pk AND p.kind = 'pursues' \
+          JOIN work_node g ON g.pk = p.to_pk WHERE e.to_pk = {r}.pk AND e.kind = 'produces' LIMIT 1), \
+         CASE WHEN {r}.kind = 'goal' THEN {r}.title END)"
+    )
+}
+
+/// The live states (spec model.md, Live state).
+pub const LIVE_STATES: &[&str] = &["working", "waiting", "idle", "unknown", "stale", "ended"];
+
+/// The live window: hook evidence this recent makes a session live.
+pub const LIVE_WINDOW_MS: i64 = 15 * 60 * 1000;
+/// Evidence older than this, with nothing newer, means the session ended.
+pub const LIVE_DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// The live state of session alias `s` at `now` (spec model.md, Live
+/// state): computed when asked from the stored live facts and the time,
+/// never written by a clock. Rules apply in order and the result is total.
+/// A fact dated after `now` counts as at `now`.
+pub fn live_state(s: &str, now: i64) -> String {
+    let w = LIVE_WINDOW_MS;
+    let d = LIVE_DAY_MS;
+    let ev = format!("MIN({s}.live_last_event_at, {now})");
+    let grew = format!("MIN({s}.last_activity_at, {now})");
+    let live = format!(
+        "({s}.live_root_alive = 1 OR ({s}.live_root_alive IS NULL \
+         AND {s}.live_last_event_at IS NOT NULL AND {now} - {ev} <= {w}))"
+    );
+    format!(
+        "(CASE \
+         WHEN {s}.live_last_event = 'hook_session_end' \
+              OR ({s}.live_root_alive = 0 AND {s}.live_last_event = 'hook_stop') THEN 'ended' \
+         WHEN {s}.live_root_alive = 0 THEN 'stale' \
+         WHEN {live} AND {s}.live_waiting_on IS NOT NULL THEN 'waiting' \
+         WHEN {live} AND {s}.live_last_event IN ('hook_stop', 'hook_notification') THEN 'idle' \
+         WHEN {live} THEN 'working' \
+         WHEN {s}.live_last_event IS NULL AND {s}.live_root_alive IS NULL \
+              AND {s}.last_activity_at IS NOT NULL AND {now} - {grew} <= {w} THEN 'unknown' \
+         WHEN COALESCE({s}.live_last_event_at, {s}.last_activity_at) IS NOT NULL \
+              AND {now} - MAX(COALESCE({ev}, 0), COALESCE({grew}, 0)) <= {d} THEN 'stale' \
+         ELSE 'ended' END)"
+    )
+}
+
+/// When `s`'s live state changes with no new fact: the end of the live
+/// window or of the 24 hours after the last evidence; NULL when only a new
+/// fact can change it.
+pub fn live_until(s: &str, now: i64) -> String {
+    let w = LIVE_WINDOW_MS;
+    let d = LIVE_DAY_MS;
+    let ev = format!("MIN({s}.live_last_event_at, {now})");
+    let grew = format!("MIN({s}.last_activity_at, {now})");
+    let last = format!("MAX(COALESCE({ev}, 0), COALESCE({grew}, 0))");
+    format!(
+        "(CASE {state} \
+         WHEN 'ended' THEN NULL \
+         WHEN 'stale' THEN CASE WHEN {s}.live_root_alive = 0 THEN NULL ELSE {last} + {d} END \
+         WHEN 'unknown' THEN {grew} + {w} \
+         ELSE CASE WHEN {s}.live_root_alive = 1 THEN NULL ELSE {ev} + {w} END END)",
+        state = live_state(s, now)
+    )
+}
+
 /// The expression for a plain field (every kind but `Special`).
 pub fn sql(unit: Unit, name: &str, a: &Aliases) -> Option<String> {
     let s = &a.s;
@@ -768,10 +905,16 @@ pub fn sql(unit: Unit, name: &str, a: &Aliases) -> Option<String> {
         (Unit::Sessions, "source") => {
             format!("CASE WHEN {s}.stub = 1 THEN 'missing' ELSE 'present' END")
         }
-        (Unit::Sessions, "waiting") => format!("({s}.live_waiting_on IS NOT NULL)"),
-        (Unit::Sessions, "running") | (Unit::Sessions, "process_alive") => {
-            format!("{s}.live_root_alive")
-        }
+        (Unit::Sessions, "process_alive") => format!("{s}.live_root_alive"),
+        (Unit::Work, "kind") => format!("{r}.kind"),
+        (Unit::Work, "title") => format!("{r}.title"),
+        (Unit::Work, "key") => format!("{r}.key"),
+        (Unit::Work, "state") => format!("{r}.state"),
+        (Unit::Work, "at") => format!("{r}.at"),
+        (Unit::Work, "goal") => work_goal(r),
+        (Unit::Work, "checks_passed") => format!("json_extract({r}.attrs_json, '$.checks_passed')"),
+        (Unit::Work, "checks_failed") => format!("json_extract({r}.attrs_json, '$.checks_failed')"),
+        (Unit::Work, "artifacts") => format!("json_extract({r}.attrs_json, '$.artifacts')"),
         (Unit::Sessions, "waiting_on") => format!("{s}.live_waiting_on"),
         (Unit::Sessions, "task") => format!("{s}.live_task"),
         (Unit::Sessions, "harness") => format!("{s}.harness"),

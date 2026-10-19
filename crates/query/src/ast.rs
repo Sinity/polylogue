@@ -42,10 +42,11 @@ pub enum Unit {
     Runs,
     Deliveries,
     Processes,
+    Work,
 }
 
 impl Unit {
-    pub const ALL: [Unit; 12] = [
+    pub const ALL: [Unit; 13] = [
         Unit::Sessions,
         Unit::Messages,
         Unit::Blocks,
@@ -58,6 +59,7 @@ impl Unit {
         Unit::Runs,
         Unit::Deliveries,
         Unit::Processes,
+        Unit::Work,
     ];
 
     pub fn name(self) -> &'static str {
@@ -74,6 +76,7 @@ impl Unit {
             Unit::Runs => "runs",
             Unit::Deliveries => "deliveries",
             Unit::Processes => "processes",
+            Unit::Work => "work",
         }
     }
 
@@ -92,6 +95,7 @@ impl Unit {
             Unit::Runs => "run",
             Unit::Deliveries => "delivery",
             Unit::Processes => "process",
+            Unit::Work => "work",
         }
     }
 

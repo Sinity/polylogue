@@ -100,6 +100,12 @@ impl LogicalDay {
     }
 
     /// The logical date an instant belongs to.
+    /// The local hour (0-23) of an instant.
+    pub fn local_hour(&self, ms: i64) -> u8 {
+        let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+        ts.to_zoned(self.zone.clone()).hour() as u8
+    }
+
     pub fn date_of(&self, ms: i64) -> jiff::civil::Date {
         let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
         let local = ts.to_zoned(self.zone.clone()).date();

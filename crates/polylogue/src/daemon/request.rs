@@ -135,6 +135,23 @@ pub enum Request {
     Cancel {
         request_id: String,
     },
+    /// Sessions with live evidence and their live state at `now` (the
+    /// daemon's clock when absent).
+    Live {
+        #[serde(default)]
+        now: Option<i64>,
+    },
+    /// The most recent signal notices and what happened to each.
+    Notices {
+        #[serde(default)]
+        limit: Option<u64>,
+    },
+    /// The change feed: what changed after `since` (a cursor from a
+    /// previous answer's `next`; everything when absent).
+    Changes {
+        #[serde(default)]
+        since: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
