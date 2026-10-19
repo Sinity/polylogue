@@ -7,7 +7,7 @@
 use crate::Result;
 use crate::read::Reader;
 use polylogue_model::export::SessionExport;
-use polylogue_model::{Event, Json, Link, MessageId, SessionId, Timestamp};
+use polylogue_model::{Event, Json, Link, LinkKind, MessageId, SessionId, Timestamp};
 use rusqlite::OptionalExtension;
 
 impl Reader<'_> {
@@ -72,25 +72,25 @@ impl Reader<'_> {
     /// (law 4).
     pub fn links(&self, id: &SessionId) -> Result<Vec<Link>> {
         let mut stmt = self.conn().prepare_cached(
-            "SELECT kind, parent_id, child_id, branch_point, spawning_call, evidence
+            "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence
              FROM link WHERE parent_id = ?1 OR child_id = ?1
-             ORDER BY parent_id, child_id, kind",
+             ORDER BY parent_id, child_id, kind, how",
         )?;
         let rows = stmt.query_map([id.to_string()], |r| {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
+                (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
                 r.get::<_, String>(2)?,
-                r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(3)?,
                 r.get::<_, Option<String>>(4)?,
-                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (kind, parent, child, at, call_id, evidence) = row?;
-            let (Ok(kind), Ok(parent), Ok(child)) = (
-                serde_json::from_value(Json::String(kind)),
+            let ((kind, how), parent, child, at, call_id, evidence) = row?;
+            let (Some(kind), Ok(parent), Ok(child)) = (
+                LinkKind::from_columns(&kind, &how),
                 SessionId::parse(&parent),
                 SessionId::parse(&child),
             ) else {

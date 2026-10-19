@@ -33,7 +33,7 @@
             }
           ],
           "id": "claude-code:o1",
-          "prompt_kind": "prose",
+          "prompt_kind": "model",
           "role": "user",
           "session": "claude-code:agent-c7"
         },

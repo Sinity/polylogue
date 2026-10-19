@@ -440,7 +440,9 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<InlineBlob>) -> Option<Vec<Bl
                 "cwd": item.get("cwd"),
                 "parsed_cmd": item.get("parsed_cmd"),
             });
-            ("command_execution", input, command, None, output)
+            // A code-mode script's command: the `exec_command` tool the
+            // script called (spec sources/codex.md, code mode).
+            ("exec_command", input, command, None, output)
         }
         "FileChange" => {
             let changes = item.get("changes").cloned().unwrap_or(Json::Null);

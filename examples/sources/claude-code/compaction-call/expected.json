@@ -33,7 +33,7 @@
             }
           ],
           "id": "claude-code:h1",
-          "prompt_kind": "prose",
+          "prompt_kind": "harness",
           "role": "user",
           "session": "claude-code:agent-acompact-5e"
         },

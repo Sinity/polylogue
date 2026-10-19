@@ -342,7 +342,7 @@ fn commands_a_script_ran_are_recovered_as_calls() {
         panic!()
     };
     assert_eq!(command.as_deref(), Some("ls"));
-    assert_eq!(tool.as_deref(), Some("command_execution"));
+    assert_eq!(tool.as_deref(), Some("exec_command"));
     let Block::ToolResult {
         outcome, output, ..
     } = &recovered.blocks[1]

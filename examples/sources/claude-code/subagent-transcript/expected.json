@@ -43,7 +43,7 @@
         "at": "claude-code:a9",
         "child": "claude-code:agent-ab12",
         "evidence": "fork-context-ref",
-        "kind": "fork",
+        "kind": "spawn",
         "parent": "claude-code:s1"
       }
     ],
@@ -59,7 +59,7 @@
             }
           ],
           "id": "claude-code:t1",
-          "prompt_kind": "prose",
+          "prompt_kind": "model",
           "role": "user",
           "session": "claude-code:agent-ab12"
         },

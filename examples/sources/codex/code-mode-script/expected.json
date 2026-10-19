@@ -53,7 +53,7 @@
                 "cwd": "file:///work/repo",
                 "parsed_cmd": []
               },
-              "tool": "command_execution",
+              "tool": "exec_command",
               "type": "tool_call"
             },
             {

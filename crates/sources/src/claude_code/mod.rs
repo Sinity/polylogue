@@ -493,16 +493,22 @@ impl ClaudeCode {
     }
 
     /// Who wrote a user record. A subagent transcript's root record (no
-    /// parent) is the task its parent model wrote.
+    /// parent) is the task its parent model wrote; a compaction call's is
+    /// the harness's summarizing instruction.
     fn prompt_kind(&self, v: &Json, content: &Json) -> PromptKind {
         let kind = blocks::prompt_kind(v, content);
-        if matches!(self.file, File::Subagent { .. })
-            && kind == PromptKind::Prose
-            && str_field(v, "parentUuid").is_none()
-        {
-            return PromptKind::Model;
+        match &self.file {
+            File::Subagent { stem }
+                if kind == PromptKind::Prose && str_field(v, "parentUuid").is_none() =>
+            {
+                if stem.starts_with("agent-acompact") {
+                    PromptKind::Harness
+                } else {
+                    PromptKind::Model
+                }
+            }
+            _ => kind,
         }
-        kind
     }
 
     fn title(&self, carry: &mut Carry, v: &Json, field: &str, source: TitleSource) -> Disposition {
@@ -541,7 +547,8 @@ fn link_at(
     call_id: Option<String>,
     evidence: &str,
 ) {
-    let key = format!("{kind:?} {parent} {child}");
+    // A later record may add the branch point; the writer merges them.
+    let key = format!("{kind:?} {parent} {child} {}", at.is_some());
     if carry.links.insert(key) {
         out.links.push(Link {
             kind,
@@ -786,11 +793,13 @@ impl Parser for ClaudeCode {
                 else {
                     return Disposition::unknown("fork-context-ref without a parent");
                 };
+                // Evidence for the subagent link, with its branch point
+                // (spec sources/claude-code.md): never a second parent.
                 let at = str_field(v, "parentLastUuid").and_then(message_id);
                 link_at(
                     carry,
                     out,
-                    LinkKind::Fork,
+                    LinkKind::Spawn,
                     parent,
                     child,
                     at,

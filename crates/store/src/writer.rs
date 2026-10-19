@@ -1048,7 +1048,8 @@ impl Ctx<'_, '_> {
         let existing = self
             .tx
             .prepare_cached(
-                "SELECT pk, kind, title, title_source, cwd_json, branch, harness_version, started_at
+                "SELECT pk, kind, title, title_source, cwd_json, branch, harness_version, started_at,
+                     repo
                  FROM session WHERE id = ?1",
             )?
             .query_row([&id], |r| {
@@ -1061,11 +1062,12 @@ impl Ctx<'_, '_> {
                     r.get::<_, Option<String>>(5)?,
                     r.get::<_, Option<String>>(6)?,
                     r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, Option<String>>(8)?,
                 ))
             })
             .optional()?;
         let (pk, merged) = match existing {
-            Some((pk, kind, title, title_source, cwd, branch, version, started)) => {
+            Some((pk, kind, title, title_source, cwd, branch, version, started, repo)) => {
                 let mut cur =
                     Session::new(s.id.clone(), parse_name(&kind).unwrap_or(SessionKind::Main));
                 if let (Some(text), Some(source)) = (
@@ -1078,6 +1080,7 @@ impl Ctx<'_, '_> {
                     .and_then(|c| serde_json::from_str(&c).ok())
                     .unwrap_or_default();
                 cur.git_branch = branch;
+                cur.repo = repo;
                 cur.tool_version = version;
                 cur.started = started.and_then(Timestamp::from_unix_ms);
                 let before = cur.clone();
@@ -1105,13 +1108,15 @@ impl Ctx<'_, '_> {
             merged.tool_version,
             ms(merged.started),
             self.counter,
+            merged.repo,
         ];
         match pk {
             Some(pk) => {
                 self.tx
                     .prepare_cached(
                         "UPDATE session SET title = ?5, title_source = ?6, cwd_json = ?7, cwd = ?8,
-                             branch = ?9, harness_version = ?10, started_at = ?11, changed = ?12
+                             branch = ?9, harness_version = ?10, started_at = ?11, changed = ?12,
+                             repo = ?13
                          WHERE id = ?1 AND origin = ?2 AND native_id = ?3 AND kind = ?4",
                     )?
                     .execute(cols)?;
@@ -1121,8 +1126,9 @@ impl Ctx<'_, '_> {
                 self.tx
                     .prepare_cached(
                         "INSERT INTO session(id, origin, native_id, kind, title, title_source,
-                             cwd_json, cwd, branch, harness_version, started_at, changed, harness)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?2)",
+                             cwd_json, cwd, branch, harness_version, started_at, changed, harness,
+                             repo)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?2, ?13)",
                     )?
                     .execute(cols)?;
                 let pk = self.tx.last_insert_rowid();
@@ -1678,7 +1684,7 @@ impl Ctx<'_, '_> {
     /// One link per kind, parent and child; parts one file lacks are filled
     /// from another (the SQL form of [`Link::merge`]).
     fn write_link(&self, l: &Link) -> Result<()> {
-        let kind = name(&l.kind);
+        let (kind, how) = l.kind.columns();
         let child = l.child.to_string();
         let child_pk: Option<i64> = self
             .tx
@@ -1689,7 +1695,7 @@ impl Ctx<'_, '_> {
             .prepare_cached(
                 "INSERT INTO link(parent_id, child_id, child_pk, kind, how, branch_point,
                      spawning_call, evidence, input_pk, parser_version)
-                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9)
+                 VALUES (?1, ?2, ?3, ?4, ?10, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT(parent_id, child_id, kind, how) DO UPDATE SET
                      child_pk = COALESCE(link.child_pk, excluded.child_pk),
                      branch_point = COALESCE(link.branch_point, excluded.branch_point),
@@ -1705,6 +1711,7 @@ impl Ctx<'_, '_> {
                 l.evidence,
                 self.input_pk,
                 self.parser_version,
+                how,
             ])?;
         Ok(())
     }
@@ -1833,13 +1840,13 @@ fn action(tool: &str) -> &'static str {
         "Grep" | "Glob" | "LS" | "ToolSearch" => "search",
         "WebFetch" | "WebSearch" | "web_search" => "web",
         "Task" | "Agent" => "subagent",
+        // Codex code mode: a script whose `exec_command` calls are counted
+        // in its place.
+        "exec" => "code",
         t if t.starts_with("mcp__") => "mcp",
         _ => "other",
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 /// Marks which of a branched session's messages lie on the path from its
 /// newest active leaf to the root (`on_active_path` 1) and which on an
@@ -1863,3 +1870,6 @@ fn mark_active_path(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     .execute([session_pk])?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

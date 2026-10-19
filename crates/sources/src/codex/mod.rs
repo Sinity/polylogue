@@ -248,6 +248,9 @@ impl Rollout {
         if let Some(branch) = p.get("git").and_then(|g| str_field(g, "branch")) {
             s.git_branch = Some(branch.to_owned());
         }
+        if let Some(url) = p.get("git").and_then(|g| str_field(g, "repository_url")) {
+            s.repo = Some(url.to_owned());
+        }
         if let Some(name) = str_field(p, "agent_nickname") {
             s.offer_title(name, TitleSource::AgentName);
         }

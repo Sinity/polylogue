@@ -1718,6 +1718,7 @@ dependencies = [
  "polylogue-sinex",
  "polylogue-sources",
  "polylogue-store",
+ "polylogue-testkit",
  "rmcp",
  "schemars",
  "serde",
