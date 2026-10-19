@@ -23,6 +23,10 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// The daemon's allocator, so the measured memory is the daemon's.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 struct Rng(u64);
 
 impl Rng {
@@ -311,6 +315,10 @@ fn main() {
             .unwrap_or(0)
     };
     let (read_bytes, write_bytes) = (io_field("read_bytes:"), io_field("write_bytes:"));
+    // Bytes handed to write calls, whatever the filesystem: the measure of
+    // write amplification that does not depend on the disk (tmpfs archives
+    // never reach `write_bytes`).
+    let wchar = io_field("wchar:");
     // Peak resident memory of the whole run. Memory must stay bounded by
     // the parse pool's bytes in flight and the writer's cache, not grow
     // with the corpus; `--max-rss-mb` fails the run when it does not.
@@ -337,6 +345,9 @@ fn main() {
             "disk_read_mb": read_bytes as f64 / 1e6,
             "disk_written_mb": write_bytes as f64 / 1e6,
             "written_over_kept": write_bytes as f64 / (index + stored).max(1) as f64,
+            "written_mb": wchar as f64 / 1e6,
+            "written_over_input": wchar as f64 / input.max(1) as f64,
+            "exports_mb": dir_size(&archive.exports_dir()) as f64 / 1e6,
             "peak_rss_mb": peak_rss_mb,
             "errors": pass.errors.len(),
             "first_errors": pass.errors.iter().take(5).collect::<Vec<_>>(),

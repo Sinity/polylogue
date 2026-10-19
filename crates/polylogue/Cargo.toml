@@ -12,6 +12,7 @@ publish.workspace = true
 sinex = ["dep:polylogue-sinex"]
 
 [dependencies]
+mimalloc.workspace = true
 polylogue-sinex = { workspace = true, optional = true }
 polylogue-model.workspace = true
 polylogue-sources.workspace = true
