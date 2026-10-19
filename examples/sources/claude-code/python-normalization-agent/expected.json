@@ -1,0 +1,69 @@
+{
+  "accounting": {
+    "framed": 2,
+    "materialized": {
+      "assistant": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [
+      {
+        "child": "claude-code:agent-norm",
+        "evidence": "agentId",
+        "kind": "spawn",
+        "parent": "claude-code:claude-lineage-parent"
+      }
+    ],
+    "messages": [
+      {
+        "end": 202,
+        "message": {
+          "at": "2026-07-01T11:00:00Z",
+          "blocks": [
+            {
+              "text": "Inspect the normalization shard and report only evidence.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:agent-task",
+          "prompt_kind": "model",
+          "role": "user",
+          "session": "claude-code:agent-norm"
+        },
+        "offset": 0
+      },
+      {
+        "end": 445,
+        "message": {
+          "at": "2026-07-01T11:00:01Z",
+          "blocks": [
+            {
+              "text": "The shard is coherent.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:agent-answer",
+          "model": "claude-sonnet-4-5-20250929",
+          "parent": "claude-code:agent-task",
+          "role": "assistant",
+          "session": "claude-code:agent-norm"
+        },
+        "offset": 203
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-code:agent-norm",
+        "kind": "subagent",
+        "started": "2026-07-01T11:00:00Z"
+      }
+    ]
+  }
+}

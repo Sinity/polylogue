@@ -1,0 +1,385 @@
+{
+  "accounting": {
+    "framed": 14,
+    "materialized": {
+      "event_msg/item_completed": 5,
+      "response_item/custom_tool_call": 4,
+      "response_item/custom_tool_call_output": 4,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 351,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call-a",
+              "command": "const r = await tools.exec_command({\"cmd\":\"pytest -q\",\"workdir\":\"/repo\"});\ntext(r.output);",
+              "input": "const r = await tools.exec_command({\"cmd\":\"pytest -q\",\"workdir\":\"/repo\"});\ntext(r.output);",
+              "tool": "exec",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:ctc-a",
+          "role": "assistant",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 121
+      },
+      {
+        "end": 8423,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "exec-aaaa1111",
+              "command": "pytest -q",
+              "input": {
+                "command": [
+                  "/bin/sh",
+                  "-lc",
+                  "pytest -q"
+                ],
+                "cwd": "file:///repo",
+                "parsed_cmd": [
+                  {
+                    "cmd": "pytest -q",
+                    "type": "unknown"
+                  }
+                ]
+              },
+              "tool": "exec_command",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "exec-aaaa1111",
+              "outcome": {
+                "kind": "error",
+                "reason": {
+                  "detail": 2,
+                  "kind": "exit_code"
+                }
+              },
+              "output": "FAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\n2 failed, 3 passed\n",
+              "type": "tool_result"
+            }
+          ],
+          "duration_ms": 4000,
+          "id": "codex:exec-aaaa1111",
+          "role": "assistant",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 352
+      },
+      {
+        "end": 8688,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call-a",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "Script completed\nWall time 4.0 seconds\nOutput:\n\n2 failed, 3 passed\n",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:ctco-a",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 8424
+      },
+      {
+        "end": 8941,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call-b",
+              "command": "const r = await tools.exec_command({\"cmd\":\"build.sh\",\"workdir\":\"/repo\",\"yield_time_ms\":1000});\ntext(r.output);",
+              "input": "const r = await tools.exec_command({\"cmd\":\"build.sh\",\"workdir\":\"/repo\",\"yield_time_ms\":1000});\ntext(r.output);",
+              "tool": "exec",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:ctc-b",
+          "role": "assistant",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 8689
+      },
+      {
+        "end": 9163,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call-b",
+              "outcome": {
+                "kind": "unknown",
+                "reason": "running_in_background"
+              },
+              "output": "Script running with cell ID 3\nWall time 1.0 seconds\nOutput:\n",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:ctco-b",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 8942
+      },
+      {
+        "end": 9667,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "exec-bbbb2222",
+              "command": "build.sh",
+              "input": {
+                "command": [
+                  "/bin/sh",
+                  "-lc",
+                  "build.sh"
+                ],
+                "cwd": "file:///repo",
+                "parsed_cmd": [
+                  {
+                    "cmd": "build.sh",
+                    "type": "unknown"
+                  }
+                ]
+              },
+              "tool": "exec_command",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "exec-bbbb2222",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "built 2 targets\n",
+              "type": "tool_result"
+            }
+          ],
+          "duration_ms": 9000,
+          "id": "codex:exec-bbbb2222",
+          "role": "assistant",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 9164
+      },
+      {
+        "end": 9878,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call-c",
+              "command": "for (const p of paths) {\n  await tools.exec_command({cmd: \"wc -l \" + p});\n}",
+              "input": "for (const p of paths) {\n  await tools.exec_command({cmd: \"wc -l \" + p});\n}",
+              "tool": "exec",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:ctc-c",
+          "role": "assistant",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 9668
+      },
+      {
+        "end": 10384,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "exec-cccc3333",
+              "command": "wc -l alpha.py",
+              "input": {
+                "command": [
+                  "/bin/sh",
+                  "-lc",
+                  "wc -l alpha.py"
+                ],
+                "cwd": "file:///repo",
+                "parsed_cmd": [
+                  {
+                    "cmd": "wc -l alpha.py",
+                    "type": "unknown"
+                  }
+                ]
+              },
+              "tool": "exec_command",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "exec-cccc3333",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "12 alpha.py\n",
+              "type": "tool_result"
+            }
+          ],
+          "duration_ms": 0,
+          "id": "codex:exec-cccc3333",
+          "role": "assistant",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 9879
+      },
+      {
+        "end": 10966,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "exec-dddd4444",
+              "command": "wc -l beta.py",
+              "input": {
+                "command": [
+                  "/bin/sh",
+                  "-lc",
+                  "wc -l beta.py"
+                ],
+                "cwd": "file:///repo",
+                "parsed_cmd": [
+                  {
+                    "cmd": "wc -l beta.py",
+                    "type": "unknown"
+                  }
+                ]
+              },
+              "tool": "exec_command",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "exec-dddd4444",
+              "outcome": {
+                "kind": "error",
+                "reason": {
+                  "detail": 1,
+                  "kind": "exit_code"
+                }
+              },
+              "output": "wc: beta.py: No such file or directory\n",
+              "type": "tool_result"
+            }
+          ],
+          "duration_ms": 0,
+          "id": "codex:exec-dddd4444",
+          "role": "assistant",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 10385
+      },
+      {
+        "end": 11175,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call-c",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "Script completed\nWall time 0.1 seconds\nOutput:\n",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:ctco-c",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 10967
+      },
+      {
+        "end": 11405,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call-d",
+              "command": "await tools.apply_patch({input: \"*** Begin Patch\\n*** Update File: alpha.py\\n*** End Patch\"});",
+              "input": "await tools.apply_patch({input: \"*** Begin Patch\\n*** Update File: alpha.py\\n*** End Patch\"});",
+              "tool": "exec",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:ctc-d",
+          "role": "assistant",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 11176
+      },
+      {
+        "end": 11744,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "exec-eeee5555",
+              "input": {
+                "/repo/alpha.py": {
+                  "move_path": null,
+                  "type": "update",
+                  "unified_diff": "@@ -1 +1 @@\n-old\n+new\n"
+                }
+              },
+              "path": "/repo/alpha.py",
+              "tool": "file_change",
+              "type": "tool_call"
+            },
+            {
+              "call_id": "exec-eeee5555",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "Success. Updated the following files:\nM /repo/alpha.py\n",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:exec-eeee5555",
+          "role": "assistant",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 11406
+      },
+      {
+        "end": 11953,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call-d",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "Script completed\nWall time 0.1 seconds\nOutput:\n",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:ctco-d",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:codex-item-completed"
+        },
+        "offset": 11745
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/repo"
+        ],
+        "id": "codex:codex-item-completed",
+        "kind": "main",
+        "started": "2026-09-02T10:00:00Z"
+      }
+    ]
+  }
+}

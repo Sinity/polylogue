@@ -24,6 +24,7 @@ pub fn for_item(ty: &str) -> Fields {
 const MESSAGE: Fields = &[
     ("type", Read),
     ("id", Read),
+    ("timestamp", Read),
     ("role", Read),
     ("content", Read),
     ("content[].type", Read),
@@ -31,6 +32,9 @@ const MESSAGE: Fields = &[
     ("content[].image_url", Read),
     ("content[].file_url", Read),
     ("content[].filename", Read),
+    // A `code` part (2025 assistant items) is kept whole as a block.
+    ("content[].code", Read),
+    ("content[].language", Read),
     (
         "content[].detail",
         Excluded("image resolution hint sent to the API"),
@@ -58,6 +62,7 @@ const MESSAGE: Fields = &[
 const REASONING: Fields = &[
     ("type", Read),
     ("id", Read),
+    ("timestamp", Read),
     ("summary", Read),
     ("summary[].type", Read),
     ("summary[].text", Read),
@@ -71,6 +76,7 @@ const REASONING: Fields = &[
 const CALL: Fields = &[
     ("type", Read),
     ("id", Read),
+    ("timestamp", Read),
     ("call_id", Read),
     ("name", Read),
     ("namespace", Read),

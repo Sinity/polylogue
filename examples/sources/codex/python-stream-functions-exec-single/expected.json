@@ -1,0 +1,69 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "response_item/custom_tool_call": 1,
+      "response_item/custom_tool_call_output": 1,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 380,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "exec-single",
+              "command": "const result = await tools.exec_command({\n  cmd: \"git status --short\",\n  workdir: \"/repo\"\n});\ntext(JSON.stringify(result));",
+              "input": "const result = await tools.exec_command({\n  cmd: \"git status --short\",\n  workdir: \"/repo\"\n});\ntext(JSON.stringify(result));",
+              "tool": "exec",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:ctc-single",
+          "role": "assistant",
+          "session": "codex:codex-functions-exec-single"
+        },
+        "offset": 120
+      },
+      {
+        "end": 676,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "exec-single",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "Script completed\nWall time 0.1 seconds\nOutput:\n\n{\"exit_code\":0,\"output\":\"clean\",\"bytes_written\":5}",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:ctco-single",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:codex-functions-exec-single"
+        },
+        "offset": 381
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/repo"
+        ],
+        "id": "codex:codex-functions-exec-single",
+        "kind": "main",
+        "started": "2026-07-15T10:00:00Z"
+      }
+    ]
+  }
+}

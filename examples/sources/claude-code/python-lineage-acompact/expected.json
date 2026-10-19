@@ -1,0 +1,71 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "assistant": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {
+      "summary: no summary": 1
+    },
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [
+      {
+        "child": "claude-code:agent-acompact-1a",
+        "evidence": "agentId acompact",
+        "kind": "spawn",
+        "parent": "claude-code:claude-lineage-parent"
+      }
+    ],
+    "messages": [
+      {
+        "end": 161,
+        "message": {
+          "at": "2026-07-01T12:05:00Z",
+          "blocks": [
+            {
+              "text": "Plan the release.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:compact-u",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:agent-acompact-1a"
+        },
+        "offset": 0
+      },
+      {
+        "end": 404,
+        "message": {
+          "at": "2026-07-01T12:05:01Z",
+          "blocks": [
+            {
+              "text": "I will inspect the checks.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:compact-a",
+          "model": "claude-sonnet-4-5-20250929",
+          "parent": "claude-code:compact-u",
+          "role": "assistant",
+          "session": "claude-code:agent-acompact-1a"
+        },
+        "offset": 162
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-code:agent-acompact-1a",
+        "kind": "compaction",
+        "started": "2026-07-01T12:05:00Z"
+      }
+    ]
+  }
+}

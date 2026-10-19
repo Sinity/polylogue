@@ -1,0 +1,69 @@
+{
+  "accounting": {
+    "framed": 4,
+    "materialized": {
+      "response_item/message": 2,
+      "response_item/token_count": 1,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 375,
+        "message": {
+          "at": "2025-01-15T10:00:05Z",
+          "blocks": [
+            {
+              "text": "What is the capital of France?",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg-user-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "codex:text-only-session-1"
+        },
+        "offset": 181
+      },
+      {
+        "end": 577,
+        "message": {
+          "at": "2025-01-15T10:00:08Z",
+          "blocks": [
+            {
+              "text": "The capital of France is Paris.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg-asst-1",
+          "role": "assistant",
+          "session": "codex:text-only-session-1",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": 12,
+            "output": 8,
+            "reasoning": null
+          }
+        },
+        "offset": 376
+      }
+    ],
+    "sessions": [
+      {
+        "git_branch": "main",
+        "id": "codex:text-only-session-1",
+        "kind": "main",
+        "started": "2025-01-15T10:00:00Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,3 @@
+{"type":"session_meta","payload":{"id":"origin-matrix-codex","timestamp":"2026-08-01T10:00:00Z"}}
+{"type":"response_item","payload":{"type":"message","id":"matrix-user","role":"user","timestamp":"2026-08-01T10:00:01Z","content":[{"type":"input_text","text":"Prove the parser claim."}]}}
+{"type":"response_item","payload":{"type":"message","id":"matrix-assistant","role":"assistant","timestamp":"2026-08-01T10:00:02Z","content":[{"type":"output_text","text":"The production route parsed this witness."}]}}

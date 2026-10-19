@@ -1,0 +1,110 @@
+{
+  "accounting": {
+    "framed": 6,
+    "materialized": {
+      "model": 3,
+      "prompt": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {
+      "model: empty chunk": 1
+    },
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": null,
+        "kind": "run_settings",
+        "session": "ai-studio:branching_session"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2025-02-01T13:00:02Z",
+          "blocks": [
+            {
+              "text": "Initial question.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:branching_session#chunk-user-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:branching_session"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2025-02-01T13:00:08Z",
+          "blocks": [
+            {
+              "text": "First (edited) answer.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:branching_session#chunk-model-edit-1",
+          "parent": "ai-studio:branching_session#chunk-user-1",
+          "role": "assistant",
+          "session": "ai-studio:branching_session"
+        },
+        "offset": 1
+      },
+      {
+        "end": 3,
+        "message": {
+          "at": "2025-02-01T13:00:12Z",
+          "blocks": [
+            {
+              "text": "Second answer with grounding.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:branching_session#chunk-model-edit-2",
+          "parent": "ai-studio:branching_session#chunk-model-edit-1",
+          "role": "assistant",
+          "session": "ai-studio:branching_session"
+        },
+        "offset": 2
+      },
+      {
+        "end": 4,
+        "message": {
+          "at": "2025-02-01T13:00:30Z",
+          "blocks": [
+            {
+              "text": "Partial response cut off.",
+              "type": "text"
+            },
+            {
+              "data": "Stream interrupted",
+              "type": "other",
+              "type_name": "error"
+            }
+          ],
+          "id": "ai-studio:branching_session#chunk-error-1",
+          "parent": "ai-studio:branching_session#chunk-model-edit-2",
+          "role": "assistant",
+          "session": "ai-studio:branching_session",
+          "stop_reason": "OTHER"
+        },
+        "offset": 3
+      }
+    ],
+    "sessions": [
+      {
+        "id": "ai-studio:branching_session",
+        "kind": "main",
+        "started": "2025-02-01T13:00:02Z"
+      }
+    ]
+  }
+}

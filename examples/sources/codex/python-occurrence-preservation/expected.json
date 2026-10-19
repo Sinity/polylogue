@@ -1,0 +1,102 @@
+{
+  "accounting": {
+    "framed": 6,
+    "materialized": {
+      "event_msg/user_message": 2,
+      "response_item/message": 1,
+      "response_item/reasoning": 1,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {
+      "response_item/message: same prompt as the user_message event before it, which is stored": 1
+    },
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 233,
+        "message": {
+          "at": "2026-01-01T00:00:01Z",
+          "blocks": [
+            {
+              "text": "continue",
+              "type": "text"
+            }
+          ],
+          "id": "codex:prompt-one",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "codex:neutral-occurrences"
+        },
+        "offset": 98
+      },
+      {
+        "end": 543,
+        "message": {
+          "at": "2026-01-01T01:00:00Z",
+          "blocks": [
+            {
+              "text": "continue",
+              "type": "text"
+            }
+          ],
+          "id": "codex:prompt-two",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "codex:neutral-occurrences"
+        },
+        "offset": 408
+      },
+      {
+        "end": 720,
+        "message": {
+          "at": "2026-01-01T01:00:01Z",
+          "blocks": [
+            {
+              "text": "Inspect the sample.",
+              "type": "thinking"
+            }
+          ],
+          "id": "codex:reasoning-one",
+          "role": "assistant",
+          "session": "codex:neutral-occurrences"
+        },
+        "offset": 544
+      },
+      {
+        "end": 875,
+        "message": {
+          "at": "2026-01-01T01:00:02Z",
+          "blocks": [
+            {
+              "data": {
+                "code": "print(1)",
+                "language": "python",
+                "type": "code"
+              },
+              "type": "other",
+              "type_name": "code"
+            }
+          ],
+          "id": "codex:code-one",
+          "role": "assistant",
+          "session": "codex:neutral-occurrences"
+        },
+        "offset": 721
+      }
+    ],
+    "sessions": [
+      {
+        "id": "codex:neutral-occurrences",
+        "kind": "main",
+        "started": "2026-01-01T00:00:00Z"
+      }
+    ]
+  }
+}

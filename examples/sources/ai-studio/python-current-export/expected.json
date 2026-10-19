@@ -1,0 +1,398 @@
+{
+  "accounting": {
+    "framed": 16,
+    "materialized": {
+      "model": 6,
+      "prompt": 1,
+      "user": 8
+    },
+    "refused": {},
+    "unknown": {
+      "user: empty chunk": 1
+    },
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [
+      {
+        "hash": "91525ff00a3755a8df93c626b59f6e36cf021d85ebccecdedc38f3f1890a15fc",
+        "size": 3
+      },
+      {
+        "hash": "91525ff00a3755a8df93c626b59f6e36cf021d85ebccecdedc38f3f1890a15fc",
+        "size": 3
+      }
+    ],
+    "events": [
+      {
+        "data": {
+          "enableAgentCollaborativePlanningControl": false,
+          "enableAgentThinkingSummariesControl": false,
+          "enableAgentVisualizationControl": false,
+          "enableAutoFunctionResponse": false,
+          "enableBrowseAsATool": false,
+          "enableCodeExecution": false,
+          "enableEnhancedCivicAnswers": false,
+          "enableGoogleMaps": false,
+          "enableImageSearch": false,
+          "enableSearchAsATool": false,
+          "googleSearch": {},
+          "maxOutputTokens": 8192,
+          "model": "models/synthetic-model",
+          "outputResolution": "RESOLUTION_UNSPECIFIED",
+          "responseMimeType": "text/plain",
+          "responseModalities": [],
+          "safetySettings": [
+            {
+              "category": "HARM_CATEGORY_HARASSMENT",
+              "threshold": "OFF"
+            }
+          ],
+          "temperature": 1.0,
+          "thinkingBudget": 2048,
+          "thinkingLevel": "THINKING_LEVEL_UNSPECIFIED",
+          "topK": 64,
+          "topP": 0.95
+        },
+        "kind": "run_settings",
+        "session": "ai-studio:current_export"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "blocks": [
+            {
+              "text": "synthetic system instruction",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:current_export#system",
+          "role": "system",
+          "session": "ai-studio:current_export"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2026-01-05T09:00:00Z",
+          "blocks": [
+            {
+              "text": "synthetic opening turn",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:current_export#0",
+          "parent": "ai-studio:current_export#system",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:current_export",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": 4,
+            "output": null,
+            "reasoning": null
+          }
+        },
+        "offset": 1
+      },
+      {
+        "end": 3,
+        "message": {
+          "blocks": [
+            {
+              "text": "synthetic thought",
+              "type": "thinking"
+            }
+          ],
+          "id": "ai-studio:current_export#1",
+          "model": "synthetic-model",
+          "parent": "ai-studio:current_export#0",
+          "role": "assistant",
+          "session": "ai-studio:current_export",
+          "stop_reason": "STOP",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": null,
+            "output": null,
+            "reasoning": 3
+          }
+        },
+        "offset": 2
+      },
+      {
+        "end": 4,
+        "message": {
+          "blocks": [
+            {
+              "text": "synthetic answer",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:current_export#2",
+          "model": "synthetic-model",
+          "parent": "ai-studio:current_export#1",
+          "role": "assistant",
+          "session": "ai-studio:current_export",
+          "stop_reason": "STOP",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": null,
+            "output": 3,
+            "reasoning": null
+          }
+        },
+        "offset": 3
+      },
+      {
+        "end": 5,
+        "message": {
+          "blocks": [
+            {
+              "direction": "input",
+              "source_id": "synthetic-drive-document",
+              "type": "file"
+            }
+          ],
+          "id": "ai-studio:current_export#3",
+          "parent": "ai-studio:current_export#2",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:current_export"
+        },
+        "offset": 4
+      },
+      {
+        "end": 6,
+        "message": {
+          "blocks": [
+            {
+              "direction": "input",
+              "source_id": "synthetic-drive-image",
+              "type": "image"
+            }
+          ],
+          "id": "ai-studio:current_export#4",
+          "parent": "ai-studio:current_export#3",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:current_export"
+        },
+        "offset": 5
+      },
+      {
+        "end": 7,
+        "message": {
+          "blocks": [
+            {
+              "direction": "input",
+              "source_id": "synthetic-drive-audio",
+              "type": "file"
+            }
+          ],
+          "id": "ai-studio:current_export#5",
+          "parent": "ai-studio:current_export#4",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:current_export"
+        },
+        "offset": 6
+      },
+      {
+        "end": 8,
+        "message": {
+          "blocks": [
+            {
+              "direction": "input",
+              "source_id": "synthetic-drive-video",
+              "type": "file"
+            }
+          ],
+          "id": "ai-studio:current_export#6",
+          "parent": "ai-studio:current_export#5",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:current_export"
+        },
+        "offset": 7
+      },
+      {
+        "end": 9,
+        "message": {
+          "blocks": [
+            {
+              "blob": "91525ff00a3755a8df93c626b59f6e36cf021d85ebccecdedc38f3f1890a15fc",
+              "direction": "input",
+              "media_type": "image/png",
+              "size": 3,
+              "type": "image"
+            }
+          ],
+          "id": "ai-studio:current_export#8",
+          "parent": "ai-studio:current_export#6",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:current_export"
+        },
+        "offset": 8
+      },
+      {
+        "end": 10,
+        "message": {
+          "blocks": [
+            {
+              "blob": "91525ff00a3755a8df93c626b59f6e36cf021d85ebccecdedc38f3f1890a15fc",
+              "direction": "input",
+              "media_type": "text/plain",
+              "size": 3,
+              "type": "file"
+            }
+          ],
+          "id": "ai-studio:current_export#9",
+          "parent": "ai-studio:current_export#8",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:current_export"
+        },
+        "offset": 9
+      },
+      {
+        "end": 11,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "current_export#10:code1",
+              "command": "print(0)",
+              "input": {
+                "code": "print(0)",
+                "language": "PYTHON"
+              },
+              "tool": "code_execution",
+              "type": "tool_call"
+            }
+          ],
+          "id": "ai-studio:current_export#10",
+          "model": "synthetic-model",
+          "parent": "ai-studio:current_export#9",
+          "role": "assistant",
+          "session": "ai-studio:current_export",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": null,
+            "output": 5,
+            "reasoning": null
+          }
+        },
+        "offset": 10
+      },
+      {
+        "end": 12,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "current_export#11:code1",
+              "data": {
+                "outcome": "OUTCOME_OK",
+                "output": "0"
+              },
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "0",
+              "type": "tool_result"
+            }
+          ],
+          "id": "ai-studio:current_export#11",
+          "model": "synthetic-model",
+          "parent": "ai-studio:current_export#10",
+          "role": "assistant",
+          "session": "ai-studio:current_export",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": null,
+            "output": 2,
+            "reasoning": null
+          }
+        },
+        "offset": 11
+      },
+      {
+        "end": 13,
+        "message": {
+          "blocks": [
+            {
+              "text": "synthetic grounded answer",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:current_export#12",
+          "model": "synthetic-model",
+          "parent": "ai-studio:current_export#11",
+          "role": "assistant",
+          "session": "ai-studio:current_export",
+          "stop_reason": "STOP",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": null,
+            "output": 3,
+            "reasoning": null
+          }
+        },
+        "offset": 12
+      },
+      {
+        "end": 14,
+        "message": {
+          "blocks": [
+            {
+              "data": "synthetic upstream refusal",
+              "type": "other",
+              "type_name": "error"
+            }
+          ],
+          "id": "ai-studio:current_export#13",
+          "model": "synthetic-model",
+          "parent": "ai-studio:current_export#12",
+          "role": "assistant",
+          "session": "ai-studio:current_export",
+          "stop_reason": "OTHER"
+        },
+        "offset": 13
+      },
+      {
+        "end": 15,
+        "message": {
+          "blocks": [
+            {
+              "text": "synthetic edited turn",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:current_export#14",
+          "parent": "ai-studio:current_export#13",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:current_export"
+        },
+        "offset": 14
+      }
+    ],
+    "sessions": [
+      {
+        "id": "ai-studio:current_export",
+        "kind": "main",
+        "started": "2026-01-05T09:00:00Z"
+      }
+    ]
+  }
+}

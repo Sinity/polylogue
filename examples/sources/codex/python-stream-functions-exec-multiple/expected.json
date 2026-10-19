@@ -1,0 +1,70 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "response_item/function_call": 1,
+      "response_item/function_call_output": 1,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 1274,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "exec-multiple",
+              "input": {
+                "source": "const commandResult = await tools.exec_command({\n  cmd: [\"git\", \"status\", \"--short\"],\n  workdir: \"/repo\"\n});\nconst patchResult = await tools.apply_patch(`*** Begin Patch\n*** Update File: src/example.py\n@@\n-old = true\n+old = false\n*** Move to: src/renamed.py\n*** End Patch`);\nconst stdinResult = await tools.write_stdin({session_id: \"proc-1\", chars: \"yes\\n\"});\nconst planResult = await tools.update_plan({plan: [{step: \"inspect\", status: \"completed\"}]});\nconst waitResult = await tools.wait({cell_id: \"cell-7\"});\nconst webResult = await tools.web.search({query: \"Polylogue action pairs\"});\nconst imageResult = await tools.view_image({path: \"artifacts/preview.png\"});\nconst mcpResult = await tools.mcp.repo_memory.search({query: \"delegation provenance\"});\nconst unknownResult = await tools.future_tool({opaque: true});\nconst malformedResult = await tools.exec_command(dynamicArgs;\n"
+              },
+              "tool": "functions.exec",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:fc-multiple",
+          "role": "assistant",
+          "session": "codex:codex-functions-exec-multiple"
+        },
+        "offset": 122
+      },
+      {
+        "end": 2237,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "exec-multiple",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "Script completed\nWall time 0.3 seconds\nOutput:\n\n{\"exit_code\":2,\"output\":\"command failed\"}\n{\"path\":\"src/renamed.py\",\"bytes_written\":42}\n{\"bytes\":4}\n{}\n{\"status\":\"completed\"}\n{\"url\":\"https://example.test/polylogue\"}\n{\"file_path\":\"artifacts/preview.png\",\"size_bytes\":100}\n{\"result\":{\"path\":\"docs/delegation.md\",\"exit_code\":0}}\n{\"status\":\"opaque\",\"message\":\"exit_code=7 is prose only\"}\n{\"status\":\"malformed\",\"message\":\"exit_code=9 is prose only\"}",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:fco-multiple",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:codex-functions-exec-multiple"
+        },
+        "offset": 1275
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/repo"
+        ],
+        "id": "codex:codex-functions-exec-multiple",
+        "kind": "main",
+        "started": "2026-07-15T11:00:00Z"
+      }
+    ]
+  }
+}

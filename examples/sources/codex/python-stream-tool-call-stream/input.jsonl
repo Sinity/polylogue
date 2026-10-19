@@ -1,0 +1,6 @@
+{"type":"session_meta","payload":{"id":"tool-call-session-1","timestamp":"2025-01-15T11:00:00Z","instructions":"Use tools."}}
+{"type":"response_item","payload":{"type":"message","id":"msg-user-1","role":"user","timestamp":"2025-01-15T11:00:02Z","content":[{"type":"input_text","text":"List the files in /tmp."}]}}
+{"type":"response_item","payload":{"type":"function_call","id":"fc_1","call_id":"call_abc","name":"exec_command","arguments":"{\"cmd\": \"ls /tmp\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"call_abc","output":"file1.txt\nfile2.txt"}}
+{"type":"response_item","payload":{"type":"message","id":"msg-asst-1","role":"assistant","timestamp":"2025-01-15T11:00:09Z","content":[{"type":"output_text","text":"There are two files: file1.txt and file2.txt."}]}}
+{"type":"response_item","payload":{"type":"token_count","input_tokens":42,"output_tokens":18}}

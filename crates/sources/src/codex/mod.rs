@@ -160,6 +160,17 @@ pub struct Carry {
     /// The byte range of the record being read, for events.
     #[serde(skip)]
     current: Option<(u64, u64)>,
+    /// The previous record, when it was a stored user prompt: an item or a
+    /// `user_message` event. Codex can write one prompt both ways in
+    /// adjacent records; the second of the pair is the same prompt.
+    #[serde(default)]
+    prompt: Option<Prompt>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct Prompt {
+    text: String,
+    from_event: bool,
 }
 
 /// One record, unwrapped from its envelope.
@@ -189,7 +200,8 @@ fn unwrap(v: &Json) -> Rec<'_> {
         return Rec {
             ty: str_field(v, "type").unwrap_or("?"),
             payload,
-            at,
+            // Some writers put the time on the item, not the envelope.
+            at: at.or_else(|| payload.get("timestamp").and_then(time::rfc3339)),
             ordinal,
         };
     }
@@ -791,8 +803,7 @@ impl Rollout {
                 }
             }
             "item_completed" => self.item_completed(carry, record, p, at, out),
-            "user_message"
-            | "agent_message"
+            "agent_message"
             | "agent_reasoning"
             | "agent_reasoning_raw_content"
             | "agent_reasoning_section_break" => {
@@ -843,6 +854,24 @@ impl Rollout {
             _ => self.event(carry, p, sub, at, out),
         }
     }
+}
+
+/// The text of a user message item, for pairing it with a `user_message`
+/// event that records the same prompt.
+fn user_text(item: &Json) -> Option<String> {
+    if str_field(item, "type") != Some("message") || str_field(item, "role") != Some("user") {
+        return None;
+    }
+    let Json::Array(parts) = item.get("content")? else {
+        return None;
+    };
+    Some(
+        parts
+            .iter()
+            .filter_map(|c| str_field(c, "text"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 fn unquote(v: &Json) -> String {
@@ -931,6 +960,66 @@ impl Parser for Rollout {
         carry.current = Some((record.offset, record.offset + record.bytes.len() as u64));
         if Self::copied(carry, rec.ordinal) && rec.ty != "response_item" {
             return Disposition::unknown("copied from the parent thread, which stores it");
+        }
+        let prev = carry.prompt.take();
+        if rec.ty == "response_item" && str_field(p, "type") == Some("token_count") {
+            // Some writers record usage as an item: it belongs to the
+            // answer it follows, like an event_msg token count.
+            Self::usage(carry, p);
+            Self::close(carry, out);
+            return Disposition::Materialized;
+        }
+        let same = |text: &str, from_event: bool| {
+            prev.as_ref()
+                .is_some_and(|p| p.from_event == from_event && p.text == text)
+        };
+        if rec.ty == "response_item"
+            && let Some(text) = user_text(p)
+        {
+            if same(&text, true) {
+                return Disposition::unknown(
+                    "same prompt as the user_message event before it, which is stored",
+                );
+            }
+            let d = self.response_item(carry, record, p, rec.at, rec.ordinal, out, acc);
+            if d == Disposition::Materialized {
+                carry.prompt = Some(Prompt {
+                    text,
+                    from_event: false,
+                });
+            }
+            return d;
+        }
+        if rec.ty == "event_msg" && str_field(p, "type") == Some("user_message") {
+            let text = str_field(p, "message").unwrap_or_default().to_owned();
+            if same(&text, false) {
+                return Disposition::unknown(
+                    "same prompt as the user message item before it, which is stored",
+                );
+            }
+            // A prompt only the event recorded: it is the prompt.
+            let mut content = vec![serde_json::json!({"type": "input_text", "text": text})];
+            if let Some(Json::Array(images)) = p.get("images") {
+                content.extend(
+                    images
+                        .iter()
+                        .filter_map(Json::as_str)
+                        .map(|url| serde_json::json!({"type": "input_image", "image_url": url})),
+                );
+            }
+            let mut item =
+                serde_json::json!({"type": "message", "role": "user", "content": content});
+            if let Some(id) = str_field(p, "client_id") {
+                item["id"] = Json::String(id.to_owned());
+            }
+            let d = self.response_item(carry, record, &item, rec.at, rec.ordinal, out, acc);
+            if d == Disposition::Materialized {
+                carry.prompt = Some(Prompt {
+                    text,
+                    from_event: true,
+                });
+            }
+            return d;
         }
         match rec.ty {
             "session_meta" => self.session_meta(carry, p, out),

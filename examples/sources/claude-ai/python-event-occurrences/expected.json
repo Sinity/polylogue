@@ -1,0 +1,97 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "assistant": 2,
+      "conversation": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": {
+          "name": "Synthetic repeated occurrences",
+          "uuid": "event-occurrences"
+        },
+        "kind": "conversation_settings",
+        "session": "claude-ai:event-occurrences"
+      },
+      {
+        "at": "2026-01-01T00:00:00Z",
+        "data": {
+          "summary": [
+            {
+              "text": "first summary"
+            }
+          ]
+        },
+        "kind": "compaction",
+        "session": "claude-ai:event-occurrences"
+      },
+      {
+        "at": "2026-01-01T00:02:00Z",
+        "data": {
+          "summary": [
+            {
+              "text": "second summary"
+            }
+          ]
+        },
+        "kind": "compaction",
+        "session": "claude-ai:event-occurrences"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2026-01-01T00:00:00Z",
+          "blocks": [
+            {
+              "text": "first occurrence",
+              "type": "text"
+            }
+          ],
+          "id": "claude-ai:repeated",
+          "model": "synthetic-first",
+          "role": "assistant",
+          "session": "claude-ai:event-occurrences"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2026-01-01T00:02:00Z",
+          "blocks": [
+            {
+              "text": "second occurrence",
+              "type": "text"
+            }
+          ],
+          "id": "claude-ai:repeated",
+          "model": "synthetic-second",
+          "role": "assistant",
+          "session": "claude-ai:event-occurrences"
+        },
+        "offset": 1
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-ai:event-occurrences",
+        "kind": "main",
+        "title": {
+          "source": "generated",
+          "text": "Synthetic repeated occurrences"
+        }
+      }
+    ]
+  }
+}

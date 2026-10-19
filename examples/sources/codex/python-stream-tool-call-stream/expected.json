@@ -1,0 +1,111 @@
+{
+  "accounting": {
+    "framed": 6,
+    "materialized": {
+      "response_item/function_call": 1,
+      "response_item/function_call_output": 1,
+      "response_item/message": 2,
+      "response_item/token_count": 1,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 313,
+        "message": {
+          "at": "2025-01-15T11:00:02Z",
+          "blocks": [
+            {
+              "text": "List the files in /tmp.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg-user-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "codex:tool-call-session-1"
+        },
+        "offset": 126
+      },
+      {
+        "end": 465,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_abc",
+              "command": "ls /tmp",
+              "input": {
+                "cmd": "ls /tmp"
+              },
+              "tool": "exec_command",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:fc_1",
+          "role": "assistant",
+          "session": "codex:tool-call-session-1"
+        },
+        "offset": 314
+      },
+      {
+        "end": 585,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_abc",
+              "outcome": {
+                "kind": "unknown",
+                "reason": "status_field_unreadable"
+              },
+              "output": "file1.txt\nfile2.txt",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:tool-call-session-1@466",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:tool-call-session-1"
+        },
+        "offset": 466
+      },
+      {
+        "end": 801,
+        "message": {
+          "at": "2025-01-15T11:00:09Z",
+          "blocks": [
+            {
+              "text": "There are two files: file1.txt and file2.txt.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg-asst-1",
+          "role": "assistant",
+          "session": "codex:tool-call-session-1",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": 42,
+            "output": 18,
+            "reasoning": null
+          }
+        },
+        "offset": 586
+      }
+    ],
+    "sessions": [
+      {
+        "id": "codex:tool-call-session-1",
+        "kind": "main",
+        "started": "2025-01-15T11:00:00Z"
+      }
+    ]
+  }
+}

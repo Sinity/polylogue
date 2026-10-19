@@ -1,0 +1,65 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "model": 1,
+      "prompt": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": null,
+        "kind": "run_settings",
+        "session": "ai-studio:1abc"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "blocks": [
+            {
+              "text": "Prove the parser claim.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:1abc#matrix-user",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:1abc"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "blocks": [
+            {
+              "text": "The production route parsed this witness.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:1abc#matrix-assistant",
+          "parent": "ai-studio:1abc#matrix-user",
+          "role": "assistant",
+          "session": "ai-studio:1abc"
+        },
+        "offset": 1
+      }
+    ],
+    "sessions": [
+      {
+        "id": "ai-studio:1abc",
+        "kind": "main"
+      }
+    ]
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "accounting": {
+    "framed": 2,
+    "materialized": {
+      "conversation": 1,
+      "text": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "1970-01-01T00:00:01Z",
+        "data": {
+          "async_status": "synthetic-async_status",
+          "blocked_urls": [],
+          "context_scopes": [],
+          "conversation_id": "field-census-v1",
+          "conversation_origin": "synthetic-conversation_origin",
+          "conversation_template_id": "synthetic-conversation_template_id",
+          "create_time": 1.0,
+          "current_node": "node-1",
+          "default_model_slug": "synthetic-default_model_slug",
+          "disabled_tool_ids": [],
+          "gizmo_id": "synthetic-gizmo_id",
+          "gizmo_type": "synthetic-gizmo_type",
+          "id": "field-census-v1",
+          "is_archived": false,
+          "is_do_not_remember": false,
+          "is_read_only": false,
+          "is_starred": false,
+          "is_study_mode": false,
+          "is_temporary": false,
+          "memory_scope": "synthetic-memory_scope",
+          "messages": [],
+          "moderation_results": [],
+          "name": "synthetic-name",
+          "owner": "synthetic-owner",
+          "plugin_ids": [],
+          "safe_urls": [],
+          "shared_conversation_id": "synthetic-shared_conversation_id",
+          "sugar_item_id": "synthetic-sugar_item_id",
+          "title": "Field census",
+          "update_time": 1.0,
+          "uuid": "synthetic-uuid",
+          "voice": "synthetic-voice"
+        },
+        "kind": "conversation_settings",
+        "session": "chatgpt:field-census-v1"
+      },
+      {
+        "after": "chatgpt:node-1",
+        "data": null,
+        "kind": "active_leaf",
+        "session": "chatgpt:field-census-v1"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "1970-01-01T00:00:01Z",
+          "blocks": [
+            {
+              "call_id": "node-1",
+              "input": "Synthetic assistant turn.",
+              "tool": "synthetic-recipient",
+              "type": "tool_call"
+            }
+          ],
+          "duration_ms": 1000,
+          "id": "chatgpt:node-1",
+          "production": {
+            "effort": "synthetic-thinking_effort",
+            "request": "synthetic-request_id"
+          },
+          "role": "assistant",
+          "session": "chatgpt:field-census-v1",
+          "stop_reason": "max_tokens"
+        },
+        "offset": 0
+      }
+    ],
+    "sessions": [
+      {
+        "id": "chatgpt:field-census-v1",
+        "kind": "main",
+        "started": "1970-01-01T00:00:01Z",
+        "title": {
+          "source": "generated",
+          "text": "Field census"
+        }
+      }
+    ]
+  }
+}
