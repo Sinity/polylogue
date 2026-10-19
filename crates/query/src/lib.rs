@@ -11,7 +11,7 @@ pub mod parse;
 pub mod time;
 
 pub use compile::{
-    Attach, ColKind, Column, IdCheck, Options, Param, Program, Shape, WhyClause, compile,
+    Attach, ColKind, Column, IdCheck, Near, Options, Param, Program, Shape, WhyClause, compile,
 };
 pub use parse::parse;
 pub use time::Clock;

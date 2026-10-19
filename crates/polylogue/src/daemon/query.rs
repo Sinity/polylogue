@@ -78,6 +78,9 @@ pub struct Ask<'a> {
     pub now: i64,
     pub day: LogicalDay,
     pub embeddings: bool,
+    /// For `near:`: the nearest texts to a text, as the JSON the query
+    /// binds.
+    pub near: Option<&'a dyn Fn(&str) -> Result<String, String>>,
 }
 
 pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
@@ -109,7 +112,17 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         embeddings: ask.embeddings,
         self_session: ask.session,
     };
-    let program = polylogue_query::compile(ask.text, &opts)?;
+    let mut program = polylogue_query::compile(ask.text, &opts)?;
+    if let (Some(near), Some(f)) = (program.near.clone(), ask.near) {
+        let hits = f(&near.text).map_err(|message| Failure {
+            kind: "embed".into(),
+            message,
+            detail: None,
+        })?;
+        if let Some(p) = program.params.get_mut(near.param - 1) {
+            *p = Param::Text(hits);
+        }
+    }
     check_ids(reader, &program)?;
     let params = values(&program.params);
     let count = reader.query(&program.count_sql(), &params)?;
