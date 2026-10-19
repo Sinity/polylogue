@@ -68,6 +68,20 @@ impl Archive {
         data.join("polylogue")
     }
 
+    /// Whether a daemon holds this archive's writer lock. A daemon takes
+    /// the lock before it opens the archive and binds its socket, so a held
+    /// lock with no socket answering means a daemon is still starting.
+    pub fn lock_held(&self) -> bool {
+        let Ok(file) = OpenOptions::new().read(true).open(self.root.join("lock")) else {
+            return false;
+        };
+        match file.try_lock_shared() {
+            Ok(()) => false,
+            Err(std::fs::TryLockError::WouldBlock) => true,
+            Err(std::fs::TryLockError::Error(_)) => false,
+        }
+    }
+
     /// Creates the directory with copy-on-write off and the three databases
     /// at their current versions, or opens an existing one and applies
     /// archive migrations. Takes the writer lock; a second daemon on the

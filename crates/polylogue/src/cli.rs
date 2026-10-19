@@ -472,7 +472,7 @@ pub fn run(args: Args) -> ExitCode {
         },
     };
     let root = Archive::default_root();
-    let response = match send(&Archive::at(&root).socket(), &request) {
+    let response = match send_when_ready(&Archive::at(&root), &request) {
         Ok(r) => r,
         Err(e) if is_down(&e) => {
             return fail(
@@ -688,6 +688,28 @@ fn is_down(e: &std::io::Error) -> bool {
     )
 }
 
+/// Sends one request, waiting for a daemon that is still starting: one
+/// that holds the archive lock but has not bound its socket yet (opening a
+/// large archive takes seconds). With no daemon at all, the error is
+/// returned at once.
+pub fn send_when_ready(archive: &Archive, request: &Request) -> std::io::Result<Response> {
+    let mut pause = std::time::Duration::from_millis(50);
+    let mut told = false;
+    loop {
+        match send(&archive.socket(), request) {
+            Err(e) if is_down(&e) && archive.lock_held() => {
+                if !told {
+                    eprintln!("polylogue: waiting for the daemon to finish opening the archive");
+                    told = true;
+                }
+                std::thread::sleep(pause);
+                pause = (pause * 2).min(std::time::Duration::from_millis(500));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Sends one request and reads its response.
 pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Response> {
     let mut stream = UnixStream::connect(socket)?;
@@ -861,5 +883,34 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = send(&dir.path().join("daemon.sock"), &Request::Status).unwrap_err();
         assert!(is_down(&err));
+        assert!(!Archive::at(dir.path()).lock_held());
+        let err = send_when_ready(&Archive::at(dir.path()), &Request::Status).unwrap_err();
+        assert!(is_down(&err));
+    }
+
+    #[test]
+    fn a_starting_daemon_is_waited_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = Archive::at(dir.path());
+        // The daemon's order: take the lock, open the archive, then bind.
+        let (_, lock) = Archive::open_or_create(dir.path()).unwrap();
+        assert!(archive.lock_held());
+        let socket = archive.socket();
+        let server = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
+            let reply = serde_json::to_string(&Response::Ok {
+                data: serde_json::json!({"ready": true}),
+            })
+            .unwrap();
+            std::io::Write::write_all(&mut &stream, format!("{reply}\n").as_bytes()).unwrap();
+            drop(lock);
+        });
+        let response = send_when_ready(&archive, &Request::Status).unwrap();
+        assert!(matches!(response, Response::Ok { .. }));
+        server.join().unwrap();
     }
 }

@@ -30,7 +30,8 @@ fn error_text(kind: &str, message: &str, detail: Option<&serde_json::Value>) -> 
 
 /// Turns a daemon answer into tool text: the data as JSON, or the error.
 fn answer(request: &Request, socket: &std::path::Path) -> String {
-    match crate::cli::send(socket, request) {
+    let archive = Archive::at(socket.parent().unwrap_or(socket));
+    match crate::cli::send_when_ready(&archive, request) {
         Ok(Response::Ok { data }) => serde_json::to_string_pretty(&data).unwrap_or_default(),
         Ok(Response::Accepted { request_id }) => format!("accepted {request_id}"),
         Ok(Response::Error {
@@ -46,7 +47,8 @@ fn answer(request: &Request, socket: &std::path::Path) -> String {
 
 /// The context text of a `context` answer, or the error.
 fn context_text(request: &Request, socket: &std::path::Path) -> String {
-    match crate::cli::send(socket, request) {
+    let archive = Archive::at(socket.parent().unwrap_or(socket));
+    match crate::cli::send_when_ready(&archive, request) {
         Ok(Response::Ok { data }) => data["prepared"]["text"]
             .as_str()
             .unwrap_or_default()
