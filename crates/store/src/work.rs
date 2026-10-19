@@ -10,7 +10,7 @@
 
 use crate::Result;
 use crate::writer::{unpack_block, unpack_text};
-use polylogue_model::command::{Line, Stage, parse};
+use polylogue_model::command::{Stage, effective_stages};
 use polylogue_model::{Block, Json, WorkEdgeKind, WorkNodeKind};
 use rusqlite::{OptionalExtension, Transaction, params};
 use std::collections::BTreeMap;
@@ -160,6 +160,13 @@ impl Pursuit {
 /// Derives the work graph for every session whose stored rows are older
 /// than its `changed` or the rules. Returns the number of sessions done.
 pub fn derive(index: &mut rusqlite::Connection) -> Result<u64> {
+    // An excision removes a session's nodes (and, by cascade, their edges)
+    // but leaves a shared goal no attempt pursues any more.
+    index.execute(
+        "DELETE FROM work_node WHERE session_pk IS NULL AND kind = 'goal'
+             AND NOT EXISTS (SELECT 1 FROM work_edge WHERE to_pk = work_node.pk)",
+        [],
+    )?;
     let mut done = 0;
     loop {
         let tx = index.transaction()?;
@@ -341,10 +348,7 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
         let Some(command) = &call.command else {
             continue;
         };
-        let Line::Stages(stages) = parse(command) else {
-            continue;
-        };
-        for stage in &stages {
+        for stage in &effective_stages(command) {
             if let Some((change, ids)) = bead_change(stage) {
                 for id in ids {
                     let key = format!("bead:{id}");
@@ -412,6 +416,26 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
             checks.push((call, check));
         }
     }
+    // A spawned session pursues the task it was given: its first prompt,
+    // shown as text. Everything it checks and makes belongs to that attempt.
+    if let Some(task) = spawned_task(tx, session_pk)? {
+        let key = format!("task:{session_id}");
+        order.insert(0, key.clone());
+        pursuits.insert(
+            key.clone(),
+            Pursuit {
+                goal_key: key,
+                goal_title: task,
+                shared: false,
+                from: None,
+                until: None,
+                state: "",
+                checks_ok: 0,
+                checks_failed: 0,
+                commits: 0,
+            },
+        );
+    }
     // Attempts, with what was checked and made while each was open.
     let mut attempt_pk: BTreeMap<String, i64> = BTreeMap::new();
     for (call, _) in &checks {
@@ -454,7 +478,8 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
             &p.goal_title,
             Some(session_pk),
             p.from,
-            Some(p.state),
+            // A spawned session's attempt has no state its records show.
+            (!p.state.is_empty()).then_some(p.state),
             None,
             Some(&attrs.to_string()),
         )?;
@@ -521,23 +546,48 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
     Ok(())
 }
 
+/// The first line of a spawned session's first prompt, when a spawn link
+/// names the session as its child (a fork or continuation is no new task).
+fn spawned_task(tx: &Transaction<'_>, session_pk: i64) -> Result<Option<String>> {
+    let spawned: bool = tx
+        .prepare_cached(
+            "SELECT EXISTS (SELECT 1 FROM link WHERE child_pk = ?1 AND kind = 'spawn')",
+        )?
+        .query_row([session_pk], |r| r.get(0))?;
+    if !spawned {
+        return Ok(None);
+    }
+    let first: Option<Vec<u8>> = tx
+        .prepare_cached(
+            "SELECT x.body FROM message m JOIN block b ON b.message_pk = m.pk
+             JOIN text x ON x.id = b.text_id
+             WHERE m.session_pk = ?1 AND m.role = 'user' AND b.kind = 'text'
+             ORDER BY m.seq, b.idx LIMIT 1",
+        )?
+        .query_row([session_pk], |r| r.get(0))
+        .optional()?;
+    Ok(first.map(|b| unpack_text(&b)).transpose()?.and_then(|t| {
+        t.lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(|l| l.chars().take(200).collect())
+    }))
+}
+
 /// The check a call ran, as its stage's normalized form: the last stage
 /// that is not a directory change or an output filter.
 fn check_of(call: &Call) -> Option<String> {
-    match parse(call.command.as_deref()?) {
-        Line::Stages(stages) => stages
-            .iter()
-            .rev()
-            .find(|s| {
-                !matches!(
-                    s.program.as_str(),
-                    "cd" | "pushd" | "tail" | "head" | "tee" | "grep"
-                )
-            })
-            .filter(|s| is_check(s))
-            .map(Stage::normalized),
-        Line::Script => None,
-    }
+    effective_stages(call.command.as_deref()?)
+        .iter()
+        .rev()
+        .find(|s| {
+            !matches!(
+                s.program.as_str(),
+                "cd" | "pushd" | "tail" | "head" | "tee" | "grep"
+            )
+        })
+        .filter(|s| is_check(s))
+        .map(Stage::normalized)
 }
 
 /// Removes the session's own work rows, the edges touching them, and the

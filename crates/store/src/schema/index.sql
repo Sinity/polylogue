@@ -609,8 +609,10 @@ CREATE INDEX work_node_kind ON work_node(kind, at);
 CREATE INDEX work_node_call ON work_node(tool_call_pk) WHERE tool_call_pk IS NOT NULL;   -- foreign-key check
 
 CREATE TABLE work_edge (
-  from_pk           INTEGER NOT NULL REFERENCES work_node(pk),
-  to_pk             INTEGER NOT NULL REFERENCES work_node(pk),
+  -- An edge goes with either node, so an excision deleting a session's nodes
+  -- by `session_pk` needs no rule of its own for edges.
+  from_pk           INTEGER NOT NULL REFERENCES work_node(pk) ON DELETE CASCADE,
+  to_pk             INTEGER NOT NULL REFERENCES work_node(pk) ON DELETE CASCADE,
   kind              TEXT NOT NULL CHECK (kind IN ('pursues','checks','produces')),
   PRIMARY KEY (from_pk, to_pk, kind)
 ) STRICT, WITHOUT ROWID;

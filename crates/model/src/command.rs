@@ -237,6 +237,8 @@ fn stage(words: Vec<String>) -> Option<Result<Stage, Script>> {
             break;
         }
     }
+    let words: Vec<String> = rest.collect();
+    let mut rest = without_redirections(words).into_iter().peekable();
     loop {
         let first = rest.next()?;
         if SCRIPT_WORDS.contains(&first.as_str()) {
@@ -273,6 +275,33 @@ fn stage(words: Vec<String>) -> Option<Result<Stage, Script>> {
             args: rest.collect(),
         }));
     }
+}
+
+/// A word that redirects (`2>/dev/null`, `>out`, `2>&1`, `<in`), with
+/// whether its target is the next word (`>` alone).
+fn redirection(w: &str) -> Option<bool> {
+    let body = w.trim_start_matches(|c: char| c.is_ascii_digit());
+    let body = body.strip_prefix('&').unwrap_or(body);
+    let op = ["<<<", ">>", "<>", ">&", "<&", ">", "<"]
+        .into_iter()
+        .find(|op| body.starts_with(op))?;
+    Some(body.len() == op.len())
+}
+
+fn without_redirections(words: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip_next = false;
+    for w in words {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        match redirection(&w) {
+            Some(alone) => skip_next = alone,
+            None => out.push(w),
+        }
+    }
+    out
 }
 
 fn is_assignment(w: &str) -> bool {
@@ -359,6 +388,82 @@ impl Stage {
     }
 }
 
+impl Stage {
+    /// The command a runner stage runs, when it is one: `nix develop
+    /// --command …`, `nix shell … -c …`, `flock FILE …`, `bash -c '…'`.
+    /// The normalized command keeps the runner (spec analysis.md); what a
+    /// command does is read from the command it runs.
+    pub fn runs(&self) -> Option<Line> {
+        let after = |flags: &[&str]| {
+            let at = self.args.iter().position(|a| flags.contains(&a.as_str()))?;
+            Some(&self.args[at + 1..])
+        };
+        let words = match (self.program.as_str(), self.subcommand()) {
+            ("nix", Some("develop" | "shell")) => after(&["--command", "-c"])?.to_vec(),
+            ("flock", _) => {
+                // `flock [options] FILE COMMAND…`: the first operand is the
+                // lock file.
+                let mut it = self.args.iter().skip_while(|a| a.starts_with('-'));
+                it.next()?;
+                it.cloned().collect()
+            }
+            ("bash" | "sh" | "zsh", _) => return Some(parse(after(&["-c"])?.first()?)),
+            ("direnv", Some("exec")) => self.operands().get(1..)?.to_vec(),
+            _ => return None,
+        };
+        if words.is_empty() {
+            return None;
+        }
+        Some(parse(&shell_join(&words)))
+    }
+}
+
+/// Words joined back into one command line, quoting what needs it.
+fn shell_join(words: &[String]) -> String {
+    words
+        .iter()
+        .map(|w| {
+            if !w.is_empty()
+                && w.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_./=:+,@%".contains(c))
+            {
+                w.clone()
+            } else {
+                format!("'{}'", w.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Every stage of a line, with the commands runner stages run in their
+/// place, in order.
+pub fn effective_stages(line: &str) -> Vec<Stage> {
+    fn walk(line: Line, out: &mut Vec<Stage>, depth: u8) {
+        let Line::Stages(stages) = line else {
+            return;
+        };
+        for s in stages {
+            match s.runs() {
+                Some(inner) if depth < 4 => walk(inner, out, depth + 1),
+                _ => out.push(s),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let parsed = match parse(line) {
+        // A heredoc's own command line still has a shape; its body is data.
+        Line::Script if line.contains("<<") => {
+            let head = line.lines().next().unwrap_or("");
+            let head = head.split("<<").next().unwrap_or("");
+            parse(head)
+        }
+        other => other,
+    };
+    walk(parsed, &mut out, 0);
+    out
+}
+
 /// The call's normalized command: its last stage's, with `cd` and `pushd`
 /// counted only when nothing follows them.
 pub fn normalize(line: &str) -> Option<String> {
@@ -430,6 +535,38 @@ mod tests {
         assert_eq!(n("cat <<< 'here string'"), "cat");
         assert_eq!(n("cd /tmp"), "cd");
         assert_eq!(n("cd /a && cd /b"), "cd");
+    }
+
+    #[test]
+    fn runners_expose_the_command_they_run() {
+        let progs = |line: &str| -> Vec<String> {
+            effective_stages(line)
+                .iter()
+                .map(Stage::normalized)
+                .collect()
+        };
+        assert_eq!(
+            progs("cd /r && nix develop --command cargo nextest run -p x"),
+            ["cd", "cargo nextest"]
+        );
+        assert_eq!(
+            progs("timeout 900 nix develop .#ci -c bash -c 'cargo test && bd close a-1'"),
+            ["cargo test", "bd close"]
+        );
+        assert_eq!(progs("flock /tmp/l.lock cargo build"), ["cargo build"]);
+        // The normalized command keeps the runner, as the spec groups it.
+        assert_eq!(n("nix develop --command cargo test"), "nix develop");
+    }
+
+    #[test]
+    fn redirections_are_not_arguments() {
+        assert_eq!(n("bd 2>/dev/null update x-1 --claim"), "bd update");
+        assert_eq!(n("git > out.txt log"), "git log");
+        let heads: Vec<String> = effective_stages("cd /r && git commit -q -F - <<'EOF'\nmsg\nEOF")
+            .iter()
+            .map(Stage::normalized)
+            .collect();
+        assert_eq!(heads, ["cd", "git commit"]);
     }
 
     #[test]

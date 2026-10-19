@@ -12,6 +12,8 @@ struct World {
     _lock: crate::ArchiveLock,
     writer: Writer,
     offset: u64,
+    /// Links sent with the next write.
+    links: Vec<polylogue_model::Link>,
 }
 
 fn world() -> World {
@@ -24,6 +26,7 @@ fn world() -> World {
         _lock: lock,
         writer,
         offset: 0,
+        links: vec![],
     }
 }
 
@@ -164,6 +167,7 @@ impl World {
                 output: Output {
                     sessions: vec![Session::new(sid(session), SessionKind::Main)],
                     messages: rows,
+                    links: std::mem::take(&mut self.links),
                     ..Output::default()
                 },
                 accounting,
@@ -437,4 +441,93 @@ fn deriving_again_changes_nothing() {
     assert_eq!(w.writer.derive().unwrap(), 0);
     let after = w.rows("SELECT key, kind, title, state FROM work_node ORDER BY key");
     assert_eq!(before, after);
+}
+
+#[test]
+fn rows_an_excision_leaves_behind_are_swept() {
+    // Excision deletes a session's nodes by their session; their edges go
+    // with them, and a shared goal no one pursues any more goes at the next
+    // derive.
+    let mut w = world();
+    w.write(
+        "a",
+        bash("a", 1, 1_000, "bd update plnext-5 --claim", true, ""),
+    );
+    w.write(
+        "b",
+        bash("b", 1, 2_000, "bd update plnext-5 --claim", true, ""),
+    );
+    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    let excise = |s: &str| {
+        index
+            .execute(
+                "DELETE FROM work_node WHERE session_pk = (SELECT pk FROM session WHERE id = ?1)",
+                [format!("claude-code:{s}")],
+            )
+            .unwrap();
+    };
+    excise("b");
+    w.writer.derive().unwrap();
+    let dangling = "SELECT COUNT(*) AS n FROM work_edge e WHERE NOT EXISTS
+        (SELECT 1 FROM work_node n WHERE n.pk = e.from_pk)";
+    assert_eq!(w.rows(dangling), vec![json!({"n": 0})]);
+    assert_eq!(
+        w.rows("SELECT COUNT(*) AS n FROM work_node WHERE kind = 'goal'"),
+        vec![json!({"n": 1})],
+        "a still pursues the goal"
+    );
+    excise("a");
+    w.writer.derive().unwrap();
+    assert_eq!(
+        w.rows("SELECT COUNT(*) AS n FROM work_node"),
+        vec![json!({"n": 0})]
+    );
+    assert_eq!(
+        w.rows("SELECT COUNT(*) AS n FROM work_edge"),
+        vec![json!({"n": 0})]
+    );
+}
+
+#[test]
+fn a_spawned_session_pursues_the_task_it_was_given() {
+    let mut w = world();
+    w.write("parent", prose("parent", 1, 1_000, "coordinate"));
+    let mut child = prose(
+        "child",
+        1,
+        2_000,
+        "Sinex lane B: replay and excision.\nDetails follow.",
+    );
+    child.extend(bash(
+        "child",
+        2,
+        3_000,
+        "nix develop --command cargo nextest run",
+        true,
+        "ok",
+    ));
+    w.links.push(polylogue_model::Link {
+        kind: polylogue_model::LinkKind::Spawn,
+        parent: sid("parent"),
+        child: sid("child"),
+        at: None,
+        call_id: None,
+        evidence: "test".into(),
+    });
+    w.write("child", child);
+    let rows = w.rows(
+        "SELECT g.title AS goal, a.state, c.title AS check_title FROM work_node g
+         JOIN work_edge p ON p.to_pk = g.pk AND p.kind = 'pursues'
+         JOIN work_node a ON a.pk = p.from_pk
+         JOIN work_edge k ON k.to_pk = a.pk AND k.kind = 'checks'
+         JOIN work_node c ON c.pk = k.from_pk",
+    );
+    assert_eq!(
+        rows,
+        vec![json!({
+            "goal": "Sinex lane B: replay and excision.",
+            "state": null,
+            "check_title": "cargo nextest"
+        })]
+    );
 }
