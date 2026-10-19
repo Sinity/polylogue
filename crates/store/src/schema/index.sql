@@ -484,7 +484,9 @@ CREATE TABLE commit_link (
   commit_hash       TEXT NOT NULL,          -- full hash; the one place the commit is a key, so it is named
                                             --   commit_hash here and `commit` everywhere else
   repo              TEXT,
-  evidence_block_pk INTEGER REFERENCES block(pk),  -- the git commit tool call; NULL for a trailer
+  evidence_block_pk INTEGER REFERENCES block(pk) ON DELETE CASCADE,  -- the git commit tool call; NULL for a
+                                            --   trailer. Derived: a rewrite of the call removes it, and the
+                                            --   derive step makes it again
   evidence          TEXT NOT NULL,          -- commit-output | trailer | codex-git
   PRIMARY KEY (session_pk, commit_hash)
 ) STRICT, WITHOUT ROWID;
@@ -601,7 +603,9 @@ CREATE TABLE work_node (
   at                INTEGER,
   state             TEXT,                   -- attempt: open | closed | released | completed | pending;
                                             --   verification: the call's outcome
-  tool_call_pk      INTEGER REFERENCES tool_call(pk),  -- the call that is its evidence
+  tool_call_pk      INTEGER REFERENCES tool_call(pk) ON DELETE CASCADE,  -- the call that is its
+                                            --   evidence; a rewrite of the call removes the node until the
+                                            --   derive step makes it again, so derived rows never block a write
   attrs_json        TEXT                    -- attempt: checks passed and failed and commits while it was open
 ) STRICT;
 CREATE INDEX work_node_session ON work_node(session_pk);

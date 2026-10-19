@@ -551,7 +551,7 @@ fn derive_session(tx: &Transaction<'_>, session_pk: i64, session_id: &str) -> Re
 fn spawned_task(tx: &Transaction<'_>, session_pk: i64) -> Result<Option<String>> {
     let spawned: bool = tx
         .prepare_cached(
-            "SELECT EXISTS (SELECT 1 FROM link WHERE child_pk = ?1 AND kind = 'spawn')",
+            "SELECT EXISTS (SELECT 1 FROM link WHERE child_pk = ?1 AND kind = 'subagent')",
         )?
         .query_row([session_pk], |r| r.get(0))?;
     if !spawned {
