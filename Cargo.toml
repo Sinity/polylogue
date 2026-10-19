@@ -32,6 +32,7 @@ clap = { version = "4.6", features = ["derive"] }
 clap_complete = "4.6"
 notify = "8.2"
 libc = "0.2"
+proptest = "1"
 tempfile = "3"
 base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }

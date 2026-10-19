@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cddc68694e1f99e341737d83ee8e96d52044d143c724e8684293d064ea6ebdce # shrinks to s = Shape { parents: [2, 2, 4], children: [(7, 3, 1), (4, 1, 2)] }, files_gone = true
+cc 50b286f47cfa582bfe2630a278bed5f9ae61b9e9bac905a8fbf227f7a209d02d # shrinks to s = Shape { parents: [1], children: [(7, 5, 3), (2, 4, 1)] }, pick = 7, cut = 3

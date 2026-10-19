@@ -3,14 +3,14 @@ use polylogue_model::{Message, SessionId};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
-struct World {
-    dir: tempfile::TempDir,
-    home: PathBuf,
-    root: PathBuf,
+pub(crate) struct World {
+    pub(crate) dir: tempfile::TempDir,
+    pub(crate) home: PathBuf,
+    pub(crate) root: PathBuf,
 }
 
 impl World {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         fs::create_dir_all(home.join(".claude/projects/-proj")).unwrap();
@@ -18,7 +18,7 @@ impl World {
         Self { dir, home, root }
     }
 
-    fn engine(&self, chunk: u64) -> (Engine, polylogue_store::ArchiveLock) {
+    pub(crate) fn engine(&self, chunk: u64) -> (Engine, polylogue_store::ArchiveLock) {
         let (archive, lock) = Archive::open_or_create(&self.root).unwrap();
         let config = Config {
             home: self.home.clone(),
@@ -33,11 +33,11 @@ impl World {
         (Engine::new(config, archive).unwrap(), lock)
     }
 
-    fn file(&self, name: &str) -> PathBuf {
+    pub(crate) fn file(&self, name: &str) -> PathBuf {
         self.home.join(".claude/projects/-proj").join(name)
     }
 
-    fn append(&self, name: &str, text: &str) {
+    pub(crate) fn append(&self, name: &str, text: &str) {
         let mut f = OpenOptions::new()
             .create(true)
             .append(true)
@@ -46,7 +46,7 @@ impl World {
         f.write_all(text.as_bytes()).unwrap();
     }
 
-    fn texts(&self, session: &str) -> Vec<String> {
+    pub(crate) fn texts(&self, session: &str) -> Vec<String> {
         let pool = ReadPool::open(&Archive::at(&self.root)).unwrap();
         let id = SessionId::parse(&format!("claude-code:{session}")).unwrap();
         pool.reader()
@@ -58,7 +58,7 @@ impl World {
             .collect()
     }
 
-    fn count(&self, sql: &str) -> i64 {
+    pub(crate) fn count(&self, sql: &str) -> i64 {
         let pool = ReadPool::open(&Archive::at(&self.root)).unwrap();
         pool.reader().unwrap().query(sql, &[]).unwrap()[0]["n"]
             .as_i64()
@@ -66,7 +66,7 @@ impl World {
     }
 }
 
-fn user(uuid: &str, session: &str, text: &str) -> String {
+pub(crate) fn user(uuid: &str, session: &str, text: &str) -> String {
     format!(
         "{}\n",
         serde_json::json!({
@@ -77,7 +77,7 @@ fn user(uuid: &str, session: &str, text: &str) -> String {
     )
 }
 
-fn assistant(uuid: &str, session: &str, text: &str) -> String {
+pub(crate) fn assistant(uuid: &str, session: &str, text: &str) -> String {
     format!(
         "{}\n",
         serde_json::json!({
@@ -216,7 +216,7 @@ fn a_vanished_file_is_observed_gone_and_its_messages_stay() {
 }
 
 /// Deletes `index.db` (and its WAL files) of a closed archive.
-fn delete_index(root: &Path) {
+pub(crate) fn delete_index(root: &Path) {
     for suffix in ["", "-wal", "-shm"] {
         let _ = fs::remove_file(root.join(format!("index.db{suffix}")));
     }
@@ -552,7 +552,7 @@ fn excising_a_session_from_a_shared_input_overwrites_only_its_records() {
     assert_eq!(w.texts("keep").len(), 2);
 }
 
-fn export_of(root: &Path, session: &str) -> polylogue_model::export::SessionExport {
+pub(crate) fn export_of(root: &Path, session: &str) -> polylogue_model::export::SessionExport {
     let pool = ReadPool::open(&Archive::at(root)).unwrap();
     pool.reader()
         .unwrap()

@@ -67,11 +67,14 @@ impl Reader<'_> {
         Ok(out)
     }
 
-    /// Links where the session is the parent or the child.
+    /// Links where the session is the parent or the child, in an order fixed
+    /// by their content: the order inputs arrived in never changes the view
+    /// (law 4).
     pub fn links(&self, id: &SessionId) -> Result<Vec<Link>> {
         let mut stmt = self.conn().prepare_cached(
             "SELECT kind, parent_id, child_id, branch_point, spawning_call, evidence
-             FROM link WHERE parent_id = ?1 OR child_id = ?1 ORDER BY pk",
+             FROM link WHERE parent_id = ?1 OR child_id = ?1
+             ORDER BY parent_id, child_id, kind",
         )?;
         let rows = stmt.query_map([id.to_string()], |r| {
             Ok((
