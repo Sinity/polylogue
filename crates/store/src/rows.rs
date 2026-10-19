@@ -360,7 +360,10 @@ pub struct Restoring {
 impl Restoring {
     pub fn open(archive: &crate::Archive) -> crate::Result<Self> {
         Ok(Self {
-            conn: crate::files::open_write(&archive.archive_db())?,
+            conn: crate::files::open_write(
+                &archive.archive_db(),
+                crate::files::cache::ARCHIVE_WRITER,
+            )?,
         })
     }
 

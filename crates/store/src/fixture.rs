@@ -64,8 +64,8 @@ pub struct T<'a> {
 impl Fixture {
     pub fn new(root: &Path) -> Result<Self> {
         let (archive, lock) = Archive::open_or_create(root)?;
-        let index = open_write(&archive.index_db())?;
-        let notes = open_write(&archive.archive_db())?;
+        let index = open_write(&archive.index_db(), crate::files::cache::SETUP)?;
+        let notes = open_write(&archive.archive_db(), crate::files::cache::SETUP)?;
         index.execute("INSERT INTO input_ref(id) VALUES ('fixture')", [])?;
         let input_pk = index.last_insert_rowid();
         Ok(Self {

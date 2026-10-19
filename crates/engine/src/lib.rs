@@ -601,6 +601,7 @@ impl Engine {
                 blobs: vec![],
                 length: st.stored,
                 parse: None,
+                release: Default::default(),
             };
             self.writer.send(batch)?;
         }

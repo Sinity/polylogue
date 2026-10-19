@@ -105,7 +105,7 @@ impl Archive {
         }
         let archive = Self::at(root);
         fs::create_dir_all(archive.blobs_dir())?;
-        let mut a = open_write(&archive.archive_db())?;
+        let mut a = open_write(&archive.archive_db(), cache::SETUP)?;
         if schema::version(&a)? == 0 {
             schema::create_archive(&a)?;
         }
@@ -117,9 +117,9 @@ impl Archive {
             [uuid::Uuid::now_v7().to_string()],
         )?;
         set_aside_old_index(&archive)?;
-        let i = open_write(&archive.index_db())?;
+        let i = open_write(&archive.index_db(), cache::SETUP)?;
         schema::ensure_index(&i)?;
-        let e = open_write(&archive.embeddings_db())?;
+        let e = open_write(&archive.embeddings_db(), cache::SETUP)?;
         if schema::version(&e)? == 0 {
             schema::create_embeddings(&e)?;
         }
@@ -176,18 +176,29 @@ fn tune(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "wal")?;
     conn.pragma_update(None, "synchronous", "normal")?;
     conn.pragma_update(None, "temp_store", "memory")?;
-    // A large page cache: the writer and the readers run against tables in
-    // the hundreds of MB, and the operator allows a few GB of RAM.
-    conn.pragma_update(None, "cache_size", -262_144)?;
-    conn.pragma_update(None, "mmap_size", 1_i64 << 32)?;
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
     Ok(())
+}
+
+/// Page-cache budgets of the write connections, in MiB. Together with the
+/// parse pool's bytes in flight they are the daemon's memory: the operator
+/// allows a few GB, and a first build stays within about 2.5 GB.
+pub mod cache {
+    /// The writer's `index.db` connection. It holds the indexes probed on
+    /// every insert (text hashes, message IDs) and the search segments it
+    /// merges; at 256 MB a first build read back from disk more than twice
+    /// its input.
+    pub const INDEX_WRITER: i64 = 1536;
+    /// The writer's `archive.db` connection: inputs, revisions, extents.
+    pub const ARCHIVE_WRITER: i64 = 256;
+    /// Schema setup and one-off maintenance.
+    pub const SETUP: i64 = 16;
 }
 
 /// A connection the writer (or setup) uses. Each connection belongs to one
 /// thread, so SQLite's own mutexes are off (they cost about 3% of the
 /// writer's time).
-pub fn open_write(path: &Path) -> Result<Connection> {
+pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -196,10 +207,10 @@ pub fn open_write(path: &Path) -> Result<Connection> {
             | OpenFlags::SQLITE_OPEN_URI,
     )?;
     tune(&conn)?;
-    // The writer's page cache holds the indexes it probes on every insert
-    // (text hashes, message ids) and the search segments it merges; at
-    // 256 MB a first build read back from disk more than twice its input.
-    conn.pragma_update(None, "cache_size", -2_097_152)?;
+    conn.pragma_update(None, "cache_size", -(cache_mib * 1024))?;
+    // Mapped pages count as resident memory and speed up reads only; the
+    // writer's reads go through its page cache.
+    conn.pragma_update(None, "mmap_size", 0)?;
     // Checkpoint after about 1 GB of WAL rather than 4 MB, so a page written
     // by many transactions reaches the database file once.
     conn.pragma_update(None, "wal_autocheckpoint", 262_144)?;
@@ -247,7 +258,7 @@ mod tests {
         writer.flush().unwrap();
         drop(writer);
         // A stop in the middle of a first build leaves the mark set.
-        open_write(&archive.index_db())
+        open_write(&archive.index_db(), cache::SETUP)
             .unwrap()
             .execute("UPDATE meta SET value = '1' WHERE key = 'unsynced'", [])
             .unwrap();

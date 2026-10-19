@@ -31,7 +31,9 @@ pub use files::{Archive, ArchiveLock};
 pub use notes::NoteFilter;
 pub use read::{KnownInput, ReadPool, Reader, SessionSummary, SqlValue, Status};
 pub use user::{Delivery, DeliveryOutcome, LeftOut, UserOutcome, UserRequest, UserWrite};
-pub use writer::{Batch, InputKey, Observation, ParseStep, WriteReport, Writer, WriterSender};
+pub use writer::{
+    Batch, InputKey, Observation, ParseStep, Release, WriteReport, Writer, WriterSender,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
