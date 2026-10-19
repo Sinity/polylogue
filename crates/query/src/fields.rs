@@ -10,6 +10,7 @@
 
 use crate::ast::Unit;
 use crate::compile::ColKind;
+use crate::compile::custom_fields::{self as custom, Custom};
 use polylogue_model::{
     BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role, SessionKind, WorkNodeKind,
 };
@@ -33,7 +34,7 @@ pub enum Kind {
     /// Unix milliseconds.
     Time,
     Bool,
-    /// Compiled by its own rule in [`crate::compile`].
+    /// Compiled by its own rule ([`Field::compile`]).
     Special,
 }
 
@@ -49,6 +50,8 @@ pub struct Field {
     pub sql: Option<Expr>,
     /// The column kind of the value when the matching kind does not say.
     pub value_kind: Option<ColKind>,
+    /// A special field's compile rule; every special field has one.
+    pub(crate) compile: Option<Custom>,
 }
 
 /// SQL over a unit's aliases: a template whose `{s}`, `{m}`, `{b}`, `{t}`,
@@ -123,6 +126,21 @@ const fn f(unit: Unit, name: &'static str, kind: Kind, help: &'static str) -> Fi
         help,
         sql: None,
         value_kind: None,
+        compile: None,
+    }
+}
+
+/// A special field: matched by its own compile rule.
+const fn sp(unit: Unit, name: &'static str, help: &'static str, compile: Custom) -> Field {
+    Field {
+        unit,
+        name,
+        kind: Kind::Special,
+        values: None,
+        help,
+        sql: None,
+        value_kind: None,
+        compile: Some(compile),
     }
 }
 
@@ -140,6 +158,7 @@ const fn v(
         help,
         sql: None,
         value_kind: None,
+        compile: None,
     }
 }
 
@@ -149,15 +168,11 @@ const fn sv(
     name: &'static str,
     values: &'static [&'static str],
     help: &'static str,
+    compile: Custom,
 ) -> Field {
     Field {
-        unit,
-        name,
-        kind: Kind::Special,
         values: Some(values),
-        help,
-        sql: None,
-        value_kind: None,
+        ..sp(unit, name, help, compile)
     }
 }
 
@@ -323,32 +338,12 @@ pub static FIELDS: &[Field] = &[
         "who started the session: main, or one another session spawned",
     ).sql("{s}.kind"),
     f(Sessions, "title", Substring, "the displayed title").sql("COALESCE({s}.title, {s}.derived_title)"),
-    f(
-        Sessions,
-        "repo",
-        Special,
-        "the repository: name, owner/name or URL",
-    ).sql("{s}.repo"),
+    sp(Sessions, "repo", "the repository: name, owner/name or URL", custom::repo).sql("{s}.repo"),
     f(Sessions, "checkout", Subtree, "the worktree path").sql("{s}.checkout"),
-    f(
-        Sessions,
-        "collection",
-        Special,
-        "the provider's grouping: name or ID",
-    ).sql("COALESCE({s}.collection_name, {s}.collection_id)"),
+    sp(Sessions, "collection", "the provider's grouping: name or ID", custom::collection).sql("COALESCE({s}.collection_name, {s}.collection_id)"),
     f(Sessions, "branch", Match, "the git branch, as recorded").sql("{s}.branch"),
-    f(
-        Sessions,
-        "commit",
-        Special,
-        "a commit recorded or linked (prefix, 7+ hex digits)",
-    ),
-    f(
-        Sessions,
-        "pr",
-        Special,
-        "a pull request linked to the session",
-    ),
+    sp(Sessions, "commit", "a commit recorded or linked (prefix, 7+ hex digits)", custom::commit),
+    sp(Sessions, "pr", "a pull request linked to the session", custom::pr),
     v(
         Sessions,
         "outcome",
@@ -356,31 +351,16 @@ pub static FIELDS: &[Field] = &[
         "the session's outcome note",
     ).sql_fn(sessions_outcome),
     f(Sessions, "hidden", Bool, "has a hidden note").sql_fn(sessions_hidden),
-    f(
-        Sessions,
-        "cwd",
-        Special,
-        "working directory, and the directories below it",
-    ).sql("{s}.cwd"),
+    sp(Sessions, "cwd", "working directory, and the directories below it", custom::cwd).sql("{s}.cwd"),
     v(
         Sessions,
         "source",
         &["present", "missing"],
         "whether a transcript was stored",
     ).sql("CASE WHEN {s}.stub = 1 THEN 'missing' ELSE 'present' END"),
-    sv(
-        Sessions,
-        "live",
-        LIVE_STATES,
-        "the live state now, from hook and process records and the time",
-    ).sql_clock(sessions_live),
-    f(Sessions, "waiting", Special, "the live state is waiting").sql_clock(sessions_waiting).boolean(),
-    f(
-        Sessions,
-        "running",
-        Special,
-        "the live state is working, waiting, idle or unknown",
-    ).sql_clock(sessions_running).boolean(),
+    sv(Sessions, "live", LIVE_STATES, "the live state now, from hook and process records and the time", custom::live).sql_clock(sessions_live),
+    sp(Sessions, "waiting", "the live state is waiting", custom::waiting).sql_clock(sessions_waiting).boolean(),
+    sp(Sessions, "running", "the live state is working, waiting, idle or unknown", custom::running).sql_clock(sessions_running).boolean(),
     v(
         Sessions,
         "waiting_on",
@@ -431,64 +411,19 @@ pub static FIELDS: &[Field] = &[
         Match,
         "claude-code, codex-tui, codex-exec, …",
     ).sql("{s}.harness"),
-    f(
-        Sessions,
-        "model",
-        Special,
-        "a model that wrote at least one message",
-    ).sql(
+    sp(Sessions, "model", "a model that wrote at least one message", custom::model).sql(
         "(SELECT x.model FROM message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL GROUP BY x.model ORDER BY count(*) DESC LIMIT 1)",
     ),
-    f(
-        Sessions,
-        "tag",
-        Special,
-        "a tag note; tag:key:value for key:value tags",
-    ),
-    sv(
-        Sessions,
-        "has",
-        &SESSION_HAS_NAMES,
-        "the session has thinking, tool calls, errors, …",
-    ),
+    sp(Sessions, "tag", "a tag note; tag:key:value for key:value tags", custom::tag),
+    sv(Sessions, "has", &SESSION_HAS_NAMES, "the session has thinking, tool calls, errors, …", custom::has),
     f(Sessions, "temporary", Bool, "temporary web chats").sql("{s}.temporary"),
-    f(
-        Sessions,
-        "parent",
-        Special,
-        "sessions linked from the given session",
-    ),
-    f(
-        Sessions,
-        "root",
-        Special,
-        "the subagent tree under the given session",
-    ),
-    f(Sessions, "depth", Special, "depth in the subagent tree"),
-    f(
-        Sessions,
-        "link",
-        Special,
-        "the kind of an incoming link; link:fork, link:resume",
-    ),
-    f(
-        Sessions,
-        "continues",
-        Special,
-        "sessions continuing the given session",
-    ),
-    f(
-        Sessions,
-        "continued_by",
-        Special,
-        "sessions the given session continues",
-    ),
-    f(
-        Sessions,
-        "lineage",
-        Special,
-        "every session connected through links",
-    ),
+    sp(Sessions, "parent", "sessions linked from the given session", custom::parent),
+    sp(Sessions, "root", "the subagent tree under the given session", custom::root),
+    sp(Sessions, "depth", "depth in the subagent tree", custom::depth),
+    sp(Sessions, "link", "the kind of an incoming link; link:fork, link:resume", custom::link),
+    sp(Sessions, "continues", "sessions continuing the given session", custom::continues),
+    sp(Sessions, "continued_by", "sessions the given session continues", custom::continued_by),
+    sp(Sessions, "lineage", "every session connected through links", custom::lineage),
     f(Sessions, "team", Match, "the agent team").sql("{s}.team"),
     f(
         Sessions,
@@ -496,28 +431,13 @@ pub static FIELDS: &[Field] = &[
         Match,
         "the member's name in an agent team",
     ).sql("{s}.agent_name"),
-    f(
-        Sessions,
-        "path",
-        Special,
-        "a file path the session read, wrote or edited",
-    ),
-    f(
-        Sessions,
-        "tool",
-        Special,
-        "the session made such a tool call",
-    ),
-    f(
-        Sessions,
-        "action",
-        Special,
-        "the session made such a tool call",
-    ),
+    sp(Sessions, "path", "a file path the session read, wrote or edited", custom::session_tool_call),
+    sp(Sessions, "tool", "the session made such a tool call", custom::session_tool_call),
+    sp(Sessions, "action", "the session made such a tool call", custom::session_tool_call),
     f(Sessions, "started", Time, "first own message or event").sql("{s}.started_at"),
     f(Sessions, "last_active", Time, "last own message or event").sql("{s}.last_activity_at"),
-    f(Sessions, "since", Special, "active on or after the time"),
-    f(Sessions, "until", Special, "begun on or before the time"),
+    sp(Sessions, "since", "active on or after the time", custom::since),
+    sp(Sessions, "until", "begun on or before the time", custom::until),
     f(Sessions, "messages", Number, "own messages").sql_fn(sessions_messages),
     f(Sessions, "human_prompts", Number, "own prose prompts").sql_fn(sessions_human_prompts),
     f(Sessions, "human_commands", Number, "own typed commands").sql_fn(sessions_human_commands),
@@ -561,9 +481,9 @@ pub static FIELDS: &[Field] = &[
         "own cost plus every session below in the subagent tree",
     ).sql_fn(sessions_tree_cost),
     f(Sessions, "duration", Duration, "last_active - started").sql("({s}.last_activity_at - {s}.started_at)"),
-    f(Sessions, "near", Special, "semantic similarity (a ranking)"),
-    f(Sessions, "output", Special, "words in tool output"),
-    f(Sessions, "thinking", Special, "words in thinking"),
+    sp(Sessions, "near", "semantic similarity (a ranking)", custom::near),
+    sp(Sessions, "output", "words in tool output", custom::output),
+    sp(Sessions, "thinking", "words in thinking", custom::thinking),
     // messages
     f(Messages, "id", Prefix, "message ID").sql("{m}.id"),
     v(
@@ -599,12 +519,7 @@ pub static FIELDS: &[Field] = &[
         "a copy of an earlier session's message",
     ).sql("({m}.inherited_from IS NOT NULL)"),
     f(Messages, "active", Bool, "on the active path").sql("COALESCE({m}.on_active_path, 1)"),
-    sv(
-        Messages,
-        "has",
-        &MESSAGE_HAS_NAMES,
-        "the message has thinking, tool calls, attachments or code",
-    ),
+    sv(Messages, "has", &MESSAGE_HAS_NAMES, "the message has thinking, tool calls, attachments or code", custom::has),
     f(Messages, "words", Number, "words in its text").sql("{m}.words"),
     f(Messages, "input_tokens", Number, "").sql("{m}.input_tokens"),
     f(Messages, "output_tokens", Number, "").sql("{m}.output_tokens"),
@@ -624,11 +539,11 @@ pub static FIELDS: &[Field] = &[
         "the sending session of an agent-to-agent message",
     ).sql("{m}.from_session"),
     f(Messages, "from_name", Match, "the sender's name as written").sql("{m}.from_name"),
-    f(Messages, "since", Special, "at or after the time"),
-    f(Messages, "until", Special, "at or before the time"),
-    f(Messages, "near", Special, "semantic similarity (a ranking)"),
-    f(Messages, "output", Special, "words in tool output"),
-    f(Messages, "thinking", Special, "words in thinking"),
+    sp(Messages, "since", "at or after the time", custom::since),
+    sp(Messages, "until", "at or before the time", custom::until),
+    sp(Messages, "near", "semantic similarity (a ranking)", custom::near),
+    sp(Messages, "output", "words in tool output", custom::output),
+    sp(Messages, "thinking", "words in thinking", custom::thinking),
     // blocks
     v(
         Blocks,
@@ -639,16 +554,11 @@ pub static FIELDS: &[Field] = &[
     f(Blocks, "media_type", Match, "").sql("{b}.media_type"),
     f(Blocks, "file_name", Substring, "").sql("{b}.file_name"),
     f(Blocks, "at", Time, "the message's time").sql("{m}.at"),
-    f(Blocks, "since", Special, "at or after the time"),
-    f(Blocks, "until", Special, "at or before the time"),
+    sp(Blocks, "since", "at or after the time", custom::since),
+    sp(Blocks, "until", "at or before the time", custom::until),
     // tool_calls
     f(ToolCalls, "tool", Match, "the tool name as written").sql("{t}.tool"),
-    f(
-        ToolCalls,
-        "mcp_server",
-        Special,
-        "for MCP tools, the server part of the name",
-    ).sql(
+    sp(ToolCalls, "mcp_server", "for MCP tools, the server part of the name", custom::mcp_server).sql(
         "CASE WHEN {t}.tool LIKE 'mcp\\_\\_%' ESCAPE '\\' THEN substr({t}.tool, 6, instr(substr({t}.tool, 6), '__') - 1) END",
     ),
     v(
@@ -657,31 +567,16 @@ pub static FIELDS: &[Field] = &[
         ACTIONS,
         "shell, file_read, file_write, file_edit, search, web, …",
     ).sql("{t}.action"),
-    f(
-        ToolCalls,
-        "command",
-        Special,
-        "the shell command (substring)",
-    ).sql("{t}.command"),
+    sp(ToolCalls, "command", "the shell command (substring)", custom::tool_call_text).sql("{t}.command"),
     f(
         ToolCalls,
         "command_norm",
         Match,
         "the normalized command: cargo test, git commit",
     ).sql("{t}.command_norm"),
-    f(
-        ToolCalls,
-        "input",
-        Special,
-        "text inside the arguments (substring)",
-    ),
-    f(ToolCalls, "output", Special, "words in the result"),
-    f(
-        ToolCalls,
-        "path",
-        Special,
-        "a file path in the arguments (substring)",
-    ).sql("{t}.path"),
+    sp(ToolCalls, "input", "text inside the arguments (substring)", custom::input),
+    sp(ToolCalls, "output", "words in the result", custom::output),
+    sp(ToolCalls, "path", "a file path in the arguments (substring)", custom::tool_call_text).sql("{t}.path"),
     v(
         ToolCalls,
         "outcome",
@@ -694,20 +589,10 @@ pub static FIELDS: &[Field] = &[
     f(ToolCalls, "exit_code", Number, "").sql("{t}.exit_code"),
     f(ToolCalls, "at", Time, "").sql("{t}.at"),
     f(ToolCalls, "duration", Duration, "").sql("{t}.duration_ms"),
-    f(
-        ToolCalls,
-        "since",
-        Special,
-        "ended at or after the time, or still open",
-    ),
-    f(ToolCalls, "until", Special, "started at or before the time"),
-    f(
-        ToolCalls,
-        "child",
-        Special,
-        "for subagent calls: the child session",
-    ),
-    f(ToolCalls, "next", Special, "the session's next tool call"),
+    sp(ToolCalls, "since", "ended at or after the time, or still open", custom::since),
+    sp(ToolCalls, "until", "started at or before the time", custom::until),
+    sp(ToolCalls, "child", "for subagent calls: the child session", custom::spawned_child),
+    sp(ToolCalls, "next", "the session's next tool call", custom::next_call),
     // files
     f(Files, "path", Substring, "the file path").sql("{r}.path"),
     f(Files, "reads", Number, "").sql("{r}.reads"),
@@ -723,8 +608,8 @@ pub static FIELDS: &[Field] = &[
         "compaction, model_switch, permission, …",
     ).sql("{r}.kind"),
     f(Events, "at", Time, "").sql("{r}.at"),
-    f(Events, "since", Special, "at or after the time"),
-    f(Events, "until", Special, "at or before the time"),
+    sp(Events, "since", "at or after the time", custom::since),
+    sp(Events, "until", "at or before the time", custom::until),
     // links
     v(
         Links,
@@ -738,8 +623,8 @@ pub static FIELDS: &[Field] = &[
         LINK_HOW_NAMES,
         "how the child relates",
     ).sql("{r}.how"),
-    f(Links, "parent", Special, "the parent session").sql("{r}.parent_id"),
-    f(Links, "child", Special, "the child session").sql("{r}c.id"),
+    sp(Links, "parent", "the parent session", custom::link_parent).sql("{r}.parent_id"),
+    sp(Links, "child", "the child session", custom::link_child).sql("{r}c.id"),
     f(Links, "pending", Bool, "the parent is not in the archive").sql("(NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = {r}.parent_id))"),
     f(
         Links,
@@ -776,7 +661,7 @@ pub static FIELDS: &[Field] = &[
         Match,
         "operator, a session ID, agent or script",
     ).sql("{r}.author"),
-    f(Notes, "target", Special, "a reference"),
+    sp(Notes, "target", "a reference", custom::note_target),
     f(
         Notes,
         "source",
@@ -792,8 +677,8 @@ pub static FIELDS: &[Field] = &[
         Bool,
         "a current withdrawal withdraws it",
     ).sql_fn(notes_withdrawn),
-    f(Notes, "since", Special, "created at or after the time"),
-    f(Notes, "until", Special, "created at or before the time"),
+    sp(Notes, "since", "created at or after the time", custom::since),
+    sp(Notes, "until", "created at or before the time", custom::until),
     // runs
     f(Runs, "id", Prefix, "").sql("{r}.id"),
     v(Runs, "kind", &["task", "attempt"], "").sql("{r}.kind"),
@@ -812,7 +697,7 @@ pub static FIELDS: &[Field] = &[
     f(Runs, "evidence", Match, "").sql("{r}.evidence"),
     // deliveries
     f(Deliveries, "id", Prefix, "").sql("{r}.id"),
-    f(Deliveries, "recipient", Special, "the receiving session").sql("{r}.recipient_id"),
+    sp(Deliveries, "recipient", "the receiving session", custom::recipient).sql("{r}.recipient_id"),
     v(
         Deliveries,
         "event",
@@ -847,18 +732,8 @@ pub static FIELDS: &[Field] = &[
         "the latest event's detail: a failure's reason, or what used it",
     ).sql_fn(deliveries_detail),
     f(Deliveries, "text", Substring, "the delivered text").sql("pl_text({r}.body)"),
-    f(
-        Deliveries,
-        "refs",
-        Special,
-        "a reference the delivery included",
-    ),
-    f(
-        Deliveries,
-        "left_out",
-        Special,
-        "a reference left out for budget",
-    ),
+    sp(Deliveries, "refs", "a reference the delivery included", custom::refs),
+    sp(Deliveries, "left_out", "a reference left out for budget", custom::left_out),
     f(Deliveries, "at", Time, "").sql("{r}.at"),
     f(Deliveries, "bytes", Number, "").sql("{r}.bytes"),
     // changes (the change feed): sessions written, sessions removed, notes
@@ -878,12 +753,7 @@ pub static FIELDS: &[Field] = &[
     )
     .sql("{r}.seq"),
     f(Changes, "note_kind", Match, "a note's kind").sql("{r}.note_kind"),
-    f(
-        Changes,
-        "after",
-        Special,
-        "changes after a cursor `INDEX.ARCHIVE`: the `view` of an earlier answer",
-    ),
+    sp(Changes, "after", "changes after a cursor `INDEX.ARCHIVE`: the `view` of an earlier answer", custom::changes_after),
     // turns (spec query.md, turns): computed along the active path
     f(Turns, "id", Prefix, "its first prompt's message ID").sql("{r}.id"),
     f(Turns, "start", Time, "the first message's time").sql("{r}.start"),

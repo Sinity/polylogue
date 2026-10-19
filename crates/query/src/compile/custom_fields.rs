@@ -1,546 +1,630 @@
-//! Fields whose SQL is written by hand here rather than read from the
-//! field table: each needs a rule of its own (a subquery, a parameter
-//! shape, a check against other conditions).
+//! Fields compiled by a rule of their own rather than from the field
+//! table's SQL: each needs a subquery, a parameter shape, or a check
+//! against other conditions. A special field in [`crate::fields::FIELDS`]
+//! names its rule here, so a field without one cannot be declared.
 
 use super::*;
 use polylogue_model::{LINK_HOW_NAMES, LINK_KIND_NAMES};
 
-impl<'a> Compiler<'a> {
-    /// A field whose SQL is written here, by its own rule.
-    pub(super) fn custom_field(
-        &mut self,
-        unit: Unit,
-        name: &str,
-        op: FieldOp<'_>,
-        scope: &Scope,
-        span: Span,
-        top: bool,
-    ) -> Result<String, QueryError> {
-        let a = &scope.a;
-        let s = &a.s;
-        let one = |op: &FieldOp<'_>| -> Option<String> {
-            match op {
-                FieldOp::Match(Value::One { text, .. }) => Some(text.clone()),
-                _ => None,
-            }
-        };
-        let need_value = |name: &str| QueryError::Invalid {
-            message: format!("{name} takes {name}:VALUE"),
-            position: span.start,
-        };
-        let values = |op: &FieldOp<'_>| -> Vec<String> {
-            match op {
-                FieldOp::Match(v) => alternatives(v),
-                _ => vec![],
-            }
-        };
-        Ok(match (unit, name) {
-            (_, "near") => {
-                if !top {
-                    return Err(QueryError::Invalid {
-                        message: "near: ranks the whole query, so it appears once among the top-level conditions".into(),
-                        position: span.start,
-                    });
-                }
-                if !self.opts.embeddings {
-                    self.degraded.push(
-                        "semantic search is not enabled; rows are ordered by time and unranked"
-                            .into(),
-                    );
-                    return Ok("1".into());
-                }
-                let text = one(&op).ok_or_else(|| need_value(name))?;
-                // The caller binds the nearest texts as `[[text id, similarity], ...]`.
-                let param = self.bind(Param::Text("[]".into()));
-                let index = self.params.len();
-                let cte = format!("n{}", self.ctes.len() + 1);
-                self.ctes.push(format!(
-                    "{cte} AS MATERIALIZED (SELECT CAST(json_extract(j.value, '$[0]') AS INTEGER) AS text_id, \
-                     -json_extract(j.value, '$[1]') AS rank FROM json_each({param}) j)"
-                ));
-                let a = &scope.a;
-                let rank = match unit {
-                    Unit::Sessions => format!(
-                        "(SELECT min(h.rank) FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
-                         WHERE xb.session_pk IN ({}))",
-                        fields::subtree(&a.s)
-                    ),
-                    Unit::Messages => format!(
-                        "(SELECT min(h.rank) FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
-                         WHERE xb.message_pk = {}.pk)",
-                        a.m
-                    ),
-                    Unit::Blocks => {
-                        format!(
-                            "(SELECT h.rank FROM {cte} h WHERE h.text_id = {}.text_id)",
-                            a.b
-                        )
-                    }
-                    other => {
-                        return Err(QueryError::Invalid {
-                            message: format!(
-                                "near: ranks sessions, messages and blocks, not {}",
-                                other.name()
-                            ),
-                            position: span.start,
-                        });
-                    }
-                };
-                // Semantic similarity ranks the whole query, ahead of any
-                // full-text rank.
-                self.rank = Some(rank);
-                self.near = Some(Near { text, param: index });
-                "1".into()
-            }
-            (_, "output" | "thinking") => {
-                let text = one(&op).ok_or_else(|| need_value(name))?;
-                let quoted = matches!(op, FieldOp::Match(Value::One { quoted: true, .. }));
-                let index = if name == "output" {
-                    Index::Output
-                } else {
-                    Index::Thinking
-                };
-                self.text(&[(text, quoted, span)], scope, index, false)?
-            }
-            (_, "since" | "until") => {
-                let t = self.time(name, &one(&op).ok_or_else(|| need_value(name))?, span)?;
-                let spec = units::spec(unit);
-                let (window, at) = if name == "since" {
-                    (spec.since, t.start())
-                } else {
-                    (spec.until, t.end())
-                };
-                let window = window.ok_or_else(|| self.unknown_field(name, unit, span))?;
-                a.expand(window).replace("{v}", &at.to_string())
-            }
-            (Unit::Changes, "after") => {
-                let text = match &op {
-                    FieldOp::Match(Value::One { text, .. }) => text.as_str(),
-                    _ => "",
-                };
-                let cursor = text
-                    .split_once('.')
-                    .and_then(|(i, a)| Some((i.parse::<i64>().ok()?, a.parse::<i64>().ok()?)));
-                let Some((index, archive)) = cursor else {
-                    return Err(QueryError::Invalid {
-                        message: "after: takes a cursor `INDEX.ARCHIVE`, two numbers".into(),
-                        position: span.start,
-                    });
-                };
-                format!(
-                    "(({r}.kind = 'note' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
-                     OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index})))",
-                    r = a.row
-                )
-            }
-            (Unit::Sessions, "repo")
-                if matches!(&op, FieldOp::Match(Value::One { text, quoted: false })
-                    if text.eq_ignore_ascii_case("unknown")) =>
-            {
-                format!("({s}.repo IS NULL AND {s}.repo_root IS NULL)")
-            }
-            (Unit::Sessions, "repo") => {
-                let mut parts = vec![];
-                for v in values(&op) {
-                    let v = v.to_lowercase().trim_end_matches('/').to_owned();
-                    let p = self.text_param(&v);
-                    let tail = self.text_param(&format!("%/{}", like_escape(&v)));
-                    let tail_git = self.text_param(&format!("%/{}.git", like_escape(&v)));
-                    parts.push(format!(
-                        "(lower(rtrim({s}.repo, '/')) = {p} OR lower(rtrim({s}.repo, '/')) LIKE {tail} ESCAPE '\\' \
-                         OR lower({s}.repo) LIKE {tail_git} ESCAPE '\\' OR {s}.repo_root = {p})"
-                    ));
-                }
-                if parts.is_empty() {
-                    return Err(need_value(name));
-                }
-                format!("({})", parts.join(" OR "))
-            }
-            (Unit::Sessions, "collection") => {
-                let mut parts = vec![];
-                for v in values(&op) {
-                    let p = self.text_param(&v.to_lowercase());
-                    parts.push(format!(
-                        "(lower({s}.collection_name) = {p} OR lower({s}.collection_id) = {p})"
-                    ));
-                }
-                format!("({})", parts.join(" OR "))
-            }
-            (Unit::Sessions, "live") => {
-                let now = self.opts.clock.now;
-                let mut states = vec![];
-                for v in values(&op) {
-                    let v = v.to_ascii_lowercase();
-                    if !fields::LIVE_STATES.contains(&v.as_str()) {
-                        return Err(QueryError::BadValue {
-                            field: name.into(),
-                            value: v,
-                            position: span.start,
-                            message: format!("live is one of {}", fields::LIVE_STATES.join(", ")),
-                        });
-                    }
-                    states.push(format!("'{v}'"));
-                }
-                if states.is_empty() {
-                    return Err(need_value(name));
-                }
-                format!("{} IN ({})", fields::live_state(s, now), states.join(", "))
-            }
-            (Unit::Sessions, "waiting" | "running") => {
-                let now = self.opts.clock.now;
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                let want = match v.to_ascii_lowercase().as_str() {
-                    "true" | "yes" | "1" => true,
-                    "false" | "no" | "0" => false,
-                    _ => {
-                        return Err(QueryError::BadValue {
-                            field: name.into(),
-                            value: v,
-                            position: span.start,
-                            message: format!("{name} is true or false"),
-                        });
-                    }
-                };
-                let states = if name == "waiting" {
-                    "('waiting')"
-                } else {
-                    "('working', 'waiting', 'idle', 'unknown')"
-                };
-                let not = if want { "" } else { "NOT " };
-                format!("{} {not}IN {states}", fields::live_state(s, now))
-            }
-            (Unit::Sessions, "commit") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                if v.len() < 7 || !v.chars().all(|c| c.is_ascii_hexdigit()) {
-                    return Err(QueryError::BadValue {
-                        field: name.into(),
-                        value: v,
-                        position: span.start,
-                        message: "commit takes a hash prefix of at least 7 hex digits".into(),
-                    });
-                }
-                let p = self.text_param(&format!("{}%", v.to_lowercase()));
-                let q = self.text_param(&v.to_lowercase());
-                // A hash is stored as the command printed it, often short:
-                // either may be a prefix of the other.
-                format!(
-                    "EXISTS (SELECT 1 FROM commit_link cl WHERE cl.session_pk = {s}.pk \
-                     AND (cl.commit_hash LIKE {p} OR {q} LIKE cl.commit_hash || '%'))"
-                )
-            }
-            (Unit::Sessions, "pr") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                let (repo, number) = parse_pr(&v).ok_or_else(|| QueryError::BadValue {
-                    field: name.into(),
-                    value: v.clone(),
-                    position: span.start,
-                    message: "pr takes a number, owner/name#N, or a pull request URL".into(),
-                })?;
-                let n = self.bind(Param::Int(number));
-                match repo {
-                    Some(repo) => {
-                        let p = self.text_param(&repo.to_lowercase());
-                        format!(
-                            "EXISTS (SELECT 1 FROM pr_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n} AND lower(pl.repo) = {p})"
-                        )
-                    }
-                    None => format!(
-                        "EXISTS (SELECT 1 FROM pr_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n})"
-                    ),
-                }
-            }
-            (Unit::Sessions, "cwd") => {
-                let mut parts = vec![];
-                for v in values(&op) {
-                    let a1 = self.subtree(&format!("{s}.cwd"), &v);
-                    let a2 = self.subtree("cj.value", &v);
-                    parts.push(format!(
-                        "({a1} OR EXISTS (SELECT 1 FROM json_each({s}.cwd_json) cj WHERE {a2}))"
-                    ));
-                }
-                if parts.is_empty() {
-                    return Err(need_value(name));
-                }
-                format!("({})", parts.join(" OR "))
-            }
-            (Unit::Sessions, "model") => match op {
-                FieldOp::Match(Value::One {
-                    text,
-                    quoted: false,
-                }) if text.eq_ignore_ascii_case("unknown") => {
-                    format!(
-                        "NOT EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL)"
-                    )
-                }
-                FieldOp::Match(Value::Any) => "1".into(),
-                _ => {
-                    let vs: Vec<String> = values(&op)
-                        .iter()
-                        .map(|v| self.text_param(&v.to_lowercase()))
-                        .collect();
-                    if vs.is_empty() {
-                        return Err(need_value(name));
-                    }
-                    // Unknown when no message records a model, so neither
-                    // the condition nor its NOT matches (three-valued, law 132).
-                    format!(
-                        "CASE WHEN EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL) \
-                         THEN EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND lower(x.model) IN ({})) END",
-                        vs.join(", ")
-                    )
-                }
-            },
-            (Unit::Sessions, "tag") => {
-                let mut parts = vec![];
-                for v in values(&op) {
-                    let v = v.to_lowercase();
-                    let p = self.text_param(&v);
-                    parts.push(format!(
-                        "EXISTS (SELECT 1 FROM a.note tn JOIN a.note_target tt ON tt.note_id = tn.id \
-                         WHERE tn.kind = 'tag' AND tt.ref = 'session:' || {s}.id AND {} \
-                         AND ((tn.key IS NULL AND lower(tn.value) = {p}) \
-                           OR lower(tn.key) || ':' || lower(tn.value) = {p} \
-                           OR (tn.value IS NULL AND lower(tn.key) = {p})))",
-                        fields::live_note("tn")
-                    ));
-                }
-                if parts.is_empty() {
-                    return Err(need_value(name));
-                }
-                format!("({})", parts.join(" OR "))
-            }
-            (Unit::Sessions, "has") | (Unit::Messages, "has") => {
-                let (table, alias) = if unit == Unit::Sessions {
-                    (&fields::SESSION_HAS[..], s)
-                } else {
-                    (&fields::MESSAGE_HAS[..], &a.m)
-                };
-                let mut parts = vec![];
-                for v in values(&op) {
-                    let has = table
-                        .iter()
-                        .find(|h| h.name.eq_ignore_ascii_case(&v))
-                        .ok_or_else(|| QueryError::BadValue {
-                            field: "has".into(),
-                            value: v.clone(),
-                            position: span.start,
-                            message: format!(
-                                "has on {} is one of {}; not {v:?}",
-                                unit.name(),
-                                table.iter().map(|h| h.name).collect::<Vec<_>>().join(", ")
-                            ),
-                        })?;
-                    parts.push((has.sql)(alias));
-                }
-                format!("({})", parts.join(" OR "))
-            }
-            (Unit::Sessions, "parent") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                if v.eq_ignore_ascii_case("missing") {
-                    format!(
-                        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = l.parent_id))"
-                    )
-                } else {
-                    let (e, p) = self.id_params(&v);
-                    format!(
-                        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND (l.parent_id = {e} OR l.parent_id LIKE {p} ESCAPE '\\'))"
-                    )
-                }
-            }
-            (Unit::Sessions, "root") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                let (e, p) = self.id_params(&v);
-                format!(
-                    "{s}.pk IN (WITH RECURSIVE tr(pk) AS (SELECT pk FROM session WHERE id = {e} OR id LIKE {p} ESCAPE '\\' \
-                     UNION SELECT l.child_pk FROM link l JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
-                     WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM tr)"
-                )
-            }
-            (Unit::Sessions, "depth") => {
-                let expr = format!(
-                    "(WITH RECURSIVE up(pk, d) AS (SELECT {s}.pk, 0 UNION SELECT lp.pk, up.d + 1 FROM up \
-                     JOIN link l ON l.child_pk = up.pk AND l.kind = 'subagent' JOIN session lp ON lp.id = l.parent_id \
-                     WHERE up.d < 1000) SELECT max(d) FROM up)"
-                );
-                let def = fields::Field {
-                    unit: Unit::Sessions,
-                    name: "depth",
-                    kind: Kind::Number,
-                    values: None,
-                    help: "",
-                    sql: None,
-                    value_kind: None,
-                };
-                if top {
-                    self.show("depth", &expr, ColKind::Number);
-                }
-                self.typed(&def, &expr, op, span)?
-            }
-            (Unit::Sessions, "link") => {
-                let mut parts = vec![];
-                for v in values(&op) {
-                    let v = v.to_ascii_lowercase();
-                    let column = if LINK_KIND_NAMES.contains(&v.as_str()) {
-                        "kind"
-                    } else if LINK_HOW_NAMES.contains(&v.as_str()) {
-                        "how"
-                    } else {
-                        return Err(QueryError::BadValue {
-                            field: "link".into(),
-                            position: span.start,
-                            message: format!(
-                                "link is one of {}, or how it was made: {}; not {v:?}",
-                                LINK_KIND_NAMES.join(", "),
-                                LINK_HOW_NAMES.join(", ")
-                            ),
-                            value: v,
-                        });
-                    };
-                    parts.push(format!(
-                        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND l.{column} = '{v}')"
-                    ));
-                }
-                format!("({})", parts.join(" OR "))
-            }
-            (Unit::Sessions, "continues") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                let (e, p) = self.id_params(&v);
-                format!(
-                    "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND l.kind = 'continuation' AND (l.parent_id = {e} OR l.parent_id LIKE {p} ESCAPE '\\'))"
-                )
-            }
-            (Unit::Sessions, "continued_by") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                let (e, p) = self.id_params(&v);
-                format!(
-                    "EXISTS (SELECT 1 FROM link l JOIN session lc ON lc.pk = l.child_pk WHERE l.parent_id = {s}.id \
-                     AND l.kind = 'continuation' AND (lc.id = {e} OR lc.id LIKE {p} ESCAPE '\\'))"
-                )
-            }
-            (Unit::Sessions, "lineage") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                let (e, p) = self.id_params(&v);
-                format!(
-                    "{s}.id IN (WITH RECURSIVE comp(id) AS (SELECT id FROM session WHERE id = {e} OR id LIKE {p} ESCAPE '\\' \
-                     UNION SELECT CASE WHEN l.parent_id = comp.id THEN lc.id ELSE l.parent_id END \
-                     FROM link l JOIN session lc ON lc.pk = l.child_pk JOIN comp ON comp.id = l.parent_id OR comp.id = lc.id) \
-                     SELECT id FROM comp)"
-                )
-            }
-            (Unit::Sessions, "path" | "tool" | "action") => {
-                let inner = Scope {
-                    unit: Unit::ToolCalls,
-                    a: Aliases {
-                        t: "tq".into(),
-                        ..a.clone()
-                    },
-                };
-                let cond = self.field_cond(name, op, &inner, span, false)?;
-                format!(
-                    "EXISTS (SELECT 1 FROM tool_call tq WHERE tq.session_pk = {s}.pk AND {cond})"
-                )
-            }
-            (Unit::ToolCalls, "command" | "path") => {
-                let t = &a.t;
-                let mut parts = vec![];
-                for v in values(&op) {
-                    let col = format!("{t}.{name}");
-                    if v.chars().count() >= 3 {
-                        let phrase = format!("\"{}\"", v.replace('"', "\"\""));
-                        let p = self.text_param(&phrase);
-                        parts.push(format!(
-                            "{t}.pk IN (SELECT rowid FROM tool_call_trigram WHERE tool_call_trigram MATCH '{name}:' || {p})"
-                        ));
-                    } else {
-                        let p = self.text_param(&v.to_lowercase());
-                        parts.push(format!("instr(lower({col}), {p}) > 0"));
-                    }
-                }
-                if parts.is_empty() {
-                    return Err(need_value(name));
-                }
-                format!("({})", parts.join(" OR "))
-            }
-            (Unit::ToolCalls, "input") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                let p = self.text_param(&v);
-                format!(
-                    "instr(pl_key(json_extract(pl_block({}.body), '$.input')), pl_key({p})) > 0",
-                    a.cb
-                )
-            }
-            (Unit::ToolCalls, "mcp_server") => {
-                let vs: Vec<String> = values(&op)
-                    .iter()
-                    .map(|v| self.text_param(&v.to_lowercase()))
-                    .collect();
-                if vs.is_empty() {
-                    return Err(need_value(name));
-                }
-                format!(
-                    "({t}.tool LIKE 'mcp\\_\\_%' ESCAPE '\\' AND lower(substr({t}.tool, 6, instr(substr({t}.tool, 6), '__') - 1)) IN ({}))",
-                    vs.join(", "),
-                    t = a.t
-                )
-            }
-            (Unit::ToolCalls, "child" | "next")
-            | (Unit::Links, "parent" | "child")
-            | (Unit::Deliveries, "recipient") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                let (e, p) = self.id_params(&v);
-                match (unit, name) {
-                    (Unit::ToolCalls, "child") => format!(
-                        "EXISTS (SELECT 1 FROM link lc JOIN session lcs ON lcs.pk = lc.child_pk WHERE lc.kind = 'subagent' \
-                         AND lc.parent_id = {s}.id AND (lc.spawning_call = {t}.call_id OR lc.spawned_by = {cb}.pk) \
-                         AND (lcs.id = {e} OR lcs.id LIKE {p} ESCAPE '\\'))",
-                        t = a.t,
-                        cb = a.cb
-                    ),
-                    (Unit::Links, "parent") => format!(
-                        "({r}.parent_id = {e} OR {r}.parent_id LIKE {p} ESCAPE '\\')",
-                        r = a.row
-                    ),
-                    (Unit::Links, "child") => {
-                        format!("({r}c.id = {e} OR {r}c.id LIKE {p} ESCAPE '\\')", r = a.row)
-                    }
-                    (Unit::Deliveries, "recipient") => format!(
-                        "({r}.recipient_id = {e} OR {r}.recipient_id LIKE {p} ESCAPE '\\')",
-                        r = a.row
-                    ),
-                    _ => {
-                        return Err(QueryError::Invalid {
-                            message: "next names a relation; filter on next.<field>, such as next.action:shell".into(),
-                            position: span.start,
-                        });
-                    }
-                }
-            }
-            (Unit::Notes, "target") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                let p = self.text_param(&v);
-                let pp = self.text_param(&like_prefix(&v));
-                format!(
-                    "EXISTS (SELECT 1 FROM a.note_target nt WHERE nt.note_id = {r}.id AND (nt.ref = {p} OR nt.ref LIKE {pp} ESCAPE '\\' OR nt.ref = 'session:' || {p}))",
-                    r = a.row
-                )
-            }
-            (Unit::Deliveries, "refs" | "left_out") => {
-                let v = one(&op).ok_or_else(|| need_value(name))?;
-                let col = if name == "refs" {
-                    "refs_json"
-                } else {
-                    "left_out_json"
-                };
-                let p = self.text_param(&v);
-                format!(
-                    "EXISTS (SELECT 1 FROM json_each({r}.{col}) dj WHERE instr(COALESCE(json_extract(dj.value, '$.ref'), dj.value), {p}) > 0)",
-                    r = a.row
-                )
-            }
-            _ => return Err(self.unknown_field(name, unit, span)),
-        })
+/// A special field's compile rule.
+pub(crate) type Custom = fn(&mut Compiler<'_>, &Call<'_, '_>) -> Result<String, QueryError>;
+
+/// One condition on a special field, as its rule receives it.
+pub(crate) struct Call<'q, 's> {
+    pub unit: Unit,
+    pub name: &'static str,
+    pub op: FieldOp<'q>,
+    pub scope: &'s Scope,
+    pub span: Span,
+    /// The condition is at the top level of the query.
+    pub top: bool,
+}
+
+impl Call<'_, '_> {
+    fn one(&self) -> Option<String> {
+        match self.op {
+            FieldOp::Match(Value::One { text, .. }) => Some(text.clone()),
+            _ => None,
+        }
     }
 
+    /// The single value, or the refusal naming the field's form.
+    fn value(&self) -> Result<String, QueryError> {
+        self.one().ok_or_else(|| self.need_value())
+    }
+
+    fn need_value(&self) -> QueryError {
+        QueryError::Invalid {
+            message: format!("{0} takes {0}:VALUE", self.name),
+            position: self.span.start,
+        }
+    }
+
+    fn values(&self) -> Vec<String> {
+        match self.op {
+            FieldOp::Match(v) => alternatives(v),
+            _ => vec![],
+        }
+    }
+
+    /// The bare, unquoted value `unknown`.
+    fn unknown(&self) -> bool {
+        matches!(self.op, FieldOp::Match(Value::One { text, quoted: false })
+            if text.eq_ignore_ascii_case("unknown"))
+    }
+
+    fn bad(&self, value: String, message: String) -> QueryError {
+        QueryError::BadValue {
+            field: self.name.into(),
+            value,
+            position: self.span.start,
+            message,
+        }
+    }
+
+    fn s(&self) -> &str {
+        &self.scope.a.s
+    }
+
+    fn row(&self) -> &str {
+        &self.scope.a.row
+    }
+}
+
+/// `(… OR …)` of the parts, refusing an empty list.
+fn any_of(x: &Call<'_, '_>, parts: Vec<String>) -> Result<String, QueryError> {
+    if parts.is_empty() {
+        return Err(x.need_value());
+    }
+    Ok(format!("({})", parts.join(" OR ")))
+}
+
+pub(crate) fn near(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    if !x.top {
+        return Err(QueryError::Invalid {
+            message:
+                "near: ranks the whole query, so it appears once among the top-level conditions"
+                    .into(),
+            position: x.span.start,
+        });
+    }
+    if !c.opts.embeddings {
+        c.degraded
+            .push("semantic search is not enabled; rows are ordered by time and unranked".into());
+        return Ok("1".into());
+    }
+    let text = x.value()?;
+    // The caller binds the nearest texts as `[[text id, similarity], ...]`.
+    let param = c.bind(Param::Text("[]".into()));
+    let index = c.params.len();
+    let cte = format!("n{}", c.ctes.len() + 1);
+    c.ctes.push(format!(
+        "{cte} AS MATERIALIZED (SELECT CAST(json_extract(j.value, '$[0]') AS INTEGER) AS text_id, \
+         -json_extract(j.value, '$[1]') AS rank FROM json_each({param}) j)"
+    ));
+    let a = &x.scope.a;
+    let rank = match x.unit {
+        Unit::Sessions => format!(
+            "(SELECT min(h.rank) FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
+             WHERE xb.session_pk IN ({}))",
+            fields::subtree(&a.s)
+        ),
+        Unit::Messages => format!(
+            "(SELECT min(h.rank) FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
+             WHERE xb.message_pk = {}.pk)",
+            a.m
+        ),
+        Unit::Blocks => format!(
+            "(SELECT h.rank FROM {cte} h WHERE h.text_id = {}.text_id)",
+            a.b
+        ),
+        other => {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "near: ranks sessions, messages and blocks, not {}",
+                    other.name()
+                ),
+                position: x.span.start,
+            });
+        }
+    };
+    // Semantic similarity ranks the whole query, ahead of any full-text
+    // rank.
+    c.rank = Some(rank);
+    c.near = Some(Near { text, param: index });
+    Ok("1".into())
+}
+
+pub(crate) fn output(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    words_in(c, x, Index::Output)
+}
+
+pub(crate) fn thinking(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    words_in(c, x, Index::Thinking)
+}
+
+fn words_in(c: &mut Compiler<'_>, x: &Call<'_, '_>, index: Index) -> Result<String, QueryError> {
+    let text = x.value()?;
+    let quoted = matches!(x.op, FieldOp::Match(Value::One { quoted: true, .. }));
+    c.text(&[(text, quoted, x.span)], x.scope, index, false)
+}
+
+pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let t = c.time(x.name, &x.value()?, x.span)?;
+    let window = units::spec(x.unit)
+        .since
+        .ok_or_else(|| c.unknown_field(x.name, x.unit, x.span))?;
+    Ok(x.scope
+        .a
+        .expand(window)
+        .replace("{v}", &t.start().to_string()))
+}
+
+pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let t = c.time(x.name, &x.value()?, x.span)?;
+    let window = units::spec(x.unit)
+        .until
+        .ok_or_else(|| c.unknown_field(x.name, x.unit, x.span))?;
+    Ok(x.scope
+        .a
+        .expand(window)
+        .replace("{v}", &t.end().to_string()))
+}
+
+pub(crate) fn changes_after(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let cursor = x.one().and_then(|t| {
+        let (i, a) = t.split_once('.')?;
+        Some((i.parse::<i64>().ok()?, a.parse::<i64>().ok()?))
+    });
+    let Some((index, archive)) = cursor else {
+        return Err(QueryError::Invalid {
+            message: "after: takes a cursor `INDEX.ARCHIVE`, two numbers".into(),
+            position: x.span.start,
+        });
+    };
+    Ok(format!(
+        "(({r}.kind = 'note' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
+         OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index})))",
+        r = x.row()
+    ))
+}
+
+pub(crate) fn repo(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let s = x.s();
+    if x.unknown() {
+        return Ok(format!("({s}.repo IS NULL AND {s}.repo_root IS NULL)"));
+    }
+    let mut parts = vec![];
+    for v in x.values() {
+        let v = v.to_lowercase().trim_end_matches('/').to_owned();
+        let p = c.text_param(&v);
+        let tail = c.text_param(&format!("%/{}", like_escape(&v)));
+        let tail_git = c.text_param(&format!("%/{}.git", like_escape(&v)));
+        parts.push(format!(
+            "(lower(rtrim({s}.repo, '/')) = {p} OR lower(rtrim({s}.repo, '/')) LIKE {tail} ESCAPE '\\' \
+             OR lower({s}.repo) LIKE {tail_git} ESCAPE '\\' OR {s}.repo_root = {p})"
+        ));
+    }
+    any_of(x, parts)
+}
+
+pub(crate) fn collection(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let s = x.s();
+    let mut parts = vec![];
+    for v in x.values() {
+        let p = c.text_param(&v.to_lowercase());
+        parts.push(format!(
+            "(lower({s}.collection_name) = {p} OR lower({s}.collection_id) = {p})"
+        ));
+    }
+    any_of(x, parts)
+}
+
+pub(crate) fn live(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let mut states = vec![];
+    for v in x.values() {
+        let v = v.to_ascii_lowercase();
+        if !fields::LIVE_STATES.contains(&v.as_str()) {
+            let message = format!("live is one of {}", fields::LIVE_STATES.join(", "));
+            return Err(x.bad(v, message));
+        }
+        states.push(format!("'{v}'"));
+    }
+    if states.is_empty() {
+        return Err(x.need_value());
+    }
+    Ok(format!(
+        "{} IN ({})",
+        fields::live_state(x.s(), c.opts.clock.now),
+        states.join(", ")
+    ))
+}
+
+pub(crate) fn waiting(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    live_flag(c, x, "('waiting')")
+}
+
+pub(crate) fn running(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    live_flag(c, x, "('working', 'waiting', 'idle', 'unknown')")
+}
+
+/// A true/false field: the live state is one of `states`.
+fn live_flag(c: &mut Compiler<'_>, x: &Call<'_, '_>, states: &str) -> Result<String, QueryError> {
+    let v = x.value()?;
+    let want = match v.to_ascii_lowercase().as_str() {
+        "true" | "yes" | "1" => true,
+        "false" | "no" | "0" => false,
+        _ => {
+            let message = format!("{} is true or false", x.name);
+            return Err(x.bad(v, message));
+        }
+    };
+    let not = if want { "" } else { "NOT " };
+    Ok(format!(
+        "{} {not}IN {states}",
+        fields::live_state(x.s(), c.opts.clock.now)
+    ))
+}
+
+pub(crate) fn commit(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let v = x.value()?;
+    if v.len() < 7 || !v.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(x.bad(
+            v,
+            "commit takes a hash prefix of at least 7 hex digits".into(),
+        ));
+    }
+    let p = c.text_param(&format!("{}%", v.to_lowercase()));
+    let q = c.text_param(&v.to_lowercase());
+    // A hash is stored as the command printed it, often short: either may
+    // be a prefix of the other.
+    Ok(format!(
+        "EXISTS (SELECT 1 FROM commit_link cl WHERE cl.session_pk = {}.pk \
+         AND (cl.commit_hash LIKE {p} OR {q} LIKE cl.commit_hash || '%'))",
+        x.s()
+    ))
+}
+
+pub(crate) fn pr(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let v = x.value()?;
+    let Some((repo, number)) = parse_pr(&v) else {
+        return Err(x.bad(
+            v,
+            "pr takes a number, owner/name#N, or a pull request URL".into(),
+        ));
+    };
+    let s = x.s();
+    let n = c.bind(Param::Int(number));
+    Ok(match repo {
+        Some(repo) => {
+            let p = c.text_param(&repo.to_lowercase());
+            format!(
+                "EXISTS (SELECT 1 FROM pr_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n} AND lower(pl.repo) = {p})"
+            )
+        }
+        None => format!(
+            "EXISTS (SELECT 1 FROM pr_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n})"
+        ),
+    })
+}
+
+pub(crate) fn cwd(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let s = x.s();
+    let mut parts = vec![];
+    for v in x.values() {
+        let a1 = c.subtree(&format!("{s}.cwd"), &v);
+        let a2 = c.subtree("cj.value", &v);
+        parts.push(format!(
+            "({a1} OR EXISTS (SELECT 1 FROM json_each({s}.cwd_json) cj WHERE {a2}))"
+        ));
+    }
+    any_of(x, parts)
+}
+
+pub(crate) fn model(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let s = x.s();
+    if x.unknown() {
+        return Ok(format!(
+            "NOT EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL)"
+        ));
+    }
+    if matches!(x.op, FieldOp::Match(Value::Any)) {
+        return Ok("1".into());
+    }
+    let vs: Vec<String> = x
+        .values()
+        .iter()
+        .map(|v| c.text_param(&v.to_lowercase()))
+        .collect();
+    if vs.is_empty() {
+        return Err(x.need_value());
+    }
+    // Unknown when no message records a model, so neither the condition
+    // nor its NOT matches (three-valued, law 132).
+    Ok(format!(
+        "CASE WHEN EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND x.model IS NOT NULL) \
+         THEN EXISTS (SELECT 1 FROM message x WHERE x.session_pk = {s}.pk AND lower(x.model) IN ({})) END",
+        vs.join(", ")
+    ))
+}
+
+pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let s = x.s();
+    let mut parts = vec![];
+    for v in x.values() {
+        let p = c.text_param(&v.to_lowercase());
+        parts.push(format!(
+            "EXISTS (SELECT 1 FROM a.note tn JOIN a.note_target tt ON tt.note_id = tn.id \
+             WHERE tn.kind = 'tag' AND tt.ref = 'session:' || {s}.id AND {} \
+             AND ((tn.key IS NULL AND lower(tn.value) = {p}) \
+               OR lower(tn.key) || ':' || lower(tn.value) = {p} \
+               OR (tn.value IS NULL AND lower(tn.key) = {p})))",
+            fields::live_note("tn")
+        ));
+    }
+    any_of(x, parts)
+}
+
+pub(crate) fn has(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let (table, alias) = if x.unit == Unit::Sessions {
+        (&fields::SESSION_HAS[..], x.s())
+    } else {
+        (&fields::MESSAGE_HAS[..], x.scope.a.m.as_str())
+    };
+    let mut parts = vec![];
+    for v in x.values() {
+        let Some(has) = table.iter().find(|h| h.name.eq_ignore_ascii_case(&v)) else {
+            let names: Vec<&str> = table.iter().map(|h| h.name).collect();
+            let message = format!(
+                "has on {} is one of {}; not {v:?}",
+                x.unit.name(),
+                names.join(", ")
+            );
+            return Err(x.bad(v, message));
+        };
+        parts.push((has.sql)(alias));
+    }
+    any_of(x, parts)
+}
+
+pub(crate) fn parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let s = x.s();
+    let v = x.value()?;
+    if v.eq_ignore_ascii_case("missing") {
+        return Ok(format!(
+            "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = l.parent_id))"
+        ));
+    }
+    let (e, p) = c.id_params(&v);
+    Ok(format!(
+        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND (l.parent_id = {e} OR l.parent_id LIKE {p} ESCAPE '\\'))"
+    ))
+}
+
+pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let (e, p) = c.id_params(&x.value()?);
+    Ok(format!(
+        "{}.pk IN (WITH RECURSIVE tr(pk) AS (SELECT pk FROM session WHERE id = {e} OR id LIKE {p} ESCAPE '\\' \
+         UNION SELECT l.child_pk FROM link l JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
+         WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM tr)",
+        x.s()
+    ))
+}
+
+pub(crate) fn depth(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let expr = format!(
+        "(WITH RECURSIVE up(pk, d) AS (SELECT {}.pk, 0 UNION SELECT lp.pk, up.d + 1 FROM up \
+         JOIN link l ON l.child_pk = up.pk AND l.kind = 'subagent' JOIN session lp ON lp.id = l.parent_id \
+         WHERE up.d < 1000) SELECT max(d) FROM up)",
+        x.s()
+    );
+    let def = fields::Field {
+        unit: Unit::Sessions,
+        name: "depth",
+        kind: Kind::Number,
+        values: None,
+        help: "",
+        sql: None,
+        value_kind: None,
+        compile: None,
+    };
+    if x.top {
+        c.show("depth", &expr, ColKind::Number);
+    }
+    c.typed(&def, &expr, x.op, x.span)
+}
+
+pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let s = x.s();
+    let mut parts = vec![];
+    for v in x.values() {
+        let v = v.to_ascii_lowercase();
+        let column = if LINK_KIND_NAMES.contains(&v.as_str()) {
+            "kind"
+        } else if LINK_HOW_NAMES.contains(&v.as_str()) {
+            "how"
+        } else {
+            let message = format!(
+                "link is one of {}, or how it was made: {}; not {v:?}",
+                LINK_KIND_NAMES.join(", "),
+                LINK_HOW_NAMES.join(", ")
+            );
+            return Err(x.bad(v, message));
+        };
+        parts.push(format!(
+            "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND l.{column} = '{v}')"
+        ));
+    }
+    any_of(x, parts)
+}
+
+pub(crate) fn continues(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let (e, p) = c.id_params(&x.value()?);
+    Ok(format!(
+        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {}.pk AND l.kind = 'continuation' AND (l.parent_id = {e} OR l.parent_id LIKE {p} ESCAPE '\\'))",
+        x.s()
+    ))
+}
+
+pub(crate) fn continued_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let (e, p) = c.id_params(&x.value()?);
+    Ok(format!(
+        "EXISTS (SELECT 1 FROM link l JOIN session lc ON lc.pk = l.child_pk WHERE l.parent_id = {}.id \
+         AND l.kind = 'continuation' AND (lc.id = {e} OR lc.id LIKE {p} ESCAPE '\\'))",
+        x.s()
+    ))
+}
+
+pub(crate) fn lineage(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let (e, p) = c.id_params(&x.value()?);
+    Ok(format!(
+        "{}.id IN (WITH RECURSIVE comp(id) AS (SELECT id FROM session WHERE id = {e} OR id LIKE {p} ESCAPE '\\' \
+         UNION SELECT CASE WHEN l.parent_id = comp.id THEN lc.id ELSE l.parent_id END \
+         FROM link l JOIN session lc ON lc.pk = l.child_pk JOIN comp ON comp.id = l.parent_id OR comp.id = lc.id) \
+         SELECT id FROM comp)",
+        x.s()
+    ))
+}
+
+/// `path:`, `tool:` and `action:` on sessions: the session made such a tool
+/// call.
+pub(crate) fn session_tool_call(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_>,
+) -> Result<String, QueryError> {
+    let inner = Scope {
+        unit: Unit::ToolCalls,
+        a: Aliases {
+            t: "tq".into(),
+            ..x.scope.a.clone()
+        },
+    };
+    let cond = c.field_cond(x.name, x.op, &inner, x.span, false)?;
+    Ok(format!(
+        "EXISTS (SELECT 1 FROM tool_call tq WHERE tq.session_pk = {}.pk AND {cond})",
+        x.s()
+    ))
+}
+
+/// `command:` and `path:` on tool calls: a substring, through the trigram
+/// index from three characters.
+pub(crate) fn tool_call_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let t = &x.scope.a.t;
+    let name = x.name;
+    let mut parts = vec![];
+    for v in x.values() {
+        if v.chars().count() >= 3 {
+            let phrase = format!("\"{}\"", v.replace('"', "\"\""));
+            let p = c.text_param(&phrase);
+            parts.push(format!(
+                "{t}.pk IN (SELECT rowid FROM tool_call_trigram WHERE tool_call_trigram MATCH '{name}:' || {p})"
+            ));
+        } else {
+            let p = c.text_param(&v.to_lowercase());
+            parts.push(format!("instr(lower({t}.{name}), {p}) > 0"));
+        }
+    }
+    any_of(x, parts)
+}
+
+pub(crate) fn input(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let p = c.text_param(&x.value()?);
+    Ok(format!(
+        "instr(pl_key(json_extract(pl_block({}.body), '$.input')), pl_key({p})) > 0",
+        x.scope.a.cb
+    ))
+}
+
+pub(crate) fn mcp_server(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let vs: Vec<String> = x
+        .values()
+        .iter()
+        .map(|v| c.text_param(&v.to_lowercase()))
+        .collect();
+    if vs.is_empty() {
+        return Err(x.need_value());
+    }
+    Ok(format!(
+        "({t}.tool LIKE 'mcp\\_\\_%' ESCAPE '\\' AND lower(substr({t}.tool, 6, instr(substr({t}.tool, 6), '__') - 1)) IN ({}))",
+        vs.join(", "),
+        t = x.scope.a.t
+    ))
+}
+
+pub(crate) fn spawned_child(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let (e, p) = c.id_params(&x.value()?);
+    let a = &x.scope.a;
+    Ok(format!(
+        "EXISTS (SELECT 1 FROM link lc JOIN session lcs ON lcs.pk = lc.child_pk WHERE lc.kind = 'subagent' \
+         AND lc.parent_id = {s}.id AND (lc.spawning_call = {t}.call_id OR lc.spawned_by = {cb}.pk) \
+         AND (lcs.id = {e} OR lcs.id LIKE {p} ESCAPE '\\'))",
+        s = a.s,
+        t = a.t,
+        cb = a.cb
+    ))
+}
+
+pub(crate) fn next_call(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    Err(QueryError::Invalid {
+        message: "next names a relation; filter on next.<field>, such as next.action:shell".into(),
+        position: x.span.start,
+    })
+}
+
+/// A field naming a session by ID or unique prefix in a column of the row.
+fn session_id_in(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_>,
+    column: &str,
+) -> Result<String, QueryError> {
+    let (e, p) = c.id_params(&x.value()?);
+    let column = x.scope.a.expand(column);
+    Ok(format!("({column} = {e} OR {column} LIKE {p} ESCAPE '\\')"))
+}
+
+pub(crate) fn link_parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    session_id_in(c, x, "{r}.parent_id")
+}
+
+pub(crate) fn link_child(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    session_id_in(c, x, "{r}c.id")
+}
+
+pub(crate) fn recipient(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    session_id_in(c, x, "{r}.recipient_id")
+}
+
+pub(crate) fn note_target(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let v = x.value()?;
+    let p = c.text_param(&v);
+    let pp = c.text_param(&like_prefix(&v));
+    Ok(format!(
+        "EXISTS (SELECT 1 FROM a.note_target nt WHERE nt.note_id = {r}.id AND (nt.ref = {p} OR nt.ref LIKE {pp} ESCAPE '\\' OR nt.ref = 'session:' || {p}))",
+        r = x.row()
+    ))
+}
+
+pub(crate) fn refs(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    delivery_ref(c, x, "refs_json")
+}
+
+pub(crate) fn left_out(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    delivery_ref(c, x, "left_out_json")
+}
+
+fn delivery_ref(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_>,
+    column: &str,
+) -> Result<String, QueryError> {
+    let p = c.text_param(&x.value()?);
+    Ok(format!(
+        "EXISTS (SELECT 1 FROM json_each({r}.{column}) dj WHERE instr(COALESCE(json_extract(dj.value, '$.ref'), dj.value), {p}) > 0)",
+        r = x.row()
+    ))
+}
+
+impl Compiler<'_> {
     pub(super) fn id_params(&mut self, v: &str) -> (String, String) {
         let e = self.text_param(v);
         let p = self.text_param(&like_prefix(v));

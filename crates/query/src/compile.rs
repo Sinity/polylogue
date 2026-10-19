@@ -7,13 +7,13 @@
 use crate::ast::*;
 use crate::fields::{self, Aliases, Kind};
 use crate::time::{self, Clock, Time};
-use crate::units::{self, Via};
+use crate::units::{self, Index, Search, Via};
 use crate::{QueryError, parse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 mod conditions;
-mod custom_fields;
+pub(crate) mod custom_fields;
 mod program;
 mod saved;
 mod sequences;
@@ -245,8 +245,11 @@ fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), Quer
     if allowed == 0 {
         return Ok(());
     }
-    let units = Unit::ALL.iter().map(|u| u.name());
-    for candidate in units.chain(opts.command_words.iter().map(String::as_str)) {
+    let units: Vec<&str> = Unit::all().map(Unit::name).collect();
+    for candidate in units
+        .into_iter()
+        .chain(opts.command_words.iter().map(String::as_str))
+    {
         if candidate != lower && strsim::damerau_levenshtein(&lower, candidate) <= allowed {
             return Err(QueryError::NotAQuery {
                 word: word.clone(),
@@ -261,7 +264,7 @@ fn refuse_commands(text: &str, query: &Query, opts: &Options) -> Result<(), Quer
 /// The unit a query's rows currently are, and the aliases they are read
 /// through.
 #[derive(Debug, Clone)]
-struct Scope {
+pub(crate) struct Scope {
     unit: Unit,
     a: Aliases,
 }
@@ -275,17 +278,6 @@ impl Scope {
     }
 }
 
-/// Which full-text index a term searches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Index {
-    /// `text` blocks written by a person or a model.
-    Prose,
-    /// `thinking` blocks.
-    Thinking,
-    /// Tool output.
-    Output,
-}
-
 /// The rows of `| matches`: an SQL body selecting `_pk` and `columns`,
 /// ordered, and whether it needs `WITH RECURSIVE`.
 struct MatchRel {
@@ -294,7 +286,7 @@ struct MatchRel {
     recursive: bool,
 }
 
-struct Compiler<'a> {
+pub(crate) struct Compiler<'a> {
     text: &'a str,
     opts: &'a Options,
     params: Vec<Param>,
@@ -357,7 +349,7 @@ impl<'a> Compiler<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum FieldOp<'q> {
+pub(crate) enum FieldOp<'q> {
     Match(&'q Value),
     Compare(Op, &'q str),
     Between(&'q str, &'q str),
@@ -459,8 +451,13 @@ fn named_fields(top: &[Cond], unit: Unit) -> HashSet<String> {
     out
 }
 
+/// Plain words search this unit.
 fn text_unit(unit: Unit) -> bool {
-    units::spec(unit).text
+    match units::spec(unit).search {
+        Search::Hits { words, .. } => words,
+        Search::Substring(_) => true,
+        Search::None => false,
+    }
 }
 
 /// At least 8 characters of hex digits and dashes, containing a digit or

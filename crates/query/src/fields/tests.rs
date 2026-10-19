@@ -17,3 +17,16 @@ fn names_are_unique_per_unit() {
         assert!(seen.insert((f.unit, f.name)), "{:?}.{}", f.unit, f.name);
     }
 }
+
+#[test]
+fn exactly_the_special_fields_have_a_compile_rule() {
+    for f in FIELDS {
+        assert_eq!(
+            f.kind == Kind::Special,
+            f.compile.is_some(),
+            "{:?}.{}",
+            f.unit,
+            f.name
+        );
+    }
+}

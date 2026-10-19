@@ -47,22 +47,10 @@ pub enum Unit {
 }
 
 impl Unit {
-    pub const ALL: [Unit; 14] = [
-        Unit::Sessions,
-        Unit::Messages,
-        Unit::Blocks,
-        Unit::ToolCalls,
-        Unit::Files,
-        Unit::Events,
-        Unit::Notes,
-        Unit::Links,
-        Unit::Turns,
-        Unit::Runs,
-        Unit::Deliveries,
-        Unit::Processes,
-        Unit::Work,
-        Unit::Changes,
-    ];
+    /// Every unit, in the registry's order.
+    pub fn all() -> impl Iterator<Item = Unit> {
+        crate::units::UNITS.iter().map(|s| s.unit)
+    }
 
     pub fn name(self) -> &'static str {
         crate::units::spec(self).name
@@ -75,9 +63,7 @@ impl Unit {
 
     pub fn from_name(name: &str) -> Option<Unit> {
         let name = name.to_ascii_lowercase();
-        Unit::ALL
-            .into_iter()
-            .find(|u| u.name() == name || u.singular() == name)
+        Unit::all().find(|u| u.name() == name || u.singular() == name)
     }
 }
 
