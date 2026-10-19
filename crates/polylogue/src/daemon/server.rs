@@ -206,6 +206,39 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
             }
         }
         Request::Export { sessions, format } => export(&reader, &sessions, &format),
+        Request::Excise {
+            request_id,
+            target,
+            reason,
+            dry_run,
+        } => {
+            drop(reader);
+            let scope = match polylogue_engine::ExciseScope::parse(&target) {
+                Ok(s) => s,
+                Err(e) => return error("bad_request", e),
+            };
+            let request = polylogue_engine::ExciseRequest {
+                id: request_id,
+                scope,
+                reason,
+                dry_run,
+            };
+            let (reply, wait) = sync_channel(1);
+            let sent = d
+                .loop_tx
+                .lock()
+                .map(|tx| tx.send(LoopMsg::Excise { request, reply }).is_ok())
+                .unwrap_or(false);
+            if !sent {
+                return error("internal", "the convergence loop has stopped");
+            }
+            match wait.recv() {
+                Ok(Ok(done)) => ok(done),
+                Ok(Err(e)) if e.contains("not found") => error("not_found", e),
+                Ok(Err(e)) => error("excise", e),
+                Err(_) => error("internal", "the convergence loop has stopped"),
+            }
+        }
         Request::AddNote { request_id, note } => {
             drop(reader);
             write(d, request_id, UserWrite::AddNote { note })

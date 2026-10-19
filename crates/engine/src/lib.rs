@@ -20,6 +20,7 @@ pub mod stage;
 
 use polylogue_model::Json;
 use polylogue_sources::{Capture, Framing, ORIGINS, OriginSpec, Support};
+pub use polylogue_store::excise::{ExciseRequest, Excised, Scope as ExciseScope};
 use polylogue_store::export::Exporter;
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
@@ -143,6 +144,10 @@ pub enum LoopMsg {
         paths: Vec<PathBuf>,
         reply: SyncSender<Result<ImportReport, String>>,
     },
+    Excise {
+        request: ExciseRequest,
+        reply: SyncSender<Result<Excised, String>>,
+    },
     Stop,
 }
 
@@ -262,6 +267,8 @@ pub struct Engine {
     inputs: HashMap<PathBuf, InputState>,
     loaded: bool,
     exporter: Exporter,
+    /// Paths on this machine an excision removed: never collected again.
+    refused: HashSet<PathBuf>,
 }
 
 /// The bytes a zip file starts with.
@@ -337,7 +344,27 @@ impl Engine {
             inputs: HashMap::new(),
             loaded: false,
             exporter: Exporter::default(),
+            refused: HashSet::new(),
         })
+    }
+
+    /// Runs an excision through the writer, then stops collecting the
+    /// paths it removed ([`polylogue_store::excise`]).
+    pub fn excise(&mut self, request: ExciseRequest) -> Result<Excised, EngineError> {
+        self.load()?;
+        let done = self.writer.excise(request, Arc::clone(&self.blobs))?;
+        if done.dry_run {
+            return Ok(done);
+        }
+        let prefix = format!("{}:", self.config.machine);
+        for p in &done.refused_paths {
+            if let Some(path) = p.strip_prefix(&prefix) {
+                let path = PathBuf::from(path);
+                self.inputs.remove(&path);
+                self.refused.insert(path);
+            }
+        }
+        Ok(done)
     }
 
     /// Brings a tool database's export up to date when due; returns the
@@ -369,8 +396,26 @@ impl Engine {
         if self.loaded {
             return Ok(());
         }
-        let known: Vec<KnownInput> = self.reads.reader()?.known_inputs(&self.config.machine)?;
+        let reader = self.reads.reader()?;
+        for row in reader.query("SELECT refused_json AS r FROM a.excision", &[])? {
+            let refused: serde_json::Value = row["r"]
+                .as_str()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            for l in refused["locations"].as_array().into_iter().flatten() {
+                if l["machine"].as_str() == Some(self.config.machine.as_str())
+                    && let Some(path) = l["path"].as_str()
+                {
+                    self.refused.insert(PathBuf::from(path));
+                }
+            }
+        }
+        let known: Vec<KnownInput> = reader.known_inputs(&self.config.machine)?;
+        drop(reader);
         for k in known {
+            if self.refused.contains(Path::new(&k.path)) {
+                continue;
+            }
             let Some(origin) = ORIGINS.iter().find(|o| o.name == k.format) else {
                 continue;
             };
@@ -427,6 +472,9 @@ impl Engine {
             } else {
                 f
             };
+            if self.refused.contains(&f.path) {
+                continue;
+            }
             seen.insert(f.path.clone());
             let Ok(meta) = std::fs::metadata(&f.path) else {
                 continue;
@@ -802,6 +850,9 @@ impl Engine {
                     Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
                     Ok(LoopMsg::Import { paths, reply }) => {
                         let _ = reply.send(self.import(&paths).map_err(|e| e.to_string()));
+                    }
+                    Ok(LoopMsg::Excise { request, reply }) => {
+                        let _ = reply.send(self.excise(request).map_err(|e| e.to_string()));
                     }
                     Ok(LoopMsg::Changed) | Err(RecvTimeoutError::Timeout) => {}
                 }

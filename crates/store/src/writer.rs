@@ -200,6 +200,12 @@ enum Msg {
         Box<crate::user::UserRequest>,
         SyncSender<Result<crate::user::UserOutcome>>,
     ),
+    /// An excision, with the blob store whose files it changes.
+    Excise(
+        Box<crate::excise::ExciseRequest>,
+        std::sync::Arc<hashed_blobs::Store>,
+        SyncSender<Result<crate::excise::Excised>>,
+    ),
 }
 
 /// Handle to the writer thread. Dropping it stops the thread after the
@@ -250,11 +256,15 @@ impl Writer {
             // mark set and the index is rebuilt.
             index.pragma_update(None, "journal_mode", "memory")?;
         }
+        let archive_conn = open_write(&archive.archive_db())?;
+        let refused = crate::excise::Refused::load(&archive_conn)?;
         let mut inner = Inner {
-            archive: open_write(&archive.archive_db())?,
+            archive: archive_conn,
             index,
             report: WriteReport::default(),
             unsynced: empty,
+            embeddings_db: archive.embeddings_db(),
+            refused,
         };
         let (tx, rx) = sync_channel::<Msg>(256);
         let handle = std::thread::Builder::new()
@@ -285,6 +295,22 @@ impl Writer {
     /// it to commit. It is written after the batches already queued.
     pub fn user(&self, request: crate::user::UserRequest) -> Result<crate::user::UserOutcome> {
         user_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, request)
+    }
+
+    /// Runs an excision after the batches already queued and waits for it
+    /// to commit ([`crate::excise`]).
+    pub fn excise(
+        &self,
+        request: crate::excise::ExciseRequest,
+        store: std::sync::Arc<hashed_blobs::Store>,
+    ) -> Result<crate::excise::Excised> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::Excise(Box::new(request), store, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
     /// Waits until every batch sent before this call is committed, and
@@ -342,12 +368,16 @@ struct Inner {
     report: WriteReport,
     /// The index is being built without syncs ([`Writer::start`]).
     unsynced: bool,
+    embeddings_db: std::path::PathBuf,
+    /// Sessions and messages excised: their rows are never written again.
+    refused: crate::excise::Refused,
 }
 
 impl Inner {
     fn run(&mut self, rx: &Receiver<Msg>) {
         let mut flushes = Vec::new();
         let mut users = Vec::new();
+        let mut excisions = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut group = Vec::new();
             let mut rows = 0;
@@ -363,6 +393,10 @@ impl Inner {
                 }
                 Msg::User(request, reply) => {
                     users.push((request, reply));
+                    false
+                }
+                Msg::Excise(request, store, reply) => {
+                    excisions.push((request, store, reply));
                     false
                 }
             };
@@ -383,6 +417,9 @@ impl Inner {
             }
             for (request, reply) in users.drain(..) {
                 let _ = reply.send(self.write_user(&request));
+            }
+            for (request, store, reply) in excisions.drain(..) {
+                let _ = reply.send(self.write_excision(&request, &store));
             }
             if !flushes.is_empty()
                 && let Err(e) = self.settle()
@@ -413,9 +450,84 @@ impl Inner {
         Ok(())
     }
 
+    /// One excision in its own transactions: `archive.db`, `index.db` and
+    /// `embeddings.db` commit together or not at all (a dry run rolls all
+    /// three back); the blob files it replaced are deleted after they
+    /// commit.
+    fn write_excision(
+        &mut self,
+        request: &crate::excise::ExciseRequest,
+        store: &hashed_blobs::Store,
+    ) -> Result<crate::excise::Excised> {
+        let embeddings = if self.embeddings_db.exists() {
+            let e = open_write(&self.embeddings_db)?;
+            e.execute_batch("BEGIN IMMEDIATE")?;
+            Some(e)
+        } else {
+            None
+        };
+        let atx = self.archive.transaction()?;
+        let itx = self.index.transaction()?;
+        let seq = bump_counter(&atx)?;
+        let counter = bump_counter(&itx)?;
+        let txs = crate::excise::Txs {
+            archive: &atx,
+            index: &itx,
+            embeddings: embeddings.as_ref(),
+            store,
+            seq,
+            counter,
+        };
+        let (done, files) = match crate::excise::apply(&txs, request) {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some(e) = &embeddings {
+                    let _ = e.execute_batch("ROLLBACK");
+                }
+                return Err(e);
+            }
+        };
+        if request.dry_run {
+            itx.rollback()?;
+            atx.rollback()?;
+            if let Some(e) = &embeddings {
+                e.execute_batch("ROLLBACK")?;
+            }
+            return Ok(done);
+        }
+        atx.commit()?;
+        itx.commit()?;
+        if let Some(e) = &embeddings {
+            e.execute_batch("COMMIT")?;
+        }
+        for hash in files {
+            if let Err(e) = store.delete(&hashed_blobs::Hash(hash.0)) {
+                self.report
+                    .errors
+                    .push(format!("excision: delete blob {hash}: {e}"));
+            }
+        }
+        self.refused.sessions.extend(done.sessions.iter().cloned());
+        self.refused
+            .messages
+            .extend(crate::excise::Refused::load(&self.archive)?.messages);
+        Ok(done)
+    }
+
     /// Writes a group in one transaction per database. If it fails, each
     /// batch is retried alone, so one bad batch costs only itself.
     fn write_group(&mut self, group: &[Box<Batch>]) {
+        if !self.refused.is_empty() && group.iter().any(|b| touches(b, &self.refused)) {
+            let filtered: Vec<Box<Batch>> = group
+                .iter()
+                .map(|b| Box::new(without_refused(b, &self.refused)))
+                .collect();
+            return self.write_group_inner(&filtered);
+        }
+        self.write_group_inner(group);
+    }
+
+    fn write_group_inner(&mut self, group: &[Box<Batch>]) {
         if group.len() > 1 && self.write(group.iter().map(|b| &**b)).is_ok() {
             return;
         }
@@ -477,6 +589,92 @@ impl Inner {
         self.report.transactions += 1;
         Ok(())
     }
+}
+
+/// Whether a batch's rows name an excised session or message.
+fn touches(b: &Batch, r: &crate::excise::Refused) -> bool {
+    let Some(p) = &b.parse else {
+        return false;
+    };
+    let o = &p.output;
+    o.sessions
+        .iter()
+        .any(|s| r.sessions.contains(&s.id.to_string()))
+        || o.messages.iter().any(|m| refused_message(&m.message, r))
+        || o.events
+            .iter()
+            .any(|e| r.sessions.contains(&e.session.to_string()))
+        || o.links.iter().any(|l| {
+            r.sessions.contains(&l.parent.to_string()) || r.sessions.contains(&l.child.to_string())
+        })
+}
+
+fn refused_message(m: &Message, r: &crate::excise::Refused) -> bool {
+    r.messages.contains(&m.id.to_string()) || r.sessions.contains(&m.session.to_string())
+}
+
+/// A copy of a batch without the rows of excised sessions and messages:
+/// they are never written again, from any input (architecture 5.6). The
+/// bytes and parse position stay, so the input is not parsed again for
+/// them.
+fn without_refused(b: &Batch, r: &crate::excise::Refused) -> Batch {
+    let mut out = b.clone();
+    let Some(p) = &mut out.parse else {
+        return out;
+    };
+    let keep_msgs: Vec<bool> = p
+        .output
+        .messages
+        .iter()
+        .map(|m| !refused_message(&m.message, r))
+        .collect();
+    let keep_events: Vec<bool> = p
+        .output
+        .events
+        .iter()
+        .map(|e| !r.sessions.contains(&e.session.to_string()))
+        .collect();
+    let mut i = 0;
+    p.output.messages.retain(|_| {
+        i += 1;
+        keep_msgs[i - 1]
+    });
+    if p.hashes.len() == keep_msgs.len() {
+        let mut i = 0;
+        p.hashes.retain(|_| {
+            i += 1;
+            keep_msgs[i - 1]
+        });
+    }
+    if p.bodies.len() == keep_msgs.len() {
+        let mut i = 0;
+        p.bodies.retain(|_| {
+            i += 1;
+            keep_msgs[i - 1]
+        });
+    }
+    let mut i = 0;
+    p.output.events.retain(|_| {
+        i += 1;
+        keep_events[i - 1]
+    });
+    if p.events.len() == keep_events.len() {
+        let mut i = 0;
+        p.events.retain(|_| {
+            i += 1;
+            keep_events[i - 1]
+        });
+    }
+    p.output
+        .sessions
+        .retain(|s| !r.sessions.contains(&s.id.to_string()));
+    p.output.links.retain(|l| {
+        !r.sessions.contains(&l.parent.to_string()) && !r.sessions.contains(&l.child.to_string())
+    });
+    p.output
+        .background
+        .retain(|u| !r.sessions.contains(&u.session.to_string()));
+    out
 }
 
 fn weight(b: &Batch) -> usize {
