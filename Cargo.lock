@@ -1741,7 +1741,9 @@ dependencies = [
  "polylogue-model",
  "polylogue-sources",
  "polylogue-store",
+ "polylogue-testkit",
  "proptest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1838,9 +1840,11 @@ dependencies = [
 name = "polylogue-testkit"
 version = "0.1.0"
 dependencies = [
+ "hashed-blobs",
  "polylogue-engine",
  "polylogue-model",
  "polylogue-store",
+ "serde_json",
  "tempfile",
 ]
 
