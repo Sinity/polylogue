@@ -361,6 +361,7 @@ fn role_name(m: &Message) -> &'static str {
         (Role::Assistant, _) => "assistant",
         (Role::System, _) => "system",
         (Role::User, Some(PromptKind::Harness)) => "harness",
+        (Role::User, Some(PromptKind::Model)) => "model",
         (Role::User, _) => "user",
     }
 }

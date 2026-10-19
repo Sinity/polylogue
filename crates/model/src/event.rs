@@ -37,6 +37,30 @@ pub enum LinkKind {
     Copy,
 }
 
+impl LinkKind {
+    /// The stored `(kind, how)` pair: the link table and the query language
+    /// name a link's family (`subagent`, `continuation`) and how it was made.
+    pub fn columns(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Spawn => ("subagent", "fresh"),
+            Self::Fork => ("continuation", "fork"),
+            Self::Copy => ("continuation", "resume"),
+            Self::Continuation => ("continuation", "after_compaction"),
+        }
+    }
+
+    /// The kind a stored `(kind, how)` pair names, if this version knows it.
+    pub fn from_columns(kind: &str, how: &str) -> Option<Self> {
+        Some(match (kind, how) {
+            ("subagent", _) => Self::Spawn,
+            ("continuation", "fork") => Self::Fork,
+            ("continuation", "resume") => Self::Copy,
+            ("continuation", "after_compaction") => Self::Continuation,
+            _ => return None,
+        })
+    }
+}
+
 /// A relationship between two sessions, from an explicit marker in the
 /// source, never from guessing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

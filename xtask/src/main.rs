@@ -15,6 +15,7 @@ const FORMATTED: &[&str] = &[
     "polylogue-query",
     "polylogue-render",
     "polylogue-sinex",
+    "polylogue-testkit",
     "polylogue",
     "xtask",
 ];
@@ -53,6 +54,8 @@ fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
             &["polylogue-model"]
         }
         "polylogue-engine" => &["polylogue-model", "polylogue-sources", "polylogue-store"],
+        // Test worlds: built through the engine, read through the store.
+        "polylogue-testkit" => &["polylogue-model", "polylogue-store", "polylogue-engine"],
         // The Sinex adapter publishes and restores through the store; its
         // rebuild proof drives the engine.
         "polylogue-sinex" => &["polylogue-model", "polylogue-store", "polylogue-engine"],
@@ -94,9 +97,15 @@ fn boundaries(metadata: &Value) -> Result<(), String> {
             .as_array()
             .ok_or("dependencies missing")?
         {
+            let test_only = dependency["kind"].as_str() == Some("dev");
             let dependency = dependency["name"]
                 .as_str()
                 .ok_or("dependency name missing")?;
+            // Tests may build worlds with the testkit and open SQLite to
+            // break an archive on purpose (law 22); product code may not.
+            if test_only && matches!(dependency, "polylogue-testkit" | "rusqlite") {
+                continue;
+            }
             if (workspace.contains(&dependency) && !allowed.contains(&dependency))
                 || (dependency == "rusqlite" && name != "polylogue-store")
             {
@@ -153,6 +162,23 @@ fn main() -> ExitCode {
             run.nextest(
                 "test",
                 &nextest(vec!["--locked".into(), "--workspace".into()]),
+            )?;
+            // The laws that inject failures, built with the test-only feature.
+            run.nextest(
+                "faults",
+                &nextest(
+                    [
+                        "--locked",
+                        "-p",
+                        "polylogue-engine",
+                        "--features",
+                        "faults",
+                        "--test",
+                        "faults",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                ),
             )
         }),
         Cli::Scenarios => run("scenarios", &[], |run| {

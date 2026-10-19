@@ -37,13 +37,18 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
             input.len()
         ));
     }
-    let got = serde_json::json!({"output": step.output, "accounting": step.accounting});
-    let got = serde_json::to_string_pretty(&got).map_err(|e| e.to_string())? + "\n";
+    let value = sorted(serde_json::json!({"output": step.output, "accounting": step.accounting}));
+    let got = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())? + "\n";
     let expected_path = dir.join("expected.json");
     let bless = std::env::var_os("POLYLOGUE_BLESS").is_some();
     match fs::read_to_string(&expected_path) {
         Ok(expected) if !bless => {
-            if expected == got {
+            // Compared as values: a workspace build can turn on serde_json's
+            // preserve_order (through the Sinex crates), which changes key
+            // order but not content.
+            let expected: serde_json::Value =
+                serde_json::from_str(&expected).map_err(|e| e.to_string())?;
+            if expected == value {
                 Ok(())
             } else {
                 Err(format!(
@@ -73,4 +78,19 @@ fn golden_cases() {
     }
     assert!(ran > 0, "no golden cases found");
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// Objects with their keys in sorted order, however serde_json is built.
+fn sorted(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            serde_json::Value::Object(entries.into_iter().map(|(k, v)| (k, sorted(v))).collect())
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(sorted).collect())
+        }
+        other => other,
+    }
 }

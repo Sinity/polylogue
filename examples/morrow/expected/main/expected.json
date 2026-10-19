@@ -1,0 +1,367 @@
+{
+  "_about": "Expected results of the spec's main-archive examples on the Morrow archive (examples/archive/): query.md examples 1-38, the overview, search chrono, and the by-model and by-day reports. Sessions are named by their FACTS.md number; rows are in result order (newest activity first) unless the query has no order, where they are sorted. Times are local (Europe/Warsaw, CEST); costs are exact USD. check_facts.py recomputes every value in this file from the raw files and fails on any difference; edit build.py, never this file by hand, and re-record with: python3 check_facts.py --record-main",
+  "queries": {
+    "1 origin:claude-code": [
+      "#4",
+      "#2",
+      "#1"
+    ],
+    "2 origin:claude-code kind:subagent": [
+      "#3"
+    ],
+    "3 kind:* | agg count, sum:cost": {
+      "count": 8,
+      "sum_cost": 6.1956,
+      "unknown_cost": 2,
+      "partial_cost": 0
+    },
+    "4 sessions | group by origin | count": {
+      "claude-code": 3,
+      "codex": 2,
+      "chatgpt": 1,
+      "claude-ai": 1
+    },
+    "5 repo:morrow": [
+      "#6",
+      "#5"
+    ],
+    "6 tag:project:morrow": [
+      "#6",
+      "#5",
+      "#4",
+      "#2",
+      "#1"
+    ],
+    "7 tag:research": [
+      "#7"
+    ],
+    "8 sessions where cost > 1": [
+      "#4",
+      "#2",
+      "#1"
+    ],
+    "9 cost:unknown": [
+      "#8",
+      "#7"
+    ],
+    "10 sessions where human_prompts >= 3": [
+      "#7",
+      "#4",
+      "#2",
+      "#1"
+    ],
+    "11 sessions where messages >= 10": [
+      "#4",
+      "#2",
+      "#1"
+    ],
+    "12 sessions where tool_calls > 5": [
+      "#4",
+      "#2",
+      "#1"
+    ],
+    "13 messages where written_by:human \"chrono\"": [
+      [
+        "#2",
+        "let's use chrono, not time"
+      ],
+      [
+        "#8",
+        "Shorter, and mention chrono."
+      ]
+    ],
+    "14 messages where written_by:human inherited:* \"chrono\"": [
+      [
+        "#2",
+        "let's use chrono, not time",
+        false
+      ],
+      [
+        "#4",
+        "let's use chrono, not time",
+        true
+      ],
+      [
+        "#8",
+        "Shorter, and mention chrono.",
+        false
+      ]
+    ],
+    "15 tool_calls where outcome:error": [
+      [
+        "#2",
+        "cargo test",
+        101
+      ],
+      [
+        "#4",
+        "cargo clippy -- -D warnings",
+        1
+      ]
+    ],
+    "16 tool_calls where outcome:error | group by session | count": {
+      "#2": 1,
+      "#4": 1
+    },
+    "17 tool_calls | group by action | count": {
+      "shell": 18,
+      "file_edit": 8,
+      "file_read": 6,
+      "file_write": 2,
+      "web": 2,
+      "subagent": 1
+    },
+    "18 tool_calls where tool:Bash | agg count": 13,
+    "19 tool_calls where session.tag:project:morrow | agg count": 33,
+    "20 sessions where exists tool_call(action:shell AND outcome:error)": [
+      "#4",
+      "#2"
+    ],
+    "21 sessions where seq(cargo test error -> Edit -> cargo test ok)": [
+      "#2"
+    ],
+    "22 messages where written_by:human | group by session.origin | count": {
+      "claude-code": 9,
+      "chatgpt": 3,
+      "codex": 3,
+      "claude-ai": 2
+    },
+    "23 messages where active:false": [
+      [
+        "#7",
+        "What do other libraries do?"
+      ],
+      [
+        "#7",
+        "dateutil guesses month-first by default; chrono refuses ambiguous input."
+      ]
+    ],
+    "24 parent:claude-code:7f3a2c10-0002-4000-8000-000000000002": [
+      [
+        "#4",
+        [
+          [
+            "continuation",
+            "resume"
+          ],
+          [
+            "reference",
+            "briefing"
+          ]
+        ]
+      ],
+      [
+        "#3",
+        [
+          [
+            "subagent",
+            "fresh"
+          ]
+        ]
+      ]
+    ],
+    "25 lineage:codex:01a20000-0005-7000-8000-000000000005": [
+      "#6",
+      "#5"
+    ],
+    "26 since:2026-10-05": [
+      "#8",
+      "#6",
+      "#5"
+    ],
+    "27 started between 2026-10-02 and 2026-10-03": [
+      "#4",
+      "#2"
+    ],
+    "28 has:compaction": [
+      "#4"
+    ],
+    "29 model:claude-opus-5-5": {
+      "default": [],
+      "kind:*": [
+        "#3"
+      ],
+      "model:unknown": [
+        "#8"
+      ]
+    },
+    "30 origin:(chatgpt|claude-ai)": [
+      "#8",
+      "#7"
+    ],
+    "31 notes where kind:decision": [
+      [
+        "decided: chrono, not time",
+        "#2",
+        "let's use chrono, not time"
+      ]
+    ],
+    "32 origin:codex with messages(id, role)[role:assistant, last:1]": [
+      [
+        "#6",
+        "Strict mode is in: Options { strict: true } rejects same-day weekday phrases. Tests and clippy pass."
+      ],
+      [
+        "#5",
+        "Noted on the message above: next friday bug in weekday_offset()."
+      ]
+    ],
+    "33 near:\"ambiguous date formats\"": {
+      "outcome": "degraded",
+      "rows": [
+        "#8",
+        "#6",
+        "#5",
+        "#7",
+        "#4",
+        "#2",
+        "#1"
+      ]
+    },
+    "34 repo:other": {
+      "outcome": "empty",
+      "rows": [],
+      "known repos": [
+        "op/morrow"
+      ]
+    },
+    "35 reop:morrow": {
+      "outcome": "error"
+    },
+    "36 links where kind:continuation": [
+      [
+        "#2",
+        "#4",
+        "resume"
+      ],
+      [
+        "#5",
+        "#6",
+        "fork"
+      ]
+    ],
+    "37 link:fork": [
+      "#6"
+    ],
+    "38 tree_cost > 2.90": {
+      "tree_cost": [
+        "#2"
+      ],
+      "cost": []
+    }
+  },
+  "overview": {
+    "sessions": 8,
+    "top_level": 7,
+    "last_activity": "2026-10-07 18:05:00",
+    "sources": {
+      "claude-code": 4,
+      "codex": 2,
+      "chatgpt": 1,
+      "claude-ai": 1
+    },
+    "prompts": 17,
+    "tool_calls": 37,
+    "known_cost": 6.2,
+    "unknown_cost_sessions": 2
+  },
+  "search chrono": {
+    "sessions": [
+      "#2",
+      "#7",
+      "#8"
+    ],
+    "messages": 8,
+    "per_session": {
+      "#2": 5,
+      "#7": 1,
+      "#8": 2
+    }
+  },
+  "analyze --cost --by model": {
+    "(not recorded)": {
+      "sessions": 1,
+      "input": null,
+      "output": null,
+      "cache_read": null,
+      "cache_write": null,
+      "cost": null
+    },
+    "claude-fable-5-1": {
+      "sessions": 3,
+      "input": 4700,
+      "output": 44100,
+      "cache_read": 1700000,
+      "cache_write": 140000,
+      "cost": 5.702
+    },
+    "claude-opus-5-5": {
+      "sessions": 1,
+      "input": 400,
+      "output": 3000,
+      "cache_read": 60000,
+      "cache_write": 15000,
+      "cost": 0.1606
+    },
+    "gpt-6": {
+      "sessions": 1,
+      "input": null,
+      "output": null,
+      "cache_read": null,
+      "cache_write": null,
+      "cost": null
+    },
+    "gpt-6.1-sol": {
+      "sessions": 2,
+      "input": 48000,
+      "output": 9000,
+      "cache_read": 180000,
+      "cache_write": null,
+      "cost": 0.333
+    }
+  },
+  "analyze --by day": {
+    "2026-10-01": {
+      "sessions": 1,
+      "prompts": 3,
+      "tool_calls": 6,
+      "sum_cost": 1.262
+    },
+    "2026-10-02": {
+      "sessions": 1,
+      "prompts": 3,
+      "tool_calls": 17,
+      "sum_cost": 3.0106
+    },
+    "2026-10-03": {
+      "sessions": 1,
+      "prompts": 3,
+      "tool_calls": 8,
+      "sum_cost": 1.59
+    },
+    "2026-10-04": {
+      "sessions": 1,
+      "prompts": 3,
+      "tool_calls": 0,
+      "sum_cost": null
+    },
+    "2026-10-05": {
+      "sessions": 1,
+      "prompts": 2,
+      "tool_calls": 3,
+      "sum_cost": 0.216
+    },
+    "2026-10-06": {
+      "sessions": 1,
+      "prompts": 1,
+      "tool_calls": 3,
+      "sum_cost": 0.117
+    },
+    "2026-10-07": {
+      "sessions": 1,
+      "prompts": 2,
+      "tool_calls": 0,
+      "sum_cost": null
+    }
+  }
+}

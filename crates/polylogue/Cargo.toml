@@ -39,6 +39,7 @@ thiserror.workspace = true
 tempfile.workspace = true
 
 polylogue-store = { workspace = true, features = ["fixture"] }
+polylogue-testkit.workspace = true
 
 [lints]
 workspace = true

@@ -25,7 +25,8 @@ use crate::parse::{BackgroundUpdate, MessageRow, Output, Parser, StepParser};
 use crate::time;
 use polylogue_model::{
     ApiError, Attribution, ErrorReason, Event, Json, Link, LinkKind, Message, MessageId, NativeId,
-    Origin, Production, Role, Session, SessionId, SessionKind, TitleSource, ToolOutcome, Usage,
+    Origin, Production, PromptKind, Role, Session, SessionId, SessionKind, TitleSource,
+    ToolOutcome, Usage,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -153,6 +154,37 @@ pub struct Carry {
     links: BTreeSet<String>,
     /// The latest message, for placing events on the timeline.
     last: Option<MessageId>,
+    /// Record uuids that are not a message's own: a split response's later
+    /// records (its message carries the first one's uuid) and event records
+    /// (compaction boundaries, attachments, progress), each mapped to the
+    /// message a child naming it as parent belongs under. Recent ones only:
+    /// children follow their parents closely.
+    #[serde(default)]
+    aliases: VecDeque<(String, Option<MessageId>)>,
+}
+
+/// How many record aliases a parser keeps.
+const ALIASES: usize = 4096;
+
+impl Carry {
+    fn alias(&mut self, uuid: &str, target: Option<MessageId>) {
+        if self.aliases.len() == ALIASES {
+            self.aliases.pop_front();
+        }
+        self.aliases.push_back((uuid.to_owned(), target));
+    }
+
+    /// The message a record's parent pointer names, through aliases.
+    fn parent(&self, v: &Json) -> Option<MessageId> {
+        self.resolve(str_field(v, "parentUuid")?)
+    }
+
+    fn resolve(&self, uuid: &str) -> Option<MessageId> {
+        match self.aliases.iter().rev().find(|(u, _)| u == uuid) {
+            Some((_, target)) => target.clone(),
+            None => message_id(uuid),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -387,6 +419,13 @@ impl ClaudeCode {
             }
             match &mut carry.open {
                 Some(open) => {
+                    let target = Some(open.message.id.clone());
+                    if native != open.message.id.native().as_str() {
+                        carry.alias(&native, target);
+                    }
+                    let Some(open) = &mut carry.open else {
+                        unreachable!("the open response was just matched")
+                    };
                     open.end = open.end.max(end);
                     let m = &mut open.message;
                     m.blocks.extend(blocks);
@@ -407,7 +446,7 @@ impl ClaudeCode {
                         message: Message {
                             id: id.clone(),
                             session,
-                            parent: str_field(v, "parentUuid").and_then(message_id),
+                            parent: carry.parent(v),
                             role,
                             at: v.get("timestamp").and_then(time::rfc3339),
                             model,
@@ -427,11 +466,11 @@ impl ClaudeCode {
             let message = Message {
                 id: id.clone(),
                 session,
-                parent: str_field(v, "parentUuid").and_then(message_id),
+                parent: carry.parent(v),
                 role,
                 at: v.get("timestamp").and_then(time::rfc3339),
                 model,
-                prompt_kind: Some(blocks::prompt_kind(v, content)),
+                prompt_kind: Some(self.prompt_kind(v, content)),
                 blocks,
                 usage,
                 stop_reason,
@@ -491,6 +530,25 @@ impl ClaudeCode {
         self.event(carry, record, v, kind, out)
     }
 
+    /// Who wrote a user record. A subagent transcript's root record (no
+    /// parent) is the task its parent model wrote; a compaction call's is
+    /// the harness's summarizing instruction.
+    fn prompt_kind(&self, v: &Json, content: &Json) -> PromptKind {
+        let kind = blocks::prompt_kind(v, content);
+        match &self.file {
+            File::Subagent { stem }
+                if kind == PromptKind::Prose && str_field(v, "parentUuid").is_none() =>
+            {
+                if stem.starts_with("agent-acompact") {
+                    PromptKind::Harness
+                } else {
+                    PromptKind::Model
+                }
+            }
+            _ => kind,
+        }
+    }
+
     fn title(&self, carry: &mut Carry, v: &Json, field: &str, source: TitleSource) -> Disposition {
         let Some(text) = str_field(v, field) else {
             return Disposition::unknown(format!("no {field}"));
@@ -527,7 +585,8 @@ fn link_at(
     call_id: Option<String>,
     evidence: &str,
 ) {
-    let key = format!("{kind:?} {parent} {child}");
+    // A later record may add the branch point; the writer merges them.
+    let key = format!("{kind:?} {parent} {child} {}", at.is_some());
     if carry.links.insert(key) {
         out.links.push(Link {
             kind,
@@ -675,6 +734,17 @@ impl Parser for ClaudeCode {
         if let File::Journal { .. } = self.file {
             return self.journal(carry, record, v, ty, out);
         }
+        let message_record = matches!(ty, "user" | "assistant")
+            && v.get("isCompactSummary").and_then(Json::as_bool) != Some(true);
+        if !message_record && let Some(uuid) = str_field(v, "uuid") {
+            // A child naming this record as its parent belongs under the
+            // nearest message above it; a compaction boundary points there
+            // through `logicalParentUuid`.
+            let target = str_field(v, "logicalParentUuid")
+                .or_else(|| str_field(v, "parentUuid"))
+                .and_then(|p| carry.resolve(p));
+            carry.alias(uuid, target);
+        }
         match ty {
             "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {
                 self.event(carry, record, v, "compaction_summary", out)
@@ -772,11 +842,13 @@ impl Parser for ClaudeCode {
                 else {
                     return Disposition::unknown("fork-context-ref without a parent");
                 };
+                // Evidence for the subagent link, with its branch point
+                // (spec sources/claude-code.md): never a second parent.
                 let at = str_field(v, "parentLastUuid").and_then(message_id);
                 link_at(
                     carry,
                     out,
-                    LinkKind::Fork,
+                    LinkKind::Spawn,
                     parent,
                     child,
                     at,

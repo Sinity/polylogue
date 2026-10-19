@@ -287,8 +287,9 @@ impl Reader<'_> {
         let links: Vec<(String, String, Option<String>)> = self
             .conn()
             .prepare_cached(
-                "SELECT parent_id, kind, branch_point FROM link
-                 WHERE child_id = ?1 AND kind IN ('fork', 'copy') ORDER BY pk",
+                "SELECT parent_id, how, branch_point FROM link
+                 WHERE child_id = ?1 AND kind = 'continuation' AND how IN ('fork', 'resume')
+                 ORDER BY pk",
             )?
             .query_map([child.to_string()], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
@@ -568,6 +569,7 @@ impl Reader<'_> {
     /// statement uses are not bound, so one parameter list serves several
     /// statements of one compiled query.
     pub fn query(&self, sql: &str, params: &[SqlValue]) -> Result<Vec<serde_json::Value>> {
+        crate::fault::check("read.query", sql)?;
         let mut stmt = self.conn().prepare_cached(sql)?;
         let names: Vec<String> = stmt
             .column_names()

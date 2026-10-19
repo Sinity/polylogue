@@ -1718,6 +1718,7 @@ dependencies = [
  "polylogue-sinex",
  "polylogue-sources",
  "polylogue-store",
+ "polylogue-testkit",
  "rmcp",
  "schemars",
  "serde",
@@ -1740,7 +1741,9 @@ dependencies = [
  "polylogue-model",
  "polylogue-sources",
  "polylogue-store",
+ "polylogue-testkit",
  "proptest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1831,6 +1834,18 @@ dependencies = [
  "thiserror 2.0.21",
  "uuid",
  "zstd",
+]
+
+[[package]]
+name = "polylogue-testkit"
+version = "0.1.0"
+dependencies = [
+ "hashed-blobs",
+ "polylogue-engine",
+ "polylogue-model",
+ "polylogue-store",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

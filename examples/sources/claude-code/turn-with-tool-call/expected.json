@@ -90,7 +90,7 @@
             }
           ],
           "id": "claude-code:u2",
-          "parent": "claude-code:a2",
+          "parent": "claude-code:a1",
           "prompt_kind": "harness",
           "role": "user",
           "session": "claude-code:s1"

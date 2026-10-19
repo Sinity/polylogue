@@ -19,9 +19,15 @@ thiserror.workspace = true
 zip.workspace = true
 ureq.workspace = true
 
+[features]
+# Test support: arm the store's fault points (laws 7, 45, 63).
+faults = ["polylogue-store/faults"]
+
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+polylogue-testkit.workspace = true
+rusqlite.workspace = true
 
 [lints]
 workspace = true

@@ -28,3 +28,5 @@ workspace = true
 [features]
 # Test support: an archive written row by row (`fixture`).
 fixture = []
+# Test support: arm fault points (crate::fault); never enabled by a shipped build.
+faults = []

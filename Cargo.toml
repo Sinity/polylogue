@@ -16,6 +16,7 @@ polylogue-engine = { path = "crates/engine" }
 polylogue-query = { path = "crates/query" }
 polylogue-render = { path = "crates/render" }
 polylogue-sinex = { path = "crates/sinex" }
+polylogue-testkit = { path = "crates/testkit" }
 credential-masking = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.4.0" }
 hashed-blobs = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.4.0" }
 devkit = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.4.0" }

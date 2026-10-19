@@ -214,7 +214,11 @@ pub fn prompt_kind(record: &Json, content: &Json) -> PromptKind {
         .and_then(Json::as_str)
         && kind != "human"
     {
-        return PromptKind::Harness;
+        return if kind == "peer" {
+            PromptKind::Model
+        } else {
+            PromptKind::Harness
+        };
     }
     let text = match content {
         Json::String(s) => s.as_str(),
