@@ -14,6 +14,7 @@
 
 pub mod collect;
 pub mod derive;
+pub mod drive;
 pub mod pool;
 pub mod publish;
 pub mod stage;
@@ -447,13 +448,47 @@ impl Engine {
         }
     }
 
+    /// Writes the next Drive revision of each AI Studio prompt into the
+    /// spool, when the operator turned the collector on. The written files
+    /// change a watched location, so another pass follows on its own.
+    /// Returns the error to report on the pass, if the sync failed.
+    fn sync_drive(&self) -> Option<String> {
+        let state = polylogue_sources::origin::Root {
+            env: Some("XDG_STATE_HOME"),
+            default: ".local/state",
+        };
+        let on = self
+            .reads
+            .reader()
+            .ok()?
+            .setting(drive::SETTING, &self.config.machine)
+            .ok()??;
+        if on != "on" {
+            return None;
+        }
+        let collector = drive::Collector {
+            endpoints: drive::Endpoints::default(),
+            token_path: self.config.root(state).join("polylogue/token.json"),
+            spool: self
+                .config
+                .root(polylogue_sources::ai_studio::ROOT)
+                .join("polylogue/drive/ai-studio"),
+        };
+        collector
+            .sync()
+            .err()
+            .map(|e| format!("ai-studio collector: {e}"))
+    }
+
     /// Runs one pass of the loop to completion.
     pub fn converge(&mut self) -> Result<Pass, EngineError> {
         let started = Instant::now();
         self.load()?;
+        let drive_error = self.sync_drive();
         let (found, unreadable) = collect::scan(&self.config);
         let mut pass = Pass {
             unreadable_roots: unreadable,
+            errors: drive_error.into_iter().collect(),
             ..Pass::default()
         };
         let mut plans = Vec::new();
