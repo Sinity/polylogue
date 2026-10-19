@@ -1,0 +1,23 @@
+{
+  "sessionId": "origin-matrix-gemini-cli",
+  "projectHash": "origin-matrix-project",
+  "startTime": "2026-08-01T10:00:00.000Z",
+  "lastUpdated": "2026-08-01T10:00:02.000Z",
+  "kind": "chat",
+  "summary": "Origin capability matrix",
+  "messages": [
+    {
+      "id": "user-1",
+      "timestamp": "2026-08-01T10:00:01.000Z",
+      "type": "user",
+      "content": ["Prove the parser claim."]
+    },
+    {
+      "id": "assistant-1",
+      "timestamp": "2026-08-01T10:00:02.000Z",
+      "type": "gemini",
+      "content": "The production route parsed this witness.",
+      "model": "gemini-matrix"
+    }
+  ]
+}

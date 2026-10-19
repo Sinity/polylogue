@@ -1,0 +1,70 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "gemini": 1,
+      "session": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": {
+          "project_hash": "origin-matrix-project"
+        },
+        "kind": "project",
+        "session": "gemini-cli:origin-matrix-gemini-cli"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2026-08-01T10:00:01Z",
+          "blocks": [],
+          "id": "gemini-cli:user-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "gemini-cli:origin-matrix-gemini-cli"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2026-08-01T10:00:02Z",
+          "blocks": [
+            {
+              "text": "The production route parsed this witness.",
+              "type": "text"
+            }
+          ],
+          "id": "gemini-cli:assistant-1",
+          "model": "gemini-matrix",
+          "parent": "gemini-cli:user-1",
+          "role": "assistant",
+          "session": "gemini-cli:origin-matrix-gemini-cli"
+        },
+        "offset": 1
+      }
+    ],
+    "sessions": [
+      {
+        "id": "gemini-cli:origin-matrix-gemini-cli",
+        "kind": "main",
+        "started": "2026-08-01T10:00:00Z",
+        "title": {
+          "source": "summary",
+          "text": "Origin capability matrix"
+        }
+      }
+    ]
+  }
+}

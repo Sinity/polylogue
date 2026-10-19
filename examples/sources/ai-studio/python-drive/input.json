@@ -1,0 +1,16 @@
+{
+ "chunkedPrompt": {
+  "chunks": [
+   {
+    "id": "matrix-user",
+    "role": "user",
+    "text": "Prove the parser claim."
+   },
+   {
+    "id": "matrix-assistant",
+    "role": "model",
+    "text": "The production route parsed this witness."
+   }
+  ]
+ }
+}

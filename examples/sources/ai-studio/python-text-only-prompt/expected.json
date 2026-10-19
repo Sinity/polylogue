@@ -1,0 +1,119 @@
+{
+  "accounting": {
+    "framed": 5,
+    "materialized": {
+      "model": 2,
+      "prompt": 1,
+      "user": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": null,
+        "kind": "run_settings",
+        "session": "ai-studio:text_only_prompt"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2025-02-01T08:00:00Z",
+          "blocks": [
+            {
+              "text": "What is the capital of France?",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:text_only_prompt#0",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:text_only_prompt"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2025-02-01T08:00:05Z",
+          "blocks": [
+            {
+              "text": "The capital of France is Paris.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:text_only_prompt#1",
+          "parent": "ai-studio:text_only_prompt#0",
+          "role": "assistant",
+          "session": "ai-studio:text_only_prompt",
+          "stop_reason": "STOP",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": null,
+            "output": 8,
+            "reasoning": null
+          }
+        },
+        "offset": 1
+      },
+      {
+        "end": 3,
+        "message": {
+          "at": "2025-02-01T08:00:20Z",
+          "blocks": [
+            {
+              "text": "And of Germany?",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:text_only_prompt#2",
+          "parent": "ai-studio:text_only_prompt#1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:text_only_prompt"
+        },
+        "offset": 2
+      },
+      {
+        "end": 4,
+        "message": {
+          "at": "2025-02-01T08:00:30Z",
+          "blocks": [
+            {
+              "text": "Berlin.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:text_only_prompt#3",
+          "parent": "ai-studio:text_only_prompt#2",
+          "role": "assistant",
+          "session": "ai-studio:text_only_prompt",
+          "stop_reason": "STOP",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": null,
+            "output": 2,
+            "reasoning": null
+          }
+        },
+        "offset": 3
+      }
+    ],
+    "sessions": [
+      {
+        "id": "ai-studio:text_only_prompt",
+        "kind": "main",
+        "started": "2025-02-01T08:00:00Z"
+      }
+    ]
+  }
+}

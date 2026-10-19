@@ -1,0 +1,2 @@
+{"type":"user","uuid":"matrix-user","sessionId":"origin-matrix-claude-code","timestamp":"2026-08-01T10:00:00Z","message":{"role":"user","content":"Prove the parser claim."}}
+{"type":"assistant","uuid":"matrix-assistant","parentUuid":"matrix-user","sessionId":"origin-matrix-claude-code","timestamp":"2026-08-01T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"The production route parsed this witness."}]}}

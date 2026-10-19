@@ -1,0 +1,131 @@
+{
+  "accounting": {
+    "framed": 5,
+    "materialized": {
+      "model": 1,
+      "prompt": 1,
+      "user": 3
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [
+      {
+        "hash": "aaff1535a99cdd3d3e41e25ea6ef55c7b5373722ea588867f02fea01067ff8a8",
+        "size": 8
+      }
+    ],
+    "events": [
+      {
+        "data": null,
+        "kind": "run_settings",
+        "session": "ai-studio:multimodal_session"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2025-02-01T12:00:02Z",
+          "blocks": [
+            {
+              "text": "Describe this document.",
+              "type": "text"
+            },
+            {
+              "direction": "input",
+              "media_type": "application/pdf",
+              "name": "spec.pdf",
+              "source_id": "doc-attached-1",
+              "type": "file"
+            }
+          ],
+          "id": "ai-studio:multimodal_session#chunk-user-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:multimodal_session"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2025-02-01T12:00:05Z",
+          "blocks": [
+            {
+              "blob": "aaff1535a99cdd3d3e41e25ea6ef55c7b5373722ea588867f02fea01067ff8a8",
+              "direction": "input",
+              "media_type": "image/png",
+              "size": 8,
+              "type": "file"
+            }
+          ],
+          "id": "ai-studio:multimodal_session#chunk-user-2",
+          "parent": "ai-studio:multimodal_session#chunk-user-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:multimodal_session"
+        },
+        "offset": 1
+      },
+      {
+        "end": 3,
+        "message": {
+          "at": "2025-02-01T12:00:07Z",
+          "blocks": [
+            {
+              "direction": "input",
+              "media_type": "video/youtube",
+              "name": "YouTube abc123",
+              "source_id": "abc123",
+              "type": "file",
+              "url": "https://www.youtube.com/watch?v=abc123"
+            }
+          ],
+          "id": "ai-studio:multimodal_session#chunk-user-3",
+          "parent": "ai-studio:multimodal_session#chunk-user-2",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:multimodal_session"
+        },
+        "offset": 2
+      },
+      {
+        "end": 4,
+        "message": {
+          "at": "2025-02-01T12:00:25Z",
+          "blocks": [
+            {
+              "text": "Document, image, and video summarized.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:multimodal_session#chunk-model-1",
+          "parent": "ai-studio:multimodal_session#chunk-user-3",
+          "role": "assistant",
+          "session": "ai-studio:multimodal_session",
+          "stop_reason": "STOP",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": null,
+            "output": 10,
+            "reasoning": null
+          }
+        },
+        "offset": 3
+      }
+    ],
+    "sessions": [
+      {
+        "id": "ai-studio:multimodal_session",
+        "kind": "main",
+        "started": "2025-02-01T12:00:02Z"
+      }
+    ]
+  }
+}

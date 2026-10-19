@@ -1,0 +1,320 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "chat": 1,
+      "execute_tool": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "at": "2025-01-01T00:00:01Z",
+        "data": {
+          "attributes": [
+            {
+              "key": "gen_ai.operation.name",
+              "value": {
+                "stringValue": "chat"
+              }
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "value": {
+                "stringValue": "conversation-demo-7"
+              }
+            },
+            {
+              "key": "gen_ai.request.model",
+              "value": {
+                "stringValue": "gpt-4.1-mini"
+              }
+            },
+            {
+              "key": "gen_ai.input.messages",
+              "value": {
+                "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Find tomorrow's weather.\"}]}]"
+              }
+            },
+            {
+              "key": "gen_ai.output.messages",
+              "value": {
+                "arrayValue": {
+                  "values": [
+                    {
+                      "kvlistValue": {
+                        "values": [
+                          {
+                            "key": "role",
+                            "value": {
+                              "stringValue": "assistant"
+                            }
+                          },
+                          {
+                            "key": "parts",
+                            "value": {
+                              "arrayValue": {
+                                "values": [
+                                  {
+                                    "kvlistValue": {
+                                      "values": [
+                                        {
+                                          "key": "type",
+                                          "value": {
+                                            "stringValue": "text"
+                                          }
+                                        },
+                                        {
+                                          "key": "content",
+                                          "value": {
+                                            "stringValue": "I'll check the forecast."
+                                          }
+                                        }
+                                      ]
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "key": "gen_ai.usage.input_tokens",
+              "value": {
+                "intValue": "18"
+              }
+            },
+            {
+              "key": "gen_ai.usage.output_tokens",
+              "value": {
+                "intValue": "6"
+              }
+            },
+            {
+              "key": "gen_ai.usage.cache_read.input_tokens",
+              "value": {
+                "intValue": "0"
+              }
+            }
+          ],
+          "endTimeUnixNano": "1735689603000000000",
+          "kind": 3,
+          "name": "chat gpt-4.1-mini",
+          "spanId": "b7ad6b7169203331",
+          "startTimeUnixNano": "1735689601000000000",
+          "status": {
+            "code": 1
+          },
+          "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+        },
+        "kind": "otel_span",
+        "session": "otel-genai:conversation-demo-7"
+      },
+      {
+        "at": "2025-01-01T00:00:02Z",
+        "data": {
+          "attributes": [
+            {
+              "key": "gen_ai.operation.name",
+              "value": {
+                "stringValue": "execute_tool"
+              }
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "value": {
+                "stringValue": "conversation-demo-7"
+              }
+            },
+            {
+              "key": "gen_ai.tool.name",
+              "value": {
+                "stringValue": "search"
+              }
+            },
+            {
+              "key": "gen_ai.tool.call.id",
+              "value": {
+                "stringValue": "call-search-1"
+              }
+            },
+            {
+              "key": "gen_ai.tool.call.arguments",
+              "value": {
+                "kvlistValue": {
+                  "values": [
+                    {
+                      "key": "query",
+                      "value": {
+                        "stringValue": "rain forecast"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "key": "gen_ai.tool.call.result",
+              "value": {
+                "stringValue": "Rain expected tomorrow."
+              }
+            },
+            {
+              "key": "vendor.experimental.signal",
+              "value": {
+                "stringValue": "retained-verbatim"
+              }
+            }
+          ],
+          "endTimeUnixNano": "1735689602100000000",
+          "kind": 1,
+          "name": "execute_tool search",
+          "parentSpanId": "b7ad6b7169203331",
+          "spanId": "00f067aa0ba902b7",
+          "startTimeUnixNano": "1735689602000000000",
+          "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+        },
+        "kind": "otel_span",
+        "session": "otel-genai:conversation-demo-7"
+      },
+      {
+        "at": "2025-01-01T00:00:02Z",
+        "data": {
+          "arguments": {
+            "query": "rain forecast"
+          },
+          "call_id": "call-search-1",
+          "error": false,
+          "result": "Rain expected tomorrow.",
+          "tool": "search"
+        },
+        "kind": "tool_execution",
+        "session": "otel-genai:conversation-demo-7"
+      },
+      {
+        "at": "2025-01-01T00:00:04Z",
+        "data": {
+          "attributes": [
+            {
+              "key": "gen_ai.operation.name",
+              "value": {
+                "stringValue": "execute_tool"
+              }
+            },
+            {
+              "key": "gen_ai.conversation.id",
+              "value": {
+                "stringValue": "conversation-demo-7"
+              }
+            },
+            {
+              "key": "gen_ai.tool.name",
+              "value": {
+                "stringValue": "failing-tool"
+              }
+            },
+            {
+              "key": "gen_ai.tool.call.id",
+              "value": {
+                "stringValue": "call-fail-1"
+              }
+            },
+            {
+              "key": "gen_ai.tool.call.result",
+              "value": {
+                "stringValue": "Permission denied."
+              }
+            }
+          ],
+          "kind": 1,
+          "name": "execute_tool failing-tool",
+          "parentSpanId": "b7ad6b7169203331",
+          "spanId": "b7ad6b7169203332",
+          "startTimeUnixNano": "1735689604000000000",
+          "status": {
+            "code": 2,
+            "message": "permission denied"
+          },
+          "traceId": "4bf92f3577b34da6a3ce929d0e0e4736"
+        },
+        "kind": "otel_span",
+        "session": "otel-genai:conversation-demo-7"
+      },
+      {
+        "at": "2025-01-01T00:00:04Z",
+        "data": {
+          "arguments": null,
+          "call_id": "call-fail-1",
+          "error": true,
+          "result": "Permission denied.",
+          "tool": "failing-tool"
+        },
+        "kind": "tool_execution",
+        "session": "otel-genai:conversation-demo-7"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "blocks": [
+            {
+              "text": "Find tomorrow's weather.",
+              "type": "text"
+            }
+          ],
+          "id": "otel-genai:conversation-demo-7#0",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "otel-genai:conversation-demo-7"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2025-01-01T00:00:01Z",
+          "blocks": [
+            {
+              "text": "I'll check the forecast.",
+              "type": "text"
+            }
+          ],
+          "duration_ms": 2000,
+          "id": "otel-genai:conversation-demo-7#1",
+          "model": "gpt-4.1-mini",
+          "parent": "otel-genai:conversation-demo-7#0",
+          "role": "assistant",
+          "session": "otel-genai:conversation-demo-7",
+          "usage": {
+            "cache_write": null,
+            "cached_input": 0,
+            "input": 18,
+            "output": 6,
+            "reasoning": null
+          }
+        },
+        "offset": 1
+      }
+    ],
+    "sessions": [
+      {
+        "id": "otel-genai:conversation-demo-7",
+        "kind": "main",
+        "started": "2025-01-01T00:00:01Z"
+      }
+    ]
+  }
+}

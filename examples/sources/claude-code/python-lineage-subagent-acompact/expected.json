@@ -1,0 +1,71 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "assistant": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {
+      "summary: no summary": 1
+    },
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [
+      {
+        "child": "claude-code:agent-task-agent-12-change-proof",
+        "evidence": "agentId",
+        "kind": "spawn",
+        "parent": "claude-code:claude-lineage-parent"
+      }
+    ],
+    "messages": [
+      {
+        "end": 370,
+        "message": {
+          "at": "2026-07-01T12:10:00Z",
+          "blocks": [
+            {
+              "text": "Validate the synthetic twelve-change overhaul and report only task-local evidence.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:task-compact-u",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "claude-code:agent-task-agent-12-change-proof"
+        },
+        "offset": 0
+      },
+      {
+        "end": 702,
+        "message": {
+          "at": "2026-07-01T12:10:01Z",
+          "blocks": [
+            {
+              "text": "The task-local verification matrix is complete.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:task-compact-a",
+          "model": "claude-sonnet-4-5-20250929",
+          "parent": "claude-code:task-compact-u",
+          "role": "assistant",
+          "session": "claude-code:agent-task-agent-12-change-proof"
+        },
+        "offset": 371
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-code:agent-task-agent-12-change-proof",
+        "kind": "subagent",
+        "started": "2026-07-01T12:10:00Z"
+      }
+    ]
+  }
+}

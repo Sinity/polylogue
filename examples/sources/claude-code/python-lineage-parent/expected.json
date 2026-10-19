@@ -1,0 +1,62 @@
+{
+  "accounting": {
+    "framed": 2,
+    "materialized": {
+      "assistant": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 186,
+        "message": {
+          "at": "2026-07-01T12:00:00Z",
+          "blocks": [
+            {
+              "text": "Plan the release.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:parent-u",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:claude-lineage-parent"
+        },
+        "offset": 0
+      },
+      {
+        "end": 427,
+        "message": {
+          "at": "2026-07-01T12:00:01Z",
+          "blocks": [
+            {
+              "text": "I will inspect the checks.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:parent-a",
+          "model": "claude-sonnet-4-5-20250929",
+          "parent": "claude-code:parent-u",
+          "role": "assistant",
+          "session": "claude-code:claude-lineage-parent"
+        },
+        "offset": 187
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-code:claude-lineage-parent",
+        "kind": "main",
+        "started": "2026-07-01T12:00:00Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "model": 1,
+      "prompt": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": null,
+        "kind": "run_settings",
+        "session": "ai-studio:text_only_session"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "at": "2025-02-01T10:00:05Z",
+          "blocks": [
+            {
+              "text": "What is the capital of France?",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:text_only_session#chunk-user-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:text_only_session"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "at": "2025-02-01T10:00:08Z",
+          "blocks": [
+            {
+              "text": "The capital of France is Paris.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:text_only_session#chunk-model-1",
+          "parent": "ai-studio:text_only_session#chunk-user-1",
+          "role": "assistant",
+          "session": "ai-studio:text_only_session",
+          "stop_reason": "STOP",
+          "usage": {
+            "cache_write": null,
+            "cached_input": null,
+            "input": null,
+            "output": 8,
+            "reasoning": null
+          }
+        },
+        "offset": 1
+      }
+    ],
+    "sessions": [
+      {
+        "id": "ai-studio:text_only_session",
+        "kind": "main",
+        "started": "2025-02-01T10:00:05Z"
+      }
+    ]
+  }
+}

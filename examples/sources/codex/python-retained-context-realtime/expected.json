@@ -1,0 +1,113 @@
+{
+  "accounting": {
+    "framed": 8,
+    "materialized": {
+      "response_item/function_call": 1,
+      "response_item/function_call_output": 1,
+      "response_item/message": 2,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {
+      "realtime_item: unrecognized record type": 2,
+      "retained_context: unrecognized record type": 1
+    },
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 382,
+        "message": {
+          "at": "2026-09-01T10:00:01Z",
+          "blocks": [
+            {
+              "text": "Pick a colour for the sample banner.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:retained-context-session@184",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "codex:retained-context-session"
+        },
+        "offset": 184
+      },
+      {
+        "end": 641,
+        "message": {
+          "at": "2026-09-01T10:00:02Z",
+          "blocks": [
+            {
+              "call_id": "call_sample_question",
+              "input": {
+                "questions": [
+                  {
+                    "question": "Which colour should the banner use?"
+                  }
+                ]
+              },
+              "tool": "request_user_input",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:retained-context-session@383",
+          "role": "assistant",
+          "session": "codex:retained-context-session"
+        },
+        "offset": 383
+      },
+      {
+        "end": 1130,
+        "message": {
+          "at": "2026-09-01T10:00:05.1Z",
+          "blocks": [
+            {
+              "call_id": "call_sample_question",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "{\"answers\":{\"q1\":{\"answers\":[\"Green\"]}}}",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:retained-context-session@920",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:retained-context-session"
+        },
+        "offset": 920
+      },
+      {
+        "end": 1731,
+        "message": {
+          "at": "2026-09-01T10:00:10Z",
+          "blocks": [
+            {
+              "text": "The banner will be green.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:retained-context-session@1538",
+          "role": "assistant",
+          "session": "codex:retained-context-session"
+        },
+        "offset": 1538
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/workspace/sample"
+        ],
+        "id": "codex:retained-context-session",
+        "kind": "main",
+        "started": "2026-09-01T10:00:00Z"
+      }
+    ]
+  }
+}

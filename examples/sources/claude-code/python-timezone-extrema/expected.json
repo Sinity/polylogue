@@ -1,0 +1,67 @@
+{
+  "accounting": {
+    "framed": 2,
+    "materialized": {
+      "assistant": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [
+      {
+        "child": "claude-code:timezone-extrema",
+        "evidence": "sessionId",
+        "kind": "copy",
+        "parent": "claude-code:neutral-timezone"
+      }
+    ],
+    "messages": [
+      {
+        "end": 162,
+        "message": {
+          "at": "2026-01-01T08:00:00Z",
+          "blocks": [
+            {
+              "text": "Inspect the sample.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:user-one",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "claude-code:neutral-timezone"
+        },
+        "offset": 0
+      },
+      {
+        "end": 361,
+        "message": {
+          "at": "2026-01-01T09:00:00Z",
+          "blocks": [
+            {
+              "text": "The sample is ready.",
+              "type": "text"
+            }
+          ],
+          "id": "claude-code:assistant-one",
+          "role": "assistant",
+          "session": "claude-code:neutral-timezone"
+        },
+        "offset": 163
+      }
+    ],
+    "sessions": [
+      {
+        "id": "claude-code:neutral-timezone",
+        "kind": "main",
+        "started": "2026-01-01T08:00:00Z"
+      }
+    ]
+  }
+}

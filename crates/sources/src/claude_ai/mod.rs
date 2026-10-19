@@ -90,6 +90,16 @@ const MESSAGE_FIELDS: Fields = &[
         Rule::Excluded("edit time; the creation time orders messages"),
     ),
     (
+        "edited_at",
+        Rule::Excluded("edit time; the creation time orders messages"),
+    ),
+    // The model that wrote this message; it overrides the conversation's.
+    ("model", Rule::Read),
+    (
+        "metadata",
+        Rule::Kept("message settings such as the thinking configuration"),
+    ),
+    (
         "truncated",
         Rule::Kept("the export marks a message it shortened"),
     ),
@@ -260,7 +270,7 @@ fn message(
         role,
         at: m.get("created_at").and_then(time_of),
         model: (role == Role::Assistant)
-            .then(|| model.map(str::to_owned))
+            .then(|| string_of(m, "model").or_else(|| model.map(str::to_owned)))
             .flatten(),
         prompt_kind,
         blocks,

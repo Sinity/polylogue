@@ -1,0 +1,4 @@
+{"type":"session_meta","payload":{"id":"text-only-session-1","timestamp":"2025-01-15T10:00:00Z","git":{"branch":"main","commit_hash":"deadbeef"},"instructions":"You are helpful."}}
+{"type":"response_item","payload":{"type":"message","id":"msg-user-1","role":"user","timestamp":"2025-01-15T10:00:05Z","content":[{"type":"input_text","text":"What is the capital of France?"}]}}
+{"type":"response_item","payload":{"type":"message","id":"msg-asst-1","role":"assistant","timestamp":"2025-01-15T10:00:08Z","content":[{"type":"output_text","text":"The capital of France is Paris."}]}}
+{"type":"response_item","payload":{"type":"token_count","input_tokens":12,"output_tokens":8}}

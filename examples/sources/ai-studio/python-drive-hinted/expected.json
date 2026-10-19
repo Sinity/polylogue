@@ -1,0 +1,65 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "model": 1,
+      "prompt": 1,
+      "user": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": null,
+        "kind": "run_settings",
+        "session": "ai-studio:1abd"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 1,
+        "message": {
+          "blocks": [
+            {
+              "text": "Prove the Drive-hinted parser claim.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:1abd#drive-user",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "ai-studio:1abd"
+        },
+        "offset": 0
+      },
+      {
+        "end": 2,
+        "message": {
+          "blocks": [
+            {
+              "text": "The Drive-hinted production route parsed this witness.",
+              "type": "text"
+            }
+          ],
+          "id": "ai-studio:1abd#drive-assistant",
+          "parent": "ai-studio:1abd#drive-user",
+          "role": "assistant",
+          "session": "ai-studio:1abd"
+        },
+        "offset": 1
+      }
+    ],
+    "sessions": [
+      {
+        "id": "ai-studio:1abd",
+        "kind": "main"
+      }
+    ]
+  }
+}

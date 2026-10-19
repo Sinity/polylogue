@@ -1,0 +1,223 @@
+{
+  "accounting": {
+    "framed": 13,
+    "materialized": {
+      "compacted": 1,
+      "response_item/function_call": 2,
+      "response_item/function_call_output": 2,
+      "response_item/message": 4,
+      "response_item/token_count": 1,
+      "session_meta": 1,
+      "turn_context": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "data": {
+          "cwd": "/repo/polylogue"
+        },
+        "kind": "turn_context",
+        "range": [
+          129,
+          188
+        ],
+        "session": "codex:interleaved-session-1"
+      },
+      {
+        "after": "codex:msg-user-2",
+        "at": "2025-01-15T12:05:00Z",
+        "data": {
+          "message": "Conversation compacted",
+          "replacement_history_items": 1
+        },
+        "kind": "compaction",
+        "range": [
+          1493,
+          1638
+        ],
+        "session": "codex:interleaved-session-1"
+      },
+      {
+        "after": "codex:msg-user-2",
+        "data": {
+          "turn_context": {
+            "cwd": "/repo/other"
+          }
+        },
+        "kind": "turn_context",
+        "range": [
+          1639,
+          1711
+        ],
+        "session": "codex:interleaved-session-1"
+      }
+    ],
+    "links": [],
+    "messages": [
+      {
+        "end": 388,
+        "message": {
+          "at": "2025-01-15T12:00:03Z",
+          "blocks": [
+            {
+              "text": "Check git status, then read README.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg-user-1",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "codex:interleaved-session-1"
+        },
+        "offset": 189
+      },
+      {
+        "end": 543,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_git",
+              "command": "git status",
+              "input": {
+                "cmd": "git status"
+              },
+              "tool": "exec_command",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:fc_1",
+          "role": "assistant",
+          "session": "codex:interleaved-session-1"
+        },
+        "offset": 389
+      },
+      {
+        "end": 648,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_git",
+              "outcome": {
+                "kind": "unknown",
+                "reason": "status_field_unreadable"
+              },
+              "output": "clean",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:interleaved-session-1@544",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:interleaved-session-1"
+        },
+        "offset": 544
+      },
+      {
+        "end": 841,
+        "message": {
+          "at": "2025-01-15T12:00:08Z",
+          "blocks": [
+            {
+              "text": "Working tree is clean.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg-asst-1",
+          "role": "assistant",
+          "session": "codex:interleaved-session-1"
+        },
+        "offset": 649
+      },
+      {
+        "end": 994,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_read",
+              "input": {
+                "path": "README.md"
+              },
+              "path": "README.md",
+              "tool": "read_file",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:fc_2",
+          "role": "assistant",
+          "session": "codex:interleaved-session-1"
+        },
+        "offset": 842
+      },
+      {
+        "end": 1108,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_read",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "# Polylogue\n",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:interleaved-session-1@995",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:interleaved-session-1"
+        },
+        "offset": 995
+      },
+      {
+        "end": 1320,
+        "message": {
+          "at": "2025-01-15T12:00:14Z",
+          "blocks": [
+            {
+              "text": "README starts with the Polylogue heading.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg-asst-2",
+          "role": "assistant",
+          "session": "codex:interleaved-session-1"
+        },
+        "offset": 1109
+      },
+      {
+        "end": 1492,
+        "message": {
+          "at": "2025-01-15T12:01:00Z",
+          "blocks": [
+            {
+              "text": "Thanks.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:msg-user-2",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "codex:interleaved-session-1"
+        },
+        "offset": 1321
+      }
+    ],
+    "sessions": [
+      {
+        "cwd": [
+          "/repo/polylogue"
+        ],
+        "git_branch": "feature/x",
+        "id": "codex:interleaved-session-1",
+        "kind": "main",
+        "started": "2025-01-15T12:00:00Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "accounting": {
+    "framed": 3,
+    "materialized": {
+      "response_item/message": 2,
+      "session_meta": 1
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 286,
+        "message": {
+          "at": "2026-08-01T10:00:01Z",
+          "blocks": [
+            {
+              "text": "Prove the parser claim.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:matrix-user",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "codex:origin-matrix-codex"
+        },
+        "offset": 98
+      },
+      {
+        "end": 504,
+        "message": {
+          "at": "2026-08-01T10:00:02Z",
+          "blocks": [
+            {
+              "text": "The production route parsed this witness.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:matrix-assistant",
+          "role": "assistant",
+          "session": "codex:origin-matrix-codex"
+        },
+        "offset": 287
+      }
+    ],
+    "sessions": [
+      {
+        "id": "codex:origin-matrix-codex",
+        "kind": "main",
+        "started": "2026-08-01T10:00:00Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,169 @@
+{
+  "accounting": {
+    "framed": 11,
+    "materialized": {
+      "legacy_header": 1,
+      "response_item/function_call": 2,
+      "response_item/function_call_output": 2,
+      "response_item/message": 2,
+      "response_item/reasoning": 1
+    },
+    "refused": {},
+    "unknown": {
+      "state: turn-state marker of 2025 rollouts; holds no content": 3
+    },
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 382,
+        "message": {
+          "blocks": [
+            {
+              "text": "List the sample directory.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:legacy-response-session@280",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "codex:legacy-response-session"
+        },
+        "offset": 280
+      },
+      {
+        "end": 578,
+        "message": {
+          "blocks": [
+            {
+              "text": "Listing the directory first.",
+              "type": "thinking"
+            }
+          ],
+          "id": "codex:rs_sample_1",
+          "role": "assistant",
+          "session": "codex:legacy-response-session"
+        },
+        "offset": 407
+      },
+      {
+        "end": 693,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_sample_ok",
+              "command": "ls sample",
+              "input": {
+                "command": [
+                  "ls",
+                  "sample"
+                ]
+              },
+              "tool": "shell",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:legacy-response-session@579",
+          "role": "assistant",
+          "session": "codex:legacy-response-session"
+        },
+        "offset": 579
+      },
+      {
+        "end": 860,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_sample_ok",
+              "outcome": {
+                "kind": "ok"
+              },
+              "output": "{\"output\":\"alpha.txt\\nbeta.txt\\n\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.1}}",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:legacy-response-session@694",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:legacy-response-session"
+        },
+        "offset": 694
+      },
+      {
+        "end": 990,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_sample_fail",
+              "command": "cat sample/missing.txt",
+              "input": {
+                "command": [
+                  "cat",
+                  "sample/missing.txt"
+                ]
+              },
+              "tool": "shell",
+              "type": "tool_call"
+            }
+          ],
+          "id": "codex:legacy-response-session@861",
+          "role": "assistant",
+          "session": "codex:legacy-response-session"
+        },
+        "offset": 861
+      },
+      {
+        "end": 1189,
+        "message": {
+          "blocks": [
+            {
+              "call_id": "call_sample_fail",
+              "outcome": {
+                "kind": "error",
+                "reason": {
+                  "detail": 1,
+                  "kind": "exit_code"
+                }
+              },
+              "output": "{\"output\":\"cat: sample/missing.txt: No such file or directory\\n\",\"metadata\":{\"exit_code\":1,\"duration_seconds\":0.1}}",
+              "type": "tool_result"
+            }
+          ],
+          "id": "codex:legacy-response-session@991",
+          "prompt_kind": "harness",
+          "role": "user",
+          "session": "codex:legacy-response-session"
+        },
+        "offset": 991
+      },
+      {
+        "end": 1339,
+        "message": {
+          "blocks": [
+            {
+              "text": "The directory holds alpha.txt and beta.txt.",
+              "type": "text"
+            }
+          ],
+          "id": "codex:legacy-response-session@1214",
+          "role": "assistant",
+          "session": "codex:legacy-response-session"
+        },
+        "offset": 1214
+      }
+    ],
+    "sessions": [
+      {
+        "git_branch": "main",
+        "id": "codex:legacy-response-session",
+        "kind": "main",
+        "started": "2025-08-01T10:00:00Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "synthetic-agent"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {"name": "synthetic.instrumentation", "version": "0.1.0"},
+          "schemaUrl": "https://opentelemetry.io/schemas/gen-ai-dev/1.42.0-dev",
+          "spans": [
+            {
+              "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+              "spanId": "00f067aa0ba902b7",
+              "parentSpanId": "b7ad6b7169203331",
+              "name": "execute_tool search",
+              "kind": 1,
+              "startTimeUnixNano": "1735689602000000000",
+              "endTimeUnixNano": "1735689602100000000",
+              "attributes": [
+                {"key": "gen_ai.operation.name", "value": {"stringValue": "execute_tool"}},
+                {"key": "gen_ai.conversation.id", "value": {"stringValue": "conversation-demo-7"}},
+                {"key": "gen_ai.tool.name", "value": {"stringValue": "search"}},
+                {"key": "gen_ai.tool.call.id", "value": {"stringValue": "call-search-1"}},
+                {"key": "gen_ai.tool.call.arguments", "value": {"kvlistValue": {"values": [
+                  {"key": "query", "value": {"stringValue": "rain forecast"}}
+                ]}}},
+                {"key": "gen_ai.tool.call.result", "value": {"stringValue": "Rain expected tomorrow."}},
+                {"key": "vendor.experimental.signal", "value": {"stringValue": "retained-verbatim"}}
+              ]
+            },
+            {
+              "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+              "spanId": "b7ad6b7169203331",
+              "name": "chat gpt-4.1-mini",
+              "kind": 3,
+              "startTimeUnixNano": "1735689601000000000",
+              "endTimeUnixNano": "1735689603000000000",
+              "attributes": [
+                {"key": "gen_ai.operation.name", "value": {"stringValue": "chat"}},
+                {"key": "gen_ai.conversation.id", "value": {"stringValue": "conversation-demo-7"}},
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-4.1-mini"}},
+                {"key": "gen_ai.input.messages", "value": {"stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Find tomorrow's weather.\"}]}]"}},
+                {"key": "gen_ai.output.messages", "value": {"arrayValue": {"values": [
+                  {"kvlistValue": {"values": [
+                    {"key": "role", "value": {"stringValue": "assistant"}},
+                    {"key": "parts", "value": {"arrayValue": {"values": [
+                      {"kvlistValue": {"values": [
+                        {"key": "type", "value": {"stringValue": "text"}},
+                        {"key": "content", "value": {"stringValue": "I'll check the forecast."}}
+                      ]}}
+                    ]}}}
+                  ]}}
+                ]}}},
+                {"key": "gen_ai.usage.input_tokens", "value": {"intValue": "18"}},
+                {"key": "gen_ai.usage.output_tokens", "value": {"intValue": "6"}},
+                {"key": "gen_ai.usage.cache_read.input_tokens", "value": {"intValue": "0"}}
+              ],
+              "status": {"code": 1}
+            },
+            {
+              "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+              "spanId": "b7ad6b7169203332",
+              "parentSpanId": "b7ad6b7169203331",
+              "name": "execute_tool failing-tool",
+              "kind": 1,
+              "startTimeUnixNano": "1735689604000000000",
+              "attributes": [
+                {"key": "gen_ai.operation.name", "value": {"stringValue": "execute_tool"}},
+                {"key": "gen_ai.conversation.id", "value": {"stringValue": "conversation-demo-7"}},
+                {"key": "gen_ai.tool.name", "value": {"stringValue": "failing-tool"}},
+                {"key": "gen_ai.tool.call.id", "value": {"stringValue": "call-fail-1"}},
+                {"key": "gen_ai.tool.call.result", "value": {"stringValue": "Permission denied."}}
+              ],
+              "status": {"code": 2, "message": "permission denied"}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
