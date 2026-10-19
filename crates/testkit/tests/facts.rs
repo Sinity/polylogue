@@ -76,20 +76,3 @@ fn a_continuation_reads_its_inherited_prefix_logically() {
     // #4 resumes #2: 18 inherited messages, then its 10 own.
     assert_eq!(r.messages(&session(4), true).unwrap().len(), 28);
 }
-
-#[test]
-#[ignore = "diagnostic"]
-fn dump_links() {
-    let w = Morrow::build(Set::Main);
-    let pool = w.reads();
-    let r = pool.reader().unwrap();
-    for q in [
-        "SELECT parent_id, child_id, kind, how FROM link",
-        "SELECT id, repo FROM session",
-        "SELECT tool, action, count(*) n FROM tool_call GROUP BY tool, action",
-    ] {
-        for row in r.query(q, &[]).unwrap() {
-            eprintln!("{row}");
-        }
-    }
-}

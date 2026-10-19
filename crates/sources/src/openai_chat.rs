@@ -7,11 +7,11 @@
 //! (architecture 5.5). The session is the object's `id` when it has one,
 //! else the file name.
 
-use crate::account::{Accounting, Disposition};
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of};
 use crate::fields::{Fields, Rule, unaccounted};
 use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
+use crate::{Accounting, Disposition};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Json, Message, PromptKind, Role, Session, SessionKind,
     TitleSource, ToolOutcome, Usage,

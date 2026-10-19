@@ -3,7 +3,7 @@
 
 use super::native::{read_frame, serve, write_frame};
 use super::*;
-use crate::testworld::{World, world};
+use crate::test_daemon::{self, TestDaemon};
 use base64::Engine as _;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
-fn ctx(w: &World) -> Arc<Ctx> {
+fn ctx(w: &TestDaemon) -> Arc<Ctx> {
     Arc::new(Ctx::at(&w.daemon.state, &w.daemon.archive).unwrap())
 }
 
@@ -93,7 +93,7 @@ fn capture(provider_session: &str, text: &str) -> Vec<u8> {
 
 #[test]
 fn a_capture_is_spooled_durably_and_archived_by_the_loop() {
-    let w = world("x");
+    let w = test_daemon::start("x");
     let ctx = ctx(&w);
     let status = exchange(&ctx, "GET", "/v1/status", b"");
     assert_eq!(status.status, 200);
@@ -257,7 +257,7 @@ fn report(ctx: &Arc<Ctx>, id: &str, who: &str, outcome: &str) -> Answer {
 
 #[test]
 fn the_extension_claims_and_reports_actions_the_operator_queued() {
-    let w = world("x");
+    let w = test_daemon::start("x");
     let ctx = ctx(&w);
     let claim = |who: &str| {
         exchange(

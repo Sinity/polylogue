@@ -4,10 +4,10 @@
 //! an input keeps the join to sessions a function of stored bytes, so a
 //! rebuild gives every session the same repository.
 
-use crate::account::{Accounting, Disposition};
 use crate::document::{Sink, str_of, string_of};
 use crate::origin::Root;
 use crate::parse::{DocumentParser, Output, StepParser, Whole};
+use crate::{Accounting, Disposition};
 use polylogue_model::{Json, RepoLookup};
 use std::path::Path;
 

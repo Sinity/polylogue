@@ -2,7 +2,7 @@
 //! access rules, the reader's pages and its JSON API.
 
 use super::*;
-use crate::testworld::{World, world};
+use crate::test_daemon::{self, TestDaemon};
 use axum::body::{Body, to_bytes};
 use axum::http::Request as Http;
 use tower::ServiceExt;
@@ -11,12 +11,12 @@ const PORT: u16 = 8765;
 const TOKEN: &str = "t0ken";
 
 struct Reader {
-    w: World,
+    w: TestDaemon,
     web: Arc<Web>,
 }
 
 fn reader() -> Reader {
-    let w = world("look at <script>alert(1)</script> & the parser");
+    let w = test_daemon::start("look at <script>alert(1)</script> & the parser");
     let browser = Arc::new(crate::browser::Ctx::at(&w.daemon.state, &w.daemon.archive).unwrap());
     let web = Arc::new(Web {
         daemon: Arc::clone(&w.daemon),

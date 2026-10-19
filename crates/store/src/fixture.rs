@@ -1,8 +1,14 @@
-//! A small archive written row by row, for tests of what reads it (the
-//! query language, rendering, the daemon). Rows go straight into the
-//! tables, the way the writer leaves them, so a test states the facts it
-//! needs without a parser or an input file. Enabled with the `fixture`
-//! feature; never part of the product.
+//! Archives for tests, enabled with the `fixture` feature; never part of
+//! the product.
+//!
+//! - [`Fixture`]: a small archive written row by row, for tests of what
+//!   reads it (the query language, rendering, the daemon). Rows go straight
+//!   into the tables, the way the writer leaves them, so a test states the
+//!   facts it needs without a parser or an input file.
+//! - [`writer::WriterWorld`]: the real writer over a temporary archive, for
+//!   tests of what the writer and the derive step make of parsed records.
+
+pub mod writer;
 
 use crate::files::{Archive, ArchiveLock, open_write};
 use crate::{ReadPool, Result};

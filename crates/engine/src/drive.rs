@@ -245,5 +245,4 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
 }
 
 #[cfg(test)]
-#[path = "drive_tests.rs"]
 mod tests;

@@ -4,9 +4,9 @@
 //! the export holds them; only positions are new, taken from the
 //! document's order, which is the order the export was read in.
 
-use crate::account::{Accounting, Disposition};
 use crate::document::Sink;
 use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
+use crate::{Accounting, Disposition};
 use polylogue_model::export::{Document, FORMAT};
 use std::path::Path;
 
