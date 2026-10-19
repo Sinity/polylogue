@@ -281,7 +281,6 @@ pub static ORIGINS: &[OriginSpec] = &[
     reserved!("grok", Import, []),
     reserved!("otel-genai", Import, []),
     reserved!("openai-chat", Import, []),
-    reserved!("polylogue-export", Import, []),
 ];
 
 pub fn by_name(name: &str) -> Option<&'static OriginSpec> {
