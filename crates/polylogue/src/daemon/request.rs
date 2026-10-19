@@ -105,9 +105,15 @@ pub enum Request {
     Sql {
         statement: String,
     },
+    /// `session:<id>`, `input:<id>` or `text:<string>`. A dry run counts
+    /// what would go and changes nothing.
     Excise {
         request_id: String,
         target: String,
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default)]
+        dry_run: bool,
     },
     /// One harness hook event, as the hook command received it.
     Hook {

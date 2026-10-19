@@ -99,11 +99,15 @@ pub enum Command {
     Notices,
     /// Read-only SQL over the stable views.
     Sql { statement: String },
-    /// Remove content permanently from every file and derived product.
+    /// Remove content permanently from every file and derived product:
+    /// `session:<id>`, `input:<id>` or `text:<string>`. Without `--yes`,
+    /// shows what would go and changes nothing.
     Excise {
         target: String,
         #[arg(long)]
         yes: bool,
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Embeddings: cost preview, build, status.
     #[command(subcommand)]
@@ -369,6 +373,16 @@ pub fn run(args: Args) -> ExitCode {
                 format: format!("{format:?}").to_lowercase(),
             }
         }
+        Some(Command::Excise {
+            target,
+            yes,
+            reason,
+        }) => Request::Excise {
+            request_id: request_id(),
+            target,
+            reason,
+            dry_run: !yes,
+        },
         Some(Command::Sql { statement }) => Request::Sql { statement },
         Some(Command::Recall { query, cwd }) => Request::Context {
             request_id: request_id(),

@@ -353,6 +353,144 @@ fn an_imported_file_keeps_the_origin_whose_layout_it_sits_in() {
     assert_eq!(recognize_import(loose, head).unwrap().name, "claude-code");
 }
 
+fn excise(e: &mut Engine, target: &str, dry_run: bool) -> Excised {
+    e.excise(ExciseRequest {
+        id: format!("req-{target}-{dry_run}"),
+        scope: ExciseScope::parse(target).unwrap(),
+        reason: Some("test".into()),
+        dry_run,
+    })
+    .unwrap()
+}
+
+/// Whether any stored input byte range holds `needle`.
+fn stored(root: &Path, needle: &str) -> bool {
+    !polylogue_store::excise::stored_blobs_containing(&Archive::at(root), needle)
+        .unwrap()
+        .is_empty()
+}
+
+#[test]
+fn an_excised_session_is_gone_from_every_file_and_never_comes_back() {
+    let w = World::new();
+    w.append(
+        "s1.jsonl",
+        &(user("u1", "s1", "the launch code is zebra42") + &assistant("a1", "s1", "noted")),
+    );
+    w.append(
+        "s2.jsonl",
+        &(user("u2", "s2", "unrelated") + &assistant("a2", "s2", "fine")),
+    );
+    let (mut e, lock) = w.engine(64 << 20);
+    assert!(e.converge().unwrap().errors.is_empty());
+    assert!(stored(&w.root, "zebra42"));
+
+    let preview = excise(&mut e, "session:claude-code:s1", true);
+    assert!(preview.dry_run);
+    assert_eq!(preview.messages, 2);
+    assert_eq!(w.texts("s1"), ["the launch code is zebra42", "noted"]);
+
+    let done = excise(&mut e, "session:claude-code:s1", false);
+    assert_eq!(done.sessions, ["claude-code:s1"]);
+    assert_eq!(done.inputs_removed.len(), 1);
+    assert!(done.blobs_deleted >= 1, "{done:?}");
+    assert!(w.texts("s1").is_empty());
+    assert_eq!(w.texts("s2"), ["unrelated", "fine"]);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:s1'"),
+        0
+    );
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM text_fts WHERE text_fts MATCH 'zebra42'"),
+        0
+    );
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM removed_session WHERE session_id = 'claude-code:s1'"),
+        1
+    );
+    assert!(!stored(&w.root, "zebra42"));
+
+    // The file keeps growing; nothing of it is collected again.
+    w.append("s1.jsonl", &user("u3", "s1", "zebra42 again"));
+    assert!(e.converge().unwrap().errors.is_empty());
+    assert!(w.texts("s1").is_empty());
+    // Nor after a restart.
+    drop(e);
+    drop(lock);
+    let (mut e, _lock) = w.engine(64 << 20);
+    assert!(e.converge().unwrap().errors.is_empty());
+    assert!(w.texts("s1").is_empty());
+    assert!(!stored(&w.root, "zebra42"));
+    // Nor by import of the same session from another file.
+    let copy = w.dir.path().join("copy.jsonl");
+    fs::write(&copy, user("u1", "s1", "the launch code is zebra42")).unwrap();
+    e.import(std::slice::from_ref(&copy)).unwrap();
+    assert!(w.texts("s1").is_empty());
+}
+
+#[test]
+fn an_excised_text_is_overwritten_in_stored_bytes_and_the_index() {
+    let w = World::new();
+    w.append(
+        "s1.jsonl",
+        &(user("u1", "s1", "token sk-abc123 here") + &assistant("a1", "s1", "ok")),
+    );
+    let (mut e, _lock) = w.engine(64 << 20);
+    assert!(e.converge().unwrap().errors.is_empty());
+    let done = excise(&mut e, "text:sk-abc123", false);
+    assert_eq!(done.inputs_overwritten.len(), 1, "{done:?}");
+    assert_eq!(
+        done.on_disk.len(),
+        1,
+        "the live file still holds it: {done:?}"
+    );
+    assert!(!stored(&w.root, "sk-abc123"));
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM text_fts WHERE text_fts MATCH 'abc123'"),
+        0
+    );
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM text_fts WHERE text_fts MATCH 'token'"),
+        1
+    );
+    e.converge().unwrap();
+    let texts = w.texts("s1");
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    assert!(!texts[0].contains("sk-abc123"));
+    assert!(texts[0].starts_with("token ") && texts[0].ends_with(" here"));
+    let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
+    let rows = pool
+        .reader()
+        .unwrap()
+        .query("SELECT scope AS s FROM a.excision", &[])
+        .unwrap();
+    assert!(!rows[0]["s"].as_str().unwrap().contains("sk-abc123"));
+}
+
+#[test]
+fn excising_a_session_from_a_shared_input_overwrites_only_its_records() {
+    let w = World::new();
+    // One file holding records of two sessions (a resumed session's file
+    // names the session each record belongs to).
+    w.append(
+        "mix.jsonl",
+        &(user("u1", "keep", "keep this")
+            + &user("u2", "drop", "drop pelican77")
+            + &user("u3", "keep", "and this")),
+    );
+    let (mut e, _lock) = w.engine(64 << 20);
+    assert!(e.converge().unwrap().errors.is_empty());
+    assert_eq!(w.count("SELECT count(*) AS n FROM session"), 2);
+    let target = w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:drop'");
+    assert_eq!(target, 1);
+    let done = excise(&mut e, "session:claude-code:drop", false);
+    assert!(done.inputs_removed.is_empty(), "{done:?}");
+    assert_eq!(done.inputs_overwritten.len(), 1, "{done:?}");
+    assert!(!stored(&w.root, "pelican77"));
+    assert!(stored(&w.root, "keep this") && stored(&w.root, "and this"));
+    assert_eq!(w.texts("keep").len(), 2);
+}
+
 fn export_of(root: &Path, session: &str) -> polylogue_model::export::SessionExport {
     let pool = ReadPool::open(&Archive::at(root)).unwrap();
     pool.reader()
