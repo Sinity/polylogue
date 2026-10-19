@@ -548,7 +548,7 @@ dependencies = [
 [[package]]
 name = "credential-masking"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.2.0#dffee36c25b20efda25c3f0abdc9324f69c16552"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.4.0#29e6841b5d73437dde3021b84b61b7d36dada5d8"
 
 [[package]]
 name = "crossbeam-utils"
@@ -698,11 +698,11 @@ dependencies = [
 [[package]]
 name = "devkit"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.2.0#dffee36c25b20efda25c3f0abdc9324f69c16552"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.4.0#29e6841b5d73437dde3021b84b61b7d36dada5d8"
 dependencies = [
  "blake3",
  "clap",
- "devkit-macros 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.2.0)",
+ "devkit-macros",
  "quick-xml",
  "rusqlite",
  "serde_json",
@@ -710,30 +710,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "devkit"
-version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.3.0#1a66c9704c25f79ec61104d0783b171a8741714b"
-dependencies = [
- "blake3",
- "devkit-macros 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.3.0)",
- "quick-xml",
- "serde_json",
-]
-
-[[package]]
 name = "devkit-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.2.0#dffee36c25b20efda25c3f0abdc9324f69c16552"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "devkit-macros"
-version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.3.0#1a66c9704c25f79ec61104d0783b171a8741714b"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.4.0#29e6841b5d73437dde3021b84b61b7d36dada5d8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1028,7 +1007,7 @@ dependencies = [
 [[package]]
 name = "hashed-blobs"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.2.0#dffee36c25b20efda25c3f0abdc9324f69c16552"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.4.0#29e6841b5d73437dde3021b84b61b7d36dada5d8"
 dependencies = [
  "blake3",
  "chacha20poly1305",
@@ -1809,7 +1788,7 @@ name = "polylogue-sinex"
 version = "0.1.0"
 dependencies = [
  "async-nats",
- "devkit 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.3.0)",
+ "devkit",
  "futures-util",
  "hashed-blobs",
  "polylogue-engine",
@@ -3409,7 +3388,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "clap",
- "devkit 0.1.0 (git+https://github.com/Sinity/polylogue-sinex-common?tag=v0.2.0)",
+ "devkit",
  "serde_json",
  "tempfile",
 ]
