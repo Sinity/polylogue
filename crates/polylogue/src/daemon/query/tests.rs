@@ -387,6 +387,7 @@ fn ask(text: &str) -> Ask<'_> {
         now: OCT1 + 7 * DAY,
         day: LogicalDay::named("UTC", 0).unwrap(),
         embeddings: false,
+        near: None,
     }
 }
 
@@ -705,6 +706,37 @@ fn an_empty_result_explains_itself() {
     let v = q(&w, "near:\"ambiguous date formats\"");
     assert_eq!(v["outcome"], "degraded");
     assert_eq!(v["count"], 7);
+}
+
+#[test]
+fn near_ranks_by_the_nearest_texts_it_is_given() {
+    let w = morrow();
+    let pool = w.fx.reads().unwrap();
+    let text_id = pool
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT b.text_id AS t FROM block b JOIN session s ON s.pk = b.session_pk
+             WHERE s.id LIKE '%0002-4000%' AND b.text_id IS NOT NULL LIMIT 1",
+            &[],
+        )
+        .unwrap()[0]["t"]
+        .as_i64()
+        .unwrap();
+    let hits = format!("[[{text_id}, 0.93]]");
+    let near = |q: &str| -> Result<String, String> {
+        assert_eq!(q, "ambiguous date formats");
+        Ok(hits.clone())
+    };
+    let mut a = ask("near:\"ambiguous date formats\"");
+    a.embeddings = true;
+    a.near = Some(&near);
+    let v = run_q(&w, a).unwrap();
+    assert_eq!(v["outcome"], "rows", "{v}");
+    assert_eq!(v["ranked"], true);
+    // Ranking keeps every row; the nearest comes first.
+    assert_eq!(v["count"], 7);
+    assert_eq!(ids(&v)[0], "#2");
 }
 
 #[test]

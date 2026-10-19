@@ -60,6 +60,7 @@ fn ask(text: &str) -> Ask<'_> {
         now: NOW,
         day: LogicalDay::named("Europe/Warsaw", 240).unwrap(),
         embeddings: false,
+        near: None,
     }
 }
 

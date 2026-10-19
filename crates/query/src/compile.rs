@@ -95,6 +95,14 @@ pub struct WhyClause {
     pub sql: String,
 }
 
+/// A `near:` term to rank by: its text and the parameter holding the
+/// nearest texts as a JSON array of `[text id, similarity]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Near {
+    pub text: String,
+    pub param: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Program {
     pub query: String,
@@ -119,6 +127,9 @@ pub struct Program {
     pub why: Vec<WhyClause>,
     pub why_of: String,
     pub page_size: u64,
+    /// `near:`: the text to embed, and the 1-based parameter the caller
+    /// fills with the nearest texts before running the query.
+    pub near: Option<Near>,
     /// The instant and zone the times were resolved against.
     pub now: i64,
     pub zone: String,
@@ -240,6 +251,7 @@ struct Compiler<'a> {
     aliases: usize,
     /// The ranking expression, when a top-level text term ranks the rows.
     rank: Option<String>,
+    near: Option<Near>,
 }
 
 impl<'a> Compiler<'a> {
@@ -256,6 +268,7 @@ impl<'a> Compiler<'a> {
             shown: vec![],
             aliases: 0,
             rank: None,
+            near: None,
         }
     }
 
@@ -601,6 +614,7 @@ impl<'a> Compiler<'a> {
             why,
             why_of,
             page_size,
+            near: self.near,
             now: self.opts.clock.now,
             zone: self.opts.clock.day.zone_name().unwrap_or("UTC").to_owned(),
             day_start_minutes: self.opts.clock.day.start_minutes,
@@ -1626,12 +1640,54 @@ impl<'a> Compiler<'a> {
                         position: span.start,
                     });
                 }
-                self.degraded.push(if self.opts.embeddings {
-                    "semantic ranking is not built yet; rows are ordered by time and unranked"
-                        .into()
-                } else {
-                    "semantic search is not enabled; rows are ordered by time and unranked".into()
-                });
+                if !self.opts.embeddings {
+                    self.degraded.push(
+                        "semantic search is not enabled; rows are ordered by time and unranked"
+                            .into(),
+                    );
+                    return Ok("1".into());
+                }
+                let text = one(&op).ok_or_else(|| need_value(name))?;
+                // The caller binds the nearest texts as `[[text id, similarity], ...]`.
+                let param = self.bind(Param::Text("[]".into()));
+                let index = self.params.len();
+                let cte = format!("n{}", self.ctes.len() + 1);
+                self.ctes.push(format!(
+                    "{cte} AS MATERIALIZED (SELECT CAST(json_extract(j.value, '$[0]') AS INTEGER) AS text_id, \
+                     -json_extract(j.value, '$[1]') AS rank FROM json_each({param}) j)"
+                ));
+                let a = &scope.a;
+                let rank = match unit {
+                    Unit::Sessions => format!(
+                        "(SELECT min(h.rank) FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
+                         WHERE xb.session_pk IN ({}))",
+                        fields::subtree(&a.s)
+                    ),
+                    Unit::Messages => format!(
+                        "(SELECT min(h.rank) FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
+                         WHERE xb.message_pk = {}.pk)",
+                        a.m
+                    ),
+                    Unit::Blocks => {
+                        format!(
+                            "(SELECT h.rank FROM {cte} h WHERE h.text_id = {}.text_id)",
+                            a.b
+                        )
+                    }
+                    other => {
+                        return Err(QueryError::Invalid {
+                            message: format!(
+                                "near: ranks sessions, messages and blocks, not {}",
+                                other.name()
+                            ),
+                            position: span.start,
+                        });
+                    }
+                };
+                // Semantic similarity ranks the whole query, ahead of any
+                // full-text rank.
+                self.rank = Some(rank);
+                self.near = Some(Near { text, param: index });
                 "1".into()
             }
             (_, "output" | "thinking") => {

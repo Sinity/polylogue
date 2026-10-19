@@ -115,6 +115,18 @@ pub enum Request {
         #[serde(default)]
         dry_run: bool,
     },
+    /// Embeddings: `status`, `preview` (what a build would embed and cost)
+    /// or `build`. `query` limits them to the sessions it finds; `limit`
+    /// to that many texts. A paid provider builds only with `yes`.
+    Embed {
+        what: String,
+        #[serde(default)]
+        query: Option<String>,
+        #[serde(default)]
+        limit: Option<u64>,
+        #[serde(default)]
+        yes: bool,
+    },
     /// One harness hook event, as the hook command received it.
     Hook {
         event: String,

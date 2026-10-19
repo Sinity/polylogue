@@ -271,9 +271,23 @@ pub enum WorkCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum EmbedCommand {
-    Preview(QueryArgs),
-    Build(QueryArgs),
+    /// What a build would embed and what it would cost.
+    Preview(EmbedArgs),
+    /// Embed the texts not yet embedded. A paid provider needs `--yes`.
+    Build(EmbedArgs),
+    /// Vectors per model, and the provider settings.
     Status,
+}
+
+#[derive(Debug, ClapArgs)]
+pub struct EmbedArgs {
+    /// A sessions query limiting the texts (default: every prose text).
+    pub query: Vec<String>,
+    /// At most this many texts.
+    #[arg(long)]
+    pub limit: Option<u64>,
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -391,6 +405,19 @@ pub fn run(args: Args) -> ExitCode {
             Request::Export {
                 sessions: ids,
                 format: format!("{format:?}").to_lowercase(),
+            }
+        }
+        Some(Command::Embed(e)) => {
+            let (what, args) = match e {
+                EmbedCommand::Status => ("status", None),
+                EmbedCommand::Preview(a) => ("preview", Some(a)),
+                EmbedCommand::Build(a) => ("build", Some(a)),
+            };
+            Request::Embed {
+                what: what.into(),
+                query: args.as_ref().map(|a| a.query.join(" ")),
+                limit: args.as_ref().and_then(|a| a.limit),
+                yes: args.as_ref().is_some_and(|a| a.yes),
             }
         }
         Some(Command::Excise {

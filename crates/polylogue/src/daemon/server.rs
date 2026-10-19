@@ -151,6 +151,17 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
             why,
             session,
         } => {
+            let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
+                .ok()
+                .flatten();
+            let embeddings = crate::embeddings::available(&d.archive, provider.as_ref());
+            let near = |q: &str| -> Result<String, String> {
+                let Some(p) = &provider else {
+                    return Ok("[]".into());
+                };
+                crate::embeddings::nearest_json(&d.archive, &reader, p, q)
+                    .map_err(|e| e.to_string())
+            };
             let ask = super::query::Ask {
                 text: &text,
                 cursor: cursor.as_deref(),
@@ -162,7 +173,8 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 // and `day.logical_start` settings come with the settings
                 // lane.
                 day: polylogue_model::LogicalDay::system(),
-                embeddings: false,
+                embeddings,
+                near: Some(&near),
             };
             match super::query::run(&reader, ask) {
                 Ok(data) => Response::Ok { data },
@@ -209,6 +221,12 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
             }
         }
         Request::Export { sessions, format } => export(&reader, &sessions, &format),
+        Request::Embed {
+            what,
+            query,
+            limit,
+            yes,
+        } => embed(d, &reader, &what, query.as_deref(), limit, yes),
         Request::Excise {
             request_id,
             target,
@@ -338,6 +356,100 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 .unwrap_or_default();
             error("not_built", format!("`{op}` is not built yet"))
         }
+    }
+}
+
+/// Embedding status, cost preview and build ([`crate::embeddings`]).
+fn embed(
+    d: &Daemon,
+    reader: &polylogue_store::Reader<'_>,
+    what: &str,
+    query: Option<&str>,
+    limit: Option<u64>,
+    yes: bool,
+) -> Response {
+    use crate::embeddings::{self, ProviderKind};
+    let provider = match embeddings::Provider::from_settings(reader, &machine_id()) {
+        Ok(p) => p,
+        Err(e) => return error("bad_request", e),
+    };
+    if what == "status" {
+        let vectors =
+            polylogue_store::vectors::Vectors::open_read(&d.archive).and_then(|v| v.status());
+        return match vectors {
+            Ok(s) => ok(serde_json::json!({
+                "provider": provider.as_ref().map(|p| serde_json::json!({
+                    "endpoint": p.endpoint, "model": p.model,
+                })),
+                "vectors": s,
+            })),
+            Err(e) => store_error(&e),
+        };
+    }
+    let Some(provider) = provider else {
+        return error(
+            "embeddings_off",
+            "embeddings are off; `polylogue setting embed.provider local` (or `voyage`) turns them on",
+        );
+    };
+    // A query limits the work to the sessions it finds.
+    let sessions: Option<Vec<String>> = match query.filter(|q| !q.trim().is_empty()) {
+        None => None,
+        Some(q) => {
+            let ask = super::query::Ask {
+                text: q,
+                cursor: None,
+                page_size: Some(1_000_000),
+                why: false,
+                session: None,
+                now: now_ms(),
+                day: polylogue_model::LogicalDay::system(),
+                embeddings: false,
+                near: None,
+            };
+            match super::query::run(reader, ask) {
+                Ok(v) if v["unit"] == "sessions" => Some(
+                    v["rows"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|r| r["id"].as_str().map(str::to_owned))
+                        .collect(),
+                ),
+                Ok(_) => return error("bad_request", "embed takes a sessions query"),
+                Err(f) => {
+                    return Response::Error {
+                        kind: f.kind,
+                        message: f.message,
+                        detail: f.detail,
+                    };
+                }
+            }
+        }
+    };
+    let result = match what {
+        "preview" => embeddings::preview(&d.archive, reader, &provider, sessions.as_deref(), limit)
+            .map(|p| serde_json::to_value(p).unwrap_or_default()),
+        "build" => {
+            if provider.kind == ProviderKind::Voyage && !yes {
+                return error(
+                    "confirm",
+                    "Voyage is paid: `polylogue embed preview` shows the cost; build with --yes",
+                );
+            }
+            embeddings::build(&d.archive, reader, &provider, sessions.as_deref(), limit)
+                .map(|b| serde_json::to_value(b).unwrap_or_default())
+        }
+        other => {
+            return error(
+                "bad_request",
+                format!("embed {other}: status, preview or build"),
+            );
+        }
+    };
+    match result {
+        Ok(v) => ok(v),
+        Err(e) => error("embed", e),
     }
 }
 
