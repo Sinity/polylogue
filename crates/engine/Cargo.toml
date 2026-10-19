@@ -24,6 +24,7 @@ ureq.workspace = true
 faults = ["polylogue-store/faults"]
 
 [dev-dependencies]
+mimalloc.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
 polylogue-testkit.workspace = true

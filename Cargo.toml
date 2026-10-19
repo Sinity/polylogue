@@ -47,6 +47,7 @@ ureq = { version = "3", features = ["json"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 sha2 = "0.10"
 tower = { version = "0.5", features = ["util"] }
+mimalloc = { version = "0.1", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

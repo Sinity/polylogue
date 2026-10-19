@@ -21,6 +21,13 @@ mod web;
 use clap::Parser;
 use std::process::ExitCode;
 
+/// mimalloc instead of glibc's allocator: a first build's sixteen parse
+/// threads fragmented glibc's arenas by about 1 GB beyond the live heap
+/// (heaptrack against RSS, 2026-10-19); mimalloc kept RSS 650 MB lower at
+/// the same speed.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Exit code when a command needs the daemon and it is not running.
 pub const EXIT_DAEMON_REQUIRED: u8 = 6;
 
