@@ -25,6 +25,21 @@ pub struct Output {
     /// Bytes the input carried inline (base64 images), for the blob store.
     /// Blocks refer to them by hash.
     pub blobs: Vec<InlineBlob>,
+    /// Repository lookups (a `polylogue-repo-lookup` input holds one).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repo_lookups: Vec<RepoLookup>,
+}
+
+/// What a repository directory is, as read on this host: where its `.git`
+/// is, its `origin` remote and its first commit. Sessions whose working
+/// directory lies under `path` belong to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoLookup {
+    pub path: String,
+    /// The remote's URL with any credentials removed.
+    pub remote: Option<String>,
+    /// The repository's identity; `None` when it could not be read.
+    pub root_commit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

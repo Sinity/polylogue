@@ -727,7 +727,12 @@ fn usage(u: &Json) -> Usage {
         cache_write: n("cache_creation_input_tokens"),
         output: n("output_tokens"),
         reasoning: None,
+        cache_write_1h: u
+            .get("cache_creation")
+            .and_then(|c| c.get("ephemeral_1h_input_tokens"))
+            .and_then(Json::as_u64),
         service_tier: str_field(u, "service_tier").map(str::to_owned),
+        speed: str_field(u, "speed").map(str::to_owned),
     }
 }
 

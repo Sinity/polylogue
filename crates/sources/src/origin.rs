@@ -121,7 +121,7 @@ macro_rules! reserved {
 pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code",
-        parser_version: 3,
+        parser_version: 4,
         support: Support::Parsed,
         route: Route::Live,
         framing: Framing::Lines,
@@ -157,7 +157,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "codex",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Live,
         root: crate::codex::ROOT,
@@ -215,6 +215,18 @@ pub static ORIGINS: &[OriginSpec] = &[
         framing: Framing::Lines,
         recognize: crate::grok_cli::recognize,
         open: crate::grok_cli::open,
+    },
+    OriginSpec {
+        name: "polylogue-repo-lookup",
+        parser_version: 1,
+        support: Support::Parsed,
+        route: Route::Spool,
+        root: crate::repo_lookup::ROOT,
+        locations: crate::repo_lookup::LOCATIONS,
+        capture: Capture::Bytes,
+        framing: Framing::Document,
+        recognize: crate::repo_lookup::recognize,
+        open: crate::repo_lookup::open,
     },
     OriginSpec {
         name: "hook-spool",

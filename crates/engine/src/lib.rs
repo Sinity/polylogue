@@ -17,6 +17,7 @@ pub mod derive;
 pub mod drive;
 pub mod pool;
 pub mod publish;
+pub mod repo_lookup;
 pub mod stage;
 
 use polylogue_model::Json;
@@ -282,6 +283,9 @@ pub struct Engine {
     exporter: Exporter,
     /// Paths on this machine an excision removed: never collected again.
     refused: HashSet<PathBuf>,
+    lookups: repo_lookup::Cache,
+    /// When repository lookups were last refreshed; at most once a minute.
+    lookups_at: Option<Instant>,
 }
 
 /// The bytes a zip file starts with.
@@ -377,6 +381,8 @@ impl Engine {
             loaded: false,
             exporter: Exporter::default(),
             refused: HashSet::new(),
+            lookups: repo_lookup::Cache::default(),
+            lookups_at: None,
         })
     }
 
@@ -485,6 +491,44 @@ impl Engine {
     /// spool, when the operator turned the collector on. The written files
     /// change a watched location, so another pass follows on its own.
     /// Returns the error to report on the pass, if the sync failed.
+    /// Writes the repository lookups for the working directories the index
+    /// holds (spec sources/README.md, the repo-lookup record), at most once
+    /// a minute. The files it writes are collected in this same pass.
+    fn refresh_lookups(&mut self) -> Result<(), String> {
+        if self
+            .lookups_at
+            .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(60))
+        {
+            return Ok(());
+        }
+        self.lookups_at = Some(Instant::now());
+        let rows = self
+            .reads
+            .reader()
+            .and_then(|r| {
+                r.query(
+                    "SELECT DISTINCT cwd, cwd_json FROM session WHERE cwd IS NOT NULL",
+                    &[],
+                )
+            })
+            .map_err(|e| format!("repository lookups: {e}"))?;
+        let dir = self
+            .config
+            .root(polylogue_sources::repo_lookup::ROOT)
+            .join("polylogue/repo-lookup");
+        let read_at = polylogue_model::Timestamp::from_unix_ms(now_ms())
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+        repo_lookup::refresh(
+            repo_lookup::working_directories(&rows),
+            &dir,
+            &mut self.lookups,
+            &read_at,
+        )
+        .map(|_| ())
+        .map_err(|e| format!("repository lookups in {}: {e}", dir.display()))
+    }
+
     fn sync_drive(&self) -> Option<String> {
         let state = polylogue_sources::origin::Root {
             env: Some("XDG_STATE_HOME"),
@@ -518,10 +562,11 @@ impl Engine {
         let started = Instant::now();
         self.load()?;
         let drive_error = self.sync_drive();
+        let lookup_error = self.refresh_lookups().err();
         let (found, unreadable) = collect::scan(&self.config);
         let mut pass = Pass {
             unreadable_roots: unreadable,
-            errors: drive_error.into_iter().collect(),
+            errors: drive_error.into_iter().chain(lookup_error).collect(),
             ..Pass::default()
         };
         let mut plans = Vec::new();

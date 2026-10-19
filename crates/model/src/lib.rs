@@ -17,7 +17,7 @@ mod work;
 
 pub use batch::{
     Accounting, BackgroundUpdate, CountMismatch, Disposition, InlineBlob, MessageRow, OrderKey,
-    Output,
+    Output, RepoLookup,
 };
 pub use block::{Attachment, AttachmentDirection, Block, ErrorReason, ToolOutcome, UnknownReason};
 pub use event::{Event, Link, LinkKind};
@@ -27,7 +27,7 @@ pub use note::{Author, NewNote, Note, NoteKind, Relation, Target, TargetError};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{LogicalDay, Timestamp};
 pub mod text;
-pub use price::{Catalog, Price};
+pub use price::{Catalog, LongContext, Price};
 pub use usage::Usage;
 pub use work::{WorkEdgeKind, WorkNodeKind};
 

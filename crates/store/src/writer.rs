@@ -1080,6 +1080,15 @@ fn write_rows(
     for l in &p.output.links {
         ctx.write_link(l)?;
     }
+    for pk in sessions.values() {
+        passed_without_result(tx, *pk)?;
+    }
+    for l in &p.output.repo_lookups {
+        crate::repos::upsert_lookup(tx, l, input_pk, counter)?;
+    }
+    for pk in sessions.values() {
+        crate::repos::assign(tx, *pk, counter, None)?;
+    }
     for u in &p.output.background {
         let (outcome, reason, exit) = outcome_columns(&u.outcome);
         tx.prepare_cached(
@@ -1511,16 +1520,18 @@ impl Ctx<'_, '_> {
                  source_end = ?27, in_progress = ?15, input_tokens = ?16, output_tokens = ?17,
                  cache_read_tokens = ?18, cache_write_tokens = ?19, reasoning_tokens = ?20,
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
-                 words = ?25, parser_version = ?26, cost_nusd = ?28, provider_cost_nusd = ?29
+                 words = ?25, parser_version = ?26, cost_nusd = ?28, provider_cost_nusd = ?29,
+                 cache_write_5m_tokens = ?30, cache_write_1h_tokens = ?31, speed = ?32
              WHERE pk = ?1"
         } else {
             "INSERT INTO message(id, session_pk, order_input_pk, seq, route_rank, role, written_by,
                  prompt_kind, model, at, parent_id, input_pk, source_chain, source_start,
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
-                 attrs_json, words, parser_version, cost_nusd, provider_cost_nusd)
+                 attrs_json, words, parser_version, cost_nusd, provider_cost_nusd,
+                 cache_write_5m_tokens, cache_write_1h_tokens, speed)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?27, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?28, ?29)"
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?28, ?29, ?30, ?31, ?32)"
         };
         let first: rusqlite::types::Value = match pk {
             Some(pk) => pk.into(),
@@ -1556,6 +1567,12 @@ impl Ctx<'_, '_> {
             v.end,
             polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
             crate::cost::reported_nusd(m.reported_cost_usd.as_ref()),
+            // The five-minute part is known only when the one-hour part is.
+            u.cache_write_1h
+                .and(u.cache_write)
+                .map(|w| w.saturating_sub(u.cache_write_1h.unwrap_or(0)) as i64),
+            n(u.cache_write_1h),
+            u.speed,
         ])?;
         Ok(pk.unwrap_or_else(|| self.tx.last_insert_rowid()))
     }
@@ -1589,7 +1606,7 @@ impl Ctx<'_, '_> {
         self.tx
             .prepare_cached(
                 "UPDATE tool_call SET result_block_pk = NULL, outcome = 'unknown',
-                     outcome_reason = 'awaiting_result', exit_code = NULL
+                     outcome_reason = 'no_result', exit_code = NULL
                  WHERE result_block_pk IN (SELECT pk FROM block WHERE message_pk = ?1)",
             )?
             .execute([message_pk])?;
@@ -1723,7 +1740,7 @@ impl Ctx<'_, '_> {
             .prepare_cached(
                 "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, action, command,
                      command_norm, path, outcome, outcome_reason)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'unknown', 'awaiting_result')",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'unknown', 'no_result')",
             )?
             .execute(params![
                 session_pk,
@@ -1983,6 +2000,26 @@ pub(crate) fn restore_text(block: &mut Block, text: String) {
         Block::ToolResult { output, .. } => *output = Some(text),
         _ => {}
     }
+}
+
+/// Model 6 (outcome reasons): a call still without a result once a later
+/// model response exists in its session never gets one, since a harness
+/// answers only after every call of the earlier response has its result.
+/// The reason is a fact of the records; whether a `no_result` call is
+/// pending is decided at read time from live state.
+fn passed_without_result(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
+    tx.prepare_cached(
+        "UPDATE tool_call SET outcome_reason = 'passed_without_result'
+         WHERE session_pk = ?1 AND result_block_pk IS NULL AND outcome = 'unknown'
+           AND outcome_reason = 'no_result'
+           AND EXISTS (
+             SELECT 1 FROM block cb JOIN message cm ON cm.pk = cb.message_pk
+             JOIN message later ON later.session_pk = cm.session_pk
+             WHERE cb.pk = tool_call.call_block_pk AND later.role = 'assistant'
+               AND (later.order_input_pk, later.seq) > (cm.order_input_pk, cm.seq))",
+    )?
+    .execute([session_pk])?;
+    Ok(())
 }
 
 fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>, Option<i64>) {

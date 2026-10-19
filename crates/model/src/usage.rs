@@ -13,8 +13,16 @@ pub struct Usage {
     pub output: Option<u64>,
     /// Reasoning tokens, when the source reports them apart from output.
     pub reasoning: Option<u64>,
+    /// The part of `cache_write` written with a one-hour lifetime, which is
+    /// billed at a higher rate than the default five-minute writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_1h: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    /// A generation mode priced differently from the standard one, as the
+    /// tool records it (`fast`, `standard`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<String>,
 }
 
 impl Usage {

@@ -351,3 +351,60 @@ fn process_keeps_transcript_order_and_outcomes_apart() {
     let s = analysis::first_failure(&r, &Scope::default(), false).unwrap();
     assert_eq!((s.sessions, s.events), (1, 1));
 }
+
+/// Tokens at two grains: a fork's logical figures include what it shows
+/// from its parent; its physical figures hold only its own responses, so
+/// physical figures over sessions still add up to the archive's.
+#[test]
+fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let parent = session(&mut f, "claude-code:p");
+    let child = session(&mut f, "claude-code:c");
+    model_message(
+        &mut f,
+        parent,
+        "a",
+        "claude-opus-5-5",
+        T0,
+        &lanes(10, 0, None, 1),
+    );
+    model_message(
+        &mut f,
+        parent,
+        "b",
+        "claude-opus-5-5",
+        T0 + 1,
+        &lanes(20, 0, None, 2),
+    );
+    model_message(
+        &mut f,
+        child,
+        "d",
+        "claude-opus-5-5",
+        T0 + 2,
+        &lanes(40, 0, None, 4),
+    );
+    f.link("claude-code:p", "claude-code:c", "continuation", "fork")
+        .unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let all = super::sessions(&r, &Scope::default()).unwrap();
+    let get = |id: &str| all.iter().find(|s| s.session == id).unwrap();
+    let (p, c) = (get("claude-code:p"), get("claude-code:c"));
+    assert_eq!(
+        (p.physical.messages, p.logical.messages),
+        (2, 2),
+        "a session with no parent shows only its own"
+    );
+    assert_eq!((c.physical.messages, c.logical.messages), (1, 3));
+    assert_eq!(c.physical.lanes.input.tokens, 40);
+    assert_eq!(c.logical.lanes.input.tokens, 70);
+    let physical: u64 = all.iter().map(|s| s.physical.lanes.input.tokens).sum();
+    assert_eq!(
+        physical,
+        usage(&r, &Scope::default()).unwrap().lanes.input.tokens
+    );
+    // Priced under the current catalog, at both grains.
+    assert!(c.logical.api_cost.known_usd.unwrap() > c.physical.api_cost.known_usd.unwrap());
+}

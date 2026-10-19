@@ -10,7 +10,7 @@ use polylogue_store::measure::{self, Scope, analysis, outlook};
 use serde::Serialize;
 
 /// The measurements a request can name, for errors and help.
-pub const WHAT: &str = "usage, cost, quota, outcomes, survival, survival-turns, \
+pub const WHAT: &str = "usage, cost, sessions, quota, outcomes, survival, survival-turns, \
     daily:<tokens|api_cost|sessions|prompts|tool_errors>, process, rhythm";
 
 pub fn handle(reader: &Reader<'_>, what: &str, query: Option<&str>, now: i64) -> Response {
@@ -27,6 +27,7 @@ pub fn handle(reader: &Reader<'_>, what: &str, query: Option<&str>, now: i64) ->
     };
     let out = match what {
         "usage" | "cost" => json(measure::usage(reader, &scope)),
+        "sessions" => json(measure::sessions(reader, &scope)),
         "quota" | "outlook" => {
             if query.is_some() {
                 return error(

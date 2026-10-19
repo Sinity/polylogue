@@ -32,7 +32,9 @@ CREATE TABLE session (
                                             --   Session: a copy counts while its source is absent)
   last_activity_at  INTEGER,
   cwd               TEXT,
-  repo              TEXT,                   -- name or URL, for display
+  repo              TEXT,                   -- name or URL, for display: the record's own git evidence, else the
+                                            --   remote of the repo_lookup holding the session's cwd
+  repo_root         TEXT,                   -- the repository's identity, its root commit hash, from repo_lookup
   checkout          TEXT,                   -- worktree path, when it differs from cwd's repository root
   collection_id     TEXT,                   -- provider grouping: ChatGPT project or custom GPT, claude.ai project
   collection_name   TEXT,
@@ -68,7 +70,8 @@ CREATE INDEX session_cwd      ON session(cwd);                -- cwd: prefix as 
 CREATE INDEX session_repo     ON session(repo) WHERE repo IS NOT NULL;
 CREATE INDEX session_collection ON session(collection_id) WHERE collection_id IS NOT NULL;
 CREATE INDEX session_live ON session(live_last_event_at) WHERE live_root_alive = 1 OR live_waiting_on IS NOT NULL;   -- running:, waiting:, the overview
-CREATE INDEX session_live_checkout ON session(checkout) WHERE live_root_alive = 1;   -- peers (repository from session_facts)
+CREATE INDEX session_live_checkout ON session(checkout) WHERE live_root_alive = 1;   -- peers
+CREATE INDEX session_repo_root ON session(repo_root) WHERE repo_root IS NOT NULL;   -- repo: by identity
 
 CREATE TABLE message (
   pk                INTEGER PRIMARY KEY,
@@ -503,52 +506,19 @@ CREATE TABLE pr_link (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX pr_link_number ON pr_link(number);                 -- pr:
 
--- Per-session facts (field meanings: analysis.md, session facts). Costs here
--- are sums of message.cost_nusd, never computed separately.
-CREATE TABLE session_facts (
-  session_pk             INTEGER PRIMARY KEY REFERENCES session(pk),
-  version                TEXT NOT NULL,     -- meta.facts_version it was computed at
-  from_changed           INTEGER NOT NULL,  -- the session's `changed` it was computed from; stale when either differs
-  repo_root              TEXT,              -- root commit hash, the repository's identity (model.md), derived by joining
-                                            --   the session's cwd to repo-lookup records (sources/README.md)
-  messages               INTEGER NOT NULL,  -- own, active path: counted_as IS NULL and not a copy of unknown origin
-                                            --   (a non-copy, or the copy counted while its source is absent; model.md)
-  inherited_messages     INTEGER NOT NULL,  -- copies not counted in this session (counted_as set)
-  human_prompts          INTEGER NOT NULL,  -- human messages with prompt_kind prose (model.md)
-  human_commands         INTEGER NOT NULL,  -- human messages with prompt_kind command
-  words_human            INTEGER NOT NULL,
-  words_model            INTEGER NOT NULL,
-  tool_calls             INTEGER NOT NULL,  -- excludes a code-mode wrapper whose children are counted; a wrapper with
-                                            --   no children counts itself (sources/codex.md, code mode; query.md, Defaults)
-  tool_errors            INTEGER NOT NULL,  -- the same rule
-  tool_no_result         INTEGER NOT NULL,  -- calls with no result record; split into pending and unknown at read
-  tool_unknown           INTEGER NOT NULL,  -- other unknown outcomes
-  input_tokens           INTEGER,           -- NULL when unknown for every message
-  output_tokens          INTEGER,
-  cache_read_tokens      INTEGER,
-  cache_write_tokens     INTEGER,
-  reasoning_tokens       INTEGER,
-  unknown_usage_messages INTEGER NOT NULL,
-  cost_nusd              INTEGER,           -- known cost; NULL when nothing is priced
-  unpriced_messages      INTEGER NOT NULL,  -- messages whose usage or price is unknown
-  wall_ms                INTEGER,
-  engaged_ms             INTEGER,
-  has_thinking           INTEGER NOT NULL,
-  has_attachments        INTEGER NOT NULL,
-  has_branches           INTEGER NOT NULL,
-  compactions            INTEGER NOT NULL,
-  children               INTEGER NOT NULL,  -- sessions this one spawned (incoming subagent links)
-  tree_cost_nusd         INTEGER,           -- own cost plus every descendant's own cost, each once (analysis.md)
-  tree_unpriced          INTEGER NOT NULL,  -- sessions in the tree with partial or unknown cost, plus spawning
-                                            --   calls whose child session is not in the archive (analysis.md)
-  depth                  INTEGER NOT NULL,  -- 0 for a top-level session; subagent depth below it
-  display_title          TEXT,              -- the rule in model.md, Session (`title`), without notes; the current
-                                            --   `title` note is joined at read time, so a note never makes this row stale
-  title_source           TEXT NOT NULL,     -- note | provider | index | job | instruction | first_prompt | id
-  root_session_id        TEXT               -- top of the subagent tree, for root: and lineage: without recursion
-) STRICT;
-CREATE INDEX session_facts_cost ON session_facts(cost_nusd);
-CREATE INDEX session_facts_repo_root ON session_facts(repo_root) WHERE repo_root IS NOT NULL;   -- repo: by identity, peers
+
+-- One per repository directory a session worked in, from the
+-- polylogue-repo-lookup inputs the engine writes (spec sources/README.md, the
+-- repo-lookup record). A session belongs to the lookup whose path is the
+-- longest one at or above its cwd; the writer copies the identity onto the
+-- session (repo_root, and repo where no record names one).
+CREATE TABLE repo_lookup (
+  path              TEXT PRIMARY KEY,       -- the directory holding .git
+  remote            TEXT,                   -- origin's URL without credentials; NULL when there is none
+  root_commit       TEXT,                   -- NULL when it could not be read (shallow clone)
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)
+) STRICT, WITHOUT ROWID;
+
 
 -- The last run of each normalized command per repository: what briefings list as
 -- unresolved failures and failure statistics read. Kept by the writer in the same
@@ -572,18 +542,6 @@ CREATE TABLE repo_command_last (
 CREATE INDEX repo_command_last_failing ON repo_command_last(repo_root) WHERE outcome <> 'ok';
 CREATE INDEX repo_command_last_call ON repo_command_last(tool_call_pk);   -- foreign-key check
 
-CREATE TABLE session_model_usage (           -- per session and model
-  session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  model             TEXT NOT NULL,
-  input             INTEGER,
-  output            INTEGER,
-  cache_read        INTEGER,
-  cache_write       INTEGER,
-  reasoning         INTEGER,
-  cost_nusd         INTEGER,
-  PRIMARY KEY (session_pk, model)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX session_model_usage_model ON session_model_usage(model);   -- model:X
 
 -- The work graph (architecture 4.4; old 1vpm, 67ac), derived from structure
 -- only (spec model.md, The work graph): goals are what a session declared it

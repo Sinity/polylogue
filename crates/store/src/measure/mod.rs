@@ -10,7 +10,7 @@ pub mod outlook;
 mod tests;
 mod usage;
 
-pub use usage::{Lane, Lanes, ModelUsage, Money, UsageReport};
+pub use usage::{Lane, Lanes, ModelUsage, Money, SessionUsage, Totals, UsageReport};
 
 use crate::{Reader, Result};
 
@@ -72,6 +72,11 @@ impl Scope {
 /// response once, however many sessions show it.
 pub fn usage(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> {
     usage::report(reader, scope)
+}
+
+/// Each session's usage in the scope, physical and logical.
+pub fn sessions(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<SessionUsage>> {
+    usage::per_session(reader, scope)
 }
 
 /// Sessions in `scope` that a current `hidden` note hides. They stay in

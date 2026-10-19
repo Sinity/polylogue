@@ -25,7 +25,8 @@ pub fn reprice(index: &Connection, catalog: &Catalog) -> Result<u64> {
     {
         let mut read = tx.prepare(
             "SELECT pk, model, input_tokens, output_tokens, cache_read_tokens,
-                    cache_write_tokens, reasoning_tokens
+                    cache_write_tokens, reasoning_tokens, cache_write_1h_tokens, service_tier,
+                    speed
              FROM message WHERE model IS NOT NULL",
         )?;
         let mut write = tx.prepare("UPDATE message SET cost_nusd = ?2 WHERE pk = ?1")?;
@@ -40,7 +41,9 @@ pub fn reprice(index: &Connection, catalog: &Catalog) -> Result<u64> {
                     cached_input: n(4)?,
                     cache_write: n(5)?,
                     reasoning: n(6)?,
-                    service_tier: None,
+                    cache_write_1h: n(7)?,
+                    service_tier: r.get(8)?,
+                    speed: r.get(9)?,
                 },
             ))
         })?;

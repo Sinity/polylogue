@@ -258,11 +258,38 @@ impl Reader<'_> {
         };
         let mut out = Vec::new();
         if logical {
-            let mut seen = HashSet::new();
-            self.inherited(pk, id, &mut out, &mut seen, 0)?;
+            // Inherited messages come in runs, one per ancestor session.
+            let mut runs: Vec<(i64, SessionId, HashSet<i64>)> = Vec::new();
+            for (session_pk, session, message_pk) in self.inherited_keys(pk, id)? {
+                match runs.last_mut() {
+                    Some((s, _, set)) if *s == session_pk => {
+                        set.insert(message_pk);
+                    }
+                    _ => runs.push((session_pk, session, HashSet::from([message_pk]))),
+                }
+            }
+            for (session_pk, session, set) in runs {
+                out.extend(self.messages_where(session_pk, &session, |m| set.contains(&m))?);
+            }
         }
         out.extend(self.own_messages(pk, id)?);
         Ok(out)
+    }
+
+    /// The message keys a session shows: what it inherits through its
+    /// fork and resume links, in reading order, then its own. Each message
+    /// once.
+    pub fn logical_message_keys(&self, id: &SessionId) -> Result<Vec<i64>> {
+        let Some(pk) = self.session_pk(id)? else {
+            return Ok(Vec::new());
+        };
+        let mut keys: Vec<i64> = self
+            .inherited_keys(pk, id)?
+            .into_iter()
+            .map(|(_, _, m)| m)
+            .collect();
+        keys.extend(self.own_keys(pk)?.into_iter().map(|(m, _)| m));
+        Ok(keys)
     }
 
     fn session_pk(&self, id: &SessionId) -> Result<Option<i64>> {
@@ -273,12 +300,37 @@ impl Reader<'_> {
             .optional()?)
     }
 
+    /// A session's own message keys and IDs in reading order.
+    fn own_keys(&self, session_pk: i64) -> Result<Vec<(i64, String)>> {
+        Ok(self
+            .conn()
+            .prepare_cached(
+                "SELECT pk, id FROM message WHERE session_pk = ?1 ORDER BY order_input_pk, seq",
+            )?
+            .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// What a session inherits: `(session key, session, message key)` in
+    /// reading order. A fork shows its parent's view up to the branch
+    /// point; a resume shows the messages its own file copied.
+    fn inherited_keys(
+        &self,
+        child_pk: i64,
+        child: &SessionId,
+    ) -> Result<Vec<(i64, SessionId, i64)>> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        self.inherited(child_pk, child, &mut out, &mut seen, 0)?;
+        Ok(out)
+    }
+
     fn inherited(
         &self,
         child_pk: i64,
         child: &SessionId,
-        out: &mut Vec<Message>,
-        seen: &mut HashSet<String>,
+        out: &mut Vec<(i64, SessionId, i64)>,
+        seen: &mut HashSet<i64>,
         depth: usize,
     ) -> Result<()> {
         if depth > 64 {
@@ -302,31 +354,29 @@ impl Reader<'_> {
             let Some(parent_pk) = self.session_pk(&parent)? else {
                 continue;
             };
-            let msgs = if kind == "fork" {
+            let keys: Vec<i64> = if kind == "fork" {
                 self.inherited(parent_pk, &parent, out, seen, depth + 1)?;
-                let mut own = self.own_messages(parent_pk, &parent)?;
+                let mut own = self.own_keys(parent_pk)?;
                 if let Some(at) = at
-                    && let Some(i) = own.iter().position(|m| m.id.to_string() == at)
+                    && let Some(i) = own.iter().position(|(_, id)| *id == at)
                 {
                     own.truncate(i + 1);
                 }
-                own
+                own.into_iter().map(|(m, _)| m).collect()
             } else {
-                let copied: HashSet<i64> = self
-                    .conn()
+                self.conn()
                     .prepare_cached(
-                        "SELECT DISTINCT m.pk FROM message m
+                        "SELECT DISTINCT m.pk, m.order_input_pk, m.seq FROM message m
                          JOIN message_source s ON s.message_pk = m.pk
                          JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
-                         WHERE m.session_pk = ?1",
+                         WHERE m.session_pk = ?1 ORDER BY m.order_input_pk, m.seq",
                     )?
                     .query_map(params![parent_pk, child_pk], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?;
-                self.messages_where(parent_pk, &parent, |pk| copied.contains(&pk))?
+                    .collect::<rusqlite::Result<_>>()?
             };
-            for m in msgs {
-                if seen.insert(m.id.to_string()) {
-                    out.push(m);
+            for m in keys {
+                if seen.insert(m) {
+                    out.push((parent_pk, parent.clone(), m));
                 }
             }
         }
@@ -369,7 +419,7 @@ impl Reader<'_> {
         let mut stmt = self.conn().prepare_cached(
             "SELECT pk, id, role, prompt_kind, model, at, parent_id, input_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens, service_tier, stop_reason,
-                    duration_ms, attrs_json
+                    duration_ms, attrs_json, cache_write_1h_tokens, speed
              FROM message WHERE session_pk = ?1 ORDER BY order_input_pk, seq",
         )?;
         let rows = stmt.query_map([session_pk], |r| {
@@ -392,11 +442,29 @@ impl Reader<'_> {
                 r.get::<_, Option<String>>(13)?,
                 r.get::<_, Option<i64>>(14)?,
                 r.get::<_, Option<String>>(15)?,
+                (
+                    r.get::<_, Option<i64>>(16)?,
+                    r.get::<_, Option<String>>(17)?,
+                ),
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (pk, id, role, kind, model, at, parent, lanes, tier, stop, duration, attrs) = row?;
+            let (
+                pk,
+                id,
+                role,
+                kind,
+                model,
+                at,
+                parent,
+                lanes,
+                tier,
+                stop,
+                duration,
+                attrs,
+                (w1h, speed),
+            ) = row?;
             if !keep(pk) {
                 continue;
             }
@@ -421,7 +489,9 @@ impl Reader<'_> {
                     cache_write: n(lanes[2]),
                     output: n(lanes[3]),
                     reasoning: n(lanes[4]),
+                    cache_write_1h: n(w1h),
                     service_tier: tier,
+                    speed,
                 },
                 stop_reason: stop,
                 reported_cost_usd: attrs

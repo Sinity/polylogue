@@ -75,7 +75,7 @@ pub struct ListArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MeasureArgs {
-    /// usage, cost, quota, outcomes, survival, survival-turns,
+    /// usage, cost, sessions, quota, outcomes, survival, survival-turns,
     /// daily:<tokens|api_cost|sessions|prompts|tool_errors>, process or rhythm.
     pub what: String,
     /// A sessions query to measure over (e.g. `repo:polylogue since:7d`);
@@ -246,7 +246,7 @@ impl Polylogue {
     }
 
     #[tool(
-        description = "Measure usage: token lanes and API-equivalent cost by model, the 5-hour and weekly subscription windows with burn and forecast (`quota`), tool outcomes, survival to the first failed tool call, daily series with level changes, tool-call transitions, and prompt rhythm. Unknown figures are null, never 0."
+        description = "Measure usage: token lanes and API-equivalent cost by model, each session at the physical and logical grain (`sessions`), the 5-hour and weekly subscription windows with burn and forecast (`quota`), tool outcomes, survival to the first failed tool call, daily series with level changes, tool-call transitions, and prompt rhythm. Unknown figures are null, never 0."
     )]
     async fn measure(&self, Parameters(a): Parameters<MeasureArgs>) -> String {
         answer(

@@ -13,8 +13,12 @@ use std::collections::{BTreeMap, HashMap};
 pub struct Outcomes {
     pub ok: u64,
     pub error: u64,
-    /// The call has no result record.
+    /// The call has no result record yet, and nothing later in its session
+    /// rules one out; read as pending while the session is live.
     pub no_result: u64,
+    /// The call has no result record and the session went on past it, so
+    /// none will come.
+    pub passed_without_result: u64,
     /// Any other unknown outcome.
     pub unknown: u64,
 }
@@ -25,7 +29,9 @@ pub fn outcomes(reader: &Reader<'_>, scope: &Scope) -> Result<Outcomes> {
         &format!(
             "SELECT sum(t.outcome = 'ok'), sum(t.outcome = 'error'),
                     sum(t.outcome = 'unknown' AND t.outcome_reason = 'no_result'),
-                    sum(t.outcome = 'unknown' AND coalesce(t.outcome_reason, '') <> 'no_result')
+                    sum(t.outcome = 'unknown' AND t.outcome_reason = 'passed_without_result'),
+                    sum(t.outcome = 'unknown'
+                        AND coalesce(t.outcome_reason, '') NOT IN ('no_result', 'passed_without_result'))
              FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
              JOIN message m ON m.pk = b.message_pk
              WHERE t.inherited = 0 AND {cond}"
@@ -37,7 +43,8 @@ pub fn outcomes(reader: &Reader<'_>, scope: &Scope) -> Result<Outcomes> {
                 ok: n(0)?,
                 error: n(1)?,
                 no_result: n(2)?,
-                unknown: n(3)?,
+                passed_without_result: n(3)?,
+                unknown: n(4)?,
             })
         },
     )?)
