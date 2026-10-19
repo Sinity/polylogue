@@ -55,15 +55,20 @@ fn header(m: &Message) -> String {
     }
 }
 
-/// One page of the dialogue and actions of `messages`, at most
-/// `budget_tokens` (at least one character), starting at `cursor`.
-pub fn page(messages: &[Message], budget_tokens: usize, cursor_at: Option<&str>) -> Page {
+/// One page of what `view` keeps of `messages`, at most `budget_tokens`
+/// (at least one character), starting at `cursor`.
+pub fn page(
+    messages: &[Message],
+    view: View,
+    budget_tokens: usize,
+    cursor_at: Option<&str>,
+) -> Page {
     let budget = budget_tokens.max(1) * CHARS_PER_TOKEN;
     let mut at = cursor_at.and_then(parse_cursor).unwrap_or_default();
     let mut out = String::new();
     while at.message < messages.len() {
         let m = &messages[at.message];
-        let ps = pieces(m, View::Full);
+        let ps = pieces(m, view);
         while at.piece < ps.len() {
             let p = &ps[at.piece];
             let mut body = match (p.kind, &p.label) {

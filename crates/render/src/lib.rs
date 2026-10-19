@@ -2,6 +2,7 @@
 //! rendered blocks; a view is a filter over that stream. Credentials are
 //! masked on output, block by block, never by refusing.
 
+pub mod measures;
 pub mod model_pages;
 pub mod results;
 pub mod session_summary;
@@ -54,7 +55,8 @@ impl View {
         })
     }
 
-    fn keeps(self, message: &Message, block: &Block) -> bool {
+    /// Whether this view shows `block` of `message`.
+    pub fn keeps(self, message: &Message, block: &Block) -> bool {
         match self {
             View::Full => true,
             View::Dialogue => matches!(block, Block::Text { .. } | Block::Thinking { .. }),

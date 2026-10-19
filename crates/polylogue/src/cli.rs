@@ -2,7 +2,18 @@
 //! query language; subcommands cover everything else. Every command takes
 //! `--json` for programs and agents.
 
+mod print;
+mod setup;
+
+use crate::briefing::{Ask, StartSource};
+use crate::daemon::{Request, Response};
 use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
+use polylogue_model::{Author, NewNote, NoteKind, SessionId, Target};
+use polylogue_store::{Archive, NoteFilter};
+use print::print_plain;
+use setup::{install_agent, open_reader};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -179,8 +190,9 @@ pub struct ReadArgs {
     pub session: String,
     #[arg(long, value_enum, default_value_t = ViewArg::Full)]
     pub view: ViewArg,
-    #[arg(long, value_enum, default_value_t = ExportFormat::Terminal)]
-    pub format: ExportFormat,
+    /// Default: terminal text, or JSON messages with `--json`.
+    #[arg(long, value_enum)]
+    pub format: Option<ExportFormat>,
     /// Pages sized for a model, at most this many tokens each.
     #[arg(long)]
     pub budget: Option<usize>,
@@ -435,7 +447,11 @@ pub fn run(args: Args) -> ExitCode {
             Request::Read {
                 session,
                 view: format!("{:?}", r.view).to_lowercase(),
-                format: format!("{:?}", r.format).to_lowercase(),
+                format: match r.format {
+                    Some(f) => format!("{f:?}").to_lowercase(),
+                    None if json => "json".into(),
+                    None => "terminal".into(),
+                },
                 logical: r.logical,
                 budget: r.budget,
                 cursor: r.cursor,
@@ -708,14 +724,6 @@ fn write_export(data: &serde_json::Value, out: Option<&std::path::Path>, json: b
     }
 }
 
-use crate::briefing::{Ask, StartSource};
-use crate::daemon::{Request, Response};
-use polylogue_model::{Author, NewNote, NoteKind, SessionId, Target};
-use polylogue_store::Archive;
-use polylogue_store::NoteFilter;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-
 fn request_id() -> String {
     polylogue_store::user_writes::new_request_id()
 }
@@ -896,145 +904,6 @@ pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Resp
     serde_json::from_str(&reply).map_err(std::io::Error::other)
 }
 
-/// Chrome's and Chromium's host manifest directories under `config`. An
-/// existing browser config directory gets the manifest; with none, Chrome's
-/// does.
-pub fn host_manifest_dirs(config: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let dirs: Vec<_> = ["google-chrome", "chromium"]
-        .iter()
-        .map(|b| config.join(b))
-        .filter(|d| d.is_dir())
-        .collect();
-    let dirs = if dirs.is_empty() {
-        vec![config.join("google-chrome")]
-    } else {
-        dirs
-    };
-    dirs.into_iter()
-        .map(|d| d.join("NativeMessagingHosts"))
-        .collect()
-}
-
-fn install_agent(json: bool, harness: &str, extension_id: Option<&str>, remove: bool) -> ExitCode {
-    if harness != "chrome" {
-        return fail(
-            json,
-            "not_built",
-            &format!(
-                "`install-agent {harness}` is not built yet; for Claude Code hooks use `polylogue hooks install`"
-            ),
-            1,
-        );
-    }
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let file = format!("{}.json", crate::browser::HOST_NAME);
-    let mut changed = Vec::new();
-    for dir in host_manifest_dirs(&config) {
-        let path = dir.join(&file);
-        let result = if remove {
-            match std::fs::remove_file(&path) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                other => other,
-            }
-        } else {
-            let Some(id) = extension_id
-                .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase()))
-            else {
-                return fail(
-                    json,
-                    "bad_request",
-                    "`--extension-id` (the ID chrome://extensions shows) is required",
-                    2,
-                );
-            };
-            let binary = std::env::current_exe().and_then(std::fs::canonicalize);
-            let Ok(binary) = binary else {
-                return fail(json, "io", "cannot resolve this binary's path", 1);
-            };
-            let manifest = crate::browser::native::manifest(&binary, id);
-            std::fs::create_dir_all(&dir).and_then(|()| {
-                std::fs::write(
-                    &path,
-                    serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-                )
-            })
-        };
-        if let Err(e) = result {
-            return fail(json, "io", &format!("{}: {e}", path.display()), 1);
-        }
-        changed.push(path);
-    }
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({ "removed": remove, "files": changed })
-        );
-    } else {
-        for p in &changed {
-            println!(
-                "{} {}",
-                if remove { "removed" } else { "wrote" },
-                p.display()
-            );
-        }
-        if changed.is_empty() {
-            println!("nothing to remove");
-        }
-    }
-    ExitCode::SUCCESS
-}
-
-/// Opens the web reader: reads the running daemon's port and token, checks
-/// that the port's listener is this user's, and opens `/auth#<token>` in
-/// the browser. The fragment never reaches a server log or history.
-fn open_reader(json: bool) -> ExitCode {
-    use crate::web::access;
-    let root = polylogue_store::Archive::default_root();
-    let dir = access::runtime_dir(&access::archive_key(&root));
-    let (Ok(token), Ok(port)) = (
-        std::fs::read_to_string(dir.join("token")),
-        std::fs::read_to_string(dir.join("port")),
-    ) else {
-        return fail(
-            json,
-            "daemon_required",
-            "the daemon is not serving the web reader; start `polylogue daemon`",
-            crate::EXIT_DAEMON_REQUIRED,
-        );
-    };
-    let Ok(port) = port.trim().parse::<u16>() else {
-        return fail(json, "io", "the port file is unreadable", 1);
-    };
-    if access::listener_owner(port).is_none() || access::listener_owner(port) != access::my_uid() {
-        return fail(
-            json,
-            "refused",
-            &format!("port {port} is not served by this user's daemon; not sending the token"),
-            1,
-        );
-    }
-    let url = format!("http://127.0.0.1:{port}/");
-    let auth = format!("http://127.0.0.1:{port}/auth#{}", token.trim());
-    let opened = std::process::Command::new("xdg-open")
-        .arg(&auth)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if json {
-        println!("{}", serde_json::json!({ "url": url, "opened": opened }));
-    } else if opened {
-        println!("opened {url}");
-    } else {
-        // The operator's own terminal: the sign-in link may be shown here.
-        eprintln!("polylogue: could not start a browser; open {auth}");
-    }
-    ExitCode::SUCCESS
-}
-
 fn fail(json: bool, kind: &str, message: &str, code: u8) -> ExitCode {
     if json {
         println!(
@@ -1079,145 +948,6 @@ fn shell_quote(w: &str) -> String {
         w.to_owned()
     } else {
         format!("'{}'", w.replace('\'', r"'\''"))
-    }
-}
-
-/// Plain terminal output until the renderer (architecture 7, `render`)
-/// takes these over: one line per session, one paragraph per message.
-fn print_plain(request: &Request, data: &serde_json::Value) {
-    let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_owned();
-    match request {
-        Request::List { .. } => {
-            crate::row_numbers::remember(
-                &Archive::default_root(),
-                &crate::row_numbers::row_ids(data),
-            );
-            for (n, row) in data.as_array().into_iter().flatten().enumerate() {
-                println!(
-                    "@{:<3} {:<25} {:>6}  {}  {}",
-                    n + 1,
-                    s(&row["last_activity"]),
-                    row["messages"],
-                    s(&row["id"]),
-                    s(&row["title"])
-                );
-            }
-        }
-        Request::Read { .. } => {
-            for m in data["messages"].as_array().into_iter().flatten() {
-                println!("── {} {}", s(&m["role"]), s(&m["at"]));
-                for b in m["blocks"].as_array().into_iter().flatten() {
-                    match b["type"].as_str() {
-                        Some("text") => println!("{}", s(&b["text"])),
-                        Some("tool_call") => println!(
-                            "→ {} {}",
-                            s(&b["tool"]),
-                            b["command"].as_str().or(b["path"].as_str()).unwrap_or("")
-                        ),
-                        Some("tool_result") => println!("← {}", b["outcome"]["kind"]),
-                        Some(other) => println!("[{other}]"),
-                        None => {}
-                    }
-                }
-                println!();
-            }
-        }
-        Request::Context { .. } if data["off"].as_bool() == Some(true) => {
-            println!(
-                "session-start briefs are off (`polylogue setting briefing.session_start on`)"
-            );
-        }
-        Request::Context { .. } => {
-            print!("{}", s(&data["prepared"]["text"]));
-        }
-        Request::Notes { .. } => {
-            for n in data.as_array().into_iter().flatten() {
-                let targets: Vec<String> = n["targets"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(s)
-                    .collect();
-                let label = n["key"]
-                    .as_str()
-                    .map_or_else(|| s(&n["kind"]), str::to_owned);
-                println!(
-                    "{}  [{}] {}  ({}; {})",
-                    s(&n["id"]),
-                    label,
-                    s(&n["value"]),
-                    targets.join(", "),
-                    s(&n["author"])
-                );
-            }
-        }
-        Request::Resumable { .. } => {
-            for c in data.as_array().into_iter().flatten() {
-                let open = &c["open"];
-                let mut why = Vec::new();
-                if open["unanswered_prompt"].as_bool() == Some(true) {
-                    why.push("unanswered prompt".to_owned());
-                }
-                if open["open_tool_call"].as_bool() == Some(true) {
-                    why.push("unfinished tool call".to_owned());
-                }
-                if let Some(t) = open["todo"].as_str() {
-                    why.push(format!("todo: {t}"));
-                }
-                if let Some(w) = open["waiting_on"].as_str() {
-                    why.push(format!("waiting on {w}"));
-                }
-                for f in c["follow_ups"].as_array().into_iter().flatten() {
-                    why.push(s(f));
-                }
-                println!(
-                    "{}  {}  {}\n    {}",
-                    s(&c["session"]["last_activity"]),
-                    s(&c["session"]["id"]),
-                    s(&c["session"]["title"]),
-                    why.join("; ")
-                );
-            }
-        }
-        Request::Continue { .. } => {
-            let line = |c: &serde_json::Value| -> String {
-                let mut words = vec![shell_quote(&s(&c["program"]))];
-                words.extend(
-                    c["args"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .map(|a| shell_quote(&s(a))),
-                );
-                let cmd = words.join(" ");
-                match c["cwd"].as_str() {
-                    Some(d) => format!("cd {} && {cmd}", shell_quote(d)),
-                    None => cmd,
-                }
-            };
-            if !data["native"].is_null() {
-                println!("native resume:      {}", line(&data["native"]));
-            }
-            println!("with context:       {}", line(&data["context_assisted"]));
-        }
-        Request::Query { .. } if data["outcome"] == "measure" => print!(
-            "{}",
-            crate::measure_text::render(data["measure"].as_str().unwrap_or(""), &data["data"])
-        ),
-        Request::Query { .. } => {
-            if matches!(data["shape"].as_str(), Some("rows" | "matches")) {
-                crate::row_numbers::remember(
-                    &Archive::default_root(),
-                    &crate::row_numbers::row_ids(&data["rows"]),
-                );
-            }
-            let _ = polylogue_render::results::render(
-                data,
-                polylogue_render::Format::Terminal,
-                &mut std::io::stdout().lock(),
-            );
-        }
-        _ => println!("{}", serde_json::to_string_pretty(data).unwrap_or_default()),
     }
 }
 

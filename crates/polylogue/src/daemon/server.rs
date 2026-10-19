@@ -331,7 +331,12 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
             Err(e) => error("sql", e),
         },
         Request::Read {
-            session, logical, ..
+            session,
+            view,
+            format,
+            logical,
+            budget,
+            cursor,
         } => {
             let s = match reader.session(&session) {
                 Ok(Some(s)) => s,
@@ -339,7 +344,7 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
                 Err(e) => return error("store", e),
             };
             match reader.messages(&session, logical) {
-                Ok(messages) => ok(serde_json::json!({ "session": s, "messages": messages })),
+                Ok(messages) => read(&s, messages, &view, &format, budget, cursor.as_deref()),
                 Err(e) => error("store", e),
             }
         }
@@ -634,6 +639,49 @@ fn embed(
     }
 }
 
+/// One session in a view: as JSON messages, rendered in a format, or, with
+/// a token budget, as one page of text for a model with the cursor of the
+/// next.
+fn read(
+    session: &polylogue_model::Session,
+    mut messages: Vec<polylogue_model::Message>,
+    view: &str,
+    format: &str,
+    budget: Option<usize>,
+    cursor: Option<&str>,
+) -> Response {
+    let Some(v) = polylogue_render::View::parse(view) else {
+        return error("bad_request", format!("unknown view {view:?}"));
+    };
+    if let Some(budget) = budget {
+        let page = polylogue_render::model_pages::page(&messages, v, budget, cursor);
+        return ok(serde_json::json!({ "session": session, "text": page.text, "next": page.next }));
+    }
+    if cursor.is_some() {
+        return error("bad_request", "a cursor continues a read with a budget");
+    }
+    if format == "json" {
+        if v != polylogue_render::View::Full {
+            for m in &mut messages {
+                let kept: Vec<_> = m.blocks.iter().filter(|b| v.keeps(m, b)).cloned().collect();
+                m.blocks = kept;
+            }
+            messages.retain(|m| !m.blocks.is_empty());
+        }
+        return ok(serde_json::json!({ "session": session, "messages": messages }));
+    }
+    let Some(f) = polylogue_render::Format::parse(format) else {
+        return error("bad_request", format!("unknown format {format:?}"));
+    };
+    let mut items = vec![polylogue_render::Rendered::SessionHeader(session)];
+    items.extend(messages.iter().map(polylogue_render::Rendered::Message));
+    let mut out = Vec::new();
+    if let Err(e) = polylogue_render::render(&items, f, v, &mut out) {
+        return error("internal", e);
+    }
+    ok(serde_json::json!({ "format": format, "content": String::from_utf8_lossy(&out) }))
+}
+
 /// Whole sessions in the export format (`json`, lossless and read back by
 /// `import`) or rendered as Markdown or HTML.
 fn export(
@@ -791,3 +839,6 @@ pub fn listen(listener: &UnixListener, daemon: &Arc<Daemon>) {
         std::thread::spawn(move || serve_client(stream, &d));
     }
 }
+
+#[cfg(test)]
+mod tests;
