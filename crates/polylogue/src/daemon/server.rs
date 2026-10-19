@@ -178,6 +178,7 @@ fn signal_loop(d: &Daemon) {
                 now,
                 day: day.clone(),
                 embeddings: false,
+                near: None,
             };
             match super::query::run(&reader, ask) {
                 Ok(v) => {

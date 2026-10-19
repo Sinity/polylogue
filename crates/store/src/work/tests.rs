@@ -163,6 +163,7 @@ impl World {
             piece: None,
             blobs: vec![],
             length: self.offset,
+            release: Default::default(),
             parse: Some(ParseStep {
                 output: Output {
                     sessions: vec![Session::new(sid(session), SessionKind::Main)],
