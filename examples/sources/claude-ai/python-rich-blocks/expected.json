@@ -12,7 +12,12 @@
   },
   "output": {
     "background": [],
-    "blobs": [],
+    "blobs": [
+      {
+        "hash": "0229ff7dec8a365f7300835d175494866d46e56fec330dad33cd3dc93df3c16d",
+        "size": 5
+      }
+    ],
     "events": [
       {
         "data": {
@@ -63,8 +68,10 @@
             {
               "attachments": [
                 {
+                  "blob": "0229ff7dec8a365f7300835d175494866d46e56fec330dad33cd3dc93df3c16d",
                   "direction": "input",
-                  "media_type": "image/png"
+                  "media_type": "image/png",
+                  "size": 5
                 }
               ],
               "call_id": "toolu-1",
@@ -90,8 +97,10 @@
             {
               "attachments": [
                 {
+                  "blob": "0229ff7dec8a365f7300835d175494866d46e56fec330dad33cd3dc93df3c16d",
                   "direction": "input",
-                  "media_type": "image/png"
+                  "media_type": "image/png",
+                  "size": 5
                 }
               ],
               "call_id": "toolu-2",

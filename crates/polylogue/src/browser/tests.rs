@@ -417,12 +417,14 @@ fn native_raw_grok_capture_reaches_an_ordinary_archive_read() {
     );
     let mut envelope: Value = serde_json::from_slice(&body).unwrap();
     envelope["session"]["attachments"] = json!([{"provider_attachment_id":"raw-file", "message_provider_id":"raw-r1", "content_base64":B64.encode(b"native asset bytes")}]);
-    let published = exchange(
-        &ctx,
-        "POST",
-        "/v1/browser-captures",
-        &serde_json::to_vec(&envelope).unwrap(),
+    // The extension streams schema_version before the capture marker.
+    let mut fields = envelope.as_object().unwrap().clone();
+    fields.remove("schema_version");
+    let streamed = format!(
+        "{{\"schema_version\":1,{}",
+        &serde_json::to_string(&fields).unwrap()[1..]
     );
+    let published = exchange(&ctx, "POST", "/v1/browser-captures", streamed.as_bytes());
     assert_eq!(published.status, 200);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
