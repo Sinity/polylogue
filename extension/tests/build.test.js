@@ -130,20 +130,7 @@ describe("build.mjs full archive emission", () => {
     execFileSync("python3", ["-c", "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", archive, unpacked]);
     let messageListener;
     let alarmListener;
-    // The backfill exact-capture path (requirePairedTrustedReceiver,
-    // fix(extension): require pairing before provider capture #2983) needs a
-    // real receiver pairing, not just a configured base URL + token -- a
-    // manually-configured-but-never-paired receiver is a distinct state from
-    // the one this fixture exercises. Seed it the same way
-    // background.test.js's successful-capture fixtures do.
-    let stored = {
-      receiverBaseUrl: "http://127.0.0.1:8765",
-      polylogueReceiverPairing: {
-        state: "online",
-        receiver_id: "packaged-receiver",
-        api_schema: "polylogue-browser-capture/v1",
-      },
-    };
+    let stored = {};
     let sessionStored = {};
     const pageRequests = [];
     const pageFetchCalls = [];
@@ -278,69 +265,17 @@ describe("build.mjs full archive emission", () => {
         return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-capability" : null }, json: async () => ({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] }) };
       }
       if (String(url).endsWith("/v1/status")) {
-        // requirePairedTrustedReceiver's health probe (ensureTrustedReceiver ->
-        // checkReceiverHealth -> GET /v1/status), matching the seeded
-        // polylogueReceiverPairing identity above.
         return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ok: true, receiver_id: "packaged-receiver", api_schema: "polylogue-browser-capture/v1" }) };
       }
       const receiverPath = new globalThis.URL(url).pathname;
       if (receiverPath === "/v1/archive-state") {
         return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ sessions: [] }) };
       }
-      if (receiverPath === "/v1/capture-jobs/capabilities") {
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({
-          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1",
-          protocol_min: 2,
-          protocol_max: 2,
-          scope_namespace: "cjs1:packaged-namespace",
-        }) };
-      }
-      if (receiverPath === "/v1/capture-jobs/discover") {
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ jobs: [] }) };
-      }
-      if (receiverPath === "/v1/capture-jobs") {
-        const request = JSON.parse(options.body);
-        const scope = request.scope.kind === "invocation" ? { kind: "invocation", resume_capability: "synthetic-packaged-resume" } : request.scope;
-        return { ok: true, status: 201, headers: { get: () => null }, json: async () => ({ scope, job: receiverCheckpoints.job({
-          job_id: "packaged-capture-job", provider: "chatgpt", scope, revision: 0, lease_generation: 0,
-        }) }) };
-      }
-      if (receiverPath.endsWith("/adopt")) {
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({
-          job: receiverCheckpoints.job({ job_id: "packaged-capture-job", provider: "chatgpt", revision: 1, lease_generation: 1 }),
-          lease: { lease_id: "packaged-lease", generation: 1, proof: "packaged-proof" },
-        }) };
-      }
-      if (receiverPath.endsWith("/update")) {
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({
-          job: receiverCheckpoints.job({
-            job_id: "packaged-capture-job", provider: "chatgpt", revision: 2, lease_generation: 1,
-            lease_expires_at: "2026-07-16T10:02:00Z",
-          }),
-          receipt: { kind: "capture_job_update" },
-        }) };
-      }
-      if (receiverPath.endsWith("/checkpoint")) {
-        const checkpoint = await receiverCheckpoints.checkpoint({ job_id: "packaged-capture-job", provider: "chatgpt", revision: 3 }, options);
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({
-          job: checkpoint.job, receipt: checkpoint.receipt,
-        }) };
-      }
-      const nativeResponse = (payload) => ({ ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-native-request" : null }, json: async () => payload });
-      if (receiverPath === "/v1/capture-jobs/packaged-capture-job") return nativeResponse({ job: receiverCheckpoints.job({ job_id: "packaged-capture-job" }) });
-      if (receiverPath.endsWith("/native/begin")) return nativeResponse({ state: "acquiring" });
-      if (receiverPath.endsWith("/native/member")) {
-        const descriptor = JSON.parse(options.headers["X-Polylogue-Native"]);
-        expect(createHash("sha256").update(globalThis.Buffer.from(await options.body.arrayBuffer())).digest("hex")).toBe(descriptor.sha256);
-        return nativeResponse({ sha256: descriptor.sha256, size_bytes: descriptor.size_bytes });
-      }
-      if (receiverPath.endsWith("/native/prepare")) return nativeResponse({ plan_digest: "sha256:" + "a".repeat(64), summary: { title: null, turn_count: 1, attachment_count: 0, session_kind: "standard", needs_follow_up: true } });
-      if (receiverPath.endsWith("/native/plan")) return nativeResponse({ assets: [], after: null });
-      if (receiverPath.endsWith("/native/finalize")) return nativeResponse({ sha256: "b".repeat(64), size_bytes: 1234 });
-      if (receiverPath.endsWith("/native/publish")) {
-        receiverPosts += 1;
-        return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" && receiverPosts > 1 ? "packaged-ack" : null },
-          json: async () => ({ ok: true, provider: "chatgpt", provider_session_id: "fixture-1", content_hash: JSON.parse(options.body).sha256, submitted_content_hash: JSON.parse(options.body).sha256, outcome: "accepted" }) };
+      if (receiverPath === "/v1/browser-captures/inspect") {
+        const envelope = JSON.parse(await options.body.text());
+        expect(envelope.raw_provider_payload).toHaveProperty("mapping");
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ok: true,
+          attachments: [], summary: { title: "Packaged fixture", turn_count: 1, attachment_count: 0, session_kind: "main", needs_follow_up: true } }) };
       }
       const contentHash = createHash("sha256").update(globalThis.Buffer.from(await options.body.arrayBuffer())).digest("hex");
       receiverPosts += 1;

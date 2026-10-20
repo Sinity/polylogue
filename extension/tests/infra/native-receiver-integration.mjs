@@ -48,7 +48,12 @@ const adapters = {
       assert.equal(options.documentId, sender.documentId);
       assert.equal(message.type, "polylogue.acquireRecordAssets");
       assetRequests += 1;
-      return { ok: true, acquisition: { attachments: [], outcome: { failed: [{ status: "no_resolvable_source" }] } } };
+      const descriptor = message.attachments[0];
+      const ref = await staging.begin(owner, { kind: "asset" });
+      const bytes = Buffer.from(`synthetic-native-asset:${descriptor.provider_attachment_id}`);
+      await staging.append(ref, owner, 0, bytes.toString("base64")); await staging.seal(ref, owner);
+      return { ok: true, acquisition: { attachments: [{ ...descriptor, staged_asset: ref, size_bytes: bytes.length }],
+        outcome: { attempted: 1, acquired: 1, failed: [] } } };
     } },
   network: async (url, options) => { calls.push({ path: new URL(url).pathname, method: options?.method || "GET" }); return nativeFetch(transport, url, options); },
   now: () => Date.now(), log() {},
@@ -94,4 +99,4 @@ assert.ok(published.receiver_request_id);
 assert.ok(calls.some((call) => call.path === "/v1/browser-captures/inspect" && call.method === "POST"));
 assert.ok(calls.some((call) => call.path === "/v1/browser-captures" && call.method === "POST"));
 assert.ok(!calls.some((call) => call.path.startsWith("/v1/capture-jobs")));
-process.stdout.write(JSON.stringify({ sha256: published.content_hash, receiver_request_id: published.receiver_request_id, summary: summarized.summary, calls }));
+process.stdout.write(JSON.stringify({ sha256: published.content_hash, receiver_request_id: published.receiver_request_id, summary: summarized.summary, asset_requests: assetRequests, calls }));

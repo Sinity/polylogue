@@ -37,6 +37,7 @@ export async function prepareNativeCapture({ capture, staging, store, inspect, a
   try {
     body = await staging.prepare(envelope, null, null, signal);
     plan = await inspect(body.body, signal);
+    signal?.throwIfAborted();
     if (!plan?.ok || !plan.summary || !Array.isArray(plan.attachments)) throw new Error("native_inspection_invalid");
   } finally {
     // This body is an inspection request, never a pending delivery. Raw replies

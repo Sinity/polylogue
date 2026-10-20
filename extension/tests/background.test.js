@@ -297,6 +297,8 @@ function installChromeMock(storagePatch = {}) {
 }
 
 function captureJobFixtureResponse(url, options = {}) {
+  if (new URL(url).pathname === "/v1/browser-captures/inspect") return responseJson({ ok: true, attachments: [],
+    summary: { title: "Synthetic", turn_count: 2, attachment_count: 0, session_kind: "main", needs_follow_up: false } });
   const artifactResponse = checkpointArtifactFixtureResponse(url);
   if (artifactResponse) return artifactResponse;
   const path = new globalThis.URL(url).pathname;
@@ -576,209 +578,39 @@ describe("background receiver diagnostics", () => {
     expect(fetchCalls.filter((call) => String(call.url).startsWith("https://"))).toEqual([]);
   });
 
-  it.each(["capabilities", "prepare"].flatMap(boundary => ["success", "cancel"].map(outcome => [boundary, outcome])))("distinguishes the original preparation await despite identical markers: %s/%s", async (boundary, outcome) => {
-    stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
+  it.each(["success", "cancel"])("keeps inspection progress and cancellation attached to the original raw capture: %s", async (outcome) => {
     tabs[0].url = "https://chatgpt.com/c/session";
     const owner = { tab_id: 42, document_id: "owned-document", provider: "chatgpt" };
     const store = new IndexedDbBackfillStore(globalThis.indexedDB);
     const staging = new CaptureStaging(globalThis.navigator.storage, store);
     const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://chatgpt.com/backend-api/conversation/session" });
     const raw = JSON.stringify({ id: "session", mapping: {} });
-    await staging.append(ref, owner, 0, globalThis.Buffer.from(raw).toString("base64"));
-    await staging.seal(ref, owner);
-    const operations = []; let release; let pending = 0; let memberBytes;
-    const originalFetch = globalThis.fetch;
+    await staging.append(ref, owner, 0, Buffer.from(raw).toString("base64")); await staging.seal(ref, owner);
+    let release; let pending = 0;
     globalThis.fetch = vi.fn(async (url, options) => {
-      const path = new globalThis.URL(url).pathname;
-      const operation = path === "/v1/capture-jobs/capabilities" ? "capabilities" : path.split("/native/")[1];
-      if (operation) operations.push(operation);
-      if (operation === "member") memberBytes = await options.body.text();
-      if (operation === boundary) {
-        pending++;
-        try { await new Promise(resolve => { release = resolve; }); }
-        finally { pending--; }
-      }
-      if (path === "/v1/status") return responseJson({ ok: true, receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1" });
-      return captureJobFixtureResponse(url, options) || originalFetch(url, options);
+      expect(new URL(url).pathname).toBe("/v1/browser-captures/inspect");
+      expect(await options.body.text()).toContain(`"raw_provider_payload":${raw}`);
+      pending++;
+      try { await new Promise(resolve => { release = resolve; }); } finally { pending--; }
+      return responseJson({ ok: true, attachments: [], summary: { turn_count: 0, attachment_count: 0 } });
     });
+    const sender = { tab: tabs[0], documentId: owner.document_id };
     const normalization = sendRuntimeMessage({ type: "polylogue.normalizeNativeCapture", provider: "chatgpt", raw_ref: ref,
-      native_id: "session", native_request_id: "polylogue-native-fetch-1-original" }, { tab: tabs[0], documentId: owner.document_id });
-    let result; normalization.then(value => { result = value; });
+      native_id: "session", native_request_id: "polylogue-native-fetch-1-original" }, sender);
     await vi.waitFor(() => expect(release).toBeDefined());
-    await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([
-      expect.objectContaining({ stage: "native_preparation_progress", phase: "native_prepare", state: "BEGIN", native_request_id: "polylogue-native-fetch-1-original" }),
-    ])));
-    expect(result).toBeUndefined(); expect(pending).toBe(1);
-    expect(stored.polylogueDebugLog.some(row => row.phase === "native_prepare" && row.state === "END")).toBe(false);
-    if (boundary === "capabilities") {
-      expect(operations).toEqual(["capabilities"]); expect(memberBytes).toBeUndefined();
-    } else {
-      expect(operations).toEqual(["capabilities", "begin", "member", "prepare"]);
-      expect(memberBytes).toBe(raw);
-    }
-    let cancellation; let cancellationSettled = false;
+    expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: "native_prepare", state: "BEGIN", native_request_id: "polylogue-native-fetch-1-original" }),
+    ]));
+    let cancellation; let settled = false;
     if (outcome === "cancel") {
-      cancellation = sendRuntimeMessage({ type: "polylogue.cancelNativeCapture", provider: "chatgpt", raw_ref: ref }, { tab: tabs[0], documentId: owner.document_id });
-      cancellation.then(() => { cancellationSettled = true; });
-      await setImmediate();
-      expect(cancellationSettled).toBe(false); expect(result).toBeUndefined(); expect(pending).toBe(1);
+      cancellation = sendRuntimeMessage({ type: "polylogue.cancelNativeCapture", provider: "chatgpt", raw_ref: ref }, sender);
+      cancellation.then(() => { settled = true; }); await setImmediate();
+      expect(settled).toBe(false); expect(pending).toBe(1);
     }
-    release();
-    result = await normalization;
+    release(); const result = await normalization;
     if (cancellation) expect(await cancellation).toMatchObject({ ok: true, outcome: "cancelled" });
-    expect(pending).toBe(0);
     expect(result.ok).toBe(outcome === "success");
-    if (outcome === "cancel") expect(result.outcome).toBe("cancelled");
-    else expect(result.envelope.receiver_native).toHaveProperty("sha256");
-  });
-
-  it.each([
-    ["admission", "success"],
-    ...["prepare", "plan", "finalize"].flatMap(boundary => ["success", "failure", "cancel"].map(outcome => [boundary, outcome])),
-    ["prepare", "diagnostic_failure"], ["prepare", "missing_id"], ["prepare", "malformed_id"],
-  ])("records private fixed progress before the actual suspended native %s request: %s", async (boundary, outcome) => {
-    stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
-    tabs[0].url = "https://chatgpt.com/c/session";
-    const owner = { tab_id: 42, document_id: "owned-document", provider: "chatgpt" };
-    const store = new IndexedDbBackfillStore(globalThis.indexedDB);
-    const staging = new CaptureStaging(globalThis.navigator.storage, store);
-    const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://chatgpt.com/backend-api/conversation/session" });
-    await staging.append(ref, owner, 0, globalThis.Buffer.from(JSON.stringify({ id: "session", mapping: {} })).toString("base64"));
-    await staging.seal(ref, owner);
-    if (outcome === "diagnostic_failure") {
-      const originalSet = globalThis.chrome.storage.local.set;
-      globalThis.chrome.storage.local.set = async patch => {
-        if (patch.polylogueDebugLog?.[0]?.stage === "native_preparation_progress") throw new Error("synthetic debug write refusal");
-        return originalSet(patch);
-      };
-    }
-    let release; const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async (url, options) => {
-      const path = new globalThis.URL(url).pathname;
-      if (path.endsWith(`/native/${boundary}`) || (boundary === "admission" && path === "/v1/status")) await new Promise((resolve, reject) => { release = () => outcome === "failure" ? reject(new Error("synthetic native request refusal")) : resolve(); });
-      if (path === "/v1/status") return responseJson({ ok: true, receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1" });
-      return captureJobFixtureResponse(url, options) || originalFetch(url, options);
-    });
-    const normalization = sendRuntimeMessage({ type: "polylogue.normalizeNativeCapture", provider: "chatgpt", raw_ref: ref, native_id: "session", native_request_id: outcome === "missing_id" ? undefined : outcome === "malformed_id" ? "staging-uuid" : "polylogue-native-fetch-1-original" }, { tab: tabs[0], documentId: owner.document_id });
-    let earlyResponse; normalization.then(value => { earlyResponse = value; });
-    await vi.waitFor(() => expect(release, JSON.stringify(earlyResponse)).toBeDefined());
-    const phase = { admission: "normalize_admission", prepare: "native_prepare", plan: "native_assets", finalize: "native_finalize" }[boundary];
-    if (!["diagnostic_failure", "missing_id", "malformed_id"].includes(outcome)) await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([
-      expect.objectContaining({stage:"native_preparation_progress",phase,state:"BEGIN",acquisition_ref:ref.id}),
-    ])));
-    const begun = stored.polylogueDebugLog.find(row => row.phase === phase && row.state === "BEGIN");
-    if (!["diagnostic_failure", "missing_id", "malformed_id"].includes(outcome)) expect(Object.keys(begun).sort()).toEqual(["acquisition_ref","at","native_request_id","phase","stage","state"]);
-    else expect(begun).toBeUndefined();
-    expect(stored.polylogueDebugLog.some(row => row.phase === phase && row.state === "END")).toBe(false);
-    const cancellation = outcome === "cancel" ? sendRuntimeMessage({ type: "polylogue.cancelNativeCapture", provider: "chatgpt", raw_ref: ref }, { tab: tabs[0], documentId: owner.document_id }) : null;
-    if (cancellation) await setImmediate();
-    release();
-    const result = await normalization;
-    if (cancellation) await cancellation;
-    expect(result.ok).toBe(["success", "diagnostic_failure", "missing_id", "malformed_id"].includes(outcome));
-    if (outcome === "success") await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([
-      expect.objectContaining({stage:"native_preparation_progress",phase:"native_finalize",state:"END",acquisition_ref:ref.id}),
-    ])));
-    if (["failure", "cancel"].includes(outcome)) expect(stored.polylogueDebugLog.some(row => row.phase === phase && row.state === "END")).toBe(false);
-  });
-
-  it.each(["same_clock", "interleaved", "missing_id", "malformed_id"])("carries ORIGINAL MAIN request through replaced headers, private log and strict report: %s", async schedule => {
-    stored.polylogueAmbientSettings = { enabled: true, automatic_capture_enabled: false, disabled_sites: [] };
-    stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
-    tabs[0].url = "https://chatgpt.com/c/session";
-    const owner = { tab_id: 42, document_id: "owned-document", provider: "chatgpt" };
-    const store = new IndexedDbBackfillStore(globalThis.indexedDB);
-    const staging = new CaptureStaging(globalThis.navigator.storage, store);
-    const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://chatgpt.com/backend-api/conversation/session" });
-    await staging.append(ref, owner, 0, globalThis.Buffer.from(JSON.stringify({ id: "session", mapping: {} })).toString("base64"));
-    await staging.seal(ref, owner);
-    const fixedClock = Date.now(); vi.spyOn(Date, "now").mockReturnValue(fixedClock);
-    const allStorageListeners = new Set(); const pages = []; const normalizations = []; const releases = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async (url, options) => {
-      if (new globalThis.URL(url).pathname.endsWith("/native/prepare")) await new Promise(resolve => { releases.push(resolve); });
-      if (new globalThis.URL(url).pathname === "/v1/status") return responseJson({ ok: true, receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1" });
-      return captureJobFixtureResponse(url, options) || originalFetch(url, options);
-    });
-    const originalSet = globalThis.chrome.storage.local.set;
-    globalThis.chrome.storage.local.set = async patch => {
-      const changes = Object.fromEntries(Object.entries(patch).map(([key, value]) => [key, { oldValue: stored[key], newValue: value }]));
-      await originalSet(patch);
-      for (const listener of allStorageListeners) listener(changes, "local");
-    };
-    try {
-      for (let index = 0; index < (schedule === "interleaved" ? 2 : 1); index++) {
-        const dom = new JSDOM("<!doctype html><title>Neutral capture fixture</title>", { url: tabs[0].url, runScripts: "outside-only" });
-        const listeners = []; const storageListeners = new Set(); const page = { dom, storageListeners, registrationListeners: null, requestId: null, capture: null };
-        pages.push(page); dom.window.Date.now = () => fixedClock;
-        dom.window.chrome = {
-          storage: { onChanged: { addListener: listener => { storageListeners.add(listener); allStorageListeners.add(listener); }, removeListener: listener => { storageListeners.delete(listener); allStorageListeners.delete(listener); } } },
-          runtime: { id: globalThis.chrome.runtime.id, getManifest: globalThis.chrome.runtime.getManifest,
-            onMessage: { addListener: listener => listeners.push(listener) },
-            sendMessage: async message => {
-              const request = { ...message };
-              if (message.type === "polylogue.normalizeNativeCapture") {
-                expect(storageListeners.size).toBe(2); // Registration plus original preparation observer, before runtime send.
-                expect(message.native_request_id).toBe(page.requestId);
-                expect(message.raw_ref).toEqual(ref); // Header response actually replaced the acquisition descriptor.
-                normalizations.push(message);
-                if (schedule === "missing_id") delete request.native_request_id;
-                if (schedule === "malformed_id") request.native_request_id = "staging-uuid";
-              }
-              const result = await sendRuntimeMessage(request, { tab: tabs[0], documentId: owner.document_id });
-              // The real header handler is retained; the neutral fixture presents
-              // an identical owned raw revision for both concurrent responses.
-              return message.type === "polylogue.nativeCaptureHeader" && result?.ok
-                ? { ...result, capture: { ...result.capture, bodyRef: ref } } : result;
-            } },
-        };
-        dom.window.fetch = async input => new globalThis.Response(JSON.stringify(new globalThis.URL(String(input)).pathname === "/api/auth/session" ? { detail: "not_found" } : { id: "session", mapping: {} }), { status: new globalThis.URL(String(input)).pathname === "/api/auth/session" ? 404 : 200, headers: { "content-type": "application/json" } });
-        dom.window.postMessage = data => {
-          if (data.type === `polylogue.page.v2.${dom.window.chrome.runtime.id}.chatgpt.nativeFetchRequest`) page.requestId = data.requestId;
-          dom.window.queueMicrotask(() => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { source: dom.window, origin: dom.window.location.origin, data })));
-        };
-        const context = dom.getInternalVMContext();
-        for (const file of ["content/asset_stream.js", "content/chatgpt_bridge.js", "common.js", "content/chatgpt.js"]) new Script(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), `../src/${file}`), "utf8")).runInContext(context);
-        page.registrationListeners = new Set(storageListeners);
-        page.dispatch = message => new Promise((resolve, reject) => {
-          if (!listeners.some(listener => listener(message, {}, resolve) === true)) reject(new Error("synthetic content listener missing"));
-        });
-        page.capture = page.dispatch({ type: "polylogue.capturePage", deferReceiver: true });
-      }
-      await vi.waitFor(() => expect(releases.length).toBe(pages.length));
-      expect(normalizations).toHaveLength(pages.length);
-      expect(new Set(pages.map(page => page.requestId)).size).toBe(pages.length);
-      for (const page of pages) expect(page.requestId).toMatch(/^polylogue-native-fetch-\d+-[a-z0-9]+$/);
-      if (!["missing_id", "malformed_id"].includes(schedule)) for (const page of pages) {
-        await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([expect.objectContaining({ stage: "native_preparation_progress", phase: "normalize_admission", state: "BEGIN", native_request_id: page.requestId, acquisition_ref: ref.id })])));
-      }
-      const cancellations = pages.map(page => page.dispatch({ type: "polylogue.cancelCapture" }));
-      expect(allStorageListeners.size).toBe(pages.length);
-      for (const page of pages) expect(page.storageListeners).toEqual(page.registrationListeners);
-      for (const release of releases) release();
-      await Promise.all(cancellations);
-      for (const page of pages) {
-        const progress = await page.capture;
-        expect(progress).toMatchObject({ ok: false, outcome: "cancelled" });
-        const rows = progress.native_progress.filter(row => row.source === "background_debug_log");
-        if (["missing_id", "malformed_id"].includes(schedule)) expect(rows).toEqual([]);
-        else expect(rows).toContainEqual({ stage: "normalize_admission", state: "BEGIN", source: "background_debug_log" });
-        expect(JSON.stringify(progress.native_progress)).not.toContain(page.requestId);
-        expect(JSON.stringify(progress.native_progress)).not.toContain(ref.id);
-        const snapshot = JSON.stringify(progress.native_progress);
-        // A real late private write after original cancellation cannot revive an observer.
-        await globalThis.chrome.storage.local.set({ polylogueDebugLog: [{ at: new Date().toISOString(), stage: "native_preparation_progress", phase: "native_finalize", state: "END", native_request_id: page.requestId, acquisition_ref: ref.id }] });
-        expect(JSON.stringify(progress.native_progress)).toBe(snapshot);
-      }
-    } finally {
-      const cancellations = pages.map(page => page.dispatch?.({ type: "polylogue.cancelCapture" }));
-      for (const release of releases) release();
-      await Promise.allSettled(cancellations);
-      await Promise.allSettled(pages.map(page => page.capture));
-      for (const page of pages) { page.dom.window.dispatchEvent(new page.dom.window.Event("pagehide")); page.dom.window.close(); }
-      expect(allStorageListeners.size).toBe(0);
-      vi.restoreAllMocks();
-    }
+    expect(await (await staging.file(ref.id)).text()).toBe(raw);
   });
 
   it("uses the supported Claude native id header without inventing a uuid", async () => {
@@ -919,7 +751,7 @@ describe("background receiver diagnostics", () => {
 
     expect(response.receiver_request_id).toBe("receiver-request-1");
     expect(fetchCalls).toHaveLength(1);
-    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/browser-captures");
+    expect(fetchCalls[0].url).toBe("polylogue://native/v1/browser-captures");
     expect(fetchCalls[0].options.headers.Authorization).toBeUndefined();
     expect(fetchCalls[0].options.headers["Content-Type"]).toBe("application/json");
     expect(fetchCalls[0].options.headers["X-Request-ID"]).toMatch(/^polylogue-ext-/);
@@ -944,14 +776,14 @@ describe("background receiver diagnostics", () => {
       nativeId: "session", extensionVersion: "0.3.0", instanceId: "synthetic-preparation-instance", signal: new globalThis.AbortController().signal });
     const sender = { tab: tabs[0], documentId: owner.document_id };
     globalThis.fetch = vi.fn(async (url) => {
-      if (String(url).endsWith("/native/publish")) throw new TypeError("Failed to fetch");
+      if (String(url).endsWith("/v1/browser-captures")) throw new TypeError("Failed to fetch");
       return responseJson({ ok: true, receiver_id: stored.polylogueReceiverPairing.receiver_id,
         api_schema: stored.polylogueReceiverPairing.api_schema });
     });
     expect(await sendRuntimeMessage({ type: "polylogue.capture", envelope }, sender)).toMatchObject({ queued: true });
     let uploads = 0; let drained = false;
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      if (!String(url).endsWith("/native/publish")) return responseJson({ ok: true,
+      if (!String(url).endsWith("/v1/browser-captures")) return responseJson({ ok: true,
         receiver_id: stored.polylogueReceiverPairing.receiver_id, api_schema: stored.polylogueReceiverPairing.api_schema });
       uploads += 1;
       try { await new Promise((resolve, reject) => {
@@ -986,7 +818,7 @@ describe("background receiver diagnostics", () => {
     const sender = { tab: tabs[0], documentId: owner.document_id };
     let finishUpload; let uploads = 0; let uploadSignal; let uploadBody;
     globalThis.fetch = vi.fn(async (url, options) => {
-      if (!String(url).endsWith("/native/publish")) return responseJson({ ok: true,
+      if (!String(url).endsWith("/v1/browser-captures")) return responseJson({ ok: true,
         receiver_id: stored.polylogueReceiverPairing.receiver_id, api_schema: stored.polylogueReceiverPairing.api_schema });
       uploads += 1; uploadSignal = options.signal; uploadBody = options.body;
       await new Promise((resolve) => { finishUpload = resolve; });
@@ -1004,7 +836,7 @@ describe("background receiver diagnostics", () => {
     expect(await sendRuntimeMessage({ type: "polylogue.cancelCaptureDelivery", request_id: "shared-second" }, sender)).toMatchObject({ ok: true });
     expect(await second).toMatchObject({ ok: false, error: "capture_cancelled" });
     expect(uploadSignal.aborted).toBe(false);
-    expect(JSON.parse(uploadBody).sha256).toBe(envelope.receiver_native.sha256);
+    expect(JSON.parse(await uploadBody.text()).raw_provider_payload).toHaveProperty("mapping");
     expect(await (await staging.file(ref.id)).text()).toContain("shared evidence");
     expect(await deliveryEntries()).toHaveLength(1);
     finishUpload();
@@ -1029,7 +861,7 @@ describe("background receiver diagnostics", () => {
     const sender = { tab: tabs[0], documentId: owner.document_id };
     let finishDrain; let closing = false; let uploads = 0;
     globalThis.fetch = vi.fn(async (url, options) => {
-      if (!String(url).endsWith("/native/publish")) return responseJson({ ok: true,
+      if (!String(url).endsWith("/v1/browser-captures")) return responseJson({ ok: true,
         receiver_id: stored.polylogueReceiverPairing.receiver_id, api_schema: stored.polylogueReceiverPairing.api_schema });
       uploads += 1;
       if (uploads === 1) {
@@ -1509,7 +1341,7 @@ describe("background receiver diagnostics", () => {
     activatedListener({ tabId: 78 });
 
     await vi.waitFor(() => expect(fetchCalls).toHaveLength(1));
-    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/status");
+    expect(fetchCalls[0].url).toBe("polylogue://native/v1/status");
     expect(stored.polylogueSessionLedger).toBeUndefined();
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
@@ -2452,7 +2284,7 @@ describe("background receiver diagnostics", () => {
     await vi.waitFor(() => expect(stored.polylogueState?.active_page_state).toBe("conversation"));
     await vi.waitFor(() => expect(stored.polylogueState?.captured).toBe(true));
     expect(fetchCalls.map((call) => call.url)).toContain(
-      "http://127.0.0.1:8875/v1/archive-state?provider=chatgpt&provider_session_id=conv-123",
+      "polylogue://native/v1/archive-state?provider=chatgpt&provider_session_id=conv-123",
     );
     expect(stored.polylogueState.captured).toBe(true);
     expect(stored.polylogueState.last_receiver_request_id).toBe("capture-request-1");
@@ -2461,7 +2293,7 @@ describe("background receiver diagnostics", () => {
       type: "polylogue.capturePage",
       reason: "auto_capture_missing",
     });
-    expect(fetchCalls.map((call) => call.url)).toContain("http://127.0.0.1:8875/v1/browser-captures");
+    expect(fetchCalls.map((call) => call.url)).toContain("polylogue://native/v1/browser-captures");
     const timeline = stored.polylogueConversationTimeline["chatgpt:conv-123"];
     expect(timeline.map((entry) => entry.event)).toEqual(["captured", "detected_new", "first_seen"]);
     expect(timeline[0]).toMatchObject({ reason: "auto_capture_missing", detail: "spooled_only" });
@@ -2586,7 +2418,7 @@ describe("background receiver diagnostics", () => {
     await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalled());
     expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, expect.objectContaining({ type: "polylogue.capturePage" }));
     await vi.waitFor(() => expect(stored.polylogueState?.captured).toBe(true));
-    expect(fetchCalls.map((call) => call.url)).toContain("http://127.0.0.1:8875/v1/browser-captures");
+    expect(fetchCalls.map((call) => call.url)).toContain("polylogue://native/v1/browser-captures");
   });
 
   it("queries a temporary chat using its current content-script identity", async () => {
@@ -3162,7 +2994,7 @@ describe("background receiver diagnostics", () => {
     updatedListener(42, { status: "complete" }, tabs[0]);
 
     await vi.waitFor(() => expect(stored.polylogueState?.active_page_state).toBe("supported_no_session"));
-    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/status");
+    expect(fetchCalls[0].url).toBe("polylogue://native/v1/status");
     expect(stored.polylogueState.provider).toBe("chatgpt");
     expect(stored.polylogueState.last_receiver_request_id).toBe("status-1");
     expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
@@ -4155,7 +3987,7 @@ describe("receiver health probe", () => {
         api_schema: "polylogue-browser-capture/v1",
       },
     });
-    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/status");
+    expect(fetchCalls[0].url).toBe("polylogue://native/v1/status");
   });
 
   it("reports the receiver as unreachable when the fetch itself fails", async () => {
