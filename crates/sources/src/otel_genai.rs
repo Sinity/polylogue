@@ -11,7 +11,7 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
-use crate::parse::{DocumentParser, MessageRow, Output, StepParser, Whole};
+use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, Timestamp, ToolAction,
@@ -29,8 +29,8 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
         && first_key(head) == Some("resourceSpans")
 }
 
-pub fn open(_path: &Path) -> Option<Box<dyn StepParser>> {
-    Some(Box::new(Whole(OtelGenAi)))
+pub fn open(_path: &Path) -> Option<Parse> {
+    Some(Parse::Document(Box::new(OtelGenAi)))
 }
 
 pub struct OtelGenAi;

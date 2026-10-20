@@ -7,8 +7,8 @@
 
 use super::{Scope, UsageReport, usage};
 use crate::{Reader, Result};
+use polylogue_model::{QuotaLimit, QuotaReading, Timestamp};
 use serde::Serialize;
-use serde_json::Value;
 
 const MINUTE: i64 = 60_000;
 const HOUR: i64 = 60 * MINUTE;
@@ -20,11 +20,14 @@ pub const WEEK: i64 = 10_080;
 pub struct Observation {
     /// Unix ms of the response that carried it.
     pub at: i64,
-    /// `claude-code` or `codex`.
+    /// The origin that reported it (`claude-code`, `codex`).
     pub tool: String,
     /// The tool's name for the limit (`codex`, `five_hour`, `seven_day`, …).
     pub limit: String,
     pub window_minutes: i64,
+    /// The window starts with the first response after the previous one
+    /// ended.
+    pub from_first_response: bool,
     pub used_percent: Option<f64>,
     /// Unix ms.
     pub resets_at: Option<i64>,
@@ -91,61 +94,22 @@ pub struct Quota {
     pub tools: Vec<ToolQuota>,
 }
 
-/// Reads one response's quota record into observations.
-pub fn observations(tool: &str, at: i64, quota: &Value) -> Vec<Observation> {
-    let num = |v: &Value| {
-        v.as_f64()
-            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-    };
-    let mut out = vec![];
-    match tool {
-        "codex" => {
-            let limit = quota["limit_id"].as_str().unwrap_or("codex").to_owned();
-            for slot in ["primary", "secondary"] {
-                let w = &quota[slot];
-                let Some(minutes) = w["window_minutes"].as_i64() else {
-                    continue;
-                };
-                let resets_at = w["resets_at"]
-                    .as_i64()
-                    .map(|s| s * 1000)
-                    .or_else(|| w["resets_in_seconds"].as_i64().map(|s| at + s * 1000));
-                out.push(Observation {
-                    at,
-                    tool: tool.to_owned(),
-                    limit: limit.clone(),
-                    window_minutes: minutes,
-                    used_percent: num(&w["used_percent"]),
-                    resets_at,
-                    status: None,
-                });
-            }
-        }
-        "claude-code" => {
-            let Some(kind) = quota["rateLimitType"].as_str() else {
-                return out;
-            };
-            let minutes = match kind {
-                "five_hour" => FIVE_HOURS,
-                k if k.starts_with("seven_day") => WEEK,
-                _ => return out,
-            };
-            let status = quota["status"].as_str().map(str::to_owned);
-            out.push(Observation {
-                at,
-                tool: tool.to_owned(),
-                limit: kind.to_owned(),
-                window_minutes: minutes,
-                // A refused turn means the window is used up; other states
-                // do not say how much.
-                used_percent: (status.as_deref() == Some("rejected")).then_some(100.0),
-                resets_at: quota["resetsAt"].as_i64().map(|s| s * 1000),
-                status,
-            });
-        }
-        _ => {}
-    }
-    out
+/// Every limit reading of one response.
+fn observations(tool: &str, at: i64, reading: &QuotaReading) -> Vec<Observation> {
+    reading
+        .windows
+        .iter()
+        .map(|w| Observation {
+            at,
+            tool: tool.to_owned(),
+            limit: w.limit.limit.to_string(),
+            window_minutes: w.limit.minutes,
+            from_first_response: w.limit.from_first_response,
+            used_percent: w.used_percent,
+            resets_at: w.resets_at.map(Timestamp::unix_ms),
+            status: w.status.clone(),
+        })
+        .collect()
 }
 
 /// The window containing `now` for one limit, from its observations
@@ -197,17 +161,20 @@ pub fn blocks(times: &[i64], anchors: &[(i64, i64)], len: i64) -> Vec<(WindowSou
     out
 }
 
-/// Reads every observation and builds the quota report for `now`.
-pub fn quota(reader: &Reader<'_>, now: i64) -> Result<Quota> {
+/// Reads every quota reading and builds the report for `now`. `known` names
+/// the tools that have a subscription quota and the limits each has
+/// whether or not a reading named them.
+pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> Result<Quota> {
     let conn = reader.conn();
     let mut obs: Vec<Observation> = vec![];
     let mut plans: Vec<(String, String)> = vec![];
     let mut credits: Vec<(String, Credits)> = vec![];
+    let mut tools: Vec<String> = known.iter().map(|(t, _)| (*t).to_owned()).collect();
     {
         let mut stmt = conn.prepare(
             "SELECT s.origin, m.at, json_extract(m.attrs_json, '$.production.quota')
              FROM message m JOIN session s ON s.pk = m.session_pk
-             WHERE m.at IS NOT NULL AND s.origin IN ('codex', 'claude-code')
+             WHERE m.at IS NOT NULL
                AND json_extract(m.attrs_json, '$.production.quota') IS NOT NULL
              ORDER BY m.at",
         )?;
@@ -219,56 +186,61 @@ pub fn quota(reader: &Reader<'_>, now: i64) -> Result<Quota> {
             ))
         })?;
         for row in rows {
-            let (tool, at, quota) = row?;
-            let Ok(quota) = serde_json::from_str::<Value>(&quota) else {
-                continue;
-            };
-            if let Some(plan) = quota["plan_type"].as_str() {
-                plans.push((tool.clone(), plan.to_owned()));
+            let (tool, at, reading) = row?;
+            let reading: QuotaReading = serde_json::from_str(&reading)?;
+            if let Some(plan) = &reading.plan {
+                plans.push((tool.clone(), plan.clone()));
             }
-            if let Some(balance) = quota["credits"]["balance"].as_str() {
+            if let Some(balance) = &reading.credits {
                 credits.push((
                     tool.clone(),
                     Credits {
-                        balance: balance.to_owned(),
+                        balance: balance.clone(),
                         observed_at: at,
                     },
                 ));
             }
-            obs.extend(observations(&tool, at, &quota));
+            obs.extend(observations(&tool, at, &reading));
+            if !tools.contains(&tool) {
+                tools.push(tool);
+            }
         }
     }
-    let mut tools = vec![];
-    for tool in ["claude-code", "codex"] {
+    let mut out = vec![];
+    for tool in &tools {
+        let tool = tool.as_str();
         let mine: Vec<&Observation> = obs.iter().filter(|o| o.tool == tool).collect();
-        let mut limits: Vec<(String, i64)> = mine
+        let mut limits: Vec<(String, i64, bool)> = mine
             .iter()
-            .map(|o| (o.limit.clone(), o.window_minutes))
+            .map(|o| (o.limit.clone(), o.window_minutes, o.from_first_response))
             .collect();
         limits.sort();
         limits.dedup();
-        if tool == "claude-code" {
-            // Claude Code's windows exist whether or not a turn was refused.
-            for want in [("five_hour", FIVE_HOURS), ("seven_day", WEEK)] {
-                if !limits.iter().any(|(_, m)| *m == want.1) {
-                    limits.push((want.0.to_owned(), want.1));
-                }
+        let declared = known
+            .iter()
+            .filter(|(t, _)| *t == tool)
+            .flat_map(|(_, l)| *l);
+        for want in declared {
+            if !limits.iter().any(|(_, m, _)| *m == want.minutes) {
+                limits.push((
+                    want.limit.to_string(),
+                    want.minutes,
+                    want.from_first_response,
+                ));
             }
         }
         let mut windows = vec![];
-        for (limit, minutes) in limits {
+        for (limit, minutes, from_first_response) in limits {
             let these: Vec<Observation> = mine
                 .iter()
                 .filter(|o| o.limit == limit && o.window_minutes == minutes)
                 .map(|o| (*o).clone())
                 .collect();
             let window = match current_window(&these, now) {
-                Some(w) if w.0 == WindowSource::Reported || tool == "codex" || minutes == WEEK => {
-                    Some(w)
-                }
-                // Claude Code's five-hour windows start with the first
-                // response after the previous one ended.
-                _ if minutes == FIVE_HOURS => {
+                Some(w) if w.0 == WindowSource::Reported || !from_first_response => Some(w),
+                // A window that starts with the first response after the
+                // previous one ended.
+                _ if from_first_response => {
                     let times = response_times(reader, tool, now - 2 * minutes * MINUTE, now)?;
                     let anchors: Vec<(i64, i64)> = these
                         .iter()
@@ -287,7 +259,7 @@ pub fn quota(reader: &Reader<'_>, now: i64) -> Result<Quota> {
                 )?);
             }
         }
-        tools.push(ToolQuota {
+        out.push(ToolQuota {
             tool: tool.to_owned(),
             plan: plans
                 .iter()
@@ -302,7 +274,7 @@ pub fn quota(reader: &Reader<'_>, now: i64) -> Result<Quota> {
             windows,
         });
     }
-    Ok(Quota { now, tools })
+    Ok(Quota { now, tools: out })
 }
 
 fn response_times(reader: &Reader<'_>, tool: &str, since: i64, until: i64) -> Result<Vec<i64>> {

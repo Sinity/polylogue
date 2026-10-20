@@ -19,7 +19,7 @@ pub mod read;
 pub mod repo_lookup;
 
 use polylogue_model::Json;
-use polylogue_sources::{Capture, Framing, ORIGINS, OriginSpec, Support};
+use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
 pub use polylogue_store::excise::{ExciseRequest, Excised, Scope as ExciseScope};
 use polylogue_store::tool_databases::Exporter;
 use polylogue_store::{
@@ -310,12 +310,14 @@ pub struct Engine {
     lookups_at: Option<Instant>,
 }
 
+/// Whether `origin` reads the input at `path` whole, as one document.
+fn whole(origin: &OriginSpec, path: &Path) -> bool {
+    (origin.open)(path).is_some_and(|p| p.is_document())
+}
+
 /// The range a plan's first job reads: a document whole, lines by chunk.
-fn span(origin: &OriginSpec, chunk: u64) -> u64 {
-    match origin.framing {
-        Framing::Lines => chunk,
-        Framing::Document => u64::MAX,
-    }
+fn span(origin: &OriginSpec, path: &Path, chunk: u64) -> u64 {
+    if whole(origin, path) { u64::MAX } else { chunk }
 }
 
 fn now_ms() -> i64 {
@@ -703,9 +705,10 @@ impl Engine {
             Change::Unchanged | Change::Disappeared => return self.stored_plan(path),
         };
         // A document is parsed whole: any change parses it from its start.
-        let (parse_pos, carry) = match st.origin.framing {
-            Framing::Lines => (parse_pos, carry),
-            Framing::Document => (0, None),
+        let (parse_pos, carry) = if whole(st.origin, path) {
+            (0, None)
+        } else {
+            (parse_pos, carry)
         };
         Ok(Some(Plan {
             path: path.to_path_buf(),
@@ -724,7 +727,7 @@ impl Engine {
             piece_started: false,
             carry,
             tail: None,
-            span: span(st.origin, self.config.chunk),
+            span: span(st.origin, path, self.config.chunk),
             chunk: self.config.chunk,
             priority,
             tracked: true,
@@ -774,7 +777,7 @@ impl Engine {
             piece_started: false,
             carry: None,
             tail: None,
-            span: span(origin, self.config.chunk),
+            span: span(origin, path, self.config.chunk),
             chunk: self.config.chunk,
             priority: Priority::Bulk,
             tracked: true,

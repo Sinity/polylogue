@@ -13,6 +13,7 @@ mod id;
 mod message;
 mod note;
 pub mod price;
+mod quota;
 mod session;
 mod time;
 mod usage;
@@ -34,6 +35,7 @@ pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{LogicalDay, Timestamp};
 pub mod text;
 pub use price::{Catalog, LongContext, Price};
+pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};
 pub use usage::Usage;
 pub use work::{WorkEdgeKind, WorkNodeKind};
 

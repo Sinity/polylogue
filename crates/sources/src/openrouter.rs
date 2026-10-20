@@ -9,7 +9,7 @@
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule, unaccounted};
-use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, StepParser, Whole};
+use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, Parse};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, PromptKind, Role,
@@ -28,8 +28,8 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
     named && first_byte(head) == Some(b'{') && first_key(head) == Some("version")
 }
 
-pub fn open(_path: &Path) -> Option<Box<dyn StepParser>> {
-    Some(Box::new(Whole(OpenRouter)))
+pub fn open(_path: &Path) -> Option<Parse> {
+    Some(Parse::Document(Box::new(OpenRouter)))
 }
 
 pub struct OpenRouter;

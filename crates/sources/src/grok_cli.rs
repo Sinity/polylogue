@@ -11,7 +11,7 @@
 use crate::document::{first_key, message_id, session_id, str_of, string_of};
 use crate::fields::{Fields, Rule, unaccounted};
 use crate::frame::Record;
-use crate::parse::{MessageRow, Output, Parser, StepParser};
+use crate::parse::{MessageRow, Output, Parse, Parser};
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     Block, Event, Json, Message, MessageId, PromptKind, Role, Session, SessionKind, ToolAction,
@@ -71,8 +71,8 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
     Place::from_path(path).is_some() && first_key(head) == Some("type")
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
-    Place::from_path(path).map(|place| Box::new(GrokCli { place }) as Box<dyn StepParser>)
+pub fn open(path: &Path) -> Option<Parse> {
+    Place::from_path(path).map(|place| Parse::Lines(Box::new(GrokCli { place })))
 }
 
 pub struct GrokCli {

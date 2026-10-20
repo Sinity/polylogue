@@ -156,9 +156,15 @@
             "effort": "high",
             "first_token_ms": 800,
             "quota": {
-              "rateLimitType": "five_hour",
-              "resetsAt": 1790000000,
-              "status": "allowed"
+              "windows": [
+                {
+                  "from_first_response": true,
+                  "limit": "five_hour",
+                  "minutes": 300,
+                  "resets_at": "2026-09-21T14:13:20Z",
+                  "status": "allowed"
+                }
+              ]
             },
             "request": "r-1",
             "request_id": "req_1",

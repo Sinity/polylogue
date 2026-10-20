@@ -150,10 +150,24 @@ fn the_api_request_id_lands_on_the_message_and_is_not_invented() {
 }
 
 #[test]
-fn quota_limits_are_kept_as_the_refusal_evidence() {
+fn a_refused_turn_s_quota_limits_are_a_used_up_window() {
     let quota = json!({"status": "rejected", "resetsAt": 1787464800, "rateLimitType": "seven_day"});
     let p = run(&[assistant("a1", text("ok"), json!({"quotaLimits": quota}))]);
-    assert_eq!(message(&p, ":a1")["production"]["quota"], quota);
+    assert_eq!(
+        message(&p, ":a1")["production"]["quota"],
+        json!({"windows": [{"limit": "seven_day", "minutes": 10080, "used_percent": 100.0,
+                            "resets_at": "2026-08-23T06:00:00Z", "status": "rejected"}]})
+    );
+    // Other states do not say how much is used; the five-hour window
+    // starts with the first response after the last one ended.
+    let quota =
+        json!({"status": "allowed_warning", "resetsAt": 1787464800, "rateLimitType": "five_hour"});
+    let p = run(&[assistant("a1", text("ok"), json!({"quotaLimits": quota}))]);
+    assert_eq!(
+        message(&p, ":a1")["production"]["quota"]["windows"][0],
+        json!({"limit": "five_hour", "minutes": 300, "from_first_response": true,
+               "resets_at": "2026-08-23T06:00:00Z", "status": "allowed_warning"})
+    );
 }
 
 #[test]

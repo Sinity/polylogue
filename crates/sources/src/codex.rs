@@ -22,13 +22,14 @@ mod items;
 use crate::fields::unaccounted;
 use crate::frame::Record;
 use crate::origin::Root;
-use crate::parse::{BackgroundUpdate, MessageRow, Output, Parser, StepParser};
+use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
 use crate::{Accounting, Disposition};
 use items::{Completed, str_field};
 use polylogue_model::{
     Block, Event, Json, Link, LinkKind, Message, MessageId, NativeId, Origin, Production,
-    PromptKind, Role, Session, SessionId, SessionKind, TitleSource, ToolAction, ToolOutcome, Usage,
+    PromptKind, QuotaLimit, QuotaReading, QuotaWindow, Role, Session, SessionId, SessionKind,
+    TitleSource, ToolAction, ToolOutcome, Usage,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,17 +56,63 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
             .is_none_or(|&b| b == b'{')
 }
 
+/// A token count's `rate_limits`: the plan, credits, and a `primary` and
+/// `secondary` window of the limit `limit_id`. A window's reset is epoch
+/// seconds, or seconds after the record in older rollouts.
+fn quota(q: &Json, at: Option<polylogue_model::Timestamp>) -> Option<QuotaReading> {
+    let limit = str_field(q, "limit_id").unwrap_or("codex");
+    let windows = ["primary", "secondary"]
+        .iter()
+        .filter_map(|slot| {
+            let w = q.get(*slot)?;
+            let minutes = w.get("window_minutes").and_then(Json::as_i64)?;
+            let resets_at = w
+                .get("resets_at")
+                .and_then(Json::as_i64)
+                .and_then(|s| s.checked_mul(1000))
+                .or_else(|| {
+                    let after = w.get("resets_in_seconds").and_then(Json::as_i64)?;
+                    at?.unix_ms().checked_add(after.checked_mul(1000)?)
+                })
+                .and_then(polylogue_model::Timestamp::from_unix_ms);
+            let used = w.get("used_percent").and_then(|u| {
+                u.as_f64()
+                    .or_else(|| u.as_str().and_then(|s| s.parse().ok()))
+            });
+            Some(QuotaWindow {
+                limit: QuotaLimit {
+                    limit: limit.to_owned().into(),
+                    minutes,
+                    from_first_response: false,
+                },
+                used_percent: used,
+                resets_at,
+                status: None,
+            })
+        })
+        .collect();
+    let reading = QuotaReading {
+        plan: str_field(q, "plan_type").map(str::to_owned),
+        credits: q
+            .get("credits")
+            .and_then(|c| str_field(c, "balance"))
+            .map(str::to_owned),
+        windows,
+    };
+    (reading != QuotaReading::default()).then_some(reading)
+}
+
 /// `codex resume <id>`.
 pub fn resume(native: &str) -> Option<Vec<String>> {
     Some(vec!["codex".into(), "resume".into(), native.into()])
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
-    Some(match File::from_path(path)? {
+pub fn open(path: &Path) -> Option<Parse> {
+    Some(Parse::Lines(match File::from_path(path)? {
         File::Rollout { thread } => Box::new(Rollout { thread }),
         File::History => Box::new(index::History),
         File::SessionIndex => Box::new(index::SessionIndex),
-    })
+    }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -798,7 +845,7 @@ impl Rollout {
                     &mut carry.open,
                     p.get("rate_limits").filter(|r| !r.is_null()),
                 ) {
-                    open.message.production.quota = Some(limits.clone());
+                    open.message.production.quota = quota(limits, at);
                 }
                 Self::close(carry, out);
                 match p.get("rate_limits").filter(|r| !r.is_null()) {

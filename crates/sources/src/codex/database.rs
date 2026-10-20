@@ -11,7 +11,7 @@
 use super::{items::str_field, session_id};
 use crate::frame::Record;
 use crate::origin::Root;
-use crate::parse::{Output, Parser, StepParser};
+use crate::parse::{Output, Parse, Parser};
 use crate::time;
 use crate::{Accounting, Disposition};
 use polylogue_model::{Event, Json, Link, LinkKind, Session, SessionKind, TitleSource};
@@ -58,8 +58,8 @@ pub fn is_database(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "sqlite") && database(path).is_some()
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
-    recognize(path, b"{").then(|| Box::new(Database) as Box<dyn StepParser>)
+pub fn open(path: &Path) -> Option<Parse> {
+    recognize(path, b"{").then(|| Parse::Lines(Box::new(Database)))
 }
 
 pub struct Database;

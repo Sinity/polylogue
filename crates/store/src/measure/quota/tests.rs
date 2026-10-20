@@ -3,42 +3,13 @@ use super::*;
 const T0: i64 = 1_790_000_000_000;
 
 #[test]
-fn codex_slots_are_classified_by_length_not_name() {
-    let q = serde_json::json!({"limit_id": "codex", "plan_type": "pro",
-        "primary": {"used_percent": 42.0, "window_minutes": 10080, "resets_at": 1_790_600_000},
-        "secondary": null});
-    let o = observations("codex", T0, &q);
-    assert_eq!(o.len(), 1);
-    assert_eq!(o[0].window_minutes, WEEK);
-    assert_eq!(o[0].resets_at, Some(1_790_600_000_000));
-    assert_eq!(o[0].used_percent, Some(42.0));
-    let q = serde_json::json!({"primary": {"used_percent": 1, "window_minutes": 300,
-        "resets_in_seconds": 60}});
-    assert_eq!(
-        observations("codex", T0, &q)[0].resets_at,
-        Some(T0 + 60_000)
-    );
-}
-
-#[test]
-fn a_refused_claude_turn_means_the_window_is_used_up() {
-    let q = serde_json::json!({"status": "rejected", "resetsAt": 1_790_010_000,
-        "rateLimitType": "five_hour"});
-    let o = observations("claude-code", T0, &q);
-    assert_eq!(o[0].used_percent, Some(100.0));
-    let q = serde_json::json!({"status": "allowed_warning", "resetsAt": 1_790_010_000,
-        "rateLimitType": "seven_day"});
-    let o = observations("claude-code", T0, &q);
-    assert_eq!((o[0].window_minutes, o[0].used_percent), (WEEK, None));
-}
-
-#[test]
 fn a_past_reset_is_carried_forward_by_the_window_length() {
     let o = vec![Observation {
         at: T0,
         tool: "codex".into(),
         limit: "codex".into(),
         window_minutes: WEEK,
+        from_first_response: false,
         used_percent: Some(10.0),
         resets_at: Some(T0 + HOUR),
         status: None,
@@ -119,6 +90,7 @@ fn burn_needs_two_reports_five_minutes_apart() {
         tool: "codex".into(),
         limit: "codex".into(),
         window_minutes: FIVE_HOURS,
+        from_first_response: false,
         used_percent: Some(p),
         resets_at: None,
         status: None,

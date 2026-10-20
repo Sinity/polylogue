@@ -3,10 +3,56 @@
 
 use super::{Scope, analysis, quota, usage};
 use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
-use polylogue_model::Usage;
+use polylogue_model::{QuotaLimit, QuotaReading, QuotaWindow, Usage};
 use serde_json::json;
+use std::borrow::Cow;
 
 const DAY: i64 = 86_400_000;
+
+/// The tools with a subscription quota, as the origin table declares them.
+const KNOWN: &[(&str, &[QuotaLimit])] = &[
+    (
+        "claude-code",
+        &[
+            QuotaLimit {
+                limit: Cow::Borrowed("five_hour"),
+                minutes: 300,
+                from_first_response: true,
+            },
+            QuotaLimit {
+                limit: Cow::Borrowed("seven_day"),
+                minutes: 10_080,
+                from_first_response: false,
+            },
+        ],
+    ),
+    ("codex", &[]),
+];
+
+/// A quota reading of one window, as a parser stores it.
+fn reading(
+    limit: &str,
+    minutes: i64,
+    from_first_response: bool,
+    used: Option<f64>,
+    resets_at: i64,
+    status: Option<&str>,
+) -> serde_json::Value {
+    serde_json::to_value(QuotaReading {
+        windows: vec![QuotaWindow {
+            limit: QuotaLimit {
+                limit: limit.to_owned().into(),
+                minutes,
+                from_first_response,
+            },
+            used_percent: used,
+            resets_at: polylogue_model::Timestamp::from_unix_ms(resets_at),
+            status: status.map(str::to_owned),
+        }],
+        ..QuotaReading::default()
+    })
+    .unwrap()
+}
 const T0: i64 = 1_790_000_000_000;
 
 fn tokens(input: u64, cached: u64, write: Option<u64>, output: u64) -> Usage {
@@ -120,9 +166,9 @@ fn law_70_unpriced_models_and_credits() {
         T0,
         &tokens(1_000_000, 0, Some(0), 0),
     );
-    let credits = json!({"limit_id": "codex", "plan_type": "pro",
-        "credits": {"balance": "38816.6156015000"},
-        "primary": {"used_percent": 10.0, "window_minutes": 10080, "resets_at": (T0 + DAY) / 1000}});
+    let mut credits = reading("codex", 10_080, false, Some(10.0), T0 + DAY, None);
+    credits["plan"] = json!("pro");
+    credits["credits"] = json!("38816.6156015000");
     let pk = model_message(
         &mut f,
         unpriced,
@@ -173,7 +219,7 @@ fn law_70_unpriced_models_and_credits() {
     assert_eq!(all.api_cost.unpriced_messages, 2);
 
     // Credits are reported in their own place, never as dollars.
-    let o = quota::quota(&r, T0 + 1).unwrap();
+    let o = quota::quota(&r, T0 + 1, KNOWN).unwrap();
     let codex = o.tools.iter().find(|t| t.tool == "codex").unwrap();
     assert_eq!(codex.credits.as_ref().unwrap().balance, "38816.6156015000");
     assert_eq!(codex.plan.as_deref(), Some("pro"));
@@ -211,7 +257,7 @@ fn law_138_hiding_never_changes_a_usage_figure() {
         let r = pool.reader().unwrap();
         (
             usage(&r, &Scope::default()).unwrap(),
-            quota::quota(&r, now).unwrap(),
+            quota::quota(&r, now, KNOWN).unwrap(),
         )
     };
     let (u0, o0) = read(&f);
@@ -253,13 +299,18 @@ fn outlook_reads_reported_windows_and_projects_exhaustion() {
             at,
             &tokens(10, 0, None, 10),
         );
-        let q = json!({"primary": {"used_percent": pct, "window_minutes": 300,
-                                   "resets_at": reset / 1000}});
+        let q = reading("codex", 300, false, Some(pct), reset, None);
         f.usage(pk, &tokens(10, 0, None, 10), Some(q)).unwrap();
     }
     let claude = session(&mut f, "claude-code:s");
-    let rejected = json!({"status": "rejected", "resetsAt": (T0 + 2 * DAY) / 1000,
-                          "rateLimitType": "seven_day"});
+    let rejected = reading(
+        "seven_day",
+        10_080,
+        false,
+        Some(100.0),
+        T0 + 2 * DAY,
+        Some("rejected"),
+    );
     let pk = model_message(
         &mut f,
         claude,
@@ -272,7 +323,7 @@ fn outlook_reads_reported_windows_and_projects_exhaustion() {
         .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let o = quota::quota(&r, T0 + 3_600_000 + 1).unwrap();
+    let o = quota::quota(&r, T0 + 3_600_000 + 1, KNOWN).unwrap();
 
     let cw = &o.tools.iter().find(|t| t.tool == "codex").unwrap().windows[0];
     assert_eq!(cw.source, quota::WindowSource::Reported);

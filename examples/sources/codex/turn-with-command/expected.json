@@ -198,11 +198,14 @@
           "production": {
             "effort": "medium",
             "quota": {
-              "primary": {
-                "resets_at": 1772370000,
-                "used_percent": 4.0,
-                "window_minutes": 300
-              }
+              "windows": [
+                {
+                  "limit": "codex",
+                  "minutes": 300,
+                  "resets_at": "2026-03-01T13:00:00Z",
+                  "used_percent": 4.0
+                }
+              ]
             }
           },
           "role": "assistant",
@@ -260,11 +263,14 @@
           "production": {
             "effort": "medium",
             "quota": {
-              "primary": {
-                "resets_at": 1772370000,
-                "used_percent": 4.0,
-                "window_minutes": 300
-              }
+              "windows": [
+                {
+                  "limit": "codex",
+                  "minutes": 300,
+                  "resets_at": "2026-03-01T13:00:00Z",
+                  "used_percent": 4.0
+                }
+              ]
             }
           },
           "role": "assistant",

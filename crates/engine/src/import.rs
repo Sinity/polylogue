@@ -111,7 +111,7 @@ impl Engine {
             piece_started: false,
             carry: None,
             tail: None,
-            span: span(origin, self.config.chunk),
+            span: span(origin, path, self.config.chunk),
             chunk: self.config.chunk,
             priority: Priority::Live,
             tracked: false,

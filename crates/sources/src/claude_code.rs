@@ -21,15 +21,16 @@ pub mod side;
 use crate::fields::unaccounted;
 use crate::frame::Record;
 use crate::origin::Root;
-use crate::parse::{BackgroundUpdate, MessageRow, Output, Parser, StepParser};
+use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
 use crate::{Accounting, Disposition};
 use polylogue_model::{
     ApiError, Attribution, ErrorReason, Event, Json, Link, LinkKind, Message, MessageId, NativeId,
-    Origin, Production, PromptKind, Role, Session, SessionId, SessionKind, TitleSource,
-    ToolOutcome, Usage,
+    Origin, Production, PromptKind, QuotaLimit, QuotaReading, QuotaWindow, Role, Session,
+    SessionId, SessionKind, Timestamp, TitleSource, ToolOutcome, Usage,
 };
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
@@ -59,8 +60,8 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
             .is_none_or(|&b| b == b'{')
 }
 
-pub fn open(path: &Path) -> Option<Box<dyn StepParser>> {
-    File::from_path(path).map(|file| Box::new(ClaudeCode { file }) as Box<dyn StepParser>)
+pub fn open(path: &Path) -> Option<Parse> {
+    File::from_path(path).map(|file| Parse::Lines(Box::new(ClaudeCode { file })))
 }
 
 /// `claude --resume <id>`. Subagents and sidechains are not resumable on
@@ -712,6 +713,50 @@ fn range(record: Record<'_>) -> (u64, u64) {
     (record.offset, record.offset + record.bytes.len() as u64)
 }
 
+/// Claude Code's subscription windows: five hours from the first response
+/// after the last window ended, and a week on a fixed schedule. They exist
+/// whether or not a turn was ever refused.
+pub const QUOTA_LIMITS: &[QuotaLimit] = &[
+    QuotaLimit {
+        limit: Cow::Borrowed("five_hour"),
+        minutes: 300,
+        from_first_response: true,
+    },
+    QuotaLimit {
+        limit: Cow::Borrowed("seven_day"),
+        minutes: 10_080,
+        from_first_response: false,
+    },
+];
+
+/// `quotaLimits`, which Claude Code records only when it refuses a turn:
+/// `{status, resetsAt, rateLimitType}`.
+fn quota(q: &Json) -> Option<QuotaReading> {
+    let kind = str_field(q, "rateLimitType")?;
+    let limit = QUOTA_LIMITS
+        .iter()
+        .find(|l| kind == l.limit || (l.minutes == 10_080 && kind.starts_with("seven_day")))?;
+    let status = str_field(q, "status").map(str::to_owned);
+    Some(QuotaReading {
+        windows: vec![QuotaWindow {
+            limit: QuotaLimit {
+                limit: Cow::Owned(kind.to_owned()),
+                ..limit.clone()
+            },
+            // A refused turn means the window is used up; other states do
+            // not say how much.
+            used_percent: (status.as_deref() == Some("rejected")).then_some(100.0),
+            resets_at: q
+                .get("resetsAt")
+                .and_then(Json::as_i64)
+                .and_then(|s| s.checked_mul(1000))
+                .and_then(Timestamp::from_unix_ms),
+            status,
+        }],
+        ..QuotaReading::default()
+    })
+}
+
 /// How the harness produced a message: settings, attribution and the
 /// API's diagnostics (`Production`).
 fn production(v: &Json, msg: &Json) -> Production {
@@ -746,7 +791,7 @@ fn production(v: &Json, msg: &Json) -> Production {
         request: s("requestRef"),
         request_id: s("requestId"),
         turn_origin: s("turnOrigin"),
-        quota: kept(v.get("quotaLimits")),
+        quota: v.get("quotaLimits").and_then(quota),
     }
 }
 
