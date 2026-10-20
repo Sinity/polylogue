@@ -35,7 +35,7 @@ fn capture_keeps_original_identity_after_the_source_is_rewritten_or_deleted() {
         assert_eq!(w.texts("s1"), ["captured"]);
         let reader = engine.reads.reader().unwrap();
         let retained = reader
-            .retained_input(&blake3::hash(original.as_bytes()).to_hex().to_string())
+            .retained_input(blake3::hash(original.as_bytes()).to_hex().as_ref())
             .unwrap()
             .unwrap();
         assert_eq!(retained.length, original.len() as u64);
