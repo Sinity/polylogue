@@ -48,12 +48,22 @@ fn independent_line_framing_refuses_missing_and_extra_classifications() {
 #[test]
 fn field_checks_do_not_frame_records_or_change_declared_exclusions() {
     let mut records = Records::default();
-    records.fields("event", &json!({"read":1,"kept":{"extra":2},"excluded":3,"items":[{"known":1,"extra":2},{"known":2,"extra":3}]}), &[
-        ("read",Rule::Read),
-        ("kept",Rule::Kept("retained as event data")),
-        ("excluded",Rule::Excluded("not interpreted")),
-        ("items[].known",Rule::Read),
-    ]);
+    let value = json!({
+        "read": 1,
+        "kept": {"extra": 2},
+        "excluded": 3,
+        "items": [{"known": 1, "extra": 2}, {"known": 2, "extra": 3}],
+    });
+    records.fields(
+        "event",
+        &value,
+        &[
+            ("read", Rule::Read),
+            ("kept", Rule::Kept("retained as event data")),
+            ("excluded", Rule::Excluded("not interpreted")),
+            ("items[].known", Rule::Read),
+        ],
+    );
     let counts = records.finish().unwrap();
     assert_eq!(counts.framed, 0);
     assert!(counts.materialized.is_empty());

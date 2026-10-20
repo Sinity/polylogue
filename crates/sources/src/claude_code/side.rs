@@ -6,7 +6,6 @@
 //! (a `plan` event from the transcript).
 
 use super::{ROOT, session_id};
-use crate::document::Sink;
 use crate::frame::Record;
 use crate::origin::Root;
 use crate::parse::{DocumentParser, Output, Parse, Parser};
@@ -166,7 +165,6 @@ fn json(bytes: &[u8]) -> Result<Json, Disposition> {
 
 impl DocumentParser for SideFile {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let mut sink = Sink::new(out, records);
         let len = bytes.len();
         let (kind, disposition) = match &self.side {
             Side::Todos { session, agent } => (
@@ -179,7 +177,7 @@ impl DocumentParser for SideFile {
                             .as_deref()
                             .map(|a| format!("agent-{a}"))
                             .unwrap_or_else(|| session.clone());
-                        whole(&owner, "todo_list", v, len, sink.out)
+                        whole(&owner, "todo_list", v, len, out)
                     }
                     Err(d) => d,
                 },
@@ -187,7 +185,7 @@ impl DocumentParser for SideFile {
             Side::Task { session } => (
                 "task",
                 match json(bytes) {
-                    Ok(v) => whole(session, "task", v, len, sink.out),
+                    Ok(v) => whole(session, "task", v, len, out),
                     Err(d) => d,
                 },
             ),
@@ -198,13 +196,13 @@ impl DocumentParser for SideFile {
                 "subagent_meta",
                 match json(bytes) {
                     Ok(v) => {
-                        spawn_link(stem, session.as_deref(), &v, sink.out);
-                        whole(stem, "subagent_meta", v, len, sink.out)
+                        spawn_link(stem, session.as_deref(), &v, out);
+                        whole(stem, "subagent_meta", v, len, out)
                     }
                     Err(d) => d,
                 },
             ),
-            Side::JobState => ("job_state", job_state(bytes, len, sink.out)),
+            Side::JobState => ("job_state", job_state(bytes, len, out)),
             Side::JobTimeline => (
                 "job_timeline",
                 Disposition::unknown(
@@ -218,7 +216,7 @@ impl DocumentParser for SideFile {
                 });
                 (
                     "file_snapshot",
-                    whole(session, "file_snapshot", data, len, sink.out),
+                    whole(session, "file_snapshot", data, len, out),
                 )
             }
             Side::ToolResult { session, name } => {
@@ -228,7 +226,7 @@ impl DocumentParser for SideFile {
                 let data = serde_json::json!({ "file": name, "ref": reference, "size": len });
                 (
                     "tool_result_file",
-                    whole(session, "tool_result_file", data, len, sink.out),
+                    whole(session, "tool_result_file", data, len, out),
                 )
             }
             Side::Plan => (
@@ -244,7 +242,7 @@ impl DocumentParser for SideFile {
                 ),
             ),
         };
-        sink.records.record(kind, &disposition);
+        records.record(kind, &disposition);
     }
 }
 

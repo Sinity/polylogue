@@ -51,7 +51,18 @@ impl Parser for ClassifiedLines {
 
 #[test]
 fn append_boundaries_keep_dispositions_fields_offsets_and_carry() {
-    let bytes=b"\r\n{\"kind\":\"message\",\"extra\":1}\r\n  \n{broken}\n{\"kind\":\"metadata\"}\n{\"kind\":\"wrong\"}\n{\"kind\":\"message\"}";
+    let bytes = concat!(
+        "\r\n",
+        r#"{"kind":"message","extra":1}"#,
+        "\r\n  \n",
+        "{broken}\n",
+        r#"{"kind":"metadata"}"#,
+        "\n",
+        r#"{"kind":"wrong"}"#,
+        "\n",
+        r#"{"kind":"message"}"#,
+    )
+    .as_bytes();
     let mut whole_carry = Vec::new();
     let whole = run(&ClassifiedLines, &mut whole_carry, bytes, 17).unwrap();
     assert_eq!(whole.accounting.framed, 4);

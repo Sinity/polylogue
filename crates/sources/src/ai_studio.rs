@@ -610,25 +610,22 @@ const LISTING_FIELDS: Fields = &[
 
 impl DocumentParser for Listing {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let mut sink = Sink::new(out, records);
         let files = match serde_json::from_slice::<Json>(bytes) {
             Ok(v) => v.get("files").and_then(Json::as_array).cloned(),
             Err(e) => {
-                return sink.records.record(
+                return records.record(
                     "listing",
                     &Disposition::refused(format!("malformed JSON: {e}")),
                 );
             }
         };
         let Some(files) = files else {
-            return sink
-                .records
-                .record("listing", &Disposition::refused("no files array"));
+            return records.record("listing", &Disposition::refused("no files array"));
         };
         for f in &files {
-            sink.records.fields("file", f, LISTING_FIELDS);
+            records.fields("file", f, LISTING_FIELDS);
             let Some(sid) = str_of(f, "id").and_then(|id| session_id(ORIGIN, id)) else {
-                sink.records.record("file", &Disposition::refused("no id"));
+                records.record("file", &Disposition::refused("no id"));
                 continue;
             };
             let mut session = Session::new(sid, SessionKind::Main);
@@ -638,8 +635,8 @@ impl DocumentParser for Listing {
             if let Some(at) = f.get("createdTime").and_then(time_of) {
                 session.offer_start(at);
             }
-            sink.out.sessions.push(session);
-            sink.records.record("file", &Disposition::Materialized);
+            out.sessions.push(session);
+            records.record("file", &Disposition::Materialized);
         }
     }
 }
