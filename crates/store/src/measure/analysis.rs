@@ -392,7 +392,7 @@ pub fn process(reader: &Reader<'_>, scope: &Scope, top: usize) -> Result<Process
          FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
          JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk
          WHERE t.inherited = 0 AND {cond}
-         ORDER BY m.session_pk, m.order_input_pk, m.seq, b.pk"
+         ORDER BY m.session_pk, m.order_input_id, m.seq, b.pk"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
         Ok((
@@ -582,10 +582,10 @@ pub fn unanswered_end(reader: &Reader<'_>, scope: &Scope, now: i64) -> Result<Su
                    AND h.written_by = 'human' AND h.prompt_kind = 'prose'),
            NOT EXISTS (
              SELECT 1 FROM message a WHERE a.session_pk = s.pk AND a.role = 'assistant'
-               AND (a.order_input_pk, a.seq) > (
-                 SELECT h.order_input_pk, h.seq FROM message h WHERE h.session_pk = s.pk
+               AND (a.order_input_id, a.seq) > (
+                 SELECT h.order_input_id, h.seq FROM message h WHERE h.session_pk = s.pk
                    AND h.written_by = 'human' AND h.prompt_kind = 'prose'
-                 ORDER BY h.order_input_pk DESC, h.seq DESC LIMIT 1))
+                 ORDER BY h.order_input_id DESC, h.seq DESC LIMIT 1))
          FROM s"
     );
     let mut obs = vec![];

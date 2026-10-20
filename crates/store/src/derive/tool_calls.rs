@@ -44,7 +44,7 @@ fn passed_without_result(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
              SELECT 1 FROM block cb JOIN message cm ON cm.pk = cb.message_pk
              JOIN message later ON later.session_pk = cm.session_pk
              WHERE cb.pk = tool_call.call_block_pk AND later.role = 'assistant'
-               AND (later.order_input_pk, later.seq) > (cm.order_input_pk, cm.seq))
+               AND (later.order_input_id, later.seq) > (cm.order_input_id, cm.seq))
            THEN 'passed_without_result' ELSE 'no_result' END
          WHERE session_pk = ?1 AND result_block_pk IS NULL AND outcome = 'unknown'
            AND outcome_reason IN ('no_result', 'passed_without_result')",

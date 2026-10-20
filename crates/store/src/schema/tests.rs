@@ -31,8 +31,8 @@ fn index_schema_changes_require_a_version_and_digest_update() {
             blake3::hash(INDEX.as_bytes()).to_hex().to_string()
         ),
         (
-            15,
-            "6decacc6432574167cbb0e84a286932f3156a8e17c5ad9fbee2f546f17f6d96c".to_owned()
+            16,
+            "5297b755e1af55d98a6e3ea55ca8f3cbf8a7473e83214835a28093dc3f12b278".to_owned()
         ),
         "bump INDEX_VERSION and record its schema digest when index.sql changes"
     );
