@@ -34,8 +34,8 @@ Optimize for fast integration. See `docs/development.md`.
   the rest of the machine's work: `agentctl job start polylogue check
   --workspace <worktree>`, or `exec -- <command>` for focused tests.
 - The pre-push hook checks formatting and crate boundaries only (seconds).
-  There is no hosted CI and no required check; open a PR and merge it when it
-  is ready.
+  There is no hosted test CI. Open a PR when ready and follow the forge's
+  current review and status requirements.
 - Run the full suite (AgentCTL operation `check`) on batches of merged work,
   not before every merge. Fix what it finds afterwards.
 - Merge small PRs often. Rebase before pushing; do not keep long-lived

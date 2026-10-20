@@ -23,7 +23,7 @@ toml = "0.9"
 polylogue-engine.workspace = true
 polylogue-model.workspace = true
 tempfile.workspace = true
-devkit = { git = "https://github.com/Sinity/polylogue-sinex-common", tag = "v0.5.3", default-features = false, features = ["pg", "nats"] }
+devkit = { workspace = true, features = ["pg", "nats"] }
 
 [lints]
 workspace = true
