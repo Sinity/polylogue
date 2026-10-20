@@ -65,7 +65,7 @@ impl Reader<'_> {
             Within::Session(pk) => (
                 "m.inherited_from IS NULL AND COALESCE(m.on_active_path, 1) = 1 \
                  AND m.session_pk IN \
-                 (WITH RECURSIVE tr(pk) AS (SELECT ?2 UNION SELECT l.child_pk FROM link l \
+                 (WITH RECURSIVE tr(pk) AS (SELECT ?2 UNION SELECT l.child_pk FROM current_link l \
                   JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
                   WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM tr)",
                 pk,
@@ -83,7 +83,7 @@ impl Reader<'_> {
             let sql = format!(
                 "SELECT tx.body, s.id, m.id FROM {table} JOIN text tx ON tx.id = {table}.rowid \
                  JOIN block b ON b.text_id = tx.id AND b.kind = '{block}' \
-                 JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk \
+                 JOIN current_message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk \
                  WHERE {table} MATCH ?1 AND {scope}{writer} \
                  ORDER BY bm25({table}), m.at DESC LIMIT 1"
             );

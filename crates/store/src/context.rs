@@ -97,7 +97,7 @@ impl Reader<'_> {
         let conn = self.conn();
         let mut stmt = conn.prepare_cached(
             "SELECT s.id, s.kind, coalesce(s.title, s.derived_title), s.started_at, s.last_activity_at,
-                    (SELECT count(*) FROM message m WHERE m.session_pk = s.pk), s.cwd
+                    (SELECT count(*) FROM current_message m WHERE m.session_pk = s.pk), s.cwd
                FROM session s
               WHERE s.kind = 'main' AND s.stub = 0
                 AND (s.cwd = ?1 OR (s.cwd >= ?1 || '/' AND s.cwd < ?1 || '0'))
@@ -147,7 +147,7 @@ impl Reader<'_> {
         let mut stmt = conn.prepare_cached(
             "SELECT m.id, m.at, t.body
                FROM session s
-               JOIN message m ON m.session_pk = s.pk
+               JOIN current_message m ON m.session_pk = s.pk
                JOIN block b ON b.message_pk = m.pk AND b.kind = 'text'
                JOIN text t ON t.id = b.text_id
               WHERE s.id = ?1 AND m.written_by = 'human'
@@ -188,9 +188,9 @@ impl Reader<'_> {
         let row = conn
             .prepare_cached(
                 "SELECT s.live_open_tool_pk IS NOT NULL, s.live_todo, s.live_waiting_on,
-                        (SELECT m.written_by FROM message m WHERE m.session_pk = s.pk
+                        (SELECT m.written_by FROM current_message m WHERE m.session_pk = s.pk
                           ORDER BY m.order_input_id DESC, m.seq DESC LIMIT 1),
-                        (SELECT m.prompt_kind FROM message m WHERE m.session_pk = s.pk
+                        (SELECT m.prompt_kind FROM current_message m WHERE m.session_pk = s.pk
                           ORDER BY m.order_input_id DESC, m.seq DESC LIMIT 1),
                         coalesce((SELECT c.result_block_pk IS NULL FROM tool_call c
                                    WHERE c.session_pk = s.pk ORDER BY c.pk DESC LIMIT 1), 0)

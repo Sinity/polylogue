@@ -43,6 +43,8 @@ pub enum Change {
     First,
     /// Same facts as last time: nothing is read.
     Unchanged,
+    /// Interpret already retained bytes in this exact chain.
+    Reparse { chain: i64 },
     /// The same file grew: only the bytes from `from` on are new. The caller
     /// confirms the old tail is intact before trusting this.
     Appended { from: u64 },

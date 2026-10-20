@@ -1,6 +1,6 @@
-//! The browser extension's capture spool: one JSON file per captured
-//! conversation, rewritten in place when the conversation is captured
-//! again (`$XDG_STATE_HOME/polylogue/browser-capture/<provider>/*.json`).
+//! The browser extension's capture spool: one framed append log per conversation
+//! (`$XDG_STATE_HOME/polylogue/browser-capture/<provider>/*.json`). Each distinct
+//! envelope is interpreted once. Existing unframed envelopes remain readable.
 //!
 //! A capture carries the provider's own conversation JSON
 //! (`raw_provider_payload`) where the provider page exposes it. That JSON
@@ -33,18 +33,19 @@ const KIND_KEY: &str = "polylogue_capture_kind";
 /// captures, without treating an unrelated schema-versioned JSON file as one.
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     path.extension().is_some_and(|e| e == "json")
-        && first_byte(head) == Some(b'{')
-        && (matches!(first_key(head), Some(KIND_KEY | "capture_id"))
-            || (first_key(head) == Some("schema_version")
-                && head
-                    .windows(b"\"polylogue_capture_kind\"".len())
-                    .any(|part| part == b"\"polylogue_capture_kind\"")))
+        && (head.starts_with(polylogue_model::snapshot_log::MAGIC)
+            || (first_byte(head) == Some(b'{')
+                && (matches!(first_key(head), Some(KIND_KEY | "capture_id"))
+                    || (first_key(head) == Some("schema_version")
+                        && head
+                            .windows(b"\"polylogue_capture_kind\"".len())
+                            .any(|part| part == b"\"polylogue_capture_kind\"")))))
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
     path.extension()
         .is_some_and(|e| e == "json")
-        .then(|| Parse::Document(Box::new(Capture)))
+        .then(|| Parse::Snapshots(Box::new(Capture)))
 }
 
 const CAPTURE_FIELDS: Fields = &[

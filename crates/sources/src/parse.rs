@@ -40,12 +40,17 @@ pub struct Step {
     pub accounting: Accounting,
     /// Bytes of the input the step covered; the next step starts there.
     pub consumed: u64,
+    /// Start of this step within the supplied range. Normal parses start at 0.
+    pub start: u64,
+    pub snapshot: Option<polylogue_model::Snapshot>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
     #[error("a document must be parsed from its first byte, got offset {0}")]
     NotWhole(u64),
+    #[error("invalid snapshot stream: {0}")]
+    Snapshot(String),
     #[error(transparent)]
     Counts(#[from] CountMismatch),
     #[error("carried state is unreadable: {0}")]
@@ -80,6 +85,8 @@ pub fn run<P: Parser>(
         output,
         accounting,
         consumed: consumed as u64,
+        start: 0,
+        snapshot: None,
     })
 }
 
@@ -117,6 +124,10 @@ impl<P: Parser + Send> StepParser for P {
 /// them and submits each disposition to the shared accounting sink.
 pub trait DocumentParser {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records);
+
+    fn snapshot_complete(&self, _bytes: &[u8]) -> bool {
+        false
+    }
 }
 
 /// Parses a complete document. Each step covers the whole input, so there
@@ -133,6 +144,8 @@ pub fn run_document<D: DocumentParser + ?Sized>(
         output,
         accounting,
         consumed: bytes.len() as u64,
+        start: 0,
+        snapshot: None,
     })
 }
 
@@ -146,9 +159,15 @@ pub enum Parse {
     /// One document (or archive) read whole: an export, a capture the
     /// extension rewrites. Any change parses the whole input again.
     Document(Box<dyn DocumentParser + Send>),
+    /// Ordered, complete documents in an append-only snapshot log.
+    Snapshots(Box<dyn DocumentParser + Send>),
 }
 
 impl Parse {
+    pub fn is_snapshots(&self) -> bool {
+        matches!(self, Parse::Snapshots(_))
+    }
+
     pub fn is_document(&self) -> bool {
         matches!(self, Parse::Document(_))
     }
@@ -163,6 +182,15 @@ impl Parse {
     ) -> Result<(Step, Json), ParseError> {
         match self {
             Parse::Lines(p) => p.step(carry, bytes, base),
+            Parse::Snapshots(_) => {
+                let (mut steps, carry) = self.steps(carry, bytes, base)?;
+                if steps.len() != 1 {
+                    return Err(ParseError::Snapshot(
+                        "use steps for a multi-snapshot range".into(),
+                    ));
+                }
+                Ok((steps.remove(0), carry))
+            }
             Parse::Document(d) => {
                 if base != 0 {
                     return Err(ParseError::NotWhole(base));
@@ -171,6 +199,120 @@ impl Parse {
             }
         }
     }
+
+    /// A range can contain several complete snapshots. Each remains a separate
+    /// writer step, so coalesced reads preserve every intermediate version.
+    pub fn steps(
+        &self,
+        carry: Option<&Json>,
+        bytes: &[u8],
+        base: u64,
+    ) -> Result<(Vec<Step>, Json), ParseError> {
+        match self {
+            Parse::Snapshots(parser) => Ok((snapshots(&**parser, bytes, base)?, Json::Null)),
+            _ => self
+                .step(carry, bytes, base)
+                .map(|(step, carry)| (vec![step], carry)),
+        }
+    }
+}
+
+fn snapshots(
+    parser: &dyn DocumentParser,
+    bytes: &[u8],
+    base: u64,
+) -> Result<Vec<Step>, ParseError> {
+    use polylogue_model::snapshot_log::{HEADER_LEN, Header, MAGIC};
+    let mut position = 0usize;
+    if base == 0 {
+        if MAGIC.starts_with(bytes) && bytes.len() < MAGIC.len() {
+            return empty_steps();
+        }
+        if bytes.starts_with(MAGIC) {
+            position = MAGIC.len();
+        } else {
+            // Existing single-envelope spools keep their original input identity.
+            match serde_json::from_slice::<serde::de::IgnoredAny>(bytes) {
+                Err(error) if error.is_eof() => return empty_steps(),
+                _ => {}
+            }
+            let mut step = run_document(parser, bytes)?;
+            mark_snapshot(
+                &mut step,
+                0,
+                bytes.len() as u64,
+                parser.snapshot_complete(bytes),
+            );
+            return Ok(vec![step]);
+        }
+    }
+    let mut steps = Vec::new();
+    while bytes.len().saturating_sub(position) >= HEADER_LEN {
+        let header_start = position;
+        let header = Header::decode(&bytes[position..position + HEADER_LEN])
+            .map_err(ParseError::Snapshot)?;
+        position += HEADER_LEN;
+        let length = usize::try_from(header.length)
+            .map_err(|_| ParseError::Snapshot("frame length exceeds address space".into()))?;
+        let Some(end) = position
+            .checked_add(length)
+            .filter(|end| *end <= bytes.len())
+        else {
+            break;
+        };
+        if !header.verifies(&bytes[position..end]) {
+            return Err(ParseError::Snapshot(
+                "snapshot payload digest mismatch".into(),
+            ));
+        }
+        let mut step = run_document(parser, &bytes[position..end])?;
+        mark_snapshot(
+            &mut step,
+            base + position as u64,
+            base + end as u64,
+            parser.snapshot_complete(&bytes[position..end]),
+        );
+        step.start = if base == 0 && steps.is_empty() {
+            0
+        } else {
+            header_start as u64
+        };
+        step.consumed = end as u64;
+        steps.push(step);
+        position = end;
+    }
+    if steps.is_empty() {
+        return empty_steps();
+    }
+    Ok(steps)
+}
+
+fn mark_snapshot(step: &mut Step, start: u64, end: u64, complete: bool) {
+    for row in &mut step.output.messages {
+        row.offset = start;
+        row.end = end;
+    }
+    step.snapshot = Some(polylogue_model::Snapshot {
+        start,
+        end,
+        complete,
+        covered: step
+            .output
+            .sessions
+            .iter()
+            .map(|session| session.id.clone())
+            .collect(),
+    });
+}
+
+fn empty_steps() -> Result<Vec<Step>, ParseError> {
+    Ok(vec![Step {
+        output: Output::default(),
+        accounting: Accounting::default(),
+        consumed: 0,
+        start: 0,
+        snapshot: None,
+    }])
 }
 
 #[cfg(test)]

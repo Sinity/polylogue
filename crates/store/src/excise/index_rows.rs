@@ -143,7 +143,8 @@ pub(super) fn clear_for_reparse(
         let row: Option<i64> = i
             .query_row(
                 "SELECT indexed FROM text WHERE id = ?1
-                 AND NOT EXISTS (SELECT 1 FROM block WHERE text_id = ?1)",
+                 AND NOT EXISTS (SELECT 1 FROM block WHERE text_id = ?1)
+                 AND NOT EXISTS (SELECT 1 FROM version_block WHERE text_id = ?1)",
                 [tid],
                 |r| r.get(0),
             )
@@ -300,16 +301,31 @@ pub(super) fn remove_input(
     t.archive
         .execute("DELETE FROM revision WHERE input = ?1", [input])?;
     if let Some(pk) = input_pk(t.index, input)? {
+        let messages: Vec<i64> = t
+            .index
+            .prepare("SELECT DISTINCT message_pk FROM message_source WHERE input_pk=?1")?
+            .query_map([pk], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
         // Rows of other sessions from this input (an input scope's
         // shared sessions keep their other inputs' rows).
-        for table in ["parse_state", "unrecognized", "parsed", "message_source"] {
+        for table in [
+            "parse_state",
+            "unrecognized",
+            "parsed",
+            "message_source",
+            "event_source",
+            "link_source",
+            "snapshot",
+        ] {
             t.index
                 .execute(&format!("DELETE FROM {table} WHERE input_pk = ?1"), [pk])?;
         }
         t.index
             .execute("UPDATE input_ref SET excised = 1 WHERE pk = ?1", [pk])?;
+        crate::writer::promote_current(t.index, &messages, t.counter)?;
     }
     let _ = done;
+    crate::versions::prune(t.index)?;
     Ok(())
 }
 
@@ -381,7 +397,8 @@ pub(super) fn delete_session(
         let row: Option<(Vec<u8>, i64)> = i
             .query_row(
                 "SELECT hash, indexed FROM text WHERE id = ?1
-                 AND NOT EXISTS (SELECT 1 FROM block WHERE text_id = ?1)",
+                 AND NOT EXISTS (SELECT 1 FROM block WHERE text_id = ?1)
+                 AND NOT EXISTS (SELECT 1 FROM version_block WHERE text_id = ?1)",
                 [tid],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -402,9 +419,11 @@ pub(super) fn clear_session(
     pk: i64,
     id: &str,
 ) -> Result<(Vec<i64>, Vec<Vec<u8>>)> {
+    i.execute("DELETE FROM snapshot WHERE pk IN (SELECT snapshot_pk FROM snapshot_session WHERE session_pk=?1)", [pk])?;
     let text_ids: Vec<i64> = i
         .prepare(
-            "SELECT DISTINCT text_id FROM block WHERE session_pk = ?1 AND text_id IS NOT NULL",
+            "SELECT DISTINCT text_id FROM block WHERE session_pk = ?1 AND text_id IS NOT NULL
+             UNION SELECT v.text_id FROM version_block v JOIN message_source ms ON ms.version_hash=v.version_hash JOIN message m ON m.pk=ms.message_pk WHERE m.session_pk=?1 AND v.text_id IS NOT NULL",
         )?
         .query_map([pk], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
@@ -472,6 +491,7 @@ pub(super) fn clear_session(
     )?;
     i.execute("DELETE FROM message WHERE session_pk = ?1", [pk])?;
     i.execute("DELETE FROM session WHERE pk = ?1", [pk])?;
+    crate::versions::prune(i)?;
     Ok((text_ids, blobs))
 }
 

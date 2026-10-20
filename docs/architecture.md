@@ -23,7 +23,7 @@ in sources; SQLite access stays in store. Rebuilding a derived index must not
 replace the retained observations with a claim that a provider file is still
 available.
 
-Small spool revisions, hook settings and reader credentials are replaced using
+Hook settings and reader credentials are replaced using
 `atomicwrites`, which owns temporary-file cleanup, file synchronization,
 rename and directory synchronization. Each caller still owns its path and
 permissions; hook installation refuses managed symlinks.
@@ -34,9 +34,23 @@ message model. `POST /v1/browser-captures/inspect` accepts the final capture
 envelope and returns its summary and attachment descriptors without a write.
 Acquired files travel by value in `session.attachments[].content_base64`;
 Claude inline media stays in the raw payload and is linked to retained blobs.
-`POST /v1/browser-captures` acknowledges the durable spool write. The spool
-currently replaces one conversation file, so intermediate captures acknowledged
-before convergence can still be overwritten.
+`POST /v1/browser-captures` acknowledges the durable spool write. Each conversation has one length/digest framed append log; the host syncs its
+new envelope before acknowledgement. Exact envelope bytes identify retries: an
+older retry is a no-op; a new observation, including a reversion, carries new
+observation provenance. Existing single-envelope spools convert on the next
+distinct capture. Ambiguous partial tails are preserved and refuse appends.
+Appending scans headers for identity without rereading other payloads; the
+parser verifies every interpreted payload. Text excision recomputes active
+digests while preserving observed digests and source offsets.
+
+Each complete envelope is interpreted once into an ordered source snapshot.
+The rebuildable index retains normalized message versions with exact source
+ranges, sharing prose in the text store. Ordinary reads, queries and
+derivations use current projections. Only explicit complete-session coverage
+can retire absent members; current browser acquisitions supply partial
+coverage, including native payloads. Partial session facts merge with earlier
+supplied facts. Historical chains replay through the same parser and writer,
+with chain and snapshot range ordering preserving the latest projection.
 
 `GET /v1/reader-location` resolves the running reader's published port and
 sign-in fragment after checking the listener owner. The CLI uses the same

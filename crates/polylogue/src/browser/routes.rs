@@ -169,18 +169,7 @@ async fn capture(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes) -
         .and_then(|v| v.to_str().ok())
         .map_or_else(new_id, str::to_owned);
     let bytes = body.clone();
-    let written = blocking(move || -> std::io::Result<bool> {
-        // The spool is ours: a symlink in it is not followed.
-        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(std::io::Error::other("symlink in the spool"));
-        }
-        if fs::read(&path).is_ok_and(|old| old == bytes.as_ref()) {
-            return Ok(false);
-        }
-        write_durable(&path, &bytes)?;
-        Ok(true)
-    })
-    .await;
+    let written = blocking(move || super::captures::publish(&path, &bytes)).await;
     let new = match written {
         Some(Ok(w)) => w,
         _ => return bad(StatusCode::INTERNAL_SERVER_ERROR, "write_failed"),
@@ -205,7 +194,8 @@ async fn capture(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes) -
         "content_hash": hash,
         "dedup_content_hash": hash,
         "bytes_written": if new { body.len() } else { 0 },
-        "replaced": new,
+        "replaced": false,
+        "appended": new,
         "deduplicated": !new,
         "state": "spooled_only",
     }))
@@ -236,7 +226,7 @@ async fn archive_state(State(ctx): State<Arc<Ctx>>, Query(q): Query<StateQuery>)
     let indexed: Option<Option<i64>> = blocking(move || {
         let sid = sid?;
         let statement = format!(
-            "SELECT (SELECT COUNT(*) FROM message m WHERE m.session_pk = s.pk) AS n
+            "SELECT (SELECT COUNT(*) FROM current_message m WHERE m.session_pk = s.pk) AS n
                FROM session s WHERE s.id = {}",
             sql_text(&sid)
         );

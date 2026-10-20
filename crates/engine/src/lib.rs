@@ -278,7 +278,15 @@ impl Plan {
                 (self.change.clone(), self.observation.clone(), false, end)
             }
             Some(_) => (self.change.clone(), None, true, end),
-            None => (Change::Unchanged, None, false, self.piece_pos),
+            None => (
+                match self.change {
+                    Change::Reparse { chain } => Change::Reparse { chain },
+                    _ => Change::Unchanged,
+                },
+                None,
+                false,
+                self.piece_pos,
+            ),
         };
         Job {
             path: self.path.clone(),
@@ -595,6 +603,7 @@ impl Engine {
             errors: drive_error.into_iter().chain(lookup_error).collect(),
             ..Pass::default()
         };
+        self.restore_snapshots(&mut pass)?;
         let mut plans = Vec::new();
         let mut seen = HashSet::new();
         for f in found {
@@ -674,7 +683,7 @@ impl Engine {
                 piece: None,
                 blobs: vec![],
                 length: st.stored,
-                parse: None,
+                parse: Vec::new(),
                 release: Default::default(),
             };
             self.writer.send(batch)?;
@@ -731,7 +740,9 @@ impl Engine {
                 (0, 0, None, Priority::Bulk)
             }
             Change::Appended { .. } => {
-                let resumable = st.carry.is_some() || st.parsed_upto == 0;
+                let resumable = st.carry.is_some()
+                    || st.parsed_upto == 0
+                    || (st.origin.open)(path).is_some_and(|p| p.is_snapshots());
                 if resumable && !version_changed {
                     (st.stored, st.parsed_upto, st.carry.take(), Priority::Live)
                 } else {
@@ -739,6 +750,7 @@ impl Engine {
                 }
             }
             Change::Unchanged | Change::Disappeared => return self.stored_plan(path),
+            Change::Reparse { .. } => unreachable!(),
         };
         // A document is parsed whole: any change parses it from its start.
         let (parse_pos, carry) = if whole(st.origin, path) {
@@ -777,6 +789,66 @@ impl Engine {
     /// when the index is behind them: a new parser version, a fresh index,
     /// or a file that moved or went. The same loop builds the index from
     /// stored bytes as from files, so a rebuild needs no command of its own.
+    /// Historical chains share the ordinary parser and writer. Their scope
+    /// ordering prevents replay from replacing a newer current observation.
+    fn restore_snapshots(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
+        let inputs: Vec<_> = self
+            .inputs
+            .iter()
+            .filter(|(path, st)| (st.origin.open)(path).is_some_and(|parser| parser.is_snapshots()))
+            .map(|(path, st)| (path.clone(), st.input_id.clone(), st.origin, st.chain))
+            .collect();
+        for (path, id, origin, current) in inputs {
+            let chains = self.reads.reader()?.retained_chains(&id)?;
+            for (chain, state) in chains {
+                if Some(chain) == current
+                    || state.length == 0
+                    || (state.parser_version == Some(origin.parser_version)
+                        && (state.waiting || state.parsed_upto >= state.length))
+                {
+                    continue;
+                }
+                let start = if state.parser_version == Some(origin.parser_version) {
+                    state.parsed_upto
+                } else {
+                    0
+                };
+                let source = pool::Bytes::Stored(Arc::new(self.reads.reader()?.stored_chain(
+                    &id,
+                    chain,
+                    state.length,
+                )?));
+                let plan = Plan {
+                    path: path.clone(),
+                    origin,
+                    input: InputKey {
+                        id: id.clone(),
+                        format: origin.name.into(),
+                        route_rank: state.route_rank,
+                    },
+                    change: Change::Reparse { chain },
+                    observation: None,
+                    facts: None,
+                    size: state.length,
+                    piece_pos: state.length,
+                    parse_pos: start,
+                    piece_started: false,
+                    carry: None,
+                    tail: None,
+                    span: span(origin, &path, self.config.chunk),
+                    chunk: self.config.chunk,
+                    priority: Priority::Bulk,
+                    tracked: false,
+                    failed: false,
+                    waiting: false,
+                    source,
+                };
+                self.execute(vec![plan], pass)?;
+            }
+        }
+        Ok(())
+    }
+
     fn stored_plan(&mut self, path: &Path) -> Result<Option<Plan>, EngineError> {
         let Some(st) = self.inputs.get(path) else {
             return Ok(None);
@@ -820,12 +892,17 @@ impl Engine {
                 format: origin.name.into(),
                 route_rank,
             },
-            change: Change::Unchanged,
+            change: Change::Reparse { chain },
             observation: None,
             facts,
             size: stored,
             piece_pos: stored,
-            parse_pos: 0,
+            parse_pos: if !version_changed && (origin.open)(path).is_some_and(|p| p.is_snapshots())
+            {
+                st.parsed_upto
+            } else {
+                0
+            },
             piece_started: false,
             carry: None,
             tail: None,

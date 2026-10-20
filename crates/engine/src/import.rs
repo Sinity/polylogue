@@ -128,7 +128,7 @@ impl Engine {
                 piece: Some(piece.clone()),
                 blobs: Vec::new(),
                 length: piece.size,
-                parse: None,
+                parse: Vec::new(),
                 release: Default::default(),
             })?;
             let written = self.writer.flush()?;
