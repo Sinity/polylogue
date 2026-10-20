@@ -310,7 +310,7 @@ pub(super) fn replacement(needle: &str) -> Result<u8> {
             "an excised text must contain a byte other than a line break".into(),
         ));
     }
-    [b' ', b'*']
+    (*b" *")
         .into_iter()
         .chain(b'!'..=b'~')
         .find(|b| *b != b'"' && *b != b'\\' && !needle.as_bytes().contains(b))
