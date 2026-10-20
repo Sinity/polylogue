@@ -75,22 +75,6 @@ fn manifest_path(target: Target) -> PathBuf {
 
 const LOCK: &str = "/realm/tmp/work/realdata.lock";
 
-/// Machine-wide build slots: a command run through this script waits for
-/// one of a fixed number of slots, so builds and bench runs don't pile up on
-/// one host. Skipped where the script doesn't exist.
-fn slotted(program: &str) -> Command {
-    let slot = env::var_os("BUILD_SLOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/realm/tmp/work/build-slot"));
-    if slot.exists() {
-        let mut c = Command::new(slot);
-        c.arg(program);
-        c
-    } else {
-        Command::new(program)
-    }
-}
-
 #[derive(Debug, clap::Subcommand)]
 pub enum Bench {
     /// Draw a representative sample of the corpus and write its manifest.
@@ -311,7 +295,7 @@ fn sample(target: Target, bytes: u64, seed: u64, cut: f64) -> Result<(), String>
 }
 
 fn first_build_binary() -> Result<PathBuf, String> {
-    let ok = slotted("cargo")
+    let ok = Command::new("cargo")
         .args([
             "build",
             "--locked",
@@ -336,9 +320,9 @@ fn first_build_binary() -> Result<PathBuf, String> {
 /// Runs `first_build` under the real-data lock (`flock -o`: the lock is not
 /// inherited by anything the run starts) and returns its JSON line.
 fn first_build(binary: &Path, home: &Path, out: &Path) -> Result<Value, String> {
-    // A build slot, then the real-data lock: the run neither competes with
-    // builds nor with other runs over real data.
-    let output = slotted("flock")
+    // AgentCTL admits the outer benchmark job; the lock excludes other
+    // benchmarks over real data without queueing nested work.
+    let output = Command::new("flock")
         .arg("-o")
         .arg(LOCK)
         .arg(binary)

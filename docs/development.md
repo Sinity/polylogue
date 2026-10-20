@@ -89,7 +89,22 @@ agentctl job start polylogue check --workspace <worktree>      # full suite
 agentctl job start polylogue scenarios --workspace <worktree>  # end-to-end tests
 agentctl job start polylogue package --workspace <worktree>    # nix flake check
 agentctl job start polylogue exec --workspace <worktree> -- cargo test -p polylogue-store
+agentctl job start polylogue bench --workspace <worktree> -- run
 ```
+
+The benchmark runs its builds and measurements inside that job. It does not
+use a separate build-slot script or queue nested jobs. The real-data lock
+still prevents overlapping corpus benchmarks.
+
+## Keeping checks fast
+
+Use the recorded stages to distinguish compilation, service setup and test
+execution. A cold build is not a warm-suite timing. If the suite slows down,
+inspect its slowest tests and CPU, memory and I/O waits; check for orphaned
+services and repeated fixture setup before increasing limits. Keep assertions
+and populations unchanged while diagnosing. Record the candidate, command,
+stage times and remaining failures in the owning Bead. Recheck after changes
+to the runner, fixtures or dependency profiles, and at integration batches.
 
 ## Merging
 

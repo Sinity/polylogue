@@ -15,7 +15,6 @@ exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask"
 pool = "bulk"
 result = "exit"
 timeout_seconds = 3600
-scratch = "tmpfs"
 cache = "none"
 
 [operations.scenarios]
@@ -24,7 +23,6 @@ exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask"
 pool = "bulk"
 result = "exit"
 timeout_seconds = 1800
-scratch = "tmpfs"
 cache = "none"
 
 [operations.package]
@@ -43,5 +41,15 @@ arguments = "required"
 pool = "bulk"
 result = "exit"
 timeout_seconds = 1800
+scratch = "nvme"
+cache = "none"
+
+[operations.bench]
+description = "Run the corpus benchmark through the shared job queue"
+exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "bench"]
+arguments = "required"
+pool = "bulk"
+result = "exit"
+timeout_seconds = 7200
 scratch = "nvme"
 cache = "none"

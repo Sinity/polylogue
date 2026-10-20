@@ -41,6 +41,9 @@ Optimize for fast integration. See `docs/development.md`.
 - Merge small PRs often. Rebase before pushing; do not keep long-lived
   branches.
 - Report what you ran and what you did not. A merge is not evidence of testing.
+- Keep the loop fast: compare build, setup and test times separately. When a
+  run slows down, inspect its slow tests, resource waits and cleanup before
+  increasing timeouts or reducing coverage. Record measurements in Beads.
 
 ## Code
 
