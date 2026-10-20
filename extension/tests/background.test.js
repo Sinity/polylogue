@@ -1729,85 +1729,19 @@ describe("background receiver diagnostics", () => {
     )).toHaveLength(pageWorkBeforeAlarm);
   });
 
-  it("derives CaptureJob scope from live provider identity without disclosing the handle", async () => {
-    const accountHandle = "stable-chatgpt-account-id";
-    globalThis.chrome.scripting.executeScript = mockPageScript(async (details) => {
-      const request = details.args?.[0];
-      if (request?.operation === "identity") {
-        return [{ result: { ok: true, response: { accountHandle } } }];
-      }
-      const body = request?.operation === "inventory"
-        ? { items: [], total: 0 }
-        : { id: "backfill-1", mapping: { node: { id: "node", parent: null, message: { id: "message", author: { role: "user" }, content: { content_type: "text", parts: ["synthetic message"] } } } } };
-      return [{ result: { ok: true, response: {
-        ok: true,
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(body),
-      } } }];
-    });
+  it("derives local scope from provider identity without disclosing the handle to the host", async () => {
+    const accountHandle = "neutral-account";
+    globalThis.chrome.scripting.executeScript = mockPageScript(async (details) => details.args?.[0]?.operation === "identity"
+      ? [{ result: { ok: true, response: { accountHandle } } }]
+      : [{ result: { ok: true, response: { ok: true, status: 200, body: JSON.stringify({ items: [], total: 0 }) } } }]);
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
-      const path = new globalThis.URL(url).pathname;
-      if (path === "/v1/capture-jobs/capabilities") {
-        return responseJson({
-          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1",
-          protocol_min: 2,
-          protocol_max: 2,
-          scope_namespace: "cjs1:identity-test-namespace",
-        });
-      }
-      if (path === "/v1/browser-captures/capabilities") {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
-      }
-      if (path === "/v1/capture-jobs/discover") return responseJson({ jobs: [] });
-      if (path === "/v1/capture-jobs") {
-        return responseJson({ job: {
-          job_id: "capture-job-1", provider: "chatgpt", revision: 0, lease_generation: 0,
-        } }, { status: 201 });
-      }
-      if (path.endsWith("/adopt")) {
-        return responseJson({
-          job: { job_id: "capture-job-1", provider: "chatgpt", revision: 1, lease_generation: 1 },
-          lease: { lease_id: "lease-1", generation: 1, proof: "proof-1" },
-        });
-      }
-      if (path.endsWith("/update")) {
-        return responseJson({
-          job: {
-            job_id: "capture-job-1", provider: "chatgpt", revision: 2, lease_generation: 1,
-            lease_expires_at: "2026-07-16T10:02:00Z",
-          },
-          receipt: { kind: "capture_job_update" },
-        });
-      }
-      if (path.endsWith("/checkpoint")) {
-        return checkpointFixtureResponse({ job_id: "capture-job-1", revision: 3 }, options);
-      }
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+      return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
     });
-
-    await sendRuntimeMessage({
-      type: "polylogue.backfill.start",
-      provider: "chatgpt",
-      cutoff: "2026-01-01T00:00:00Z",
-    });
-
-    await vi.waitFor(() => expect(fetchCalls.some(
-      (call) => new globalThis.URL(call.url).pathname.endsWith("/checkpoint") && call.options.method === "PUT",
-    )).toBe(true));
-    const captureJobCalls = fetchCalls.filter((call) => new globalThis.URL(call.url).pathname.startsWith("/v1/capture-jobs"));
-    expect(captureJobCalls.length).toBeGreaterThanOrEqual(5);
-    for (const call of captureJobCalls) {
-      if (!call.options.body) continue;
-      const encoded = typeof call.options.body === "string" ? call.options.body : await call.options.body.text();
-      expect(encoded).not.toContain(accountHandle);
-      expect(encoded).not.toContain("paired:");
-      const body = captureJobRequestBody(call.options);
-      if (body.scope?.kind === "account") expect(body.scope.key).toMatch(/^h1:/);
-    }
+    const result = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+    expect(result).toMatchObject({ ok: true, job: { account_scope: expect.stringMatching(/^h1:/) } });
+    expect(JSON.stringify(fetchCalls)).not.toContain(accountHandle);
+    expect(fetchCalls.every(call => !new URL(call.url).pathname.startsWith("/v1/capture-jobs"))).toBe(true);
     expect(JSON.stringify(stored)).not.toContain(accountHandle);
   });
 
@@ -1947,7 +1881,7 @@ describe("background receiver diagnostics", () => {
         // clock again. A later wake may have nothing left to do once the
         // item is already captured, so this does not assert growth.
         await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
-        if (fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish") && call.options.method === "POST")) break;
+        if (fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")) break;
       }
       // The four partitions all resolve to the same single native id, so the
       // Submitting the reassembled capture to the receiver is its own wake
@@ -1955,20 +1889,18 @@ describe("background receiver diagnostics", () => {
       // before the provider-fetch loop in runLeasedJob), so it can still be
       // pending after the wake that only just finished the provider fetch.
       for (let submitWake = 0; submitWake < 3; submitWake += 1) {
-        if (fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish") && call.options.method === "POST")) break;
+        if (fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")) break;
         simulatedNowMs += 20000;
         alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
         await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
       }
-      await vi.waitFor(() => expect(fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish") && call.options.method === "POST")).toBe(true), { timeout: 4000 });
+      await vi.waitFor(() => expect(fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")).toBe(true), { timeout: 4000 });
     } finally {
       clockSpy.mockRestore();
     }
 
-    const memberCall = fetchCalls.find((call) => new globalThis.URL(call.url).pathname.endsWith("/native/member"));
-    expect(JSON.parse(await memberCall.options.body.text())).toEqual(conversationBody);
-    const publication = fetchCalls.find((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish"));
-    expect(JSON.parse(publication.options.body).sha256).toBe("b".repeat(64));
+    const publication = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures");
+    expect(JSON.parse(await publication.options.body.text()).raw_provider_payload).toEqual(conversationBody);
   }, 20000);
 
   it("retains thoughts literally through native member publication", async () => {
@@ -2041,7 +1973,7 @@ describe("background receiver diagnostics", () => {
       expect(started, `backfill start refused: ${started.error || "unknown"}`).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
       const capturePosted = () =>
-        fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish") && call.options.method === "POST");
+        fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST");
       // The coordinator advances one step per wake, so wakes -- not elapsed
       // real time -- are what drive it forward. Wake it again as soon as the
       // previous wake has released the job's execution lease, and never while
@@ -2075,10 +2007,8 @@ describe("background receiver diagnostics", () => {
       clockSpy.mockRestore();
     }
 
-    const memberCall = fetchCalls.find((call) => new globalThis.URL(call.url).pathname.endsWith("/native/member"));
-    expect(JSON.parse(await memberCall.options.body.text())).toEqual(conversationBody);
-    const publication = fetchCalls.find((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish"));
-    expect(JSON.parse(publication.options.body).sha256).toBe("b".repeat(64));
+    const publication = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures");
+    expect(JSON.parse(await publication.options.body.text()).raw_provider_payload).toEqual(conversationBody);
   }, 20000);
 
   it("preserves local recovery without querying accountless legacy evidence", async () => {
@@ -2480,7 +2410,7 @@ describe("background receiver diagnostics", () => {
       details.target.tabId === 42 && details.files?.includes("src/content/chatgpt.js"))).toBe(true);
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalledWith(42,
       expect.objectContaining({ type: "polylogue.capturePage" }));
-    expect(fetchCalls.every(({ url }) => new globalThis.URL(String(url)).hostname === "127.0.0.1")).toBe(true);
+    expect(fetchCalls.every(({ url }) => new globalThis.URL(String(url)).protocol === "polylogue:")).toBe(true);
   });
 
   it("never fetches a terminal ChatGPT conversation across a receiver outage and a service-worker restart", async () => {
@@ -3947,12 +3877,12 @@ describe("receiver health probe", () => {
       receiver_id: "neutral-original", api_schema: "polylogue-browser-capture/v1", state: "online",
     } });
     globalThis.fetch = vi.fn(async (_url, init) => {
-      expect(init.receiverId).toBe("neutral-original");
+      expect(init.receiverId).toBeUndefined();
       expect(init.headers.Authorization).toBeUndefined();
       throw new Error(code);
     });
     const result = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
-    expect(result).toMatchObject({ ok: false, status, detail: code, pairing: { state, receiver_id: "neutral-original" } });
+    expect(result).toMatchObject({ ok: false, status: "unreachable", detail: code });
     expect(globalThis.fetch).toHaveBeenCalledOnce();
     expect(stored.receiverAuthToken).toBeUndefined();
     expect(stored.neutralUnrelatedSetting).toBe("preserved");
@@ -3978,14 +3908,8 @@ describe("receiver health probe", () => {
     expect(response).toMatchObject({
       ok: true,
       status: "ok",
-      detail: null,
-      endpoint: "http://127.0.0.1:8875",
       receiver_request_id: "receiver-request-1",
-      pairing: {
-        state: "online",
-        receiver_id: "rx-health",
-        api_schema: "polylogue-browser-capture/v1",
-      },
+      receiver_status: { receiver_id: "rx-health", api_schema: "polylogue-browser-capture/v1" },
     });
     expect(fetchCalls[0].url).toBe("polylogue://native/v1/status");
   });
@@ -4012,7 +3936,7 @@ describe("receiver health probe", () => {
 
     const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
 
-    expect(response).toMatchObject({ ok: false, status: "unreachable", detail: "non_json_response" });
+    expect(response).toMatchObject({ ok: false, status: "error", detail: "native_host_contract_incompatible" });
   });
 });
 

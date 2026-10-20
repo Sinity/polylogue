@@ -330,7 +330,7 @@ describe("build.mjs full archive emission", () => {
     expect(JSON.stringify(pageRequests)).not.toContain(pageToken);
     expect(JSON.stringify(pageRequests)).not.toContain(pageAccount);
     expect(tabs.sendMessage.mock.calls.some(([, message]) => message.type === "polylogue.capturePage")).toBe(false);
-    expect(fetchCalls.every((call) => String(call.url).includes("127.0.0.1"))).toBe(true);
+    expect(fetchCalls.every((call) => new URL(call.url).protocol === "polylogue:")).toBe(true);
 
     // A freshness invocation can reuse the home tab only through the worker's
     // pre-request claim. This uses the packaged MAIN/isolated/background route,

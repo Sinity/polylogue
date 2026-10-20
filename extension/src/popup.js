@@ -11,6 +11,8 @@ let currentFreshnessQueue = { entries: {}, dropped_count: 0 };
 let currentBackfillJobs = [];
 let currentReceiverOnline = true;
 let currentBrowserActions = [];
+const pendingBackupExports = new Map();
+let pendingBackupImport = null;
 
 function hostMatches(hostname, domain) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
@@ -334,7 +336,7 @@ function renderBackfillControls(jobs) {
   const active = currentBackfillJobs.filter((job) => !["complete", "completed", "cancelled", "failed"].includes(job.status));
   node.innerHTML = active.length ? active.map((job) => {
     const resume = job.status === "paused";
-    return `<div class="work-item"><div class="work-title">${escapeHtml(job.job_title || `${job.provider || "Provider"} history backfill`)} · ${escapeHtml(job.status || "unknown")}</div><div class="controls"><button data-backfill-action="${resume ? "resume" : "pause"}" data-backfill-id="${escapeHtml(job.id)}">${resume ? "Resume" : "Pause"}</button><button data-backfill-action="cancel" data-backfill-id="${escapeHtml(job.id)}">Cancel</button><button data-backfill-action="export" data-backfill-id="${escapeHtml(job.id)}">Export</button></div></div>`;
+    return `<div class="work-item"><div class="work-title">${escapeHtml(job.job_title || `${job.provider || "Provider"} history backfill`)} · ${escapeHtml(job.status || "unknown")}</div><div class="controls"><button data-backfill-action="${resume ? "resume" : "pause"}" data-backfill-id="${escapeHtml(job.id)}">${resume ? "Resume" : "Pause"}</button><button data-backfill-action="cancel" data-backfill-id="${escapeHtml(job.id)}">Cancel</button><button data-backfill-action="export" data-backfill-id="${escapeHtml(job.id)}">Export</button>${pendingBackupExports.has(job.id) ? `<button data-backfill-action="exportAck" data-backfill-id="${escapeHtml(job.id)}">Confirm saved</button>` : ""}</div></div>`;
   }).join("") : '<div class="empty">No persisted backfill jobs need operator controls.</div>';
 }
 
@@ -431,7 +433,37 @@ function ambientFallback(raw, tabUrl) {
 }
 
 function renderAmbient(ambient, tabUrl = "", assertions = null) {
-  const enabledNode = document.getElementById("ambient-enabled");
+  const enabledNode = document.getElementById("backfill-import")?.addEventListener("change", async event => {
+  const file = event.target.files?.[0]; if (!file) return;
+  const status = document.getElementById("backup-status");
+  const cancel = document.getElementById("cancel-backfill-import");
+  try {
+    const begin = await chrome.runtime.sendMessage({ type: "polylogue.backfill.import.begin" });
+    if (!begin?.ok) throw new Error(begin?.error || "checkpoint_import_failed");
+    const id = begin.import_id; pendingBackupImport = id; if (cancel) cancel.hidden = false;
+    for (let offset = 0, sequence = 0; offset < file.size; offset += 48 * 1024, sequence++) {
+      if (pendingBackupImport !== id) throw new Error("Import cancelled");
+      const bytes = new Uint8Array(await file.slice(offset, offset + 48 * 1024).arrayBuffer());
+      let text = ""; for (let index = 0; index < bytes.length; index += 8192) text += String.fromCharCode(...bytes.subarray(index, index + 8192));
+      const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.import.append", import_id: id, sequence, base64: btoa(text) });
+      if (!result?.ok) throw new Error(result?.error || "checkpoint_import_failed");
+    }
+    if (pendingBackupImport !== id) throw new Error("Import cancelled");
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.import.finish", import_id: id });
+    if (!result?.ok) throw new Error(result?.error || "checkpoint_import_failed");
+    if (status) status.textContent = "Backup restored. The job is paused for review; its original account scope is preserved.";
+  } catch (error) {
+    if (pendingBackupImport) await chrome.runtime.sendMessage({ type: "polylogue.backfill.import.cancel", import_id: pendingBackupImport }).catch(() => undefined);
+    if (status) status.textContent = String(error.message || error);
+  } finally { pendingBackupImport = null; if (cancel) cancel.hidden = true; event.target.value = ""; await render(); }
+});
+
+document.getElementById("cancel-backfill-import")?.addEventListener("click", async () => {
+  const id = pendingBackupImport; pendingBackupImport = null;
+  if (id) await chrome.runtime.sendMessage({ type: "polylogue.backfill.import.cancel", import_id: id });
+});
+
+document.getElementById("ambient-enabled");
   const siteNode = document.getElementById("ambient-site-enabled");
   const siteLabel = document.getElementById("ambient-site");
   const automaticCaptureNode = document.getElementById("automatic-capture-enabled");
@@ -805,15 +837,24 @@ document.getElementById("backfill-controls")?.addEventListener("click", async (e
   if (!jobId) return;
   if (action === "export") {
     const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.export", job_id: jobId });
-    if (result?.ok) {
-      const blob = new globalThis.Blob([`${JSON.stringify(result.ledger, null, 2)}\n`], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `polylogue-backfill-${jobId}.json`;
-      link.click();
-      URL.revokeObjectURL(url);
-    }
+    if (!result?.ok) throw new Error(result?.error || "checkpoint_export_failed");
+    if (!/^[a-f0-9-]+$/.test(result.artifact_ref || "")) throw new Error("checkpoint_export_invalid_ref");
+    const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("polylogue-capture");
+    const metadata = JSON.parse(await (await (await directory.getFileHandle(`${result.artifact_ref}.json`)).getFile()).text());
+    const file = await (await directory.getFileHandle(`${result.artifact_ref}.bytes`)).getFile();
+    if (`sha256:${metadata.sha256}` !== result.digest || file.size !== result.size_bytes) throw new Error("checkpoint_export_file_mismatch");
+    const url = URL.createObjectURL(file);
+    const link = document.createElement("a"); link.href = url; link.download = `polylogue-backfill-${jobId}.json`;
+    link.click(); URL.revokeObjectURL(url);
+    pendingBackupExports.set(jobId, result);
+    const status = document.getElementById("backup-status");
+    if (status) status.textContent = "Save the backup file, then choose Confirm saved. The original job and its evidence remain intact.";
+  } else if (action === "exportAck") {
+    const exported = pendingBackupExports.get(jobId);
+    if (!exported) throw new Error("checkpoint_export_unavailable");
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.exportAck", ...exported });
+    if (!result?.ok) throw new Error(result?.error || "checkpoint_export_ack_failed");
+    pendingBackupExports.delete(jobId);
   } else {
     await chrome.runtime.sendMessage({ type: "polylogue.backfill.control", job_id: jobId, action });
   }

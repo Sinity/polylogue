@@ -7,6 +7,7 @@ import { BACKFILL_RECOVERY_CHECKPOINT_VERSION, DURABLE_RECEIVER_ACK_FIELDS, retr
 import { providerAdapters } from "../backfill/providers.js";
 import { executeProviderPageRequest } from "../backfill/page_transport.js";
 import { IndexedDbBackfillStore, nativeCacheOrder } from "../backfill/storage.js";
+import { importCheckpoint } from "../backfill/import.js";
 import { deriveAccountScope } from "../backfill/encoding.js";
 import {
   classifyBrowserActionFailure,
@@ -43,6 +44,7 @@ function trackNativeOperation(operation) {
   operation.finish = () => { nativeNormalizations.delete(operation.controller.signal); drained(); };
   nativeNormalizations.set(operation.controller.signal, operation);
 }
+const checkpointImports = new Map();
 const captureDeliveries = new Map();
 const foregroundDeliveryCompletions = new Map();
 
@@ -649,6 +651,7 @@ async function reconcileCaptureRoots() {
       try { await captureStaging.seal({ id: meta.id, token: meta.token }, meta.owner); }
       catch (error) { await appendDebugLog({ stage: "capture_acquisition_recovery_pending", ref: meta.id, error: String(typeof error.code === "string" ? error.code : (error.message || error)) }); }
     }
+    if (meta.import_staged && !await captureStaging.referenced(meta.id)) { await captureStaging.discard(meta.id); continue; }
     if (meta.retired) { await captureStaging.discardUnreferenced(meta.id); continue; }
     if (!meta.owner?.tab_id || await captureStaging.referenced(meta.id)) continue;
     const tab = await tabIfPresent(meta.owner.tab_id);
@@ -3486,6 +3489,35 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "polylogue.backfill.status") {
       const coordinator = await backfillCoordinator();
       sendResponse({ ok: true, ...await coordinator.listStatus({ cursor: message.cursor || null, pageSize: message.pageSize || 25, activeOnly: message.activeOnly === true }) });
+      return;
+    }
+    if (message.type?.startsWith("polylogue.backfill.import.")) {
+      if (sender.url !== `chrome-extension://${runtimeChrome.runtime.id}/src/popup.html`) throw new Error("checkpoint_import_sender_invalid");
+      if (message.type === "polylogue.backfill.import.begin") {
+        const owner = { checkpoint_import_id: globalThis.crypto.randomUUID() };
+        const ref = await captureStaging.begin(owner, { kind: "checkpoint-import-body" });
+        await captureStaging.save({ ...await captureStaging.metadata(ref.id), import_staged: true });
+        checkpointImports.set(owner.checkpoint_import_id, { ref, owner, controller: new AbortController() });
+        sendResponse({ ok: true, import_id: owner.checkpoint_import_id }); return;
+      }
+      const operation = checkpointImports.get(message.import_id);
+      if (!operation) throw new Error("checkpoint_import_unavailable");
+      if (message.type === "polylogue.backfill.import.append") {
+        sendResponse({ ok: true, ...await captureStaging.append(operation.ref, operation.owner, message.sequence, message.base64) }); return;
+      }
+      if (message.type === "polylogue.backfill.import.cancel") {
+        operation.controller.abort(new DOMException("Import cancelled", "AbortError"));
+        if (operation.running) await operation.running.catch(() => undefined);
+        else await captureStaging.discard(operation.ref.id);
+        checkpointImports.delete(message.import_id); sendResponse({ ok: true }); return;
+      }
+      if (message.type !== "polylogue.backfill.import.finish" || operation.running) throw new Error("checkpoint_import_operation_invalid");
+      operation.running = (async () => {
+        await captureStaging.seal(operation.ref, operation.owner);
+        return importCheckpoint(await captureStaging.file(operation.ref.id), { staging: captureStaging, store: captureStore, signal: operation.controller.signal });
+      })();
+      try { sendResponse({ ok: true, ...await operation.running }); }
+      finally { checkpointImports.delete(message.import_id); await captureStaging.discard(operation.ref.id); }
       return;
     }
     if (["polylogue.backfill.export", "polylogue.backfill.exportAck"].includes(message.type)) {

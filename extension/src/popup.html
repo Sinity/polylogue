@@ -354,6 +354,10 @@
           <div class="section-head"><strong id="work-heading">Automatic capture</strong><span id="work-count" class="value mono">0</span></div>
           <p class="section-note">Capture and freshness transitions continue automatically. This view only explains held evidence.</p>
           <div id="work-queue" class="work-list" aria-live="polite"></div>
+          <label class="label" for="backfill-import">Restore a local backfill backup (restored jobs stay paused)</label>
+          <input id="backfill-import" type="file" accept="application/json,.json">
+          <button id="cancel-backfill-import" hidden>Cancel import</button>
+          <p id="backup-status" class="section-note" aria-live="polite"></p>
           <div id="backfill-controls" class="work-list" aria-label="Persisted backfill jobs"></div>
           <details>
             <summary>Capture retry detail · <span id="queue-count" class="mono">0</span></summary>

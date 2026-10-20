@@ -1342,6 +1342,29 @@ export class IndexedDbBackfillStore {
     await done;
   }
 
+  async publishImportedCheckpoint({ job, queue, revisions, captures, records }, signal = null) {
+    const db = await this.database();
+    const tx = db.transaction(["jobs", "queue", "revisions", "captures", "capture_records"], "readwrite");
+    const done = transactionDone(tx);
+    const cancel = () => { try { tx.abort(); } catch { /* A completed commit is final. */ } };
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      signal?.throwIfAborted();
+      if (await requestResult(tx.objectStore("jobs").get(job.id))) throw new Error("checkpoint_import_job_exists");
+      tx.objectStore("jobs").add(jobRow(job));
+      for (const row of queue) { signal?.throwIfAborted(); tx.objectStore("queue").add(queueRow(row)); }
+      for (const row of revisions) {
+        signal?.throwIfAborted();
+        if (!await requestResult(tx.objectStore("revisions").get(row.id))) tx.objectStore("revisions").add(row);
+      }
+      for (const row of captures) { signal?.throwIfAborted(); tx.objectStore("captures").add(row); }
+      for (const row of records) { signal?.throwIfAborted(); tx.objectStore("capture_records").add(captureRecordRow(row)); }
+      signal?.throwIfAborted(); await done;
+      return { job_id: job.id, restored: queue.length, status: "paused" };
+    } catch (error) { cancel(); await done.catch(() => undefined); throw error; }
+    finally { signal?.removeEventListener("abort", cancel); }
+  }
+
   async beginCheckpointRecovery(root) {
     if (!Number.isSafeInteger(root.sequence) || root.sequence < 0 ||
         typeof root.account_scope !== "string" || !root.account_scope ||

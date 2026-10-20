@@ -579,7 +579,12 @@ export class CaptureStaging {
             if (record.record_kind !== "checkpoint:queue") continue;
             await append(`${first ? "" : ","}{"queue_id":${JSON.stringify(record.checkpoint_value.id)},"capture":`); first = false;
             for await (const text of this.json(record.export_capture, signal)) await append(text);
-            await append(',"files":['); let firstFile = true;
+            await append(',"records":['); let firstRecord = true;
+            if (record.record_ref) for await (const native of this.records.captureRecords(record.record_ref)) {
+              await append(firstRecord ? "" : ","); firstRecord = false;
+              for await (const text of this.json(native, signal)) await append(text);
+            }
+            await append('],"files":['); let firstFile = true;
             const evidence = async (ref) => {
               if (!ref) return;
               await append(firstFile ? "" : ","); firstFile = false;

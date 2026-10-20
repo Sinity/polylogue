@@ -6,7 +6,7 @@ export function nativeEnvelope(capture, attachments = false) {
   const payload = capture.provider === "grok"
     ? { conversation: raw(capture.related_refs.conversation.id), responses: raw(capture.raw_ref),
       ...(capture.related_refs.response_nodes ? { response_nodes: raw(capture.related_refs.response_nodes.id) } : {}),
-      acquisition: capture.acquisition }
+      acquisition: { ...capture.acquisition, kind: "grok-endpoint-bundle" } }
     : raw(capture.raw_ref);
   return { schema_version: 1, polylogue_capture_kind: "browser_llm_session", source: "browser-extension",
     provider_meta: { capture_fidelity: "native_full", ...capture.attribution,
