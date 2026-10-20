@@ -296,7 +296,7 @@ fn sample(target: Target, bytes: u64, seed: u64, cut: f64) -> Result<(), String>
 }
 
 fn first_build_binary() -> Result<PathBuf, String> {
-    let ok = Command::new("cargo")
+    let ok = devkit::cargo_command()
         .args([
             "build",
             "--locked",

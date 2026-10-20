@@ -3,10 +3,7 @@ mod bench;
 use clap::Parser;
 use devkit::{Nextest, Run, select::Selection};
 use serde_json::Value;
-use std::{
-    path::Path,
-    process::{Command, ExitCode},
-};
+use std::{path::Path, process::ExitCode};
 
 /// Packages rustfmt checks.
 const FORMATTED: &[&str] = &[
@@ -79,7 +76,7 @@ fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
 }
 
 fn metadata(root: &Path) -> Result<Value, String> {
-    let output = Command::new("cargo")
+    let output = devkit::cargo_command()
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .current_dir(root)
         .output()
@@ -123,7 +120,7 @@ fn boundaries(metadata: &Value) -> Result<(), String> {
 }
 
 fn fmt_check(run: &mut Run) -> devkit::Result {
-    let mut fmt = Command::new("cargo");
+    let mut fmt = devkit::cargo_command();
     fmt.arg("fmt");
     for package in FORMATTED {
         fmt.args(["-p", package]);
