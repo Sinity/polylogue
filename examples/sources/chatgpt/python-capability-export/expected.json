@@ -22,19 +22,27 @@
           "title": "Origin capability matrix"
         },
         "kind": "conversation_settings",
+        "range": [
+          3,
+          543
+        ],
         "session": "chatgpt:origin-matrix-chatgpt"
       },
       {
         "after": "chatgpt:matrix-message",
         "data": null,
         "kind": "active_leaf",
+        "range": [
+          3,
+          543
+        ],
         "session": "chatgpt:origin-matrix-chatgpt"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 543,
         "message": {
           "at": "2026-08-01T10:00:00Z",
           "blocks": [
@@ -48,7 +56,7 @@
           "role": "user",
           "session": "chatgpt:origin-matrix-chatgpt"
         },
-        "offset": 0
+        "offset": 3
       }
     ],
     "sessions": [

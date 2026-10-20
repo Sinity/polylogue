@@ -29,7 +29,7 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
         return Err(format!("{} does not recognize {}", origin, path.display()));
     }
     let parser = (spec.open)(path).ok_or("origin does not open this path")?;
-    let (step, _carry) = parser.step(None, &input, 0).map_err(|e| e.to_string())?;
+    let step = super::support::array_fixture::parse(&parser, &input)?;
     if step.consumed != input.len() as u64 {
         return Err(format!(
             "consumed {} of {} bytes",

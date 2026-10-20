@@ -311,7 +311,7 @@ fn a_zip_export_imports_its_conversations_and_keeps_its_other_files() {
 }
 
 #[test]
-fn a_document_export_is_parsed_whole_however_small_the_chunk() {
+fn array_conversations_parse_when_the_chunk_is_smaller_than_one_record() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("conversations.json");
     let convs = serde_json::json!([
@@ -319,8 +319,7 @@ fn a_document_export_is_parsed_whole_however_small_the_chunk() {
         chatgpt_conversation("c2", "two")
     ]);
     fs::write(&path, serde_json::to_vec_pretty(&convs).unwrap()).unwrap();
-    // A chunk far smaller than the document: a line-framed origin would
-    // read it in steps; a document is read whole in one.
+    // The array path admits one conversation independently of the line chunk.
     let (mut e, _lock) = w.engine(64);
     let report = e.import(std::slice::from_ref(&path)).unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);

@@ -25,13 +25,17 @@
           "uuid": "native-rich-blocks"
         },
         "kind": "conversation_settings",
+        "range": [
+          3,
+          1773
+        ],
         "session": "claude-ai:native-rich-blocks"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 1773,
         "message": {
           "at": "2026-01-01T00:00:01Z",
           "blocks": [
@@ -58,10 +62,10 @@
           "role": "assistant",
           "session": "claude-ai:native-rich-blocks"
         },
-        "offset": 0
+        "offset": 3
       },
       {
-        "end": 2,
+        "end": 1773,
         "message": {
           "at": "2026-01-01T00:00:02Z",
           "blocks": [
@@ -87,10 +91,10 @@
           "role": "user",
           "session": "claude-ai:native-rich-blocks"
         },
-        "offset": 1
+        "offset": 3
       },
       {
-        "end": 3,
+        "end": 1773,
         "message": {
           "at": "2026-01-01T00:00:03Z",
           "blocks": [
@@ -116,10 +120,10 @@
           "role": "user",
           "session": "claude-ai:native-rich-blocks"
         },
-        "offset": 2
+        "offset": 3
       },
       {
-        "end": 4,
+        "end": 1773,
         "message": {
           "at": "2026-01-01T00:00:04Z",
           "blocks": [

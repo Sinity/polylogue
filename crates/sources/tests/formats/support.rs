@@ -1,6 +1,9 @@
 //! Shared helpers for tests that drive one origin's parser on bytes written
 //! inline: the knowledge ported from the Python predecessor's tests.
 
+#[path = "../../src/array/fixture.rs"]
+pub mod array_fixture;
+
 use polylogue_sources::origin::by_name;
 use serde_json::Value;
 use std::path::Path;
@@ -12,7 +15,7 @@ pub fn parse(origin: &str, path: &str, input: &[u8]) -> Value {
     let path = Path::new(path);
     let parser =
         (spec.open)(path).unwrap_or_else(|| panic!("{origin} does not open {}", path.display()));
-    let (step, _carry) = parser.step(None, input, 0).expect("parse step");
+    let step = array_fixture::parse(&parser, input).expect("parse step");
     assert_eq!(
         step.consumed,
         input.len() as u64,

@@ -102,7 +102,10 @@ fn capture_failure_leaves_no_catalog_input() {
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 0);
 }
 
-fn engine(w: &polylogue_testkit::ClaudeHome, chunk: u64) -> (Engine, polylogue_store::ArchiveLock) {
+pub(super) fn engine(
+    w: &polylogue_testkit::ClaudeHome,
+    chunk: u64,
+) -> (Engine, polylogue_store::ArchiveLock) {
     let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
     let config = Config {
         home: w.home.clone(),

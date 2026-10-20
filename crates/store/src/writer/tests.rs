@@ -79,6 +79,8 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
         blobs: vec![],
         length: start + 100,
         parse: vec![ParseStep {
+            order_from: None,
+            reset: start == 0,
             snapshot: None,
             output: Output {
                 sessions: sessions
@@ -887,3 +889,5 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
 }
 
 mod snapshots;
+
+mod array_order;

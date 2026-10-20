@@ -348,7 +348,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "chatgpt",
-        parser_version: 3,
+        parser_version: 4,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,
@@ -362,7 +362,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "claude-ai",
-        parser_version: 3,
+        parser_version: 4,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,

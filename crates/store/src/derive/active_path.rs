@@ -13,7 +13,7 @@ use rusqlite::Transaction;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "active_path",
-    version: Version::Rules(2),
+    version: Version::Rules(3),
     after: &[],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
@@ -28,7 +28,7 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
                       PARTITION BY r.id ORDER BY
                         COALESCE(es.chain, e.source_chain, 0) DESC,
                         COALESCE(es.source_snapshot, -1) DESC,
-                        COALESCE(e.source_start, e.seq) DESC, e.id
+                        COALESCE(es.source_order, e.source_start, e.seq) DESC, e.id
                     ) AS newest
              FROM current_event e JOIN current_message m ON m.pk = e.after_message_pk
              LEFT JOIN event_source es ON es.event_id = e.id AND es.current = 1

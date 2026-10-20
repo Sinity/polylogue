@@ -146,11 +146,34 @@ inputs and unparsed members use the normal parse pool's part-sized jobs without
 retaining duplicate part blobs. One input is imported at a time. Acquisition
 uses the blob store's default 4 MiB frames and a 64-byte recognition prefix;
 parser buffers scale with the configured chunk and the largest incomplete
-record carried between jobs. Document-framed origins still read and parse a
-whole document. Reimporting a retained input retries missing or outdated parser
+record carried between jobs. Other document-framed origins still read and
+parse a whole document. Reimporting a retained input retries missing or outdated parser
 progress without adding another revision or copy of its bytes. Restart replay
 selects the same sequential reader for a chain retained as one complete file
 blob, and obtains route precedence from its durable revision class.
+
+ChatGPT and Claude export arrays use Serde's array visitor and `RawValue` to
+frame one conversation at a time. The reader records and verifies the exact
+lexeme against the source bytes before accepting its range. The whole outer
+array, including its trailing suffix, must validate before any conversation is
+published. A private operation-scoped scratch object compresses the elements
+into an anonymous temporary file and indexes their ranges and ordering in a
+temporary SQLite file (1 MiB cache, no mmap). ChatGPT conversations retain their
+global oldest-first ordering and first-owner message deduplication through this
+same object; Claude preserves physical array order. Scratch disappears when the
+operation ends and is rebuilt from retained bytes on retry.
+
+The existing live-before-bulk and size ordering applies across parser kinds.
+Preceding ordinary work drains through the parse pool and commits before the
+serial array driver runs with the pool inactive. That driver decodes one
+conversation and waits for its writer commit before decoding the next. Message order is a separate logical ordinal; message and
+event locations cite the complete original conversation span. Repeated event
+facts retain their latest logical source order, including across replay. Memory therefore
+scales with the largest conversation and its parser output, rather than the
+whole export; a single large conversation still needs that much memory. Parser
+progress becomes complete only after every conversation commits. An interrupted
+retry starts from the retained array, resets accounting, and idempotently
+replays committed conversations.
 
 ## Application and transports
 

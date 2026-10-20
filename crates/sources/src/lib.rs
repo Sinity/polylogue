@@ -4,7 +4,11 @@
 //! reads timestamps and checks that every wire field is read or excluded
 //! with a reason.
 
+#[cfg(test)]
+extern crate self as polylogue_sources;
+
 pub mod ai_studio;
+pub mod array;
 pub mod browser_capture;
 pub mod chatgpt;
 pub mod claude_ai;

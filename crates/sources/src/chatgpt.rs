@@ -18,7 +18,7 @@
 use crate::Disposition;
 use crate::document::{Sink, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};
-use crate::parse::{DocumentParser, MessageRow, Output, Parse};
+use crate::parse::{MessageRow, Parse};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, ErrorReason, Event, Json, Link, LinkKind, Message,
     PromptKind, Role, Session, SessionKind, TitleSource, ToolAction, ToolOutcome, UnknownReason,
@@ -58,7 +58,7 @@ pub(crate) fn first_byte(head: &[u8]) -> Option<u8> {
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
-    recognize_name(path).then(|| Parse::Document(Box::new(Export)))
+    recognize_name(path).then(|| Parse::Array(Box::new(Export)))
 }
 
 fn recognize_name(path: &Path) -> bool {
@@ -70,38 +70,23 @@ fn recognize_name(path: &Path) -> bool {
 /// The export's conversation array.
 pub struct Export;
 
-impl DocumentParser for Export {
-    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut crate::Records) {
-        let mut sink = Sink::new(out, records);
-        match serde_json::from_slice::<Json>(bytes) {
-            Ok(Json::Array(items)) => {
-                // Oldest first: a conversation branched into a new chat
-                // repeats its parent's messages, and they belong to the
-                // parent, which must be read before the branch. The export
-                // lists newest first.
-                let mut order: Vec<usize> = (0..items.len()).collect();
-                order.sort_by(|&a, &b| {
-                    let t = |i: usize| items[i].get("create_time").and_then(Json::as_f64);
-                    match (t(a), t(b)) {
-                        (Some(x), Some(y)) => x.total_cmp(&y).then(a.cmp(&b)),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => a.cmp(&b),
-                    }
-                });
-                let mut owners = Owners::default();
-                for i in order {
-                    conversation(&items[i], &mut sink, &mut owners);
-                }
-            }
-            Ok(_) => sink
-                .records
-                .record("export", &Disposition::refused("not a JSON array")),
-            Err(e) => sink.records.record(
-                "export",
-                &Disposition::refused(format!("malformed JSON: {e}")),
-            ),
+impl crate::array::ArrayParser for Export {
+    fn order_key(&self, raw: &serde_json::value::RawValue) -> Option<f64> {
+        #[derive(serde::Deserialize)]
+        struct Header {
+            create_time: Option<Json>,
         }
+        // Unrelated fields deserialize as IgnoredAny, including the mapping.
+        let header: Header = serde_json::from_str(raw.get()).ok()?;
+        header.create_time?.as_f64()
+    }
+    fn item(
+        &self,
+        value: &Json,
+        sink: &mut Sink<'_>,
+        owners: &mut dyn crate::array::Owners,
+    ) -> Result<(), String> {
+        conversation_with_owners(value, sink, owners)
     }
 }
 
@@ -158,38 +143,60 @@ pub struct Owners {
     first: HashMap<String, polylogue_model::SessionId>,
 }
 
+impl crate::array::Owners for Owners {
+    fn claim(
+        &mut self,
+        native: &str,
+        session: &polylogue_model::SessionId,
+    ) -> Result<polylogue_model::SessionId, String> {
+        Ok(self
+            .first
+            .entry(native.to_owned())
+            .or_insert_with(|| session.clone())
+            .clone())
+    }
+}
+
 /// One conversation object: its session, messages and events. Shared by
 /// the export and by browser captures of the same conversation, so both
 /// routes produce the same IDs and unite (architecture 5.5).
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
+    conversation_with_owners(conv, sink, owners).expect("in-memory message ownership");
+}
+
+fn conversation_with_owners(
+    conv: &Json,
+    sink: &mut Sink<'_>,
+    owners: &mut dyn crate::array::Owners,
+) -> Result<(), String> {
     let Some(obj) = conv.as_object() else {
         sink.records
             .record("conversation", &Disposition::refused("not an object"));
-        return;
+        return Ok(());
     };
     if obj.is_empty() {
         sink.records.record(
             "conversation",
             &Disposition::unknown("empty object in the export"),
         );
-        return;
+        return Ok(());
     }
     let Some(native) = str_of(conv, "conversation_id").or_else(|| str_of(conv, "id")) else {
         sink.records
             .record("conversation", &Disposition::refused("no conversation ID"));
-        return;
+        return Ok(());
     };
     let Some(sid) = session_id(ORIGIN, native) else {
         sink.records.record(
             "conversation",
             &Disposition::refused("unusable conversation ID"),
         );
-        return;
+        return Ok(());
     };
     let Some(mapping) = conv.get("mapping").and_then(Json::as_object) else {
         sink.records
             .record("conversation", &Disposition::refused("no mapping"));
-        return;
+        return Ok(());
     };
 
     let mut session = Session::new(sid.clone(), SessionKind::Main);
@@ -265,12 +272,11 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
     let mut branch: Option<(polylogue_model::SessionId, Message)> = None;
     for (_, _, message) in rows {
         let native = message.id.native().as_str().to_owned();
-        match owners.first.get(&native) {
-            Some(owner) if *owner != sid => {
-                branch = Some((owner.clone(), message));
+        match owners.claim(&native, &sid)? {
+            owner if owner != sid => {
+                branch = Some((owner, message));
             }
             _ => {
-                owners.first.insert(native, sid.clone());
                 let offset = sink.position();
                 sink.out.messages.push(MessageRow {
                     offset,
@@ -303,6 +309,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
             data: Json::Null,
         });
     }
+    Ok(())
 }
 
 /// The mapping as a tree of node IDs, for parents and tool owners.

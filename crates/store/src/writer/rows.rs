@@ -64,7 +64,9 @@ pub(super) fn write_rows(
                 session_pk,
                 hash,
                 &bodies,
-                if p.snapshot.is_some() {
+                if let Some(from) = p.order_from {
+                    (from + i as u64) as i64
+                } else if p.snapshot.is_some() {
                     i as i64
                 } else {
                     row.offset as i64
@@ -97,7 +99,7 @@ pub(super) fn write_rows(
             Some(prepared) if p.events.len() == p.output.events.len() => prepared.clone(),
             _ => pack_event(e)?,
         };
-        ctx.write_event(e, session_pk, &packed)?;
+        ctx.write_event(e, session_pk, &packed, p.order_from)?;
         if ctx.snapshot_current(session_pk)? {
             crate::live::apply(tx, session_pk, e, counter)?;
         }
@@ -214,7 +216,7 @@ impl Version {
             if self.snapshot != -1 || cur.snapshot != -1 {
                 return self.snapshot >= cur.snapshot;
             }
-            return self.start <= cur.start;
+            return self.order <= cur.order;
         }
         if self.main != cur.main {
             return self.main;
@@ -364,7 +366,7 @@ impl Ctx<'_, '_> {
             .tx
             .prepare_cached(
                 "SELECT m.pk, m.order_input_pk, m.seq, m.input_pk, m.source_chain, m.source_start,
-                        m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind, m.order_input_id, s.source_snapshot, s.current, s.session_pk, s.main
+                        m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind, m.order_input_id, s.source_snapshot, s.current, s.session_pk, s.main, COALESCE(s.source_order,m.seq)
                  FROM message m LEFT JOIN message_source s
                    ON s.message_pk = m.pk AND s.preferred = 1
                  JOIN session ss ON ss.pk = m.session_pk
@@ -379,7 +381,7 @@ impl Ctx<'_, '_> {
                         session_pk:r.get::<_,Option<i64>>(14)?.unwrap_or(r.get(9)?),
                         chain: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
                         snapshot: r.get::<_, Option<i64>>(12)?.unwrap_or(-1),
-                        order: r.get(2)?,
+                        order: r.get(16)?,
                         current: r.get::<_, Option<i64>>(13)?.unwrap_or(1) != 0,
                         start: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
                         end: 0,
@@ -412,14 +414,14 @@ impl Ctx<'_, '_> {
         let prior: Option<i64> = self
             .tx
             .prepare_cached(
-                "SELECT source_start FROM message_source
+                "SELECT source_order FROM message_source
                  WHERE message_pk = ?1 AND input_pk = ?2 AND chain = ?3 AND source_snapshot = ?4 AND session_pk=?5",
             )?
             .query_row(params![pk, self.input_pk, self.chain, new.snapshot, new.session_pk], |r| {
                 r.get(0)
             })
             .optional()?;
-        if prior.is_some_and(|start| offset > start) {
+        if prior.is_some_and(|order| position > order) {
             return Ok(false);
         }
         crate::versions::retain(self.tx, &new.hash, m, bodies, self.packed, self.bulk)?;
@@ -858,7 +860,13 @@ impl Ctx<'_, '_> {
     }
 
     /// `packed` is the event's id and stored payload ([`pack_event`]).
-    fn write_event(&self, e: &Event, session_pk: i64, packed: &(String, Vec<u8>)) -> Result<()> {
+    fn write_event(
+        &self,
+        e: &Event,
+        session_pk: i64,
+        packed: &(String, Vec<u8>),
+        order: Option<u64>,
+    ) -> Result<()> {
         let (id, data) = packed;
         let after: Option<(i64, i64)> = match &e.after {
             Some(id) => self
@@ -896,7 +904,7 @@ impl Ctx<'_, '_> {
                 e.range.map(|r| r.1 as i64),
                 data,
             ])?;
-        self.tx.execute("INSERT INTO event_source(event_id,input_pk,chain,source_snapshot,current) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(event_id,input_pk,chain,source_snapshot) DO UPDATE SET current=excluded.current", params![id,self.input_pk,self.chain,self.snapshot.map_or(-1,|snapshot|snapshot.start as i64), i64::from(self.snapshot_current(session_pk)?)])?;
+        self.tx.execute("INSERT INTO event_source(event_id,input_pk,chain,source_snapshot,current,source_order) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(event_id,input_pk,chain,source_snapshot) DO UPDATE SET current=excluded.current, source_order=MAX(event_source.source_order,excluded.source_order)", params![id,self.input_pk,self.chain,self.snapshot.map_or(-1,|snapshot|snapshot.start as i64), i64::from(self.snapshot_current(session_pk)?), order.map_or(seq, |order| order as i64)])?;
         Ok(())
     }
 
@@ -986,7 +994,7 @@ impl Ctx<'_, '_> {
             "parsing"
         };
         let detail = (status == "waiting").then(|| b.length.to_string());
-        let whole = p.start == 0;
+        let whole = p.reset;
         let sql = if whole {
             "INSERT INTO parse_state(input_pk, chain, parser_version, status, parsed_upto, framed,
                  used, unrecognized_n, undecodable, detail)

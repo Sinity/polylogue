@@ -1,5 +1,5 @@
 use super::*;
-use crate::parse::run_document;
+
 use serde_json::json;
 
 fn node(id: &str, parent: Option<&str>, message: Json) -> (String, Json) {
@@ -21,7 +21,7 @@ fn text(parts: &[&str]) -> Json {
 
 fn export(convs: &[Json]) -> crate::parse::Step {
     let bytes = serde_json::to_vec(&Json::Array(convs.to_vec())).unwrap();
-    run_document(&Export, &bytes).unwrap()
+    crate::array::fixture::parse(&Parse::Array(Box::new(Export)), &bytes).unwrap()
 }
 
 fn conv(id: &str, current: &str, nodes: Vec<(String, Json)>) -> Json {
