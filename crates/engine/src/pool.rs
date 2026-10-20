@@ -51,8 +51,8 @@ pub enum Bytes {
     /// The file at the job's path.
     #[default]
     File,
-    /// Bytes that are not a file of their own (a member of an imported zip).
-    Memory(Arc<Vec<u8>>),
+    /// One completely acquired import, retained before parsing begins.
+    Import(Arc<Mutex<read::Imported>>),
     /// What the archive stored for the input: its file changed, moved or
     /// went, or the index is being built again.
     Stored(Arc<polylogue_store::blobs::StoredChain>),
@@ -303,7 +303,10 @@ fn run(
     };
     let started = std::time::Instant::now();
     let read = match &job.source {
-        Bytes::Memory(all) => Ok(all[job.start as usize..job.end as usize].to_vec()),
+        Bytes::Import(source) => source
+            .lock()
+            .expect("import reader lock")
+            .read_range(job.start, job.end),
         Bytes::Stored(chain) => chain
             .read_range(store, job.start, job.end)
             .map_err(|e| std::io::Error::other(e.to_string())),
@@ -387,6 +390,14 @@ fn run(
             }
         }
     });
+    if let Bytes::Import(source) = &job.source {
+        let upto = if job.origin.support == polylogue_sources::Support::Parsed {
+            out.parsed_upto
+        } else {
+            job.end
+        };
+        source.lock().expect("import reader lock").consume(upto);
+    }
     let batch = Batch {
         input: job.input,
         change: job.change,

@@ -70,6 +70,17 @@ pub struct KnownInput {
     pub waiting: bool,
 }
 
+/// The current retained revision and its parser progress, independent of a
+/// source path. Imports use this to retry parsing without retaining bytes twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedInput {
+    pub route_rank: u8,
+    pub waiting: bool,
+    pub length: u64,
+    pub parsed_upto: u64,
+    pub parser_version: Option<u32>,
+}
+
 /// Totals for `status`. Unknown is never shown as zero: a count that could
 /// not be read is an error, not a 0.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -715,12 +726,46 @@ impl Reader<'_> {
         Ok(out)
     }
 
-    /// Whether `archive.db` holds an input with this id.
-    pub fn has_input(&self, id: &str) -> Result<bool> {
-        Ok(self
+    /// The latest retained revision and any committed parse progress.
+    pub fn retained_input(&self, id: &str) -> Result<Option<RetainedInput>> {
+        let row = self
             .conn()
-            .prepare_cached("SELECT 1 FROM a.input WHERE id = ?1")?
-            .exists([id])?)
+            .prepare_cached(
+                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.parser_version, r.produced, COALESCE(p.status = 'waiting', 0)
+             FROM a.revision r
+             LEFT JOIN input_ref i ON i.id = r.input
+             LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain
+             WHERE r.input = ?1 ORDER BY r.number DESC LIMIT 1",
+            )?
+            .query_row([id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, bool>(4)?,
+                ))
+            })
+            .optional()?;
+        let Some((length, parsed_upto, parser_version, produced, waiting)) = row else {
+            return Ok(None);
+        };
+        let route_rank = match produced.as_str() {
+            "imported" => 2,
+            "first" | "appended" | "head_rewritten" | "rewritten" | "snapshot" => 0,
+            _ => {
+                return Err(StoreError::Invalid(format!(
+                    "unknown revision source: {produced}"
+                )));
+            }
+        };
+        Ok(Some(RetainedInput {
+            route_rank,
+            waiting,
+            length: length as u64,
+            parsed_upto: parsed_upto as u64,
+            parser_version: parser_version.map(|v| v as u32),
+        }))
     }
 
     /// Runs read-only SQL and returns each row as a JSON object. Parameters

@@ -79,6 +79,29 @@ storage failures propagate as errors; an unavailable collection is not an
 empty collection. Cursors retain the query identity and resolved time; they do
 not establish a snapshot that survives between requests.
 
+## Imported bytes
+
+`engine/import.rs` acquires each file or ZIP member through the existing blob
+store's streaming plain writer. The original BLAKE3 names the input and its
+single retained blob. Before registering the complete revision, acquisition
+checks the same open source descriptor's generation and size; ZIP members also
+check their declared uncompressed length. An interrupted acquisition publishes
+no input or source observation. A completed blob can be orphaned if registration
+fails.
+
+Parsing reads that retained representation, so later source replacement or
+deletion does not change its identity or parsed content. The verified sequential
+plain reader decodes each frame once after one verification pass. Line-framed
+inputs and unparsed members use the normal parse pool's part-sized jobs without
+retaining duplicate part blobs. One input is imported at a time. Acquisition
+uses the blob store's default 4 MiB frames and a 64-byte recognition prefix;
+parser buffers scale with the configured chunk and the largest incomplete
+record carried between jobs. Document-framed origins still read and parse a
+whole document. Reimporting a retained input retries missing or outdated parser
+progress without adding another revision or copy of its bytes. Restart replay
+selects the same sequential reader for a chain retained as one complete file
+blob, and obtains route precedence from its durable revision class.
+
 ## Application and transports
 
 `daemon/service.rs` owns application state and typed request handling, including

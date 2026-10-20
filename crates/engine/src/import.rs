@@ -6,32 +6,29 @@
 use super::*;
 
 impl Engine {
-    /// Brings in export files by explicit request (architecture 5.1). An
-    /// imported file is an input named by the BLAKE3 of its bytes, so
-    /// importing the same file again stores nothing. A zip the origins do
-    /// not read whole is opened and each member imported on its own: the
-    /// ones an origin recognizes are parsed, the rest (images, audio, the
-    /// export's own HTML) are kept as bytes. Members are read one at a time
-    /// and imported in groups of about [`IMPORT_GROUP`] bytes, so an export
-    /// larger than memory still imports.
+    /// Imports immutable content identified by the BLAKE3 of its original
+    /// bytes. Acquisition streams into the blob store before the writer
+    /// records a complete revision; parsing reads ranges of that same blob.
+    /// Document-framed origins still parse a whole document in one job.
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<ImportReport, EngineError> {
+        use std::io::{Read, Seek, SeekFrom};
         let started = Instant::now();
         let mut report = ImportReport::default();
-        let mut group = Vec::new();
-        let mut group_bytes = 0u64;
-        // A directory (an old spool, an unpacked export) imports every file
-        // under it, in path order.
         let mut files = Vec::new();
         for path in paths {
             files_under(path, &mut files)?;
         }
         for path in &files {
+            let mut file = std::fs::File::open(path)?;
+            let facts = FileFacts::of(&file.metadata()?);
             let mut head = [0u8; 64];
-            let n = std::io::Read::read(&mut std::fs::File::open(path)?, &mut head)?;
+            let n = file.read(&mut head)?;
             let head = &head[..n];
             let whole = recognize_import(path, head);
+            file.seek(SeekFrom::Start(0))?;
             if whole.is_none() && head.starts_with(ZIP_MAGIC) {
-                let mut archive = zip::ZipArchive::new(std::fs::File::open(path)?)
+                let generation = file.try_clone()?;
+                let mut archive = zip::ZipArchive::new(file)
                     .map_err(|e| std::io::Error::other(format!("{}: {e}", path.display())))?;
                 for i in 0..archive.len() {
                     let mut member = archive
@@ -40,75 +37,118 @@ impl Engine {
                     if !member.is_file() {
                         continue;
                     }
-                    let name = member.name().to_owned();
-                    let mut bytes = Vec::with_capacity(member.size() as usize);
-                    std::io::Read::read_to_end(&mut member, &mut bytes)?;
-                    let at = PathBuf::from(format!("{}!/{name}", path.display()));
-                    let origin = recognize_member(&at, &bytes);
-                    if let Some(plan) =
-                        self.import_plan(&at, origin, Arc::new(bytes), &mut report)?
-                    {
-                        group_bytes += plan.size;
-                        group.push(plan);
+                    let at = PathBuf::from(format!("{}!/{}", path.display(), member.name()));
+                    let declared = member.size();
+                    let captured = Captured::read(&self.blobs, &mut member)?;
+                    unchanged(&generation, facts, facts.size)?;
+                    if captured.piece.size != declared {
+                        return Err(std::io::Error::other(
+                            "ZIP member length changed during import",
+                        )
+                        .into());
                     }
-                    if group_bytes >= IMPORT_GROUP {
-                        self.execute(std::mem::take(&mut group), &mut report.pass)?;
-                        group_bytes = 0;
-                    }
+                    let origin = recognize_member(&at, &captured.head);
+                    self.import_captured(&at, origin, captured, None, &mut report)?;
                 }
-                continue;
-            }
-            let Some(origin) = whole else {
+            } else if whole.is_some() {
+                let captured = Captured::read(&self.blobs, &mut file)?;
+                unchanged(&file, facts, captured.piece.size)?;
+                // Recognition uses the captured prefix, so a concurrent rewrite
+                // cannot pair one version's identity with another's parser.
+                if let Some(origin) = recognize_import(path, &captured.head) {
+                    self.import_captured(path, origin, captured, Some(facts), &mut report)?;
+                } else {
+                    report.unrecognized.push(path.clone());
+                }
+            } else {
                 report.unrecognized.push(path.clone());
-                continue;
-            };
-            let bytes = Arc::new(std::fs::read(path)?);
-            if let Some(plan) = self.import_plan(path, origin, bytes, &mut report)? {
-                group_bytes += plan.size;
-                group.push(plan);
-            }
-            if group_bytes >= IMPORT_GROUP {
-                self.execute(std::mem::take(&mut group), &mut report.pass)?;
-                group_bytes = 0;
             }
         }
-        self.execute(group, &mut report.pass)?;
         report.pass.sessions_derived = self.writer.derive()?;
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
     }
 
-    /// One imported input's plan, or `None` when its exact bytes are
-    /// already stored.
-    pub(super) fn import_plan(
+    fn import_captured(
         &mut self,
         path: &Path,
         origin: &'static OriginSpec,
-        bytes: Arc<Vec<u8>>,
+        captured: Captured,
+        facts: Option<FileFacts>,
+        report: &mut ImportReport,
+    ) -> Result<(), EngineError> {
+        if let Some(plan) = self.import_plan(path, origin, captured, facts, report)? {
+            self.execute(vec![plan], &mut report.pass)?;
+        }
+        Ok(())
+    }
+
+    /// Retains the complete acquisition once, then parses it without making
+    /// further pieces. A retry can rebuild parser state from offset zero.
+    fn import_plan(
+        &mut self,
+        path: &Path,
+        origin: &'static OriginSpec,
+        captured: Captured,
+        facts: Option<FileFacts>,
         report: &mut ImportReport,
     ) -> Result<Option<Plan>, EngineError> {
-        let id = blake3::hash(&bytes).to_hex().to_string();
-        if self.reads.reader()?.has_input(&id)? {
+        let piece = captured.piece;
+        let id = piece.hash.to_string();
+        let retained = self.reads.reader()?.retained_input(&id)?;
+        let complete = retained.as_ref().is_some_and(|r| r.length == piece.size);
+        if complete {
             report.already_stored.push(path.to_path_buf());
-            return Ok(None);
+            if origin.support != Support::Parsed
+                || retained.as_ref().is_some_and(|r| {
+                    (r.parsed_upto == piece.size || r.waiting)
+                        && r.parser_version == Some(origin.parser_version)
+                })
+            {
+                return Ok(None);
+            }
+        } else {
+            report.imported.push(path.to_path_buf());
         }
-        let facts = std::fs::metadata(path).ok().map(|m| FileFacts::of(&m));
-        report.imported.push(path.to_path_buf());
+        let input = InputKey {
+            id,
+            format: origin.name.into(),
+            route_rank: 2,
+        };
+        if !complete {
+            self.writer.send(polylogue_store::Batch {
+                input: input.clone(),
+                change: if retained.is_some() {
+                    Change::Rewritten
+                } else {
+                    Change::First
+                },
+                observation: Some(self.observation(path, facts)),
+                continues: false,
+                piece: Some(piece.clone()),
+                blobs: Vec::new(),
+                length: piece.size,
+                parse: None,
+                release: Default::default(),
+            })?;
+            let written = self.writer.flush()?;
+            if !written.errors.is_empty() {
+                report.pass.errors.extend(written.errors);
+                return Ok(None);
+            }
+            report.pass.bytes_stored += piece.size;
+        }
         Ok(Some(Plan {
             path: path.to_path_buf(),
             origin,
-            input: InputKey {
-                id,
-                format: origin.name.into(),
-                route_rank: 2,
-            },
-            change: Change::First,
-            observation: Some(self.observation(path, facts)),
+            input,
+            change: Change::Unchanged,
+            observation: None,
             facts,
-            size: bytes.len() as u64,
-            piece_pos: 0,
+            size: piece.size,
+            piece_pos: piece.size,
             parse_pos: 0,
-            piece_started: false,
+            piece_started: true,
             carry: None,
             tail: None,
             span: span(origin, path, self.config.chunk),
@@ -117,17 +157,73 @@ impl Engine {
             tracked: false,
             failed: false,
             waiting: false,
-            source: pool::Bytes::Memory(bytes),
+            source: pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::open(
+                &self.blobs,
+                piece.hash,
+                piece.size,
+            )?))),
         }))
+    }
+}
+
+/// Generation and length must still describe the descriptor that was captured.
+fn unchanged(file: &std::fs::File, before: FileFacts, length: u64) -> std::io::Result<()> {
+    if FileFacts::of(&file.metadata()?) != before || length != before.size {
+        return Err(std::io::Error::other("source changed during import"));
+    }
+    Ok(())
+}
+
+/// A completed acquisition. The blob store hashes and compresses bounded
+/// frames while this reader counts original bytes and remembers the prefix.
+struct Captured {
+    piece: polylogue_store::Piece,
+    head: Vec<u8>,
+}
+
+impl Captured {
+    fn read(store: &hashed_blobs::Store, reader: impl std::io::Read) -> Result<Self, EngineError> {
+        let mut reader = CaptureReader {
+            reader,
+            size: 0,
+            head: Vec::new(),
+        };
+        let hash = store.put_plain_checked::<hashed_blobs::Error>(
+            &mut reader,
+            polylogue_store::blobs::LEVEL,
+            || Ok(()),
+        )?;
+        Ok(Self {
+            piece: polylogue_store::Piece {
+                hash: polylogue_model::BlobHash(hash.0),
+                size: reader.size,
+                stored: polylogue_store::blobs::Stored::File {
+                    stored_size: store.stored_size(&hash)?,
+                },
+            },
+            head: reader.head,
+        })
+    }
+}
+
+struct CaptureReader<R> {
+    reader: R,
+    size: u64,
+    head: Vec<u8>,
+}
+
+impl<R: std::io::Read> std::io::Read for CaptureReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.reader.read(buf)?;
+        self.size += n as u64;
+        let take = n.min(64 - self.head.len());
+        self.head.extend_from_slice(&buf[..take]);
+        Ok(n)
     }
 }
 
 /// The bytes a zip file starts with.
 pub(super) const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
-
-/// Bytes of imported inputs held in memory and run through the pool at
-/// once. A member larger than this runs alone.
-pub(super) const IMPORT_GROUP: u64 = 1 << 30;
 
 /// The origin that reads a zip member, or the one that keeps it as bytes.
 pub(super) fn recognize_member(at: &Path, bytes: &[u8]) -> &'static OriginSpec {

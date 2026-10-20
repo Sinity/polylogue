@@ -213,6 +213,19 @@ impl StoredChain {
         Ok(Self { length, extents })
     }
 
+    /// A chain retained as one complete file blob, suitable for one verified
+    /// sequential reader. Inline and assembled chains use extent reads.
+    pub fn single_file_blob(&self) -> Option<BlobHash> {
+        let [extent] = self.extents.as_slice() else {
+            return None;
+        };
+        (extent.offset == 0
+            && extent.length == self.length
+            && extent.blob_offset == 0
+            && extent.inline.is_none())
+        .then_some(extent.blob)
+    }
+
     /// Bytes `[start, end)` of the chain. A range no extent covers is an
     /// error, never zeros.
     pub fn read_range(&self, store: &hashed_blobs::Store, start: u64, end: u64) -> Result<Vec<u8>> {
