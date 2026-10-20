@@ -12,7 +12,6 @@ pub mod writer;
 
 use crate::archive::{Archive, ArchiveLock, open_write};
 use crate::{ReadPool, Result};
-use polylogue_model::text::fold;
 use rusqlite::{Connection, params};
 use std::path::Path;
 
@@ -138,23 +137,13 @@ impl Fixture {
     }
 
     fn text(&self, body: &str, bit: i64) -> Result<i64> {
-        let hash = blake3::hash(body.as_bytes());
-        let packed = crate::encoding::pack_text(body)?;
-        self.index.execute(
-            "INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, ?3)
-             ON CONFLICT(hash) DO UPDATE SET indexed = indexed | ?3",
-            params![&hash.as_bytes()[..], packed, bit],
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.index,
+            rusqlite::TransactionBehavior::Immediate,
         )?;
-        let id: i64 = self.index.query_row(
-            "SELECT id FROM text WHERE hash = ?1",
-            [&hash.as_bytes()[..]],
-            |r| r.get(0),
-        )?;
-        let table = if bit == 2 { "output_fts" } else { "text_fts" };
-        self.index.execute(
-            &format!("INSERT INTO {table}(rowid, body) VALUES (?1, ?2)"),
-            params![id, fold(body)],
-        )?;
+        let id = crate::text_rows::intern(&tx, body, bit, None, false)?;
+        tx.commit()?;
+        crate::text_rows::index_pending(&self.index, i64::MAX)?;
         Ok(id)
     }
 

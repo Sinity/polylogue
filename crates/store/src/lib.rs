@@ -28,6 +28,7 @@ pub mod session_export;
 mod session_row;
 pub mod sinex_rows;
 pub mod sql_functions;
+mod text_rows;
 pub mod timing;
 pub mod tool_databases;
 pub mod user_writes;

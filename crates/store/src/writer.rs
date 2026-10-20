@@ -29,7 +29,7 @@ mod excluded;
 mod rows;
 mod search;
 
-use crate::encoding::{block_text, pack_block, pack_event, pack_text, unpack_block, unpack_text};
+use crate::encoding::{block_text, pack_block, pack_event, unpack_block, unpack_text};
 use batch::message_hash;
 pub use batch::{Batch, InFlight, InputKey, Observation, ParseStep, WriteReport};
 use bytes::*;
@@ -412,7 +412,7 @@ impl Inner {
             }
             // Whatever a flush reports written is also searchable.
             if !flushes.is_empty()
-                && let Err(e) = write_pending_search(&self.index, i64::MAX)
+                && let Err(e) = crate::text_rows::index_pending(&self.index, i64::MAX)
             {
                 self.report
                     .errors
