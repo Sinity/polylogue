@@ -27,7 +27,9 @@ Within store, `encoding.rs` owns packed row bodies and block-text separation;
 Fixtures use the same text-storage path as ingestion.
 
 `store/derive.rs` orders session derivations and records the source-change counter
-and rule version for each. Message costs use the same path, with the complete
+and rule version for each. A consumer's version includes its complete declared
+dependency rules, so an upstream rule change also refreshes unchanged sessions.
+Missing, cyclic or incorrectly ordered declarations fail before any rows change. Message costs use the same path, with the complete
 catalog digest and its published label in their version. Changing prices does
 not invalidate unrelated derivations. The work graph and its orphan cleanup
 live under `derive/work.rs`. Provider-reported costs remain recorded facts.

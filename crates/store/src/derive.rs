@@ -10,9 +10,10 @@
 //! sessions built from it, which come back from their inputs parsed again
 //! and are derived anew.
 
-use crate::Result;
+use crate::{Result, StoreError};
 use polylogue_model::Catalog;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use std::collections::BTreeMap;
 
 mod active_path;
 mod cost;
@@ -27,6 +28,7 @@ mod work;
 const SESSIONS_PER_TRANSACTION: usize = 200;
 
 /// One derivation over a session's stored rows.
+#[derive(Clone, Copy)]
 struct Derivation {
     /// Its key in `derive_state`; stable across versions.
     pub name: &'static str,
@@ -43,6 +45,7 @@ struct Derivation {
 
 /// Rule versions stay readable; catalog-derived rows also name the complete
 /// catalog content. The full digest avoids truncating catalog identity to an integer.
+#[derive(Clone, Copy)]
 enum Version {
     Rules(i64),
     Catalog(i64),
@@ -54,7 +57,7 @@ impl Version {
             Self::Rules(n) => n.to_string(),
             Self::Catalog(n) => {
                 let hash = blake3::hash(&serde_json::to_vec(catalog)?);
-                format!("catalog:{n}:{}:{hash}", catalog.version)
+                serde_json::to_string(&("catalog", n, &catalog.version, hash.to_hex().as_str()))?
             }
         })
     }
@@ -78,23 +81,100 @@ pub fn run(index: &mut Connection) -> Result<u64> {
 }
 
 fn run_with_catalog(index: &mut Connection, catalog: &Catalog) -> Result<u64> {
+    run_all(index, catalog, ALL)
+}
+
+fn run_all(index: &mut Connection, catalog: &Catalog, derivations: &[Derivation]) -> Result<u64> {
+    // Resolve the whole declaration before writing any rows. Dependency rule
+    // changes invalidate consumers even when their source session is unchanged.
+    let versions = versions(derivations, catalog)?;
     let mut done = 0;
-    for d in ALL {
-        debug_assert!(
-            d.after.iter().all(|a| ALL
-                .iter()
-                .take_while(|x| x.name != d.name)
-                .any(|x| x.name == *a)),
-            "derivation {} runs before what it reads",
-            d.name
-        );
-        done += run_one(index, d, catalog)?;
+    for (d, version) in derivations.iter().zip(&versions) {
+        done += run_one(index, d, version, catalog)?;
     }
     Ok(done)
 }
 
-fn run_one(index: &mut Connection, d: &Derivation, catalog: &Catalog) -> Result<u64> {
-    let version = d.version.resolve(catalog)?;
+fn versions(derivations: &[Derivation], catalog: &Catalog) -> Result<Vec<String>> {
+    let mut positions = BTreeMap::new();
+    for (i, d) in derivations.iter().enumerate() {
+        if positions.insert(d.name, i).is_some() {
+            return Err(StoreError::Invalid(format!(
+                "duplicate derivation {}",
+                d.name
+            )));
+        }
+    }
+    let mut marks = vec![0; derivations.len()];
+    for i in 0..derivations.len() {
+        check_dependencies(i, derivations, &positions, &mut marks)?;
+    }
+    let own = derivations
+        .iter()
+        .map(|d| d.version.resolve(catalog))
+        .collect::<Result<Vec<_>>>()?;
+    let mut ancestors: Vec<BTreeMap<&str, &str>> = Vec::new();
+    let mut versions = Vec::new();
+    for (i, d) in derivations.iter().enumerate() {
+        let mut dependencies = BTreeMap::new();
+        for after in d.after {
+            let j = positions[after];
+            if j >= i {
+                return Err(StoreError::Invalid(format!(
+                    "derivation {} must follow {after}",
+                    d.name
+                )));
+            }
+            dependencies.insert(*after, own[j].as_str());
+            dependencies.extend(ancestors[j].iter().map(|(k, v)| (*k, *v)));
+        }
+        // A flat transitive map avoids repeatedly embedding and escaping
+        // whole dependency trees. Sorted keys make declaration order irrelevant.
+        let version = if dependencies.is_empty() {
+            own[i].clone()
+        } else {
+            serde_json::to_string(&(&own[i], &dependencies))?
+        };
+        ancestors.push(dependencies);
+        versions.push(version);
+    }
+    Ok(versions)
+}
+
+fn check_dependencies(
+    i: usize,
+    derivations: &[Derivation],
+    positions: &BTreeMap<&str, usize>,
+    marks: &mut [u8],
+) -> Result<()> {
+    let d = &derivations[i];
+    match marks[i] {
+        1 => {
+            return Err(StoreError::Invalid(format!(
+                "derivation dependency cycle at {}",
+                d.name
+            )));
+        }
+        2 => return Ok(()),
+        _ => {}
+    }
+    marks[i] = 1;
+    for after in d.after {
+        let j = *positions.get(after).ok_or_else(|| {
+            StoreError::Invalid(format!("derivation {} depends on missing {after}", d.name))
+        })?;
+        check_dependencies(j, derivations, positions, marks)?;
+    }
+    marks[i] = 2;
+    Ok(())
+}
+
+fn run_one(
+    index: &mut Connection,
+    d: &Derivation,
+    version: &str,
+    catalog: &Catalog,
+) -> Result<u64> {
     let mut done = 0;
     loop {
         // Immediate, like the writer's and the search thread's: a deferred

@@ -189,3 +189,194 @@ fn session_read_and_export_preserve_every_recorded_fact() {
     assert_eq!(exported.messages.len(), 1);
     assert_eq!(exported.messages[0].session, exported.session.id);
 }
+
+fn versioned_rules(version: i64) -> [super::Derivation; 4] {
+    use super::{Derivation, Version};
+    [
+        Derivation {
+            name: "upstream",
+            version: Version::Rules(version),
+            after: &[],
+            run: if version == 1 {
+                |tx, pk, _| {
+                    tx.execute(
+                        "UPDATE session SET derived_title = 'before' WHERE pk = ?1",
+                        [pk],
+                    )?;
+                    Ok(())
+                }
+            } else {
+                |tx, pk, _| {
+                    tx.execute(
+                        "UPDATE session SET derived_title = 'after' WHERE pk = ?1",
+                        [pk],
+                    )?;
+                    Ok(())
+                }
+            },
+            finish: None,
+        },
+        Derivation {
+            name: "dependent",
+            version: Version::Rules(1),
+            after: &["upstream"],
+            run: |tx, pk, _| {
+                tx.execute(
+                    "UPDATE session SET repo = derived_title WHERE pk = ?1",
+                    [pk],
+                )?;
+                Ok(())
+            },
+            finish: None,
+        },
+        Derivation {
+            name: "unrelated",
+            version: Version::Rules(1),
+            after: &[],
+            run: |tx, pk, _| {
+                tx.execute(
+                    "UPDATE session SET repo_root = 'unrelated' WHERE pk = ?1",
+                    [pk],
+                )?;
+                Ok(())
+            },
+            finish: None,
+        },
+        super::cost::DERIVATION,
+    ]
+}
+
+fn synthetic_catalog(version: &str) -> polylogue_model::Catalog {
+    serde_json::from_value(json!({"version": version, "models": {}})).unwrap()
+}
+
+#[test]
+fn upstream_rule_change_invalidates_unchanged_dependents_only() {
+    let mut index = rusqlite::Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&index).unwrap();
+    index
+        .execute(
+            "INSERT INTO session(id, origin, native_id, kind, changed)
+        VALUES ('test:s', 'test', 's', 'main', 1)",
+            [],
+        )
+        .unwrap();
+    let catalog = synthetic_catalog("first");
+    assert_eq!(
+        super::run_all(&mut index, &catalog, &versioned_rules(1)).unwrap(),
+        4
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT repo FROM session", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "before"
+    );
+    assert_eq!(
+        super::run_all(&mut index, &catalog, &versioned_rules(2)).unwrap(),
+        2
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT repo FROM session", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "after"
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT changed FROM session", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        super::run_all(&mut index, &catalog, &versioned_rules(2)).unwrap(),
+        0
+    );
+    assert_eq!(
+        super::run_all(
+            &mut index,
+            &synthetic_catalog("second"),
+            &versioned_rules(2)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT repo_root FROM session", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "unrelated"
+    );
+}
+
+#[test]
+fn dependency_identity_includes_transitive_rules_and_ignores_list_order() {
+    let catalog = synthetic_catalog("same");
+    let mut first = versioned_rules(1).to_vec();
+    first.push(super::Derivation {
+        name: "grandchild",
+        version: super::Version::Rules(1),
+        after: &["upstream", "dependent"],
+        run: |_, _, _| Ok(()),
+        finish: None,
+    });
+    let original = super::versions(&first, &catalog).unwrap();
+    first[4].after = &["dependent", "upstream"];
+    assert_eq!(super::versions(&first, &catalog).unwrap(), original);
+    first[0].version = super::Version::Rules(2);
+    let changed = super::versions(&first, &catalog).unwrap();
+    for i in [0, 1, 4] {
+        assert_ne!(original[i], changed[i]);
+    }
+    for i in [2, 3] {
+        assert_eq!(original[i], changed[i]);
+    }
+}
+
+#[test]
+fn invalid_dependency_declarations_are_refused_before_any_rows_change() {
+    let mut missing = versioned_rules(1);
+    missing[1].after = &["missing"];
+    let mut cyclic = versioned_rules(1);
+    cyclic[0].after = &["dependent"];
+    let mut backward = versioned_rules(1);
+    backward.swap(0, 1);
+    let mut duplicate = versioned_rules(1);
+    duplicate[2].name = "upstream";
+    for (rules, reason) in [
+        (missing, "missing"),
+        (cyclic, "cycle"),
+        (backward, "must follow"),
+        (duplicate, "duplicate"),
+    ] {
+        let mut index = rusqlite::Connection::open_in_memory().unwrap();
+        crate::schema::create_index(&index).unwrap();
+        index
+            .execute(
+                "INSERT INTO session(id, origin, native_id, kind, changed)
+            VALUES ('test:s', 'test', 's', 'main', 1)",
+                [],
+            )
+            .unwrap();
+        let error = super::run_all(&mut index, &synthetic_catalog("same"), &rules).unwrap_err();
+        assert!(
+            matches!(error, crate::StoreError::Invalid(ref detail) if detail.contains(reason)),
+            "{error}"
+        );
+        assert_eq!(
+            index
+                .query_row("SELECT count(*) FROM derive_state", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            index
+                .query_row("SELECT derived_title FROM session", [], |r| r
+                    .get::<_, Option<String>>(0))
+                .unwrap(),
+            None
+        );
+    }
+}
