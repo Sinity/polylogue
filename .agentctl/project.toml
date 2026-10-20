@@ -9,6 +9,14 @@ command = ["env"]
 inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR"]
 unset = ["PYTHONPATH", "PYTHONHOME"]
 
+[operations.fast]
+description = "Formatting, crate boundaries and strict Clippy in the development queue"
+exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "fast"]
+pool = "normal"
+result = "exit"
+timeout_seconds = 1800
+cache = "none"
+
 [operations.check]
 description = "Formatting, crate boundaries and the full workspace test suite (cargo nextest)"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]

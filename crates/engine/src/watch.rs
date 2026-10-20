@@ -1,5 +1,5 @@
-//! Watch existing locations and advance missing-directory frontiers as they
-//! appear. A frontier is nonrecursive so unrelated state writes stay outside it.
+//! Watch source directories and the nearest existing parents of missing ones.
+//! Parents are watched nonrecursively to exclude unrelated state writes.
 use crate::{Config, LoopMsg, collect};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::BTreeMap;
@@ -43,12 +43,11 @@ impl Roots {
             self.watcher.watch(path, mode)?;
         }
         for path in self.active.keys() {
-            if !wanted.contains_key(path) {
-                if let Err(error) = self.watcher.unwatch(path) {
-                    if path.exists() {
-                        return Err(error);
-                    }
-                }
+            if !wanted.contains_key(path)
+                && let Err(error) = self.watcher.unwatch(path)
+                && path.exists()
+            {
+                return Err(error);
             }
         }
         self.active = wanted;
