@@ -38,7 +38,10 @@ Claude inline media stays in the raw payload and is linked to retained blobs.
 new envelope before acknowledgement. Exact envelope bytes identify retries: an
 older retry is a no-op; a new observation, including a reversion, carries new
 observation provenance. Existing single-envelope spools convert on the next
-distinct capture. Ambiguous partial tails are preserved and refuse appends.
+distinct capture. An interrupted append can complete only when every existing
+tail byte matches the submitted frame prefix; it appends only the missing
+suffix. Constant-only prefixes contain no observation identity. Differing or
+otherwise ambiguous tails are preserved and refuse appends.
 Appending scans headers for identity without rereading other payloads; the
 parser verifies every interpreted payload. Text excision recomputes active
 digests while preserving observed digests and source offsets.

@@ -26,12 +26,15 @@ pub(super) fn publish(path: &Path, bytes: &[u8]) -> io::Result<bool> {
         .open(lock_path)?;
     lock.lock()?;
     let mut file = open(path)?;
+    let submitted = Header::of(bytes);
+    let encoded = submitted.encode();
     let mut prefix = vec![0; MAGIC.len()];
     let read = file.read(&mut prefix)?;
     if read == 0 {
         file.write_all(MAGIC)?;
     } else if read < MAGIC.len() && MAGIC.starts_with(&prefix[..read]) {
-        return Err(invalid("incomplete snapshot log prefix"));
+        complete_tail(&mut file, 0, &[MAGIC, &encoded, bytes])?;
+        return synced(&file, dir);
     } else if read > 0 && &prefix[..read] != MAGIC {
         file.rewind()?;
         let mut old = Vec::new();
@@ -46,7 +49,6 @@ pub(super) fn publish(path: &Path, bytes: &[u8]) -> io::Result<bool> {
         write_durable(path, &converted)?;
         file = open(path)?;
     }
-    let submitted = Header::of(bytes);
     let length = file.metadata()?.len();
     let mut position = MAGIC.len() as u64;
     while position < length {
@@ -55,7 +57,8 @@ pub(super) fn publish(path: &Path, bytes: &[u8]) -> io::Result<bool> {
         match file.read_exact(&mut header) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
-                return Err(invalid("incomplete snapshot header"));
+                complete_tail(&mut file, position, &[&encoded, bytes])?;
+                return synced(&file, dir);
             }
             Err(error) => return Err(error),
         }
@@ -65,7 +68,8 @@ pub(super) fn publish(path: &Path, bytes: &[u8]) -> io::Result<bool> {
             .and_then(|start| start.checked_add(header.length))
             .ok_or_else(|| invalid("snapshot range overflow"))?;
         if end > length {
-            return Err(invalid("incomplete snapshot payload"));
+            complete_tail(&mut file, position, &[&encoded, bytes])?;
+            return synced(&file, dir);
         }
         if header == submitted {
             let mut previous = vec![0; bytes.len()];
@@ -73,13 +77,53 @@ pub(super) fn publish(path: &Path, bytes: &[u8]) -> io::Result<bool> {
             if previous != bytes {
                 return Err(invalid("snapshot digest differs from stored bytes"));
             }
+            synced(&file, dir)?;
             return Ok(false);
         }
         position = end;
     }
     file.seek(SeekFrom::End(0))?;
-    file.write_all(&submitted.encode())?;
+    file.write_all(&encoded)?;
     file.write_all(bytes)?;
+    synced(&file, dir)
+}
+
+/// A tail can contain only common framing, so equality of all existing bytes
+/// is the evidence available. Compare before writing and append only a suffix.
+fn complete_tail(file: &mut File, start: u64, parts: &[&[u8]]) -> io::Result<()> {
+    let length = file
+        .metadata()?
+        .len()
+        .checked_sub(start)
+        .ok_or_else(|| invalid("snapshot tail starts beyond EOF"))?;
+    let expected: usize = parts.iter().map(|part| part.len()).sum();
+    if length > expected as u64 {
+        return Err(invalid("existing tail exceeds submitted frame"));
+    }
+    file.seek(SeekFrom::Start(start))?;
+    let mut remaining = length as usize;
+    let mut buffer = [0; 8192];
+    for part in parts {
+        let take = remaining.min(part.len());
+        for chunk in part[..take].chunks(buffer.len()) {
+            file.read_exact(&mut buffer[..chunk.len()])?;
+            if &buffer[..chunk.len()] != chunk {
+                return Err(invalid("existing tail differs from submitted frame"));
+            }
+        }
+        remaining -= take;
+    }
+    file.seek(SeekFrom::End(0))?;
+    let mut skip = length as usize;
+    for part in parts {
+        let before = skip.min(part.len());
+        skip -= before;
+        file.write_all(&part[before..])?;
+    }
+    Ok(())
+}
+
+fn synced(file: &File, dir: &Path) -> io::Result<bool> {
     file.sync_all()?;
     File::open(dir)?.sync_all()?;
     Ok(true)
