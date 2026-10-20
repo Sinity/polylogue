@@ -16,7 +16,7 @@
 // dedicated manifest with browser_specific_settings.gecko populated.
 
 import { execFileSync } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -98,10 +98,11 @@ function buildFirefoxManifest(manifest) {
 }
 
 function copyTree(src, dst) {
-  // Use cp -a to preserve permissions; portable across CI runners that
-  // ship Node + coreutils (Linux/macOS). Windows is not supported as a
-  // build host for this artifact.
-  execFileSync("cp", ["-a", `${src}/.`, dst], { stdio: "inherit" });
+  // Exclude development caches before staging, not only when packing.
+  cpSync(src, dst, { recursive: true, preserveTimestamps: true,
+    filter: (path) => !relative(src, path).split(/[\\/]/).some(part => ARCHIVE_EXCLUDE_DIRS.has(part))
+      && !ARCHIVE_EXCLUDE_FILES.has(relative(src, path)),
+  });
 }
 
 const ARCHIVE_EXCLUDE_DIRS = new Set([
