@@ -10,7 +10,7 @@ started inside a queued job keeps that job occupied after the command exits.
 | Check | Command | When | Typical time |
 | --- | --- | --- | --- |
 | Focused tests | `agentctl job start polylogue focused --workspace <worktree> -- -p <crate> <filter>` | while editing | seconds |
-| Fast check | `agentctl job start polylogue exec --workspace <worktree> -- cargo run -p xtask -- fast` | before pushing a change | 2-16 s warm, minutes in a fresh worktree |
+| Fast check | `agentctl job start polylogue fast --workspace <worktree>` | before pushing a change | 2-16 s warm, minutes in a fresh worktree |
 | Full suite | `agentctl job start polylogue check --workspace <worktree>` | a batch of merged work | 30 s warm, 2-3 min after an edit, 9 min cold |
 | Changed packages | `cargo run -p xtask -- test --changed` | before pushing a focused change | depends on the change |
 | End-to-end scenarios | `cargo run -p xtask -- scenarios` | after daemon, CLI or MCP changes | about a minute warm |
@@ -127,15 +127,17 @@ and records results as the full suite. Raw `cargo test` or `cargo nextest`
 inherits the caller's temporary directory; filesystem sync costs and long
 socket paths can then change the test behavior.
 
-The `focused` operation requires a selection and uses the normal development
-queue. Full checks and corpus benchmarks use the bulk queue, so they do not
-consume every slot for short development checks. A new target or dependency
+The `fast` operation uses the normal development queue for formatting,
+boundaries and strict Clippy. The `focused` operation requires a selection
+and uses the same queue. Full checks and corpus benchmarks use the bulk
+queue, so they do not consume every slot for short development checks. A new target or dependency
 profile may still need compilation; the stage times show that separately.
 
 ## Merging
 
-A PR merges as soon as it is ready; nothing waits on a hosted check. Run the
-full suite on batches of merged work and fix what it finds in follow-up PRs.
+Follow the forge's required review statuses when merging. There is no hosted
+test CI. Run the full suite on batches of merged work and fix what it finds
+in follow-up PRs.
 
 ## Timing in tests
 
