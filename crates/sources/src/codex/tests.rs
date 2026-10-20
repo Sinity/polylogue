@@ -588,3 +588,17 @@ fn rate_limits_read_as_windows_classified_by_length_not_name() {
     assert_eq!(w.resets_at.map(|t| t.unix_ms()), Some(1_790_000_060_000));
     assert_eq!(w.used_percent, Some(1.0));
 }
+
+#[test]
+fn absent_quota_facts_remain_absent_and_extreme_resets_do_not_overflow() {
+    assert!(quota(&json!({}), None).is_none());
+    for field in ["resets_at", "resets_in_seconds"] {
+        let q = json!({"primary": {"window_minutes": 300, field: i64::MAX}});
+        let reading = quota(&q, polylogue_model::Timestamp::from_unix_ms(1000)).unwrap();
+        let window = &reading.windows[0];
+        assert_eq!(window.used_percent, None);
+        assert_eq!(window.resets_at, None);
+        assert_eq!(reading.plan, None);
+        assert_eq!(reading.credits, None);
+    }
+}

@@ -43,6 +43,8 @@ pub struct Step {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
+    #[error("a document must be parsed from its first byte, got offset {0}")]
+    NotWhole(u64),
     #[error(transparent)]
     Counts(#[from] CountMismatch),
     #[error("carried state is unreadable: {0}")]
@@ -163,9 +165,14 @@ impl Parse {
         match self {
             Parse::Lines(p) => p.step(carry, bytes, base),
             Parse::Document(d) => {
-                debug_assert_eq!(base, 0, "a document is parsed whole");
+                if base != 0 {
+                    return Err(ParseError::NotWhole(base));
+                }
                 Ok((run_document(&**d, bytes)?, Json::Null))
             }
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

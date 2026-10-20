@@ -749,7 +749,8 @@ fn quota(q: &Json) -> Option<QuotaReading> {
             resets_at: q
                 .get("resetsAt")
                 .and_then(Json::as_i64)
-                .and_then(|s| Timestamp::from_unix_ms(s * 1000)),
+                .and_then(|s| s.checked_mul(1000))
+                .and_then(Timestamp::from_unix_ms),
             status,
         }],
         ..QuotaReading::default()

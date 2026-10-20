@@ -69,10 +69,10 @@ fn quota(q: &Json, at: Option<polylogue_model::Timestamp>) -> Option<QuotaReadin
             let resets_at = w
                 .get("resets_at")
                 .and_then(Json::as_i64)
-                .map(|s| s * 1000)
+                .and_then(|s| s.checked_mul(1000))
                 .or_else(|| {
                     let after = w.get("resets_in_seconds").and_then(Json::as_i64)?;
-                    Some(at?.unix_ms() + after * 1000)
+                    at?.unix_ms().checked_add(after.checked_mul(1000)?)
                 })
                 .and_then(polylogue_model::Timestamp::from_unix_ms);
             let used = w.get("used_percent").and_then(|u| {
