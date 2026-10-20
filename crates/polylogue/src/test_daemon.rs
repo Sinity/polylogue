@@ -13,10 +13,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct TestDaemon {
-    pub _dir: tempfile::TempDir,
     pub home: PathBuf,
     pub daemon: Arc<Daemon>,
-    _lock: polylogue_store::ArchiveLock,
+    server: server::Server,
+    runtime: service::Runtime,
+    // Removed only after both owners have joined their workers.
+    pub _dir: tempfile::TempDir,
 }
 
 /// A daemon whose loop has parsed one Claude Code session, `claude-code:s1`,
@@ -35,15 +37,15 @@ pub fn start(text: &str) -> TestDaemon {
     config.home = home.clone();
     config.tool_dirs.clear();
     config.workers = 2;
-    let (daemon, lock) = service::start(&dir.path().join("archive"), config).unwrap();
-    let listener = server::bind(&daemon).unwrap();
-    let d = Arc::clone(&daemon);
-    std::thread::spawn(move || server::listen(&listener, &d));
+    let runtime = service::start(&dir.path().join("archive"), config).unwrap();
+    let daemon = Arc::clone(&runtime.daemon);
+    let server = server::Server::start(Arc::clone(&daemon)).unwrap();
     let world = TestDaemon {
         _dir: dir,
         home,
         daemon,
-        _lock: lock,
+        server,
+        runtime,
     };
     world.wait_for(|data| {
         data["store"]["messages"].as_u64() == Some(1)
@@ -82,5 +84,16 @@ impl TestDaemon {
             &self.daemon,
         );
         assert!(matches!(r, Response::Ok { .. }), "{r:?}");
+    }
+}
+
+impl Drop for TestDaemon {
+    fn drop(&mut self) {
+        if let Err(error) = self.server.shutdown() {
+            eprintln!("test daemon socket: {error}");
+        }
+        if let Err(error) = self.runtime.shutdown() {
+            eprintln!("test daemon runtime: {error}");
+        }
     }
 }

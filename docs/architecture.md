@@ -42,6 +42,20 @@ use the same application operations. Signal evaluation and embedding providers
 have their own modules. This is an internal boundary in the application crate,
 not another service or crate.
 
+`service::Runtime` owns the convergence and signal workers and the archive
+lock. Socket and HTTP servers own their listeners and client work and stop
+before the application runtime. Shutdown wakes signal timers, closes transport
+admission and joins workers before releasing the writer lock. Unfinished
+socket input or response writes fail when peers close; already admitted store
+writes finish before the writer joins. Retained writer-sender handles refuse
+new work after shutdown. External `Arc<Daemon>` handles can still retain read-pool
+connections after workers stop; runtime shutdown does not reclaim those handles.
+
+The in-process `TestDaemon` follows that order on ordinary drop and panic,
+before removing its temporary archive. This does not establish cleanup after
+forcibly killing a parent test process, or a bound on an idle daemon's byte
+reads; those remain separate work in `plnext-xni.27`.
+
 `commands.rs` declares command arguments, capabilities, printers and local
 output actions. CLI, MCP and HTTP build their surfaces from that table.
 `daemon/measure.rs` declares measurements and their supported metrics once.

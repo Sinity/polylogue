@@ -9,8 +9,10 @@ use polylogue_store::user_writes::{self as user_writes, machine_id};
 use polylogue_store::{
     Archive, Delivery, ReadPool, StoreError, UserRequest, UserWrite, WriterSender,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 /// What request handlers share.
@@ -27,6 +29,7 @@ pub struct Daemon {
     started: Instant,
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,
+    stopping: AtomicBool,
 }
 
 pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
@@ -124,6 +127,12 @@ pub(crate) fn ok(data: impl serde::Serialize) -> Response {
 /// Answers one request. Reads use the read pool; imports go to the loop
 /// thread, which owns the writer.
 pub fn handle(request: Request, d: &Daemon) -> Response {
+    if d.stopping.load(Ordering::Acquire) {
+        return error(
+            "daemon_stopping",
+            "the daemon has stopped accepting requests",
+        );
+    }
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(e) => return error("store", e),
@@ -490,13 +499,60 @@ fn export(
     ok(serde_json::json!({ "format": format, "content": String::from_utf8_lossy(&out) }))
 }
 
-/// Opens the archive at `root`, starts its convergence loop on a thread of
-/// its own and returns the shared daemon state. The lock is held for as
-/// long as the returned value lives.
-pub fn start(
-    root: &std::path::Path,
-    config: Config,
-) -> std::io::Result<(Arc<Daemon>, polylogue_store::ArchiveLock)> {
+/// Owns the application workers and writer lock. Transports must stop
+/// before this runtime; external daemon references cannot keep workers alive.
+pub struct Runtime {
+    pub daemon: Arc<Daemon>,
+    signals_stop: Option<Sender<()>>,
+    signals: Option<JoinHandle<()>>,
+    engine: Option<JoinHandle<std::io::Result<()>>>,
+    lock: Option<polylogue_store::ArchiveLock>,
+}
+
+impl Runtime {
+    pub fn shutdown(&mut self) -> std::io::Result<()> {
+        self.daemon.stopping.store(true, Ordering::Release);
+        if let Some(stop) = self.signals_stop.take() {
+            let _ = stop.send(());
+        }
+        let mut failure = None;
+        if let Some(signals) = self.signals.take()
+            && signals.join().is_err()
+        {
+            failure = Some(std::io::Error::other("signal worker panicked"));
+        }
+        if let Ok(tx) = self.daemon.loop_tx.lock() {
+            let _ = tx.send(LoopMsg::Stop);
+        }
+        if let Some(engine) = self.engine.take() {
+            match engine.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    failure.get_or_insert(error);
+                }
+                Err(_) => {
+                    failure.get_or_insert_with(|| {
+                        std::io::Error::other("convergence worker panicked")
+                    });
+                }
+            }
+        }
+        self.lock.take();
+        failure.map_or(Ok(()), Err)
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown() {
+            eprintln!("polylogue: shutdown: {error}");
+        }
+    }
+}
+
+/// Opens the archive and starts owned application workers. Startup errors
+/// join any workers already started before releasing the archive lock.
+pub fn start(root: &std::path::Path, config: Config) -> std::io::Result<Runtime> {
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
     let (archive, lock) = Archive::open_or_create(root).map_err(|e| to_io(&e))?;
     let paths = config.clone();
@@ -518,21 +574,42 @@ pub fn start(
         status: Arc::clone(&status),
         started: Instant::now(),
         signals: Mutex::new(serde_json::Value::Null),
+        stopping: AtomicBool::new(false),
     });
-    {
-        let d = Arc::clone(&daemon);
+    let mut runtime = Runtime {
+        daemon,
+        signals_stop: None,
+        signals: None,
+        engine: None,
+        lock: Some(lock),
+    };
+    let (ready, wait) = sync_channel(1);
+    runtime.engine = Some(
+        std::thread::Builder::new()
+            .name("polylogue-loop".into())
+            .spawn(move || {
+                let started = ready.clone();
+                let result = engine.run(tx, &rx, &status, || {
+                    let _ = started.send(Ok(()));
+                });
+                if let Err(error) = &result {
+                    let _ = ready.try_send(Err(error.to_string()));
+                }
+                result.map_err(|error| std::io::Error::other(error.to_string()))
+            })?,
+    );
+    wait.recv()
+        .map_err(|_| std::io::Error::other("convergence worker exited during startup"))?
+        .map_err(std::io::Error::other)?;
+    let (stop, stopped) = channel();
+    runtime.signals_stop = Some(stop);
+    let daemon = Arc::clone(&runtime.daemon);
+    runtime.signals = Some(
         std::thread::Builder::new()
             .name("polylogue-signals".into())
-            .spawn(move || crate::signals::run(&d))?;
-    }
-    std::thread::Builder::new()
-        .name("polylogue-loop".into())
-        .spawn(move || {
-            if let Err(e) = engine.run(tx, &rx, &status) {
-                eprintln!("polylogue: the convergence loop stopped: {e}");
-            }
-        })?;
-    Ok((daemon, lock))
+            .spawn(move || crate::signals::run(&daemon, &stopped))?,
+    );
+    Ok(runtime)
 }
 
 #[cfg(test)]

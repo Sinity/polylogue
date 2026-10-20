@@ -21,6 +21,7 @@ use polylogue_model::{
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 mod batch;
@@ -38,6 +39,7 @@ use rows::*;
 use search::*;
 
 enum Msg {
+    Stop,
     Batch(Box<Batch>),
     Flush(SyncSender<WriteReport>),
     /// A note, delivery or setting; answered once committed.
@@ -59,8 +61,34 @@ enum Msg {
 /// Handle to the writer thread. Dropping it stops the thread after the
 /// batches already sent are written.
 pub struct Writer {
-    tx: Option<SyncSender<Msg>>,
+    tx: Option<WriterQueue>,
     handle: Option<JoinHandle<()>>,
+}
+
+/// Serializes admission with shutdown. Once the stop message is queued,
+/// every retained sender refuses new work rather than acknowledging a
+/// message that the receiver will never process.
+#[derive(Clone)]
+struct WriterQueue(Arc<Mutex<Option<SyncSender<Msg>>>>);
+
+impl WriterQueue {
+    fn send(&self, message: Msg) -> std::result::Result<(), ()> {
+        self.0
+            .lock()
+            .map_err(|_| ())?
+            .as_ref()
+            .ok_or(())?
+            .send(message)
+            .map_err(|_| ())
+    }
+
+    fn stop(&self) {
+        if let Ok(mut admission) = self.0.lock()
+            && let Some(sender) = admission.take()
+        {
+            let _ = sender.send(Msg::Stop);
+        }
+    }
 }
 
 /// Rows written per transaction before committing; a transaction also
@@ -186,7 +214,7 @@ impl Writer {
             .name("polylogue-writer".into())
             .spawn(move || inner.run(&rx))?;
         Ok(Self {
-            tx: Some(tx),
+            tx: Some(WriterQueue(Arc::new(Mutex::new(Some(tx))))),
             handle: Some(handle),
         })
     }
@@ -252,7 +280,9 @@ impl Writer {
 
 impl Drop for Writer {
     fn drop(&mut self) {
-        self.tx.take();
+        if let Some(queue) = self.tx.take() {
+            queue.stop();
+        }
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
@@ -261,7 +291,7 @@ impl Drop for Writer {
 
 /// A clonable sender into the writer, for worker threads.
 #[derive(Clone)]
-pub struct WriterSender(SyncSender<Msg>);
+pub struct WriterSender(WriterQueue);
 
 impl WriterSender {
     pub fn send(&self, batch: Batch) -> Result<()> {
@@ -284,7 +314,7 @@ impl WriterSender {
     }
 }
 
-fn derive_via(tx: &SyncSender<Msg>) -> Result<u64> {
+fn derive_via(tx: &WriterQueue) -> Result<u64> {
     let (reply, wait) = sync_channel(1);
     tx.send(Msg::Derive(reply))
         .map_err(|_| StoreError::WriterGone)?;
@@ -292,7 +322,7 @@ fn derive_via(tx: &SyncSender<Msg>) -> Result<u64> {
 }
 
 fn user_via(
-    tx: &SyncSender<Msg>,
+    tx: &WriterQueue,
     request: crate::user_writes::UserRequest,
 ) -> Result<crate::user_writes::UserOutcome> {
     let (reply, wait) = sync_channel(1);
@@ -324,11 +354,16 @@ impl Inner {
         let mut excisions = Vec::new();
         let mut derives = Vec::new();
         while let Ok(first) = rx.recv() {
+            let mut stopping = false;
             let mut group = Vec::new();
             let mut rows = 0;
             let mut bytes = 0;
             let mut push =
                 |m: Msg, group: &mut Vec<Box<Batch>>, rows: &mut usize, bytes: &mut u64| match m {
+                    Msg::Stop => {
+                        stopping = true;
+                        false
+                    }
                     Msg::Batch(b) => {
                         *rows += weight(&b);
                         *bytes += input_bytes(&b);
@@ -420,6 +455,9 @@ impl Inner {
             }
             for reply in flushes.drain(..) {
                 let _ = reply.send(std::mem::take(&mut self.report));
+            }
+            if stopping {
+                break;
             }
         }
         let _ = self.settle();

@@ -885,6 +885,7 @@ impl Engine {
         tx: Sender<LoopMsg>,
         rx: &Receiver<LoopMsg>,
         status: &Arc<Mutex<Pass>>,
+        ready: impl FnOnce(),
     ) -> Result<(), EngineError> {
         use notify::Watcher as _;
         let wake = tx.clone();
@@ -898,6 +899,7 @@ impl Engine {
             watcher.watch(&root, notify::RecursiveMode::Recursive)?;
         }
         drop(tx);
+        ready();
         loop {
             match self.converge() {
                 Ok(pass) => {
