@@ -18,7 +18,7 @@
 //! interrupts become plain notices. Every handoff is a `delivery` record,
 //! so what fired survives restarts and index rebuilds.
 
-use crate::daemon::server::{Daemon, now_ms};
+use crate::daemon::service::{Daemon, now_ms};
 use polylogue_model::{Author, Note, NoteKind};
 use polylogue_store::{Delivery, UserRequest, UserWrite};
 use serde_json::{Value, json};

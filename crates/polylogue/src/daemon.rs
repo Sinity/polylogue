@@ -7,5 +7,6 @@ pub mod measure;
 pub mod query;
 pub mod request;
 pub mod server;
+pub mod service;
 
 pub use request::{Request, Response};

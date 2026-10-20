@@ -15,7 +15,7 @@
 //! `--yes` after a preview.
 
 use crate::daemon::Response;
-use crate::daemon::server::{Daemon, error, now_ms, ok, store_error};
+use crate::daemon::service::{Daemon, error, now_ms, ok, store_error};
 use polylogue_store::user_writes::machine_id;
 use polylogue_store::vectors::{Vector, Vectors};
 use polylogue_store::{Archive, Reader};

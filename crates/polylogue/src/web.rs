@@ -8,7 +8,7 @@ pub mod access;
 mod api;
 pub mod pages;
 
-use crate::daemon::server::{Daemon, handle};
+use crate::daemon::service::{Daemon, handle};
 use crate::daemon::{Request, Response};
 use axum::Router;
 use axum::extract::{Path as UrlPath, Query, Request as HttpRequest, State};
