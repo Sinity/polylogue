@@ -308,9 +308,20 @@ pub fn install(path: &Path, install: bool) -> std::io::Result<()> {
     text.push('\n');
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".settings.json.polylogue-{}", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
+    use std::os::unix::fs::PermissionsExt;
+    let permissions = match std::fs::metadata(path) {
+        Ok(meta) => meta.permissions(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::Permissions::from_mode(0o600)
+        }
+        Err(e) => return Err(e),
+    };
+    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
+        .write(|file| {
+            file.set_permissions(permissions)?;
+            file.write_all(text.as_bytes())
+        })
+        .map_err(Into::into)
 }
 
 #[cfg(test)]

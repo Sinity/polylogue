@@ -69,16 +69,11 @@ pub fn publish(dir: &Path, token: &str, port: u16) -> io::Result<()> {
 }
 
 fn write_private(path: &Path, text: &str) -> io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    f.write_all(text.as_bytes())?;
-    f.sync_all()?;
-    fs::rename(tmp, path)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true).mode(0o600);
+    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
+        .write_with_options(|file| file.write_all(text.as_bytes()), options)
+        .map_err(Into::into)
 }
 
 /// Whether a `Host` header names this listener.

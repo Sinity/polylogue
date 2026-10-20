@@ -66,3 +66,28 @@ fn install_writes_a_file_and_refuses_symlinks() {
     std::os::unix::fs::symlink(&path, &link).unwrap();
     assert!(install(&link, true).is_err());
 }
+
+#[test]
+fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let other = dir.path().join("other.json");
+    std::fs::write(&path, r#"{"model":"example"}"#).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    std::fs::write(&other, b"unchanged").unwrap();
+    let stale = dir
+        .path()
+        .join(format!(".settings.json.polylogue-{}", std::process::id()));
+    std::os::unix::fs::symlink(&other, stale).unwrap();
+    install(&path, true).unwrap();
+    assert_eq!(std::fs::read(&other).unwrap(), b"unchanged");
+    assert!(!path.is_symlink());
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    let settings: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(settings["model"], "example");
+    assert!(settings["hooks"]["SessionStart"].is_array());
+}

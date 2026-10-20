@@ -16,6 +16,11 @@ in sources; SQLite access stays in store. Rebuilding a derived index must not
 replace the retained observations with a claim that a provider file is still
 available.
 
+Small spool revisions, hook settings and reader credentials are replaced using
+`atomicwrites`, which owns temporary-file cleanup, file synchronization,
+rename and directory synchronization. Each caller still owns its path and
+permissions; hook installation refuses managed symlinks.
+
 ## Storage and queries
 
 `polylogue-store` owns the archive, index, embeddings and blob access. One

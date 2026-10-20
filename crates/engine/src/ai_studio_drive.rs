@@ -12,6 +12,7 @@
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const SETTING: &str = "drive.ai-studio";
@@ -238,9 +239,9 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
 
 /// Written whole or not at all, so the loop never stores half a revision.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
-    let tmp = path.with_extension("json.part");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)?;
+    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
+        .write(|file| file.write_all(bytes))
+        .map_err(std::io::Error::from)?;
     Ok(())
 }
 
