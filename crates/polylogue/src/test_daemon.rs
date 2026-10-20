@@ -2,8 +2,11 @@
 //! its loop reads only the temporary home, and its socket is served on a
 //! thread of its own.
 
-use crate::daemon::server::{self, Daemon, handle};
 use crate::daemon::{Request, Response};
+use crate::daemon::{
+    server,
+    service::{self, Daemon, handle},
+};
 use polylogue_engine::Config;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,7 +35,7 @@ pub fn start(text: &str) -> TestDaemon {
     config.home = home.clone();
     config.tool_dirs.clear();
     config.workers = 2;
-    let (daemon, lock) = server::start(&dir.path().join("archive"), config).unwrap();
+    let (daemon, lock) = service::start(&dir.path().join("archive"), config).unwrap();
     let listener = server::bind(&daemon).unwrap();
     let d = Arc::clone(&daemon);
     std::thread::spawn(move || server::listen(&listener, &d));

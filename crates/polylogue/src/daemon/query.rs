@@ -90,32 +90,34 @@ pub type NearFn<'a> = dyn Fn(&str) -> Result<String, String> + 'a;
 
 /// The current saved queries by name (`saved_query` notes, newest
 /// revision, not withdrawn), for `query:NAME`.
-fn saved_queries(reader: &Reader<'_>) -> std::collections::BTreeMap<String, String> {
+fn saved_queries(
+    reader: &Reader<'_>,
+) -> Result<std::collections::BTreeMap<String, String>, Failure> {
     let sql = format!(
         "SELECT n.key AS k, n.value AS v FROM a.note n WHERE n.kind = 'saved_query' \
          AND n.key IS NOT NULL AND n.value IS NOT NULL AND {} AND NOT {}",
         polylogue_query::fields::current_note("n"),
         polylogue_query::fields::withdrawn_note("n"),
     );
-    reader
-        .query(&sql, &[])
-        .unwrap_or_default()
+    Ok(reader
+        .query(&sql, &[])?
         .iter()
         .filter_map(|r| Some((r["k"].as_str()?.to_owned(), r["v"].as_str()?.to_owned())))
-        .collect()
+        .collect())
 }
 
 /// Kept results by ID, with the shape of their stored rows, for
 /// `result:<id>`.
-fn kept_results(reader: &Reader<'_>) -> std::collections::BTreeMap<String, polylogue_query::Kept> {
-    reader
+fn kept_results(
+    reader: &Reader<'_>,
+) -> Result<std::collections::BTreeMap<String, polylogue_query::Kept>, Failure> {
+    Ok(reader
         .query(
             "SELECT id, json_extract(rows_json, '$.unit') AS unit, \
              json_extract(rows_json, '$.columns') AS columns, \
              json_extract(rows_json, '$.match_columns') AS match_columns FROM a.kept_result",
             &[],
-        )
-        .unwrap_or_default()
+        )?
         .iter()
         .filter_map(|r| {
             let parse = |k: &str| -> Vec<polylogue_query::Column> {
@@ -132,7 +134,7 @@ fn kept_results(reader: &Reader<'_>) -> std::collections::BTreeMap<String, polyl
                 },
             ))
         })
-        .collect()
+        .collect())
 }
 
 /// Runs a query in full for keeping: its rows, and, when it has one
@@ -149,8 +151,8 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         page_size: None,
         embeddings: false,
         self_session: ask.session,
-        saved: saved_queries(reader),
-        kept: kept_results(reader),
+        saved: saved_queries(reader)?,
+        kept: kept_results(reader)?,
         fields: ask.fields.to_vec(),
     };
     let program = polylogue_query::compile(ask.text, &opts)?;
@@ -209,8 +211,8 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         page_size: ask.page_size,
         embeddings: ask.embeddings,
         self_session: ask.session,
-        saved: saved_queries(reader),
-        kept: kept_results(reader),
+        saved: saved_queries(reader)?,
+        kept: kept_results(reader)?,
         fields: ask.fields.to_vec(),
     };
     let mut program = polylogue_query::compile(ask.text, &opts)?;

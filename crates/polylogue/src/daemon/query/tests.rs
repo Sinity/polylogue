@@ -1040,3 +1040,30 @@ fn the_work_unit_reads_the_derived_graph() {
 
 mod live;
 mod spec_examples;
+
+#[test]
+fn failed_saved_result_storage_is_not_an_empty_catalog() {
+    let mut world = morrow();
+    world
+        .fx
+        .kept_result("broken", "sessions", "not JSON")
+        .unwrap();
+    let failure = run_q(&world, ask("sessions")).unwrap_err();
+    assert_eq!(failure.kind, "store");
+    assert!(failure.message.contains("malformed JSON"));
+    let pool = world.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let failure = keep(&reader, ask("sessions")).unwrap_err();
+    assert_eq!(failure.kind, "store");
+}
+
+#[test]
+fn absent_saved_queries_and_results_are_a_valid_empty_catalog() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(saved_queries(&reader).unwrap().is_empty());
+    assert!(kept_results(&reader).unwrap().is_empty());
+    assert_eq!(run(&reader, ask("sessions")).unwrap()["count"], 0);
+}

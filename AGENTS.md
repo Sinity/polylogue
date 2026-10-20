@@ -8,6 +8,8 @@ is kept for reference; the rewrite uses its own archive.
 
 ## Structure
 
+[docs/architecture.md](docs/architecture.md) describes current module boundaries.
+
 - `crates/model`: identity, value and outcome types; no I/O.
 - `crates/sources`: one declaration and one parser per origin on the shared
   framework (`origin.rs`, `parse.rs`, `document.rs`).
@@ -15,8 +17,9 @@ is kept for reference; the rewrite uses its own archive.
 - `crates/engine`: the convergence loop and the parse pool.
 - `crates/query`: the query language and its compiler to SQL.
 - `crates/render`: one block stream in four formats.
-- `crates/polylogue`: configuration, the daemon, CLI, MCP, web reader and
-  browser host. Clients get typed store handles, never raw connections.
+- `crates/polylogue`: application operations (`daemon/service.rs`), socket
+  framing (`daemon/server.rs`), CLI, MCP, web reader and browser host.
+  Clients get typed store handles, never raw connections.
   Every command is one entry in the command table (`commands.rs`); the CLI,
   MCP tools and HTTP API are built from it, so a new operation is a table
   entry, not code on each surface.
