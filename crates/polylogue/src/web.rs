@@ -248,11 +248,7 @@ pub async fn ask(web: &Arc<Web>, request: Request) -> Response {
     let d = Arc::clone(&web.daemon);
     tokio::task::spawn_blocking(move || handle(request, &d))
         .await
-        .unwrap_or_else(|e| Response::Error {
-            kind: "internal".into(),
-            message: e.to_string(),
-            detail: None,
-        })
+        .unwrap_or_else(|error| crate::daemon::service::error("internal", error))
 }
 
 /// A response's data with the archive directory's path taken out.

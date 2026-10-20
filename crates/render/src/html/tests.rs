@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Format, tests::conversation};
+use crate::tests::conversation;
 
 #[test]
 fn document_and_reader_keep_the_selected_view_and_mask_credentials() {
@@ -12,7 +12,7 @@ fn document_and_reader_keep_the_selected_view_and_mask_credentials() {
         (View::Actions, false, false, false, true),
     ] {
         let mut document = Vec::new();
-        crate::render(&items, Format::Html, view, &mut document).unwrap();
+        crate::html::document(&items, view, &mut document).unwrap();
         for body in [content(&items, view), String::from_utf8(document).unwrap()] {
             assert_eq!(body.contains("run the tests"), prompt);
             assert_eq!(body.contains("Running them."), assistant);

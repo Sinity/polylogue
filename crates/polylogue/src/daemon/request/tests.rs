@@ -33,3 +33,22 @@ fn a_context_request_carries_its_ask() {
         }
     ));
 }
+
+#[test]
+fn response_boundary_masks_errors_and_nested_details_without_erasing_empty_data() {
+    let secret = format!("sk-ant-api03-{}-AAAAAAAA", "A".repeat(94));
+    let response = Response::Error {
+        kind: "synthetic".into(),
+        message: secret.clone(),
+        detail: Some(
+            serde_json::json!({"nested": [secret.clone(), ""], "code": 0, "known": false}),
+        ),
+    }
+    .masked();
+    let value = serde_json::to_value(response).unwrap();
+    assert!(!value.to_string().contains(&secret));
+    assert_eq!(value["kind"], "synthetic");
+    assert_eq!(value["detail"]["nested"][1], "");
+    assert_eq!(value["detail"]["code"], 0);
+    assert_eq!(value["detail"]["known"], false);
+}

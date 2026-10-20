@@ -360,3 +360,58 @@ fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held()
     runtime.shutdown().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
 }
+
+#[test]
+fn session_html_and_json_read_routes_mask_titles_and_message_content() {
+    use std::io::Write;
+    let r = reader();
+    let secret = format!("sk-ant-api03-{}-AAAAAAAA", "A".repeat(94));
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(r.w.home.join(".claude/projects/-p/s1.jsonl"))
+        .unwrap();
+    writeln!(file, "{}", serde_json::json!({"type": "custom-title", "sessionId": "s1", "customTitle": format!("Synthetic title {secret}")})).unwrap();
+    write!(
+        file,
+        "{}",
+        polylogue_testkit::claude_user("u2", "s1", &secret)
+    )
+    .unwrap();
+    drop(file);
+    r.w.wait_for(|status| {
+        if status["store"]["messages"] != 2 { return false; }
+        let response = handle(Request::Read { session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(), view: "full".into(), format: "json".into(), logical: false, budget: None, cursor: None }, &r.w.daemon);
+        matches!(response, Response::Ok { data } if data["session"]["title"]["text"].as_str().is_some_and(|t| t.starts_with("Synthetic title ")))
+    });
+    rt().block_on(async {
+        for path in [
+            "/s/claude-code:s1",
+            "/api/v1/read?session=claude-code%3As1&format=json",
+        ] {
+            let (status, _, body) = send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {body}");
+            assert!(body.contains("Synthetic title "));
+            assert!(
+                !body.contains(&secret),
+                "{path} exposed a synthetic credential"
+            );
+            assert!(body.contains("masked"));
+        }
+        let path = format!("/api/v1/read?session=claude-code%3As1&view={secret}");
+        let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            !body.contains(&secret),
+            "argument validation exposed a synthetic credential"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["error"],
+            "bad_request"
+        );
+        let path = format!("/api/v1/read?session=claude-code%3A{secret}");
+        let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(!body.contains(&secret));
+        assert!(body.contains("masked"));
+    });
+}

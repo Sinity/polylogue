@@ -1,9 +1,11 @@
-//! Rendering (architecture 7). Every format is built from one stream of
-//! rendered blocks; a view is a filter over that stream. Credentials are
-//! masked on output, block by block, never by refusing.
+//! Session output: one typed view projection, prose rendered as blocks, and
+//! structured JSON preserving model fields and the importable export codec.
+//! Credentials are masked on output, block by block and at the response boundary.
 
 pub mod html;
+mod masking;
 pub mod measures;
+pub use masking::{mask, mask_json};
 pub mod model_pages;
 pub mod results;
 pub mod session_summary;
@@ -21,6 +23,8 @@ pub enum Format {
 }
 
 impl Format {
+    pub const NAMES: &[&str] = &["terminal", "markdown", "html", "json"];
+
     pub fn parse(name: &str) -> Option<Format> {
         Some(match name {
             "terminal" => Format::Terminal,
@@ -46,6 +50,8 @@ pub enum View {
 }
 
 impl View {
+    pub const NAMES: &[&str] = &["full", "dialogue", "prompts", "actions"];
+
     pub fn parse(name: &str) -> Option<View> {
         Some(match name {
             "full" => View::Full,
@@ -58,10 +64,14 @@ impl View {
 
     /// Whether this view shows `block` of `message`.
     pub fn keeps(self, message: &Message, block: &Block) -> bool {
+        self.keeps_block(is_prompt(message), block)
+    }
+
+    fn keeps_block(self, prompt: bool, block: &Block) -> bool {
         match self {
             View::Full => true,
             View::Dialogue => matches!(block, Block::Text { .. } | Block::Thinking { .. }),
-            View::Prompts => is_prompt(message) && matches!(block, Block::Text { .. }),
+            View::Prompts => prompt && matches!(block, Block::Text { .. }),
             View::Actions => matches!(block, Block::ToolCall { .. } | Block::ToolResult { .. }),
         }
     }
@@ -90,16 +100,6 @@ pub fn shell_quote(w: &str) -> String {
     } else {
         format!("'{}'", w.replace('\'', r"'\''"))
     }
-}
-
-/// Text with credentials masked, as one block.
-pub fn mask(text: &str) -> String {
-    let mut m = credential_masking::Masker::new();
-    let mut out = Vec::with_capacity(text.len());
-    // Writing to a Vec cannot fail.
-    let _ = m.push(text, &mut out);
-    let _ = m.finish(&mut out);
-    String::from_utf8(out).unwrap_or_default()
 }
 
 /// One block as the stream carries it: its kind and its masked text.
@@ -205,25 +205,76 @@ fn when(m: &Message) -> String {
     m.at.map(|t| t.to_string()).unwrap_or_default()
 }
 
-pub fn render(
-    items: &[Rendered<'_>],
-    format: Format,
+/// A session read retains typed message fields; a view only selects blocks.
+/// JSON is structured data, while the other formats display the selected stream.
+pub fn session(
+    session: &Session,
+    messages: Vec<Message>,
     view: View,
-    out: &mut dyn Write,
-) -> io::Result<()> {
-    match format {
-        Format::Json => json_stream(items, view, out),
-        Format::Html => html::document(items, view, out),
-        Format::Markdown => markdown(items, view, out),
-        Format::Terminal => terminal(items, view, out),
+    format: Format,
+) -> io::Result<Value> {
+    let selected = project(messages, view);
+    if format == Format::Json {
+        return Ok(json!({ "session": session, "messages": selected }));
     }
+    let mut items = vec![Rendered::SessionHeader(session)];
+    items.extend(selected.iter().map(Rendered::Message));
+    formatted(&items, format, view)
+}
+
+/// Export JSON uses the model's importable Document codec, including fields
+/// such as links that have no prose rendering. It never serializes Pieces.
+pub fn export(doc: &polylogue_model::export::Document, format: Format) -> io::Result<Value> {
+    if format == Format::Json {
+        return serde_json::to_value(doc).map_err(io::Error::other);
+    }
+    let mut items = Vec::new();
+    for session in &doc.sessions {
+        items.push(Rendered::SessionHeader(&session.session));
+        items.extend(session.messages.iter().map(Rendered::Message));
+        items.extend(session.events.iter().map(Rendered::Event));
+    }
+    formatted(&items, format, View::Full)
+}
+
+fn project(mut messages: Vec<Message>, view: View) -> Vec<Message> {
+    if view != View::Full {
+        for message in &mut messages {
+            let prompt = is_prompt(message);
+            message
+                .blocks
+                .retain(|block| view.keeps_block(prompt, block));
+        }
+        messages.retain(|message| !message.blocks.is_empty());
+    }
+    messages
+}
+
+fn formatted(items: &[Rendered<'_>], format: Format, view: View) -> io::Result<Value> {
+    let mut out = Vec::new();
+    match format {
+        Format::Html => html::document(items, view, &mut out)?,
+        Format::Markdown => markdown(items, view, &mut out)?,
+        Format::Terminal => terminal(items, view, &mut out)?,
+        Format::Json => unreachable!("structured JSON is encoded before prose rendering"),
+    }
+    let name = match format {
+        Format::Html => "html",
+        Format::Markdown => "markdown",
+        _ => "terminal",
+    };
+    Ok(
+        json!({ "format": name, "content": String::from_utf8(out).expect("rendered strings are UTF-8") }),
+    )
 }
 
 fn title(s: &Session) -> String {
-    s.title
-        .as_ref()
-        .map(|t| t.text.clone())
-        .unwrap_or_else(|| s.id.to_string())
+    mask(
+        &s.title
+            .as_ref()
+            .map(|t| t.text.clone())
+            .unwrap_or_else(|| s.id.to_string()),
+    )
 }
 
 fn terminal(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Result<()> {
@@ -342,28 +393,6 @@ fn markdown(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
         }
     }
     Ok(())
-}
-
-fn json_stream(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Result<()> {
-    let values: Vec<Value> = items
-        .iter()
-        .filter_map(|item| match item {
-            Rendered::SessionHeader(s) => Some(json!({ "session": s })),
-            Rendered::Message(m) => {
-                let ps = pieces(m, view);
-                (!ps.is_empty()).then(|| {
-                    json!({
-                        "message": m.id.to_string(),
-                        "role": who(m),
-                        "at": m.at,
-                        "blocks": ps.into_iter().map(|p| json!({"kind": p.kind, "label": p.label, "text": p.text})).collect::<Vec<_>>(),
-                    })
-                })
-            }
-            Rendered::Event(e) => (view == View::Full).then(|| json!({ "event": e.kind, "at": e.at })),
-        })
-        .collect();
-    writeln!(out, "{}", Value::Array(values))
 }
 
 #[cfg(test)]

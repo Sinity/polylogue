@@ -38,6 +38,7 @@ pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
         message: message.to_string(),
         detail: None,
     }
+    .masked()
 }
 
 pub(crate) fn store_error(e: &StoreError) -> Response {
@@ -128,6 +129,10 @@ pub(crate) fn ok(data: impl serde::Serialize) -> Response {
 /// Answers one request. Reads use the read pool; imports go to the loop
 /// thread, which owns the writer.
 pub fn handle(request: Request, d: &Daemon) -> Response {
+    handle_inner(request, d).masked()
+}
+
+fn handle_inner(request: Request, d: &Daemon) -> Response {
     if d.stopping.load(Ordering::Acquire) {
         return error(
             "daemon_stopping",
@@ -422,7 +427,7 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
 /// next.
 fn read(
     session: &polylogue_model::Session,
-    mut messages: Vec<polylogue_model::Message>,
+    messages: Vec<polylogue_model::Message>,
     view: &str,
     format: &str,
     budget: Option<usize>,
@@ -438,30 +443,17 @@ fn read(
     if cursor.is_some() {
         return error("bad_request", "a cursor continues a read with a budget");
     }
-    if format == "json" {
-        if v != polylogue_render::View::Full {
-            for m in &mut messages {
-                let kept: Vec<_> = m.blocks.iter().filter(|b| v.keeps(m, b)).cloned().collect();
-                m.blocks = kept;
-            }
-            messages.retain(|m| !m.blocks.is_empty());
-        }
-        return ok(serde_json::json!({ "session": session, "messages": messages }));
-    }
-    let Some(f) = polylogue_render::Format::parse(format) else {
+    let Some(format) = polylogue_render::Format::parse(format) else {
         return error("bad_request", format!("unknown format {format:?}"));
     };
-    let mut items = vec![polylogue_render::Rendered::SessionHeader(session)];
-    items.extend(messages.iter().map(polylogue_render::Rendered::Message));
-    let mut out = Vec::new();
-    if let Err(e) = polylogue_render::render(&items, f, v, &mut out) {
-        return error("internal", e);
+    match polylogue_render::session(session, messages, v, format) {
+        Ok(value) => ok(value),
+        Err(error) => self::error("internal", error),
     }
-    ok(serde_json::json!({ "format": format, "content": String::from_utf8_lossy(&out) }))
 }
 
-/// Whole sessions in the export format (`json`, lossless and read back by
-/// `import`) or rendered as Markdown or HTML.
+/// Whole sessions in the structured export format (`json`, read back by
+/// `import`; credentials masked at the response boundary) or rendered as Markdown or HTML.
 fn export(
     reader: &polylogue_store::Reader<'_>,
     ids: &[polylogue_model::SessionId],
@@ -476,30 +468,13 @@ fn export(
         }
     }
     let doc = polylogue_model::export::Document::new(sessions);
-    if format == "json" {
-        return match serde_json::to_value(&doc) {
-            Ok(v) => Response::Ok { data: v },
-            Err(e) => error("internal", e),
-        };
-    }
-    let Some(f) = polylogue_render::Format::parse(format) else {
+    let Some(format) = polylogue_render::Format::parse(format) else {
         return error("bad_request", format!("unknown export format {format:?}"));
     };
-    let mut items = Vec::new();
-    for s in &doc.sessions {
-        items.push(polylogue_render::Rendered::SessionHeader(&s.session));
-        for m in &s.messages {
-            items.push(polylogue_render::Rendered::Message(m));
-        }
-        for e in &s.events {
-            items.push(polylogue_render::Rendered::Event(e));
-        }
+    match polylogue_render::export(&doc, format) {
+        Ok(value) => ok(value),
+        Err(error) => self::error("internal", error),
     }
-    let mut out = Vec::new();
-    if let Err(e) = polylogue_render::render(&items, f, polylogue_render::View::Full, &mut out) {
-        return error("internal", e);
-    }
-    ok(serde_json::json!({ "format": format, "content": String::from_utf8_lossy(&out) }))
 }
 
 /// Owns the application workers and writer lock. Transports must stop
