@@ -845,7 +845,7 @@ pub struct MessageVersion {
 
 impl Reader<'_> {
     pub fn message_versions(&self, id: &polylogue_model::MessageId) -> Result<Vec<MessageVersion>> {
-        let mut stmt = self.conn().prepare("SELECT r.id,s.chain,s.source_snapshot,s.source_start,s.source_end,s.current,s.version_hash FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref r ON r.pk=s.input_pk WHERE m.id=?1 ORDER BY r.id,s.chain,s.source_snapshot,s.source_start")?;
+        let mut stmt = self.conn().prepare("SELECT r.id,s.chain,s.source_snapshot,s.source_start,s.source_end,s.current,s.version_hash FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref r ON r.pk=s.input_pk JOIN session placement ON placement.pk=s.session_pk WHERE m.id=?1 ORDER BY r.id,s.chain,s.source_snapshot,s.source_start,placement.id")?;
         let rows = stmt.query_map([id.to_string()], |row| {
             Ok((
                 row.get::<_, String>(0)?,

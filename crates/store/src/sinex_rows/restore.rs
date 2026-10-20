@@ -185,7 +185,7 @@ pub(super) fn install(
 
 fn check_batch(unit: &RestoreUnit, payload: Option<&[u8]>) -> Result<()> {
     match (&unit.batch, payload) {
-        (None, None) if unit.rows == 0 => return Ok(()),
+        (None, None) if unit.rows == 0 => Ok(()),
         (Some(name), Some(bytes)) => {
             let hash = super::excision::batch_hash(name)?;
             if blake3::hash(bytes).as_bytes() != &hash.0

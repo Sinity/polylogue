@@ -34,23 +34,11 @@ pub(crate) fn retain(
     )?;
     for (idx, (block, body)) in message.blocks.iter().zip(bodies).enumerate() {
         let text_id = block_text(block)
-            .map(|text| {
-                crate::text_rows::intern(
-                    tx,
-                    text,
-                    if matches!(block, Block::ToolResult { .. }) {
-                        2
-                    } else {
-                        1
-                    },
-                    Some(packed),
-                    bulk,
-                )
-            })
+            .map(|text| crate::text_rows::intern(tx, text, 0, Some(packed), bulk))
             .transpose()?;
         tx.execute(
-            "INSERT INTO version_block(version_hash, idx, body, text_id) VALUES (?1, ?2, ?3, ?4)",
-            params![hash, idx as i64, body, text_id],
+            "INSERT INTO version_block(version_hash, idx, body, text_id, blob_hash) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![hash, idx as i64, body, text_id,match block {Block::Image(a)|Block::File(a)=>a.blob.map(|h|h.0.to_vec()),_=>None}],
         )?;
     }
     Ok(())

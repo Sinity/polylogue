@@ -173,7 +173,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
     {
         let mut stmt = conn.prepare(
             "SELECT s.origin, m.at, json_extract(m.attrs_json, '$.production.quota')
-             FROM message m JOIN session s ON s.pk = m.session_pk
+             FROM current_message m JOIN session s ON s.pk = m.session_pk
              WHERE m.at IS NOT NULL
                AND json_extract(m.attrs_json, '$.production.quota') IS NOT NULL
              ORDER BY m.at",
@@ -279,7 +279,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
 
 fn response_times(reader: &Reader<'_>, tool: &str, since: i64, until: i64) -> Result<Vec<i64>> {
     let mut stmt = reader.conn().prepare_cached(
-        "SELECT m.at FROM message m JOIN session s ON s.pk = m.session_pk
+        "SELECT m.at FROM current_message m JOIN session s ON s.pk = m.session_pk
          WHERE s.origin = ?1 AND m.role = 'assistant' AND m.at >= ?2 AND m.at < ?3
          ORDER BY m.at",
     )?;

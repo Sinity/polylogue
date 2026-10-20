@@ -50,8 +50,8 @@ pub struct InlineBlob {
     pub bytes: Vec<u8>,
 }
 
-/// One complete snapshot's byte range and the sessions it replaces for this
-/// input. Other inputs keep their own current contributions to those sessions.
+/// One retained observation's byte range and session scope. Other inputs
+/// keep their own current contributions to those sessions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub start: u64,

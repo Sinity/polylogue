@@ -32,7 +32,7 @@ fn index_schema_changes_require_a_version_and_digest_update() {
         ),
         (
             17,
-            "cb991afd05c2a4dd1190b30a87ffd15657c4476153be60a32c7f332e5852d0cc".to_owned()
+            "6a4cebb9297e587d0e7b91b158a6ee95eba00396e9e9b19648d3f5ec590356f1".to_owned()
         ),
         "bump INDEX_VERSION and record its schema digest when index.sql changes"
     );

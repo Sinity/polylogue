@@ -1,5 +1,6 @@
 //! Framed snapshots: a length and digest let readers skip old payloads without
-//! decoding them. Complete frame bodies are the exact submitted JSON bytes.
+//! decoding them. Bodies start as exact submitted JSON bytes; text excision
+//! rehashes the active payload while preserving its observed identity.
 
 pub const MAGIC: &[u8] = b"POLYLOGUE-SNAPSHOTS/1\n";
 pub const HEADER_LEN: usize = 151;

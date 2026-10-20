@@ -58,17 +58,26 @@ pub(super) fn write_rows(
                 .map(pack_block)
                 .collect::<Result<_>>()?,
         };
-        written += u64::from(ctx.write_message(
-            row,
-            session_pk,
-            hash,
-            &bodies,
-            if p.snapshot.is_some() {
-                i as i64
-            } else {
-                row.offset as i64
-            },
-        )?);
+        written += u64::from(
+            ctx.write_message(
+                row,
+                session_pk,
+                hash,
+                &bodies,
+                if p.snapshot.is_some() {
+                    i as i64
+                } else {
+                    row.offset as i64
+                },
+                p.output
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == row.message.session)
+                    .map_or(ctx.session_kind(session_pk)? == "main", |s| {
+                        s.kind == polylogue_model::SessionKind::Main
+                    }),
+            )?,
+        );
         if let Some(at) = ms(row.message.at) {
             let last = activity.entry(session_pk).or_insert(at);
             *last = (*last).max(at);
@@ -169,6 +178,7 @@ pub(super) struct Ctx<'a, 't> {
 /// The preferred version of a message, as compared with a new one.
 pub(super) struct Version {
     input_pk: i64,
+    session_pk: i64,
     chain: i64,
     snapshot: i64,
     order: i64,
@@ -332,18 +342,20 @@ impl Ctx<'_, '_> {
         hash: [u8; 32],
         bodies: &[Vec<u8>],
         position: i64,
+        main: bool,
     ) -> Result<bool> {
         let m = &row.message;
         let offset = row.offset as i64;
         let new = Version {
             input_pk: self.input_pk,
+            session_pk,
             chain: self.chain,
             snapshot: self.snapshot.map_or(-1, |snapshot| snapshot.start as i64),
             order: position,
             current: self.snapshot_current(session_pk)?,
             start: offset,
             end: row.end.max(row.offset) as i64,
-            main: self.session_kind(session_pk)? == "main",
+            main,
             complete: !(m.role == Role::Assistant && m.stop_reason.is_none()),
             rank: self.rank,
             hash: hash.to_vec(),
@@ -352,7 +364,7 @@ impl Ctx<'_, '_> {
             .tx
             .prepare_cached(
                 "SELECT m.pk, m.order_input_pk, m.seq, m.input_pk, m.source_chain, m.source_start,
-                        m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind, m.order_input_id, s.source_snapshot, s.current
+                        m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind, m.order_input_id, s.source_snapshot, s.current, s.session_pk, s.main
                  FROM message m LEFT JOIN message_source s
                    ON s.message_pk = m.pk AND s.preferred = 1
                  JOIN session ss ON ss.pk = m.session_pk
@@ -364,13 +376,14 @@ impl Ctx<'_, '_> {
                     (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(11)?),
                     Version {
                         input_pk: r.get(3)?,
+                        session_pk:r.get::<_,Option<i64>>(14)?.unwrap_or(r.get(9)?),
                         chain: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
                         snapshot: r.get::<_, Option<i64>>(12)?.unwrap_or(-1),
                         order: r.get(2)?,
                         current: r.get::<_, Option<i64>>(13)?.unwrap_or(1) != 0,
                         start: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
                         end: 0,
-                        main: r.get::<_, String>(10)? == "main",
+                        main: r.get::<_,Option<bool>>(15)?.unwrap_or(r.get::<_, String>(10)? == "main"),
                         complete: r.get::<_, i64>(6)? == 0,
                         rank: r.get(7)?,
                         hash: r.get::<_, Option<Vec<u8>>>(8)?.unwrap_or_default(),
@@ -400,9 +413,9 @@ impl Ctx<'_, '_> {
             .tx
             .prepare_cached(
                 "SELECT source_start FROM message_source
-                 WHERE message_pk = ?1 AND input_pk = ?2 AND chain = ?3 AND source_snapshot = ?4",
+                 WHERE message_pk = ?1 AND input_pk = ?2 AND chain = ?3 AND source_snapshot = ?4 AND session_pk=?5",
             )?
-            .query_row(params![pk, self.input_pk, self.chain, new.snapshot], |r| {
+            .query_row(params![pk, self.input_pk, self.chain, new.snapshot, new.session_pk], |r| {
                 r.get(0)
             })
             .optional()?;
@@ -439,10 +452,7 @@ impl Ctx<'_, '_> {
         // parent's messages (a compaction call, a side question replaying
         // the history); such a copy may become the shown version, but it
         // never moves the message out of a main session.
-        let session_pk = if cur_session != session_pk
-            && cur_kind == "main"
-            && self.session_kind(session_pk)? != "main"
-        {
+        let session_pk = if cur_session != session_pk && cur_kind == "main" && !new.main {
             cur_session
         } else {
             session_pk
@@ -465,16 +475,20 @@ impl Ctx<'_, '_> {
     }
 
     fn upsert_source(&self, pk: i64, v: &Version, preferred: bool) -> Result<()> {
+        let old:Option<Vec<u8>>=self.tx.query_row("SELECT version_hash FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND source_snapshot=?4 AND session_pk=?5",params![pk,v.input_pk,v.chain,v.snapshot,v.session_pk],|r|r.get(0)).optional()?.flatten();
         self.tx.execute(
-            "INSERT INTO message_source(message_pk, input_pk, chain, source_snapshot, source_start, source_end,
+            "INSERT INTO message_source(message_pk, input_pk, chain, source_snapshot, source_start, source_end, session_pk,
                  preferred, complete, version_hash, current, source_order, route_rank, main)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?13, ?10, ?11, ?12)
-             ON CONFLICT(message_pk, input_pk, chain, source_snapshot) DO UPDATE SET
-                 source_start=excluded.source_start, source_end=excluded.source_end, preferred=excluded.preferred,
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?14, ?7, ?8, ?9, ?13, ?10, ?11, ?12)
+             ON CONFLICT(message_pk, input_pk, chain, source_snapshot, session_pk) DO UPDATE SET
+                 source_start=excluded.source_start, source_end=excluded.source_end, session_pk=excluded.session_pk, preferred=excluded.preferred,
                  complete=excluded.complete, version_hash=excluded.version_hash, current=excluded.current,
                  source_order=excluded.source_order, route_rank=excluded.route_rank, main=excluded.main",
-            params![pk, v.input_pk, v.chain, v.snapshot, v.start, v.end, i64::from(preferred), i64::from(v.complete), v.hash, v.order, v.rank, i64::from(v.main), i64::from(v.current)],
+            params![pk, v.input_pk, v.chain, v.snapshot, v.start, v.end, i64::from(preferred), i64::from(v.complete), v.hash, v.order, v.rank, i64::from(v.main), i64::from(v.current),v.session_pk],
         )?;
+        if let Some(old) = old.filter(|old| old != &v.hash) {
+            self.tx.execute("DELETE FROM message_version WHERE hash=?1 AND NOT EXISTS (SELECT 1 FROM message_source WHERE version_hash=?1)",[old])?;
+        }
         Ok(())
     }
 
@@ -614,6 +628,13 @@ impl Ctx<'_, '_> {
     /// the message row changes: a version from another session moves the
     /// message, and its old blocks must not outlive the move.
     fn clear_blocks(&self, message_pk: i64) -> Result<()> {
+        let texts: Vec<i64> = self
+            .tx
+            .prepare_cached(
+                "SELECT DISTINCT text_id FROM block WHERE message_pk=?1 AND text_id IS NOT NULL",
+            )?
+            .query_map([message_pk], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
         // Calls of the old blocks go, with their trigram entries; results of
         // the old blocks are unpaired from their calls.
         let old_calls: Vec<(i64, Option<String>, Option<String>)> = self
@@ -647,6 +668,9 @@ impl Ctx<'_, '_> {
         self.tx
             .prepare_cached("DELETE FROM block WHERE message_pk = ?1")?
             .execute([message_pk])?;
+        for text in texts {
+            crate::text_rows::unindex_unused(self.tx, text, self.bulk)?;
+        }
         Ok(())
     }
 

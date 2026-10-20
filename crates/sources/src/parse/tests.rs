@@ -95,3 +95,28 @@ fn append_boundaries_keep_dispositions_fields_offsets_and_carry() {
         );
     }
 }
+
+#[test]
+fn snapshots_verify_complete_payloads_and_wait_on_incomplete_suffixes() {
+    use polylogue_model::snapshot_log::{Header, MAGIC};
+    let parser = Parse::Snapshots(Box::new(EmptyDocument));
+    let body = b"{}";
+    let mut bytes = MAGIC.to_vec();
+    bytes.extend(Header::of(body).encode());
+    bytes.extend(body);
+    let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].consumed, bytes.len() as u64);
+    assert!(!steps[0].snapshot.as_ref().unwrap().complete);
+    let end = bytes.len();
+    bytes.extend(&Header::of(body).encode()[..10]);
+    let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
+    assert_eq!(steps[0].consumed, end as u64);
+    let (waiting, _) = parser.steps(None, &bytes[end..], end as u64).unwrap();
+    assert_eq!(waiting[0].consumed, 0);
+    bytes[end - 1] = b'[';
+    assert!(matches!(
+        parser.steps(None, &bytes, 0),
+        Err(ParseError::Snapshot(_))
+    ));
+}

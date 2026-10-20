@@ -128,13 +128,15 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
     let (cond, params) = scope.condition();
     let conn = reader.conn();
     let total = conn.query_row(
-        &format!("SELECT {TOKEN_SUMS} FROM message m WHERE m.role = 'assistant' AND {cond}"),
+        &format!(
+            "SELECT {TOKEN_SUMS} FROM current_message m WHERE m.role = 'assistant' AND {cond}"
+        ),
         rusqlite::params_from_iter(params.iter()),
         |r| row(r, 0),
     )?;
     let mut by_model = vec![];
     let mut stmt = conn.prepare(&format!(
-        "SELECT m.model, {TOKEN_SUMS} FROM message m WHERE m.role = 'assistant' AND {cond}
+        "SELECT m.model, {TOKEN_SUMS} FROM current_message m WHERE m.role = 'assistant' AND {cond}
          GROUP BY m.model ORDER BY sum(m.cost_nusd) DESC NULLS LAST, count(*) DESC"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
@@ -199,7 +201,7 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
     let (cond, params) = scope.condition();
     let conn = reader.conn();
     let mut stmt = conn.prepare(&format!(
-        "SELECT DISTINCT s.pk, s.id FROM message m JOIN session s ON s.pk = m.session_pk
+        "SELECT DISTINCT s.pk, s.id FROM current_message m JOIN session s ON s.pk = m.session_pk
          WHERE {cond} ORDER BY s.started_at, s.id"
     ))?;
     let sessions: Vec<(i64, String)> = stmt
@@ -233,7 +235,9 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
 /// condition holds only integer keys the store read itself.
 fn totals(reader: &Reader<'_>, cond: &str) -> Result<Totals> {
     let x = reader.conn().query_row(
-        &format!("SELECT {TOKEN_SUMS} FROM message m WHERE m.role = 'assistant' AND {cond}"),
+        &format!(
+            "SELECT {TOKEN_SUMS} FROM current_message m WHERE m.role = 'assistant' AND {cond}"
+        ),
         [],
         |r| row(r, 0),
     )?;

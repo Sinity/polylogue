@@ -162,6 +162,7 @@ CREATE TABLE message_source (
   message_pk        INTEGER NOT NULL REFERENCES message(pk),
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,       -- archive.db revision.chain
+  session_pk        INTEGER NOT NULL REFERENCES session(pk), -- placement in this source, independent of preferred ownership
   source_snapshot   INTEGER NOT NULL DEFAULT -1, -- snapshot start, or -1 for ordinary upserts
   current           INTEGER NOT NULL DEFAULT 1,
   source_order      INTEGER NOT NULL DEFAULT 0,
@@ -172,7 +173,7 @@ CREATE TABLE message_source (
   preferred         INTEGER NOT NULL,       -- 1 for the version the message shows (model.md, preferred version)
   complete          INTEGER NOT NULL DEFAULT 1, -- 0 while the source marks it in progress (no stop reason yet)
   version_hash      BLOB,                   -- BLAKE3 of the version's canonical JSON: the last tie-break
-  PRIMARY KEY (message_pk, input_pk, chain, source_snapshot)
+  PRIMARY KEY (message_pk, input_pk, chain, source_snapshot, session_pk)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
 
@@ -618,8 +619,9 @@ CREATE TABLE file_edit (
 
 -- Normalized versions share existing text rows; historical prose is not copied
 -- into opaque packed bodies. Current search still joins current blocks only.
-CREATE INDEX message_source_current ON message_source(input_pk,current,message_pk);
+CREATE INDEX message_source_current ON message_source(input_pk,session_pk,current,message_pk);
 CREATE INDEX message_source_snapshot ON message_source(input_pk,chain,source_snapshot);
+CREATE INDEX message_source_version ON message_source(version_hash);
 CREATE TABLE message_version (
   hash BLOB PRIMARY KEY,
   attrs BLOB NOT NULL
@@ -629,9 +631,11 @@ CREATE TABLE version_block (
   idx INTEGER NOT NULL,
   body BLOB NOT NULL,
   text_id INTEGER REFERENCES text(id),
+  blob_hash BLOB,
   PRIMARY KEY (version_hash, idx)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX version_block_text ON version_block(text_id);
+CREATE INDEX version_block_blob ON version_block(blob_hash);
 
 CREATE TABLE snapshot (
   pk INTEGER PRIMARY KEY,

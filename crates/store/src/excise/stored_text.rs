@@ -144,7 +144,13 @@ pub(super) fn find_in(
         })()?;
         if !scan.is_empty() {
             let rewritten = framing::rewrite(
-                archive, store, &mut bytes, &input, chain, &frames, &scan, fill,
+                archive,
+                store,
+                &mut bytes,
+                &(input.clone(), chain),
+                &frames,
+                &scan,
+                fill,
             )?;
             patches.insert((input.clone(), chain), rewritten);
             ranges.insert((input, chain), scan);

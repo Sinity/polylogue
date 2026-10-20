@@ -103,3 +103,216 @@ fn reversed_snapshot_replay_and_other_source_promotion_match_forward_arrival() {
         assert_eq!(result, ["alternate current A", "complete B"]);
     }
 }
+
+#[test]
+fn omitted_metadata_stays_known_with_partial_or_complete_population() {
+    for (reverse, complete) in [(false, false), (true, false), (false, true), (true, true)] {
+        let w = world();
+        let mut first = snapshot("a", 0, true, &[("a", "A")]);
+        first.parse[0].output.sessions[0].title = Some(polylogue_model::Title {
+            text: "Known title".into(),
+            source: TitleSource::Custom,
+        });
+        first.parse[0].output.sessions[0].cwd = vec!["/synthetic/project".into()];
+        let later = snapshot("a", 100, complete, &[("b", "B")]);
+        let mut seed = batch("a", 0, 0, vec![], &[]);
+        seed.length = 200;
+        seed.parse.clear();
+        w.writer.send(seed).unwrap();
+        w.writer.flush().unwrap();
+        let mut steps = vec![first, later];
+        if reverse {
+            steps.reverse();
+        }
+        for mut step in steps {
+            step.change = Change::Reparse { chain: 1 };
+            step.length = 200;
+            w.writer.send(step).unwrap();
+        }
+        w.writer.derive().unwrap();
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let session = pool.reader().unwrap().session(&sid("s")).unwrap().unwrap();
+        assert_eq!(session.title.unwrap().text, "Known title");
+        assert_eq!(session.cwd, ["/synthetic/project"]);
+    }
+}
+
+#[test]
+fn removing_an_input_promotes_only_remaining_current_versions_and_prunes_history() {
+    let w = world();
+    w.writer
+        .send(snapshot("a", 0, true, &[("a", "sensitive old version")]))
+        .unwrap();
+    w.writer
+        .send(snapshot(
+            "a",
+            100,
+            true,
+            &[("a", "preferred current version")],
+        ))
+        .unwrap();
+    w.writer
+        .send(batch(
+            "b",
+            1,
+            0,
+            vec![MessageRow {
+                offset: 0,
+                end: 100,
+                message: text_message("a", "s", Role::User, "remaining current version", None),
+            }],
+            &["s"],
+        ))
+        .unwrap();
+    w.writer.derive().unwrap();
+    let store = std::sync::Arc::new(
+        hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap(),
+    );
+    w.writer
+        .excise(
+            crate::excise::ExciseRequest {
+                id: "remove-a".into(),
+                scope: crate::excise::Scope::Input("a".into()),
+                reason: None,
+                dry_run: false,
+            },
+            store,
+        )
+        .unwrap();
+    w.writer.derive().unwrap();
+    assert_eq!(read(&w), ["remaining current version"]);
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let history = reader
+        .message_versions(&MessageId::parse("claude-code:a").unwrap())
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].input, "b");
+    assert!(history[0].current);
+    let rows = reader
+        .query("SELECT count(*) AS n FROM message_version", &[])
+        .unwrap();
+    assert_eq!(rows[0]["n"], 1);
+}
+
+#[test]
+fn retired_latest_member_leaves_current_activity_usage_and_prose() {
+    let w = world();
+    let mut first = snapshot(
+        "a",
+        0,
+        true,
+        &[("a", "retired prose"), ("b", "current prose")],
+    );
+    first.parse[0].output.messages[0].message.at = Timestamp::from_unix_ms(20);
+    first.parse[0].output.messages[0].message.usage.input = Some(900);
+    first.parse[0].output.messages[0].message.role = Role::Assistant;
+    first.parse[0].output.messages[1].message.at = Timestamp::from_unix_ms(10);
+    let mut second = snapshot("a", 100, true, &[("b", "current prose")]);
+    second.parse[0].output.messages[0].message.at = Timestamp::from_unix_ms(10);
+    w.writer.send(first).unwrap();
+    w.writer.send(second).unwrap();
+    w.writer.derive().unwrap();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader
+            .query("SELECT last_activity_at FROM session", &[])
+            .unwrap()[0]["last_activity_at"],
+        10
+    );
+    assert_eq!(
+        reader
+            .prose_texts(0, 100, None)
+            .unwrap()
+            .iter()
+            .map(|v| v.text.as_str())
+            .collect::<Vec<_>>(),
+        ["current prose"]
+    );
+    let usage = crate::measure::usage(&reader, &crate::measure::Scope::default()).unwrap();
+    assert_eq!(usage.tokens.input.tokens, 0);
+    assert_eq!(
+        reader
+            .query(
+                "SELECT count(*) AS n FROM text_fts WHERE text_fts MATCH 'retired'",
+                &[]
+            )
+            .unwrap()[0]["n"],
+        0
+    );
+}
+
+#[test]
+fn complete_scope_retires_copies_by_source_placement_after_other_source_retires() {
+    let w = world();
+    w.writer
+        .send(snapshot("a", 0, true, &[("x", "shared X")]))
+        .unwrap();
+    let mut copy = snapshot("b", 0, true, &[("x", "shared X")]);
+    copy.parse[0].output.sessions[0] = Session::new(sid("child"), SessionKind::Subagent);
+    copy.parse[0].output.messages[0].message.session = sid("child");
+    copy.parse[0].snapshot.as_mut().unwrap().covered = vec![sid("child")];
+    w.writer.send(copy).unwrap();
+    w.writer.send(snapshot("a", 100, true, &[])).unwrap();
+    w.writer.derive().unwrap();
+    assert_eq!(read(&w), ["shared X"]);
+    let mut empty = snapshot("b", 100, true, &[]);
+    empty.parse[0].output.sessions[0] = Session::new(sid("child"), SessionKind::Subagent);
+    empty.parse[0].snapshot.as_mut().unwrap().covered = vec![sid("child")];
+    w.writer.send(empty).unwrap();
+    w.writer.derive().unwrap();
+    assert!(read(&w).is_empty());
+    let pool = ReadPool::open(&w.archive).unwrap();
+    assert_eq!(pool.reader().unwrap().status().unwrap().messages, 0);
+}
+
+#[test]
+fn scopes_in_one_input_keep_separate_membership_for_the_same_message() {
+    let w = world();
+    let mut first = snapshot("a", 0, true, &[("x", "shared X")]);
+    let mut copy = first.parse[0].output.messages[0].clone();
+    copy.message.session = sid("child");
+    first.parse[0].output.messages.push(copy);
+    first.parse[0]
+        .output
+        .sessions
+        .push(Session::new(sid("child"), SessionKind::Subagent));
+    first.parse[0]
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .covered
+        .push(sid("child"));
+    first.parse[0].accounting = accounting(2);
+    w.writer.send(first).unwrap();
+    w.writer.derive().unwrap();
+    let mut empty = snapshot("a", 100, true, &[]);
+    empty.parse[0].output.sessions[0] = Session::new(sid("child"), SessionKind::Subagent);
+    empty.parse[0].snapshot.as_mut().unwrap().covered = vec![sid("child")];
+    w.writer.send(empty).unwrap();
+    w.writer.derive().unwrap();
+    assert_eq!(read(&w), ["shared X"]);
+    w.writer.send(snapshot("a", 200, true, &[])).unwrap();
+    w.writer.derive().unwrap();
+    assert!(read(&w).is_empty());
+}
+
+#[test]
+fn normalized_history_shares_prose_and_keeps_only_bounded_nonprose_copies() {
+    let w = world();
+    let a = "a".repeat(100_000);
+    let b = "b".repeat(100_000);
+    for (at, text) in [(0, a.as_str()), (100, b.as_str()), (200, b.as_str())] {
+        w.writer
+            .send(snapshot("a", at, false, &[("x", text)]))
+            .unwrap();
+    }
+    w.writer.flush().unwrap();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let rows=reader.query("SELECT (SELECT count(*) FROM text) AS texts,(SELECT count(*) FROM message_version) AS versions,(SELECT sum(length(attrs)) FROM message_version)+(SELECT sum(length(body)) FROM version_block) AS metadata_bytes",&[]).unwrap();
+    assert_eq!(rows[0]["texts"], 2);
+    assert_eq!(rows[0]["versions"], 2);
+    assert!(rows[0]["metadata_bytes"].as_u64().unwrap() < 2048);
+}

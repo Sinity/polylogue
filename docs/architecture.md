@@ -48,8 +48,8 @@ The rebuildable index retains normalized message versions with exact source
 ranges, sharing prose in the text store. Ordinary reads, queries and
 derivations use current projections. Only explicit complete-session coverage
 can retire absent members; current browser acquisitions supply partial
-coverage, including native payloads. Partial session facts merge with earlier
-supplied facts. Historical chains replay through the same parser and writer,
+coverage, including native payloads. Session facts merge with earlier supplied facts; complete population coverage
+does not clear omitted metadata. Historical chains replay through the same parser and writer,
 with chain and snapshot range ordering preserving the latest projection.
 
 `GET /v1/reader-location` resolves the running reader's published port and

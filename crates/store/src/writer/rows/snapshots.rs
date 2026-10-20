@@ -33,7 +33,7 @@ impl Ctx<'_, '_> {
                 .cloned()
                 .unwrap_or_else(|| Session::new(id.clone(), polylogue_model::SessionKind::Main));
             self.tx.execute("INSERT INTO snapshot_session(snapshot_pk,session_pk,facts,complete) VALUES (?1,?2,?3,?4) ON CONFLICT(snapshot_pk,session_pk) DO UPDATE SET facts=excluded.facts,complete=excluded.complete", params![snapshot_pk,pk,pack_json(&facts)?,snapshot.complete as i64])?;
-            let mut stmt = self.tx.prepare("SELECT DISTINCT m.pk FROM message m JOIN message_source s ON s.message_pk=m.pk WHERE m.session_pk=?1 AND s.input_pk=?2 AND s.current=1")?;
+            let mut stmt = self.tx.prepare("SELECT DISTINCT s.message_pk FROM message_source s WHERE s.session_pk=?1 AND s.input_pk=?2 AND s.current=1")?;
             for row in stmt.query_map(params![pk, self.input_pk], |row| row.get::<_, i64>(0))? {
                 affected.insert(row?);
             }
@@ -52,28 +52,29 @@ impl Ctx<'_, '_> {
         let mut affected: BTreeSet<i64> = affected.iter().copied().collect();
         for id in &snapshot.covered {
             let session_pk = self.session_row(id, false)?;
-            self.project_session(session_pk, p)?;
+            self.project_session(id, session_pk, p)?;
             // A complete scope is a deletion barrier. Partial scopes replace
             // only members they observed, independently of replay order.
             for (table, key, scope) in [
-                (
-                    "message_source",
-                    "message_pk",
-                    "SELECT pk FROM message WHERE session_pk=?2",
-                ),
+                ("message_source", "message_pk", "s.session_pk=?2"),
                 (
                     "event_source",
                     "event_id",
-                    "SELECT id FROM event WHERE session_pk=?2",
+                    "s.event_id IN (SELECT id FROM event WHERE session_pk=?2)",
                 ),
                 (
                     "link_source",
                     "link_pk",
-                    "SELECT pk FROM link WHERE parent_id=(SELECT id FROM session WHERE pk=?2) OR child_id=(SELECT id FROM session WHERE pk=?2)",
+                    "s.link_pk IN (SELECT pk FROM link WHERE parent_id=(SELECT id FROM session WHERE pk=?2) OR child_id=(SELECT id FROM session WHERE pk=?2))",
                 ),
             ] {
+                let placement = if table == "message_source" {
+                    "AND n.session_pk=s.session_pk"
+                } else {
+                    ""
+                };
                 let sql = format!(
-                    "UPDATE {table} AS s SET current=NOT EXISTS (SELECT 1 FROM snapshot h JOIN snapshot_session c ON c.snapshot_pk=h.pk WHERE h.input_pk=s.input_pk AND c.session_pk=?2 AND c.complete=1 AND (h.chain>s.chain OR (h.chain=s.chain AND h.source_start>s.source_snapshot))) AND NOT EXISTS (SELECT 1 FROM {table} n WHERE n.input_pk=s.input_pk AND n.{key}=s.{key} AND (n.chain>s.chain OR (n.chain=s.chain AND n.source_snapshot>s.source_snapshot))) WHERE s.input_pk=?1 AND (s.current=1 OR (s.chain=?3 AND s.source_snapshot=?4)) AND s.{key} IN ({scope})"
+                    "UPDATE {table} AS s SET current=NOT EXISTS (SELECT 1 FROM snapshot h JOIN snapshot_session c ON c.snapshot_pk=h.pk WHERE h.input_pk=s.input_pk AND c.session_pk=?2 AND c.complete=1 AND (h.chain>s.chain OR (h.chain=s.chain AND h.source_start>s.source_snapshot))) AND NOT EXISTS (SELECT 1 FROM {table} n WHERE n.input_pk=s.input_pk AND n.{key}=s.{key} {placement} AND (n.chain>s.chain OR (n.chain=s.chain AND n.source_snapshot>s.source_snapshot))) WHERE s.input_pk=?1 AND (s.current=1 OR (s.chain=?3 AND s.source_snapshot=?4)) AND ({scope})"
                 );
                 self.tx.execute(
                     &sql,
@@ -110,15 +111,16 @@ impl Ctx<'_, '_> {
         Ok(())
     }
 
-    fn project_session(&self, session_pk: i64, p: &ParseStep) -> Result<()> {
+    fn project_session(
+        &self,
+        id: &polylogue_model::SessionId,
+        session_pk: i64,
+        p: &ParseStep,
+    ) -> Result<()> {
         if self.snapshot_current(session_pk)? {
-            let mut next = p
-                .output
-                .sessions
-                .iter()
-                .find(|s| self.session_row(&s.id, false).ok() == Some(session_pk))
-                .cloned();
-            if !p.snapshot.as_ref().is_some_and(|s| s.complete) {
+            let mut next = p.output.sessions.iter().find(|s| &s.id == id).cloned();
+            // Population coverage does not make omitted metadata a clear.
+            {
                 let old: Option<String> = self
                     .tx
                     .query_row(
@@ -144,14 +146,14 @@ impl Ctx<'_, '_> {
             }
             return Ok(());
         }
-        let mut stmt=self.tx.prepare("SELECT c.facts,c.complete FROM snapshot_session c JOIN snapshot s ON s.pk=c.snapshot_pk WHERE s.input_pk=?1 AND c.session_pk=?2 ORDER BY s.chain,s.source_start")?;
+        let mut stmt=self.tx.prepare("SELECT c.facts FROM snapshot_session c JOIN snapshot s ON s.pk=c.snapshot_pk WHERE s.input_pk=?1 AND c.session_pk=?2 ORDER BY s.chain,s.source_start")?;
         let mut facts: Option<Session> = None;
         for row in stmt.query_map(params![self.input_pk, session_pk], |r| {
-            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, bool>(1)?))
+            r.get::<_, Vec<u8>>(0)
         })? {
-            let (bytes, complete) = row?;
+            let bytes = row?;
             let next: Session = unpack_json(&bytes)?;
-            if complete || facts.is_none() {
+            if facts.is_none() {
                 facts = Some(next);
             } else if let Some(current) = &mut facts {
                 current.merge(&next);
@@ -168,12 +170,13 @@ impl Ctx<'_, '_> {
     }
 
     pub(super) fn promote_current(&self, pk: i64) -> Result<()> {
-        let mut stmt = self.tx.prepare("SELECT s.input_pk,s.chain,s.source_snapshot,s.source_start,s.source_end,s.complete,s.route_rank,s.main,s.version_hash,s.source_order,r.id,s.preferred,m.present FROM message_source s JOIN input_ref r ON r.pk=s.input_pk JOIN message m ON m.pk=s.message_pk WHERE s.message_pk=?1 AND s.current=1 ORDER BY r.id,s.chain,s.source_snapshot")?;
+        let mut stmt = self.tx.prepare("SELECT s.input_pk,s.chain,s.source_snapshot,s.source_start,s.source_end,s.complete,s.route_rank,s.main,s.version_hash,s.source_order,r.id,s.preferred,m.present,s.session_pk FROM message_source s JOIN input_ref r ON r.pk=s.input_pk JOIN message m ON m.pk=s.message_pk WHERE s.message_pk=?1 AND s.current=1 ORDER BY r.id,s.chain,s.source_snapshot")?;
         let mut best: Option<(Version, String, bool)> = None;
         let rows = stmt.query_map([pk], |row| {
             Ok((
                 Version {
                     input_pk: row.get(0)?,
+                    session_pk: row.get(13)?,
                     chain: row.get(1)?,
                     snapshot: row.get(2)?,
                     start: row.get(3)?,
@@ -200,6 +203,7 @@ impl Ctx<'_, '_> {
         }
         drop(stmt);
         let Some((version, input_id, already_shown)) = best else {
+            self.clear_blocks(pk)?;
             self.tx
                 .execute("UPDATE message SET present=0 WHERE pk=?1", [pk])?;
             return Ok(());
@@ -214,7 +218,7 @@ impl Ctx<'_, '_> {
             |row| row.get(0),
         )?;
         let (old_session,old_kind):(i64,String)=self.tx.query_row("SELECT m.session_pk,s.kind FROM message m JOIN session s ON s.pk=m.session_pk WHERE m.pk=?1", [pk],|row|Ok((row.get(0)?,row.get(1)?)))?;
-        let session_pk = if old_kind == "main" && self.session_kind(session_pk)? != "main" {
+        let session_pk = if old_kind == "main" && !version.main {
             old_session
         } else {
             session_pk

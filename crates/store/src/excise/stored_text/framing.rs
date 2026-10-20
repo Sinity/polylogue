@@ -59,12 +59,12 @@ pub(super) fn rewrite(
     archive: &rusqlite::Connection,
     store: &hashed_blobs::Store,
     bytes: &mut PlainBytes,
-    input: &str,
-    chain: i64,
+    chain_key: &Chain,
     frames: &[Frame],
     ranges: &Ranges,
     fill: u8,
 ) -> Result<Vec<(u64, Vec<u8>)>> {
+    let (input, chain) = chain_key;
     let mut patches = Vec::new();
     for frame in frames {
         let start = frame.at + HEADER_LEN as u64;

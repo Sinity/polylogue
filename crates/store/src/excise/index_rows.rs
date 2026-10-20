@@ -96,7 +96,7 @@ pub(super) fn clear_for_reparse(
     }
     let mut freed = BTreeSet::new();
     for (pk, id) in &sessions {
-        let (text_ids, session_blobs) = clear_session(i, *pk, id)?;
+        let (text_ids, session_blobs) = clear_session(i, *pk, id, t.counter)?;
         freed.extend(text_ids);
         blobs.extend(session_blobs);
     }
@@ -261,6 +261,7 @@ pub(super) fn remove_input(
     req: &ExciseRequest,
     refused: &mut RefusedJson,
     done: &mut Excised,
+    removed_texts: &mut BTreeSet<Vec<u8>>,
 ) -> Result<()> {
     let locations: Vec<Location> = t
         .archive
@@ -300,7 +301,12 @@ pub(super) fn remove_input(
         .execute("DELETE FROM extent WHERE input = ?1", [input])?;
     t.archive
         .execute("DELETE FROM revision WHERE input = ?1", [input])?;
+    let mut texts = Vec::new();
     if let Some(pk) = input_pk(t.index, input)? {
+        let media:Vec<Vec<u8>>=t.index.prepare("SELECT DISTINCT v.blob_hash FROM version_block v JOIN message_source s ON s.version_hash=v.version_hash WHERE s.input_pk=?1 AND v.blob_hash IS NOT NULL")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        refused.blobs.extend(media.iter().map(|hash| hex(hash)));
+
+        texts=t.index.prepare("SELECT DISTINCT v.text_id FROM version_block v JOIN message_source s ON s.version_hash=v.version_hash WHERE s.input_pk=?1 AND v.text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<_>>()?;
         let messages: Vec<i64> = t
             .index
             .prepare("SELECT DISTINCT message_pk FROM message_source WHERE input_pk=?1")?
@@ -326,6 +332,13 @@ pub(super) fn remove_input(
     }
     let _ = done;
     crate::versions::prune(t.index)?;
+    for id in texts {
+        let orphan:Option<(Vec<u8>,i64)>=t.index.query_row("SELECT hash,indexed FROM text WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM block WHERE text_id=?1) AND NOT EXISTS(SELECT 1 FROM version_block WHERE text_id=?1)",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if let Some((hash, indexed)) = orphan {
+            crate::text_rows::remove(t.index, id, indexed)?;
+            removed_texts.insert(hash);
+        }
+    }
     Ok(())
 }
 
@@ -385,7 +398,7 @@ pub(super) fn delete_session(
         removed_texts.extend(hashes);
         return Ok(());
     }
-    let (text_ids, session_blobs) = clear_session(i, pk, id)?;
+    let (text_ids, session_blobs) = clear_session(i, pk, id, t.counter)?;
     blobs.extend(session_blobs);
     i.execute(
         "INSERT INTO removed_session(session_id, changed) VALUES (?1, ?2)
@@ -418,21 +431,25 @@ pub(super) fn clear_session(
     i: &Transaction<'_>,
     pk: i64,
     id: &str,
+    counter: i64,
 ) -> Result<(Vec<i64>, Vec<Vec<u8>>)> {
     i.execute("DELETE FROM snapshot WHERE pk IN (SELECT snapshot_pk FROM snapshot_session WHERE session_pk=?1)", [pk])?;
     let text_ids: Vec<i64> = i
         .prepare(
             "SELECT DISTINCT text_id FROM block WHERE session_pk = ?1 AND text_id IS NOT NULL
-             UNION SELECT v.text_id FROM version_block v JOIN message_source ms ON ms.version_hash=v.version_hash JOIN message m ON m.pk=ms.message_pk WHERE m.session_pk=?1 AND v.text_id IS NOT NULL",
+             UNION SELECT v.text_id FROM version_block v JOIN message_source ms ON ms.version_hash=v.version_hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.text_id IS NOT NULL",
         )?
         .query_map([pk], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let blobs: Vec<Vec<u8>> = i
         .prepare(
-            "SELECT DISTINCT blob_hash FROM block WHERE session_pk = ?1 AND blob_hash IS NOT NULL",
+            "SELECT DISTINCT blob_hash FROM block WHERE session_pk = ?1 AND blob_hash IS NOT NULL
+             UNION SELECT v.blob_hash FROM version_block v JOIN message_source ms ON ms.version_hash=v.version_hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.blob_hash IS NOT NULL",
         )?
         .query_map([pk], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
+    let copies:Vec<i64>=i.prepare("SELECT DISTINCT s.message_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE s.session_pk=?1 AND m.session_pk<>?1")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    i.execute("DELETE FROM message_source WHERE session_pk=?1 OR message_pk IN (SELECT pk FROM message WHERE session_pk=?1)",[pk])?;
     // Trigram entries before their tool calls.
     let calls: Vec<(i64, Option<String>, Option<String>)> = i
         .prepare("SELECT pk, command, path FROM tool_call WHERE session_pk = ?1")?
@@ -491,6 +508,7 @@ pub(super) fn clear_session(
     )?;
     i.execute("DELETE FROM message WHERE session_pk = ?1", [pk])?;
     i.execute("DELETE FROM session WHERE pk = ?1", [pk])?;
+    crate::writer::promote_current(i, &copies, counter)?;
     crate::versions::prune(i)?;
     Ok((text_ids, blobs))
 }

@@ -76,6 +76,30 @@ fn rapid_native_acknowledgements_keep_history_latest_and_retry_identity() {
         text(&pool.reader().unwrap().messages(&sid, false).unwrap()),
         ["second current version"]
     );
+    drop(pool);
+    // A new observation can revert to earlier content. Its provenance makes
+    // it distinct from the older envelope's idempotent retry.
+    let mut reversion: Value = serde_json::from_slice(&first).unwrap();
+    reversion["provenance"]["captured_at"] = json!("2026-03-01T11:00:00Z");
+    let reversion = serde_json::to_vec(&reversion).unwrap();
+    assert_eq!(
+        exchange(&ctx, "POST", "/v1/browser-captures", &reversion).status,
+        200
+    );
+    let pass = engine.converge().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert_eq!(
+        pass.bytes_read,
+        reversion.len() as u64 + polylogue_model::snapshot_log::HEADER_LEN as u64,
+        "append reads only new frame bytes"
+    );
+    let pool = ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        text(&reader.messages(&sid, false).unwrap()),
+        ["first retained version"]
+    );
+    assert_eq!(reader.message_versions(&mid).unwrap().len(), 3);
 }
 
 fn rebuild(config: polylogue_engine::Config, archive: &Archive) -> Engine {

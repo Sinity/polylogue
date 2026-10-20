@@ -38,7 +38,7 @@ pub(crate) fn intern(
     // `indexed` marks a text for its search index; the entry itself is
     // written after this transaction commits: by the search thread, or by
     // a first build in bulk when it ends.
-    if indexed & bit == 0 {
+    if bit != 0 && indexed & bit == 0 {
         if !bulk {
             conn.prepare_cached(
                 "INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (?1, ?2)",
@@ -90,6 +90,31 @@ pub(crate) fn index_pending(conn: &Connection, limit: i64) -> Result<u64> {
         tx.commit()?;
     }
 }
+/// Historical versions keep their text row, but only current blocks contribute
+/// documents to full-text ranking or embedding candidates.
+pub(crate) fn unindex_unused(i: &Connection, id: i64, bulk: bool) -> Result<()> {
+    for (bit, kind, table) in [
+        (1, "b.kind<>'tool_result'", "text_fts"),
+        (2, "b.kind='tool_result'", "output_fts"),
+    ] {
+        let used:bool=i.query_row(&format!("SELECT EXISTS(SELECT 1 FROM block b JOIN current_message m ON m.pk=b.message_pk WHERE b.text_id=?1 AND {kind})"),[id],|r|r.get(0))?;
+        if !used {
+            if !bulk {
+                i.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [id])?;
+            }
+            i.execute(
+                "DELETE FROM search_pending WHERE text_id=?1 AND fts_table=?2",
+                params![id, bit],
+            )?;
+            i.execute(
+                "UPDATE text SET indexed=indexed & ~?2 WHERE id=?1",
+                params![id, bit],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn remove(i: &Connection, id: i64, indexed: i64) -> Result<()> {
     if indexed & 1 != 0 {
         i.execute("DELETE FROM text_fts WHERE rowid = ?1", [id])?;
