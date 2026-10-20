@@ -15,13 +15,14 @@ mod note;
 pub mod price;
 mod quota;
 mod session;
+pub mod snapshot_log;
 mod time;
 mod usage;
 mod work;
 
 pub use batch::{
     Accounting, BackgroundUpdate, CountMismatch, Disposition, InlineBlob, MessageRow, OrderKey,
-    Output, RepoLookup,
+    Output, RepoLookup, Snapshot,
 };
 pub use block::{
     Attachment, AttachmentDirection, Block, BlockKind, ErrorReason, ToolAction, ToolOutcome,

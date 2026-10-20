@@ -13,6 +13,7 @@
 //! switch). Only the operator, through the CLI or the reader, enqueues.
 
 pub mod actions;
+mod captures;
 pub mod native;
 pub mod routes;
 
@@ -134,8 +135,8 @@ pub fn safe_token(s: &str) -> String {
 }
 
 /// Where a provider conversation's capture lives, relative to the spool:
-/// one file per conversation, rewritten when it is captured again. The
-/// archive keeps every distinct content as a revision.
+/// one append log per conversation. Its ordered envelopes retain every
+/// distinct observation, including captures acknowledged before convergence.
 pub fn artifact_ref(provider: &str, provider_session_id: &str) -> String {
     let hash = blake3::hash(format!("{provider}:{provider_session_id}").as_bytes());
     format!(

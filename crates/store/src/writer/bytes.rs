@@ -30,6 +30,20 @@ pub(super) fn write_bytes(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<O
     for piece in &b.blobs {
         insert_blob(tx, piece)?;
     }
+    if let Change::Reparse { chain } = b.change {
+        if b.piece.is_some()
+            || !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
+                params![b.input.id, chain, b.length as i64],
+                |r| r.get::<_, bool>(0),
+            )?
+        {
+            return Err(StoreError::Invalid(
+                "reparse must name retained bytes".into(),
+            ));
+        }
+        return Ok(Some(chain));
+    }
     let latest: Option<(i64, i64, i64)> = tx
         .prepare_cached(
             "SELECT number, chain, length FROM revision WHERE input = ?1
@@ -86,6 +100,7 @@ pub(super) fn write_bytes(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<O
             Change::Appended { .. } => "appended",
             Change::Rewritten => "rewritten",
             Change::Unchanged => "back",
+            Change::Reparse { .. } => unreachable!(),
             Change::Disappeared => "deleted",
         };
         insert_observation(tx, b, class, Some(number), seq)?;

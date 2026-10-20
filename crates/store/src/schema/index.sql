@@ -78,6 +78,7 @@ CREATE INDEX session_live_checkout ON session(checkout) WHERE live_root_alive = 
 CREATE INDEX session_repo_root ON session(repo_root) WHERE repo_root IS NOT NULL;   -- repo: by identity
 
 CREATE TABLE message (
+  present           INTEGER NOT NULL DEFAULT 1, -- current contribution; history stays in message_source
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- model.md Identity; inherited marking matches on it
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
@@ -161,12 +162,18 @@ CREATE TABLE message_source (
   message_pk        INTEGER NOT NULL REFERENCES message(pk),
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,       -- archive.db revision.chain
+  session_pk        INTEGER NOT NULL REFERENCES session(pk), -- placement in this source, independent of preferred ownership
+  source_snapshot   INTEGER NOT NULL DEFAULT -1, -- snapshot start, or -1 for ordinary upserts
+  current           INTEGER NOT NULL DEFAULT 1,
+  source_order      INTEGER NOT NULL DEFAULT 0,
+  route_rank        INTEGER NOT NULL DEFAULT 0,
+  main              INTEGER NOT NULL DEFAULT 1,
   source_start      INTEGER NOT NULL,
   source_end        INTEGER NOT NULL,       -- equal to source_start until parsers report record ends
   preferred         INTEGER NOT NULL,       -- 1 for the version the message shows (model.md, preferred version)
   complete          INTEGER NOT NULL DEFAULT 1, -- 0 while the source marks it in progress (no stop reason yet)
   version_hash      BLOB,                   -- BLAKE3 of the version's canonical JSON: the last tie-break
-  PRIMARY KEY (message_pk, input_pk, chain)
+  PRIMARY KEY (message_pk, input_pk, chain, source_snapshot, session_pk)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- foreign-key check; excision scope
 
@@ -609,3 +616,65 @@ CREATE TABLE file_edit (
   kind              TEXT NOT NULL CHECK (kind IN ('read','write','edit','delete')),
   PRIMARY KEY (session_pk, path, tool_call_pk)
 ) STRICT, WITHOUT ROWID;
+
+-- Normalized versions share existing text rows; historical prose is not copied
+-- into opaque packed bodies. Current search still joins current blocks only.
+CREATE INDEX message_source_current ON message_source(input_pk,session_pk,current,message_pk);
+CREATE INDEX message_source_snapshot ON message_source(input_pk,chain,source_snapshot);
+CREATE INDEX message_source_version ON message_source(version_hash);
+CREATE TABLE message_version (
+  hash BLOB PRIMARY KEY,
+  attrs BLOB NOT NULL
+) STRICT, WITHOUT ROWID;
+CREATE TABLE version_block (
+  version_hash BLOB NOT NULL REFERENCES message_version(hash) ON DELETE CASCADE,
+  idx INTEGER NOT NULL,
+  body BLOB NOT NULL,
+  text_id INTEGER REFERENCES text(id),
+  blob_hash BLOB,
+  PRIMARY KEY (version_hash, idx)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX version_block_text ON version_block(text_id);
+CREATE INDEX version_block_blob ON version_block(blob_hash);
+
+CREATE TABLE snapshot (
+  pk INTEGER PRIMARY KEY,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  source_start INTEGER NOT NULL,
+  source_end INTEGER NOT NULL,
+  accounting BLOB NOT NULL,
+  UNIQUE(input_pk, chain, source_start)
+) STRICT;
+CREATE TABLE snapshot_session (
+  snapshot_pk INTEGER NOT NULL REFERENCES snapshot(pk) ON DELETE CASCADE,
+    complete INTEGER NOT NULL DEFAULT 0,
+  session_pk INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
+  facts BLOB NOT NULL,
+  PRIMARY KEY(snapshot_pk, session_pk)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX snapshot_session_session ON snapshot_session(session_pk);
+CREATE TABLE event_source (
+  event_id TEXT NOT NULL REFERENCES event(id) ON DELETE CASCADE,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  source_snapshot INTEGER NOT NULL,
+  current INTEGER NOT NULL,
+  PRIMARY KEY(event_id, input_pk, chain, source_snapshot)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE link_source (
+  link_pk INTEGER NOT NULL REFERENCES link(pk) ON DELETE CASCADE,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  source_snapshot INTEGER NOT NULL,
+  current INTEGER NOT NULL,
+  facts BLOB NOT NULL,
+  PRIMARY KEY(link_pk, input_pk, chain, source_snapshot)
+) STRICT, WITHOUT ROWID;
+CREATE VIEW current_message AS SELECT * FROM message WHERE present = 1;
+CREATE VIEW current_event AS SELECT * FROM event e WHERE (NOT EXISTS
+  (SELECT 1 FROM event_source s WHERE s.event_id = e.id) AND COALESCE((SELECT excised FROM input_ref WHERE pk=e.input_pk),0)=0) OR EXISTS
+  (SELECT 1 FROM event_source s WHERE s.event_id = e.id AND s.current = 1);
+CREATE VIEW current_link AS SELECT * FROM link l WHERE (NOT EXISTS
+  (SELECT 1 FROM link_source s WHERE s.link_pk = l.pk) AND COALESCE((SELECT excised FROM input_ref WHERE pk=l.input_pk),0)=0) OR EXISTS
+  (SELECT 1 FROM link_source s WHERE s.link_pk = l.pk AND s.current = 1);

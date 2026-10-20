@@ -30,6 +30,7 @@ pub struct Observation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseStep {
     pub output: Output,
+    pub snapshot: Option<polylogue_model::Snapshot>,
     pub accounting: Accounting,
     /// Where the step's bytes start in the chain. 0 means the chain was
     /// parsed from the start, so the step's counts replace earlier ones.
@@ -147,7 +148,7 @@ pub struct Batch {
     pub blobs: Vec<Piece>,
     /// The chain's stored length after this batch.
     pub length: u64,
-    pub parse: Option<ParseStep>,
+    pub parse: Vec<ParseStep>,
     /// Runs when the writer is done with the batch: after its transaction
     /// commits (the writer keeps a transaction's batches to retry them one
     /// at a time), or when a batch is dropped unsent.

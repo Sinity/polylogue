@@ -19,7 +19,7 @@ fn run(tx: &Transaction<'_>, session_pk: i64, catalog: &Catalog) -> Result<()> {
             "SELECT pk, model, input_tokens, output_tokens, cache_read_tokens,
                     cache_write_tokens, reasoning_tokens, cache_write_1h_tokens, service_tier,
                     speed
-             FROM message WHERE session_pk = ?1",
+             FROM current_message WHERE session_pk = ?1",
         )?;
         let mut write = tx.prepare_cached(
             "UPDATE message SET cost_nusd = ?2 WHERE pk = ?1 AND cost_nusd IS NOT ?2",

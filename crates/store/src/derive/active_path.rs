@@ -19,18 +19,18 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     tx.prepare_cached(
         "WITH RECURSIVE
            leaf(id) AS (
-             SELECT m.id FROM event e JOIN message m ON m.pk = e.after_message_pk
+             SELECT m.id FROM current_event e JOIN current_message m ON m.pk = e.after_message_pk
              WHERE e.session_pk = ?1 AND e.kind = 'active_leaf'
              ORDER BY e.pk DESC LIMIT 1),
            path(id) AS (
              SELECT id FROM leaf
              UNION
-             SELECT m.parent_id FROM message m JOIN path ON m.id = path.id
+             SELECT m.parent_id FROM current_message m JOIN path ON m.id = path.id
              WHERE m.parent_id IS NOT NULL),
            marked(pk, v) AS (
              SELECT pk, CASE WHEN EXISTS (SELECT 1 FROM leaf)
                              THEN (id IN (SELECT id FROM path)) END
-             FROM message WHERE session_pk = ?1)
+             FROM current_message WHERE session_pk = ?1)
          UPDATE message SET on_active_path = marked.v FROM marked
          WHERE message.pk = marked.pk AND message.on_active_path IS NOT marked.v",
     )?

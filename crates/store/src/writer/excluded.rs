@@ -6,20 +6,20 @@ use super::*;
 
 /// Whether a batch's rows name an excised session or message.
 pub(super) fn touches(b: &Batch, r: &crate::excise::Refused) -> bool {
-    let Some(p) = &b.parse else {
-        return false;
-    };
-    let o = &p.output;
-    o.sessions
-        .iter()
-        .any(|s| r.sessions.contains(&s.id.to_string()))
-        || o.messages.iter().any(|m| refused_message(&m.message, r))
-        || o.events
+    b.parse.iter().any(|p| {
+        let o = &p.output;
+        o.sessions
             .iter()
-            .any(|e| r.sessions.contains(&e.session.to_string()))
-        || o.links.iter().any(|l| {
-            r.sessions.contains(&l.parent.to_string()) || r.sessions.contains(&l.child.to_string())
-        })
+            .any(|s| r.sessions.contains(&s.id.to_string()))
+            || o.messages.iter().any(|m| refused_message(&m.message, r))
+            || o.events
+                .iter()
+                .any(|e| r.sessions.contains(&e.session.to_string()))
+            || o.links.iter().any(|l| {
+                r.sessions.contains(&l.parent.to_string())
+                    || r.sessions.contains(&l.child.to_string())
+            })
+    })
 }
 
 pub(super) fn refused_message(m: &Message, r: &crate::excise::Refused) -> bool {
@@ -32,60 +32,65 @@ pub(super) fn refused_message(m: &Message, r: &crate::excise::Refused) -> bool {
 /// them.
 pub(super) fn without_refused(b: &Batch, r: &crate::excise::Refused) -> Batch {
     let mut out = b.clone();
-    let Some(p) = &mut out.parse else {
-        return out;
-    };
-    let keep_msgs: Vec<bool> = p
-        .output
-        .messages
-        .iter()
-        .map(|m| !refused_message(&m.message, r))
-        .collect();
-    let keep_events: Vec<bool> = p
-        .output
-        .events
-        .iter()
-        .map(|e| !r.sessions.contains(&e.session.to_string()))
-        .collect();
-    let mut i = 0;
-    p.output.messages.retain(|_| {
-        i += 1;
-        keep_msgs[i - 1]
-    });
-    if p.hashes.len() == keep_msgs.len() {
+    for p in &mut out.parse {
+        let keep_msgs: Vec<bool> = p
+            .output
+            .messages
+            .iter()
+            .map(|m| !refused_message(&m.message, r))
+            .collect();
+        let keep_events: Vec<bool> = p
+            .output
+            .events
+            .iter()
+            .map(|e| !r.sessions.contains(&e.session.to_string()))
+            .collect();
         let mut i = 0;
-        p.hashes.retain(|_| {
+        p.output.messages.retain(|_| {
             i += 1;
             keep_msgs[i - 1]
         });
-    }
-    if p.bodies.len() == keep_msgs.len() {
+        if p.hashes.len() == keep_msgs.len() {
+            let mut i = 0;
+            p.hashes.retain(|_| {
+                i += 1;
+                keep_msgs[i - 1]
+            });
+        }
+        if p.bodies.len() == keep_msgs.len() {
+            let mut i = 0;
+            p.bodies.retain(|_| {
+                i += 1;
+                keep_msgs[i - 1]
+            });
+        }
         let mut i = 0;
-        p.bodies.retain(|_| {
-            i += 1;
-            keep_msgs[i - 1]
-        });
-    }
-    let mut i = 0;
-    p.output.events.retain(|_| {
-        i += 1;
-        keep_events[i - 1]
-    });
-    if p.events.len() == keep_events.len() {
-        let mut i = 0;
-        p.events.retain(|_| {
+        p.output.events.retain(|_| {
             i += 1;
             keep_events[i - 1]
         });
+        if p.events.len() == keep_events.len() {
+            let mut i = 0;
+            p.events.retain(|_| {
+                i += 1;
+                keep_events[i - 1]
+            });
+        }
+        p.output
+            .sessions
+            .retain(|s| !r.sessions.contains(&s.id.to_string()));
+        p.output.links.retain(|l| {
+            !r.sessions.contains(&l.parent.to_string())
+                && !r.sessions.contains(&l.child.to_string())
+        });
+        p.output
+            .background
+            .retain(|u| !r.sessions.contains(&u.session.to_string()));
+        if let Some(snapshot) = &mut p.snapshot {
+            snapshot
+                .covered
+                .retain(|session| !r.sessions.contains(&session.to_string()));
+        }
     }
-    p.output
-        .sessions
-        .retain(|s| !r.sessions.contains(&s.id.to_string()));
-    p.output.links.retain(|l| {
-        !r.sessions.contains(&l.parent.to_string()) && !r.sessions.contains(&l.child.to_string())
-    });
-    p.output
-        .background
-        .retain(|u| !r.sessions.contains(&u.session.to_string()));
     out
 }

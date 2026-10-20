@@ -337,59 +337,66 @@ fn run(
         None => None,
     };
     let mut extra = Vec::new();
-    let parse = (job.origin.open)(&job.path).and_then(|parser| {
-        // A parser that panics loses only its own input (law 63): the panic
-        // becomes this input's failure, and every other input is parsed.
-        let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            polylogue_store::fault::check("parse", &job.path.to_string_lossy())
-                .map_err(|e| e.to_string())?;
-            time(Stage::Parse, || {
-                parser.step(job.carry.as_ref(), &bytes, job.start)
-            })
-            .map_err(|e| e.to_string())
-        }))
-        .unwrap_or_else(|panic| {
-            let why = panic
-                .downcast_ref::<&str>()
-                .map(|s| (*s).to_owned())
-                .or_else(|| panic.downcast_ref::<String>().cloned())
-                .unwrap_or_default();
-            Err(format!("the parser panicked: {why}"))
-        });
-        match step {
-            Ok((mut step, carry)) => {
-                for blob in std::mem::take(&mut step.output.blobs) {
-                    match time(Stage::Store, || Piece::prepare_in(blobs, &blob.bytes)) {
-                        Ok(p) => extra.push(p),
-                        Err(e) => out.error = Some(format!("store inline bytes: {e}")),
+    let parse = (job.origin.open)(&job.path)
+        .map(|parser| {
+            // A parser that panics loses only its own input (law 63): the panic
+            // becomes this input's failure, and every other input is parsed.
+            let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                polylogue_store::fault::check("parse", &job.path.to_string_lossy())
+                    .map_err(|e| e.to_string())?;
+                time(Stage::Parse, || {
+                    parser.steps(job.carry.as_ref(), &bytes, job.start)
+                })
+                .map_err(|e| e.to_string())
+            }))
+            .unwrap_or_else(|panic| {
+                let why = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_owned())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                Err(format!("the parser panicked: {why}"))
+            });
+            match step {
+                Ok((steps, carry)) => {
+                    out.carry = Some(carry);
+                    let mut parsed = Vec::new();
+                    for mut step in steps {
+                        for blob in std::mem::take(&mut step.output.blobs) {
+                            match time(Stage::Store, || Piece::prepare_in(blobs, &blob.bytes)) {
+                                Ok(p) => extra.push(p),
+                                Err(e) => out.error = Some(format!("store inline bytes: {e}")),
+                            }
+                        }
+                        out.parsed_upto = job.start + step.consumed;
+                        let mut p = ParseStep {
+                            snapshot: step.snapshot,
+                            output: step.output,
+                            accounting: step.accounting,
+                            start: job.start + step.start,
+                            parsed_upto: job.start + step.consumed,
+                            parser_version: job.origin.parser_version,
+                            at_end: job.at_end,
+                            hashes: Vec::new(),
+                            packed: Default::default(),
+                            bodies: Vec::new(),
+                            events: Vec::new(),
+                        };
+                        // Packing for the writer is store work, not parsing.
+                        let packed = std::time::Instant::now();
+                        p.prepare();
+                        add(Stage::Store, packed.elapsed());
+                        parsed.push(p);
                     }
+                    parsed
                 }
-                out.parsed_upto = job.start + step.consumed;
-                out.carry = Some(carry);
-                let mut p = ParseStep {
-                    output: step.output,
-                    accounting: step.accounting,
-                    start: job.start,
-                    parsed_upto: job.start + step.consumed,
-                    parser_version: job.origin.parser_version,
-                    at_end: job.at_end,
-                    hashes: Vec::new(),
-                    packed: Default::default(),
-                    bodies: Vec::new(),
-                    events: Vec::new(),
-                };
-                // Packing for the writer is store work, not parsing.
-                let packed = std::time::Instant::now();
-                p.prepare();
-                add(Stage::Store, packed.elapsed());
-                Some(p)
+                Err(e) => {
+                    out.error = Some(format!("parse {}: {e}", job.path.display()));
+                    Vec::new()
+                }
             }
-            Err(e) => {
-                out.error = Some(format!("parse {}: {e}", job.path.display()));
-                None
-            }
-        }
-    });
+        })
+        .unwrap_or_default();
     if let Bytes::Import(source) = &job.source {
         let upto = if job.origin.support == polylogue_sources::Support::Parsed {
             out.parsed_upto

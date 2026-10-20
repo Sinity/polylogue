@@ -65,7 +65,7 @@
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 10215,
         "message": {
           "at": "2026-07-16T01:15:00Z",
           "blocks": [
@@ -81,7 +81,7 @@
         "offset": 0
       },
       {
-        "end": 2,
+        "end": 10215,
         "message": {
           "at": "2026-07-16T01:15:40Z",
           "blocks": [
@@ -111,10 +111,10 @@
           "role": "user",
           "session": "chatgpt:chatgpt-fixture-conversation"
         },
-        "offset": 1
+        "offset": 0
       },
       {
-        "end": 3,
+        "end": 10215,
         "message": {
           "at": "2026-07-16T01:15:42Z",
           "blocks": [
@@ -132,10 +132,10 @@
           "role": "assistant",
           "session": "chatgpt:chatgpt-fixture-conversation"
         },
-        "offset": 2
+        "offset": 0
       },
       {
-        "end": 4,
+        "end": 10215,
         "message": {
           "at": "2026-07-16T01:15:44.946Z",
           "blocks": [
@@ -153,10 +153,10 @@
           "role": "assistant",
           "session": "chatgpt:chatgpt-fixture-conversation"
         },
-        "offset": 3
+        "offset": 0
       },
       {
-        "end": 5,
+        "end": 10215,
         "message": {
           "at": "2026-07-16T01:15:45Z",
           "blocks": [
@@ -179,10 +179,10 @@
           "role": "assistant",
           "session": "chatgpt:chatgpt-fixture-conversation"
         },
-        "offset": 4
+        "offset": 0
       },
       {
-        "end": 6,
+        "end": 10215,
         "message": {
           "at": "2026-07-16T01:15:46Z",
           "blocks": [
@@ -201,10 +201,10 @@
           "role": "user",
           "session": "chatgpt:chatgpt-fixture-conversation"
         },
-        "offset": 5
+        "offset": 0
       },
       {
-        "end": 7,
+        "end": 10215,
         "message": {
           "at": "2026-07-16T02:42:12.588194Z",
           "blocks": [
@@ -223,10 +223,10 @@
           "role": "assistant",
           "session": "chatgpt:chatgpt-fixture-conversation"
         },
-        "offset": 6
+        "offset": 0
       },
       {
-        "end": 8,
+        "end": 10215,
         "message": {
           "at": "2026-07-16T02:42:13Z",
           "blocks": [
@@ -260,7 +260,7 @@
           "role": "assistant",
           "session": "chatgpt:chatgpt-fixture-conversation"
         },
-        "offset": 7
+        "offset": 0
       }
     ],
     "sessions": [

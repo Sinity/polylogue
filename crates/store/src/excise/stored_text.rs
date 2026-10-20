@@ -4,6 +4,7 @@ use super::*;
 use text_matches::TextMatches;
 
 mod bytes;
+mod framing;
 use bytes::PlainBytes;
 
 const READ_CHUNK: usize = 64 * 1024;
@@ -13,6 +14,7 @@ type Ranges = Vec<(u64, u64)>;
 
 pub(super) struct StoredText {
     ranges: BTreeMap<Chain, Ranges>,
+    patches: BTreeMap<Chain, Vec<(u64, Vec<u8>)>>,
     fill: u8,
     bytes: PlainBytes,
 }
@@ -52,6 +54,8 @@ pub(super) fn find_in(
     needle: &str,
 ) -> Result<StoredText> {
     let mut ranges = BTreeMap::new();
+    let mut patches = BTreeMap::new();
+    let fill = text_matches::replacement(needle)?;
     let mut bytes = PlainBytes::new()?;
     let mut chains = archive.prepare(
         "SELECT r.input, r.chain, max(r.length), i.format FROM revision r
@@ -76,6 +80,9 @@ pub(super) fn find_in(
             format: format.clone(),
             detail,
         };
+        let frames = framing::read(archive, store, &input, chain, length)?;
+        let frame_headers = framing::headers(&frames);
+        let mut framing = frame_headers.iter().peekable();
         let mut scanner = TextMatches::new(needle)?;
         let mut header = Vec::with_capacity(16);
         let mut pos = 0;
@@ -92,7 +99,7 @@ pub(super) fn find_in(
                     )));
                 }
                 e.length = e.length.min(length - pos);
-                bytes.visit(archive, store, &e, |bytes, _at| {
+                bytes.visit(archive, store, &e, |bytes, at| {
                     if header.len() < 16 {
                         header.extend_from_slice(&bytes[..bytes.len().min(16 - header.len())]);
                         if header.starts_with(b"SQLite format 3\0") {
@@ -115,7 +122,16 @@ pub(super) fn find_in(
                             ));
                         }
                     }
-                    scanner.feed(bytes).map_err(|e| unsupported(e.to_string()))
+                    while framing.peek().is_some_and(|(_, end)| *end <= at) { framing.next(); }
+                    let mut masked = None;
+                    for (start, end) in framing.clone() {
+                        if *start >= at + bytes.len() as u64 { break; }
+                        let copy = masked.get_or_insert_with(|| bytes.to_vec());
+                        let from = start.saturating_sub(at) as usize;
+                        let upto = (*end - at).min(bytes.len() as u64) as usize;
+                        copy[from..upto].fill(b' ');
+                    }
+                    scanner.feed(masked.as_deref().unwrap_or(bytes)).map_err(|e| unsupported(e.to_string()))
                 })?;
                 pos += e.length;
             }
@@ -127,27 +143,48 @@ pub(super) fn find_in(
             scanner.finish().map_err(|e| unsupported(e.to_string()))
         })()?;
         if !scan.is_empty() {
+            let rewritten = framing::rewrite(
+                archive,
+                store,
+                &mut bytes,
+                &(input.clone(), chain),
+                &frames,
+                &scan,
+                fill,
+            )?;
+            patches.insert((input.clone(), chain), rewritten);
             ranges.insert((input, chain), scan);
         }
     }
     Ok(StoredText {
         ranges,
-        fill: text_matches::replacement(needle)?,
+        patches,
+        fill,
         bytes,
     })
 }
 
 impl StoredText {
+    fn changed_ranges(&self) -> BTreeMap<Chain, Ranges> {
+        let mut changed = self.ranges.clone();
+        for (chain, patches) in &self.patches {
+            changed.entry(chain.clone()).or_default().extend(
+                patches
+                    .iter()
+                    .map(|(at, bytes)| (*at, *at + bytes.len() as u64)),
+            );
+        }
+        changed
+    }
+
     pub(super) fn blobs(&self, archive: &rusqlite::Connection) -> Result<Vec<BlobHash>> {
         let mut hashes = BTreeSet::new();
         let mut stmt = archive.prepare("SELECT DISTINCT blob FROM extent WHERE input = ?1 AND chain = ?2 AND offset < ?4 AND offset + length > ?3")?;
-        for ((input, chain), ranges) in &self.ranges {
+        for ((input, chain), ranges) in self.changed_ranges() {
             for (start, end) in ranges {
-                for row in stmt
-                    .query_map(params![input, chain, *start as i64, *end as i64], |r| {
-                        r.get::<_, Vec<u8>>(0)
-                    })?
-                {
+                for row in stmt.query_map(params![input, chain, start as i64, end as i64], |r| {
+                    r.get::<_, Vec<u8>>(0)
+                })? {
                     let hash = row?
                         .try_into()
                         .map_err(|_| StoreError::Invalid("blob hash is not 32 bytes".into()))?;
@@ -182,8 +219,8 @@ impl StoredText {
             "SELECT blob, offset, length, blob_offset FROM extent WHERE input = ?1 AND chain = ?2
              AND offset < ?4 AND offset + length > ?3",
         )?;
-        for ((input, chain), ranges) in &self.ranges {
-            for &(start, end) in ranges {
+        for ((input, chain), ranges) in self.changed_ranges() {
+            for (start, end) in ranges {
                 for row in
                     affected.query_map(params![input, chain, start as i64, end as i64], |r| {
                         Ok((
@@ -214,7 +251,9 @@ impl StoredText {
                 "SELECT input, chain, offset, length, blob, blob_offset FROM extent WHERE blob = ?1")?
                 .query_map([&hash], extent)?.collect::<rusqlite::Result<_>>()?;
             for e in extents {
-                let ranges = self.ranges.get(&(e.input.clone(), e.chain));
+                let key = (e.input.clone(), e.chain);
+                let ranges = self.ranges.get(&key);
+                let patches = self.patches.get(&key);
                 let mut batch = t.store.batch(hashed_blobs::Durability::PerFile);
                 let mut buffer = Vec::with_capacity(WRITE_CHUNK);
                 let mut pieces = Vec::new();
@@ -230,6 +269,17 @@ impl StoredText {
                                         *b = self.fill;
                                     }
                                 }
+                            }
+                        }
+                    }
+                    if let Some(patches) = patches {
+                        for (start, patch) in patches {
+                            let from = (*start).max(at);
+                            let end = (*start + patch.len() as u64).min(at + bytes.len() as u64);
+                            if from < end {
+                                bytes[(from - at) as usize..(end - at) as usize].copy_from_slice(
+                                    &patch[(from - start) as usize..(end - start) as usize],
+                                );
                             }
                         }
                     }

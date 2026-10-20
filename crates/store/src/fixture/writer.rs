@@ -226,7 +226,8 @@ impl WriterWorld {
             blobs: vec![],
             length: self.offset,
             release: Default::default(),
-            parse: Some(ParseStep {
+            parse: vec![ParseStep {
+                snapshot: None,
                 output,
                 accounting,
                 start,
@@ -237,7 +238,7 @@ impl WriterWorld {
                 packed: Default::default(),
                 bodies: vec![],
                 events: vec![],
-            }),
+            }],
         };
         self.writer.send(batch).expect("send the batch");
         self.writer.flush().expect("flush");

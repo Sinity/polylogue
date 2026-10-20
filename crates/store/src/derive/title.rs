@@ -20,7 +20,7 @@ const LENGTH: usize = 80;
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     let body: Option<Vec<u8>> = tx
         .prepare_cached(
-            "SELECT t.body FROM message m
+            "SELECT t.body FROM current_message m
              JOIN block b ON b.message_pk = m.pk AND b.kind = 'text'
              JOIN text t ON t.id = b.text_id
              WHERE m.session_pk = ?1 AND m.written_by = 'human'

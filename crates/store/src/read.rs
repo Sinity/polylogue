@@ -393,7 +393,7 @@ impl Reader<'_> {
         Ok(self
             .conn()
             .prepare_cached(
-                "SELECT pk, id FROM message WHERE session_pk = ?1 ORDER BY order_input_id, seq",
+                "SELECT pk, id FROM current_message WHERE session_pk = ?1 ORDER BY order_input_id, seq",
             )?
             .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?)
@@ -427,7 +427,7 @@ impl Reader<'_> {
         let links: Vec<(String, String, Option<String>)> = self
             .conn()
             .prepare_cached(
-                "SELECT parent_id, how, branch_point FROM link
+                "SELECT parent_id, how, branch_point FROM current_link
                  WHERE child_id = ?1 AND kind = 'continuation' AND how IN ('fork', 'resume')
                  ORDER BY pk",
             )?
@@ -454,10 +454,10 @@ impl Reader<'_> {
             } else {
                 self.conn()
                     .prepare_cached(
-                        "SELECT DISTINCT m.pk, m.order_input_id, m.seq FROM message m
+                        "SELECT DISTINCT m.pk, m.order_input_id, m.seq FROM current_message m
                          JOIN message_source s ON s.message_pk = m.pk
                          JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
-                         WHERE m.session_pk = ?1 ORDER BY m.order_input_id, m.seq",
+                         WHERE m.session_pk = ?1 AND s.current=1 ORDER BY m.order_input_id, m.seq",
                     )?
                     .query_map(params![parent_pk, child_pk], |r| r.get(0))?
                     .collect::<rusqlite::Result<_>>()?
@@ -485,6 +485,7 @@ impl Reader<'_> {
         {
             let mut stmt = self.conn().prepare_cached(
                 "SELECT b.message_pk, b.body, t.body FROM block b
+                 JOIN current_message cm ON cm.pk = b.message_pk
                  LEFT JOIN text t ON t.id = b.text_id
                  WHERE b.session_pk = ?1 ORDER BY b.message_pk, b.idx",
             )?;
@@ -508,7 +509,7 @@ impl Reader<'_> {
             "SELECT pk, id, role, prompt_kind, model, at, parent_id, input_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens, service_tier, stop_reason,
                     duration_ms, attrs_json, cache_write_1h_tokens, speed
-             FROM message WHERE session_pk = ?1 ORDER BY order_input_id, seq",
+             FROM current_message WHERE session_pk = ?1 ORDER BY order_input_id, seq",
         )?;
         let rows = stmt.query_map([session_pk], |r| {
             Ok((
@@ -619,8 +620,10 @@ impl Reader<'_> {
         }
         Ok(Status {
             sessions: count("SELECT COUNT(*) FROM session")?,
-            messages: count("SELECT COUNT(*) FROM message")?,
-            tool_calls: count("SELECT COUNT(*) FROM tool_call")?,
+            messages: count("SELECT COUNT(*) FROM current_message")?,
+            tool_calls: count(
+                "SELECT COUNT(*) FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN current_message m ON m.pk=b.message_pk",
+            )?,
             inputs: count("SELECT COUNT(*) FROM a.input")?,
             revisions: count("SELECT COUNT(*) FROM a.revision")?,
             stored_bytes: count("SELECT COALESCE(SUM(size), 0) FROM a.blob")?,
@@ -727,6 +730,25 @@ impl Reader<'_> {
     }
 
     /// The latest retained revision and any committed parse progress.
+    /// Every retained physical chain, with rebuildable parser progress.
+    pub fn retained_chains(&self, id: &str) -> Result<Vec<(i64, RetainedInput)>> {
+        let mut stmt=self.conn().prepare_cached("SELECT r.chain,max(r.length),COALESCE(p.parsed_upto,0),p.parser_version,COALESCE(p.status='waiting',0),max(r.produced='imported') FROM a.revision r LEFT JOIN input_ref i ON i.id=r.input LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=r.chain WHERE r.input=?1 GROUP BY r.chain ORDER BY r.chain")?;
+        Ok(stmt
+            .query_map([id], |r| {
+                Ok((
+                    r.get(0)?,
+                    RetainedInput {
+                        length: r.get::<_, i64>(1)? as u64,
+                        parsed_upto: r.get::<_, i64>(2)? as u64,
+                        parser_version: r.get::<_, Option<i64>>(3)?.map(|v| v as u32),
+                        waiting: r.get(4)?,
+                        route_rank: if r.get::<_, bool>(5)? { 2 } else { 0 },
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn retained_input(&self, id: &str) -> Result<Option<RetainedInput>> {
         let row = self
             .conn()
@@ -806,6 +828,49 @@ impl Reader<'_> {
             out.push(serde_json::Value::Object(obj));
         }
         Ok(out)
+    }
+}
+
+/// A normalized version at its exact retained source range.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageVersion {
+    pub input: String,
+    pub chain: u64,
+    pub snapshot: Option<u64>,
+    pub start: u64,
+    pub end: u64,
+    pub current: bool,
+    pub message: Message,
+}
+
+impl Reader<'_> {
+    pub fn message_versions(&self, id: &polylogue_model::MessageId) -> Result<Vec<MessageVersion>> {
+        let mut stmt = self.conn().prepare("SELECT r.id,s.chain,s.source_snapshot,s.source_start,s.source_end,s.current,s.version_hash FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref r ON r.pk=s.input_pk JOIN session placement ON placement.pk=s.session_pk WHERE m.id=?1 ORDER BY r.id,s.chain,s.source_snapshot,s.source_start,placement.id")?;
+        let rows = stmt.query_map([id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Vec<u8>>(6)?,
+            ))
+        })?;
+        let mut versions = Vec::new();
+        for row in rows {
+            let (input, chain, snapshot, start, end, current, hash) = row?;
+            versions.push(MessageVersion {
+                input,
+                chain: chain as u64,
+                snapshot: (snapshot >= 0).then_some(snapshot as u64),
+                start: start as u64,
+                end: end as u64,
+                current: current != 0,
+                message: crate::versions::load(self.conn(), &hash)?,
+            });
+        }
+        Ok(versions)
     }
 }
 

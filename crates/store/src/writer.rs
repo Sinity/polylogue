@@ -28,6 +28,7 @@ mod batch;
 mod bytes;
 mod excluded;
 mod rows;
+pub(crate) use rows::promote_current;
 mod search;
 
 use crate::encoding::{block_text, pack_block, pack_event, unpack_block, unpack_text};
@@ -672,7 +673,7 @@ impl Inner {
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
         for b in batches.clone() {
-            if let Some(p) = &b.parse {
+            for p in &b.parse {
                 p.accounting.check()?;
             }
         }
@@ -692,8 +693,10 @@ impl Inner {
         let counter = bump_counter(&itx)?;
         let mut stats = (0u64, 0u64);
         for (b, chain) in batches.zip(chains) {
-            if let (Some(p), Some(chain)) = (&b.parse, chain) {
-                stats.1 += write_rows(&itx, b, p, chain, counter, self.unsynced)?;
+            if let Some(chain) = chain {
+                for p in &b.parse {
+                    stats.1 += write_rows(&itx, b, p, chain, counter, self.unsynced)?;
+                }
             }
             stats.0 += 1;
         }
@@ -709,16 +712,18 @@ impl Inner {
 
 /// The input bytes a batch was parsed from (or stored, when unparsed).
 fn input_bytes(b: &Batch) -> u64 {
-    match &b.parse {
-        Some(p) => p.parsed_upto.saturating_sub(p.start),
-        None => b.piece.as_ref().map_or(0, |p| p.size),
+    match (b.parse.first(), b.parse.last()) {
+        (Some(first), Some(last)) => last.parsed_upto.saturating_sub(first.start),
+        _ => b.piece.as_ref().map_or(0, |p| p.size),
     }
 }
 
 fn weight(b: &Batch) -> usize {
-    1 + b.parse.as_ref().map_or(0, |p| {
-        p.output.messages.len() + p.output.events.len() + p.output.links.len()
-    })
+    1 + b
+        .parse
+        .iter()
+        .map(|p| p.output.messages.len() + p.output.events.len() + p.output.links.len())
+        .sum::<usize>()
 }
 
 // ---------------------------------------------------------------- archive.db

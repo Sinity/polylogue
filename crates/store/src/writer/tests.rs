@@ -78,7 +78,8 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
         piece: None,
         blobs: vec![],
         length: start + 100,
-        parse: Some(ParseStep {
+        parse: vec![ParseStep {
+            snapshot: None,
             output: Output {
                 sessions: sessions
                     .iter()
@@ -96,7 +97,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             packed: Default::default(),
             bodies: vec![],
             events: vec![],
-        }),
+        }],
         release: InFlight::default(),
     }
 }
@@ -361,7 +362,7 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
 fn session_facts_merge_and_a_pending_link_finds_its_child() {
     let w = world();
     let mut b1 = batch("i", 0, 0, vec![], &[]);
-    let p = b1.parse.as_mut().unwrap();
+    let p = b1.parse.first_mut().unwrap();
     let mut s = Session::new(sid("parent"), SessionKind::Main);
     s.offer_cwd("/a");
     p.output.sessions = vec![s.clone()];
@@ -375,7 +376,7 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
     }];
     w.writer.send(b1).unwrap();
     let mut b2 = batch("j", 0, 0, vec![], &[]);
-    let p = b2.parse.as_mut().unwrap();
+    let p = b2.parse.first_mut().unwrap();
     s.offer_cwd("/b");
     s.offer_title("named", TitleSource::Custom);
     p.output.sessions = vec![s, Session::new(sid("agent-1"), SessionKind::Subagent)];
@@ -429,7 +430,7 @@ fn copied_messages_are_stored_once_and_read_logically() {
         vec![row(0, a), row(50, b)],
         &["parent", "child"],
     );
-    child.parse.as_mut().unwrap().output.links = vec![Link {
+    child.parse.first_mut().unwrap().output.links = vec![Link {
         kind: LinkKind::Copy,
         parent: sid("parent"),
         child: sid("child"),
@@ -476,7 +477,7 @@ fn a_step_whose_counts_do_not_add_up_is_refused_alone() {
         vec![row(0, text_message("x", "t", Role::User, "x", None))],
         &["t"],
     );
-    bad.parse.as_mut().unwrap().accounting.framed = 5;
+    bad.parse.first_mut().unwrap().accounting.framed = 5;
     w.writer.send(good).unwrap();
     w.writer.send(bad).unwrap();
     let report = w.writer.flush().unwrap();
@@ -492,11 +493,11 @@ fn revisions_extents_and_parse_state_follow_appends() {
     let mut b1 = batch("i", 0, 0, vec![], &[]);
     b1.piece = Some(Piece::prepare(&store, b"line one\n").unwrap());
     b1.length = 9;
-    b1.parse.as_mut().unwrap().parsed_upto = 9;
+    b1.parse.first_mut().unwrap().parsed_upto = 9;
     let mut b2 = batch("i", 0, 9, vec![], &[]);
     b2.piece = Some(Piece::prepare(&store, b"line two\npartial").unwrap());
     b2.length = 25;
-    b2.parse.as_mut().unwrap().parsed_upto = 18;
+    b2.parse.first_mut().unwrap().parsed_upto = 18;
     w.writer.send(b1).unwrap();
     w.writer.send(b2).unwrap();
     w.writer.flush().unwrap();
@@ -541,7 +542,7 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     let mut first = batch("i", 0, 0, vec![], &[]);
     first.piece = Some(Piece::prepare(&store, b"line\npartial").unwrap());
     first.length = 12;
-    let parse = first.parse.as_mut().unwrap();
+    let parse = first.parse.first_mut().unwrap();
     parse.parsed_upto = 5;
     parse.at_end = true;
     w.writer.send(first).unwrap();
@@ -552,7 +553,7 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     let mut append = batch("i", 0, 12, vec![], &[]);
     append.piece = Some(Piece::prepare(&store, b"rest").unwrap());
     append.length = 16;
-    append.parse = None;
+    append.parse.clear();
     w.writer.send(append).unwrap();
     w.writer.flush().unwrap();
     let known = pool.reader().unwrap().known_inputs("m").unwrap();
@@ -571,7 +572,7 @@ fn a_copy_in_a_spawned_session_never_takes_the_message_from_its_origin() {
         let copy = text_message("h1", "agent-c", Role::User, "copy", None);
         let main = batch("main", 0, 0, vec![row(0, original)], &["s"]);
         let mut spawned = batch("spawned", 0, 0, vec![row(0, copy)], &[]);
-        if let Some(p) = &mut spawned.parse {
+        if let Some(p) = spawned.parse.first_mut() {
             p.output.sessions = vec![Session::new(sid("agent-c"), SessionKind::Compaction)];
         }
         let (first, second) = if main_first {
@@ -618,7 +619,7 @@ fn session_in(id: &str, cwd: &str, repo: Option<&str>) -> Session {
 fn lookup_batch(input: &str, path: &str, remote: Option<&str>, root: &str) -> Batch {
     let mut b = batch(input, 0, 0, vec![], &[]);
     b.input.format = "polylogue-repo-lookup".into();
-    let p = b.parse.as_mut().unwrap();
+    let p = b.parse.first_mut().unwrap();
     p.output.repo_lookups.push(polylogue_model::RepoLookup {
         path: path.into(),
         remote: remote.map(Into::into),
@@ -648,7 +649,7 @@ fn repo_of(w: &World, session: &str) -> (Option<String>, Option<String>) {
 fn sessions_take_the_repository_of_the_nearest_lookup_above_their_cwd() {
     let w = world();
     let mut b = batch("i1", 0, 0, vec![], &[]);
-    let out = &mut b.parse.as_mut().unwrap().output;
+    let out = &mut b.parse.first_mut().unwrap().output;
     out.sessions
         .push(session_in("deep", "/work/outer/inner/src", None));
     out.sessions
@@ -692,7 +693,7 @@ fn sessions_take_the_repository_of_the_nearest_lookup_above_their_cwd() {
     );
     // A session written after its lookup joins as it is written.
     let mut b = batch("i2", 0, 0, vec![], &[]);
-    let out = &mut b.parse.as_mut().unwrap().output;
+    let out = &mut b.parse.first_mut().unwrap().output;
     out.sessions.push(session_in("late", "/work/outer/x", None));
     w.writer.send(b).unwrap();
     w.writer.flush().unwrap();
@@ -884,3 +885,5 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
     );
     assert_eq!(forward.1[0]["derived_title"], "First question");
 }
+
+mod snapshots;

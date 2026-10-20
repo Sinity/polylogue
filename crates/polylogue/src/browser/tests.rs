@@ -118,7 +118,10 @@ fn a_capture_is_spooled_durably_and_archived_by_the_loop() {
     assert_eq!(ack["content_hash"], sha.as_str());
     assert_eq!(ack["submitted_content_hash"], sha.as_str());
     let spooled = ctx.spool.join(ack["artifact_ref"].as_str().unwrap());
-    assert_eq!(std::fs::read(&spooled).unwrap(), bytes);
+    let stored = std::fs::read(&spooled).unwrap();
+    let body_start =
+        polylogue_model::snapshot_log::MAGIC.len() + polylogue_model::snapshot_log::HEADER_LEN;
+    assert_eq!(&stored[body_start..], bytes);
     assert!(spooled.starts_with(w.home.join(".local/state/polylogue/browser-capture")));
     // The same bytes again change nothing.
     let again = exchange(&ctx, "POST", "/v1/browser-captures", &bytes);
@@ -509,3 +512,5 @@ fn receiver_preparation_and_asset_routes_are_not_native_host_capabilities() {
     }
     assert!(std::fs::read_dir(&ctx.spool).unwrap().next().is_none());
 }
+
+mod snapshots;

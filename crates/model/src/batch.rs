@@ -50,6 +50,17 @@ pub struct InlineBlob {
     pub bytes: Vec<u8>,
 }
 
+/// One retained observation's byte range and session scope. Other inputs
+/// keep their own current contributions to those sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub start: u64,
+    pub end: u64,
+    pub covered: Vec<SessionId>,
+    /// Absence is authoritative only for explicitly complete observations.
+    pub complete: bool,
+}
+
 /// A message as one input holds it. `offset` is where its first record
 /// starts in the input and `end` where its last record ends, so the stored
 /// byte range covers every record the message was built from. The same

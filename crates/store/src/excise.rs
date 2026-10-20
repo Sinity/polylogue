@@ -445,7 +445,7 @@ impl Plan {
         }
 
         for input in &self.whole {
-            remove_input(t, input, req, &mut refused, done)?;
+            remove_input(t, input, req, &mut refused, done, &mut removed_texts)?;
         }
         for (input, spans) in &self.spans {
             overwrite(t, input, spans, req, &mut refused, &mut delete_files)?;
@@ -491,7 +491,7 @@ impl Plan {
                     [hash],
                     |r| r.get(0),
                 )? || t.index.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM block WHERE blob_hash = ?1)",
+                    "SELECT EXISTS (SELECT 1 FROM block WHERE blob_hash = ?1) OR EXISTS (SELECT 1 FROM version_block WHERE blob_hash=?1)",
                     [hash],
                     |r| r.get(0),
                 )?;

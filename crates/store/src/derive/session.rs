@@ -28,7 +28,7 @@ use std::cmp::Ordering;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "session",
-    version: Version::Rules(2),
+    version: Version::Rules(3),
     after: &[],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
@@ -56,13 +56,14 @@ fn later(a: Option<i64>, b: Option<i64>) -> Ordering {
 }
 
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
+    tx.execute("UPDATE session SET last_activity_at=(SELECT max(at) FROM current_message WHERE session_pk=?1) WHERE pk=?1",[session_pk])?;
     let rows: Vec<(String, Option<i64>, Option<i64>)> = tx
         .prepare_cached(
             "SELECT r.facts,
-                    (SELECT MIN(m.at) FROM message_source ms JOIN message m ON m.pk = ms.message_pk
-                     WHERE ms.input_pk = r.input_pk AND m.session_pk = r.session_pk),
-                    (SELECT MAX(m.at) FROM message_source ms JOIN message m ON m.pk = ms.message_pk
-                     WHERE ms.input_pk = r.input_pk AND m.session_pk = r.session_pk)
+                    (SELECT MIN(m.at) FROM message_source ms JOIN current_message m ON m.pk = ms.message_pk
+                     WHERE ms.input_pk = r.input_pk AND ms.current=1 AND m.session_pk = r.session_pk),
+                    (SELECT MAX(m.at) FROM message_source ms JOIN current_message m ON m.pk = ms.message_pk
+                     WHERE ms.input_pk = r.input_pk AND ms.current=1 AND m.session_pk = r.session_pk)
              FROM session_record r WHERE r.session_pk = ?1",
         )?
         .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
