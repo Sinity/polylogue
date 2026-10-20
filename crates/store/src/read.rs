@@ -1,10 +1,10 @@
 //! Read connections. The daemon keeps a pool; every read in one request
 //! sees one consistent snapshot of `index.db` with `archive.db` attached.
 
-use crate::Result;
 use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
 use crate::encoding::{restore_text, unpack_block, unpack_text};
+use crate::{Result, StoreError};
 use polylogue_model::{
     Block, Message, MessageId, PromptKind, Role, Session, SessionId, Timestamp, Usage,
 };
@@ -16,7 +16,13 @@ use std::sync::Mutex;
 /// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {
     archive: Archive,
-    idle: Mutex<Vec<Connection>>,
+    state: Mutex<PoolState>,
+}
+
+#[derive(Default)]
+struct PoolState {
+    idle: Vec<Connection>,
+    closed: bool,
 }
 
 /// One consistent read: a read transaction on `index.db` with `archive.db`
@@ -69,7 +75,7 @@ impl ReadPool {
     pub fn open(archive: &Archive) -> Result<Self> {
         Ok(Self {
             archive: archive.clone(),
-            idle: Mutex::new(Vec::new()),
+            state: Mutex::new(PoolState::default()),
         })
     }
 
@@ -81,9 +87,19 @@ impl ReadPool {
     }
 
     pub fn reader(&self) -> Result<Reader<'_>> {
-        let conn = match self.idle.lock().map(|mut v| v.pop()) {
-            Ok(Some(c)) => c,
-            _ => self.connect()?,
+        let idle = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| StoreError::Invalid("read pool lock poisoned".into()))?;
+            if state.closed {
+                return Err(StoreError::ReadPoolClosed);
+            }
+            state.idle.pop()
+        };
+        let conn = match idle {
+            Some(conn) => conn,
+            None => self.connect()?,
         };
         conn.execute_batch("BEGIN")?;
         Ok(Reader {
@@ -91,15 +107,24 @@ impl ReadPool {
             conn: Some(conn),
         })
     }
+
+    /// Refuses new reads and releases idle connections. Readers already admitted
+    /// keep their transaction until dropped; they are not returned to this pool.
+    pub fn close(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.closed = true;
+        state.idle.clear();
+    }
 }
 
 impl Drop for Reader<'_> {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take()
             && conn.execute_batch("COMMIT").is_ok()
-            && let Ok(mut idle) = self.pool.idle.lock()
+            && let Ok(mut state) = self.pool.state.lock()
+            && !state.closed
         {
-            idle.push(conn);
+            state.idle.push(conn);
         }
     }
 }
@@ -584,3 +609,6 @@ impl Reader<'_> {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests;
