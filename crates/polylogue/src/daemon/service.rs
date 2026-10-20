@@ -506,6 +506,8 @@ pub struct Runtime {
     signals_stop: Option<Sender<()>>,
     signals: Option<JoinHandle<()>>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
+    #[cfg(feature = "sinex")]
+    publisher: Option<crate::sinex::Publisher>,
     lock: Option<polylogue_store::ArchiveLock>,
 }
 
@@ -537,6 +539,12 @@ impl Runtime {
                 }
             }
         }
+        #[cfg(feature = "sinex")]
+        if let Some(mut publisher) = self.publisher.take()
+            && let Err(error) = publisher.shutdown()
+        {
+            failure.get_or_insert(error);
+        }
         self.daemon.reads.close();
         self.lock.take();
         failure.map_or(Ok(()), Err)
@@ -560,7 +568,7 @@ pub fn start(root: &std::path::Path, config: Config) -> std::io::Result<Runtime>
     #[allow(unused_mut)]
     let mut config = config;
     #[cfg(feature = "sinex")]
-    crate::sinex::start(&archive, &mut config)?;
+    let publisher = crate::sinex::start(&archive, &mut config)?;
     let mut engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
     let writes = engine.writer().map_err(|e| to_io(&e))?;
     let reads = ReadPool::open(&archive).map_err(|e| to_io(&e))?;
@@ -582,6 +590,8 @@ pub fn start(root: &std::path::Path, config: Config) -> std::io::Result<Runtime>
         signals_stop: None,
         signals: None,
         engine: None,
+        #[cfg(feature = "sinex")]
+        publisher,
         lock: Some(lock),
     };
     let (ready, wait) = sync_channel(1);

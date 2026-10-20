@@ -51,8 +51,8 @@ use the same application operations. Signal evaluation and embedding providers
 have their own modules. This is an internal boundary in the application crate,
 not another service or crate.
 
-`service::Runtime` owns the convergence and signal workers and the archive
-lock. Socket and HTTP servers own their listeners and client work and stop
+`service::Runtime` owns the convergence and signal workers, the optional
+Sinex publisher and the archive lock. Socket and HTTP servers own their listeners and client work and stop
 before the application runtime. Shutdown wakes signal timers, closes transport
 admission and joins workers before releasing the writer lock. Unfinished
 socket input or response writes fail when peers close; already admitted store
@@ -82,6 +82,14 @@ adapter supplies primary backing; its publication and restore qualification
 have separate acceptance criteria. Neither mode provides daemonless CLI
 access. Shared blob storage, credential masking and development tooling live in
 `polylogue-sinex-common`; projects pin immutable releases.
+
+The optional Sinex publisher stops at an async suspension point, including
+its periodic wait. Shutdown joins its thread before releasing the archive
+lock. A pending publish is interrupted rather than reported successful:
+frames lacking a committed acknowledgment have an unknown remote outcome.
+The next pass asks Sinex which stable frame keys it holds before resending.
+Synchronous archive and blob operations finish before cancellation is polled;
+this does not impose a hard shutdown deadline or qualify primary mode.
 
 ## Changing a boundary
 
