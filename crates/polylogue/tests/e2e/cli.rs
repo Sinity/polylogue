@@ -44,6 +44,7 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
+    let config = dir.path().join("config");
     let project = home.join(".claude/projects/-p");
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(
@@ -56,12 +57,14 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     let env = [
         ("POLYLOGUE_ARCHIVE", archive.as_path()),
         ("POLYLOGUE_HOME", home.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
     ];
 
     let child = Command::new(crate::BIN)
         .arg("daemon")
         .env("POLYLOGUE_ARCHIVE", &archive)
         .env("POLYLOGUE_HOME", &home)
+        .env("XDG_CONFIG_HOME", &config)
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();

@@ -37,7 +37,12 @@ pub fn start(text: &str) -> TestDaemon {
     config.home = home.clone();
     config.tool_dirs.clear();
     config.workers = 2;
-    let runtime = service::start(&dir.path().join("archive"), config).unwrap();
+    let runtime = service::start(
+        &dir.path().join("archive"),
+        config,
+        service::Backing::Standalone,
+    )
+    .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     let server = server::Server::start(Arc::clone(&daemon)).unwrap();
     let world = TestDaemon {

@@ -44,7 +44,12 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
 /// before the application workers and archive lock.
 pub fn serve() -> std::io::Result<()> {
     let root = Archive::default_root();
-    let runtime = service::start(&root, Config::from_env())?;
+    #[cfg(feature = "sinex")]
+    let backing =
+        crate::sinex::configured().map_or(service::Backing::Standalone, service::Backing::Sinex);
+    #[cfg(not(feature = "sinex"))]
+    let backing = service::Backing::Standalone;
+    let runtime = service::start(&root, Config::from_env(), backing)?;
     let server = Server::start(Arc::clone(&runtime.daemon))?;
     eprintln!(
         "polylogue: serving {} on {}",
