@@ -92,3 +92,90 @@ fn recognizes_captures_by_their_first_key() {
     assert!(!recognize(p, b"{\"title\": \"x\""));
     assert!(recognize(p, b"{\n  \"capture_id\": \"chatgpt:6a67\""));
 }
+
+#[test]
+fn grok_endpoint_bundle_preserves_native_identity_parents_and_files() {
+    let bytes = capture(
+        json!({
+            "conversation": {"conversationId":"g1", "title":"Grok fixture", "createTime":"2026-06-27T12:00:00Z"},
+            "responses":{"responses":[
+                {"responseId":"r1", "sender":"human", "message":"question", "createTime":"2026-06-27T12:00:01Z",
+                 "fileAttachmentsMetadata":[{"fileMetadataId":"f1","fileName":"notes.txt","fileMimeType":"text/plain","fileUri":"users/u/f1/content"}]},
+                {"responseId":"r2", "parentResponseId":"r1", "sender":"ASSISTANT", "message":"answer", "model":"grok-3", "steps":[{"text":["step"]}]}
+            ]},"response_nodes":{"nodes":[]}
+        }),
+        json!({"provider":"grok","provider_session_id":"g1", "turns":[],
+        "attachments":[{"provider_attachment_id":"f1","message_provider_id":"r1","content_base64":"aGVsbG8="}]}),
+    );
+    let step = run_document(&Capture, &bytes).unwrap();
+    assert_eq!(step.output.sessions[0].id.to_string(), "grok:g1");
+    assert_eq!(step.output.messages.len(), 2);
+    let assistant = &step.output.messages[1].message;
+    assert_eq!(assistant.parent.as_ref().unwrap().to_string(), "grok:r1");
+    assert_eq!(assistant.model.as_deref(), Some("grok-3"));
+    assert!(
+        assistant
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Other { type_name, .. } if type_name == "grok_step"))
+    );
+    assert_eq!(step.output.blobs[0].bytes, b"hello");
+    let inspected = inspect::inspect(&bytes).unwrap();
+    assert_eq!(inspected["summary"]["turn_count"], 2);
+    assert_eq!(inspected["attachments"][0]["url"], "users/u/f1/content");
+}
+
+#[test]
+fn inspection_keeps_mapping_keys_separate_from_native_message_ids() {
+    let bytes = capture(
+        chatgpt_payload(),
+        json!({"provider":"chatgpt", "provider_session_id":"c1"}),
+    );
+    let inspected = inspect::inspect(&bytes).unwrap();
+    assert_eq!(inspected["attachments"][0]["original_record_key"], "n1");
+    assert_eq!(inspected["attachments"][0]["message_provider_id"], "m1");
+    assert_eq!(
+        inspected["attachments"][0]["provider_meta"]["provider_file_id"],
+        "file-Pic"
+    );
+}
+
+#[test]
+fn inspection_refuses_a_raw_conversation_with_another_identity() {
+    let bytes = capture(
+        chatgpt_payload(),
+        json!({"provider":"chatgpt", "provider_session_id":"another"}),
+    );
+    assert!(inspect::inspect(&bytes).unwrap_err().contains("identity"));
+}
+
+#[test]
+fn claude_inline_media_is_linked_to_retained_bytes_and_reported_as_inline() {
+    let bytes = capture(
+        json!({"uuid":"claude-inline", "chat_messages":[
+            {"uuid":"inline-m1", "sender":"human", "content":[
+                {"type":"image", "source":{"type":"base64", "media_type":"image/png", "data":"aGVsbG8="}},
+                {"type":"document", "title":"notes.txt", "source":{"type":"base64", "media_type":"text/plain", "data":"bm90ZXM="}}
+            ]}
+        ]}),
+        json!({"provider":"claude-ai", "provider_session_id":"claude-inline"}),
+    );
+    let parsed = run_document(&Capture, &bytes).unwrap();
+    assert_eq!(parsed.output.blobs.len(), 2);
+    assert!(
+        matches!(&parsed.output.messages[0].message.blocks[0], Block::Image(file) if file.blob == Some(BlobHash::of(b"hello")))
+    );
+    let inspected = inspect::inspect(&bytes).unwrap();
+    assert_eq!(
+        inspected["attachments"][0]["provider_meta"]["native_inline_size_bytes"],
+        5
+    );
+    assert_eq!(
+        inspected["attachments"][0]["provider_meta"]["native_inline_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert_eq!(inspected["attachments"][1]["name"], "notes.txt");
+}

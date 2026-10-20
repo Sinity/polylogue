@@ -376,3 +376,97 @@ fn failed_capture_publication_cleans_up_its_temporary_file() {
         .collect();
     assert_eq!(entries, [std::ffi::OsString::from("capture.json")]);
 }
+
+#[test]
+fn native_inspection_uses_the_capture_parser_without_writing_a_spool() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = polylogue_store::Archive::at(&dir.path().join("archive"));
+    let ctx = Arc::new(Ctx::at(&config_at(dir.path()), &archive).unwrap());
+    let answer = exchange(
+        &ctx,
+        "POST",
+        "/v1/browser-captures/inspect",
+        &capture("inspect-session", "hello"),
+    );
+    assert_eq!(answer.status, 200, "{:?}", answer.json());
+    assert_eq!(answer.json()["summary"]["turn_count"], 1);
+    assert_eq!(std::fs::read_dir(&ctx.spool).unwrap().count(), 0);
+    assert_eq!(
+        exchange(&ctx, "POST", "/v1/browser-captures/inspect", b"{}").status,
+        422
+    );
+}
+
+#[test]
+fn native_raw_grok_capture_reaches_an_ordinary_archive_read() {
+    let w = test_daemon::start("fixture");
+    let ctx = ctx(&w);
+    let body = serde_json::to_vec(&json!({
+        "polylogue_capture_kind":"browser_llm_session", "schema_version":1,
+        "session":{"provider":"grok", "provider_session_id":"native-raw", "turns":[]},
+        "raw_provider_payload":{
+            "conversation":{"conversationId":"native-raw", "title":"Native fixture"},
+            "responses":{"responses":[{"responseId":"raw-r1", "sender":"human", "message":"raw provider question", "fileAttachmentsMetadata":[{"fileMetadataId":"raw-file", "fileName":"notes.txt", "fileMimeType":"text/plain", "fileUri":"users/u/raw-file/content"}]}]}
+        }
+    })).unwrap();
+    let inspected = exchange(&ctx, "POST", "/v1/browser-captures/inspect", &body);
+    assert_eq!(inspected.status, 200, "{:?}", inspected.json());
+    assert_eq!(
+        inspected.json()["attachments"][0]["provider_attachment_id"],
+        "raw-file"
+    );
+    let mut envelope: Value = serde_json::from_slice(&body).unwrap();
+    envelope["session"]["attachments"] = json!([{"provider_attachment_id":"raw-file", "message_provider_id":"raw-r1", "content_base64":B64.encode(b"native asset bytes")}]);
+    let published = exchange(
+        &ctx,
+        "POST",
+        "/v1/browser-captures",
+        &serde_json::to_vec(&envelope).unwrap(),
+    );
+    assert_eq!(published.status, 200);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(crate::daemon::Response::Ok { data }) = ctx.ask(&crate::daemon::Request::Read {
+            session: polylogue_model::SessionId::parse("grok:native-raw").unwrap(),
+            view: "full".into(),
+            format: "markdown".into(),
+            logical: false,
+            budget: None,
+            cursor: None,
+        }) && data["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("raw provider question"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native raw capture never reached ordinary read"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let hash = polylogue_model::BlobHash::of(b"native asset bytes");
+    let messages = w
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .messages(
+            &polylogue_model::SessionId::parse("grok:native-raw").unwrap(),
+            false,
+        )
+        .unwrap();
+    assert!(messages[0].blocks.iter().any(
+        |block| matches!(block, polylogue_model::Block::File(file) if file.blob == Some(hash))
+    ));
+}
+
+#[test]
+fn reader_location_is_typed_unavailable_when_no_reader_is_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = polylogue_store::Archive::at(&dir.path().join("archive"));
+    let ctx = Arc::new(Ctx::at(&config_at(dir.path()), &archive).unwrap());
+    let response = exchange(&ctx, "GET", "/v1/reader-location", b"");
+    assert_eq!(response.status, 503);
+    assert_eq!(response.json()["error"], "reader_unavailable");
+}

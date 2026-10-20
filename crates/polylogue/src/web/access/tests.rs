@@ -90,3 +90,18 @@ fn republishing_restricts_existing_files_and_ignores_stale_temporary_paths() {
         0o600
     );
 }
+
+#[test]
+fn reader_location_uses_the_published_port_and_requires_a_live_own_listener() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(reader_url_in(dir.path()).is_err());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    publish(dir.path(), "synthetic-reader-token", port).unwrap();
+    assert_eq!(
+        reader_url_in(dir.path()).unwrap(),
+        format!("http://127.0.0.1:{port}/auth#synthetic-reader-token")
+    );
+    drop(listener);
+    assert!(reader_url_in(dir.path()).is_err());
+}

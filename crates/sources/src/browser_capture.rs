@@ -100,6 +100,10 @@ pub fn session_for(
     session_id(origin_of(provider), provider_session_id)
 }
 
+mod grok;
+mod inspect;
+pub use inspect::inspect;
+
 pub struct Capture;
 
 impl DocumentParser for Capture {
@@ -150,6 +154,13 @@ impl DocumentParser for Capture {
             }
             ("claude-ai", Some(raw)) if raw.get("chat_messages").is_some() => {
                 crate::claude_ai::conversation(raw, &mut sink);
+            }
+            ("grok", Some(raw)) if raw.get("responses").is_some() => {
+                grok::conversation(
+                    raw,
+                    capture.get("session").unwrap_or(&Json::Null),
+                    &mut sink,
+                );
             }
             _ => match capture.get("session").filter(|s| s.is_object()) {
                 Some(session) => turns(origin, session, &mut sink),
