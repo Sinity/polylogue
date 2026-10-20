@@ -170,8 +170,8 @@ impl Fixture {
         let words = m.text.map_or(0, |t| t.split_whitespace().count() as i64);
         self.index.execute(
             "INSERT INTO message(id, session_pk, order_input_pk, seq, role, written_by, prompt_kind,
-                 model, at, input_pk, cost_nusd, inherited_from, on_active_path, words, parser_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?3, ?10, ?11, ?12, ?13, 1)",
+                 model, at, input_pk, cost_nusd, inherited_from, on_active_path, words, parser_version, order_input_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?3, ?10, ?11, ?12, ?13, 1, (SELECT id FROM input_ref WHERE pk = ?3))",
             params![
                 m.id,
                 session_pk,

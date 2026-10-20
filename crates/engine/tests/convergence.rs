@@ -877,3 +877,42 @@ fn text_excision_reaches_encoded_codex_tool_arguments() {
     assert_eq!(messages[0].session, id);
     assert_eq!(fs::read_to_string(path).unwrap(), source);
 }
+
+#[test]
+fn rebuilding_multiple_inputs_without_provider_files_preserves_order_and_title() {
+    let w = ClaudeHome::new();
+    w.append(
+        "a.jsonl",
+        &(user("first", "s1", "First question") + &user("shared", "s1", "Shared question")),
+    );
+    w.append(
+        "z.jsonl",
+        &(user("shared", "s1", "Shared question") + &user("last", "s1", "Last question")),
+    );
+    let view = || {
+        let reads = w.reads();
+        let r = reads.reader().unwrap();
+        let title = r
+            .query(
+                "SELECT derived_title FROM session WHERE id = 'claude-code:s1'",
+                &[],
+            )
+            .unwrap();
+        (w.texts("s1"), title)
+    };
+    {
+        let (mut engine, _lock) = w.engine(64);
+        assert!(engine.converge().unwrap().errors.is_empty());
+    }
+    let before = view();
+    fs::remove_file(w.file("a.jsonl")).unwrap();
+    fs::remove_file(w.file("z.jsonl")).unwrap();
+    delete_index(&w.root);
+    {
+        let (mut engine, _lock) = w.engine(64);
+        let rebuilt = engine.converge().unwrap();
+        assert!(rebuilt.errors.is_empty(), "{:?}", rebuilt.errors);
+        assert!(rebuilt.bytes_read > 0);
+    }
+    assert_eq!(view(), before);
+}

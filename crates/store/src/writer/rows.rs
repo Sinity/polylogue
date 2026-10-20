@@ -20,6 +20,7 @@ pub(super) fn write_rows(
     let ctx = Ctx {
         tx,
         input_pk,
+        input_id: &b.input.id,
         chain,
         rank: i64::from(b.input.route_rank),
         parser_version: i64::from(p.parser_version),
@@ -112,6 +113,7 @@ pub(super) fn write_rows(
 pub(super) struct Ctx<'a, 't> {
     tx: &'a Transaction<'t>,
     input_pk: i64,
+    input_id: &'a str,
     chain: i64,
     rank: i64,
     parser_version: i64,
@@ -295,7 +297,7 @@ impl Ctx<'_, '_> {
             .tx
             .prepare_cached(
                 "SELECT m.pk, m.order_input_pk, m.seq, m.input_pk, m.source_chain, m.source_start,
-                        m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind
+                        m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind, m.order_input_id
                  FROM message m LEFT JOIN message_source s
                    ON s.message_pk = m.pk AND s.preferred = 1
                  JOIN session ss ON ss.pk = m.session_pk
@@ -304,7 +306,7 @@ impl Ctx<'_, '_> {
             .query_row([m.id.to_string()], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
-                    (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?),
+                    (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(11)?),
                     Version {
                         input_pk: r.get(3)?,
                         chain: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
@@ -320,7 +322,9 @@ impl Ctx<'_, '_> {
             })
             .optional()?;
 
-        let Some((pk, order, preferred, (cur_session, cur_kind))) = cur else {
+        let Some((pk, (order_input, order_seq, order_id), preferred, (cur_session, cur_kind))) =
+            cur
+        else {
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, offset))?;
             self.upsert_source(pk, &new, true)?;
             self.insert_blocks(pk, session_pk, m, bodies)?;
@@ -340,13 +344,19 @@ impl Ctx<'_, '_> {
         if prior.is_some_and(|start| offset > start) {
             return Ok(false);
         }
-        let new_order = order.min((self.input_pk, offset));
+        let order = (order_input, order_seq);
+        let new_order = if (self.input_id, offset) < (order_id.as_str(), order_seq) {
+            (self.input_pk, offset)
+        } else {
+            order
+        };
         if !new.beats(&preferred) {
             self.upsert_source(pk, &new, false)?;
             if new_order != order {
                 self.tx
                     .prepare_cached(
-                        "UPDATE message SET order_input_pk = ?2, seq = ?3 WHERE pk = ?1",
+                        "UPDATE message SET order_input_pk = ?2, seq = ?3,
+                             order_input_id = (SELECT id FROM input_ref WHERE pk = ?2) WHERE pk = ?1",
                     )?
                     .execute(params![pk, new_order.0, new_order.1])?;
             }
@@ -473,7 +483,8 @@ impl Ctx<'_, '_> {
                  cache_read_tokens = ?18, cache_write_tokens = ?19, reasoning_tokens = ?20,
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
                  words = ?25, parser_version = ?26, cost_nusd = NULL, provider_cost_nusd = ?28,
-                 cache_write_5m_tokens = ?29, cache_write_1h_tokens = ?30, speed = ?31
+                 cache_write_5m_tokens = ?29, cache_write_1h_tokens = ?30, speed = ?31,
+                 order_input_id = (SELECT id FROM input_ref WHERE pk = ?3)
              WHERE pk = ?1"
         } else {
             "INSERT INTO message(id, session_pk, order_input_pk, seq, route_rank, role, written_by,
@@ -481,9 +492,10 @@ impl Ctx<'_, '_> {
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, parser_version, provider_cost_nusd,
-                 cache_write_5m_tokens, cache_write_1h_tokens, speed)
+                 cache_write_5m_tokens, cache_write_1h_tokens, speed, order_input_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?27, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?28, ?29, ?30, ?31)"
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?28, ?29, ?30, ?31,
+                 (SELECT id FROM input_ref WHERE pk = ?3))"
         };
         let first: rusqlite::types::Value = match pk {
             Some(pk) => pk.into(),

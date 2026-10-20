@@ -25,7 +25,7 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
              JOIN text t ON t.id = b.text_id
              WHERE m.session_pk = ?1 AND m.written_by = 'human'
                AND coalesce(m.prompt_kind, 'prose') = 'prose'
-             ORDER BY m.order_input_pk, m.seq, b.idx LIMIT 1",
+             ORDER BY m.order_input_id, m.seq, b.idx LIMIT 1",
         )?
         .query_row([session_pk], |r| r.get(0))
         .optional()?;

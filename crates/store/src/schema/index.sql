@@ -81,8 +81,9 @@ CREATE TABLE message (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- model.md Identity; inherited marking matches on it
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  order_input_pk    INTEGER NOT NULL,       -- order key (architecture 5.5a, model OrderKey): the input and
-  seq               INTEGER NOT NULL,       --   byte offset of the record that opened the earliest-seen version
+  order_input_pk    INTEGER NOT NULL,       -- source of the ordering record; index-local input_ref key
+  order_input_id    TEXT NOT NULL,          -- stable input identity in the order key, independent of insertion order
+  seq               INTEGER NOT NULL,       -- byte offset of the first record in that input
   route_rank        INTEGER NOT NULL DEFAULT 0, -- the preferred version's route: 0 live, 1 spool, 2 import
   role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
   written_by        TEXT NOT NULL,          -- human | model | harness | unknown
@@ -143,7 +144,7 @@ CREATE TABLE message (
                                             --   old version of the bumped format (convergence.md)
   UNIQUE (pk, session_pk)                   -- lets children state their owner once (R73)
 ) STRICT;
-CREATE INDEX message_session ON message(session_pk, order_input_pk, seq);   -- reading in order; [last:N]
+CREATE INDEX message_session ON message(session_pk, order_input_id, seq);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
 CREATE INDEX message_unseen  ON message(input_pk) WHERE first_seen IS NULL;   -- parse work: first_seen to fill
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;

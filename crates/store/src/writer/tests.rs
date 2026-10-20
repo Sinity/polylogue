@@ -822,3 +822,65 @@ fn dropping_the_writer_drains_admitted_work_with_sender_clones_alive() {
         Some("retained")
     );
 }
+
+#[test]
+fn source_arrival_order_does_not_change_message_order_or_derived_title() {
+    let view = |inputs: [&str; 2]| {
+        let w = world();
+        for input in inputs {
+            let rows = if input == "input-a" {
+                vec![
+                    row(
+                        0,
+                        text_message("earlier", "s1", Role::User, "First question", None),
+                    ),
+                    row(
+                        10,
+                        text_message("shared", "s1", Role::User, "Shared question", None),
+                    ),
+                ]
+            } else {
+                vec![
+                    row(
+                        0,
+                        text_message("shared", "s1", Role::User, "Shared question", None),
+                    ),
+                    row(
+                        10,
+                        text_message("later", "s1", Role::User, "Later question", None),
+                    ),
+                ]
+            };
+            w.writer.send(batch(input, 0, 0, rows, &["s1"])).unwrap();
+            w.writer.flush().unwrap();
+        }
+        w.writer.derive().unwrap();
+        let reads = ReadPool::open(&w.archive).unwrap();
+        let r = reads.reader().unwrap();
+        let messages = r
+            .messages(&sid("s1"), false)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id.to_string())
+            .collect::<Vec<_>>();
+        let title = r
+            .query(
+                "SELECT derived_title FROM session WHERE id = 'claude-code:s1'",
+                &[],
+            )
+            .unwrap();
+        (messages, title)
+    };
+    let forward = view(["input-a", "input-z"]);
+    let reversed = view(["input-z", "input-a"]);
+    assert_eq!(forward, reversed);
+    assert_eq!(
+        forward.0,
+        [
+            "claude-code:earlier",
+            "claude-code:shared",
+            "claude-code:later"
+        ]
+    );
+    assert_eq!(forward.1[0]["derived_title"], "First question");
+}

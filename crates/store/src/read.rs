@@ -393,7 +393,7 @@ impl Reader<'_> {
         Ok(self
             .conn()
             .prepare_cached(
-                "SELECT pk, id FROM message WHERE session_pk = ?1 ORDER BY order_input_pk, seq",
+                "SELECT pk, id FROM message WHERE session_pk = ?1 ORDER BY order_input_id, seq",
             )?
             .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?)
@@ -454,10 +454,10 @@ impl Reader<'_> {
             } else {
                 self.conn()
                     .prepare_cached(
-                        "SELECT DISTINCT m.pk, m.order_input_pk, m.seq FROM message m
+                        "SELECT DISTINCT m.pk, m.order_input_id, m.seq FROM message m
                          JOIN message_source s ON s.message_pk = m.pk
                          JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
-                         WHERE m.session_pk = ?1 ORDER BY m.order_input_pk, m.seq",
+                         WHERE m.session_pk = ?1 ORDER BY m.order_input_id, m.seq",
                     )?
                     .query_map(params![parent_pk, child_pk], |r| r.get(0))?
                     .collect::<rusqlite::Result<_>>()?
@@ -508,7 +508,7 @@ impl Reader<'_> {
             "SELECT pk, id, role, prompt_kind, model, at, parent_id, input_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens, service_tier, stop_reason,
                     duration_ms, attrs_json, cache_write_1h_tokens, speed
-             FROM message WHERE session_pk = ?1 ORDER BY order_input_pk, seq",
+             FROM message WHERE session_pk = ?1 ORDER BY order_input_id, seq",
         )?;
         let rows = stmt.query_map([session_pk], |r| {
             Ok((

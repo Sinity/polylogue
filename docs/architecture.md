@@ -82,6 +82,13 @@ Within store, `encoding.rs` owns packed row bodies and block-text separation;
 `text_rows.rs` owns text deduplication, pending search entries and removal.
 Fixtures use the same text-storage path as ingestion.
 
+Message ordering uses the existing opaque input ID and the record's wire offset.
+The index keeps that ID in `message.order_input_id` beside its local input
+foreign key. Source selection and every order consumer compare the stable ID,
+so parallel arrival and index rebuilds cannot change the message order or a
+title derived from its first prompt. Preferred message versions keep their
+existing source, completeness, route and content-hash rules.
+
 `store/derive.rs` orders session derivations and records the source-change counter
 and rule version for each. A consumer's version includes its complete declared
 dependency rules, so an upstream rule change also refreshes unchanged sessions.
