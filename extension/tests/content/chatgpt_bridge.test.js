@@ -1070,7 +1070,10 @@ describe("ChatGPT authenticated asset capture envelope", () => {
 
     expect(result.ok).toBe(true);
     expect(repeated.ok).toBe(true);
-    expect(repeated.envelope.session).toEqual(result.envelope.session);
+    const staging = harness.dom.__captureRuntime.staging;
+    const originalBody = await staging.prepare(result.envelope);
+    const repeatedBody = await staging.prepare(repeated.envelope);
+    expect(JSON.parse(await repeatedBody.body.text()).session).toEqual(JSON.parse(await originalBody.body.text()).session);
     const [attachment] = harness.dom.__captureRuntime.nativeContract.receipts[0].result.attachments;
     expect(attachment).toMatchObject({
       provider_attachment_id: "sandbox:assistant-message-1:/mnt/data/kit.zip",

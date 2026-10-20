@@ -22,6 +22,11 @@ export function receiverContractPreparation(staging, store, contract = {}) {
       signal?.throwIfAborted();
       const result = await contract.acquire?.({ capture, rawRef, asset, signal });
       contract.receipts?.push({ ordinal: asset.ordinal, result });
+      for (const [index, attachment] of (result?.attachments || []).entries()) await store.putCaptureRecord({
+        capture_id: capture.id, key: `attachment:${asset.ordinal}:${index}`, record_kind: "session-attachment",
+        order_time: 0, order_id: "", occurrence: asset.ordinal + index, session_attachment: attachment,
+        asset_failures: result?.outcome?.failed || [],
+      });
     }
     return { rawRevision: "c".repeat(64),
       summary: { title: null, turn_count: 1, attachment_count: (contract.plan || []).length,

@@ -175,6 +175,14 @@ async function enumerateThenAdvance(h, job) {
 }
 
 describe("background backfill coordinator", () => {
+  it("does not let an unavailable retired checkpoint service block local job control", async () => {
+    const h = harness(); const job = await startJob(h);
+    await h.store.putJob({ ...await h.store.getJob(job.id), status: "paused",
+      recovery_checkpoint_outcome: { state: "failed", error: "old remote checkpoint unavailable" } });
+    expect(await h.coordinator.control(job.id, "resume")).toMatchObject({ status: "running", recovery_checkpoint_error: null });
+    expect((await h.store.getJob(job.id)).recovery_checkpoint_outcome.error).toBe("old remote checkpoint unavailable");
+  });
+
   beforeEach(() => { vi.restoreAllMocks(); captureOwners.clear(); globalThis.IDBKeyRange = IDBKeyRange; });
 
   it.each([
@@ -692,7 +700,9 @@ describe("background backfill coordinator", () => {
 
     expect(adapter.normalizeCapture).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ native_id: "one" }), expect.objectContaining({ job_id: job.id, instance_id: "instance-a" }), expect.any(globalThis.AbortSignal), expect.objectContaining({ itemId: expect.any(String), jobId: job.id, owner: "instance-a", generation: expect.any(Number) }));
     expect(h.receiver).toHaveBeenCalledWith(exactEnvelope, expect.objectContaining({ size: expect.any(Number) }), expect.any(globalThis.AbortSignal));
-    expect(JSON.parse(await h.receiver.mock.calls[0][1].text())).toMatchObject({ session: { ...exactEnvelope.session, turns: exactEnvelope.session.turns.map((turn, ordinal) => ({ ...turn, ordinal })) } });
+    expect(JSON.parse(await h.receiver.mock.calls[0][1].text())).toMatchObject({ session: { ...exactEnvelope.session,
+      attachments: exactEnvelope.session.attachments.map(({ inline_base64, ...asset }) => ({ ...asset, content_base64: inline_base64 })),
+      turns: exactEnvelope.session.turns.map((turn, ordinal) => ({ ...turn, ordinal })) } });
     expect((await h.store.queuePage(job.id)).items).toMatchObject([{
       state: "complete",
       capture_fidelity: "native_full",
@@ -1038,7 +1048,7 @@ describe("provider adapter contracts", () => {
   // turns. This is the exact shape (content_type "code" then
   // "execution_output") that used to be indistinguishable from ordinary
   // assistant text once BrowserCaptureTurn had no blocks channel.
-  it("retains a ChatGPT code-interpreter call and output for canonical receiver pairing", async () => {
+  it("retains a ChatGPT code-interpreter call and output for the shared source parser", async () => {
     const native = {
       id: "gpt-ci",
       title: "Code interpreter run",
@@ -1109,7 +1119,7 @@ describe("provider adapter contracts", () => {
     expect(capture.raw_provider_payload).toBeDefined();
   });
 
-  it("retains a recipient-addressed JSON tool call for canonical receiver classification", async () => {
+  it("retains a recipient-addressed JSON tool call for shared source classification", async () => {
     const native = {
       id: "gpt-tool",
       title: "Web search",

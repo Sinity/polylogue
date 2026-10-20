@@ -86,6 +86,13 @@ function checkpointRevision(revision) {
   return globalThis.structuredClone(safe);
 }
 
+function recoveryValueDigest(value) {
+  const safe = { ...value };
+  delete safe.recovery_source_checkpoint;
+  delete safe.recovery_checkpoint_outcome;
+  return createSha256().update(canonicalJson(safe)).hex();
+}
+
 export function nativeCacheOrder(current, incoming) {
   const revision = (row) => {
     const value = row.headers?.update_time ?? row.headers?.updated_at ?? row.headers?.updatedAt ?? row.headers?.modifyTime;

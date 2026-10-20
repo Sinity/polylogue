@@ -139,7 +139,7 @@ export class BackfillCoordinator {
 
   async snapshotStatus(jobId, checkpointError = undefined) {
     const job = await this.requireJob(jobId);
-    if (checkpointError === undefined) checkpointError = job.recovery_checkpoint_outcome?.error || null;
+    if (checkpointError === undefined) checkpointError = this.checkpoint ? job.recovery_checkpoint_outcome?.error || null : null;
     const summary = await this.store.queueSummary(jobId);
     return {
       ...job,
@@ -638,6 +638,7 @@ export class BackfillCoordinator {
   }
 
   async checkpointErrorForJob(jobId) {
+    if (!this.checkpoint) return null;
     return (await this.requireJob(jobId)).recovery_checkpoint_outcome?.error || null;
   }
 
