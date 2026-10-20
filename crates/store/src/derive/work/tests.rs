@@ -357,3 +357,22 @@ fn a_spawned_task_skips_harness_wrapper_blocks() {
     );
     assert_eq!(super::task_line("\n\n"), None);
 }
+
+#[test]
+fn orphan_goals_are_removed_even_when_no_sessions_remain() {
+    let mut index = rusqlite::Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&index).unwrap();
+    index
+        .execute(
+            "INSERT INTO work_node(key, kind, title) VALUES ('bead:gone', 'goal', 'gone')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(crate::derive::run(&mut index).unwrap(), 0);
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM work_node", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}

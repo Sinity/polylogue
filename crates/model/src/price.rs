@@ -4,12 +4,12 @@
 //! derived from these prices.
 
 use crate::Usage;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 /// List prices in USD per million tokens.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Price {
     pub input: f64,
     #[serde(default)]
@@ -32,7 +32,7 @@ pub struct Price {
 }
 
 /// The long-context rates of a model whose price rises with prompt size.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct LongContext {
     /// Prompt tokens (every kind of input together) above which these apply.
     pub above: u64,
@@ -69,7 +69,7 @@ impl Price {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Catalog {
     /// Changes whenever a price changes; stored costs computed under another
     /// version are recomputed.

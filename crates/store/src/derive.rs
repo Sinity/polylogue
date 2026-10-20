@@ -11,44 +11,73 @@
 //! and are derived anew.
 
 use crate::Result;
+use polylogue_model::Catalog;
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 
 mod active_path;
+mod cost;
 mod repository;
 mod session;
 mod title;
 mod tool_calls;
+mod work;
 
 /// Sessions derived per transaction, so a long derive never holds the
 /// writer for minutes.
 const SESSIONS_PER_TRANSACTION: usize = 200;
 
 /// One derivation over a session's stored rows.
-pub struct Derivation {
+struct Derivation {
     /// Its key in `derive_state`; stable across versions.
     pub name: &'static str,
     /// Bumped when the rules change; every session is derived again.
-    pub version: i64,
+    pub version: Version,
     /// Derivations whose rows this one reads; they run first.
     pub after: &'static [&'static str],
     /// Recomputes the session's rows: replaces whatever an earlier run
     /// made, from the session's current rows.
-    pub run: fn(&Transaction<'_>, i64) -> Result<()>,
+    pub run: fn(&Transaction<'_>, i64, &Catalog) -> Result<()>,
+    /// Removes shared rows left without any session, even in an empty archive.
+    pub finish: Option<fn(&Transaction<'_>) -> Result<()>>,
+}
+
+/// Rule versions stay readable; catalog-derived rows also name the complete
+/// catalog content. The full digest avoids truncating catalog identity to an integer.
+enum Version {
+    Rules(i64),
+    Catalog(i64),
+}
+
+impl Version {
+    fn resolve(&self, catalog: &Catalog) -> Result<String> {
+        Ok(match self {
+            Self::Rules(n) => n.to_string(),
+            Self::Catalog(n) => {
+                let hash = blake3::hash(&serde_json::to_vec(catalog)?);
+                format!("catalog:{n}:{}:{hash}", catalog.version)
+            }
+        })
+    }
 }
 
 /// Every derivation, in an order where each comes after what it reads.
-pub const ALL: &[Derivation] = &[
+const ALL: &[Derivation] = &[
     session::DERIVATION,
     tool_calls::DERIVATION,
     active_path::DERIVATION,
     repository::DERIVATION,
     title::DERIVATION,
-    crate::work::DERIVATION,
+    work::DERIVATION,
+    cost::DERIVATION,
 ];
 
 /// Runs every derivation over the sessions it has not derived at their
 /// current state; returns the number of (derivation, session) pairs done.
 pub fn run(index: &mut Connection) -> Result<u64> {
+    run_with_catalog(index, Catalog::builtin())
+}
+
+fn run_with_catalog(index: &mut Connection, catalog: &Catalog) -> Result<u64> {
     let mut done = 0;
     for d in ALL {
         debug_assert!(
@@ -59,13 +88,13 @@ pub fn run(index: &mut Connection) -> Result<u64> {
             "derivation {} runs before what it reads",
             d.name
         );
-        done += run_one(index, d)?;
+        done += run_one(index, d, catalog)?;
     }
-    crate::work::sweep(index)?;
     Ok(done)
 }
 
-fn run_one(index: &mut Connection, d: &Derivation) -> Result<u64> {
+fn run_one(index: &mut Connection, d: &Derivation, catalog: &Catalog) -> Result<u64> {
+    let version = d.version.resolve(catalog)?;
     let mut done = 0;
     loop {
         // Immediate, like the writer's and the search thread's: a deferred
@@ -79,22 +108,25 @@ fn run_one(index: &mut Connection, d: &Derivation) -> Result<u64> {
                  LIMIT ?3",
             )?
             .query_map(
-                params![d.name, d.version, SESSIONS_PER_TRANSACTION as i64],
+                params![d.name, version, SESSIONS_PER_TRANSACTION as i64],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?
             .collect::<rusqlite::Result<_>>()?;
         if todo.is_empty() {
+            if let Some(finish) = d.finish {
+                finish(&tx)?;
+            }
             tx.commit()?;
             return Ok(done);
         }
         for (pk, changed) in &todo {
-            (d.run)(&tx, *pk)?;
+            (d.run)(&tx, *pk, catalog)?;
             tx.prepare_cached(
                 "INSERT INTO derive_state(name, session_pk, version, from_changed)
                  VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(name, session_pk) DO UPDATE SET version = ?3, from_changed = ?4",
             )?
-            .execute(params![d.name, pk, d.version, changed])?;
+            .execute(params![d.name, pk, version, changed])?;
         }
         tx.commit()?;
         done += todo.len() as u64;

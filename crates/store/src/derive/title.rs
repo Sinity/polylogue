@@ -2,15 +2,16 @@
 //! first prompt a person typed. Kept apart from the recorded title, which
 //! always wins when there is one, and never exported as if recorded.
 
-use super::Derivation;
+use super::{Derivation, Version};
 use crate::Result;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "title",
-    version: 1,
+    version: Version::Rules(1),
     after: &["session"],
-    run,
+    run: |tx, pk, _| run(tx, pk),
+    finish: None,
 };
 
 /// Characters kept of the prompt's first line.

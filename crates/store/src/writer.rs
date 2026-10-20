@@ -148,7 +148,6 @@ impl Writer {
     /// marked when the archive is next opened is set aside and rebuilt.
     pub fn start(archive: &Archive) -> Result<Self> {
         let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
-        crate::cost::reprice(&index, polylogue_model::Catalog::builtin())?;
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)

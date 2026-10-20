@@ -472,18 +472,18 @@ impl Ctx<'_, '_> {
                  source_end = ?27, in_progress = ?15, input_tokens = ?16, output_tokens = ?17,
                  cache_read_tokens = ?18, cache_write_tokens = ?19, reasoning_tokens = ?20,
                  service_tier = ?21, stop_reason = ?22, duration_ms = ?23, attrs_json = ?24,
-                 words = ?25, parser_version = ?26, cost_nusd = ?28, provider_cost_nusd = ?29,
-                 cache_write_5m_tokens = ?30, cache_write_1h_tokens = ?31, speed = ?32
+                 words = ?25, parser_version = ?26, cost_nusd = NULL, provider_cost_nusd = ?28,
+                 cache_write_5m_tokens = ?29, cache_write_1h_tokens = ?30, speed = ?31
              WHERE pk = ?1"
         } else {
             "INSERT INTO message(id, session_pk, order_input_pk, seq, route_rank, role, written_by,
                  prompt_kind, model, at, parent_id, input_pk, source_chain, source_start,
                  source_end, in_progress, input_tokens, output_tokens, cache_read_tokens,
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
-                 attrs_json, words, parser_version, cost_nusd, provider_cost_nusd,
+                 attrs_json, words, parser_version, provider_cost_nusd,
                  cache_write_5m_tokens, cache_write_1h_tokens, speed)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?27, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?28, ?29, ?30, ?31, ?32)"
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?28, ?29, ?30, ?31)"
         };
         let first: rusqlite::types::Value = match pk {
             Some(pk) => pk.into(),
@@ -517,8 +517,7 @@ impl Ctx<'_, '_> {
             words,
             self.parser_version,
             v.end,
-            polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
-            crate::cost::reported_nusd(m.reported_cost_usd.as_ref()),
+            reported_nusd(m.reported_cost_usd.as_ref()),
             // The five-minute part is known only when the one-hour part is.
             u.cache_write_1h
                 .and(u.cache_write)
@@ -929,4 +928,10 @@ pub(super) fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>,
         ToolOutcome::NoResult => ("unknown", Some("no_result".into()), None),
         ToolOutcome::Unknown { reason } => ("unknown", Some(name(reason)), None),
     }
+}
+
+/// A provider's reported amount is an observed fact, separate from catalog pricing.
+fn reported_nusd(usd: Option<&serde_json::Number>) -> Option<i64> {
+    let usd = usd?.as_f64()?;
+    usd.is_finite().then(|| (usd * 1e9).round() as i64)
 }

@@ -15,18 +15,19 @@ use polylogue_model::{Block, Json, WorkEdgeKind, WorkNodeKind};
 use rusqlite::{OptionalExtension, Transaction, params};
 use std::collections::BTreeMap;
 
-pub(crate) const DERIVATION: crate::derive::Derivation = crate::derive::Derivation {
+pub(crate) const DERIVATION: super::Derivation = super::Derivation {
     name: "work",
     // Bumped when the rules change; every session is derived again.
-    version: 1,
+    version: super::Version::Rules(1),
     // Reads tool calls' commands and outcome reasons.
     after: &["tool_calls"],
-    run: |tx, session_pk| {
+    run: |tx, session_pk, _| {
         let id: String = tx
             .prepare_cached("SELECT id FROM session WHERE pk = ?1")?
             .query_row([session_pk], |r| r.get(0))?;
         derive_session(tx, session_pk, &id)
     },
+    finish: Some(sweep),
 };
 
 /// Commands whose outcome checks work: tests, builds, lints and the
@@ -165,7 +166,7 @@ impl Pursuit {
 
 /// An excision removes a session's nodes (and, by cascade, their edges)
 /// but leaves a shared goal no attempt pursues any more.
-pub(crate) fn sweep(index: &rusqlite::Connection) -> Result<()> {
+fn sweep(index: &Transaction<'_>) -> Result<()> {
     index.execute(
         "DELETE FROM work_node WHERE session_pk IS NULL AND kind = 'goal'
              AND NOT EXISTS (SELECT 1 FROM work_edge WHERE to_pk = work_node.pk)",
@@ -620,11 +621,6 @@ fn clear(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     .execute([session_pk])?;
     tx.prepare_cached("DELETE FROM work_node WHERE session_pk = ?1")?
         .execute([session_pk])?;
-    tx.prepare_cached(
-        "DELETE FROM work_node WHERE session_pk IS NULL AND kind = 'goal'
-             AND NOT EXISTS (SELECT 1 FROM work_edge WHERE to_pk = work_node.pk)",
-    )?
-    .execute([])?;
     tx.prepare_cached(
         "DELETE FROM commit_link WHERE session_pk = ?1 AND evidence = 'commit-output'",
     )?

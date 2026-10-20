@@ -587,13 +587,13 @@ CREATE TABLE session_record (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX session_record_input ON session_record(input_pk);   -- excision scope, foreign-key check
 
--- Which derivation (derive/mod.rs) made a session's derived rows, at which
+-- Which derivation (derive.rs) made a session's derived rows, at which
 -- version and from which state of the session; a session is derived again
 -- when either moves.
 CREATE TABLE derive_state (
   name              TEXT NOT NULL,
   session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
-  version           INTEGER NOT NULL,
+  version           TEXT NOT NULL,
   from_changed      INTEGER NOT NULL,
   PRIMARY KEY (name, session_pk)
 ) STRICT, WITHOUT ROWID;

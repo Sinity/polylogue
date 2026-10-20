@@ -10,7 +10,6 @@
 pub mod archive;
 pub mod blobs;
 pub mod context;
-pub mod cost;
 pub mod derive;
 mod encoding;
 pub mod excise;
@@ -33,7 +32,6 @@ pub mod timing;
 pub mod tool_databases;
 pub mod user_writes;
 pub mod vectors;
-pub mod work;
 pub mod writer;
 
 pub use archive::{Archive, ArchiveLock};
