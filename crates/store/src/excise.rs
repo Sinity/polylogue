@@ -32,8 +32,11 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+mod authored;
 mod index_rows;
 mod stored_bytes;
+mod stored_text;
+mod text_matches;
 
 use index_rows::*;
 use stored_bytes::*;
@@ -110,6 +113,13 @@ pub struct Excised {
     /// Notes whose every target was the excised session or its messages.
     #[serde(default)]
     pub notes_removed: u64,
+    /// Text scope: authored rows whose payloads were overwritten.
+    #[serde(default)]
+    pub notes_redacted: u64,
+    #[serde(default)]
+    pub variants_redacted: u64,
+    #[serde(default)]
+    pub kept_results_redacted: u64,
     /// Delivered briefs whose text held the session's texts, blanked.
     #[serde(default)]
     pub deliveries_redacted: u64,
@@ -122,10 +132,10 @@ pub struct Excised {
     /// before the excision returns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs_reparsed: Vec<String>,
-    /// Text scope: files on disk (`machine:path`) that still hold the text.
-    /// Polylogue never edits them; a later full re-read of one (a rewrite,
-    /// a parser version change) would bring the text back into the index
-    /// until the file is scrubbed.
+    /// Text scope: provider locations (`machine:path`) whose retained
+    /// history held a match. Current presence and content are not checked.
+    /// Polylogue never edits them; a later full read may collect the text
+    /// again until the original file is scrubbed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub on_disk: Vec<String>,
 }
@@ -371,6 +381,11 @@ impl Plan {
         req: &ExciseRequest,
         done: &mut Excised,
     ) -> Result<(Excised, Vec<BlobHash>)> {
+        let text_matches = self
+            .text
+            .as_ref()
+            .map(|text| stored_text::find(t, text))
+            .transpose()?;
         let mut refused = RefusedJson::default();
         let mut delete_files = Vec::new();
         let mut removed_texts: BTreeSet<Vec<u8>> = BTreeSet::new();
@@ -390,6 +405,7 @@ impl Plan {
             self.text_scope(
                 t,
                 &text,
+                text_matches.as_ref().expect("text scope preflight"),
                 req,
                 done,
                 &mut refused,
@@ -539,48 +555,20 @@ impl Plan {
         &mut self,
         t: &Transactions<'_, '_>,
         text: &str,
+        matches: &stored_text::StoredText,
         req: &ExciseRequest,
         done: &mut Excised,
         refused: &mut RefusedJson,
-        delete_files: &mut Vec<BlobHash>,
+        _delete_files: &mut Vec<BlobHash>,
         removed_texts: &mut BTreeSet<Vec<u8>>,
         session_blobs: &mut BTreeSet<Vec<u8>>,
     ) -> Result<()> {
-        let needles = needles(text);
-        // Stored bytes: every plain blob an extent uses.
-        let blobs: Vec<Vec<u8>> = t
-            .archive
-            .prepare("SELECT DISTINCT blob FROM extent")?
-            .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        let mut reparse = BTreeSet::new();
-        for hash in blobs {
-            let Ok(arr) = <[u8; 32]>::try_from(hash.as_slice()) else {
-                continue;
-            };
-            let old = BlobHash(arr);
-            let bytes = crate::blobs::read(t.archive, t.store, &old)?;
-            let ranges = find_all(&bytes, &needles);
-            if ranges.is_empty() {
-                continue;
-            }
-            let inputs: Vec<String> = t
-                .archive
-                .prepare("SELECT DISTINCT input FROM extent WHERE blob = ?1")?
-                .query_map([&hash], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?;
-            for i in &inputs {
-                *done.inputs_overwritten.entry(i.clone()).or_default() += ranges.len() as u64;
-                reparse.insert(i.clone());
-            }
-            if req.dry_run {
-                continue;
-            }
-            if let Some(gone) = replace_blob(t, &old, bytes, &ranges)? {
-                refused.blobs.push(hex(&gone.hash));
-                delete_files.extend(gone.file);
-            }
+        let reparse = matches.inputs();
+        done.inputs_overwritten = matches.counts();
+        if !req.dry_run {
+            matches.overwrite(t, req, refused)?;
         }
+        authored::redact(t.archive, text, req.dry_run, done)?;
         // The rows parsed from the text go; the caller parses their inputs
         // again from the overwritten stored bytes.
         done.inputs_reparsed =

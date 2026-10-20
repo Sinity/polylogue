@@ -42,6 +42,11 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::Conflict(_) => error("conflict", e),
         StoreError::NotFound(_) => error("not_found", e),
         StoreError::Invalid(_) => error("bad_request", e),
+        StoreError::ExcisionFormat { input, format, .. } => Response::Error {
+            kind: "unsupported_excision".into(),
+            message: e.to_string(),
+            detail: Some(serde_json::json!({"input": input, "format": format})),
+        },
         _ => error("store", e),
     }
 }

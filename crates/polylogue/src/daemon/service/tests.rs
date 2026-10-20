@@ -66,3 +66,18 @@ fn a_read_honours_its_view_format_and_budget() {
         );
     }
 }
+
+#[test]
+fn excision_format_refusal_has_a_distinct_public_error() {
+    let error = StoreError::ExcisionFormat {
+        input: "input1".into(),
+        format: "export-file".into(),
+        detail: "ZIP members need decoding".into(),
+    };
+    assert!(
+        matches!(store_error(&error), Response::Error { kind, detail: Some(detail), .. }
+        if kind == "unsupported_excision" && detail["input"] == "input1" && detail["format"] == "export-file")
+    );
+    let error = StoreError::BlobCorrupt(polylogue_model::BlobHash::of(b"synthetic"));
+    assert!(matches!(store_error(&error), Response::Error { kind, .. } if kind == "store"));
+}

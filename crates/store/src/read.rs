@@ -462,6 +462,8 @@ impl Reader<'_> {
         crate::blobs::StoredChain::load(self.conn(), "a.", input, chain, length)
     }
 
+    /// Source file facts come from provider observations; an excision event
+    /// records archive housekeeping, never a fresh observation of the file.
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
         let mut stmt = self.conn().prepare_cached(
             "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
@@ -470,7 +472,8 @@ impl Reader<'_> {
                     (SELECT length FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1)
              FROM a.observation o JOIN a.input i ON i.id = o.input
              WHERE o.machine = ?1 AND o.rowid = (
-                 SELECT MAX(rowid) FROM a.observation x WHERE x.machine = o.machine AND x.path = o.path)",
+                 SELECT MAX(rowid) FROM a.observation x WHERE x.machine = o.machine AND x.path = o.path
+                 AND x.class <> 'excised')",
         )?;
         let rows = stmt.query_map([machine], |r| {
             Ok((
