@@ -120,6 +120,7 @@ export async function importCheckpoint(file, { staging, store, signal = null }) 
       }
     }
     const queue = ledger.queue.map(value => {
+      requireFiles(value.source_refs || value.capture_source_refs);
       const row = rewrite(value, ids, tokens); delete row.envelope?.receiver_native;
       row.lease_owner = null; row.lease_expires_at_ms = null;
       if (row.body_ref && !staged.includes(row.body_ref)) throw new Error("checkpoint_import_file_missing");

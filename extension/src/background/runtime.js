@@ -407,8 +407,6 @@ function injectionPlanForUrl(url) {
   return [];
 }
 
-async function receiverSettings() { return { baseUrl: NATIVE_HOST }; }
-
 
 function hostnameForUrl(url) {
   try {
@@ -1277,7 +1275,7 @@ async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
 async function prepareNativeCapture(capture, { rawRef, signal, summaryOnly = false, onProgress = null }) {
   return prepareNativeTransport({ capture, staging: captureStaging, store: captureStore, signal, summaryOnly, onProgress,
     inspect: async (body, signal) => {
-      const response = await runtimeNetwork(`${(await receiverSettings()).baseUrl}/v1/browser-captures/inspect`, {
+      const response = await runtimeNetwork(`${NATIVE_HOST}/v1/browser-captures/inspect`, {
         method: "POST", headers: await requestHeaders({ hasBody: true, requestId: buildReceiverRequestId() }), body, signal });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
@@ -1328,7 +1326,6 @@ async function publishNativeCapture(reference, recordRef, signal) {
 async function postJson(path, payload, serializedBody = null, requireReceiverRequestId = false, signal = null) {
   if (path === "/v1/browser-captures" && payload.receiver_native) return publishNativeCapture(payload.receiver_native, payload.capture_record_ref, signal);
 
-  const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
   let captureBody = null;
@@ -1340,7 +1337,7 @@ async function postJson(path, payload, serializedBody = null, requireReceiverReq
   }
   signal?.throwIfAborted();
   try {
-    const response = await runtimeNetwork(`${settings.baseUrl}${path}`, {
+    const response = await runtimeNetwork(`${NATIVE_HOST}${path}`, {
       method: "POST",
       headers: await requestHeaders({ hasBody: true, requestId }),
       body: serializedBody || JSON.stringify(payload),
@@ -1415,13 +1412,12 @@ async function reportCaptureHealth(event, payload = {}) {
 
 async function getJson(path, timeoutMs = null) {
 
-  const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "GET", path, request_id: requestId });
   const controller = timeoutMs ? new globalThis.AbortController() : null;
   const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort("receiver_request_timeout"), timeoutMs) : 0;
   try {
-    const response = await runtimeNetwork(`${settings.baseUrl}${path}`, {
+    const response = await runtimeNetwork(`${NATIVE_HOST}${path}`, {
       headers: await requestHeaders({ requestId }),
       signal: controller?.signal,
     });
@@ -1534,15 +1530,8 @@ async function refreshReceiverState() {
     online,
     captured: false,
     status: health.receiver_status || null,
-    receiver_pairing: health.pairing || null,
     receiver_health: health,
-    error: health.status === "unauthorized"
-      ? "unauthorized"
-      : health.status === "pairing_mismatch"
-        ? "receiver_pairing_mismatch"
-        : online
-          ? null
-          : health.detail || "receiver_unavailable",
+    error: online ? null : health.detail || "native_host_unavailable",
     last_receiver_request_id: health.receiver_request_id || health.receiver_status?.receiver_request_id || null,
   });
 }
@@ -2611,7 +2600,6 @@ async function decideBrowserActionApproval(actionId, decision) {
 }
 
 async function transferBrowserActionAttachments(action, ownerInstanceId, transport) {
-  const settings = await receiverSettings();
   const transfer = async (command, item = null, offset = 0, encoded = "") => {
     const [result] = await runtimeChrome.scripting.executeScript({
       target: { tabId: transport.tab.id }, world: "MAIN",
@@ -2629,7 +2617,7 @@ async function transferBrowserActionAttachments(action, ownerInstanceId, transpo
       await transfer("start", item);
       const requestId = buildReceiverRequestId();
       const response = await runtimeNetwork(
-        `${settings.baseUrl}/v1/browser-actions/${encodeURIComponent(action.action_id)}/attachments/${encodeURIComponent(item.attachment_id)}`,
+        `${NATIVE_HOST}/v1/browser-actions/${encodeURIComponent(action.action_id)}/attachments/${encodeURIComponent(item.attachment_id)}`,
         { headers: await requestHeaders({ requestId }) },
       );
       if (!response.ok) {
@@ -2988,11 +2976,9 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
         tabId: tab?.id || null,
         onlyIfEmpty: true,
       });
-      const pairing = null;
       await setStateForTab(tab?.id || null, {
         online: true,
         captured: Boolean(state.captured),
-        receiver_pairing: pairing,
         archive_state: state,
         provider,
         provider_session_id: providerSessionId,
@@ -3071,15 +3057,8 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
       online,
       captured: false,
       status: health.receiver_status || null,
-      receiver_pairing: health.pairing || null,
       receiver_health: health,
-      error: health.status === "unauthorized"
-        ? "unauthorized"
-        : health.status === "pairing_mismatch"
-          ? "receiver_pairing_mismatch"
-          : online
-            ? null
-            : health.detail || "receiver_unavailable",
+      error: online ? null : health.detail || "native_host_unavailable",
       provider,
       provider_session_id: null,
       active_page_state: provider ? "supported_no_session" : "unsupported",
@@ -3104,7 +3083,6 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
         return refreshActiveTabArchiveState(tab, `${reason}_receiver_recovered`, false);
       }
     }
-    const pairing = null;
     await appendConversationTimeline({
       provider,
       providerSessionId,
@@ -3116,7 +3094,6 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
     await setStateForTab(tab?.id || null, {
       online: false,
       captured: false,
-      receiver_pairing: pairing,
       provider,
       provider_session_id: providerSessionId,
       active_page_state: provider ? "receiver_error" : "unsupported",
@@ -3142,7 +3119,7 @@ async function refreshCurrentActiveTab(reason = "active_tab") {
   await refreshActiveTabArchiveState(tab, reason);
 }
 
-function stateSnapshotForTab(tab, globalState, ledger, pairing, health, capturedSessionId) {
+function stateSnapshotForTab(tab, globalState, ledger, health, capturedSessionId) {
   const url = tab?.url || tab?.pendingUrl || "";
   const provider = archiveProviderForUrl(url);
   const providerSessionId = capturedSessionId;
@@ -3152,20 +3129,13 @@ function stateSnapshotForTab(tab, globalState, ledger, pairing, health, captured
     ? ledger?.[sessionKey(provider, providerSessionId)] || {}
     : {};
   const receiverOnline = ["ok", "recovered"].includes(health?.status);
-  const receiverError = health?.status === "unauthorized"
-    ? "unauthorized"
-    : health?.status === "pairing_mismatch"
-      ? "receiver_pairing_mismatch"
-      : receiverOnline
-        ? null
-        : health?.detail || "receiver_unavailable";
+  const receiverError = receiverOnline ? null : health?.detail || "native_host_unavailable";
 
   if (sameGlobalSession) {
     return {
       ...globalState,
       online: receiverOnline,
       error: receiverError || (receiverOnline ? globalState?.error || null : receiverError),
-      receiver_pairing: pairing,
       receiver_health: health,
     };
   }
@@ -3184,7 +3154,6 @@ function stateSnapshotForTab(tab, globalState, ledger, pairing, health, captured
     attachment_count: ledgerItem.attachment_count ?? null,
     last_receiver_request_id: ledgerItem.receiver_request_id || null,
     updated_at: ledgerItem.updated_at || null,
-    receiver_pairing: pairing,
     receiver_health: health,
   };
 }
@@ -3197,7 +3166,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
   const health = await checkNativeHost();
   const receiverOnline = ["ok", "recovered"].includes(health.status);
 
-  // Do not touch archive or queue routes after a pairing mismatch,
+  // Keep unavailable archive evidence explicit.
   // authorization failure, or offline result. This keeps the mission-control
   // surface read-only and fail-closed until receiver identity is trustworthy.
   if (refresh && resolvedTab && receiverOnline) {
@@ -3222,13 +3191,11 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     backfillStatusPromise,
     ambientSettings(hostnameForUrl(tabUrl)),
   ]);
-  const pairing = null;
   const capturedSessionId = await capturedConversationIdForTab(resolvedTab).catch(() => null);
   const baseState = stateSnapshotForTab(
     resolvedTab,
     stored.polylogueState,
     stored.polylogueSessionLedger || {},
-    pairing,
     health,
     capturedSessionId,
   );
@@ -3241,8 +3208,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
   const timeline = state.provider && state.provider_session_id
     ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
     : [];
-  const settings = await receiverSettings();
-  const intelligence = includeIntelligence ? await missionIntelligenceProjection(state, settings.baseUrl) : null;
+  const intelligence = includeIntelligence ? await missionIntelligenceProjection(state, NATIVE_HOST) : null;
   let assertionCapability = false;
   if (includeIntelligence && receiverOnline) {
     try {
@@ -3278,8 +3244,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     timeline,
     receiver: {
       health,
-      pairing,
-      configured_url: settings.baseUrl,
+        configured_url: NATIVE_HOST,
     },
     work: {
       capture_queue: await captureQueuePage(),
@@ -3426,7 +3391,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     if (message.type === "polylogue.nativeHost.status") {
       const health = await checkNativeHost();
-      sendResponse({ ok: true, health, pairing: null });
+      sendResponse({ ok: true, health });
       return;
     }
     if (message.type === "polylogue.ambient.configure") {
@@ -4044,7 +4009,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (provider !== "chatgpt" && sender.tab) {
         // The freshness queue only knows how to refetch ChatGPT. Other
         // providers recapture their own tab through captureTab, which applies
-        // the same automatic-capture policy and receiver pairing checks.
+        // the same automatic-capture policy.
         const capture = await captureTab(sender.tab, message.reason || "provider_page_hint");
         // captureTab returns null when it never reached the content script
         // (no session identity, paused policy, unpaired receiver); say so.
@@ -4132,14 +4097,9 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await setState({
           ...previous,
           online: false,
-          receiver_pairing: health.pairing || previous.receiver_pairing || null,
           receiver_health: health,
           last_receiver_request_id: health.receiver_request_id || previous.last_receiver_request_id || null,
-          error: health.status === "unauthorized"
-            ? "unauthorized"
-            : health.status === "pairing_mismatch"
-              ? "receiver_pairing_mismatch"
-              : health.detail || "receiver_unavailable",
+          error: health.detail || "native_host_unavailable",
         });
       }
       const stored = await runtimeChrome.storage.local.get({ polylogueState: null });
@@ -4149,7 +4109,6 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ok: false,
           error: state.error || "receiver_unavailable",
           receiver_request_id: state.last_receiver_request_id || null,
-          receiver_pairing: state.receiver_pairing || null,
         });
         return;
       }

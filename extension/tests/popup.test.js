@@ -1,3 +1,5 @@
+import { File } from "node:buffer";
+import { memoryOriginStorage } from "./infra/capture-staging.js";
 import { JSDOM } from "jsdom";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -52,9 +54,7 @@ function installDom() {
       <span id="receiver"></span>
       <span id="page"></span>
       <span id="archive"></span>
-      <input id="receiver-url" />
       <p id="state-detail"></p>
-      <button id="save"><span class="button-status"></span></button>
       <button id="copy-ref" class="conversation-only"><span class="button-status"></span></button>
       <button id="open-polylogue" class="conversation-only"><span class="button-status"></span></button>
       <button id="debug-toggle"><span class="button-status"></span></button>
@@ -72,12 +72,14 @@ function installDom() {
         <button id="browser-action-decline"><span class="button-status"></span></button>
       </section>
       <span id="receiver-health"></span>
-      <span id="receiver-pairing-status"></span>
-      <span id="receiver-pairing-detail"></span>
-      <button id="reset-pairing"><span class="button-status"></span></button>
+      <span id="native-host-status"></span>
+      <span id="native-host-detail"></span>
       <span id="work-count"></span>
       <div id="work-queue"></div>
       <div id="backfill-controls"></div>
+      <input id="backfill-import" type="file">
+      <button id="cancel-backfill-import" hidden>Cancel</button>
+      <p id="backup-status"></p>
       <span id="queue-count"></span>
       <div id="queue-log"></div>
       <span id="log-count"></span>
@@ -567,6 +569,12 @@ describe("popup capture", () => {
   });
 
   it("keeps persisted paused backfills controllable and exportable", async () => {
+    const storage = memoryOriginStorage();
+    const directory = await storage.getDirectory();
+    const bytes = '{"schema":"polylogue.backfill-export.v2","synthetic":"evidence"}';
+    storage.files.set("abcd.bytes", new TextEncoder().encode(bytes));
+    storage.files.set("abcd.json", new TextEncoder().encode(JSON.stringify({ sha256: "a".repeat(64) })));
+    Object.defineProperty(navigator, "storage", { configurable: true, value: storage });
     const messages = [];
     await loadPopup({}, [CHATGPT_TAB], async (message) => {
       messages.push(message);
@@ -578,7 +586,7 @@ describe("popup capture", () => {
         ] },
         ambient: { enabled: true, site_enabled: true }, timeline: [],
       };
-      if (message.type === "polylogue.backfill.export") return { ok: true, ledger: { job: { id: message.job_id } } };
+      if (message.type === "polylogue.backfill.export") return { ok: true, artifact_ref: "abcd", digest: "sha256:" + "a".repeat(64), size_bytes: new TextEncoder().encode(bytes).length, snapshot_id: "snapshot", token: "token" };
       return { ok: true };
     });
     const controls = document.getElementById("backfill-controls");
@@ -593,6 +601,32 @@ describe("popup capture", () => {
     await vi.waitFor(() => expect(messages).toContainEqual({
       type: "polylogue.backfill.export", job_id: "persisted-paused",
     }));
+  });
+
+  it("opens the published reader URL while preserving its authentication fragment", async () => {
+    await loadPopup({}, [CHATGPT_TAB], async message => message.type === "polylogue.readerLocation"
+      ? { ok: true, url: "http://127.0.0.1:41917/auth#synthetic-reader-token" } : { ok: true });
+    document.getElementById("open-polylogue").click();
+    await vi.waitFor(() => expect(chrome.tabs.create).toHaveBeenCalled());
+    const url = new URL(chrome.tabs.create.mock.calls.at(-1)[0].url);
+    expect(url.port).toBe("41917"); expect(url.hash).toBe("#synthetic-reader-token");
+  });
+
+  it("uploads a local backup in ordered chunks and reports the paused import", async () => {
+    const messages = [];
+    await loadPopup({}, [CHATGPT_TAB], async message => {
+      messages.push(message);
+      if (message.type === "polylogue.backfill.import.begin") return { ok: true, import_id: "import" };
+      return { ok: true };
+    });
+    const input = document.getElementById("backfill-import");
+    const bytes = "synthetic backup".repeat(4000);
+    Object.defineProperty(input, "files", { value: [new File([bytes], "backup.json")] });
+    input.dispatchEvent(new window.Event("change"));
+    await vi.waitFor(() => expect(messages.some(m => m.type === "polylogue.backfill.import.finish")).toBe(true));
+    const parts = messages.filter(m => m.type === "polylogue.backfill.import.append");
+    expect(parts.map(m => m.sequence)).toEqual([0, 1]);
+    expect(parts.map(m => atob(m.base64)).join("")).toBe(bytes);
   });
 
   it("redacts caller supplied idempotency keys from exported support packets", async () => {
