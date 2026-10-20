@@ -306,7 +306,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::browser_capture::ORIGIN,
-        parser_version: 3,
+        parser_version: 4,
         support: Support::Parsed,
         route: Route::Spool,
         root: Root::STATE,
@@ -362,7 +362,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "claude-ai",
-        parser_version: 2,
+        parser_version: 3,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,

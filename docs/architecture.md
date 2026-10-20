@@ -24,6 +24,21 @@ Small spool revisions, hook settings and reader credentials are replaced using
 rename and directory synchronization. Each caller still owns its path and
 permissions; hook installation refuses managed symlinks.
 
+Browser captures use the provider's existing ChatGPT or Claude parser; Grok
+endpoint bundles adapt native responses and attachment metadata to the shared
+message model. `POST /v1/browser-captures/inspect` accepts the final capture
+envelope and returns its summary and attachment descriptors without a write.
+Acquired files travel by value in `session.attachments[].content_base64`;
+Claude inline media stays in the raw payload and is linked to retained blobs.
+`POST /v1/browser-captures` acknowledges the durable spool write. The spool
+currently replaces one conversation file, so intermediate captures acknowledged
+before convergence can still be overwritten.
+
+`GET /v1/reader-location` resolves the running reader's published port and
+sign-in fragment after checking the listener owner. The CLI uses the same
+lookup. A reader that is unavailable returns an error; this lookup does not
+start one.
+
 ## Storage and queries
 
 `polylogue-store` owns the archive, index, embeddings and blob access. One

@@ -76,6 +76,25 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
         .map_err(Into::into)
 }
 
+/// The running reader's authenticated entry point, as published by that
+/// archive's daemon. Verify the listener before disclosing its token.
+pub fn reader_url(root: &Path) -> io::Result<String> {
+    let dir = runtime_dir(&archive_key(root));
+    reader_url_in(&dir)
+}
+
+pub(crate) fn reader_url_in(dir: &Path) -> io::Result<String> {
+    let token = fs::read_to_string(dir.join("token"))?;
+    let port = fs::read_to_string(dir.join("port"))?
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| io::Error::other("the reader port file is unreadable"))?;
+    if listener_owner(port).is_none() || listener_owner(port) != my_uid() {
+        return Err(io::Error::other("the reader listener is unavailable"));
+    }
+    Ok(format!("http://127.0.0.1:{port}/auth#{}", token.trim()))
+}
+
 /// Whether a `Host` header names this listener.
 pub fn host_allowed(host: Option<&str>, port: u16) -> bool {
     let Some(host) = host else {

@@ -11,11 +11,12 @@
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};
-use crate::parse::{DocumentParser, MessageRow, Output, Parse};
+use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, Parse};
 use crate::{Disposition, Records};
+use base64::Engine as _;
 use polylogue_model::{
-    Attachment, AttachmentDirection, Block, Event, Json, Message, PromptKind, Role, Session,
-    SessionId, SessionKind, TitleSource, ToolAction, ToolOutcome,
+    Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, PromptKind, Role,
+    Session, SessionId, SessionKind, TitleSource, ToolAction, ToolOutcome,
 };
 use std::path::Path;
 
@@ -185,6 +186,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                         data: serde_json::json!({ "summary": summary }),
                     });
                 }
+                collect_inline(m, &mut sink.out.blobs);
                 let at = msg.at.map(|t| t.unix_ms());
                 let index = m.get("index").and_then(Json::as_i64).unwrap_or(i as i64);
                 rows.push((at, index, i, msg));
@@ -327,6 +329,8 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
                 .and_then(Json::as_str)
                 .map(str::to_owned),
         },
+        "image" => Block::Image(media_attachment(b, direction)),
+        "document" => Block::File(media_attachment(b, direction)),
         "tool_result" => tool_result(b, direction),
         "token_budget" => return None,
         other => Block::Other {
@@ -334,6 +338,62 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
             data: b.clone(),
         },
     })
+}
+
+fn inline_bytes(block: &Json) -> Option<Vec<u8>> {
+    if !matches!(str_of(block, "type"), Some("image" | "document"))
+        || block.pointer("/source/type").and_then(Json::as_str) != Some("base64")
+    {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(block.pointer("/source/data")?.as_str()?)
+        .ok()
+}
+
+fn media_attachment(block: &Json, direction: AttachmentDirection) -> Attachment {
+    let bytes = inline_bytes(block);
+    Attachment {
+        name: string_of(block, "name").or_else(|| string_of(block, "title")),
+        media_type: block
+            .pointer("/source/media_type")
+            .and_then(Json::as_str)
+            .map(str::to_owned),
+        url: block
+            .pointer("/source/url")
+            .and_then(Json::as_str)
+            .map(str::to_owned),
+        blob: bytes.as_ref().map(|b| BlobHash::of(b)),
+        size: bytes.as_ref().map(|b| b.len() as u64),
+        direction,
+        ..Attachment::default()
+    }
+}
+
+fn collect_inline(value: &Json, blobs: &mut Vec<InlineBlob>) {
+    if let Some(bytes) = inline_bytes(value) {
+        let hash = BlobHash::of(&bytes);
+        if !blobs.iter().any(|blob| blob.hash == hash) {
+            blobs.push(InlineBlob {
+                hash,
+                size: bytes.len() as u64,
+                bytes,
+            });
+        }
+    }
+    match value {
+        Json::Array(items) => {
+            for item in items {
+                collect_inline(item, blobs);
+            }
+        }
+        Json::Object(object) => {
+            for item in object.values() {
+                collect_inline(item, blobs);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// What a claude.ai tool does, by its name.
@@ -359,18 +419,9 @@ fn tool_result(b: &Json, direction: AttachmentDirection) -> Block {
                             texts.push(t);
                         }
                     }
-                    Some("image") => attachments.push(Attachment {
-                        media_type: item
-                            .pointer("/source/media_type")
-                            .and_then(Json::as_str)
-                            .map(str::to_owned),
-                        url: item
-                            .pointer("/source/url")
-                            .and_then(Json::as_str)
-                            .map(str::to_owned),
-                        direction,
-                        ..Attachment::default()
-                    }),
+                    Some("image" | "document") => {
+                        attachments.push(media_attachment(item, direction))
+                    }
                     _ => {}
                 }
             }

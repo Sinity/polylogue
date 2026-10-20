@@ -22,11 +22,13 @@ const RECEIVER: &str = "polylogue-browser-capture";
 pub fn router(ctx: Arc<Ctx>) -> Router {
     Router::new()
         .route("/v1/status", get(status))
+        .route("/v1/reader-location", get(reader_location))
         .route(
             "/v1/browser-captures/capabilities",
             get(capture_capabilities),
         )
         .route("/v1/browser-captures", post(capture))
+        .route("/v1/browser-captures/inspect", post(inspect_capture))
         .route("/v1/archive-state", get(archive_state))
         .route("/v1/capture-health", get(health_list).post(health_report))
         .route("/v1/browser-actions/capabilities", get(action_capabilities))
@@ -104,6 +106,19 @@ async fn status(State(ctx): State<Arc<Ctx>>) -> HttpResponse {
     .into_response()
 }
 
+async fn reader_location(State(ctx): State<Arc<Ctx>>) -> HttpResponse {
+    let Some(key) = ctx.receiver_id.strip_prefix("polylogue:") else {
+        return bad(StatusCode::SERVICE_UNAVAILABLE, "reader_unavailable");
+    };
+    // Ctx's receiver key identifies the same archive as the daemon's reader.
+    let dir = crate::web::access::runtime_dir(key);
+    let location = blocking(move || crate::web::access::reader_url_in(&dir)).await;
+    match location {
+        Some(Ok(url)) => Json(json!({"ok":true,"url":url})).into_response(),
+        _ => bad(StatusCode::SERVICE_UNAVAILABLE, "reader_unavailable"),
+    }
+}
+
 async fn capture_capabilities() -> HttpResponse {
     Json(json!({
         "ok": true,
@@ -112,8 +127,20 @@ async fn capture_capabilities() -> HttpResponse {
         "durable_ack_fields": ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"],
         "outcomes": ["accepted", "noop"],
         "capture_jobs": false,
+        "inspect": true,
     }))
     .into_response()
+}
+
+async fn inspect_capture(body: Bytes) -> HttpResponse {
+    match blocking(move || polylogue_sources::browser_capture::inspect(&body)).await {
+        Some(Ok(mut result)) => {
+            result["ok"] = json!(true);
+            Json(result).into_response()
+        }
+        Some(Err(error)) => bad(StatusCode::UNPROCESSABLE_ENTITY, &error),
+        None => bad(StatusCode::INTERNAL_SERVER_ERROR, "inspection_failed"),
+    }
 }
 
 /// The conversation a capture names.

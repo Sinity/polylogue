@@ -195,31 +195,18 @@ fn install_chrome(json: bool, harness: &str, extension_id: Option<&str>, remove:
 fn open_reader(json: bool) -> ExitCode {
     use crate::web::access;
     let root = polylogue_store::Archive::default_root();
-    let dir = access::runtime_dir(&access::archive_key(&root));
-    let (Ok(token), Ok(port)) = (
-        std::fs::read_to_string(dir.join("token")),
-        std::fs::read_to_string(dir.join("port")),
-    ) else {
-        return fail(
-            json,
-            "daemon_required",
-            "the daemon is not serving the web reader; start `polylogue daemon`",
-            crate::EXIT_DAEMON_REQUIRED,
-        );
+    let auth = match access::reader_url(&root) {
+        Ok(url) => url,
+        Err(error) => {
+            return fail(
+                json,
+                "reader_unavailable",
+                &error.to_string(),
+                crate::EXIT_DAEMON_REQUIRED,
+            );
+        }
     };
-    let Ok(port) = port.trim().parse::<u16>() else {
-        return fail(json, "io", "the port file is unreadable", 1);
-    };
-    if access::listener_owner(port).is_none() || access::listener_owner(port) != access::my_uid() {
-        return fail(
-            json,
-            "refused",
-            &format!("port {port} is not served by this user's daemon; not sending the token"),
-            1,
-        );
-    }
-    let url = format!("http://127.0.0.1:{port}/");
-    let auth = format!("http://127.0.0.1:{port}/auth#{}", token.trim());
+    let url = auth.split("auth#").next().unwrap_or(&auth);
     let opened = std::process::Command::new("xdg-open")
         .arg(&auth)
         .stdout(std::process::Stdio::null())
