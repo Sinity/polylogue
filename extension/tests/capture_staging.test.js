@@ -170,8 +170,9 @@ describe("durable capture staging", () => {
       nativeId: "session", extensionVersion: "0.1.0", instanceId: "synthetic-preparation-instance", signal: new globalThis.AbortController().signal });
     expect(await store.getCapture(`raw:${raw.id}`)).toBeUndefined();
     const capture = await store.getCapture(envelope.capture_record_ref);
-    await store.putCapture({ ...capture, receiver_receipt: acceptedReceipt("synthetic-ack", envelope.receiver_native.sha256) });
-    await restarted.acknowledgeNative(capture.id);
+    const prepared = await restarted.prepare(envelope);
+    await restarted.markAcknowledged(prepared.ref, acceptedReceipt("synthetic-ack", prepared.contentHash));
+    await restarted.acknowledge(prepared.ref);
     expect(storage.files.size).toBe(0);
   });
 
@@ -231,18 +232,18 @@ describe("durable capture staging", () => {
     const options = { provider: "chatgpt", rawRef: raw, nativeId: "session",
       extensionVersion: "0.1.0", instanceId: "first-preparation-instance", signal: new globalThis.AbortController().signal };
     let retained;
-    const contract = { onPrepare: ({ capture, reference }) => {
-      retained = { capture, reference }; throw new Error("synthetic-preparation-interrupted");
+    const contract = { onPrepare: ({ capture }) => {
+      retained = { capture }; throw new Error("synthetic-preparation-interrupted");
     } };
     await expect(new NativeCaptureNormalizer({ staging, store, prepareNative: receiverContractPreparation(staging, store, contract) })
       .normalize(options)).rejects.toThrow("synthetic-preparation-interrupted");
     const interrupted = await store.getCapture(retained.capture.id);
-    expect(interrupted.receiver_native).toEqual(retained.reference);
+    expect(interrupted.preparation_instance_id).toBe(retained.capture.preparation_instance_id);
     expect(await store.captureReferences(raw.id)).toBe(true);
     const envelope = await new NativeCaptureNormalizer({ staging, store, prepareNative: receiverContractPreparation(staging, store) })
       .normalize({ ...options, instanceId: "later-worker-instance" });
-    expect(envelope.receiver_native.acquisition_id).toBe(retained.capture.acquisition_id);
-    expect(envelope.receiver_native.preparation_instance_id).toBe("first-preparation-instance");
+    expect((await store.getCapture(envelope.capture_record_ref)).acquisition_id).toBe(retained.capture.acquisition_id);
+    expect((await store.getCapture(envelope.capture_record_ref)).preparation_instance_id).toBe("first-preparation-instance");
     expect((await store.getCapture(envelope.capture_record_ref)).owner).toEqual(owner);
     expect(envelope.provenance.extension_instance_id).toBeNull();
     expect(envelope.provenance.acquisition_sequence).toBeNull();
@@ -339,7 +340,9 @@ describe("durable capture staging", () => {
     const envelope = await normalizer.normalize({ provider: "chatgpt", rawRef: raw, nativeId: "synthetic-session", extensionVersion: "0.1.0", instanceId: "synthetic-preparation-instance", signal: new globalThis.AbortController().signal });
     expect(envelope.capture_source_refs).toContain(raw.id);
     expect(envelope.session.turns).toEqual([]);
-    expect(envelope.receiver_native).toMatchObject({ acquisition_id: expect.any(String), sha256: "b".repeat(64) });
+    expect(envelope.raw_provider_payload).toEqual({ staged_raw_json: raw.id });
+    const prepared = await staging.prepare(envelope);
+    expect(JSON.parse(await prepared.body.text()).raw_provider_payload).toEqual(payload);
     expect(JSON.parse(await (await staging.file(raw.id)).text())).toEqual(payload);
     expect(await store.captureReferences(raw.id)).toBe(true);
   });
@@ -379,7 +382,7 @@ describe("durable capture staging", () => {
     expect(asset.sha256).toBe(digest(bytes));
     const envelope = { session: { turns: [{ text: "😀".repeat(25000), attachments: [asset] }] } };
     const prepared = await staging.prepare(envelope); const canonical = await prepared.body.text();
-    expect(JSON.parse(canonical).session.turns[0].attachments[0].inline_base64).toBe(encoded);
+    expect(JSON.parse(canonical).session.turns[0].attachments[0].content_base64).toBe(encoded);
     expect(prepared.contentHash).toBe(digest(canonical));
     const writes = storage.writes.length;
     staging = new CaptureStaging(storage, store);
@@ -505,8 +508,9 @@ describe("durable capture staging", () => {
     const cache = await store.pinNativeCache({ owner, provider: owner.provider, nativeId: "session", rawRef: raw, headers: {}, observedAt: "2026-01-01T00:00:00Z", acquisitionSequence: await store.nextNativeAcquisitionSequence() });
     const native = await new NativeCaptureNormalizer({ staging, store, prepareNative: receiverContractPreparation(staging, store) }).normalize({ provider: owner.provider, nativeId: "session", rawRef: raw, extensionVersion: "0.1.0", instanceId: "synthetic-preparation-instance", signal: new globalThis.AbortController().signal });
     const retainedNative = await store.getCapture(native.capture_record_ref);
-    await store.putCapture({ ...retainedNative, receiver_receipt: acceptedReceipt("native", native.receiver_native.sha256) });
-    await staging.acknowledgeNative(retainedNative.id);
+    const prepared = await staging.prepare(native);
+    await staging.markAcknowledged(prepared.ref, acceptedReceipt("native", prepared.contentHash));
+    await staging.acknowledge(prepared.ref);
     const identity = [owner.provider, raw.id, "session", "message", "attachment"];
     const asset = await staging.begin(owner, { acquisition: identity }, "asset-request");
     await store.reserveAcquisition(identity, asset, "asset-request");
@@ -719,7 +723,7 @@ describe("durable capture staging", () => {
       const completed = await store.getDelivery(delivery.id);
       expect(completed).toMatchObject({ preparing: false, delivery_sequence: entry.delivery_sequence });
       const bytes = await (await restarted.file(bodyId)).text();
-      expect(JSON.parse(bytes).session.attachments[0].inline_base64).toBe(globalThis.Buffer.from("asset evidence").toString("base64"));
+      expect(JSON.parse(bytes).session.attachments[0].content_base64).toBe(globalThis.Buffer.from("asset evidence").toString("base64"));
       expect(JSON.parse(bytes).session.turns[0].text).toBe("retained transcript");
       expect((await restarted.metadata(bodyId)).sha256).toBe(digest(bytes));
       if (boundary !== "before-close") expect(storage.writes.filter((name) => name === `${bodyId}.bytes`)).toHaveLength(sealedWrites);

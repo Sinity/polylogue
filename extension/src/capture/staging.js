@@ -298,12 +298,12 @@ export class CaptureStaging {
   }
   async *assetJson(asset, signal = null, canonical = false) {
     const keys = Object.keys(asset).filter((key) => key !== "staged_asset" && asset[key] !== undefined);
-    if (asset.staged_asset && !keys.includes("inline_base64")) keys.push("inline_base64");
+    if (asset.staged_asset && !keys.includes("content_base64")) keys.push("content_base64");
     if (canonical) keys.sort();
     yield "{"; let first = true;
     for (const key of keys) {
       if (!first) yield ","; first = false; yield `${JSON.stringify(key)}:`;
-      if (key !== "inline_base64" || !asset.staged_asset) { yield* this.json(asset[key], signal, canonical); continue; }
+      if (key !== "content_base64" || !asset.staged_asset) { yield* this.json(asset[key], signal, canonical); continue; }
       const ref = asset.staged_asset; const meta = await this.metadata(ref.id);
       if (meta.token !== ref.token || meta.state !== "sealed") throw stageError("capture_staging_asset_unsealed");
       yield '"';

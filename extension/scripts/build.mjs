@@ -2,7 +2,7 @@
 // Build packed browser extension artifacts (Chrome .zip + Firefox .xpi).
 //
 // Usage:
-//   node scripts/build.mjs                  # auto-detect version from pyproject.toml
+//   node scripts/build.mjs                  # read extension/package.json version
 //   node scripts/build.mjs --version 0.2.0  # override version explicitly
 //   node scripts/build.mjs --out ./dist     # override output directory
 //
@@ -10,7 +10,7 @@
 //   <out>/polylogue-browser-capture-<version>-chrome.zip
 //   <out>/polylogue-browser-capture-<version>-firefox.xpi
 //
-// Side effect: rewrites browser-extension/manifest.json + package.json + package-lock.json
+// Side effect: rewrites extension/manifest.json + package.json + package-lock.json
 // "version" fields to match the resolved version so the committed source
 // stays in sync with the published artifact. The Firefox artifact uses a
 // dedicated manifest with browser_specific_settings.gecko populated.
@@ -24,7 +24,6 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EXT_ROOT = resolve(__dirname, "..");
-const REPO_ROOT = resolve(EXT_ROOT, "..");
 const FIREFOX_GECKO_ID = "polylogue-browser-capture@sinity.dev";
 
 function parseArgs(argv) {
@@ -52,15 +51,8 @@ function parseArgs(argv) {
   return args;
 }
 
-function readPyprojectVersion() {
-  const path = join(REPO_ROOT, "pyproject.toml");
-  const text = readFileSync(path, "utf8");
-  // Restrict to the [project] table to avoid matching [tool.*] version pins.
-  const projectSection = text.split(/^\[/m).find((s) => s.startsWith("project]"));
-  if (!projectSection) throw new Error("no [project] table in pyproject.toml");
-  const match = projectSection.match(/^version\s*=\s*"([^"]+)"/m);
-  if (!match) throw new Error("no version = \"...\" in [project] table");
-  return match[1];
+function readPackageVersion() {
+  return JSON.parse(readFileSync(join(EXT_ROOT, "package.json"), "utf8")).version;
 }
 
 function normalizeChromeVersion(v) {
@@ -169,7 +161,7 @@ with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
 function main() {
   execFileSync(process.execPath, [join(EXT_ROOT, "scripts/sync-sha256.mjs")], { stdio: "inherit" });
   const args = parseArgs(process.argv.slice(2));
-  const rawVersion = args.version ?? readPyprojectVersion();
+  const rawVersion = args.version ?? readPackageVersion();
   const version = normalizeChromeVersion(rawVersion);
   process.stdout.write(`polylogue browser-extension build: version ${version} (raw ${rawVersion})\n`);
 

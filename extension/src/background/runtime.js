@@ -1,5 +1,6 @@
 import { AttachmentSha256 } from "../actions/sha256.js";
 import { NativeCaptureNormalizer } from "../capture/native.js";
+import { prepareNativeCapture as prepareNativeTransport } from "../capture/native_transport.js";
 import { CaptureStaging } from "../capture/staging.js";
 import { BackfillCoordinator } from "../backfill/coordinator.js";
 import { BACKFILL_RECOVERY_CHECKPOINT_VERSION, DURABLE_RECEIVER_ACK_FIELDS, retryAfterMs, receiverAckContractError } from "../backfill/models.js";
@@ -1816,99 +1817,31 @@ async function requirePairedTrustedReceiver() {
   return ensureTrustedReceiver();
 }
 
-async function prepareNativeCapture(capture, { rawRef, relatedRefs, queueContext, signal, summaryOnly = false, onProgress = null }) {
-  const progress = (phase, state) => { try { onProgress?.(phase, state); } catch { /* Diagnostics cannot change capture. */ } };
-  progress("native_prepare", "BEGIN");
-  await ensureTrustedReceiver();
-  const settings = await receiverSettings();
-  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
-  client.nativeOwnerChanged = async (adopted) => {
-    const retained = await captureStore.getCapture(capture.id);
-    if (!retained) throw new Error("native_preparation_owner_missing");
-    await captureStore.putCapture({ ...retained, receiver_native: { ...retained.receiver_native, adopted,
-      acquisition_id: capture.acquisition_id, preparation_instance_id: capture.preparation_instance_id } });
-  };
-  const refs = capture.provider === "grok" ? { responses: rawRef, ...relatedRefs } : { conversation: rawRef };
-  const members = {};
-  for (const [name, ref] of Object.entries(refs)) {
-    const meta = await captureStaging.metadata(ref.id);
-    captureStaging.requireOwner(meta, ref, capture.owner);
-    if (meta.state !== "sealed") throw new Error("capture_staging_asset_unsealed");
-    members[name] = { sha256: meta.sha256, size_bytes: meta.bytes };
-  }
-  const rawRevision = await client.nativeRevision(capture.provider, capture.native_id, members);
-  const binding = { preparation_instance_id: capture.preparation_instance_id,
-    extension_instance_id: capture.extension_instance_id, acquisition_sequence: capture.acquisition_sequence,
-    invocation_id: capture.invocation_id, raw_revision: rawRevision, native_id: capture.native_id,
-    source_url: capture.source_url, document_id: capture.owner.document_id };
-  let adopted;
-  if (capture.receiver_native?.adopted) adopted = await client.refreshNativeOwner(capture.receiver_native.adopted, capture.preparation_instance_id, signal);
-  else if (queueContext) {
-    const job = await captureStore.assertJobExecution(queueContext.jobId, queueContext.owner, queueContext.generation);
-    const accountHandle = await providerAccountHandle(capture.provider);
-    if (!accountHandle) throw new Error("capture_job_account_scope_unresolved");
-    adopted = await client.recoverOrCreate({ provider: capture.provider, accountHandle,
-      locator: { kind: "backfill", provider: capture.provider, cutoff: job.cutoff },
-      intentPayload: { provider: capture.provider, cutoff: job.cutoff }, sessionId: capture.preparation_instance_id });
-    if (adopted.scope.key !== job.account_scope) throw new Error("capture_job_account_scope_mismatch");
-  } else adopted = await client.recoverInvocation({ provider: capture.provider, creationToken: capture.preparation_token,
-    binding, sessionId: capture.preparation_instance_id });
-  const reference = { adopted, acquisition_id: capture.acquisition_id, preparation_instance_id: capture.preparation_instance_id };
-  capture = { ...capture, receiver_native: reference, raw_revision_sha256: rawRevision };
-  await captureStore.putCapture(capture);
-  await client.beginNative(adopted, capture.acquisition_id, binding, Object.keys(refs), signal);
-  for (const [name, ref] of Object.entries(refs)) {
-    adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
-    const meta = await captureStaging.metadata(ref.id);
-    await client.nativeMember(adopted, capture.acquisition_id, name, await captureStaging.file(ref.id), meta.response_metadata || {}, meta.sha256, signal);
-  }
-  adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
-  const prepared = await client.prepareNative(adopted, capture.acquisition_id, {
-    captured_at: capture.observed_at, extension_instance_id: capture.extension_instance_id,
-    acquisition_sequence: capture.acquisition_sequence, source_url: capture.source_url,
-    extension_id: runtimeChrome.runtime.id || null, adapter_name: `${capture.provider}-native-v1`,
-    adapter_version: capture.extension_version, capture_mode: "snapshot", provider_meta: capture.attribution },
-    { capture_fidelity: "native_full", ...capture.attribution }, signal);
-  const preparedRoot = await captureStore.getCapture(capture.id);
-  await captureStore.putCapture({ ...preparedRoot, receiver_summary: { raw_revision: rawRevision, plan_digest: prepared.plan_digest, summary: prepared.summary } });
-  progress("native_prepare", "END");
-  if (summaryOnly) return { rawRevision, summary: prepared.summary, reference: { ...reference, adopted, plan_digest: prepared.plan_digest } };
-  progress("native_assets", "BEGIN");
-  for await (const asset of client.nativePlan(adopted, capture.acquisition_id, capture.preparation_instance_id, signal)) {
-    if (asset.receipt) continue;
-    const descriptor = asset.descriptor;
-    let outcome = { status: "no_resolvable_source" }; let file = null; let sha256 = null;
-    if (descriptor.provider_meta.native_inline_sha256) {
-      outcome = { status: "retained_native_bytes", sha256: descriptor.provider_meta.native_inline_sha256, size_bytes: descriptor.provider_meta.native_inline_size_bytes };
-    } else if (capture.provider !== "claude-ai") {
-      signal?.throwIfAborted();
-      const cancel = () => { void runtimeChrome.tabs.sendMessage(capture.owner.tab_id, { type: "polylogue.cancelRecordAssets", capture_ref: rawRef.id }, { documentId: capture.owner.document_id }).catch(() => undefined); };
+async function prepareNativeCapture(capture, { rawRef, signal, summaryOnly = false, onProgress = null }) {
+  return prepareNativeTransport({ capture, staging: captureStaging, store: captureStore, signal, summaryOnly, onProgress,
+    inspect: async (body, signal) => {
+      const response = await runtimeNetwork(`${(await receiverSettings()).baseUrl}/v1/browser-captures/inspect`, {
+        method: "POST", headers: await requestHeaders({ hasBody: true, requestId: buildReceiverRequestId() }), body, signal });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      return result;
+    },
+    acquire: async (descriptor, ordinal, signal) => {
+      if (capture.provider === "claude-ai") return { attachments: [], outcome: { failed: [{
+        provider_attachment_id: descriptor.provider_attachment_id, status: "no_resolvable_source" }] } };
+      const cancel = () => { void runtimeChrome.tabs.sendMessage(capture.owner.tab_id,
+        { type: "polylogue.cancelRecordAssets", capture_ref: rawRef.id }, { documentId: capture.owner.document_id }).catch(() => undefined); };
       signal?.addEventListener("abort", cancel, { once: true });
       try {
         const result = await runtimeChrome.tabs.sendMessage(capture.owner.tab_id, { type: "polylogue.acquireRecordAssets",
           provider: capture.provider, nativeId: capture.native_id, capture_ref: rawRef.id,
           recordKey: descriptor.original_record_key ?? String(descriptor.original_record_ordinal),
-          attachmentOrdinal: asset.ordinal, attachments: [descriptor] }, { documentId: capture.owner.document_id });
+          attachmentOrdinal: ordinal, attachments: [descriptor] }, { documentId: capture.owner.document_id });
         signal?.throwIfAborted();
         if (!result?.ok) throw new Error(result?.error || "native_asset_acquisition_failed");
-        const acquired = result.acquisition.attachments?.[0];
-        if (acquired?.staged_asset) {
-          const meta = await captureStaging.metadata(acquired.staged_asset.id);
-          captureStaging.requireOwner(meta, acquired.staged_asset, capture.owner);
-          file = await captureStaging.file(meta.id); sha256 = meta.sha256; outcome = { status: "acquired" };
-        } else outcome = { status: result.acquisition.outcome.failed?.[0]?.status || "no_resolvable_source" };
+        return result.acquisition;
       } finally { signal?.removeEventListener("abort", cancel); }
-    }
-    adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
-    await client.nativeAsset(adopted, capture.acquisition_id, asset, outcome, file, sha256, signal);
-  }
-  progress("native_assets", "END");
-  progress("native_finalize", "BEGIN");
-  adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
-  const final = await client.finalizeNative(adopted, capture.acquisition_id, prepared.plan_digest, signal);
-  progress("native_finalize", "END");
-  return { rawRevision, summary: prepared.summary, reference: { ...reference, adopted,
-    plan_digest: prepared.plan_digest, sha256: final.sha256, size_bytes: final.size_bytes } };
+    } });
 }
 
 async function publishNativeCapture(reference, recordRef, signal) {
