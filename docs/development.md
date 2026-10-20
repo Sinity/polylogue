@@ -3,6 +3,10 @@
 Checks run on the development machine; there is no hosted CI. Run commands
 inside `nix develop`.
 
+The shell uses Cargo's incremental builds directly. A persistent compiler
+cache daemon must have its own lifecycle owner before it is enabled: a daemon
+started inside a queued job keeps that job occupied after the command exits.
+
 | Check | Command | When | Typical time |
 | --- | --- | --- | --- |
 | Focused tests | `agentctl job start polylogue exec --workspace <worktree> -- cargo nextest run -p <crate> <filter>` | while editing | seconds |
