@@ -38,8 +38,8 @@ there is no token or pairing step.
 ## Develop
 
 ```bash
-npm install
-npx vitest run       # unit tests
-npm run validate     # manifest checks
-npm run build        # packaged build
+agentctl job start polylogue extension -- ci
+agentctl job start polylogue extension -- test -- tests/native_fetch.test.js
+agentctl job start polylogue extension -- run validate
+agentctl job start polylogue extension -- run build
 ```
