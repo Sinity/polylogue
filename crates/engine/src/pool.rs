@@ -370,6 +370,8 @@ fn run(
                         }
                         out.parsed_upto = job.start + step.consumed;
                         let mut p = ParseStep {
+                            order_from: None,
+                            reset: job.start + step.start == 0,
                             snapshot: step.snapshot,
                             output: step.output,
                             accounting: step.accounting,

@@ -655,6 +655,7 @@ CREATE TABLE snapshot_session (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX snapshot_session_session ON snapshot_session(session_pk);
 CREATE TABLE event_source (
+  source_order INTEGER NOT NULL,
   event_id TEXT NOT NULL REFERENCES event(id) ON DELETE CASCADE,
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,

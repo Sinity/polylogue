@@ -22,13 +22,17 @@
           "uuid": "origin-matrix-claude-ai"
         },
         "kind": "conversation_settings",
+        "range": [
+          3,
+          326
+        ],
         "session": "claude-ai:origin-matrix-claude-ai"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 326,
         "message": {
           "at": "2026-08-01T10:00:01Z",
           "blocks": [
@@ -42,7 +46,7 @@
           "role": "user",
           "session": "claude-ai:origin-matrix-claude-ai"
         },
-        "offset": 0
+        "offset": 3
       }
     ],
     "sessions": [

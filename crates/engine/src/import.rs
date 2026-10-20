@@ -5,6 +5,8 @@
 
 use super::*;
 
+mod arrays;
+
 impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original
     /// bytes. Acquisition streams into the blob store before the writer

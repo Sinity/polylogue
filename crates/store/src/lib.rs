@@ -13,6 +13,7 @@ pub mod context;
 pub mod derive;
 mod encoding;
 pub mod excise;
+pub mod export_array;
 pub mod fault;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;

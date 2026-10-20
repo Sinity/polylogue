@@ -35,7 +35,7 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 
 pub fn open(path: &Path) -> Option<Parse> {
     let named = path.file_name().and_then(|n| n.to_str()) == Some("conversations.json");
-    named.then(|| Parse::Document(Box::new(Export)))
+    named.then(|| Parse::Array(Box::new(Export)))
 }
 
 /// `design_chats/<uuid>.json`: one Claude Design chat.
@@ -58,23 +58,18 @@ fn in_design_dir(path: &Path) -> bool {
 
 pub struct Export;
 
-impl DocumentParser for Export {
-    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let mut sink = Sink::new(out, records);
-        match serde_json::from_slice::<Json>(bytes) {
-            Ok(Json::Array(items)) => {
-                for item in &items {
-                    conversation(item, &mut sink);
-                }
-            }
-            Ok(_) => sink
-                .records
-                .record("export", &Disposition::refused("not a JSON array")),
-            Err(e) => sink.records.record(
-                "export",
-                &Disposition::refused(format!("malformed JSON: {e}")),
-            ),
-        }
+impl crate::array::ArrayParser for Export {
+    fn order_key(&self, _: &serde_json::value::RawValue) -> Option<f64> {
+        None
+    }
+    fn item(
+        &self,
+        value: &Json,
+        sink: &mut Sink<'_>,
+        _: &mut dyn crate::array::Owners,
+    ) -> Result<(), String> {
+        conversation(value, sink);
+        Ok(())
     }
 }
 

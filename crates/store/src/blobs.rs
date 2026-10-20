@@ -215,6 +215,18 @@ impl StoredChain {
         Ok(Self { length, extents })
     }
 
+    /// Reads extents forward, opening each file representation once.
+    pub fn reader(&self, store: std::sync::Arc<hashed_blobs::Store>) -> ChainReader {
+        ChainReader {
+            chain: self.clone(),
+            store,
+            index: 0,
+            position: 0,
+            current: None,
+            left: 0,
+        }
+    }
+
     /// A chain retained as one complete file blob, suitable for one verified
     /// sequential reader. Inline and assembled chains use extent reads.
     pub fn single_file_blob(&self) -> Option<BlobHash> {
@@ -265,6 +277,64 @@ impl StoredChain {
             )));
         }
         Ok(out)
+    }
+}
+
+pub struct ChainReader {
+    chain: StoredChain,
+    store: std::sync::Arc<hashed_blobs::Store>,
+    index: usize,
+    position: u64,
+    current: Option<Box<dyn std::io::Read>>,
+    left: u64,
+}
+
+impl std::io::Read for ChainReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::{self, Read};
+        if out.is_empty() || self.position == self.chain.length {
+            return Ok(0);
+        }
+        while self.left == 0 {
+            let extent = self
+                .chain
+                .extents
+                .get(self.index)
+                .ok_or_else(|| io::Error::other("stored extent missing"))?;
+            if extent.offset != self.position {
+                return Err(io::Error::other("stored extent gap"));
+            }
+            let mut reader: Box<dyn Read> = match &extent.inline {
+                Some(bytes) => Box::new(io::Cursor::new((**bytes).clone())),
+                None => Box::new(
+                    self.store
+                        .read_plain(&hashed_blobs::Hash(extent.blob.0), None, || Ok(()))
+                        .map_err(io::Error::other)?,
+                ),
+            };
+            let skipped = io::copy(
+                &mut reader.by_ref().take(extent.blob_offset),
+                &mut io::sink(),
+            )?;
+            if skipped != extent.blob_offset {
+                return Err(io::Error::other("stored blob offset past EOF"));
+            }
+            self.left = extent.length.min(self.chain.length - self.position);
+            self.current = Some(reader);
+            self.index += 1;
+        }
+        let want = out.len().min(self.left as usize);
+        let n = self
+            .current
+            .as_mut()
+            .expect("opened extent")
+            .read(&mut out[..want])?;
+        if n == 0 {
+            return Err(io::Error::other("stored blob ends before extent"));
+        }
+        self.left -= n as u64;
+        self.position += n as u64;
+        Ok(n)
     }
 }
 

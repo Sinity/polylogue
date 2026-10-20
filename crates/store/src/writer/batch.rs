@@ -29,6 +29,10 @@ pub struct Observation {
 /// One parse step's rows and where they sit in the input's chain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParseStep {
+    /// Logical message positions for array records, separate from raw spans.
+    pub order_from: Option<u64>,
+    /// Replaces accounting from an earlier parse of this chain.
+    pub reset: bool,
     pub output: Output,
     pub snapshot: Option<polylogue_model::Snapshot>,
     pub accounting: Accounting,

@@ -71,3 +71,31 @@ fn a_smaller_parse_range_can_reuse_already_decoded_overlap() {
     assert_eq!(source.read_range(8, 16).unwrap(), b"89abcdef");
     assert_eq!(source.reader.stats().decoded_bytes, 32);
 }
+
+#[test]
+fn array_scanning_uses_one_forward_decode_after_verification() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600)
+        .unwrap()
+        .with_frame_size(4 << 20);
+    let mut bytes = b"[{}".to_vec();
+    for _ in 0..10_000 {
+        bytes.extend_from_slice(b",{\"padding\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}");
+    }
+    bytes.push(b']');
+    let hash = store.put(&bytes[..], 1).unwrap();
+    let mut source = Imported::open(
+        &store,
+        polylogue_model::BlobHash(hash.0),
+        bytes.len() as u64,
+    )
+    .unwrap();
+    let verified = source.reader.stats();
+    let scan = polylogue_sources::array::scan(source.stream().unwrap(), |_, _| Ok(())).unwrap();
+    assert_eq!(scan.elements, 10_001);
+    assert!(scan.peak_element_bytes < 256);
+    let stats = source.reader.stats();
+    assert_eq!(stats.decoded_bytes, 2 * bytes.len() as u64);
+    assert_eq!(stats.frames, verified.frames + 1);
+    assert!(source.pending.is_empty());
+}

@@ -5,10 +5,10 @@ use crate::Records;
 use crate::parse::Output;
 use polylogue_model::{Json, MessageId, NativeId, Origin, SessionId, Timestamp};
 
-/// What a document parser writes into. A document has no byte offsets
-/// for its items, so rows take their order from `next`: one number per
-/// message in document order, unique in the input (architecture 5.5a,
-/// the order key).
+/// What a document or conversation parser writes into. `next` supplies
+/// logical message positions. Array and snapshot drivers replace these
+/// temporary positions with the enclosing record's actual byte range and
+/// carry logical order separately to the writer.
 pub struct Sink<'a> {
     pub out: &'a mut Output,
     pub records: &'a mut Records,

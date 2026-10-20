@@ -227,6 +227,8 @@ impl WriterWorld {
             length: self.offset,
             release: Default::default(),
             parse: vec![ParseStep {
+                order_from: None,
+                reset: start == 0,
                 snapshot: None,
                 output,
                 accounting,

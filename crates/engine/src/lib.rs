@@ -923,6 +923,38 @@ impl Engine {
         if plans.is_empty() {
             return Ok(());
         }
+        let mut ordinary = Vec::new();
+        for mut plan in plans {
+            if let Some(polylogue_sources::parse::Parse::Array(parser)) =
+                (plan.origin.open)(&plan.path)
+            {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.execute_array(&mut plan, &*parser, pass)
+                }));
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        pass.errors
+                            .push(format!("parse {}: {error}", plan.path.display()));
+                        plan.failed = true;
+                    }
+                    Err(_) => {
+                        pass.errors.push(format!(
+                            "parse {}: array parser panicked",
+                            plan.path.display()
+                        ));
+                        plan.failed = true;
+                    }
+                }
+                self.settle(plan);
+            } else {
+                ordinary.push(plan);
+            }
+        }
+        let plans = ordinary;
+        if plans.is_empty() {
+            return Ok(());
+        }
         let (done_tx, done_rx) = channel();
         let pool = Pool::start(
             self.config.workers,
