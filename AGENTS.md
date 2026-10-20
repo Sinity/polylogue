@@ -32,7 +32,7 @@ Optimize for fast integration. See `docs/development.md`.
 
 - Every cargo build or test runs as an AgentCTL job, which queues it against
   the rest of the machine's work: `agentctl job start polylogue check
-  --workspace <worktree>`, or `exec -- <command>` for focused tests.
+  --workspace <worktree>`, or `focused -- -p <crate> <filter>` for focused tests.
 - The pre-push hook checks formatting and crate boundaries only (seconds).
   There is no hosted test CI. Open a PR when ready and follow the forge's
   current review and status requirements.
