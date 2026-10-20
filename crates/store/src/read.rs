@@ -6,8 +6,7 @@ use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
 use crate::writer::{restore_text, unpack_block, unpack_text};
 use polylogue_model::{
-    Block, Message, MessageId, PromptKind, Role, Session, SessionId, SessionKind, Timestamp,
-    TitleSource, Usage,
+    Block, Message, MessageId, PromptKind, Role, Session, SessionId, Timestamp, Usage,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -143,42 +142,16 @@ impl Reader<'_> {
     }
 
     pub fn session(&self, id: &SessionId) -> Result<Option<Session>> {
-        let row = self
+        Ok(self
             .conn()
-            .prepare_cached(
-                "SELECT kind, title, title_source, cwd_json, branch, harness_version, started_at
-                 FROM session WHERE id = ?1",
-            )?
+            .prepare_cached(&format!(
+                "SELECT {} FROM session WHERE id = ?1",
+                crate::session_row::COLUMNS
+            ))?
             .query_row([id.to_string()], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                    r.get::<_, Option<String>>(5)?,
-                    r.get::<_, Option<i64>>(6)?,
-                ))
+                crate::session_row::read(id.clone(), r)
             })
-            .optional()?;
-        Ok(
-            row.map(|(kind, title, source, cwd, branch, version, started)| {
-                let mut s =
-                    Session::new(id.clone(), parse_name(&kind).unwrap_or(SessionKind::Main));
-                if let (Some(text), Some(source)) =
-                    (title, source.as_deref().and_then(parse_name::<TitleSource>))
-                {
-                    s.offer_title(&text, source);
-                }
-                s.cwd = cwd
-                    .and_then(|c| serde_json::from_str(&c).ok())
-                    .unwrap_or_default();
-                s.git_branch = branch;
-                s.tool_version = version;
-                s.started = ts(started);
-                s
-            }),
-        )
+            .optional()?)
     }
 
     /// The session's messages in order, the preferred version of each. With

@@ -24,6 +24,7 @@ mod repo_lookup;
 pub mod schema;
 pub mod search;
 pub mod session_export;
+mod session_row;
 pub mod sinex_rows;
 pub mod sql_functions;
 pub mod timing;

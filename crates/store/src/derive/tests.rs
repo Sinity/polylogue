@@ -128,11 +128,15 @@ fn two_inputs(early_first: bool) -> Json {
     early.offer_title("early", polylogue_model::TitleSource::Generated);
     early.git_branch = Some("main".into());
     early.tool_version = Some("1.0".into());
+    early.repo = Some("https://example.test/early.git".into());
+    early.mode = Some("interactive".into());
     let mut late = Session::new(sid("s"), SessionKind::Main);
     late.offer_cwd("/b");
     late.offer_cwd("/a");
     late.offer_title("late", polylogue_model::TitleSource::Generated);
     late.git_branch = Some("dev".into());
+    late.repo = Some("https://example.test/late.git".into());
+    late.mode = Some("bg".into());
     let writes = [
         ("in-early", early, prose("s", 1, 1_000, "first")),
         ("in-late", late, prose("s", 2, 5_000, "second")),
@@ -144,7 +148,7 @@ fn two_inputs(early_first: bool) -> Json {
     }
     one(
         &w,
-        "SELECT kind, title, title_source, cwd_json, cwd, branch, harness_version FROM session",
+        "SELECT kind, title, title_source, cwd_json, cwd, branch, harness_version, record_repo, mode FROM session",
     )
 }
 
@@ -155,8 +159,33 @@ fn session_facts_do_not_depend_on_arrival_order() {
     // directories by first use.
     let expected = json!({
         "kind": "subagent", "title": "late", "title_source": "generated",
-        "cwd_json": "[\"/a\",\"/b\"]", "cwd": "/b", "branch": "dev", "harness_version": "1.0"
+        "cwd_json": "[\"/a\",\"/b\"]", "cwd": "/b", "branch": "dev", "harness_version": "1.0", "record_repo": "https://example.test/late.git", "mode": "bg"
     });
     assert_eq!(two_inputs(true), expected);
     assert_eq!(two_inputs(false), expected);
+}
+
+#[test]
+fn session_read_and_export_preserve_every_recorded_fact() {
+    let mut w = WriterWorld::new();
+    let mut session = Session::new(sid("export:identity"), SessionKind::Subagent);
+    session.offer_title("An exact title", polylogue_model::TitleSource::Custom);
+    session.offer_cwd("/first");
+    session.offer_cwd("/second");
+    session.git_branch = Some("topic".into());
+    session.repo = Some("https://example.test/source.git".into());
+    session.tool_version = Some("1.2.3".into());
+    session.started = polylogue_model::Timestamp::from_unix_ms(1234);
+    session.mode = Some("bg".into());
+    w.write_session(
+        session.clone(),
+        prose("export:identity", 1, 1234, "A message"),
+    );
+    let reads = crate::ReadPool::open(&w.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(reader.session(&session.id).unwrap(), Some(session.clone()));
+    let exported = reader.session_export(&session.id).unwrap().unwrap();
+    assert_eq!(exported.session, session);
+    assert_eq!(exported.messages.len(), 1);
+    assert_eq!(exported.messages[0].session, exported.session.id);
 }

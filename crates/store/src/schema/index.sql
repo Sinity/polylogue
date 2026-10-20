@@ -36,6 +36,7 @@ CREATE TABLE session (
   cwd               TEXT,
   repo              TEXT,                   -- name or URL, for display: record_repo, else the remote of the
                                             --   repo_lookup holding the session's cwd (derived: repository)
+  mode              TEXT,                   -- harness mode as recorded, e.g. background
   record_repo       TEXT,                   -- the repository the session's own records name
   repo_root         TEXT,                   -- the repository's identity, its root commit hash, from repo_lookup (derived)
   checkout          TEXT,                   -- worktree path, when it differs from cwd's repository root
