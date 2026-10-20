@@ -306,3 +306,27 @@ fn every_http_command_is_served_and_nothing_else() {
         assert_eq!(send(&r, req).await.0, StatusCode::NOT_FOUND);
     });
 }
+
+#[test]
+fn owned_http_shutdown_closes_partial_peers_and_releases_daemon() {
+    use std::io::Write;
+    let world = test_daemon::start("HTTP lifecycle fixture");
+    let weak = Arc::downgrade(&world.daemon);
+    let mut server = start_on(Arc::clone(&world.daemon), 0).unwrap();
+    let _idle = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+    let mut partial = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+    partial
+        .write_all(b"GET /api/v1/status HTTP/1.1\r\n")
+        .unwrap();
+    let (done, stopped) = std::sync::mpsc::sync_channel(1);
+    let thread = std::thread::spawn(move || {
+        done.send(server.shutdown()).unwrap();
+    });
+    stopped
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("HTTP worker retained idle clients")
+        .unwrap();
+    thread.join().unwrap();
+    drop(world);
+    assert!(weak.upgrade().is_none());
+}

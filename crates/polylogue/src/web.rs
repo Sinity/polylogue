@@ -31,63 +31,98 @@ pub struct Web {
     pub browser: Arc<crate::browser::Ctx>,
 }
 
-/// Binds the port, writes the token and port files and serves on a thread
-/// of its own. A port already taken is reported and the daemon goes on
-/// without HTTP: the socket is the path every client but the browser uses.
-pub fn start(daemon: Arc<Daemon>) -> std::io::Result<u16> {
+/// Owns the HTTP runtime. Dropping it aborts unfinished network input and
+/// joins blocking application handlers before the application itself stops.
+pub struct Server {
+    pub port: u16,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    directory: std::path::PathBuf,
+    token: String,
+}
+
+impl Server {
+    pub fn shutdown(&mut self) -> std::io::Result<()> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        let result = self.thread.take().map_or(Ok(()), |thread| {
+            thread
+                .join()
+                .map_err(|_| std::io::Error::other("HTTP worker panicked"))?
+        });
+        if std::fs::read_to_string(self.directory.join("token"))
+            .ok()
+            .as_deref()
+            == Some(&self.token)
+        {
+            let _ = std::fs::remove_file(self.directory.join("token"));
+            let _ = std::fs::remove_file(self.directory.join("port"));
+            let _ = std::fs::remove_dir(&self.directory);
+        }
+        result
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown() {
+            eprintln!("polylogue: HTTP shutdown: {error}");
+        }
+    }
+}
+
+/// Binds the port and returns the owner of the HTTP worker. Socket serving
+/// can continue independently if HTTP startup fails.
+pub fn start(daemon: Arc<Daemon>) -> std::io::Result<Server> {
+    start_on(daemon, access::wanted_port())
+}
+
+fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
+    use std::future::IntoFuture;
     let key = access::archive_key(&daemon.archive.root);
-    let listener = std::net::TcpListener::bind(("127.0.0.1", access::wanted_port()))?;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let listener = {
+        let _entered = runtime.enter();
+        tokio::net::TcpListener::from_std(listener)?
+    };
     let token = access::new_token()?;
-    let dir = access::runtime_dir(&key);
-    access::publish(&dir, &token, port)?;
+    let directory = access::runtime_dir(&key);
     let browser = Arc::new(crate::browser::Ctx::at(&daemon.config, &daemon.archive)?);
+    let uid = access::my_uid().ok_or_else(|| std::io::Error::other("cannot read this uid"))?;
     let web = Arc::new(Web {
         daemon,
         key,
-        token,
+        token: token.clone(),
         port,
         browser,
     });
-    let uid = access::my_uid().ok_or_else(|| std::io::Error::other("cannot read this uid"))?;
-    std::thread::Builder::new()
-        .name("polylogue-http".into())
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    eprintln!("polylogue: HTTP runtime: {e}");
-                    return;
-                }
-            };
-            rt.block_on(async move {
-                let listener = match tokio::net::TcpListener::from_std(listener) {
-                    Ok(l) => l,
-                    Err(e) => {
-                        eprintln!("polylogue: HTTP listener: {e}");
-                        return;
-                    }
-                };
-                let app = router(web);
-                if let Err(e) = axum::serve(
-                    OwnerListener {
-                        inner: listener,
-                        uid,
-                    },
-                    app,
-                )
-                .await
-                {
-                    eprintln!("polylogue: HTTP stopped: {e}");
-                }
-            });
-        })?;
-    Ok(port)
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let mut server = Server {
+        port,
+        stop: Some(stop),
+        thread: None,
+        directory,
+        token,
+    };
+    access::publish(&server.directory, &server.token, port)?;
+    server.thread = Some(std::thread::Builder::new().name("polylogue-http".into()).spawn(move || {
+        runtime.block_on(async move {
+            tokio::select! {
+                result = axum::serve(OwnerListener { inner: listener, uid }, router(web)).into_future() => result,
+                _ = stopped => Ok(()),
+            }
+        })
+        // Runtime drop aborts async network tasks and waits for every
+        // spawn_blocking application request before this owner can join.
+    })?);
+    Ok(server)
 }
 
 /// Accepts only connections whose peer socket belongs to the operator's

@@ -81,3 +81,77 @@ fn excision_format_refusal_has_a_distinct_public_error() {
     let error = StoreError::BlobCorrupt(polylogue_model::BlobHash::of(b"synthetic"));
     assert!(matches!(store_error(&error), Response::Error { kind, .. } if kind == "store"));
 }
+
+fn config(home: &std::path::Path) -> Config {
+    let mut config = Config::from_env();
+    config.home = home.to_owned();
+    config.tool_dirs.clear();
+    config.workers = 1;
+    config
+}
+
+#[test]
+fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    let mut runtime = start(&root, config(dir.path())).unwrap();
+    let daemon = Arc::clone(&runtime.daemon);
+    assert!(daemon.archive.lock_held());
+    let (done, stopped) = sync_channel(1);
+    let thread = std::thread::spawn(move || {
+        let result = runtime.shutdown();
+        done.send(result).unwrap();
+    });
+    stopped
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("shutdown waited for signal timer")
+        .unwrap();
+    thread.join().unwrap();
+    assert!(
+        matches!(handle(Request::Status, &daemon), Response::Error { kind, .. } if kind == "daemon_stopping")
+    );
+    assert!(
+        Archive::open_or_create(&root).is_ok(),
+        "runtime retained its writer lock"
+    );
+}
+
+#[test]
+fn startup_failure_after_workers_start_releases_the_runtime_and_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    let weak;
+    {
+        let runtime = start(&root, config(dir.path())).unwrap();
+        weak = Arc::downgrade(&runtime.daemon);
+        // A directory cannot be replaced by the Unix socket binder.
+        std::fs::create_dir(runtime.daemon.archive.socket()).unwrap();
+        assert!(crate::daemon::server::Server::start(Arc::clone(&runtime.daemon)).is_err());
+    }
+    assert!(weak.upgrade().is_none());
+    assert!(Archive::open_or_create(&root).is_ok());
+}
+
+#[test]
+fn a_panicking_test_drops_its_in_process_daemon_workers() {
+    let (sent, received) = sync_channel(1);
+    assert!(
+        std::panic::catch_unwind(|| {
+            let world = test_daemon::start("panic fixture");
+            sent.send(Arc::downgrade(&world.daemon)).unwrap();
+            panic!("synthetic test panic");
+        })
+        .is_err()
+    );
+    assert!(received.recv().unwrap().upgrade().is_none());
+}
+
+#[test]
+fn repeated_test_daemon_drops_release_every_shared_daemon_reference() {
+    for _ in 0..3 {
+        let world = test_daemon::start("owned fixture");
+        let weak = Arc::downgrade(&world.daemon);
+        drop(world);
+        assert!(weak.upgrade().is_none());
+    }
+}

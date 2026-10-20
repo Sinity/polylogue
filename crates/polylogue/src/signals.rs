@@ -389,14 +389,22 @@ fn history(d: &Daemon) -> Vec<Sent> {
 /// Evaluates the signal rules after each change and at each `for`
 /// deadline, so a duration fires with no new data (law 140), and records
 /// every handoff as a delivery.
-pub fn run(d: &Daemon) {
+pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
     use polylogue_model::LogicalDay;
     let day = LogicalDay::system();
     let mut eval = Evaluator::new(&history(d));
     loop {
+        if !matches!(stop.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
+            return;
+        }
         let now = now_ms();
         let Ok(reader) = d.reads.reader() else {
-            std::thread::sleep(std::time::Duration::from_secs(30));
+            if !matches!(
+                stop.recv_timeout(std::time::Duration::from_secs(30)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                return;
+            }
             continue;
         };
         let filter = polylogue_store::NoteFilter {
@@ -497,7 +505,12 @@ pub fn run(d: &Daemon) {
         let wait = eval
             .next_due()
             .map_or(30_000, |due| (due - now_ms()).clamp(1_000, 30_000));
-        std::thread::sleep(std::time::Duration::from_millis(wait as u64));
+        if !matches!(
+            stop.recv_timeout(std::time::Duration::from_millis(wait as u64)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ) {
+            return;
+        }
     }
 }
 

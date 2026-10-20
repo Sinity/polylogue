@@ -733,3 +733,63 @@ fn a_call_the_session_went_past_without_a_result_will_never_get_one() {
         ]
     );
 }
+
+#[test]
+fn dropping_the_writer_drains_admitted_work_with_sender_clones_alive() {
+    let World {
+        _dir,
+        archive,
+        _lock,
+        writer,
+    } = world();
+    let sender = writer.sender().unwrap();
+    sender
+        .send(batch(
+            "shutdown",
+            0,
+            0,
+            vec![row(
+                0,
+                text_message("kept", "s", Role::User, "durable before stop", None),
+            )],
+            &["s"],
+        ))
+        .unwrap();
+    let (reply, received) = sync_channel(1);
+    sender
+        .0
+        .send(Msg::User(
+            Box::new(crate::UserRequest::now(
+                crate::user_writes::new_request_id(),
+                crate::UserWrite::SetSetting {
+                    key: "shutdown-test".into(),
+                    value: "retained".into(),
+                    author: polylogue_model::Author::Operator,
+                    machine: None,
+                },
+            )),
+            reply,
+        ))
+        .unwrap();
+    let (done, stopped) = sync_channel(1);
+    let thread = std::thread::spawn(move || {
+        drop(writer);
+        done.send(()).unwrap();
+    });
+    stopped
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("writer drop waited for retained senders");
+    thread.join().unwrap();
+    assert!(received.recv().unwrap().is_ok());
+    assert!(matches!(sender.derive(), Err(StoreError::WriterGone)));
+    let reads = ReadPool::open(&archive).unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(
+        reader.messages(&sid("s"), false).unwrap()[0].text(),
+        "durable before stop"
+    );
+    assert_eq!(
+        reader.setting("shutdown-test", "").unwrap().as_deref(),
+        Some("retained")
+    );
+}
