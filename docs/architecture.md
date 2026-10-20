@@ -14,7 +14,11 @@ supplies an independent framed total; document parsers submit the items they
 discover. Finishing either path checks the same accounting invariant.
 
 `polylogue-engine` discovers changes, retains input bytes and coordinates
-parsing. Its worker pool feeds one bounded writer. Source interpretation stays
+parsing. Existing input directories are watched recursively. A missing location
+keeps a nonrecursive watch on its nearest existing ancestor; directory creation
+advances that watch before collection, so a new source appears without waiting
+for the periodic fallback. Read-access events do not trigger collection. Its
+worker pool feeds one bounded writer. Source interpretation stays
 in sources; SQLite access stays in store. Rebuilding a derived index must not
 replace the retained observations with a claim that a provider file is still
 available.

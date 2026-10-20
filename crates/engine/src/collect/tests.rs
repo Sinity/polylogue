@@ -95,10 +95,14 @@ fn scans_exactly_the_claude_code_layout() {
     );
     assert!(names.contains(&PathBuf::from("s1/other.jsonl")));
     assert!(unreadable.is_empty());
-    assert_eq!(
-        roots(&config(home.path())),
-        [home.path().join(".claude/projects")]
-    );
+    assert!(roots(&config(home.path())).contains(&WatchRoot {
+        path: home.path().join(".claude/projects"),
+        recursive: true
+    }));
+    assert!(roots(&config(home.path())).contains(&WatchRoot {
+        path: home.path().to_path_buf(),
+        recursive: false
+    }));
 }
 
 #[test]
@@ -112,5 +116,8 @@ fn a_tool_directory_variable_moves_the_root() {
     let (found, _) = scan(&c);
     assert_eq!(found.len(), 1);
     assert!(found[0].path.starts_with(&own));
-    assert_eq!(roots(&c), [own.join("projects")]);
+    assert!(roots(&c).contains(&WatchRoot {
+        path: own.join("projects"),
+        recursive: true
+    }));
 }
