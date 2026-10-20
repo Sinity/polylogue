@@ -4,10 +4,10 @@
 //! CLI command). Archive text is escaped, so markup in a message stays
 //! text.
 
-use polylogue_model::{Block, Message, Session};
-use polylogue_render::{Format, View, outcome_label, pieces, results, shell_quote};
+use polylogue_model::{Message, Session};
+use polylogue_render::html::{encode_path_segment as encode_id, escape as esc};
+use polylogue_render::{Format, Rendered, View, html, results, shell_quote};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::fmt::Write as _;
 
 /// The page frame: one stylesheet, one script, a search box on every page,
@@ -121,8 +121,6 @@ pub fn session(session: &Session, messages: &[Message], view: View, view_name: &
         .title
         .as_ref()
         .map_or_else(|| id.clone(), |t| t.text.clone());
-    let results = results_by_call(messages);
-    let mut paired = std::collections::HashSet::new();
     let mut body = format!(
         "<article class=\"session\"><h1>{}</h1><p class=\"meta\"><code>{}</code>",
         esc(&title),
@@ -148,10 +146,8 @@ pub fn session(session: &Session, messages: &[Message], view: View, view_name: &
         );
     }
     body.push_str("</nav>");
-    for m in messages {
-        let section = message(m, view, &results, &mut paired);
-        body.push_str(&section);
-    }
+    let items: Vec<_> = messages.iter().map(Rendered::Message).collect();
+    body.push_str(&html::fragment(&items, view));
     body.push_str("</article>");
     let cli = format!("polylogue read {} --view {view_name}", shell_quote(&id));
     layout(&title, "", &cli, &body)

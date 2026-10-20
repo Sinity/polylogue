@@ -4,7 +4,7 @@
 //! next page needs, notes, and the `--why` breakdown of an empty result.
 //! JSON is the answer as the daemon gave it.
 
-use crate::Format;
+use crate::{Format, html::escape};
 use serde_json::Value;
 use std::io::{self, Write};
 
@@ -87,13 +87,6 @@ fn marked(snippet: &Value, open: &str, close: &str, escape: fn(&str) -> String) 
 
 fn plain(s: &str) -> String {
     s.to_owned()
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 fn terminal(
@@ -206,7 +199,7 @@ fn html(
     let with_snippet = rows.iter().any(|r| r["snippet"].is_object());
     write!(out, "<thead><tr>")?;
     for c in columns {
-        write!(out, "<th>{}</th>", html_escape(c))?;
+        write!(out, "<th>{}</th>", escape(c))?;
     }
     if with_snippet {
         write!(out, "<th>snippet</th>")?;
@@ -215,10 +208,10 @@ fn html(
     for (r, row) in cells.iter().zip(rows) {
         write!(out, "<tr>")?;
         for v in r {
-            write!(out, "<td>{}</td>", html_escape(v))?;
+            write!(out, "<td>{}</td>", escape(v))?;
         }
         if with_snippet {
-            let s = marked(&row["snippet"], "<mark>", "</mark>", html_escape).unwrap_or_default();
+            let s = marked(&row["snippet"], "<mark>", "</mark>", escape).unwrap_or_default();
             write!(out, "<td>{s}</td>")?;
         }
         writeln!(out, "</tr>")?;
@@ -261,7 +254,7 @@ fn footer(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<()> {
     }
     for l in lines {
         match format {
-            Format::Html => writeln!(out, "<p>{}</p>", html_escape(&l))?,
+            Format::Html => writeln!(out, "<p>{}</p>", escape(&l))?,
             Format::Terminal => writeln!(out, "\x1b[2m{l}\x1b[0m")?,
             _ => writeln!(out, "{l}")?,
         }
