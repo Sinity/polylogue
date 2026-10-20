@@ -328,3 +328,31 @@ fn text_in_an_excision_reason_is_removed_too() {
         .unwrap();
     assert_eq!(reason, "remove       ");
 }
+
+#[test]
+fn matching_json_keys_refuse_before_removing_any_value() {
+    let embedded =
+        serde_json::to_vec(&serde_json::json!({"payload": r#"{"s\u0065cret":"ordinary"}"#}))
+            .unwrap();
+    for key in [
+        br#"{"secret":"ordinary"}"#.as_slice(),
+        br#"{"s\u0065cret":"ordinary"}"#,
+        &embedded,
+    ] {
+        let w = World::new();
+        w.seed("a-value", 1, &[b"remove secret"]);
+        w.seed("b-key", 1, &[key]);
+        assert!(matches!(
+            w.excise("secret", false),
+            Err(StoreError::ExcisionFormat { .. })
+        ));
+        assert_eq!(w.bytes("a-value", 1), b"remove secret");
+        assert_eq!(w.bytes("b-key", 1), key);
+        let a = open_read(&w.archive.archive_db()).unwrap();
+        assert_eq!(
+            a.query_row("SELECT count(*) FROM excision", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
