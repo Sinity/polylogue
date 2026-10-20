@@ -10,9 +10,9 @@ fn blanked(bytes: &[u8], ranges: &[(u64, u64)]) -> Vec<u8> {
 
 #[test]
 fn every_chunk_boundary_preserves_json_spans_and_other_values() {
-    let bytes = br#"{"secret":"not a value match","v":"x s\u0065cr\u0065t y","keep":"unchanged"}"#;
+    let bytes = br#"{"label":"not a value match","v":"x s\u0065cr\u0065t y","keep":"unchanged"}"#;
     let expected =
-        br#"{"secret":"not a value match","v":"x                  y","keep":"unchanged"}"#;
+        br#"{"label":"not a value match","v":"x                  y","keep":"unchanged"}"#;
     for split in 0..=bytes.len() {
         let mut scan = TextMatches::new("secret").unwrap();
         scan.feed(&bytes[..split]).unwrap();
@@ -47,13 +47,13 @@ fn mixed_case_escapes_surrogates_and_utf8_match_identically() {
 }
 
 #[test]
-fn strings_do_not_match_across_value_boundaries_and_keys_stay_exact() {
-    let bytes = br#"{"secret":"se","v":"cret","w":"secret"}"#;
+fn strings_do_not_match_across_value_boundaries() {
+    let bytes = br#"{"label":"se","v":"cret","w":"secret"}"#;
     let ranges = in_bytes(bytes, "secret").unwrap();
     assert_eq!(ranges.len(), 1);
     assert_eq!(
         blanked(bytes, &ranges),
-        br#"{"secret":"se","v":"cret","w":"      "}"#
+        br#"{"label":"se","v":"cret","w":"      "}"#
     );
 }
 

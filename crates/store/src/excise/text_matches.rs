@@ -83,6 +83,7 @@ pub(super) struct TextMatches {
     nested_mode: Option<bool>,
     depth: usize,
     depth_limited: bool,
+    unhandled_key: bool,
 }
 
 impl TextMatches {
@@ -114,6 +115,7 @@ impl TextMatches {
             nested_mode: None,
             depth,
             depth_limited: false,
+            unhandled_key: false,
         }
     }
 
@@ -138,6 +140,7 @@ impl TextMatches {
             let at = self.offset;
             self.offset += 1;
             self.unit(byte, at, at + 1)?;
+            self.check_key()?;
         }
         Ok(())
     }
@@ -159,6 +162,7 @@ impl TextMatches {
         if let Some(nested) = &mut self.nested {
             let ok = nested.unit(byte, start, end).is_ok();
             self.depth_limited |= nested.depth_limited;
+            self.unhandled_key |= nested.unhandled_key;
             // A prose value may begin with an incomplete JSON example. It is
             // still searched directly; only valid embedded JSON adds matches.
             if !ok {
@@ -193,6 +197,7 @@ impl TextMatches {
                 && let Some(start) = self.pending_key.take()
                 && byte == b':'
             {
+                self.unhandled_key |= self.decoded_ranges.len() > start;
                 self.decoded_ranges.truncate(start);
             }
             if byte == b'"' {
@@ -252,7 +257,15 @@ impl TextMatches {
         Ok(())
     }
 
+    fn check_key(&self) -> Result<()> {
+        if self.unhandled_key {
+            return Err(StoreError::Invalid("a JSON object key contains the excised text; it needs the owning format's rewrite to preserve structural meaning".into()));
+        }
+        Ok(())
+    }
+
     pub(super) fn finish(self) -> Result<Vec<(u64, u64)>> {
+        self.check_key()?;
         if self.depth_limited {
             return Err(StoreError::Invalid(
                 "embedded JSON string nesting exceeds 128 levels".into(),
