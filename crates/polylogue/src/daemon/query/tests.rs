@@ -1067,3 +1067,61 @@ fn absent_saved_queries_and_results_are_a_valid_empty_catalog() {
     assert!(kept_results(&reader).unwrap().is_empty());
     assert_eq!(run(&reader, ask("sessions")).unwrap()["count"], 0);
 }
+
+#[test]
+fn damaged_kept_result_shapes_are_not_defaulted_or_discarded() {
+    for (field, body) in [
+        ("unit", json!({"columns": []})),
+        ("unit", json!({"unit": 7, "columns": []})),
+        ("columns", json!({"unit": "sessions"})),
+        ("columns", json!({"unit": "sessions", "columns": {}})),
+        (
+            "columns",
+            json!({"unit": "sessions", "columns": [{"name": "id", "kind": "unsupported"}]}),
+        ),
+        (
+            "match_columns",
+            json!({"unit": "sessions", "columns": [], "match_columns": null}),
+        ),
+        (
+            "match_columns",
+            json!({"unit": "sessions", "columns": [], "match_columns": "wrong"}),
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+        fixture
+            .kept_result("broken", "sessions", &body.to_string())
+            .unwrap();
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        for failure in [
+            run(&reader, ask("sessions")).unwrap_err(),
+            keep(&reader, ask("sessions")).unwrap_err(),
+        ] {
+            assert_eq!(failure.kind, "store");
+            assert!(failure.message.contains("broken"), "{failure:?}");
+            assert!(failure.message.contains(field), "{failure:?}");
+        }
+    }
+}
+
+#[test]
+fn kept_results_without_match_rows_do_not_need_match_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let body = {
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        keep(&reader, ask("sessions")).unwrap()
+    };
+    assert!(body.get("match_columns").is_none());
+    fixture
+        .kept_result("empty", "sessions", &body.to_string())
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let kept = kept_results(&reader).unwrap();
+    assert!(kept["empty"].match_columns.is_empty());
+    assert_eq!(run(&reader, ask("result:empty")).unwrap()["count"], 0);
+}
