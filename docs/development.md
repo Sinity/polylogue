@@ -9,7 +9,7 @@ started inside a queued job keeps that job occupied after the command exits.
 
 | Check | Command | When | Typical time |
 | --- | --- | --- | --- |
-| Focused tests | `agentctl job start polylogue exec --workspace <worktree> -- cargo nextest run -p <crate> <filter>` | while editing | seconds |
+| Focused tests | `agentctl job start polylogue exec --workspace <worktree> -- cargo run -p xtask -- test -p <crate> <filter>` | while editing | seconds |
 | Fast check | `agentctl job start polylogue exec --workspace <worktree> -- cargo run -p xtask -- fast` | before pushing a change | 2-16 s warm, minutes in a fresh worktree |
 | Full suite | `agentctl job start polylogue check --workspace <worktree>` | a batch of merged work | 30 s warm, 2-3 min after an edit, 9 min cold |
 | Changed packages | `cargo run -p xtask -- test --changed` | before pushing a focused change | depends on the change |
@@ -92,7 +92,7 @@ Long runs go through AgentCTL so they queue and keep their logs:
 agentctl job start polylogue check --workspace <worktree>      # full suite
 agentctl job start polylogue scenarios --workspace <worktree>  # end-to-end tests
 agentctl job start polylogue package --workspace <worktree>    # nix flake check
-agentctl job start polylogue exec --workspace <worktree> -- cargo test -p polylogue-store
+agentctl job start polylogue exec --workspace <worktree> -- cargo run -p xtask -- test -p polylogue-store
 agentctl job start polylogue bench --workspace <worktree> -- run
 ```
 
@@ -109,6 +109,11 @@ services and repeated fixture setup before increasing limits. Keep assertions
 and populations unchanged while diagnosing. Record the candidate, command,
 stage times and remaining failures in the owning Bead. Recheck after changes
 to the runner, fixtures or dependency profiles, and at integration batches.
+
+Use `xtask test` for focused tests too: it provides the same temporary storage
+and records results as the full suite. Raw `cargo test` or `cargo nextest`
+inherits the caller's temporary directory; filesystem sync costs and long
+socket paths can then change the test behavior.
 
 ## Merging
 
