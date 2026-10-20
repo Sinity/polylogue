@@ -472,3 +472,40 @@ fn reader_location_is_typed_unavailable_when_no_reader_is_running() {
     assert_eq!(response.status, 503);
     assert_eq!(response.json()["error"], "reader_unavailable");
 }
+
+#[test]
+fn receiver_preparation_and_asset_routes_are_not_native_host_capabilities() {
+    let w = test_daemon::start("retired-receiver-routes");
+    let ctx = ctx(&w);
+    let payload = json!({
+        "provider": "chatgpt",
+        "acquisition_id": "synthetic-acquisition",
+        "binding": {"native_id": "synthetic-conversation", "raw_revision": "a".repeat(64)},
+        "member_name": "conversation",
+        "provider_meta": {"capture_fidelity": "native_full"},
+        "attachment": {"provider_attachment_id": "file-neutral", "content_base64": "bmV1dHJhbA=="}
+    })
+    .to_string()
+    .into_bytes();
+    for (method, path) in [
+        ("GET", "/v1/capture-jobs/capabilities"),
+        ("POST", "/v1/capture-jobs"),
+        ("POST", "/v1/capture-jobs/synthetic/native/begin"),
+        ("PUT", "/v1/capture-jobs/synthetic/native/member"),
+        ("POST", "/v1/capture-jobs/synthetic/native/prepare"),
+        ("POST", "/v1/capture-jobs/synthetic/native/plan"),
+        ("PUT", "/v1/capture-jobs/synthetic/native/asset"),
+        ("POST", "/v1/capture-jobs/synthetic/native/finalize"),
+        ("POST", "/v1/capture-jobs/synthetic/native/publish"),
+    ] {
+        let answer = exchange(
+            &ctx,
+            method,
+            path,
+            if method == "GET" { b"" } else { &payload },
+        );
+        assert_eq!(answer.status, 501, "{method} {path}");
+        assert_eq!(answer.json()["error"], "not_built", "{method} {path}");
+    }
+    assert!(std::fs::read_dir(&ctx.spool).unwrap().next().is_none());
+}
