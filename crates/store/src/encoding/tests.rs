@@ -2,6 +2,28 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn event_identity_distinguishes_message_anchors_and_ignores_physical_ranges() {
+    let mut event = Event {
+        session: polylogue_model::SessionId::parse("chatgpt:example").unwrap(),
+        kind: "active_leaf".into(),
+        at: None,
+        after: Some(polylogue_model::MessageId::parse("chatgpt:a").unwrap()),
+        range: Some((10, 20)),
+        data: json!(null),
+    };
+    let first = pack_event(&event).unwrap().0;
+    event.range = Some((100, 200));
+    assert_eq!(pack_event(&event).unwrap().0, first);
+    event.after = Some(polylogue_model::MessageId::parse("chatgpt:b").unwrap());
+    let second = pack_event(&event).unwrap().0;
+    assert_ne!(second, first);
+    event.after = None;
+    let unanchored = pack_event(&event).unwrap().0;
+    assert_ne!(unanchored, first);
+    assert_ne!(unanchored, second);
+}
+
+#[test]
 fn text_rows_read_older_compression_levels_and_reuse_a_packer() {
     let mut packer = TextPacker::new().unwrap();
     for text in ["", "Łódź café 🦀", "a repeated body", "a repeated body"] {

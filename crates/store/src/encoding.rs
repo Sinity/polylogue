@@ -51,8 +51,9 @@ pub(crate) fn pack_block(block: &Block) -> Result<Vec<u8>> {
     pack_json(&body)
 }
 
-/// An event's id (computed from its session, kind, time and payload, so the
-/// same record parsed again is the same row) and stored payload.
+/// An event's id includes its message anchor: identical state recorded at
+/// different messages is distinct. Physical ranges do not change the fact's
+/// identity when another route supplies it.
 pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
     let data = serde_json::to_vec(&e.data)?;
     let mut h = blake3::Hasher::new();
@@ -67,6 +68,10 @@ pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
             .to_le_bytes(),
     );
     h.update(&data);
+    if let Some(after) = &e.after {
+        h.update(b"\0after\0");
+        h.update(after.to_string().as_bytes());
+    }
     Ok((h.finalize().to_hex().to_string(), pack_bytes(&data)?))
 }
 

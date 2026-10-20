@@ -2,6 +2,10 @@
 //! active leaf to the root (`on_active_path` 1) and which on an abandoned
 //! branch (0). A session whose source names no leaf keeps NULL: unknown,
 //! read as on the path.
+//!
+//! Repeated markers share an event row. Revision, snapshot and record order
+//! choose each input's latest marker; known event time and content identity
+//! resolve different inputs without depending on row insertion order.
 
 use super::{Derivation, Version};
 use crate::Result;
@@ -9,7 +13,7 @@ use rusqlite::Transaction;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "active_path",
-    version: Version::Rules(1),
+    version: Version::Rules(2),
     after: &[],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
@@ -18,10 +22,21 @@ pub(super) const DERIVATION: Derivation = Derivation {
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     tx.prepare_cached(
         "WITH RECURSIVE
+           observations AS (
+             SELECT m.id, e.at, e.id AS event_id, r.id AS input_id,
+                    row_number() OVER (
+                      PARTITION BY r.id ORDER BY
+                        COALESCE(es.chain, e.source_chain, 0) DESC,
+                        COALESCE(es.source_snapshot, -1) DESC,
+                        COALESCE(e.source_start, e.seq) DESC, e.id
+                    ) AS newest
+             FROM current_event e JOIN current_message m ON m.pk = e.after_message_pk
+             LEFT JOIN event_source es ON es.event_id = e.id AND es.current = 1
+             JOIN input_ref r ON r.pk = COALESCE(es.input_pk, e.input_pk)
+             WHERE e.session_pk = ?1 AND e.kind = 'active_leaf'),
            leaf(id) AS (
-             SELECT m.id FROM current_event e JOIN current_message m ON m.pk = e.after_message_pk
-             WHERE e.session_pk = ?1 AND e.kind = 'active_leaf'
-             ORDER BY e.pk DESC LIMIT 1),
+             SELECT id FROM observations WHERE newest = 1
+             ORDER BY at DESC, event_id, input_id LIMIT 1),
            path(id) AS (
              SELECT id FROM leaf
              UNION
