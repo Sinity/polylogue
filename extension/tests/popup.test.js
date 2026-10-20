@@ -570,11 +570,10 @@ describe("popup capture", () => {
 
   it("keeps persisted paused backfills controllable and exportable", async () => {
     const storage = memoryOriginStorage();
-    const directory = await storage.getDirectory();
     const bytes = '{"schema":"polylogue.backfill-export.v2","synthetic":"evidence"}';
     storage.files.set("abcd.bytes", new TextEncoder().encode(bytes));
     storage.files.set("abcd.json", new TextEncoder().encode(JSON.stringify({ sha256: "a".repeat(64) })));
-    Object.defineProperty(navigator, "storage", { configurable: true, value: storage });
+    Object.defineProperty(globalThis.navigator, "storage", { configurable: true, value: storage });
     const messages = [];
     await loadPopup({}, [CHATGPT_TAB], async (message) => {
       messages.push(message);
@@ -622,11 +621,11 @@ describe("popup capture", () => {
     const input = document.getElementById("backfill-import");
     const bytes = "synthetic backup".repeat(4000);
     Object.defineProperty(input, "files", { value: [new File([bytes], "backup.json")] });
-    input.dispatchEvent(new window.Event("change"));
+    input.dispatchEvent(new globalThis.window.Event("change"));
     await vi.waitFor(() => expect(messages.some(m => m.type === "polylogue.backfill.import.finish")).toBe(true));
     const parts = messages.filter(m => m.type === "polylogue.backfill.import.append");
     expect(parts.map(m => m.sequence)).toEqual([0, 1]);
-    expect(parts.map(m => atob(m.base64)).join("")).toBe(bytes);
+    expect(parts.map(m => globalThis.atob(m.base64)).join("")).toBe(bytes);
   });
 
   it("redacts caller supplied idempotency keys from exported support packets", async () => {

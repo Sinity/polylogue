@@ -1,48 +1,12 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { Script } from "node:vm";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-import { JSDOM } from "jsdom";
 import { setImmediate } from "node:timers/promises";
-import { canonicalJson, deriveAccountScope } from "../src/backfill/encoding.js";
+import { deriveAccountScope } from "../src/backfill/encoding.js";
 import { IndexedDbBackfillStore } from "../src/backfill/storage.js";
 import { CaptureStaging } from "../src/capture/staging.js";
 import { NativeCaptureNormalizer } from "../src/capture/native.js";
 import { memoryOriginStorage, receiverContractPreparation } from "./infra/capture-staging.js";
-import { checkpointReceiverState } from "./infra/capture-job-checkpoints.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
-
-const checkpointArtifacts = new Map();
-const receiverCheckpointState = checkpointReceiverState();
-beforeEach(() => { receiverCheckpointState.clear(); checkpointArtifacts.clear(); });
-async function checkpointFixtureResponse(job, options) {
-  const result = await receiverCheckpointState.checkpoint(job, options);
-  const payload = JSON.parse(result.bytes);
-  checkpointArtifacts.set(result.job.checkpoint_digest, { bytes: result.bytes, cutoff: payload.jobs[0]?.cutoff });
-  return responseJson({ job: result.job, receipt: result.receipt });
-}
-function checkpointFixture(payload, sequence = 1) {
-  const bytes = canonicalJson(payload);
-  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  checkpointArtifacts.set(digest, { bytes, cutoff: payload.jobs[0].cutoff });
-  return { sequence, digest, artifact_ref: digest, size_bytes: globalThis.Buffer.byteLength(bytes) };
-}
-function checkpointArtifactFixtureResponse(url) {
-  const path = new globalThis.URL(url).pathname;
-  if (!path.includes("/checkpoint-artifacts/")) return null;
-  const digest = decodeURIComponent(path.split("/checkpoint-artifacts/")[1]);
-  const artifact = checkpointArtifacts.get(digest);
-  if (!artifact) return new globalThis.Response(null, { status: 404 });
-  return new globalThis.Response(artifact.bytes, { headers: { "Content-Type": "application/json" } });
-}
-function captureJobRequestBody(options) {
-  if (options.headers?.["X-Polylogue-Native"]) return JSON.parse(options.headers["X-Polylogue-Native"]);
-  return options.headers?.["X-Polylogue-Checkpoint"]
-    ? JSON.parse(options.headers["X-Polylogue-Checkpoint"])
-    : options.body ? JSON.parse(options.body) : {};
-}
 
 async function deliveryEntries() {
   const entries = [];
@@ -147,11 +111,10 @@ function installChromeMock(storagePatch = {}) {
           lease: { lease_id: "synthetic-lease", generation: 1, proof: "synthetic-proof" } });
       }
       const response = await globalThis.fetch(...args);
-      if (response.ok && options.method === "POST" && (path === "/v1/browser-captures" || path.endsWith("/native/publish"))) {
+      if (response.ok && options.method === "POST" && path === "/v1/browser-captures") {
         // Explicit malformed fields override valid synthetic receipt defaults.
         const body = await response.json();
-        const hash = path.endsWith("/native/publish") ? captureJobRequestBody(options).sha256
-          : createHash("sha256").update(typeof options.body === "string" ? options.body : new Uint8Array(await options.body.arrayBuffer())).digest("hex");
+        const hash = createHash("sha256").update(typeof options.body === "string" ? options.body : new Uint8Array(await options.body.arrayBuffer())).digest("hex");
         response.json = async () => ({ outcome: "accepted", content_hash: hash, submitted_content_hash: hash, ...body });
       }
       return response;
@@ -287,7 +250,7 @@ function installChromeMock(storagePatch = {}) {
   };
   globalThis.fetch = vi.fn(async (url, options = {}) => {
     fetchCalls.push({ url, options });
-    const captureJobResponse = captureJobFixtureResponse(url, options);
+    const captureJobResponse = nativeInspectionFixtureResponse(url, options);
     if (captureJobResponse) return captureJobResponse;
     if (String(url).endsWith("/v1/browser-captures/capabilities")) {
       return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] }, { requestId: "capability-1" });
@@ -296,76 +259,10 @@ function installChromeMock(storagePatch = {}) {
   });
 }
 
-function captureJobFixtureResponse(url, options = {}) {
-  if (new URL(url).pathname === "/v1/browser-captures/inspect") return responseJson({ ok: true, attachments: [],
-    summary: { title: "Synthetic", turn_count: 2, attachment_count: 0, session_kind: "main", needs_follow_up: false } });
-  const artifactResponse = checkpointArtifactFixtureResponse(url);
-  if (artifactResponse) return artifactResponse;
-  const path = new globalThis.URL(url).pathname;
-  if (!path.startsWith("/v1/capture-jobs")) return null;
-  const body = captureJobRequestBody(options);
-  if (path === "/v1/capture-jobs/capabilities") {
-    return responseJson({
-      schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1",
-      protocol_min: 2,
-      protocol_max: 2,
-      scope_namespace: "cjs1:fixture-stable-namespace",
-    });
-  }
-  if (path === "/v1/capture-jobs/discover") return responseJson({ jobs: [] });
-  if (path === "/v1/capture-jobs") {
-    const scope = body.scope.kind === "invocation" ? { kind: "invocation", resume_capability: "fixture-resume-capability" } : body.scope;
-    return responseJson({ scope, job: receiverCheckpointState.job({
-      job_id: "fixture-capture-job", provider: body.provider, scope,
-      intent_key: body.intent.intent_key, revision: 0, lease_generation: 0,
-    }) }, { status: 201 });
-  }
-  if (path.endsWith("/adopt")) {
-    return responseJson({
-      job: receiverCheckpointState.job({
-        job_id: "fixture-capture-job", provider: body.provider, scope: body.scope,
-        intent_key: "fixture-intent", revision: 1, lease_generation: 1,
-      }),
-      lease: { lease_id: "fixture-lease", generation: 1, proof: "fixture-proof", expires_at: "2099-01-01T00:00:00Z" },
-    });
-  }
-  if (path.endsWith("/update")) {
-    return responseJson({
-      job: receiverCheckpointState.job({
-        job_id: "fixture-capture-job", provider: body.provider, scope: body.scope,
-        intent_key: "fixture-intent", revision: 2, lease_generation: 1,
-        lease_expires_at: "2099-01-01T00:00:00Z", checkpoint_sequence: null,
-      }),
-      receipt: { kind: "capture_job_update", revision: 2 },
-    });
-  }
-  if (path.endsWith("/checkpoint")) {
-    return checkpointFixtureResponse({ job_id: "fixture-capture-job", revision: 3 }, options);
-  }
-  if (path === "/v1/capture-jobs/fixture-capture-job" && (!options.method || options.method === "GET")) {
-    return responseJson({ job: receiverCheckpointState.job({ job_id: "fixture-capture-job" }) });
-  }
-  if (path.endsWith("/native/begin")) {
-    receiverCheckpointState.job({ job_id: "fixture-capture-job", native_binding: body.binding });
-    return responseJson({ acquisition_id: body.acquisition_id, state: "acquiring" });
-  }
-  if (path.endsWith("/native/member")) {
-    return (async () => {
-      expect(options.body.size).toBe(body.size_bytes);
-      expect(createHash("sha256").update(globalThis.Buffer.from(await options.body.arrayBuffer())).digest("hex")).toBe(body.sha256);
-      return responseJson({ member_name: body.member_name, sha256: body.sha256, size_bytes: body.size_bytes });
-    })();
-  }
-  if (path.endsWith("/native/prepare")) return responseJson({ plan_digest: "sha256:" + "a".repeat(64),
-    summary: { title: null, turn_count: 2, attachment_count: 0, session_kind: "standard", needs_follow_up: false } });
-  if (path.endsWith("/native/plan")) return responseJson({ plan_digest: "sha256:" + "a".repeat(64), assets: [], after: null });
-  if (path.endsWith("/native/finalize")) return responseJson({ sha256: "b".repeat(64), size_bytes: 1234 });
-  if (path.endsWith("/native/publish")) {
-    const job = receiverCheckpointState.job({ job_id: "fixture-capture-job" });
-    return responseJson({ ok: true, provider: job.provider, provider_session_id: job.native_binding.native_id,
-      content_hash: body.sha256 });
-  }
-  return responseJson({ error: "unexpected_capture_job_request" }, { ok: false, status: 500 });
+function nativeInspectionFixtureResponse(url) {
+  if (new URL(url).pathname !== "/v1/browser-captures/inspect") return null;
+  return responseJson({ ok: true, attachments: [], summary: { title: "Synthetic", turn_count: 2,
+    attachment_count: 0, session_kind: "main", needs_follow_up: false } });
 }
 
 async function loadBackground(storagePatch = {}, beforeImport = () => {}) {
@@ -402,13 +299,6 @@ async function captureReceipt(body, options, responseOptions) {
 }
 
 function responseJson(body, { ok = true, status = 200, requestId = "receiver-request-1" } = {}) {
-  if (body.job) body = { ...body, job: receiverCheckpointState.job(body.job) };
-  for (const job of [...(body.jobs || []), ...(body.job ? [body.job] : [])]) {
-    if (!job.checkpoint?.artifact_ref) continue;
-    const artifact = checkpointArtifacts.get(job.checkpoint.artifact_ref);
-    job.intent ||= { payload: { cutoff: artifact.cutoff } };
-    job.checkpoint_updated_at ||= "2026-07-16T10:00:00Z";
-  }
   return {
     headers: {
       get: vi.fn((name) => (name === "X-Request-ID" ? requestId : null)),
@@ -585,7 +475,7 @@ describe("background receiver diagnostics", () => {
     const staging = new CaptureStaging(globalThis.navigator.storage, store);
     const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://chatgpt.com/backend-api/conversation/session" });
     const raw = JSON.stringify({ id: "session", mapping: {} });
-    await staging.append(ref, owner, 0, Buffer.from(raw).toString("base64")); await staging.seal(ref, owner);
+    await staging.append(ref, owner, 0, globalThis.Buffer.from(raw).toString("base64")); await staging.seal(ref, owner);
     let release; let pending = 0;
     globalThis.fetch = vi.fn(async (url, options) => {
       expect(new URL(url).pathname).toBe("/v1/browser-captures/inspect");
@@ -620,7 +510,7 @@ describe("background receiver diagnostics", () => {
     const staging = new CaptureStaging(globalThis.navigator.storage, store);
     const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://claude.ai/api/organizations/fixture/chat_conversations/native-id" });
     const raw = JSON.stringify({ id: "native-id", chat_messages: [] });
-    await staging.append(ref, owner, 0, globalThis.Buffer.from(raw).toString("base64"));
+    await staging.append(ref, owner, 0, globalThis.globalThis.Buffer.from(raw).toString("base64"));
     await staging.seal(ref, owner);
     const result = await sendRuntimeMessage({ type: "polylogue.nativeCaptureHeader", provider: "claude-ai", raw_ref: ref },
       { tab: tabs[0], documentId: owner.document_id });
@@ -1366,7 +1256,7 @@ describe("background receiver diagnostics", () => {
   it("routes backfill inventory through an existing provider page without creating a tab", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] }, { requestId: "capability-1" });
@@ -1403,7 +1293,7 @@ describe("background receiver diagnostics", () => {
   it("keeps concurrent backfill requests with different cutoffs distinct", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
@@ -1432,7 +1322,7 @@ describe("background receiver diagnostics", () => {
 
   it("coalesces equivalent concurrent backfill requests", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
@@ -1453,7 +1343,7 @@ describe("background receiver diagnostics", () => {
 
   it("coalesces equivalent requests despite object insertion order", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
@@ -1677,7 +1567,7 @@ describe("background receiver diagnostics", () => {
   it("admits receiver capability preflight without an invented request deadline", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] }, { requestId: "capability-1" });
     });
@@ -1688,7 +1578,7 @@ describe("background receiver diagnostics", () => {
   });
 
   it("classifies a reachable receiver missing the capability route as contract-incompatible", async () => {
-    globalThis.fetch = vi.fn(async (url, options = {}) => captureJobFixtureResponse(url, options)
+    globalThis.fetch = vi.fn(async (url, options = {}) => nativeInspectionFixtureResponse(url, options)
       || responseJson({ error: "not_found" }, { ok: false, status: 404 }));
     const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
     // Name the refusal: reaching for `started.job.id` on a rejected start
@@ -1772,8 +1662,6 @@ describe("background receiver diagnostics", () => {
     }, { accountHandle: null });
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
       const path = new globalThis.URL(url).pathname;
       if (path === "/v1/capture-jobs/capabilities") {
         return responseJson({
@@ -1837,10 +1725,8 @@ describe("background receiver diagnostics", () => {
     });
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
       const path = new globalThis.URL(url).pathname;
       if (path === "/v1/status") {
         return responseJson({ ok: true, receiver_id: pairing.receiver_id, api_schema: pairing.api_schema });
@@ -1941,10 +1827,8 @@ describe("background receiver diagnostics", () => {
     });
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
       const path = new globalThis.URL(url).pathname;
       if (path === "/v1/status") {
         return responseJson({ ok: true, receiver_id: pairing.receiver_id, api_schema: pairing.api_schema });
@@ -2238,7 +2122,7 @@ describe("background receiver diagnostics", () => {
       fetchCalls.push({ url: String(input) });
       if (String(input).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "rx-temporary", api_schema: "polylogue-browser-capture/v1" });
       if (new globalThis.URL(input).pathname === "/v1/archive-state") return responseJson({ provider: "chatgpt", provider_session_id: "temp-1", state: "archived", captured: true });
-      return captureJobFixtureResponse(input) || responseJson({ ok: true });
+      return nativeInspectionFixtureResponse(input) || responseJson({ ok: true });
     });
     activatedListener({ tabId: 42 });
     await vi.waitFor(() => expect(stored.polylogueState).toMatchObject({ provider_session_id: "temp-1", captured: true }));
@@ -2271,7 +2155,7 @@ describe("background receiver diagnostics", () => {
       fetchCalls.push({ url: String(input) });
       if (String(input).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "rx-temporary", api_schema: "polylogue-browser-capture/v1" });
       if (new globalThis.URL(input).pathname === "/v1/archive-state") return responseJson({ provider: "chatgpt", provider_session_id: "temp-1", state: "missing", captured: false });
-      return captureJobFixtureResponse(input) || responseJson({ ok: true });
+      return nativeInspectionFixtureResponse(input) || responseJson({ ok: true });
     });
     await sendRuntimeMessage({ type: "polylogue.missionControl.status" }, { tab: tabs[0] });
     expect(identityReads).toBeGreaterThanOrEqual(2);
@@ -3872,7 +3756,7 @@ describe("receiver health probe", () => {
   it.each([
     ["receiver_identity_mismatch", "pairing_mismatch", "mismatch"],
     ["receiver_authentication_failed", "unauthorized", "unauthorized"],
-  ])("classifies native %s without transferring a credential", async (code, status, state) => {
+  ])("classifies native %s without transferring a credential", async (code) => {
     await loadBackground({ receiverAuthToken: "neutral-retired", neutralUnrelatedSetting: "preserved", polylogueReceiverPairing: {
       receiver_id: "neutral-original", api_schema: "polylogue-browser-capture/v1", state: "online",
     } });

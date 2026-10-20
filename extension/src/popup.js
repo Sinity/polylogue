@@ -377,7 +377,7 @@ function renderQueue(queue) {
   renderWorkQueue();
 }
 
-function renderNativeHost(pairing, health = null, configuredUrl = "") {
+function renderNativeHost(_pairing, health = null, _configuredUrl = "") {
   const statusNode = document.getElementById("native-host-status");
   const detailNode = document.getElementById("native-host-detail");
   if (!statusNode || !detailNode) return;

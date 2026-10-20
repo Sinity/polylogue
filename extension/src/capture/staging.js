@@ -639,47 +639,6 @@ export class CaptureStaging {
     await this.discardUnreferenced(snapshot.artifact_id);
   }
 
-  async receiveCheckpoint(root, response, signal = null) {
-    const owner = { checkpoint_recovery_id: root.id };
-    const ref = await this.begin(owner, { kind: "checkpoint-recovery" }, root.id);
-    if (ref.id !== root.artifact_id) throw stageError("checkpoint_artifact_owner_mismatch");
-    return this.serialize(ref.id, async () => {
-      const meta = await this.metadata(ref.id);
-      if (meta.state === "sealed") {
-        await response.body?.cancel();
-        if (`sha256:${meta.sha256}` !== root.digest) throw stageError("checkpoint_digest_mismatch");
-        return this.file(meta.id);
-      }
-      const reader = response.body?.getReader();
-      if (!reader) throw stageError("checkpoint_body_unavailable");
-      const abort = () => { void reader.cancel(signal.reason).catch(() => undefined); };
-      signal?.addEventListener("abort", abort, { once: true });
-      const directory = await this.directory();
-      const writer = await (await directory.getFileHandle(`${meta.id}.bytes`, { create: true })).createWritable();
-      const hash = createSha256(); let bytes = 0;
-      try {
-        for (;;) {
-          signal?.throwIfAborted();
-          const { value, done } = await reader.read();
-          if (done) break;
-          hash.update(value); bytes += value.length; await writer.write(value);
-        }
-        signal?.throwIfAborted();
-        if (`sha256:${hash.hex()}` !== root.digest || bytes !== root.size_bytes) throw stageError("checkpoint_digest_mismatch");
-        await writer.close();
-        await this.save({ ...meta, state: "sealed", bytes, sha256: hash.hex() });
-        return this.file(meta.id);
-      } catch (error) {
-        await reader.cancel(error).catch(() => undefined);
-        await writer.abort().catch(() => undefined);
-        throw error;
-      } finally {
-        signal?.removeEventListener("abort", abort);
-        reader.releaseLock();
-      }
-    });
-  }
-
   conversionId(queueId) { return createSha256().update(`queue:${queueId}`).hex(); }
   async prepare(envelope, stageId = null, delivery = null, signal = null) {
     signal?.throwIfAborted();

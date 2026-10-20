@@ -8,7 +8,6 @@ import { createHash, webcrypto } from "node:crypto";
 import { Script } from "node:vm";
 import { JSDOM } from "jsdom";
 import { memoryOriginStorage } from "./infra/capture-staging.js";
-import { checkpointReceiverState } from "./infra/capture-job-checkpoints.js";
 import { scheduleFreshnessHint } from "../src/capture/freshness.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -257,7 +256,6 @@ describe("build.mjs full archive emission", () => {
       .runInContext(pageDom.getInternalVMContext());
     const fetchCalls = [];
     let receiverPosts = 0;
-    const receiverCheckpoints = checkpointReceiverState();
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       let body;

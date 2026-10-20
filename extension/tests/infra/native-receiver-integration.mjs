@@ -20,7 +20,7 @@ const origin = memoryOriginStorage();
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: { storage: origin } });
 // The original runtime constructs its durable store when this module loads.
 const { startBackgroundRuntime } = await import("../../src/background/runtime.js");
-const status = await (await nativeFetch(transport, `${baseUrl}/v1/status`, { receiverId })).json();
+await (await nativeFetch(transport, `${baseUrl}/v1/status`, { receiverId })).json();
 const values = {};
 const storageArea = (values) => ({
   async get(defaults) { return { ...defaults, ...values }; },

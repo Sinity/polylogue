@@ -9,11 +9,11 @@ async function backup() {
   const owner = { tab_id: 42, document_id: "old-document", provider: "chatgpt" };
   const raw = '{ "id":"session", "mapping":{} }';
   const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://chatgpt.com/c/session" });
-  await staging.append(ref, owner, 0, Buffer.from(raw).toString("base64")); await staging.seal(ref, owner);
+  await staging.append(ref, owner, 0, globalThis.Buffer.from(raw).toString("base64")); await staging.seal(ref, owner);
   const envelope = await new NativeCaptureNormalizer({ staging, store, prepareNative: receiverContractPreparation(staging, store) })
     .normalize({ provider: "chatgpt", rawRef: ref, nativeId: "session", extensionVersion: "test", instanceId: "old-instance" });
   const asset = await staging.begin(owner, { kind: "asset" });
-  await staging.append(asset, owner, 0, Buffer.from("exact attachment").toString("base64")); await staging.seal(asset, owner);
+  await staging.append(asset, owner, 0, globalThis.Buffer.from("exact attachment").toString("base64")); await staging.seal(asset, owner);
   await store.putCaptureRecord({ capture_id: envelope.capture_record_ref, key: "asset", record_kind: "session-attachment", order_time: 0, order_id: "", occurrence: 0,
     session_attachment: { provider_attachment_id: "file", message_provider_id: "message", staged_asset: asset } });
   const body = await staging.prepare(envelope);
@@ -63,9 +63,9 @@ describe("local backfill backup import", () => {
   });
 
   it("cancels during evidence installation without publishing a runnable partial job", async () => {
-    const exported = await backup(); const target = stagingRuntime(); const controller = new AbortController();
+    const exported = await backup(); const target = stagingRuntime(); const controller = new globalThis.AbortController();
     const append = target.staging.append.bind(target.staging);
-    target.staging.append = async (...args) => { const result = await append(...args); controller.abort(new DOMException("Cancelled", "AbortError")); return result; };
+    target.staging.append = async (...args) => { const result = await append(...args); controller.abort(new globalThis.DOMException("Cancelled", "AbortError")); return result; };
     await expect(importCheckpoint(exported.file, { ...target, signal: controller.signal })).rejects.toThrow("Cancelled");
     await empty(target.store); expect(target.storage.files.size).toBe(0);
   });

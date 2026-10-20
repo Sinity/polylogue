@@ -1460,9 +1460,8 @@ async function getJson(path, timeoutMs = null) {
 // Layer 2 is a read-only projection. It deliberately uses the daemon's
 // canonical session id and typed read routes; provider DOM text and local
 // storage ledgers are not authority for cost, assertions, or archive links.
-async function missionIntelligenceProjection(state, configuredUrl) {
+async function missionIntelligenceProjection(state) {
   const indexedSessionId = state?.archive_state?.indexed_session_id || null;
-  const base = String(configuredUrl || "").replace(/\/+$/, "");
   const unavailable = (status, reason) => ({
     status,
     reason,
@@ -2477,11 +2476,6 @@ async function runCaptureFreshnessSweep() {
   if (!(await automaticCaptureEnabled())) {
     return { skipped: true, reason: "automatic_capture_paused" };
   }
-  try {
-
-  } catch (error) {
-    return { skipped: true, reason: "receiver_not_paired", error: String(error?.message || error) };
-  }
   const now = Date.now();
   let queue = await storedCaptureFreshnessQueue();
   if (queue.sweep_not_before_ms > now) return { skipped: true, reason: "sweep_backoff" };
@@ -3471,7 +3465,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true, ...await captureStaging.append(operation.ref, operation.owner, message.sequence, message.base64) }); return;
       }
       if (message.type === "polylogue.backfill.import.cancel") {
-        operation.controller.abort(new DOMException("Import cancelled", "AbortError"));
+        operation.controller.abort(new globalThis.DOMException("Import cancelled", "AbortError"));
         if (operation.running) await operation.running.catch(() => undefined);
         else await captureStaging.discard(operation.ref.id);
         checkpointImports.delete(message.import_id); sendResponse({ ok: true }); return;

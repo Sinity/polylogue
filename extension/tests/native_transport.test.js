@@ -8,7 +8,7 @@ async function fixture() {
   const runtime = stagingRuntime();
   const raw = '{ "id":"session", "mapping":{"node":{"message":{"id":"message","content":{"parts":["hello"]}}}} }';
   const ref = await runtime.staging.begin(owner, { kind: "native-response", source_url: "https://chatgpt.com/c/session" });
-  await runtime.staging.append(ref, owner, 0, Buffer.from(raw).toString("base64"));
+  await runtime.staging.append(ref, owner, 0, globalThis.Buffer.from(raw).toString("base64"));
   await runtime.staging.seal(ref, owner);
   return { ...runtime, raw, ref };
 }
@@ -26,7 +26,7 @@ describe("native capture through the shared host parser", () => {
       },
       acquire: async (descriptor) => {
         const asset = await staging.begin(owner, { kind: "asset" });
-        await staging.append(asset, owner, 0, Buffer.from("attachment bytes").toString("base64"));
+        await staging.append(asset, owner, 0, globalThis.Buffer.from("attachment bytes").toString("base64"));
         await staging.seal(asset, owner);
         return { attachments: [{ ...descriptor, staged_asset: asset }], outcome: { failed: [] } };
       },
@@ -38,7 +38,7 @@ describe("native capture through the shared host parser", () => {
     const final = await prepared.body.text();
     expect(final).toContain(`"raw_provider_payload":${raw}`);
     const parsed = JSON.parse(final);
-    expect(parsed.session.attachments).toEqual([{ provider_attachment_id: "file", message_provider_id: "message", content_base64: Buffer.from("attachment bytes").toString("base64") }]);
+    expect(parsed.session.attachments).toEqual([{ provider_attachment_id: "file", message_provider_id: "message", content_base64: globalThis.Buffer.from("attachment bytes").toString("base64") }]);
     expect(parsed.session.title).toBe(summary.title);
     const roots = [];
     for await (const capture of store.captures()) if (capture.kind === "receiver-body") roots.push(capture.id);
@@ -52,7 +52,7 @@ describe("native capture through the shared host parser", () => {
     const refs = {};
     for (const [name, value] of Object.entries({ conversation: { conversationId: "session" }, responses: { responses: [{ message: "exact" }] } })) {
       const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://grok.com/synthetic" });
-      await staging.append(ref, owner, 0, Buffer.from(JSON.stringify(value)).toString("base64")); await staging.seal(ref, owner); refs[name] = ref;
+      await staging.append(ref, owner, 0, globalThis.Buffer.from(JSON.stringify(value)).toString("base64")); await staging.seal(ref, owner); refs[name] = ref;
     }
     const capture = { id: "capture", provider: "grok", native_id: "session", raw_ref: refs.responses.id,
       related_refs: { conversation: refs.conversation }, source_refs: Object.values(refs).map(ref => ref.id), owner };

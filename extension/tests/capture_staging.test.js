@@ -169,7 +169,6 @@ describe("durable capture staging", () => {
     const envelope = await new NativeCaptureNormalizer({ staging: restarted, store, prepareNative: receiverContractPreparation(restarted, store) }).normalize({ provider: owner.provider, rawRef: raw,
       nativeId: "session", extensionVersion: "0.1.0", instanceId: "synthetic-preparation-instance", signal: new globalThis.AbortController().signal });
     expect(await store.getCapture(`raw:${raw.id}`)).toBeUndefined();
-    const capture = await store.getCapture(envelope.capture_record_ref);
     const prepared = await restarted.prepare(envelope);
     await restarted.markAcknowledged(prepared.ref, acceptedReceipt("synthetic-ack", prepared.contentHash));
     await restarted.acknowledge(prepared.ref);
@@ -507,7 +506,6 @@ describe("durable capture staging", () => {
     await staging.append(raw, owner, 0, globalThis.Buffer.from('{"conversation_id":"session","mapping":{}}').toString("base64")); await staging.seal(raw, owner);
     const cache = await store.pinNativeCache({ owner, provider: owner.provider, nativeId: "session", rawRef: raw, headers: {}, observedAt: "2026-01-01T00:00:00Z", acquisitionSequence: await store.nextNativeAcquisitionSequence() });
     const native = await new NativeCaptureNormalizer({ staging, store, prepareNative: receiverContractPreparation(staging, store) }).normalize({ provider: owner.provider, nativeId: "session", rawRef: raw, extensionVersion: "0.1.0", instanceId: "synthetic-preparation-instance", signal: new globalThis.AbortController().signal });
-    const retainedNative = await store.getCapture(native.capture_record_ref);
     const prepared = await staging.prepare(native);
     await staging.markAcknowledged(prepared.ref, acceptedReceipt("native", prepared.contentHash));
     await staging.acknowledge(prepared.ref);
