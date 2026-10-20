@@ -202,9 +202,11 @@ connections even when an external `Arc<Daemon>` survives. A reader already
 admitted keeps its transaction until its caller drops it.
 
 The in-process `TestDaemon` follows that order on ordinary drop and panic,
-before removing its temporary archive. This does not establish cleanup after
-forcibly killing a parent test process, or a bound on an idle daemon's byte
-reads; those remain separate work in `plnext-xni.27`.
+before removing its temporary archive. On Linux, test daemon subprocesses also
+receive a kernel parent-death signal, with a parent-PID check closing the startup
+race. Source read events do not wake discovery, and unchanged incomplete JSONL
+tails wait for source growth rather than rereading retained bytes. The subprocess
+tests cover forced parent death, archive-lock release and idle input reads.
 
 `commands.rs` declares command arguments, capabilities, printers and local
 output actions. CLI, MCP and HTTP build their surfaces from that table.
