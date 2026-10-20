@@ -117,10 +117,12 @@ fn link_sessions(html: &str, data: &Value) -> String {
 /// one line, outcome first, expandable.
 pub fn session(session: &Session, messages: &[Message], view: View, view_name: &str) -> String {
     let id = session.id.to_string();
-    let title = session
-        .title
-        .as_ref()
-        .map_or_else(|| id.clone(), |t| t.text.clone());
+    let title = polylogue_render::mask(
+        &session
+            .title
+            .as_ref()
+            .map_or_else(|| id.clone(), |t| t.text.clone()),
+    );
     let mut body = format!(
         "<article class=\"session\"><h1>{}</h1><p class=\"meta\"><code>{}</code>",
         esc(&title),
@@ -133,7 +135,7 @@ pub fn session(session: &Session, messages: &[Message], view: View, view_name: &
         let _ = write!(body, " · <time>{}</time>", esc(&t.to_string()));
     }
     body.push_str("</p><nav class=\"views\" aria-label=\"View\">");
-    for v in ["full", "dialogue", "prompts", "actions"] {
+    for &v in View::NAMES {
         let _ = write!(
             body,
             "<a href=\"/s/{}?view={v}\"{}>{v}</a> ",

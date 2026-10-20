@@ -158,10 +158,28 @@ output actions. CLI, MCP and HTTP build their surfaces from that table.
 
 ## Presentation and backing storage
 
-`polylogue-render` filters model blocks by view, masks credentials and renders
-output. HTML exports and the web reader use the same content renderer;
-framing, navigation and transport remain with their callers. HTML output writes
-to the supplied writer and returns write errors.
+`polylogue-render` owns session view projection and output selection. A view
+selects typed blocks without replacing message metadata or tool fields. Prose
+formats display those blocks as Pieces; structured JSON reads retain
+`{session, messages}`. JSON export retains the model's importable Document,
+including events and links, rather than converting it to prose Pieces. The
+same renderer owns the format and view names. HTML exports and the web reader
+share the content renderer; framing, navigation and transport remain with
+callers. HTML output returns write errors.
+
+The public application response boundary masks decoded JSON strings before
+transport escaping, including nested metadata, error text and object keys.
+Ordinary IDs, field names, types and empty values stay unchanged. If credential
+keys collapse to the same masked label, numbered suffixes keep every value and
+preserve ordinary keys. Blocks are also masked before model-page sizing, so a
+page split cannot expose fragments of a credential. Structured export preserves
+ordinary recorded fields; credential masking intentionally survives reimport.
+
+Socket reads (and their CLI/MCP clients), the HTTP read API and the HTML session
+route receive the finalized application response. Shared transport-error
+construction masks validation failures too. Session headers also mask titles
+in the HTML helpers. The browser-action backend has separate response paths;
+this boundary does not describe those control responses.
 
 Standalone storage keeps Polylogue's archive locally. The optional Sinex
 adapter supplies primary backing; its publication and restore qualification

@@ -157,5 +157,28 @@ pub enum Response {
     },
 }
 
+impl Response {
+    /// The application response boundary shared by socket and HTTP consumers.
+    /// Mask decoded strings before JSON escaping, keeping every structured field.
+    pub(crate) fn masked(mut self) -> Self {
+        match &mut self {
+            Self::Ok { data } => polylogue_render::mask_json(data),
+            Self::Accepted { request_id } => *request_id = polylogue_render::mask(request_id),
+            Self::Error {
+                kind,
+                message,
+                detail,
+            } => {
+                *kind = polylogue_render::mask(kind);
+                *message = polylogue_render::mask(message);
+                if let Some(detail) = detail {
+                    polylogue_render::mask_json(detail);
+                }
+            }
+        }
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests;

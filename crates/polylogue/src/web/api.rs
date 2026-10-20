@@ -79,11 +79,7 @@ async fn answer(
     };
     match values.and_then(|v| build(c, &v, &caller)) {
         Ok(request) => json_answer(web, ask(web, request).await),
-        Err(message) => (
-            StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({ "error": "bad_request", "message": message })),
-        )
-            .into_response(),
+        Err(message) => json_answer(web, crate::daemon::service::error("bad_request", message)),
     }
 }
 

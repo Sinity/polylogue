@@ -341,3 +341,5 @@ fn the_hook_spools_where_the_daemon_reads_never_outside_polylogue_home() {
     assert_eq!(carriers.len(), 1);
     assert!(!elsewhere.exists(), "the tools' own state is not touched");
 }
+
+mod structured_json;

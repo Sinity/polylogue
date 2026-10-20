@@ -80,21 +80,17 @@ fn render_to(format: Format, view: View) -> String {
         SessionKind::Main,
     );
     let ms = conversation();
-    let mut items = vec![Rendered::SessionHeader(&session)];
-    items.extend(ms.iter().map(Rendered::Message));
-    let mut out = vec![];
-    render(&items, format, view, &mut out).unwrap();
-    String::from_utf8(out).unwrap()
+    let value = crate::session(&session, ms, view, format).unwrap();
+    if format == Format::Json {
+        value.to_string()
+    } else {
+        value["content"].as_str().unwrap().to_owned()
+    }
 }
 
 #[test]
-fn credentials_are_masked_in_every_format() {
-    for format in [
-        Format::Terminal,
-        Format::Markdown,
-        Format::Html,
-        Format::Json,
-    ] {
+fn prose_formats_mask_credentials_before_rendering() {
+    for format in [Format::Terminal, Format::Markdown, Format::Html] {
         let t = render_to(format, View::Full);
         assert!(!t.contains("sk-ant-api03-AAAA"), "{format:?}: {t}");
         assert!(t.contains("run the tests"), "{format:?}");
@@ -139,29 +135,24 @@ fn html_escapes_text() {
             text: "<script>".into(),
         }],
     );
-    let mut out = vec![];
-    render(
-        &[Rendered::SessionHeader(&session), Rendered::Message(&m)],
-        Format::Html,
-        View::Full,
-        &mut out,
-    )
-    .unwrap();
-    let t = String::from_utf8(out).unwrap();
+    let value = crate::session(&session, vec![m], View::Full, Format::Html).unwrap();
+    let t = value["content"].as_str().unwrap();
     assert!(t.contains("&lt;script&gt;"));
     assert!(!t.contains("<script>"));
 }
 
 #[test]
-fn json_lists_masked_pieces() {
+fn json_retains_typed_action_blocks() {
     let t = render_to(Format::Json, View::Actions);
     let v: serde_json::Value = serde_json::from_str(&t).unwrap();
-    let blocks: Vec<&str> = v
+    let blocks: Vec<&str> = v["messages"]
         .as_array()
         .unwrap()
         .iter()
-        .flat_map(|x| x["blocks"].as_array().into_iter().flatten())
-        .map(|b| b["kind"].as_str().unwrap())
+        .flat_map(|message| message["blocks"].as_array().into_iter().flatten())
+        .map(|block| block["type"].as_str().unwrap())
         .collect();
     assert_eq!(blocks, ["tool_call", "tool_result"]);
 }
+
+mod structured;
