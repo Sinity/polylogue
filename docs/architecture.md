@@ -30,15 +30,24 @@ permissions; hook installation refuses managed symlinks.
 writer serializes archive changes; readers use read transactions. Original
 observations and authored values differ from derived indexes. Session reads,
 derivation and exports share one row mapping, including repository and mode.
-The daemon admits at most `Config.workers` client read connections, with one
-separate connection reserved for convergence so waiting clients cannot starve
-the loop. The default `Config.reader_memory_bytes` is 128 MiB for all these
-readers together. Each connection gets an equal share, split between the main
-index and attached archive page caches (rounded down to KiB); both databases
-have mmap disabled. Workers must be positive and the budget must provide at
-least 1 KiB per database per slot. This is SQLite's suggested page-cache target,
-not a hard process memory limit: query work space, statement caches and returned
-values still use memory. It imposes no row or content-size refusal.
+The daemon admits at most `Config.workers` client Readers, with one separate
+Reader reserved for convergence so waiting clients cannot starve the loop.
+Each Reader owns one index connection with the archive attached and may open
+one auxiliary embeddings connection. Daemon reads therefore open at most
+`2 * workers + 1` connections; the engine does not open embeddings.
+
+The default `Config.reader_memory_bytes` is a 128 MiB page-cache target for
+these readers together. Each Reader gets an equal share, split between the
+main index, attached archive and optional embeddings caches (rounded down to
+KiB); all three have mmap disabled. A lifetime-bound vector guard retains at
+most one auxiliary connection per Reader, including embedding builds. Upgrading
+that connection closes the old one before opening another. The engine leaves
+its optional embeddings share unused. Workers must be positive and the budget
+must provide at least 1 KiB per database per slot. This is SQLite's suggested
+page-cache target, not a hard process memory limit: query work space,
+statement caches and returned values still use memory. It imposes no row or
+content-size refusal. Short-lived setup and maintenance connections retain
+their separate 16 MiB setup allocation with mmap disabled.
 
 A full read pool waits for a released slot; opening connections also count
 against the cap. Open, BEGIN and transaction-completion failures release slots.

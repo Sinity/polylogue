@@ -168,13 +168,12 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
             let provider = crate::embeddings::Provider::from_settings(&reader, &machine_id())
                 .ok()
                 .flatten();
-            let embeddings = crate::embeddings::available(&d.archive, provider.as_ref());
+            let embeddings = crate::embeddings::available(&reader, provider.as_ref());
             let near = |q: &str| -> Result<String, String> {
                 let Some(p) = &provider else {
                     return Ok("[]".into());
                 };
-                crate::embeddings::nearest_json(&d.archive, &reader, p, q)
-                    .map_err(|e| e.to_string())
+                crate::embeddings::nearest_json(&reader, p, q).map_err(|e| e.to_string())
             };
             let ask = super::query::Ask {
                 text: &text,
@@ -245,7 +244,7 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
             query,
             limit,
             yes,
-        } => crate::embeddings::handle(d, &reader, &what, query.as_deref(), limit, yes),
+        } => crate::embeddings::handle(&reader, &what, query.as_deref(), limit, yes),
         Request::Excise {
             request_id,
             target,

@@ -77,8 +77,8 @@ pub struct Config {
 
 impl Config {
     /// One reader slot is reserved for convergence; client reads have `workers`
-    /// slots. All slots share one page-cache target, split again between index
-    /// and archive by the store. Integer division leaves unused bytes.
+    /// slots. All slots share one page-cache target, split again between index,
+    /// archive and optional embeddings by the store. Integer division leaves unused bytes.
     pub fn reader_memory_per_connection(&self) -> polylogue_store::Result<u64> {
         if self.workers == 0 {
             return Err(polylogue_store::StoreError::Invalid(
@@ -92,9 +92,9 @@ impl Config {
                 polylogue_store::StoreError::Invalid("reader slot count overflow".into())
             })?;
         let bytes = self.reader_memory_bytes / slots;
-        if bytes < 2 * 1024 {
+        if bytes < 3 * 1024 {
             return Err(polylogue_store::StoreError::Invalid(
-                "reader memory budget needs at least 2 KiB per connection".into(),
+                "reader memory budget needs at least 3 KiB per connection".into(),
             ));
         }
         Ok(bytes)

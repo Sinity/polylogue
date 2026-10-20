@@ -19,7 +19,7 @@ pub struct ReadPool {
     archive: Archive,
     state: Mutex<PoolState>,
     available: Condvar,
-    max_connections: usize,
+    max_readers: usize,
     cache_kib: i64,
     #[cfg(test)]
     changed: Condvar,
@@ -46,6 +46,7 @@ pub struct Reader<'a> {
     // ThreadId ownership detects self-exhaustion only if live readers stay
     // on their checkout thread. The marker makes that invariant enforceable.
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+    vectors: std::cell::RefCell<Option<crate::vectors::Vectors>>,
 }
 
 /// What the loop knows about a path from its last look, for comparing
@@ -94,17 +95,13 @@ impl ReadPool {
     }
 
     /// `memory_bytes` is the combined SQLite page-cache target of all pool
-    /// connections, including both index and attached archive. Mmap is disabled
+    /// reader slots, including index, attached archive and optional embeddings. Mmap is disabled
     /// so mapped pages cannot multiply outside that allocation.
     /// This is not a process RSS limit: result values and SQLite work space vary.
-    pub fn with_budget(
-        archive: &Archive,
-        max_connections: usize,
-        memory_bytes: u64,
-    ) -> Result<Self> {
-        let divisor = u64::try_from(max_connections)
+    pub fn with_budget(archive: &Archive, max_readers: usize, memory_bytes: u64) -> Result<Self> {
+        let divisor = u64::try_from(max_readers)
             .ok()
-            .and_then(|n| n.checked_mul(2 * 1024))
+            .and_then(|n| n.checked_mul(3 * 1024))
             .filter(|n| *n != 0)
             .ok_or_else(|| {
                 StoreError::Invalid("read pool needs a positive connection limit".into())
@@ -121,7 +118,7 @@ impl ReadPool {
             archive: archive.clone(),
             state: Mutex::new(PoolState::default()),
             available: Condvar::new(),
-            max_connections,
+            max_readers,
             cache_kib,
             #[cfg(test)]
             changed: Condvar::new(),
@@ -158,7 +155,7 @@ impl ReadPool {
                     *state.owners.entry(owner).or_default() += 1;
                     break Some(conn);
                 }
-                if state.live < self.max_connections {
+                if state.live < self.max_readers {
                     state.live += 1;
                     *state.owners.entry(owner).or_default() += 1;
                     break None;
@@ -185,6 +182,7 @@ impl ReadPool {
             conn: None,
             owner,
             thread_bound: std::marker::PhantomData,
+            vectors: std::cell::RefCell::new(None),
         };
         let conn = match idle {
             Some(conn) => conn,
@@ -217,6 +215,7 @@ fn pool_poisoned() -> StoreError {
 
 impl Drop for Reader<'_> {
     fn drop(&mut self) {
+        self.vectors.get_mut().take();
         let conn = self
             .conn
             .take()
@@ -271,6 +270,40 @@ pub(crate) fn ts(ms: Option<i64>) -> Option<Timestamp> {
 }
 
 impl Reader<'_> {
+    /// The optional embeddings read connection shares this reader's allocation
+    /// and cannot outlive its admission. Only one vector guard can be held.
+    pub fn vectors(&self) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {
+        self.vectors_access(false)
+    }
+
+    /// An embedding build uses the same reserved connection/cache share.
+    pub fn vectors_writer(&self) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {
+        self.vectors_access(true)
+    }
+
+    fn vectors_access(
+        &self,
+        writable: bool,
+    ) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {
+        let mut vectors = self.vectors.try_borrow_mut().map_err(|_| {
+            StoreError::Invalid("this reader already has an embeddings database guard".into())
+        })?;
+        if vectors.as_ref().is_some_and(|v| writable && !v.writable()) {
+            // Close before reopening, so a slot never owns two auxiliary connections.
+            vectors.take();
+        }
+        if vectors.is_none() {
+            *vectors = Some(crate::vectors::Vectors::for_reader(
+                &self.pool.archive,
+                self.pool.cache_kib,
+                writable,
+            )?);
+        }
+        Ok(std::cell::RefMut::map(vectors, |v| {
+            v.as_mut().expect("initialized vectors")
+        }))
+    }
+
     pub(crate) fn conn(&self) -> &Connection {
         self.conn
             .as_ref()

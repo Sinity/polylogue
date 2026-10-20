@@ -38,22 +38,26 @@ pub struct KeyStatus {
 }
 
 /// The embeddings database. One process writes it (the daemon's embedding
-/// build); reads open their own connection.
+/// build); each admitted Reader owns its optional connection.
 pub struct Vectors {
     conn: Connection,
+    writable: bool,
 }
 
 impl Vectors {
-    pub fn open(archive: &Archive) -> Result<Self> {
-        Ok(Self {
-            conn: open_write(&archive.embeddings_db(), crate::archive::cache::SETUP)?,
-        })
+    pub(crate) fn for_reader(archive: &Archive, cache_kib: i64, writable: bool) -> Result<Self> {
+        let conn = if writable {
+            open_write(&archive.embeddings_db(), crate::archive::cache::SETUP)?
+        } else {
+            open_read(&archive.embeddings_db())?
+        };
+        conn.pragma_update(None, "cache_size", -cache_kib)?;
+        conn.pragma_update(None, "mmap_size", 0)?;
+        Ok(Self { conn, writable })
     }
 
-    pub fn open_read(archive: &Archive) -> Result<Self> {
-        Ok(Self {
-            conn: open_read(&archive.embeddings_db())?,
-        })
+    pub(crate) fn writable(&self) -> bool {
+        self.writable
     }
 
     /// Text hashes that already have a vector or a permanent failure for

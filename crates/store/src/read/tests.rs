@@ -183,7 +183,7 @@ fn failed_transaction_completion_discards_the_connection_and_releases_its_slot()
 }
 
 #[test]
-fn main_and_attached_cache_targets_share_the_pool_budget_without_mmap() {
+fn main_and_attached_cache_targets_reserve_the_optional_vectors_share() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 3, (8 << 20) + 123).unwrap();
@@ -205,9 +205,9 @@ fn main_and_attached_cache_targets_share_the_pool_budget_without_mmap() {
         }
     }
     assert!(total <= (8 << 20) + 123);
-    assert!((8 << 20) + 123 - total < 3 * 2 * 1024);
+    assert!(total <= (8 << 20) * 2 / 3);
     assert!(ReadPool::with_budget(&fixture.archive, 0, 8 << 20).is_err());
-    assert!(ReadPool::with_budget(&fixture.archive, 3, 3 * 2 * 1024 - 1).is_err());
+    assert!(ReadPool::with_budget(&fixture.archive, 3, 3 * 3 * 1024 - 1).is_err());
 }
 
 #[test]

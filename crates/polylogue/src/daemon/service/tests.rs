@@ -273,7 +273,7 @@ fn admission_stop_releases_full_pool_requests_before_workers_or_admitted_readers
 fn invalid_reader_resource_configuration_refuses_startup_and_releases_the_lock() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
-    for (workers, memory) in [(0, 128 << 20), (2, 3 * 2048 - 1)] {
+    for (workers, memory) in [(0, 128 << 20), (2, 3 * 3072 - 1)] {
         let mut config = config(dir.path());
         config.workers = workers;
         config.reader_memory_bytes = memory;
