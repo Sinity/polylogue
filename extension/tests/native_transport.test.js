@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NativeCaptureNormalizer } from "../src/capture/native.js";
-import { prepareNativeCapture } from "../src/capture/native_transport.js";
+import { nativeEnvelope, prepareNativeCapture } from "../src/capture/native_transport.js";
 import { stagingRuntime } from "./infra/capture-staging.js";
 
 const owner = { tab_id: 42, document_id: "synthetic-document", provider: "chatgpt" };
@@ -44,6 +44,22 @@ describe("native capture through the shared host parser", () => {
     for await (const capture of store.captures()) if (capture.kind === "receiver-body") roots.push(capture.id);
     expect(roots).toEqual([`body:${prepared.ref}`]);
     expect(await (await staging.file(ref.id)).text()).toBe(raw);
+  });
+
+  it("substitutes all Grok raw members even when the caller has no acquisition metadata", async () => {
+    const { staging, store } = stagingRuntime();
+    const owner = { tab_id: 42, document_id: "document", provider: "grok" };
+    const refs = {};
+    for (const [name, value] of Object.entries({ conversation: { conversationId: "session" }, responses: { responses: [{ message: "exact" }] } })) {
+      const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://grok.com/synthetic" });
+      await staging.append(ref, owner, 0, Buffer.from(JSON.stringify(value)).toString("base64")); await staging.seal(ref, owner); refs[name] = ref;
+    }
+    const capture = { id: "capture", provider: "grok", native_id: "session", raw_ref: refs.responses.id,
+      related_refs: { conversation: refs.conversation }, source_refs: Object.values(refs).map(ref => ref.id), owner };
+    await store.putCapture(capture);
+    const prepared = await staging.prepare(nativeEnvelope(capture));
+    expect(JSON.parse(await prepared.body.text()).raw_provider_payload).toEqual({ conversation: { conversationId: "session" },
+      responses: { responses: [{ message: "exact" }] }, acquisition: { kind: "grok-endpoint-bundle" } });
   });
 
   it("keeps the raw acquisition after an inspection failure and removes its temporary body", async () => {

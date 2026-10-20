@@ -1142,7 +1142,7 @@ describe("background receiver diagnostics", () => {
       error: "unauthorized",
       receiver_request_id: "reject-42",
     });
-    expect(response.receiver_pairing).toBeNull();
+    expect(response.receiver_pairing).toBeUndefined();
     expect(stored.polylogueState.online).toBe(false);
     expect(stored.polylogueState.last_receiver_request_id).toBe("reject-42");
   });

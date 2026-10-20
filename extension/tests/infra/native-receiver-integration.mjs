@@ -80,6 +80,7 @@ const summarized = await send({ type: "polylogue.nativeCaptureSummary", provider
   related_refs: provider === "grok" ? { conversation: refs.conversation, ...(refs.response_nodes ? { response_nodes: refs.response_nodes } : {}) } : {} });
 assert.equal(summarized.ok, true, JSON.stringify(summarized));
 assert.equal(typeof summarized.summary.needs_follow_up, "boolean");
+assert.ok(summarized.summary.turn_count >= 1, "the fixture must produce an ordinary message");
 assert.equal(assetRequests, 0);
 const prefix = await store.getCapture(`native-preparation:${(refs.responses || refs.conversation).id}`);
 assert.equal(prefix.state, "normalizing");

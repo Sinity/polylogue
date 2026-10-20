@@ -25,24 +25,26 @@ export async function prepareNativeCapture({ capture, staging, store, inspect, a
   const revisions = [];
   for (const id of capture.source_refs) {
     const meta = await staging.metadata(id);
-    staging.requireOwner(meta, { id, token: meta.token }, capture.owner);
+    const ref = Object.values(capture.related_refs || {}).find(ref => ref.id === id) || { id, token: meta.token };
+    staging.requireOwner(meta, ref, capture.owner);
     if (meta.state !== "sealed") throw new Error("capture_staging_asset_unsealed");
     revisions.push([id, meta.sha256]);
   }
   const rawRevision = createSha256().update(JSON.stringify(revisions)).hex();
   progress("native_prepare", "BEGIN");
   const envelope = nativeEnvelope(capture);
+  const inspectionId = staging.producerStageId({ native_inspect: capture.id }, crypto.randomUUID());
   let body;
   let plan;
   try {
-    body = await staging.prepare(envelope, null, null, signal);
+    body = await staging.prepare(envelope, inspectionId, null, signal);
     plan = await inspect(body.body, signal);
     signal?.throwIfAborted();
     if (!plan?.ok || !plan.summary || !Array.isArray(plan.attachments)) throw new Error("native_inspection_invalid");
   } finally {
     // This body is an inspection request, never a pending delivery. Raw replies
     // have their independent capture roots throughout this temporary copy.
-    const id = body?.ref || envelope.capture_body_ref;
+    const id = inspectionId;
     if (id) { await store.discardCapture(`body:${id}`); await staging.discard(id); }
   }
   progress("native_prepare", "END");

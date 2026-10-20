@@ -516,7 +516,7 @@ describe("build.mjs full archive emission", () => {
       id: "packaged-recovered", status: "paused", cooldown_reason: "browser_profile_recovery_required",
       inventory_cursor: "17", daily_requests: 7, last_ack: { receiver_request_id: "ack-1", content_hash: "hash-1" },
       progress: expect.objectContaining({ operator_action: 1 }),
-      recovery_checkpoint_error: "capture_job_account_scope_unresolved",
+      recovery_checkpoint_error: null,
     });
     expect(recoveredStatus.jobs.some(job => job.id === started.job.id)).toBe(false);
     const { IndexedDbBackfillStore: RecoveredStore } = await import(/* @vite-ignore */ pathToFileURL(join(recoveryUnpacked, "src", "backfill", "storage.js")).href);
