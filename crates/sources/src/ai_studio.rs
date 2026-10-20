@@ -13,9 +13,9 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
-use crate::fields::{Fields, Rule, unaccounted};
+use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, Parse};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use base64::Engine as _;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Link, LinkKind, Message,
@@ -160,24 +160,28 @@ const CHUNK_FIELDS: Fields = &[
 ];
 
 impl DocumentParser for AiStudio {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let doc = match serde_json::from_slice::<Json>(bytes) {
             Ok(v) if v.is_object() => v,
-            Ok(_) => return sink.record("prompt", &Disposition::refused("not an object")),
+            Ok(_) => {
+                return sink
+                    .records
+                    .record("prompt", &Disposition::refused("not an object"));
+            }
             Err(e) => {
-                return sink.record(
+                return sink.records.record(
                     "prompt",
                     &Disposition::refused(format!("malformed JSON: {e}")),
                 );
             }
         };
         let Some(sid) = session_id(ORIGIN, &self.native) else {
-            return sink.record("prompt", &Disposition::refused("unusable file name"));
+            return sink
+                .records
+                .record("prompt", &Disposition::refused("unusable file name"));
         };
-        for path in unaccounted(&doc, DOCUMENT_FIELDS) {
-            sink.acc.unread("prompt", &path);
-        }
+        sink.records.fields("prompt", &doc, DOCUMENT_FIELDS);
         let chunks = doc
             .pointer("/chunkedPrompt/chunks")
             .and_then(Json::as_array)
@@ -195,7 +199,7 @@ impl DocumentParser for AiStudio {
             session.offer_start(at);
         }
         sink.out.sessions.push(session);
-        sink.record("prompt", &Disposition::Materialized);
+        sink.records.record("prompt", &Disposition::Materialized);
 
         let settings = doc.get("runSettings").cloned().unwrap_or(Json::Null);
         let model =
@@ -230,9 +234,7 @@ impl DocumentParser for AiStudio {
 
         for (i, chunk) in chunks.iter().enumerate() {
             let kind = chunk_role(chunk).unwrap_or("?").to_owned();
-            for path in unaccounted(chunk, CHUNK_FIELDS) {
-                sink.acc.unread(&kind, &path);
-            }
+            sink.records.fields(&kind, chunk, CHUNK_FIELDS);
             if i == 0
                 && let Some(parent) = chunk
                     .pointer("/branchParent/promptId")
@@ -264,9 +266,9 @@ impl DocumentParser for AiStudio {
                         end: offset + 1,
                         message,
                     });
-                    sink.record(&kind, &Disposition::Materialized);
+                    sink.records.record(&kind, &Disposition::Materialized);
                 }
-                Err(d) => sink.record(&kind, &d),
+                Err(d) => sink.records.record(&kind, &d),
             }
         }
     }
@@ -607,26 +609,26 @@ const LISTING_FIELDS: Fields = &[
 ];
 
 impl DocumentParser for Listing {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let files = match serde_json::from_slice::<Json>(bytes) {
             Ok(v) => v.get("files").and_then(Json::as_array).cloned(),
             Err(e) => {
-                return sink.record(
+                return sink.records.record(
                     "listing",
                     &Disposition::refused(format!("malformed JSON: {e}")),
                 );
             }
         };
         let Some(files) = files else {
-            return sink.record("listing", &Disposition::refused("no files array"));
+            return sink
+                .records
+                .record("listing", &Disposition::refused("no files array"));
         };
         for f in &files {
-            for path in unaccounted(f, LISTING_FIELDS) {
-                sink.acc.unread("file", &path);
-            }
+            sink.records.fields("file", f, LISTING_FIELDS);
             let Some(sid) = str_of(f, "id").and_then(|id| session_id(ORIGIN, id)) else {
-                sink.record("file", &Disposition::refused("no id"));
+                sink.records.record("file", &Disposition::refused("no id"));
                 continue;
             };
             let mut session = Session::new(sid, SessionKind::Main);
@@ -637,7 +639,7 @@ impl DocumentParser for Listing {
                 session.offer_start(at);
             }
             sink.out.sessions.push(session);
-            sink.record("file", &Disposition::Materialized);
+            sink.records.record("file", &Disposition::Materialized);
         }
     }
 }

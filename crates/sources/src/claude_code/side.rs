@@ -11,7 +11,7 @@ use crate::frame::Record;
 use crate::origin::Root;
 use crate::parse::{DocumentParser, Output, Parse, Parser};
 use crate::time;
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{Event, Json, Link, LinkKind, Session, SessionKind, Timestamp, TitleSource};
 use std::path::Path;
 
@@ -165,8 +165,8 @@ fn json(bytes: &[u8]) -> Result<Json, Disposition> {
 }
 
 impl DocumentParser for SideFile {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let len = bytes.len();
         let (kind, disposition) = match &self.side {
             Side::Todos { session, agent } => (
@@ -244,7 +244,7 @@ impl DocumentParser for SideFile {
                 ),
             ),
         };
-        sink.record(kind, &disposition);
+        sink.records.record(kind, &disposition);
     }
 }
 
@@ -341,13 +341,13 @@ impl Parser for History {
         "prompt".to_owned()
     }
 
-    fn record(
+    fn parse_record(
         &self,
         _carry: &mut (),
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
-        _acc: &mut Accounting,
+        _records: &mut Records,
     ) -> Disposition {
         let Some(sid) = v
             .get("sessionId")

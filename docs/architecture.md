@@ -8,7 +8,10 @@ also contain intended behavior that is not implemented or qualified yet.
 `polylogue-sources` interprets provider formats. An origin declaration owns
 recognition, paths, framing, parser version and provider capabilities. Opening
 an input selects line or document parsing; callers do not maintain a second
-framing flag. Parsers produce model values, record ranges and accounting.
+framing flag. Parsers produce model values, record ranges and accounting. The
+shared `Records` sink owns disposition and wire-field counts. Line parsing
+supplies an independent framed total; document parsers submit the items they
+discover. Finishing either path checks the same accounting invariant.
 
 `polylogue-engine` discovers changes, retains input bytes and coordinates
 parsing. Its worker pool feeds one bounded writer. Source interpretation stays

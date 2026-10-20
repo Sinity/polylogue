@@ -19,12 +19,11 @@ mod fields;
 mod index;
 mod items;
 
-use crate::fields::unaccounted;
 use crate::frame::Record;
 use crate::origin::Root;
 use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use items::{Completed, str_field};
 use polylogue_model::{
     Block, Event, Json, Link, LinkKind, Message, MessageId, NativeId, Origin, Production,
@@ -426,12 +425,10 @@ impl Rollout {
         at: Option<polylogue_model::Timestamp>,
         ordinal: Option<u64>,
         out: &mut Output,
-        acc: &mut Accounting,
+        records: &mut Records,
     ) -> Disposition {
         let ty = str_field(item, "type").unwrap_or("?");
-        for path in unaccounted(item, fields::for_item(ty)) {
-            acc.unread(&format!("response_item/{ty}"), &path);
-        }
+        records.fields(&format!("response_item/{ty}"), item, fields::for_item(ty));
         Self::close(carry, out);
         let copied = Self::copied(carry, ordinal);
         let session = if copied {
@@ -998,13 +995,13 @@ impl Parser for Rollout {
         }
     }
 
-    fn record(
+    fn parse_record(
         &self,
         carry: &mut Carry,
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
-        acc: &mut Accounting,
+        records: &mut Records,
     ) -> Disposition {
         if !v.is_object() {
             return Disposition::refused("record is not a JSON object");
@@ -1035,7 +1032,7 @@ impl Parser for Rollout {
                     "same prompt as the user_message event before it, which is stored",
                 );
             }
-            let d = self.response_item(carry, record, p, rec.at, rec.ordinal, out, acc);
+            let d = self.response_item(carry, record, p, rec.at, rec.ordinal, out, records);
             if d == Disposition::Materialized {
                 carry.prompt = Some(Prompt {
                     text,
@@ -1066,7 +1063,7 @@ impl Parser for Rollout {
             if let Some(id) = str_field(p, "client_id") {
                 item["id"] = Json::String(id.to_owned());
             }
-            let d = self.response_item(carry, record, &item, rec.at, rec.ordinal, out, acc);
+            let d = self.response_item(carry, record, &item, rec.at, rec.ordinal, out, records);
             if d == Disposition::Materialized {
                 carry.prompt = Some(Prompt {
                     text,
@@ -1079,7 +1076,9 @@ impl Parser for Rollout {
             "session_meta" => self.session_meta(carry, p, out),
             "legacy_header" => self.legacy_header(carry, p),
             "state" => Disposition::unknown("turn-state marker of 2025 rollouts; holds no content"),
-            "response_item" => self.response_item(carry, record, p, rec.at, rec.ordinal, out, acc),
+            "response_item" => {
+                self.response_item(carry, record, p, rec.at, rec.ordinal, out, records)
+            }
             "event_msg" => self.event_msg(carry, record, p, rec.at, out),
             "turn_context" => {
                 if let Some(model) = str_field(p, "model") {

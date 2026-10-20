@@ -18,12 +18,11 @@ mod blocks;
 mod fields;
 pub mod side;
 
-use crate::fields::unaccounted;
 use crate::frame::Record;
 use crate::origin::Root;
 use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{
     ApiError, Attribution, ErrorReason, Event, Json, Link, LinkKind, Message, MessageId, NativeId,
     Origin, Production, PromptKind, QuotaLimit, QuotaReading, QuotaWindow, Role, Session,
@@ -423,12 +422,10 @@ impl ClaudeCode {
         v: &Json,
         role: Role,
         out: &mut Output,
-        acc: &mut Accounting,
+        records: &mut Records,
     ) -> Disposition {
         let kind = self.kind(v);
-        for path in unaccounted(v, fields::MESSAGE_FIELDS) {
-            acc.unread(&kind, &path);
-        }
+        records.fields(&kind, v, fields::MESSAGE_FIELDS);
         let Some(session) = self.session(carry, v, out).map(|s| s.id.clone()) else {
             return Disposition::refused("session ID is empty");
         };
@@ -861,13 +858,13 @@ impl Parser for ClaudeCode {
         }
     }
 
-    fn record(
+    fn parse_record(
         &self,
         carry: &mut Carry,
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
-        acc: &mut Accounting,
+        records: &mut Records,
     ) -> Disposition {
         if !v.is_object() {
             return Disposition::refused("record is not a JSON object");
@@ -894,8 +891,8 @@ impl Parser for ClaudeCode {
             "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {
                 self.event(carry, record, v, "compaction_summary", out)
             }
-            "user" => self.message(carry, record, v, Role::User, out, acc),
-            "assistant" => self.message(carry, record, v, Role::Assistant, out, acc),
+            "user" => self.message(carry, record, v, Role::User, out, records),
+            "assistant" => self.message(carry, record, v, Role::Assistant, out, records),
             "system" => match str_field(v, "subtype") {
                 Some("compact_boundary") => self.event(carry, record, v, "compaction", out),
                 Some("microcompact_boundary") => {

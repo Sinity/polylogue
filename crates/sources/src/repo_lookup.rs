@@ -6,7 +6,7 @@
 
 use crate::document::{Sink, str_of, string_of};
 use crate::parse::{DocumentParser, Output, Parse};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{Json, RepoLookup};
 use std::path::Path;
 
@@ -27,17 +27,19 @@ pub fn open(_path: &Path) -> Option<Parse> {
 pub struct Lookup;
 
 impl DocumentParser for Lookup {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let v: Json = match serde_json::from_slice(bytes) {
             Ok(v) => v,
             Err(e) => {
-                sink.record("repo_lookup", &Disposition::refused(e.to_string()));
+                sink.records
+                    .record("repo_lookup", &Disposition::refused(e.to_string()));
                 return;
             }
         };
         let Some(path) = string_of(&v, "path") else {
-            sink.record("repo_lookup", &Disposition::refused("no path"));
+            sink.records
+                .record("repo_lookup", &Disposition::refused("no path"));
             return;
         };
         // `read_at` says when the lookup was taken; the row needs only what
@@ -47,7 +49,8 @@ impl DocumentParser for Lookup {
             remote: str_of(&v, "remote").map(str::to_owned),
             root_commit: str_of(&v, "root_commit").map(str::to_owned),
         });
-        sink.record("repo_lookup", &Disposition::Materialized);
+        sink.records
+            .record("repo_lookup", &Disposition::Materialized);
     }
 }
 

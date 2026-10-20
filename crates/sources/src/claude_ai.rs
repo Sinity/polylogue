@@ -10,9 +10,9 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
-use crate::fields::{Fields, Rule, unaccounted};
+use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Event, Json, Message, PromptKind, Role, Session,
     SessionId, SessionKind, TitleSource, ToolAction, ToolOutcome,
@@ -58,16 +58,18 @@ fn in_design_dir(path: &Path) -> bool {
 pub struct Export;
 
 impl DocumentParser for Export {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         match serde_json::from_slice::<Json>(bytes) {
             Ok(Json::Array(items)) => {
                 for item in &items {
                     conversation(item, &mut sink);
                 }
             }
-            Ok(_) => sink.record("export", &Disposition::refused("not a JSON array")),
-            Err(e) => sink.record(
+            Ok(_) => sink
+                .records
+                .record("export", &Disposition::refused("not a JSON array")),
+            Err(e) => sink.records.record(
                 "export",
                 &Disposition::refused(format!("malformed JSON: {e}")),
             ),
@@ -116,15 +118,18 @@ const MESSAGE_FIELDS: Fields = &[
 /// One claude.ai conversation object, shared with browser captures.
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     let Some(native) = str_of(conv, "uuid") else {
-        sink.record("conversation", &Disposition::refused("no uuid"));
+        sink.records
+            .record("conversation", &Disposition::refused("no uuid"));
         return;
     };
     let Some(sid) = session_id(ORIGIN, native) else {
-        sink.record("conversation", &Disposition::refused("unusable uuid"));
+        sink.records
+            .record("conversation", &Disposition::refused("unusable uuid"));
         return;
     };
     let Some(messages) = conv.get("chat_messages").and_then(Json::as_array) else {
-        sink.record("conversation", &Disposition::refused("no chat_messages"));
+        sink.records
+            .record("conversation", &Disposition::refused("no chat_messages"));
         return;
     };
     let mut session = Session::new(sid.clone(), SessionKind::Main);
@@ -138,7 +143,8 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         session.offer_start(at);
     }
     sink.out.sessions.push(session);
-    sink.record("conversation", &Disposition::Materialized);
+    sink.records
+        .record("conversation", &Disposition::Materialized);
 
     // Account, project, settings and model are kept whole as one event.
     if let Some(obj) = conv.as_object() {
@@ -161,9 +167,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     let mut rows: Vec<(Option<i64>, i64, usize, Message)> = Vec::new();
     for (i, m) in messages.iter().enumerate() {
         let kind = str_of(m, "sender").unwrap_or("?").to_owned();
-        for path in unaccounted(m, MESSAGE_FIELDS) {
-            sink.acc.unread(&kind, &path);
-        }
+        sink.records.fields(&kind, m, MESSAGE_FIELDS);
         match message(&sid, native, i, m, model.as_deref()) {
             Ok(msg) => {
                 // The summary claude.ai wrote when it compacted the
@@ -184,9 +188,9 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                 let at = msg.at.map(|t| t.unix_ms());
                 let index = m.get("index").and_then(Json::as_i64).unwrap_or(i as i64);
                 rows.push((at, index, i, msg));
-                sink.record(&kind, &Disposition::Materialized);
+                sink.records.record(&kind, &Disposition::Materialized);
             }
-            Err(d) => sink.record(&kind, &d),
+            Err(d) => sink.records.record(&kind, &d),
         }
     }
     rows.sort_by_key(|r| (r.0, r.1, r.2));
@@ -441,13 +445,17 @@ fn attachments(m: &Json, direction: AttachmentDirection) -> Vec<Block> {
 pub struct Design;
 
 impl DocumentParser for Design {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let chat = match serde_json::from_slice::<Json>(bytes) {
             Ok(v) if v.is_object() => v,
-            Ok(_) => return sink.record("chat", &Disposition::refused("not an object")),
+            Ok(_) => {
+                return sink
+                    .records
+                    .record("chat", &Disposition::refused("not an object"));
+            }
             Err(e) => {
-                return sink.record(
+                return sink.records.record(
                     "chat",
                     &Disposition::refused(format!("malformed JSON: {e}")),
                 );
@@ -459,7 +467,8 @@ impl DocumentParser for Design {
 
 fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
     let Some(sid) = str_of(chat, "uuid").and_then(|u| session_id(DESIGN_ORIGIN, u)) else {
-        sink.record("chat", &Disposition::refused("no uuid"));
+        sink.records
+            .record("chat", &Disposition::refused("no uuid"));
         return;
     };
     let mut session = Session::new(sid.clone(), SessionKind::Main);
@@ -470,7 +479,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
         session.offer_start(at);
     }
     sink.out.sessions.push(session);
-    sink.record("chat", &Disposition::Materialized);
+    sink.records.record("chat", &Disposition::Materialized);
     if let Some(project) = chat.get("project").filter(|p| !p.is_null()) {
         sink.out.events.push(Event {
             session: sid.clone(),
@@ -490,7 +499,8 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
     {
         let role_name = str_of(m, "role").unwrap_or("?").to_owned();
         let Some(id) = str_of(m, "uuid").and_then(|u| message_id(DESIGN_ORIGIN, u)) else {
-            sink.record(&role_name, &Disposition::refused("no uuid"));
+            sink.records
+                .record(&role_name, &Disposition::refused("no uuid"));
             continue;
         };
         let (role, prompt_kind, direction) = match role_name.as_str() {
@@ -501,7 +511,8 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
             ),
             "assistant" => (Role::Assistant, None, AttachmentDirection::Output),
             other => {
-                sink.record(other, &Disposition::unknown(format!("role {other}")));
+                sink.records
+                    .record(other, &Disposition::unknown(format!("role {other}")));
                 continue;
             }
         };
@@ -553,7 +564,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
             end: offset + 1,
             message,
         });
-        sink.record(&role_name, &Disposition::Materialized);
+        sink.records.record(&role_name, &Disposition::Materialized);
     }
 }
 

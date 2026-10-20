@@ -12,7 +12,7 @@
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{
     Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, Timestamp, ToolAction,
     ToolOutcome, Usage,
@@ -48,8 +48,8 @@ struct Span {
 }
 
 impl DocumentParser for OtelGenAi {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let documents: Vec<Json> = match serde_json::from_slice::<Json>(bytes) {
             Ok(v) => vec![v],
             Err(_) => {
@@ -57,7 +57,7 @@ impl DocumentParser for OtelGenAi {
                 for line in bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
                     match serde_json::from_slice::<Json>(line) {
                         Ok(v) => docs.push(v),
-                        Err(e) => sink.record(
+                        Err(e) => sink.records.record(
                             "line",
                             &Disposition::refused(format!("malformed JSON: {e}")),
                         ),
@@ -83,7 +83,8 @@ impl DocumentParser for OtelGenAi {
                 .map(str::to_owned);
             let is_genai = op.is_some() || span.attrs.keys().any(|k| k.starts_with("gen_ai."));
             if !is_genai {
-                sink.record("span", &Disposition::unknown("not a GenAI span"));
+                sink.records
+                    .record("span", &Disposition::unknown("not a GenAI span"));
                 continue;
             }
             let conversation = span
@@ -93,7 +94,8 @@ impl DocumentParser for OtelGenAi {
                 .map(str::to_owned)
                 .unwrap_or_else(|| span.trace.clone());
             let Some(sid) = session_id(ORIGIN, &conversation) else {
-                sink.record("span", &Disposition::refused("unusable conversation ID"));
+                sink.records
+                    .record("span", &Disposition::refused("unusable conversation ID"));
                 continue;
             };
             if sessions_made.insert(conversation.clone()) {
@@ -116,7 +118,7 @@ impl DocumentParser for OtelGenAi {
                 Some("execute_tool") => tool_span(&span, &conversation, &sid, seen, &mut sink),
                 _ => model_span(&span, &conversation, &sid, seen, &mut sink),
             }
-            sink.record(
+            sink.records.record(
                 op.as_deref().unwrap_or("gen_ai"),
                 &Disposition::Materialized,
             );

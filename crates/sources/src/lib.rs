@@ -24,6 +24,7 @@ pub mod origin;
 pub mod otel_genai;
 pub mod parse;
 pub mod polylogue_export;
+mod records;
 pub mod repo_lookup;
 pub mod time;
 
@@ -34,3 +35,4 @@ pub use parse::{
     Step, StepParser, run, run_document,
 };
 pub use polylogue_model::{Accounting, Disposition};
+pub use records::Records;

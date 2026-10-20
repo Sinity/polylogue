@@ -1,8 +1,8 @@
 //! Helpers shared by the parsers of whole documents (exports, captures):
 //! a running position for the rows they emit, and small JSON readers.
 
+use crate::Records;
 use crate::parse::Output;
-use crate::{Accounting, Disposition};
 use polylogue_model::{Json, MessageId, NativeId, Origin, SessionId, Timestamp};
 
 /// What a document parser writes into. A document has no byte offsets
@@ -11,13 +11,17 @@ use polylogue_model::{Json, MessageId, NativeId, Origin, SessionId, Timestamp};
 /// the order key).
 pub struct Sink<'a> {
     pub out: &'a mut Output,
-    pub acc: &'a mut Accounting,
+    pub records: &'a mut Records,
     next: u64,
 }
 
 impl<'a> Sink<'a> {
-    pub fn new(out: &'a mut Output, acc: &'a mut Accounting) -> Self {
-        Self { out, acc, next: 0 }
+    pub fn new(out: &'a mut Output, records: &'a mut Records) -> Self {
+        Self {
+            out,
+            records,
+            next: 0,
+        }
     }
 
     /// The next position in the document.
@@ -25,12 +29,6 @@ impl<'a> Sink<'a> {
         let at = self.next;
         self.next += 1;
         at
-    }
-
-    /// Frames one record of the document and records how it ended.
-    pub fn record(&mut self, kind: &str, disposition: &Disposition) {
-        self.acc.framed += 1;
-        self.acc.add(kind, disposition);
     }
 }
 

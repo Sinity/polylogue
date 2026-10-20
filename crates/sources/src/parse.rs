@@ -2,6 +2,7 @@
 //! state between records; [`run`] does everything around it: framing,
 //! JSON decoding, accounting and the count check.
 
+use crate::Records;
 use crate::frame::{self, Record};
 use polylogue_model::Json;
 use polylogue_model::{Accounting, CountMismatch, Disposition};
@@ -18,13 +19,13 @@ pub trait Parser {
     /// The kind name accounting uses for a record (`user`, `progress`).
     fn kind(&self, value: &Json) -> String;
 
-    fn record(
+    fn parse_record(
         &self,
         carry: &mut Self::Carry,
         record: Record<'_>,
         value: &Json,
         out: &mut Output,
-        acc: &mut Accounting,
+        records: &mut Records,
     ) -> Disposition;
 
     /// Called when no complete record remains. Sends anything still open
@@ -61,25 +62,23 @@ pub fn run<P: Parser>(
 ) -> Result<Step, ParseError> {
     let (records, consumed) = frame::lines(bytes, base);
     let mut output = Output::default();
-    let mut acc = Accounting {
-        framed: records.len() as u64,
-        ..Accounting::default()
-    };
+    let mut sink = Records::lines(records.len() as u64);
     for record in records {
         match serde_json::from_slice::<Json>(record.bytes) {
             Ok(value) => {
                 let kind = parser.kind(&value);
-                let disposition = parser.record(carry, record, &value, &mut output, &mut acc);
-                acc.add(&kind, &disposition);
+                let disposition =
+                    parser.parse_record(carry, record, &value, &mut output, &mut sink);
+                sink.record(&kind, &disposition);
             }
-            Err(e) => acc.add("?", &Disposition::refused(format!("malformed JSON: {e}"))),
+            Err(e) => sink.record("?", &Disposition::refused(format!("malformed JSON: {e}"))),
         }
     }
     parser.flush(carry, &mut output);
-    acc.check()?;
+    let accounting = sink.finish()?;
     Ok(Step {
         output,
-        accounting: acc,
+        accounting,
         consumed: consumed as u64,
     })
 }
@@ -115,9 +114,9 @@ impl<P: Parser + Send> StepParser for P {
 /// A parser for an input read whole (architecture 5.3): an export, or a
 /// capture file the extension rewrites in place. Records are the
 /// document's own items (one conversation, one span); the parser frames
-/// them and accounts for each, so `acc.framed` is its to set.
+/// them and submits each disposition to the shared accounting sink.
 pub trait DocumentParser {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records);
 }
 
 /// Parses a complete document. Each step covers the whole input, so there
@@ -127,12 +126,12 @@ pub fn run_document<D: DocumentParser + ?Sized>(
     bytes: &[u8],
 ) -> Result<Step, ParseError> {
     let mut output = Output::default();
-    let mut acc = Accounting::default();
-    parser.document(bytes, &mut output, &mut acc);
-    acc.check()?;
+    let mut sink = Records::default();
+    parser.document(bytes, &mut output, &mut sink);
+    let accounting = sink.finish()?;
     Ok(Step {
         output,
-        accounting: acc,
+        accounting,
         consumed: bytes.len() as u64,
     })
 }

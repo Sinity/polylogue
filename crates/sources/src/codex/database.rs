@@ -13,7 +13,7 @@ use crate::frame::Record;
 use crate::origin::Root;
 use crate::parse::{Output, Parse, Parser};
 use crate::time;
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{Event, Json, Link, LinkKind, Session, SessionKind, TitleSource};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -86,13 +86,13 @@ impl Parser for Database {
         }
     }
 
-    fn record(
+    fn parse_record(
         &self,
         _: &mut NoState,
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
-        _: &mut Accounting,
+        _: &mut Records,
     ) -> Disposition {
         if v.get("schema").is_some() {
             return Disposition::Materialized;

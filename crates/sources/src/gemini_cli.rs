@@ -8,9 +8,9 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
-use crate::fields::{Fields, Rule, unaccounted};
+use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{
     Block, ErrorReason, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource,
     ToolAction, ToolOutcome, Usage,
@@ -85,20 +85,26 @@ const MESSAGE_FIELDS: Fields = &[
 ];
 
 impl DocumentParser for GeminiCli {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let doc = match serde_json::from_slice::<Json>(bytes) {
             Ok(v) if v.is_object() => v,
-            Ok(_) => return sink.record("session", &Disposition::refused("not an object")),
+            Ok(_) => {
+                return sink
+                    .records
+                    .record("session", &Disposition::refused("not an object"));
+            }
             Err(e) => {
-                return sink.record(
+                return sink.records.record(
                     "session",
                     &Disposition::refused(format!("malformed JSON: {e}")),
                 );
             }
         };
         let Some(sid) = str_of(&doc, "sessionId").and_then(|s| session_id(ORIGIN, s)) else {
-            return sink.record("session", &Disposition::refused("no sessionId"));
+            return sink
+                .records
+                .record("session", &Disposition::refused("no sessionId"));
         };
         let kind = match str_of(&doc, "kind") {
             Some("subagent") => SessionKind::Subagent,
@@ -121,7 +127,7 @@ impl DocumentParser for GeminiCli {
             session.offer_cwd(dir);
         }
         sink.out.sessions.push(session);
-        sink.record("session", &Disposition::Materialized);
+        sink.records.record("session", &Disposition::Materialized);
         if let Some(hash) = str_of(&doc, "projectHash") {
             sink.out.events.push(Event {
                 session: sid.clone(),
@@ -141,9 +147,7 @@ impl DocumentParser for GeminiCli {
             .flatten()
         {
             let kind = str_of(m, "type").unwrap_or("?").to_owned();
-            for path in unaccounted(m, MESSAGE_FIELDS) {
-                sink.acc.unread(&kind, &path);
-            }
+            sink.records.fields(&kind, m, MESSAGE_FIELDS);
             let role = match kind.as_str() {
                 "user" => Role::User,
                 "gemini" => Role::Assistant,
@@ -161,16 +165,17 @@ impl DocumentParser for GeminiCli {
                         range: None,
                         data: m.get("content").cloned().unwrap_or(Json::Null),
                     });
-                    sink.record(&kind, &Disposition::Materialized);
+                    sink.records.record(&kind, &Disposition::Materialized);
                     continue;
                 }
                 other => {
-                    sink.record(other, &Disposition::unknown(format!("type {other}")));
+                    sink.records
+                        .record(other, &Disposition::unknown(format!("type {other}")));
                     continue;
                 }
             };
             let Some(id) = str_of(m, "id").and_then(|i| message_id(ORIGIN, i)) else {
-                sink.record(&kind, &Disposition::refused("no id"));
+                sink.records.record(&kind, &Disposition::refused("no id"));
                 continue;
             };
             let message = Message {
@@ -194,7 +199,7 @@ impl DocumentParser for GeminiCli {
                 end: offset + 1,
                 message,
             });
-            sink.record(&kind, &Disposition::Materialized);
+            sink.records.record(&kind, &Disposition::Materialized);
         }
     }
 }

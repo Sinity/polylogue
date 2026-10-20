@@ -8,9 +8,9 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
-use crate::fields::{Fields, Rule, unaccounted};
+use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, Parse};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, PromptKind, Role,
     Session, SessionKind, TitleSource, Usage,
@@ -105,21 +105,23 @@ const MESSAGE_FIELDS: Fields = &[
 ];
 
 impl DocumentParser for OpenRouter {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let doc = match serde_json::from_slice::<Json>(bytes) {
             Ok(v) if v.is_object() => v,
-            Ok(_) => return sink.record("room", &Disposition::refused("not an object")),
+            Ok(_) => {
+                return sink
+                    .records
+                    .record("room", &Disposition::refused("not an object"));
+            }
             Err(e) => {
-                return sink.record(
+                return sink.records.record(
                     "room",
                     &Disposition::refused(format!("malformed JSON: {e}")),
                 );
             }
         };
-        for path in unaccounted(&doc, DOCUMENT_FIELDS) {
-            sink.acc.unread("room", &path);
-        }
+        sink.records.fields("room", &doc, DOCUMENT_FIELDS);
         let empty = serde_json::Map::new();
         let messages = doc
             .get("messages")
@@ -133,10 +135,14 @@ impl DocumentParser for OpenRouter {
             )
         });
         let Some(first) = ordered.first().and_then(|m| str_of(m, "id")) else {
-            return sink.record("room", &Disposition::unknown("a room with no messages"));
+            return sink
+                .records
+                .record("room", &Disposition::unknown("a room with no messages"));
         };
         let Some(sid) = session_id(ORIGIN, first) else {
-            return sink.record("room", &Disposition::refused("unusable message ID"));
+            return sink
+                .records
+                .record("room", &Disposition::refused("unusable message ID"));
         };
         let mut session = Session::new(sid.clone(), SessionKind::Main);
         if let Some(title) = str_of(&doc, "title") {
@@ -146,7 +152,7 @@ impl DocumentParser for OpenRouter {
             session.offer_start(at);
         }
         sink.out.sessions.push(session);
-        sink.record("room", &Disposition::Materialized);
+        sink.records.record("room", &Disposition::Materialized);
 
         let characters = doc.get("characters").cloned().unwrap_or(Json::Null);
         sink.out.events.push(Event {
@@ -184,9 +190,7 @@ impl DocumentParser for OpenRouter {
 
         for m in ordered {
             let kind = str_of(m, "type").unwrap_or("?").to_owned();
-            for path in unaccounted(m, MESSAGE_FIELDS) {
-                sink.acc.unread(&kind, &path);
-            }
+            sink.records.fields(&kind, m, MESSAGE_FIELDS);
             match message(&sid, m, &characters, &mut sink) {
                 Ok(message) => {
                     let offset = sink.position();
@@ -195,9 +199,9 @@ impl DocumentParser for OpenRouter {
                         end: offset + 1,
                         message,
                     });
-                    sink.record(&kind, &Disposition::Materialized);
+                    sink.records.record(&kind, &Disposition::Materialized);
                 }
-                Err(d) => sink.record(&kind, &d),
+                Err(d) => sink.records.record(&kind, &d),
             }
         }
     }
