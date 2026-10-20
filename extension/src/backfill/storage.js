@@ -11,6 +11,13 @@ function captureRecordRow(record) {
 }
 
 
+function retireRawOwner(captures, rawId) {
+  // Late callbacks may hold metadata from before the ownership transfer.
+  // This marker owns no bytes and shares the publication transaction lock.
+  captures.put({ id: `retired-native:${rawId}`, kind: "native-acquisition-retired" });
+  captures.delete(`raw:${rawId}`);
+}
+
 function jobRow(job) { return { ...job, active_page: ["complete", "completed", "cancelled", "failed"].includes(job.status) ? 0 : 1 }; }
 
 function requestResult(request) {
@@ -586,10 +593,7 @@ export class IndexedDbBackfillStore {
       cursor.update({ ...item, raw_acquisition_ref: null, source_refs: (item.source_refs || []).filter((ref) => ref !== rawId) });
     });
     const captures = tx.objectStore("captures");
-    // Late startup callbacks may still hold pre-retirement OPFS metadata.
-    // The marker owns no bytes and shares the publication transaction lock.
-    captures.put({ id: `retired-native:${rawId}`, kind: "native-acquisition-retired" });
-    captures.delete(`raw:${rawId}`);
+    retireRawOwner(captures, rawId);
     await done;
   }
 
@@ -795,7 +799,7 @@ export class IndexedDbBackfillStore {
       tx.abort(); throw new Error("native_acquisition_custody_transfer_invalid");
     }
     captures.put({ ...capture, delivery_kind: "foreground" });
-    captures.delete(`raw:${capture.raw_ref}`);
+    retireRawOwner(captures, capture.raw_ref);
     await transactionDone(tx);
   }
 
@@ -820,7 +824,7 @@ export class IndexedDbBackfillStore {
       tx.abort(); throw new Error("native_acquisition_custody_transfer_invalid");
     }
     captures.put(capture);
-    captures.delete(`raw:${capture.raw_ref}`);
+    retireRawOwner(captures, capture.raw_ref);
     queue.put(queueRow({ ...item, envelope, capture_record_ref: capture.id, capture_source_refs: capture.source_refs,
       capture_bundle_ref: null, capture_bundle_replies: null, resume_state: "captured_waiting_receiver" }));
     if (item.capture_bundle_ref) captures.delete(item.capture_bundle_ref);

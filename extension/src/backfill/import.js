@@ -85,21 +85,30 @@ export async function importCheckpoint(file, { staging, store, signal = null }) 
     const job = ledger.jobs[0];
     if (typeof job.id !== "string" || !job.id || typeof job.provider !== "string" || typeof job.account_scope !== "string" || !job.account_scope) throw new Error("checkpoint_import_job_invalid");
     const prefix = `import:${hash.hex()}:`;
+    if (ids.has(job.id)) throw new Error("checkpoint_import_id_collision");
     ids.set(job.id, prefix + job.id);
     for (const item of ledger.queue) {
       if (typeof item.id !== "string" || item.job_id !== job.id || item.provider !== job.provider) throw new Error("checkpoint_import_queue_invalid");
+      if (ids.has(item.id)) throw new Error("checkpoint_import_id_collision");
       ids.set(item.id, prefix + item.id);
     }
     for (const entry of acquired) {
       if (!ledger.queue.some(item => item.id === entry.queue_id)) throw new Error("checkpoint_import_queue_missing");
       if (entry.capture) {
         if (typeof entry.capture.id !== "string" || entry.capture.provider !== job.provider) throw new Error("checkpoint_import_capture_invalid");
-        ids.set(entry.capture.id, prefix + entry.capture.id);
+        // Typed captures may deliberately share their body file's ID.
+        if (!ids.has(entry.capture.id)) ids.set(entry.capture.id, prefix + entry.capture.id);
       }
     }
     const requireFiles = refs => {
       for (const ref of refs || []) if (typeof ref !== "string" || !fileId.test(ref) || !fileMetadata.has(ref)) throw new Error("checkpoint_import_file_missing");
     };
+    const requireRef = ref => { if (ref != null) requireFiles([typeof ref === "string" ? ref : ref.id]); };
+    const requireAttachments = attachments => { for (const attachment of attachments || []) requireRef(attachment.staged_asset); };
+    for (const meta of fileMetadata.values()) {
+      requireFiles(meta.source_refs); requireFiles(meta.assets);
+      if (meta.record_ref && !ids.has(meta.record_ref)) throw new Error("checkpoint_import_record_missing");
+    }
     const captures = [{ id: prefix + "backup", kind: "checkpoint-import", source_refs: staged, digest: hash.hex() }];
     const records = [];
     for (const value of ledger.revisions) {
@@ -109,18 +118,22 @@ export async function importCheckpoint(file, { staging, store, signal = null }) 
     for (const entry of acquired) {
       if (entry.capture) {
         requireFiles(entry.capture.source_refs);
+        requireRef(entry.capture.raw_ref);
+        for (const ref of Object.values(entry.capture.related_refs || {})) requireRef(ref);
         const capture = rewrite(entry.capture, ids, tokens);
         delete capture.delivery_kind;
         captures.push(capture);
         for (const record of entry.records || []) {
           if (record.capture_id !== entry.capture.id) throw new Error("checkpoint_import_record_invalid");
           requireFiles(record.asset_refs);
+          requireAttachments(record.turn?.attachments);
+          requireAttachments(record.session_attachment ? [record.session_attachment] : []);
           records.push({ ...rewrite(record, ids, tokens), capture_id: capture.id });
         }
       }
     }
     const queue = ledger.queue.map(value => {
-      requireFiles(value.source_refs || value.capture_source_refs);
+      requireFiles(value.source_refs); requireFiles(value.capture_source_refs);
       const row = rewrite(value, ids, tokens); delete row.envelope?.receiver_native;
       row.lease_owner = null; row.lease_expires_at_ms = null;
       if (row.body_ref && !staged.includes(row.body_ref)) throw new Error("checkpoint_import_file_missing");

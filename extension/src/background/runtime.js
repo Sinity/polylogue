@@ -1491,7 +1491,6 @@ async function missionIntelligenceProjection(state) {
     const location = await getJson("/v1/reader-location");
     if (location.ok && location.url) {
       archiveUrl = new globalThis.URL(location.url);
-      archiveUrl.searchParams.set("q", indexedSessionId);
     }
   } catch { /* Reader availability is independent of archive evidence. */ }
   return {

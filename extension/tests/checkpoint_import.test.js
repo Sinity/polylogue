@@ -49,13 +49,31 @@ describe("local backfill backup import", () => {
     expect(await (await target.staging.file(capture.raw_ref)).text()).toBe(exported.raw);
   });
 
-  it.each(["hash", "order", "path", "missing", "truncated"])("refuses %s corruption without publishing a job", async kind => {
+  it("preserves a typed capture sharing its staged body ID", async () => {
+    const exported = await backup(); const parsed = JSON.parse(await exported.file.text());
+    const entry = parsed.acquired[0]; const row = parsed.ledger.queue[0];
+    const old = entry.capture.id; const shared = row.body_ref;
+    entry.capture.id = shared; row.capture_record_ref = shared;
+    for (const record of entry.records) record.capture_id = shared;
+    for (const file of entry.files) if (file.metadata.record_ref === old) file.metadata.record_ref = shared;
+    const target = stagingRuntime(); const result = await importCheckpoint(asFile(parsed), target);
+    const { items } = await target.store.queuePage(result.job_id);
+    expect(items[0].capture_record_ref).toBe(items[0].body_ref);
+    expect(await target.store.getCapture(items[0].body_ref)).toBeDefined();
+    expect(await (await target.staging.prepare({ capture_body_ref: items[0].body_ref })).body.text()).toBe(exported.body);
+  });
+
+  it.each(["hash", "order", "path", "missing", "attachment", "raw", "related", "metadata", "truncated"])("refuses %s corruption without publishing a job", async kind => {
     const exported = await backup(); const parsed = JSON.parse(await exported.file.text());
     const evidence = parsed.acquired[0].files[0];
     if (kind === "hash") evidence.parts[0].sha256 = "0".repeat(64);
     if (kind === "order") evidence.parts[0].sequence = 2;
     if (kind === "path") evidence.metadata.id = "../outside";
     if (kind === "missing") parsed.acquired[0].files = [];
+    if (kind === "attachment") parsed.acquired[0].records[0].session_attachment.staged_asset.id = "abcdef";
+    if (kind === "raw") parsed.acquired[0].capture.raw_ref = "abcdef";
+    if (kind === "related") parsed.acquired[0].capture.related_refs = { responses: { id: "abcdef" } };
+    if (kind === "metadata") evidence.metadata.record_ref = "absent-capture";
     const file = kind === "truncated" ? new File([JSON.stringify(parsed).slice(0, -5)], "broken.json") : asFile(parsed);
     const target = stagingRuntime();
     await expect(importCheckpoint(file, target)).rejects.toThrow();

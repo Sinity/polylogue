@@ -808,12 +808,9 @@ document.getElementById("copy-ref").addEventListener("click", async () => {
 
 document.getElementById("open-polylogue").addEventListener("click", async () => {
   await withAction("open-polylogue", async () => {
-    const state = await currentActiveConversationState();
     const result = await chrome.runtime.sendMessage({ type: "polylogue.readerLocation" });
     if (!result?.ok || !result.url) throw new Error(result?.error || "reader_unavailable");
     const url = new URL(result.url);
-    const providerSessionId = state.provider_session_id || state.last_capture?.provider_session_id;
-    if (providerSessionId) url.searchParams.set("q", providerSessionId);
     await chrome.tabs.create({ url: String(url) });
   }, { busy: "Opening" });
 });

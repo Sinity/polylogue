@@ -25,6 +25,18 @@ describe("durable capture staging", () => {
     expect(await store.getCapture(`raw:${fresh.id}`)).toMatchObject({ state: "acquiring" });
   });
 
+  it("does not recreate raw acquisition after foreground custody transfers", async () => {
+    const { staging, store } = stagingRuntime();
+    const ref = await staging.begin(owner, { kind: "native-response" });
+    await staging.append(ref, owner, 0, globalThis.Buffer.from("raw").toString("base64"));
+    await staging.seal(ref, owner); const sealed = await staging.metadata(ref.id);
+    await store.publishForegroundNativeCapture({ id: "ready", state: "ready", raw_ref: ref.id,
+      owner, provider: "chatgpt", native_id: "session", source_refs: [ref.id] });
+    await staging.publishNativeAcquisition(sealed);
+    expect(await store.getCapture(`raw:${ref.id}`)).toBeUndefined();
+    expect(await store.captureReferences(ref.id)).toBe(true);
+  });
+
   it.each([
     '{"id":"session","is_temporary":true}',
     '{"id":"session","is_temporary":true,"mapping":null}',
