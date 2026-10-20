@@ -147,8 +147,10 @@ pub fn session(session: &Session, messages: &[Message], view: View, view_name: &
     }
     body.push_str("</nav>");
     let items: Vec<_> = messages.iter().map(Rendered::Message).collect();
-    body.push_str(&html::fragment(&items, view));
-    body.push_str("</article>");
+    let mut body = body.into_bytes();
+    html::fragment(&items, view, &mut body).expect("writing UTF-8 HTML to a Vec cannot fail");
+    body.extend_from_slice(b"</article>");
+    let body = String::from_utf8(body).expect("HTML is rendered from UTF-8 strings");
     let cli = format!("polylogue read {} --view {view_name}", shell_quote(&id));
     layout(&title, "", &cli, &body)
 }

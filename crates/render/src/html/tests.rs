@@ -13,7 +13,7 @@ fn document_and_reader_keep_the_selected_view_and_mask_credentials() {
     ] {
         let mut document = Vec::new();
         crate::render(&items, Format::Html, view, &mut document).unwrap();
-        for body in [fragment(&items, view), String::from_utf8(document).unwrap()] {
+        for body in [content(&items, view), String::from_utf8(document).unwrap()] {
             assert_eq!(body.contains("run the tests"), prompt);
             assert_eq!(body.contains("Running them."), assistant);
             assert_eq!(body.contains("<summary>thinking</summary>"), thinking);
@@ -28,7 +28,7 @@ fn document_and_reader_keep_the_selected_view_and_mask_credentials() {
 fn calls_show_their_outcome_and_result_once() {
     let messages = conversation();
     let items: Vec<_> = messages.iter().map(Rendered::Message).collect();
-    let body = fragment(&items, View::Actions);
+    let body = content(&items, View::Actions);
     assert!(body.contains("error (exit 101)"));
     assert!(body.contains("cargo test"));
     assert_eq!(body.matches("test failed").count(), 1);
@@ -42,5 +42,32 @@ fn attribute_text_and_ids_are_encoded_without_interpreting_markup() {
     assert_eq!(
         encode_path_segment("codex:a/b?c#dé"),
         "codex%3Aa%2Fb%3Fc%23d%C3%A9"
+    );
+}
+
+fn content(items: &[Rendered<'_>], view: View) -> String {
+    let mut out = Vec::new();
+    fragment(items, view, &mut out).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn write_failures_are_returned() {
+    struct Broken;
+    impl std::io::Write for Broken {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let messages = conversation();
+    let items: Vec<_> = messages.iter().map(Rendered::Message).collect();
+    assert_eq!(
+        fragment(&items, View::Full, &mut Broken)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::BrokenPipe
     );
 }

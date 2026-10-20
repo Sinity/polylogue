@@ -37,7 +37,7 @@ pub fn encode_path_segment(id: &str) -> String {
 
 /// Render content without a document frame. Tool calls and their results
 /// share one rendering policy on the command line and in the web reader.
-pub fn fragment(items: &[Rendered<'_>], view: View) -> String {
+pub fn fragment(items: &[Rendered<'_>], view: View, out: &mut dyn io::Write) -> io::Result<()> {
     let messages: Vec<&Message> = items
         .iter()
         .filter_map(|item| match item {
@@ -47,25 +47,26 @@ pub fn fragment(items: &[Rendered<'_>], view: View) -> String {
         .collect();
     let results = results_by_call(&messages);
     let mut paired = std::collections::HashSet::new();
-    let mut body = String::new();
     for item in items {
         match item {
             Rendered::SessionHeader(session) => {
-                let _ = write!(
-                    body,
+                write!(
+                    out,
                     "<h1>{}</h1><p class=\"id\"><code>{}</code></p>",
                     escape(&super::title(session)),
                     escape(&session.id.to_string())
-                );
+                )?;
             }
-            Rendered::Message(value) => body.push_str(&message(value, view, &results, &mut paired)),
+            Rendered::Message(value) => {
+                write!(out, "{}", message(value, view, &results, &mut paired))?;
+            }
             Rendered::Event(event) if view == View::Full => {
-                let _ = write!(body, "<p class=\"event\">{}</p>", escape(&event.kind));
+                write!(out, "<p class=\"event\">{}</p>", escape(&event.kind))?;
             }
             Rendered::Event(_) => {}
         }
     }
-    body
+    Ok(())
 }
 
 pub(crate) fn document(
@@ -75,17 +76,18 @@ pub(crate) fn document(
 ) -> io::Result<()> {
     writeln!(
         out,
-        "<!doctype html><meta charset=\"utf-8\"><article class=\"polylogue\">{}\n</article>",
-        fragment(items, view)
-    )
+        "<!doctype html><meta charset=\"utf-8\"><article class=\"polylogue\">"
+    )?;
+    fragment(items, view, out)?;
+    writeln!(out, "</article>")
 }
 
-struct Outcome {
+struct Outcome<'a> {
     label: String,
-    text: String,
+    text: &'a str,
 }
 
-fn results_by_call(messages: &[&Message]) -> HashMap<String, Outcome> {
+fn results_by_call<'a>(messages: &[&'a Message]) -> HashMap<String, Outcome<'a>> {
     let mut out = HashMap::new();
     for m in messages {
         for b in &m.blocks {
@@ -100,7 +102,7 @@ fn results_by_call(messages: &[&Message]) -> HashMap<String, Outcome> {
                     id.clone(),
                     Outcome {
                         label: outcome_label(outcome),
-                        text: super::mask(output.as_deref().unwrap_or("")),
+                        text: output.as_deref().unwrap_or(""),
                     },
                 );
             }
@@ -112,7 +114,7 @@ fn results_by_call(messages: &[&Message]) -> HashMap<String, Outcome> {
 fn message(
     m: &Message,
     view: View,
-    results: &HashMap<String, Outcome>,
+    results: &HashMap<String, Outcome<'_>>,
     paired: &mut std::collections::HashSet<String>,
 ) -> String {
     let ps = pieces(m, view);
@@ -147,8 +149,9 @@ fn message(
                     paired.insert(id.clone());
                     results.get(id)
                 });
-                let (label, output) =
-                    result.map_or(("no result", ""), |r| (r.label.as_str(), r.text.as_str()));
+                let (label, output) = result.map_or(("no result", String::new()), |r| {
+                    (r.label.as_str(), super::mask(r.text))
+                });
                 let class = if label == "ok" {
                     "ok"
                 } else if label == "no result" || label == "unknown" {
@@ -166,7 +169,7 @@ fn message(
                     if output.is_empty() {
                         String::new()
                     } else {
-                        format!("<pre class=\"output\">{}</pre>", escape(output))
+                        format!("<pre class=\"output\">{}</pre>", escape(&output))
                     }
                 );
             }
