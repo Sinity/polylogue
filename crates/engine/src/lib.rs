@@ -17,6 +17,7 @@ pub mod collect;
 pub mod pool;
 pub mod read;
 pub mod repo_lookup;
+mod watch;
 
 use polylogue_model::Json;
 use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
@@ -940,20 +941,11 @@ impl Engine {
         status: &Arc<Mutex<Pass>>,
         ready: impl FnOnce(),
     ) -> Result<(), EngineError> {
-        use notify::Watcher as _;
-        let wake = tx.clone();
-        let mut watcher =
-            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                if res.as_ref().is_ok_and(collect::requires_scan) {
-                    let _ = wake.send(LoopMsg::Changed);
-                }
-            })?;
-        for root in collect::roots(&self.config) {
-            watcher.watch(&root, notify::RecursiveMode::Recursive)?;
-        }
+        let mut watcher = watch::Roots::new(&self.config, tx.clone())?;
         drop(tx);
         ready();
         loop {
+            watcher.refresh(&self.config)?;
             match self.converge() {
                 Ok(pass) => {
                     if let Ok(mut s) = status.lock() {

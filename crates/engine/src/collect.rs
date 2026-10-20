@@ -65,23 +65,41 @@ pub fn recognize(found: &Found) -> bool {
     (found.origin.recognize)(&found.path, &head[..n])
 }
 
-/// The directories to watch: each pattern's longest prefix without a
-/// wildcard, where it exists.
-pub fn roots(config: &Config) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = collected()
-        .flat_map(|o| o.locations.iter().map(move |l| (config.root(o.root), l)))
-        .map(|(root, pattern)| {
+/// An existing input directory is watched recursively. Until it exists,
+/// watch its nearest existing ancestor for the next directory creation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchRoot {
+    pub path: PathBuf,
+    pub recursive: bool,
+}
+
+pub fn roots(config: &Config) -> Vec<WatchRoot> {
+    let mut watches = std::collections::BTreeMap::new();
+    for origin in collected() {
+        for pattern in origin.locations {
             let fixed: Vec<&str> = pattern
                 .split('/')
                 .take_while(|s| !s.contains('*'))
                 .collect();
-            root.join(fixed.join("/"))
-        })
-        .filter(|p| p.is_dir())
-        .collect();
-    out.sort();
-    out.dedup();
-    out
+            let target = config.root(origin.root).join(fixed.join("/"));
+            let mut path = target.as_path();
+            while !path.is_dir() {
+                let Some(parent) = path.parent() else {
+                    break;
+                };
+                path = parent;
+            }
+            if path.is_dir() {
+                let recursive = path == target;
+                let entry = watches.entry(path.to_path_buf()).or_insert(false);
+                *entry |= recursive;
+            }
+        }
+    }
+    watches
+        .into_iter()
+        .map(|(path, recursive)| WatchRoot { path, recursive })
+        .collect()
 }
 
 fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<PathBuf>) {
