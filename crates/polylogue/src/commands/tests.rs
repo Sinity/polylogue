@@ -55,7 +55,7 @@ fn request_json(c: &Command, v: &Values, caller: &Caller) -> serde_json::Value {
 
 #[test]
 fn every_command_is_reachable_on_the_command_line() {
-    for c in COMMANDS {
+    for c in COMMANDS.iter() {
         let argv = argv(c);
         let (found, _) = crate::cli::parse(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
         assert_eq!(found.name, c.name, "{argv:?}");
@@ -211,8 +211,7 @@ fn note_lists_and_queries_carry_every_option() {
         "polylogue",
         "--why",
         "measure",
-        "survival",
-        "--turns",
+        "survival-turns",
         "repo:x",
         "--fields",
         "id,cost",
@@ -330,4 +329,21 @@ fn list_without_a_query_runs_the_sessions_unit() {
     assert_eq!(r["op"], "query");
     assert_eq!(r["text"], "sessions");
     assert_eq!(r["page_size"], 5);
+}
+
+#[test]
+fn every_measurement_is_a_command_and_named_in_the_query_help() {
+    let query = command("query").unwrap();
+    for m in MEASURES {
+        let c = command(&format!("measure {}", m.name)).unwrap();
+        assert_eq!(c.help, m.help);
+        assert_eq!(c.args.iter().any(|a| a.name == "query"), !m.whole_archive);
+        assert!(query.help.contains(m.name), "{}", m.name);
+    }
+    for u in polylogue_query::ast::Unit::all() {
+        assert!(query.help.contains(u.name()), "{}", u.name());
+    }
+    let (c, v) = crate::cli::parse(&["polylogue", "measure", "daily", "tokens"]).unwrap();
+    let r = request_json(c, &v, &cli_caller());
+    assert_eq!(r["text"], "sessions | measure daily:tokens");
 }

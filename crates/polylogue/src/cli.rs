@@ -3,14 +3,13 @@
 //! everything else. Every command takes `--json` for programs and agents.
 
 pub mod local;
-mod print;
+pub mod print;
 
 use crate::commands::{Action, COMMANDS, Caller, Cli, Command, GROUPS, Kind, Surface, Values};
 use crate::daemon::{Request, Response};
 use clap::ArgAction;
 use clap::parser::{ArgMatches, ValueSource};
 use polylogue_store::Archive;
-use print::print_plain;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -37,7 +36,7 @@ pub fn command() -> clap::Command {
             root = root.arg(clap_arg(a).global(true));
         }
     }
-    for c in COMMANDS {
+    for c in COMMANDS.iter() {
         match c.cli {
             Cli::NoSubcommand => {
                 for a in c.args.iter().filter(|a| !a.global) {
@@ -54,9 +53,15 @@ pub fn command() -> clap::Command {
                                 .iter()
                                 .find(|g| g.name == group)
                                 .map_or("", |g| g.help);
+                            // A group whose commands are all hidden is hidden.
+                            let hidden = COMMANDS
+                                .iter()
+                                .filter(|x| x.name.split_once(' ').is_some_and(|(g, _)| g == group))
+                                .all(|x| x.cli == Cli::Hidden);
                             root = root.subcommand(
                                 clap::Command::new(group)
                                     .about(help)
+                                    .hide(hidden)
                                     .subcommand_required(true)
                                     .arg_required_else_help(true),
                             );
@@ -200,20 +205,17 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Err(e) => return fail(json, "io", &e.to_string(), 1),
     };
     match response {
-        Response::Ok { data } if matches!(request, Request::Export { .. }) => write_export(
-            &data,
-            values.text("out").map(PathBuf::from).as_deref(),
-            json,
-        ),
-        Response::Ok { data } if values.flag("exec") => exec_plan(&data),
-        Response::Ok { data } => {
-            if json {
-                println!("{data}");
-            } else {
-                print_plain(&request, &data);
+        Response::Ok { data } => match cmd.output {
+            Some(output) => output(&values, &data, json),
+            None => {
+                if json {
+                    println!("{data}");
+                } else {
+                    print!("{}", (cmd.print)(&data));
+                }
+                ExitCode::SUCCESS
             }
-            ExitCode::SUCCESS
-        }
+        },
         Response::Accepted { request_id } => {
             println!("accepted {request_id}");
             ExitCode::SUCCESS
@@ -226,8 +228,10 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
     }
 }
 
-/// Writes an export to `out`, or to standard output.
-fn write_export(data: &serde_json::Value, out: Option<&std::path::Path>, json: bool) -> ExitCode {
+/// `export`: the document written to `--out`, or to standard output.
+pub fn write_export(values: &Values, data: &Value, json: bool) -> ExitCode {
+    let out = values.text("out").map(PathBuf::from);
+    let out = out.as_deref();
     let text = match data.get("content").and_then(|c| c.as_str()) {
         Some(content) => content.to_owned(),
         None => match serde_json::to_string_pretty(data) {
@@ -251,8 +255,21 @@ fn current_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
-/// Replaces this process with the session's native resume command.
-fn exec_plan(data: &serde_json::Value) -> ExitCode {
+/// `continue --exec`: replaces this process with the session's native
+/// resume command; without `--exec`, the plan is printed.
+pub fn resume_output(values: &Values, data: &Value, json: bool) -> ExitCode {
+    if !values.flag("exec") {
+        if json {
+            println!("{data}");
+        } else {
+            print!("{}", print::resume(data));
+        }
+        return ExitCode::SUCCESS;
+    }
+    exec_plan(data)
+}
+
+fn exec_plan(data: &Value) -> ExitCode {
     use std::os::unix::process::CommandExt;
     let Some(native) = data.get("native").filter(|n| !n.is_null()) else {
         eprintln!(
@@ -356,18 +373,6 @@ fn fail_detail(
         }
     }
     ExitCode::from(code)
-}
-
-/// A word as the shell reads it back: bare when it is plain, else quoted.
-fn shell_quote(w: &str) -> String {
-    if !w.is_empty()
-        && w.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
-    {
-        w.to_owned()
-    } else {
-        format!("'{}'", w.replace('\'', r"'\''"))
-    }
 }
 
 #[cfg(test)]

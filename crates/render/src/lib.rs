@@ -2,6 +2,7 @@
 //! rendered blocks; a view is a filter over that stream. Credentials are
 //! masked on output, block by block, never by refusing.
 
+pub mod html;
 pub mod measures;
 pub mod model_pages;
 pub mod results;
@@ -77,6 +78,18 @@ pub enum Rendered<'a> {
     SessionHeader(&'a Session),
     Message(&'a Message),
     Event(&'a Event),
+}
+
+/// A word as the shell reads it back: bare when it is plain, else quoted.
+pub fn shell_quote(w: &str) -> String {
+    if !w.is_empty()
+        && w.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
+    {
+        w.to_owned()
+    } else {
+        format!("'{}'", w.replace('\'', r"'\''"))
+    }
 }
 
 /// Text with credentials masked, as one block.
@@ -200,7 +213,7 @@ pub fn render(
 ) -> io::Result<()> {
     match format {
         Format::Json => json_stream(items, view, out),
-        Format::Html => html(items, view, out),
+        Format::Html => html::document(items, view, out),
         Format::Markdown => markdown(items, view, out),
         Format::Terminal => terminal(items, view, out),
     }
@@ -329,71 +342,6 @@ fn markdown(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
         }
     }
     Ok(())
-}
-
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
-fn html(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Result<()> {
-    writeln!(
-        out,
-        "<!doctype html><meta charset=\"utf-8\"><article class=\"polylogue\">"
-    )?;
-    for item in items {
-        match item {
-            Rendered::SessionHeader(s) => {
-                writeln!(
-                    out,
-                    "<h1>{}</h1><p class=\"id\"><code>{}</code></p>",
-                    esc(&title(s)),
-                    esc(&s.id.to_string())
-                )?;
-            }
-            Rendered::Message(m) => {
-                let ps = pieces(m, view);
-                if ps.is_empty() {
-                    continue;
-                }
-                writeln!(
-                    out,
-                    "<section class=\"message {}\"><h2>{} <time>{}</time></h2>",
-                    who(m),
-                    who(m),
-                    esc(&when(m))
-                )?;
-                for p in ps {
-                    match p.kind {
-                        "text" => writeln!(
-                            out,
-                            "<div class=\"text\">{}</div>",
-                            esc(&p.text).replace('\n', "<br>")
-                        )?,
-                        "thinking" => writeln!(
-                            out,
-                            "<details class=\"thinking\"><summary>thinking</summary><pre>{}</pre></details>",
-                            esc(&p.text)
-                        )?,
-                        kind => writeln!(
-                            out,
-                            "<div class=\"{kind}\"><b>{}</b><pre>{}</pre></div>",
-                            esc(&p.label.unwrap_or_default()),
-                            esc(&p.text)
-                        )?,
-                    }
-                }
-                writeln!(out, "</section>")?;
-            }
-            Rendered::Event(e) if view == View::Full => {
-                writeln!(out, "<p class=\"event\">{}</p>", esc(&e.kind))?
-            }
-            Rendered::Event(_) => {}
-        }
-    }
-    writeln!(out, "</article>")
 }
 
 fn json_stream(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Result<()> {

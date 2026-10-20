@@ -4,50 +4,11 @@
 //! CLI command). Archive text is escaped, so markup in a message stays
 //! text.
 
-use polylogue_model::{Block, Message, Session};
-use polylogue_render::{Format, View, outcome_label, pieces, results};
+use polylogue_model::{Message, Session};
+use polylogue_render::html::{encode_path_segment as encode_id, escape as esc};
+use polylogue_render::{Format, Rendered, View, html, results, shell_quote};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::fmt::Write as _;
-
-pub fn esc(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-/// An ID percent-encoded once as a whole, for a URL path segment.
-pub fn encode_id(id: &str) -> String {
-    let mut out = String::new();
-    for b in id.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else {
-            let _ = write!(out, "%{b:02X}");
-        }
-    }
-    out
-}
-
-fn shell_quote(s: &str) -> String {
-    if !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_.:/@%+=,".contains(&b))
-    {
-        s.to_owned()
-    } else {
-        format!("'{}'", s.replace('\'', r"'\''"))
-    }
-}
 
 /// The page frame: one stylesheet, one script, a search box on every page,
 /// and the CLI command that shows the same thing.
@@ -152,12 +113,6 @@ fn link_sessions(html: &str, data: &Value) -> String {
     out
 }
 
-/// What a tool call's result looked like, for its one-line summary.
-struct Outcome {
-    label: String,
-    text: String,
-}
-
 /// `/s/SESSION`: the session in the chosen view; tool calls collapsed to
 /// one line, outcome first, expandable.
 pub fn session(session: &Session, messages: &[Message], view: View, view_name: &str) -> String {
@@ -166,8 +121,6 @@ pub fn session(session: &Session, messages: &[Message], view: View, view_name: &
         .title
         .as_ref()
         .map_or_else(|| id.clone(), |t| t.text.clone());
-    let results = results_by_call(messages);
-    let mut paired = std::collections::HashSet::new();
     let mut body = format!(
         "<article class=\"session\"><h1>{}</h1><p class=\"meta\"><code>{}</code>",
         esc(&title),
@@ -193,167 +146,13 @@ pub fn session(session: &Session, messages: &[Message], view: View, view_name: &
         );
     }
     body.push_str("</nav>");
-    for m in messages {
-        let section = message(m, view, &results, &mut paired);
-        body.push_str(&section);
-    }
-    body.push_str("</article>");
+    let items: Vec<_> = messages.iter().map(Rendered::Message).collect();
+    let mut body = body.into_bytes();
+    html::fragment(&items, view, &mut body).expect("writing UTF-8 HTML to a Vec cannot fail");
+    body.extend_from_slice(b"</article>");
+    let body = String::from_utf8(body).expect("HTML is rendered from UTF-8 strings");
     let cli = format!("polylogue read {} --view {view_name}", shell_quote(&id));
     layout(&title, "", &cli, &body)
-}
-
-fn results_by_call(messages: &[Message]) -> HashMap<String, Outcome> {
-    let mut out = HashMap::new();
-    for m in messages {
-        for b in &m.blocks {
-            if let Block::ToolResult {
-                call_id: Some(id),
-                outcome,
-                output,
-                ..
-            } = b
-            {
-                out.insert(
-                    id.clone(),
-                    Outcome {
-                        label: outcome_label(outcome),
-                        text: polylogue_render::mask(output.as_deref().unwrap_or("")),
-                    },
-                );
-            }
-        }
-    }
-    out
-}
-
-fn message(
-    m: &Message,
-    view: View,
-    results: &HashMap<String, Outcome>,
-    paired: &mut std::collections::HashSet<String>,
-) -> String {
-    let ps = pieces(m, view);
-    // Call IDs of this message's blocks, in the order `pieces` keeps them.
-    let call_ids: Vec<Option<&String>> = m
-        .blocks
-        .iter()
-        .filter_map(|b| match b {
-            Block::ToolCall { call_id, .. } | Block::ToolResult { call_id, .. } => {
-                Some(call_id.as_ref())
-            }
-            _ => None,
-        })
-        .collect();
-    let mut calls = call_ids.into_iter();
-    let mut inner = String::new();
-    for p in &ps {
-        match p.kind {
-            "text" => {
-                let _ = write!(inner, "<div class=\"text\">{}</div>", paragraphs(&p.text));
-            }
-            "thinking" => {
-                let _ = write!(
-                    inner,
-                    "<details class=\"thinking\"><summary>thinking</summary><pre>{}</pre></details>",
-                    esc(&p.text)
-                );
-            }
-            "tool_call" => {
-                let id = calls.next().flatten();
-                let result = id.and_then(|id| {
-                    paired.insert(id.clone());
-                    results.get(id)
-                });
-                let (label, output) =
-                    result.map_or(("no result", ""), |r| (r.label.as_str(), r.text.as_str()));
-                let class = if label == "ok" {
-                    "ok"
-                } else if label == "no result" || label == "unknown" {
-                    "unknown"
-                } else {
-                    "error"
-                };
-                let _ = write!(
-                    inner,
-                    "<details class=\"tool\"><summary><span class=\"outcome {class}\">{}</span> <b>{}</b> <code>{}</code></summary><pre class=\"input\">{}</pre>{}</details>",
-                    esc(label),
-                    esc(p.label.as_deref().unwrap_or("tool")),
-                    esc(&first_line(&p.text)),
-                    esc(&p.text),
-                    if output.is_empty() {
-                        String::new()
-                    } else {
-                        format!("<pre class=\"output\">{}</pre>", esc(output))
-                    }
-                );
-            }
-            "tool_result" => {
-                let id = calls.next().flatten();
-                if id.is_some_and(|id| paired.contains(id)) {
-                    continue;
-                }
-                let _ = write!(
-                    inner,
-                    "<details class=\"tool result\"><summary><span class=\"outcome\">{}</span> result</summary><pre class=\"output\">{}</pre></details>",
-                    esc(p.label.as_deref().unwrap_or("")),
-                    esc(&p.text)
-                );
-            }
-            kind => {
-                let _ = write!(
-                    inner,
-                    "<div class=\"{kind}\">[{}{}] {}</div>",
-                    esc(kind),
-                    p.label
-                        .as_deref()
-                        .map(|l| format!(" {}", esc(l)))
-                        .unwrap_or_default(),
-                    esc(&p.text)
-                );
-            }
-        }
-    }
-    if inner.is_empty() {
-        return String::new();
-    }
-    let role = role_name(m);
-    format!(
-        "<section class=\"message {role}\" id=\"m-{}\" tabindex=\"-1\"><h2>{role}{}{}</h2>{inner}</section>",
-        encode_id(&m.id.to_string()),
-        m.at.map(|t| format!(" <time>{}</time>", esc(&t.to_string())))
-            .unwrap_or_default(),
-        m.model
-            .as_deref()
-            .map(|x| format!(" <span class=\"model\">{}</span>", esc(x)))
-            .unwrap_or_default(),
-    )
-}
-
-fn role_name(m: &Message) -> &'static str {
-    use polylogue_model::{PromptKind, Role};
-    match (m.role, m.prompt_kind) {
-        (Role::Assistant, _) => "assistant",
-        (Role::System, _) => "system",
-        (Role::User, Some(PromptKind::Harness)) => "harness",
-        (Role::User, Some(PromptKind::Model)) => "model",
-        (Role::User, _) => "user",
-    }
-}
-
-fn first_line(s: &str) -> String {
-    let line = s.lines().next().unwrap_or_default();
-    if line.chars().count() > 120 {
-        format!("{}…", line.chars().take(119).collect::<String>())
-    } else {
-        line.to_owned()
-    }
-}
-
-fn paragraphs(text: &str) -> String {
-    text.split("\n\n")
-        .filter(|p| !p.trim().is_empty())
-        .map(|p| format!("<p>{}</p>", esc(p).replace('\n', "<br>")))
-        .collect()
 }
 
 /// A page for an error: a typed kind and a message, never a local path or

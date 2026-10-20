@@ -18,7 +18,9 @@
 //! interrupts become plain notices. Every handoff is a `delivery` record,
 //! so what fired survives restarts and index rebuilds.
 
+use crate::daemon::server::{Daemon, now_ms};
 use polylogue_model::{Author, Note, NoteKind};
+use polylogue_store::{Delivery, UserRequest, UserWrite};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -362,6 +364,141 @@ pub fn summary(rules: &[Rule], unusable: &[Unusable]) -> Value {
         })).collect::<Vec<_>>(),
         "unusable": unusable.iter().map(|u| json!({"id": u.id, "reason": u.reason})).collect::<Vec<_>>(),
     })
+}
+
+/// Signal deliveries already recorded, for the evaluator to start from.
+fn history(d: &Daemon) -> Vec<Sent> {
+    let Ok(r) = d.reads.reader() else {
+        return vec![];
+    };
+    let rows = r
+        .query(
+            "SELECT at, refs_json FROM a.delivery WHERE sender = 'signal' ORDER BY at",
+            &[],
+        )
+        .unwrap_or_default();
+    rows.iter()
+        .filter_map(|row| {
+            let refs: Vec<String> = serde_json::from_str(row["refs_json"].as_str()?).ok()?;
+            let agent = refs.iter().any(|r| r == "interrupt:agent");
+            sent_from(&refs, row["at"].as_i64()?, agent)
+        })
+        .collect()
+}
+
+/// Evaluates the signal rules after each change and at each `for`
+/// deadline, so a duration fires with no new data (law 140), and records
+/// every handoff as a delivery.
+pub fn run(d: &Daemon) {
+    use polylogue_model::LogicalDay;
+    let day = LogicalDay::system();
+    let mut eval = Evaluator::new(&history(d));
+    loop {
+        let now = now_ms();
+        let Ok(reader) = d.reads.reader() else {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            continue;
+        };
+        let filter = polylogue_store::NoteFilter {
+            kinds: vec![NoteKind::Signal],
+            ..Default::default()
+        };
+        let mut rules: Vec<Rule> = vec![];
+        let mut unusable: Vec<Unusable> = vec![];
+        for note in reader.notes(&filter).unwrap_or_default() {
+            match rule(&note) {
+                Ok(r) => rules.push(r),
+                Err(u) => unusable.push(u),
+            }
+        }
+        let mut matches = std::collections::HashMap::new();
+        let mut usable = vec![];
+        for rule in rules {
+            let ask = crate::daemon::query::Ask {
+                text: &rule.query,
+                cursor: None,
+                page_size: Some(1_000),
+                why: false,
+                session: None,
+                now,
+                day: day.clone(),
+                embeddings: false,
+                near: None,
+                fields: &[],
+            };
+            match crate::daemon::query::run(&reader, ask) {
+                Ok(v) => {
+                    let rows = v["rows"]
+                        .as_array()
+                        .map(|rows| rows.iter().map(row_key).collect())
+                        .unwrap_or_default();
+                    matches.insert(rule.id.clone(), rows);
+                    usable.push(rule);
+                }
+                Err(f) => unusable.push(Unusable {
+                    id: rule.id.clone(),
+                    reason: format!("its query fails: {}", f.message),
+                }),
+            }
+        }
+        if let Ok(mut s) = d.signals.lock() {
+            *s = summary(&usable, &unusable);
+        }
+        for h in eval.step(now, &usable, &matches, |t| day.local_hour(t)) {
+            let Some(rule) = usable.iter().find(|r| r.id == h.rule) else {
+                continue;
+            };
+            let mut refs = refs(&h.rule, &h.row);
+            if h.how == How::Interrupt && !rule.operator {
+                refs.push("interrupt:agent".into());
+            }
+            let id = polylogue_store::user_writes::new_request_id();
+            let delivery = Delivery {
+                recipient_kind: "operator".into(),
+                recipient_id: None,
+                sender: "signal".into(),
+                event: "signal".into(),
+                cwd: None,
+                text: notice(rule, &h),
+                refs,
+                left_out: vec![],
+            };
+            if d.writes
+                .user(UserRequest::now(id.clone(), UserWrite::Deliver(delivery)))
+                .is_err()
+            {
+                continue;
+            }
+            // A notice is shown by `status`, briefings and the change feed;
+            // an interrupt needs the notifier `signals.toml` names, which is
+            // not built, so it stays a notice and says so.
+            let event = match h.how {
+                How::Notice => None,
+                How::Interrupt => Some((
+                    polylogue_store::DeliveryOutcome::NotSent,
+                    "no notifier is configured",
+                )),
+                How::Deferred => Some((
+                    polylogue_store::DeliveryOutcome::NotSent,
+                    "rate limit: kept for the next briefing",
+                )),
+            };
+            if let Some((what, detail)) = event {
+                let _ = d.writes.user(UserRequest::now(
+                    polylogue_store::user_writes::new_request_id(),
+                    UserWrite::DeliveryEvent {
+                        delivery: id,
+                        what,
+                        detail: Some(detail.into()),
+                    },
+                ));
+            }
+        }
+        let wait = eval
+            .next_due()
+            .map_or(30_000, |due| (due - now_ms()).clamp(1_000, 30_000));
+        std::thread::sleep(std::time::Duration::from_millis(wait as u64));
+    }
 }
 
 #[cfg(test)]

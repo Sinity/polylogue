@@ -11,12 +11,14 @@
 
 mod requests;
 
-use crate::cli::local;
+use crate::cli::{local, print};
 use crate::daemon::Request;
+use crate::daemon::measure::{MEASURES, Measure};
 use polylogue_model::SessionId;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::LazyLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -121,6 +123,12 @@ pub struct Command {
     /// and MCP and HTTP callers may pass a `request_id` so a resent call
     /// applies once.
     pub writes: bool,
+    /// The answer as text for a person on the command line; `--json`
+    /// prints the answer itself.
+    pub print: fn(&Value) -> String,
+    /// What the command line does with the answer in place of printing it
+    /// (`export` writes a file, `continue --exec` runs the plan).
+    pub output: Option<fn(&Values, &Value, bool) -> ExitCode>,
 }
 
 impl Command {
@@ -248,6 +256,8 @@ const CLI: Command = Command {
     mcp: false,
     http: false,
     writes: false,
+    print: print::json,
+    output: None,
 };
 
 pub const GROUPS: &[Group] = &[
@@ -273,11 +283,64 @@ pub const GROUPS: &[Group] = &[
     },
 ];
 
-/// Every command, in the order help lists them.
-pub const COMMANDS: &[Command] = &[
+/// Every command, in the order help lists them: the written ones, with a
+/// `measure NAME` for each measurement after `setting`.
+pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
+    let mut all = WRITTEN.to_vec();
+    let at = all
+        .iter()
+        .position(|c| c.name == "setting")
+        .map_or(all.len(), |i| i + 1);
+    all.splice(at..at, MEASURES.iter().map(measure_command));
+    for c in &mut all {
+        if c.name == "query" {
+            c.help = query_help();
+        }
+    }
+    all
+});
+
+/// `measure NAME`: a sessions query (none for a whole-archive measure),
+/// and the series for one that takes it.
+fn measure_command(m: &'static Measure) -> Command {
+    let mut args: Vec<Arg> = Vec::new();
+    if !m.metrics.is_empty() {
+        args.push(pos("metric", Kind::Choice(m.metrics), "The series"));
+    }
+    args.extend_from_slice(if m.whole_archive {
+        MEASURE_ALL
+    } else {
+        MEASURE_ARGS
+    });
+    Command {
+        name: format!("measure {}", m.name).leak(),
+        help: m.help,
+        args: args.leak(),
+        action: Action::Request(requests::measure),
+        print: print::query,
+        ..CLI
+    }
+}
+
+/// The `query` help, naming every unit and measurement.
+fn query_help() -> &'static str {
+    let units: Vec<&str> = polylogue_query::ast::Unit::all()
+        .map(polylogue_query::ast::Unit::name)
+        .collect();
+    format!(
+        "Run a query: rows of a unit ({}) with stages (`| sort by`, `| group by`, `| matches`). \
+         `| measure WHAT` ends a sessions query with a measurement: {}; unknown figures are null, never 0. \
+         Each answer's `view.cursor` continues `changes where after:CURSOR`",
+        units.join(", "),
+        crate::daemon::measure::names()
+    )
+    .leak()
+}
+
+const WRITTEN: &[Command] = &[
     Command {
         name: "query",
-        help: "Run a query: rows of a unit (sessions, messages, blocks, tool_calls, files, events, notes, links, turns, runs, deliveries, processes, work, changes) with stages (`| sort by`, `| group by`, `| matches`). `| measure WHAT` ends a sessions query with a measurement: usage, cost, sessions, quota, outcomes, failing, drift, unanswered, survival, survival-turns, daily:<tokens|api_cost|sessions|prompts|tool_errors>, process or rhythm; unknown figures are null, never 0. Each answer's `view.cursor` continues `changes where after:CURSOR`",
+        help: "Run a query",
         args: &[
             pos_opt("query", Kind::Rest, "A query, when no subcommand is given"),
             LIMIT,
@@ -286,6 +349,7 @@ pub const COMMANDS: &[Command] = &[
             FIELDS,
         ],
         action: Action::Request(requests::query),
+        print: print::query,
         cli: Cli::NoSubcommand,
         mcp: true,
         http: true,
@@ -318,6 +382,7 @@ pub const COMMANDS: &[Command] = &[
         help: "Sessions matching a query, newest first",
         args: QUERY_ARGS,
         action: Action::Request(requests::list),
+        print: print::query,
         mcp: true,
         http: true,
         ..CLI
@@ -353,6 +418,7 @@ pub const COMMANDS: &[Command] = &[
             ),
         ],
         action: Action::Request(requests::read),
+        print: print::read,
         mcp: true,
         http: true,
         ..CLI
@@ -376,6 +442,7 @@ pub const COMMANDS: &[Command] = &[
             },
         ],
         action: Action::Request(requests::export),
+        output: Some(crate::cli::write_export),
         ..CLI
     },
     Command {
@@ -470,6 +537,7 @@ pub const COMMANDS: &[Command] = &[
             opt("limit", Kind::Integer, "At most this many notes"),
         ],
         action: Action::Request(requests::note_list),
+        print: print::notes,
         mcp: true,
         http: true,
         ..CLI
@@ -494,6 +562,7 @@ pub const COMMANDS: &[Command] = &[
             },
         ],
         action: Action::Request(requests::brief),
+        print: print::context,
         mcp: true,
         ..CLI
     },
@@ -502,6 +571,7 @@ pub const COMMANDS: &[Command] = &[
         help: "Context for taking over another session: its prompts, notes, what it left open and its last answer",
         args: &[pos("session", Kind::Text, "`origin:native_id`")],
         action: Action::Request(requests::takeover),
+        print: print::context,
         mcp: true,
         ..CLI
     },
@@ -522,6 +592,8 @@ pub const COMMANDS: &[Command] = &[
             opt("limit", Kind::Integer, "At most this many sessions"),
         ],
         action: Action::Request(requests::resume),
+        print: print::resume,
+        output: Some(crate::cli::resume_output),
         mcp: true,
         http: true,
         ..CLI
@@ -538,6 +610,7 @@ pub const COMMANDS: &[Command] = &[
             CWD,
         ],
         action: Action::Request(requests::recall),
+        print: print::context,
         mcp: true,
         ..CLI
     },
@@ -559,110 +632,11 @@ pub const COMMANDS: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "measure usage",
-        help: "Tokens by kind and cost by model, over a sessions query or everything",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure cost",
-        help: "The same report as `usage`: cost sits beside the tokens it prices",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure sessions",
-        help: "Each session's tokens and cost, physical (its own responses) and logical (what it shows, inherited responses included)",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure quota",
-        help: "The 5-hour and weekly subscription windows: burn and forecast",
-        args: MEASURE_ALL,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure outcomes",
-        help: "Tool outcomes: ok, error, no result and unknown, never one rate",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure failing",
-        help: "Per repository, the commands whose most recent run failed",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure drift",
-        help: "Record types and fields each format's parser did not know, newest first: where the tools' formats moved",
-        args: MEASURE_ALL,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure unanswered",
-        help: "Time to a session ending on an unanswered prompt (Kaplan-Meier)",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure survival",
-        help: "Time to a session's first failed tool call (Kaplan-Meier)",
-        args: &[
-            opt(
-                "turns",
-                Kind::Bool,
-                "Count human prompts instead of minutes",
-            ),
-            MEASURE_ARGS[0],
-            WHY,
-            CURSOR,
-            FIELDS,
-        ],
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure daily",
-        help: "A daily series with its 7-day baseline and level changes: tokens, api_cost, sessions, prompts or tool_errors",
-        args: &[
-            pos("metric", Kind::Text, "The series"),
-            MEASURE_ARGS[0],
-            WHY,
-            CURSOR,
-            FIELDS,
-        ],
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure process",
-        help: "Which tool call follows which, and what follows a failure",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
-        name: "measure rhythm",
-        help: "Prompts by weekday and hour",
-        args: MEASURE_ARGS,
-        action: Action::Request(requests::measure),
-        ..CLI
-    },
-    Command {
         name: "work",
         help: "The work graph: goals, attempts, verifications and artifacts, by a query over the `work` unit (`polylogue work kind:attempt state:open`)",
         args: QUERY_ARGS,
         action: Action::Request(requests::work),
+        print: print::query,
         ..CLI
     },
     Command {
@@ -670,6 +644,7 @@ pub const COMMANDS: &[Command] = &[
         help: "Sessions running now and what each is doing: the query `sessions where -live:ended | sort by live_rank, last_event_at desc`",
         args: &[WHY, CURSOR, FIELDS],
         action: Action::Request(requests::live),
+        print: print::query,
         ..CLI
     },
     Command {
@@ -682,6 +657,7 @@ pub const COMMANDS: &[Command] = &[
             FIELDS,
         ],
         action: Action::Request(requests::changes),
+        print: print::query,
         ..CLI
     },
     Command {
@@ -697,6 +673,7 @@ pub const COMMANDS: &[Command] = &[
             FIELDS,
         ],
         action: Action::Request(requests::notices),
+        print: print::query,
         ..CLI
     },
     Command {
@@ -756,12 +733,14 @@ pub const COMMANDS: &[Command] = &[
     },
     Command {
         name: "sinex status",
-        help: "The Sinex backend's state",
+        help: "The Sinex backend's state (not built yet)",
+        cli: Cli::Hidden,
         ..CLI
     },
     Command {
         name: "sinex cutover",
-        help: "Make Sinex the primary store, once",
+        help: "Make Sinex the primary store, once (not built yet)",
+        cli: Cli::Hidden,
         ..CLI
     },
     Command {
@@ -845,7 +824,7 @@ pub fn command(name: &str) -> Option<&'static Command> {
 /// with one of these is refused rather than searched for.
 pub fn command_words() -> Vec<String> {
     let mut words: Vec<String> = Vec::new();
-    for c in COMMANDS {
+    for c in COMMANDS.iter() {
         if matches!(c.cli, Cli::Subcommand | Cli::Hidden) {
             let first = c.name.split(' ').next().unwrap_or(c.name);
             if !words.iter().any(|w| w == first) {
