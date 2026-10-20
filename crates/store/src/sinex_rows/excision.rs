@@ -1,0 +1,304 @@
+//! Excision owns the identities and current replacement batches of the units
+//! it changes. The manifest holds references, never before-images or user text.
+
+use super::{Unit, read};
+use crate::{Result, StoreError};
+use rusqlite::{Connection, Transaction};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Replacement {
+    pub unit: Unit,
+    /// Content-addressed replacement batch, or a tombstone for a removed unit.
+    pub batch: Option<String>,
+    pub bytes: u64,
+    pub rows: u64,
+    pub blobs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExcisionPublication {
+    pub version: u32,
+    pub replacements: Vec<Replacement>,
+    /// Earlier local pending batches no longer selected for their units.
+    pub retired_batches: Vec<String>,
+    pub digest: String,
+}
+
+pub(crate) struct Capture;
+
+impl Capture {
+    pub(crate) fn start(tx: &Transaction<'_>, request: &str) -> Result<Self> {
+        tx.execute_batch(
+            "CREATE TEMP TABLE excision_units (
+            commit_seq INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
+            PRIMARY KEY(commit_seq, kind, key));
+            CREATE TEMP TABLE excision_request(id TEXT NOT NULL);",
+        )?;
+        tx.execute("INSERT INTO excision_request VALUES (?1)", [request])?;
+        for (table, event, body) in triggers() {
+            let name = event.replace(' ', "_");
+            tx.execute_batch(&format!(
+                "CREATE TEMP TRIGGER excision_{table}_{name} {event} ON main.{table}
+                 BEGIN {body} END;"
+            ))?;
+        }
+        Ok(Self)
+    }
+
+    pub(crate) fn finish(
+        self,
+        tx: &Transaction<'_>,
+        store: &hashed_blobs::Store,
+    ) -> Result<ExcisionPublication> {
+        let units: Vec<Unit> = tx
+            .prepare(
+                "SELECT commit_seq, kind, key FROM excision_units ORDER BY commit_seq, kind, key",
+            )?
+            .query_map([], |r| {
+                Ok(Unit {
+                    commit_seq: r.get(0)?,
+                    kind: r.get(1)?,
+                    key: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let changed: BTreeSet<_> = units.iter().cloned().collect();
+        let mut retired = BTreeSet::new();
+        for previous in publications(tx)? {
+            for replacement in previous.replacements {
+                if changed.contains(&replacement.unit)
+                    && let Some(batch) = replacement.batch
+                {
+                    retired.insert(batch);
+                }
+            }
+        }
+        let local = store.primary_only();
+        let mut replacements = Vec::new();
+        for unit in units {
+            let batch = read(tx, &unit)?;
+            let hash = if batch.rows == 0 {
+                None
+            } else {
+                Some(format!(
+                    "blake3:{}",
+                    local
+                        .put(batch.lines.as_slice(), crate::blobs::LEVEL)?
+                        .hex()
+                ))
+            };
+            replacements.push(Replacement {
+                unit,
+                batch: hash,
+                bytes: batch.lines.len() as u64,
+                rows: batch.rows,
+                blobs: batch
+                    .blobs
+                    .iter()
+                    .map(|h| format!("blake3:{}", super::hex(h)))
+                    .collect(),
+            });
+        }
+        let mut selected = std::collections::BTreeMap::new();
+        for previous in publications(tx)? {
+            for replacement in previous.replacements {
+                selected.insert(replacement.unit.clone(), replacement);
+            }
+        }
+        for replacement in &replacements {
+            selected.insert(replacement.unit.clone(), replacement.clone());
+        }
+        for selected in selected.values().filter_map(|r| r.batch.as_ref()) {
+            retired.remove(selected);
+        }
+        for (table, event, _) in triggers() {
+            let name = event.replace(' ', "_");
+            tx.execute_batch(&format!("DROP TRIGGER excision_{table}_{name};"))?;
+        }
+        tx.execute_batch("DROP TABLE excision_units; DROP TABLE excision_request;")?;
+        let mut publication = ExcisionPublication {
+            version: 1,
+            replacements,
+            retired_batches: retired.into_iter().collect(),
+            digest: String::new(),
+        };
+        publication.digest = publication.computed_digest()?;
+        Ok(publication)
+    }
+}
+
+pub(super) fn publications(conn: &Connection) -> Result<Vec<ExcisionPublication>> {
+    let mut stmt = conn.prepare("SELECT refused_json FROM excision ORDER BY commit_seq, id")?;
+    let mut out = Vec::new();
+    for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
+        let value: serde_json::Value = serde_json::from_str(&row?)?;
+        if let Some(publication) = value.get("publication") {
+            let publication: ExcisionPublication = serde_json::from_value(publication.clone())?;
+            if publication.version != 1 {
+                return Err(StoreError::Invalid(
+                    "unsupported excision publication version".into(),
+                ));
+            }
+            publication.validate()?;
+            out.push(publication);
+        }
+    }
+    Ok(out)
+}
+
+fn triggers() -> Vec<(&'static str, &'static str, String)> {
+    let mut out = Vec::new();
+    for (table, kind) in [
+        ("note", "note"),
+        ("delivery", "delivery"),
+        ("excision", "excision"),
+    ] {
+        for event in ["AFTER UPDATE", "BEFORE DELETE"] {
+            let filter = if table == "excision" {
+                " WHERE OLD.id <> (SELECT id FROM excision_request)"
+            } else {
+                ""
+            };
+            out.push((table, event, format!(
+                "INSERT OR IGNORE INTO excision_units SELECT OLD.commit_seq, '{kind}', OLD.id{filter};"
+            )));
+        }
+    }
+    for table in ["note_target", "note_relation"] {
+        for event in ["AFTER UPDATE", "BEFORE DELETE", "AFTER INSERT"] {
+            let row = if event == "AFTER INSERT" {
+                "NEW"
+            } else {
+                "OLD"
+            };
+            out.push((table, event, format!(
+                "INSERT OR IGNORE INTO excision_units SELECT commit_seq, 'note', id FROM note WHERE id = {row}.note_id;"
+            )));
+        }
+    }
+    for event in ["AFTER UPDATE", "BEFORE DELETE", "AFTER INSERT"] {
+        let row = if event == "AFTER INSERT" {
+            "NEW"
+        } else {
+            "OLD"
+        };
+        out.push(("delivery_event", event, format!(
+            "INSERT OR IGNORE INTO excision_units SELECT commit_seq, 'delivery', id FROM delivery WHERE id = {row}.delivery;"
+        )));
+        out.push(("extent", event, format!(
+            "INSERT OR IGNORE INTO excision_units SELECT commit_seq, 'revision', input || '/' || number
+             FROM revision WHERE input = {row}.input AND chain = {row}.chain AND length > {row}.offset;"
+        )));
+    }
+    out.push(("revision", "BEFORE DELETE", "INSERT OR IGNORE INTO excision_units SELECT OLD.commit_seq, 'revision', OLD.input || '/' || OLD.number;".into()));
+    out
+}
+
+impl ExcisionPublication {
+    pub(super) fn computed_digest(&self) -> Result<String> {
+        let mut value = serde_json::json!({"version": self.version, "replacements": self.replacements, "retired_batches": self.retired_batches});
+        value.sort_all_objects();
+        Ok(format!(
+            "blake3:{}",
+            blake3::hash(&serde_json::to_vec(&value)?)
+        ))
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != 1 || self.digest != self.computed_digest()? {
+            return Err(StoreError::Invalid(
+                "excision replacement manifest failed its version/hash check".into(),
+            ));
+        }
+        let mut previous = None;
+        for replacement in &self.replacements {
+            let unit = &replacement.unit;
+            if unit.commit_seq < 1
+                || unit.key.is_empty()
+                || !["revision", "note", "excision", "setting", "delivery"]
+                    .contains(&unit.kind.as_str())
+                || previous.is_some_and(|previous: &Unit| previous >= unit)
+            {
+                return Err(StoreError::Invalid(
+                    "replacement units are not unique known identities in archive order".into(),
+                ));
+            }
+            previous = Some(unit);
+            match &replacement.batch {
+                Some(hash) => {
+                    batch_hash(hash)?;
+                    if replacement.rows == 0 || replacement.bytes == 0 {
+                        return Err(StoreError::Invalid("a replacement batch is empty".into()));
+                    }
+                }
+                None if replacement.bytes != 0
+                    || replacement.rows != 0
+                    || !replacement.blobs.is_empty() =>
+                {
+                    return Err(StoreError::Invalid(
+                        "a tombstone cites retained bytes".into(),
+                    ));
+                }
+                None => {}
+            }
+            for blob in &replacement.blobs {
+                batch_hash(blob)?;
+            }
+        }
+        for hash in &self.retired_batches {
+            batch_hash(hash)?;
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn batch_hash(name: &str) -> Result<hashed_blobs::Hash> {
+    let hex = name
+        .strip_prefix("blake3:")
+        .ok_or_else(|| StoreError::Invalid("a batch has no BLAKE3 name".into()))?;
+    Ok(hashed_blobs::Hash(super::unhex(hex)?.try_into().map_err(
+        |_| StoreError::Invalid("a batch name is not 32 bytes".into()),
+    )?))
+}
+
+pub(crate) fn retired_local(
+    conn: &Connection,
+    publication: &ExcisionPublication,
+) -> Result<Vec<polylogue_model::BlobHash>> {
+    let mut out = Vec::new();
+    for batch in &publication.retired_batches {
+        let hash = batch_hash(batch)?;
+        // The catalog owns source bytes, including attachments and delta bases
+        // which need not have an extent. Only uncataloged pending batches retire.
+        let retained: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM blob WHERE hash = ?1)",
+            [&hash.0[..]],
+            |r| r.get(0),
+        )?;
+        if !retained {
+            out.push(polylogue_model::BlobHash(hash.0));
+        }
+    }
+    Ok(out)
+}
+
+pub(super) fn publication(conn: &Connection, unit: &Unit) -> Result<Option<ExcisionPublication>> {
+    if unit.kind != "excision" {
+        return Ok(None);
+    }
+    let json: String = conn.query_row(
+        "SELECT refused_json FROM excision WHERE id = ?1",
+        [&unit.key],
+        |r| r.get(0),
+    )?;
+    let mut value: serde_json::Value = serde_json::from_str(&json)?;
+    let raw = value
+        .get_mut("publication")
+        .ok_or_else(|| StoreError::Invalid("legacy excision has no replacement manifest".into()))?
+        .take();
+    let publication: ExcisionPublication = serde_json::from_value(raw)?;
+    publication.validate()?;
+    Ok(Some(publication))
+}

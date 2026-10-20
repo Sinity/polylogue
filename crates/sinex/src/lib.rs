@@ -3,28 +3,24 @@
 //! archive's evidence and Polylogue's databases are copies that can be
 //! restored from it.
 //!
-//! What crosses: every input blob the archive stored, placed into Sinex's
-//! content store on the same host and registered as a material; and every
-//! unit of `archive.db` rows ([`rows`]) as a record-batch material with one
-//! `polylogue.rows` event anchored at its start. Frames are named by what
-//! they carry (`blob:<hex>`, `batch:<archive>:<position>`,
-//! `rows:<archive>:<position>`, where a unit's position is its place in the
-//! archive's write order), so a resend is answered from Sinex's record
-//! and nothing local records what was sent: the publish step asks Sinex
-//! (`have`) and sends the rest.
+//! Input blobs and units of archive rows cross as content-addressed materials.
+//! A unit keeps its write counter, kind and key even after deletion. An excision
+//! publishes hashes of replacement batches or tombstones, never old row bodies.
+//! Restoring first folds the confirmed metadata, then fetches only current
+//! batches. Older intentionally retired payloads are not needed.
 //!
-//! Restoring is the reverse: read the archive's `polylogue.rows` events from
-//! the confirmed stream in order, insert their rows into an empty
-//! `archive.db`, and let the loop build `index.db` from the stored bytes,
-//! which it reads from Sinex's store (an extra `hashed-blobs` root).
+//! Material frames include their content hash; row frames keep archive/position
+//! identity. Publication asks Sinex which frames it holds, places current payloads,
+//! then sends the highest missing position first. An interrupted suffix has an
+//! explicit gap and cannot masquerade as a complete pre-excision archive.
 use async_nats::jetstream;
 use futures_util::StreamExt;
-use polylogue_store::sinex_rows::{self, Published as ArchiveRows, Restoring};
+use polylogue_store::sinex_rows::{self, Published as ArchiveRows, RestoreUnit, Restoring, Unit};
 use serde::Deserialize;
-use sinex_model::kinds::polylogue::PolylogueRows;
+use sinex_model::event_types::polylogue::PolylogueRows;
 use sinex_model::{Class, InputRef, MaterialId, RecordLocation};
 use sinex_protocol::{Acknowledgment, Have, Ingress, MaterialFrame, ProducerEvent, Subjects};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -109,6 +105,15 @@ impl Config {
     }
 }
 
+/// Logical publication does not confirm physical material removal.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalRetirement {
+    #[default]
+    NotRequested,
+    /// Excision mappings exist, but no native retirement receipt was obtained.
+    Unverified,
+}
+
 /// What one publish pass did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Published {
@@ -117,6 +122,7 @@ pub struct Published {
     pub units: u64,
     pub rows: u64,
     pub blobs: u64,
+    pub physical_retirement: PhysicalRetirement,
 }
 
 /// What a restore did.
@@ -255,97 +261,196 @@ impl Sinex {
             .ok_or_else(|| Error::Invalid(format!("{} registered no material", ack.frame)))
     }
 
+    async fn place_blobs(
+        &mut self,
+        archive: &ArchiveRows,
+        id: &str,
+        hashes: &[[u8; 32]],
+        done: &mut Published,
+    ) -> Result<()> {
+        let frames: Vec<_> = hashes
+            .iter()
+            .map(|h| format!("blob:{}", sinex_rows::hex(h)))
+            .collect();
+        let known = self.have(&frames).await?;
+        for (hash, frame) in hashes.iter().zip(frames) {
+            if let Some(ack) = known.get(&frame) {
+                checked(ack.clone())?;
+                continue;
+            }
+            let bytes = archive.blob(hash)?;
+            let expected = hashed_blobs::Hash(*hash);
+            if self.store.put(&bytes[..], 3)? != expected {
+                return Err(Error::Invalid("input blob changed during placement".into()));
+            }
+            self.material(
+                frame,
+                None,
+                &expected,
+                bytes.len() as u64,
+                format!("blob:{}", expected.hex()),
+                serde_json::json!({"archive":id}),
+            )
+            .await?;
+            done.blobs += 1;
+        }
+        Ok(())
+    }
+
+    async fn place_batch(&mut self, id: &str, bytes: &[u8]) -> Result<MaterialId> {
+        let hash = self.store.put(bytes, 3)?;
+        // A material acknowledgment is keyed by frame, not by incoming bytes.
+        // Include the content address so an unknown outcome can be retried safely.
+        let frame = format!("batch:{id}:{}", hash.hex());
+        let known = self.have(std::slice::from_ref(&frame)).await?;
+        self.material(
+            frame.clone(),
+            known.get(&frame),
+            &hash,
+            bytes.len() as u64,
+            frame,
+            serde_json::json!({"archive":id,"media_type":"application/jsonl"}),
+        )
+        .await
+    }
+
     /// Publishes every unit of the archive at `root` that Sinex does not hold
-    /// yet, in write order: its input blobs, its record batch, then its
-    /// `polylogue.rows` event.
+    /// yet. Places current input blobs and batches before confirming row events;
+    /// an interrupted suffix remains explicitly incomplete.
     pub async fn publish(&mut self, root: &Path) -> Result<Published> {
         let archive = ArchiveRows::open(root)?;
         let id = archive
             .archive_id()
             .map_err(|e| Error::Invalid(format!("the archive has no identity: {e}")))?;
         let units = archive.units(0)?;
-        let rows_frame = |position: usize| format!("rows:{id}:{position}");
-        // Units are sent in order and each waits for its acknowledgment, so
-        // Sinex holds a prefix: find its end by bisection.
-        let (mut lo, mut hi) = (0usize, units.len());
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            let f = rows_frame(mid + 1);
-            if self.have(std::slice::from_ref(&f)).await?.contains_key(&f) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
+        let frames: Vec<_> = (1..=units.len())
+            .map(|position| format!("rows:{id}:{position}"))
+            .collect();
+        let known = self.have(&frames).await?;
+        for ack in known.values() {
+            checked(ack.clone())?;
+        }
+        let mut missing: Vec<_> = (0..units.len())
+            .filter(|i| !known.contains_key(&frames[*i]))
+            .collect();
+        // Publish the suffix boundary first. A stopped pass then has an explicit
+        // gap, never a complete-looking prefix with retired intermediate bytes.
+        if let Some(last) = missing.pop() {
+            missing.insert(0, last);
+        }
+        // Freeze/validate the complete mapping before placing replacement bytes.
+        // Only current replacements need payloads: older ones may be retired.
+        let mut current = BTreeMap::new();
+        let mut publications = BTreeMap::new();
+        for unit in &units {
+            if let Some(publication) = archive.publication(unit)? {
+                for replacement in &publication.replacements {
+                    current.insert(replacement.unit.clone(), replacement.clone());
+                }
+                publications.insert(unit.clone(), publication);
             }
         }
         let mut done = Published {
-            held: lo as u64,
+            held: known.len() as u64,
+            physical_retirement: if publications.is_empty() {
+                PhysicalRetirement::NotRequested
+            } else {
+                PhysicalRetirement::Unverified
+            },
             ..Published::default()
         };
-        for (index, unit) in units.iter().enumerate().skip(lo) {
-            let position = index + 1;
-            let batch = archive.read(unit)?;
-            let blob_frames: Vec<String> = batch
-                .blobs
-                .iter()
-                .map(|h| format!("blob:{}", sinex_rows::hex(h)))
-                .collect();
-            let known = self.have(&blob_frames).await?;
-            for (h, frame) in batch.blobs.iter().zip(blob_frames) {
-                if known.contains_key(&frame) {
+        if !missing.is_empty() {
+            for replacement in current.values() {
+                let Some(name) = &replacement.batch else {
                     continue;
+                };
+                let bytes = archive.replacement(name)?;
+                if bytes.len() as u64 != replacement.bytes {
+                    return Err(Error::Invalid(
+                        "replacement length differs from its manifest".into(),
+                    ));
                 }
-                let hash = hashed_blobs::Hash(*h);
-                let bytes = archive.blob(h)?;
-                if self.store.put(&bytes[..], 3)? != hash {
-                    return Err(Error::Invalid(format!(
-                        "blob {} changed while placed",
-                        hash.hex()
-                    )));
-                }
-                self.material(
-                    frame,
-                    None,
-                    &hash,
-                    bytes.len() as u64,
-                    format!("blob:{}", hash.hex()),
-                    serde_json::json!({ "archive": id }),
-                )
-                .await?;
-                done.blobs += 1;
-            }
-            let batch_hash = self.store.put(&batch.lines[..], 3)?;
-            let batch_frame = format!("batch:{id}:{position}");
-            let known = self.have(std::slice::from_ref(&batch_frame)).await?;
-            let material = self
-                .material(
-                    batch_frame.clone(),
-                    known.get(&batch_frame),
-                    &batch_hash,
-                    batch.lines.len() as u64,
-                    batch_frame.clone(),
-                    serde_json::json!({ "archive": id, "media_type": "application/jsonl" }),
-                )
-                .await?;
-            let event = PolylogueRows {
-                archive: id.clone(),
-                position: position as u64,
-                // Sinex names this field `local_seq` until its own rename.
-                local_seq: unit.commit_seq,
-                unit: unit.kind.into(),
-                key: unit.key.clone(),
-                batch: format!("blake3:{}", batch_hash.hex()),
-                rows: batch.rows,
-                blobs: batch
+                let hashes: Vec<_> = replacement
                     .blobs
                     .iter()
-                    .map(|h| format!("blake3:{}", sinex_rows::hex(h)))
-                    .collect(),
-            };
-            self.send(&Ingress::Events {
-                frame: rows_frame(position),
+                    .map(|name| parse_hash(name).map(|h| h.0))
+                    .collect::<Result<_>>()?;
+                self.place_blobs(&archive, &id, &hashes, &mut done).await?;
+                self.place_batch(&id, &bytes).await?;
+            }
+        }
+        for index in missing {
+            let unit = &units[index];
+            self.publish_unit(
+                &archive,
+                &id,
+                index + 1,
+                unit,
+                publications.get(unit),
+                &mut done,
+            )
+            .await?;
+        }
+        Ok(done)
+    }
+
+    async fn publish_unit(
+        &mut self,
+        archive: &ArchiveRows,
+        id: &str,
+        position: usize,
+        unit: &Unit,
+        publication: Option<&sinex_rows::ExcisionPublication>,
+        done: &mut Published,
+    ) -> Result<()> {
+        let (frame, rows) = self
+            .unit_frame(archive, id, position, unit, publication, done)
+            .await?;
+        self.send(&frame).await?;
+        done.units += 1;
+        done.rows += rows;
+        Ok(())
+    }
+
+    async fn unit_frame(
+        &mut self,
+        archive: &ArchiveRows,
+        id: &str,
+        position: usize,
+        unit: &Unit,
+        publication: Option<&sinex_rows::ExcisionPublication>,
+        done: &mut Published,
+    ) -> Result<(Ingress, u64)> {
+        let batch = archive.read(unit)?;
+        self.place_blobs(archive, id, &batch.blobs, done).await?;
+        let batch_hash = self.store.put(&batch.lines[..], 3)?;
+        let material = self.place_batch(id, &batch.lines).await?;
+        let event = PolylogueRows {
+            archive: id.to_owned(),
+            position: position as u64,
+            // Sinex names this field `local_seq` until its own rename.
+            local_seq: unit.commit_seq,
+            unit: unit.kind.clone(),
+            key: unit.key.clone(),
+            batch: format!("blake3:{}", batch_hash.hex()),
+            rows: batch.rows,
+            blobs: batch
+                .blobs
+                .iter()
+                .map(|h| format!("blake3:{}", sinex_rows::hex(h)))
+                .collect(),
+            excision: publication
+                .map(|p| serde_json::to_value(p).and_then(serde_json::from_value))
+                .transpose()?,
+        };
+        let payload = serde_json::to_value(&event)?;
+        Ok((
+            Ingress::Events {
+                frame: format!("rows:{id}:{position}"),
+                failures: vec![],
                 events: vec![ProducerEvent {
                     event_type: "polylogue.rows".into(),
-                    payload: serde_json::to_value(&event)?,
+                    payload,
                     location: Some(RecordLocation {
                         material,
                         anchor: 0,
@@ -355,17 +460,14 @@ impl Sinex {
                     reading_order: position as i64,
                     class: Class::Open,
                 }],
-            })
-            .await?;
-            done.units += 1;
-            done.rows += batch.rows;
-        }
-        Ok(done)
+            },
+            batch.rows,
+        ))
     }
 
-    /// Restores the archive `archive` into the empty, locked archive from
-    /// Sinex: every `polylogue.rows` unit in write order, each batch read
-    /// from Sinex's store and checked whole. Afterwards the loop builds
+    /// Restores into an empty locked target, or updates the same archive, from
+    /// Sinex. Selects current batches from confirmed metadata before payload IO,
+    /// then checks and installs their rows atomically. Afterwards the loop builds
     /// `index.db` from the stored bytes, read from Sinex's store.
     pub async fn restore(
         &self,
@@ -386,7 +488,7 @@ impl Sinex {
             })
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let mut units: Vec<PolylogueRows> = Vec::new();
+        let mut units: Vec<(PolylogueRows, Option<sinex_rows::ExcisionPublication>)> = Vec::new();
         // Read up to the last unit on the stream now; later ones arrive with
         // the next pass.
         let last = match stream
@@ -420,49 +522,77 @@ impl Sinex {
             let payload = event.payload.ok_or_else(|| {
                 Error::Invalid(format!("{} arrived without its payload", event.id))
             })?;
-            let unit: PolylogueRows = serde_json::from_value(payload)?;
+            let unit: PolylogueRows = serde_json::from_value(payload.clone())?;
             if unit.archive == archive {
-                units.push(unit);
+                let excision = payload
+                    .get("excision")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()?;
+                units.push((unit, excision));
             }
         }
-        units.sort_by_key(|u| u.position);
-        units.dedup_by_key(|u| u.position);
-        let reader = hashed_blobs::Reader::new(self.store_root.clone(), vec![]);
+        units.sort_by_key(|(u, _)| u.position);
+        for pair in units.windows(2) {
+            if pair[0].0.position == pair[1].0.position && pair[0] != pair[1] {
+                return Err(Error::Invalid(
+                    "confirmed units disagree at the same position".into(),
+                ));
+            }
+        }
+        units.dedup_by(|a, b| a.0.position == b.0.position);
+        let mut catalog = Vec::new();
         let mut done = Restored::default();
-        for (index, unit) in units.iter().enumerate() {
+        for (index, (unit, excision)) in units.iter().enumerate() {
             if unit.position != index as u64 + 1 {
                 return Err(Error::Invalid(format!(
-                    "Sinex holds unit {} but not unit {}: a unit is missing",
+                    "Sinex holds unit {} but not unit {}",
                     unit.position,
                     index + 1
                 )));
             }
-            let name = unit
-                .batch
-                .strip_prefix("blake3:")
-                .ok_or_else(|| Error::Invalid(format!("bad batch name {}", unit.batch)))?;
-            let hash = hashed_blobs::Hash(
-                sinex_rows::unhex(name)?
-                    .try_into()
-                    .map_err(|_| Error::Invalid(format!("bad batch name {}", unit.batch)))?,
-            );
-            let mut lines = Vec::new();
-            std::io::Read::read_to_end(&mut reader.read(&hash)?, &mut lines)?;
-            let count = lines
-                .split(|b| *b == b'\n')
-                .filter(|l| !l.is_empty())
-                .count() as u64;
-            if count != unit.rows {
-                return Err(Error::Invalid(format!(
-                    "unit {} holds {count} rows, not the {} its event names",
-                    unit.position, unit.rows
-                )));
-            }
-            done.rows += restoring.apply(&lines)?;
-            done.units += 1;
             done.commit_seq = done.commit_seq.max(unit.local_seq);
+            catalog.push(RestoreUnit {
+                unit: Unit {
+                    commit_seq: unit.local_seq,
+                    kind: unit.unit.clone(),
+                    key: unit.key.clone(),
+                },
+                batch: Some(unit.batch.clone()),
+                bytes: None,
+                rows: unit.rows,
+                blobs: unit.blobs.clone(),
+                excision: excision.clone(),
+            });
         }
-        restoring.finish(archive, done.commit_seq)?;
+        let selected = sinex_rows::select(&catalog)?;
+        let reader = hashed_blobs::Reader::new(self.store_root.clone(), vec![]);
+        done.rows = restoring.install(archive, &selected, |unit| {
+            // Required current input bytes are checked too; an unretired missing
+            // source blob is corruption, even if the row batch itself survives.
+            for name in &unit.blobs {
+                let hash = parse_hash(name)
+                    .map_err(|e| polylogue_store::StoreError::Invalid(e.to_string()))?;
+                let mut plain = reader.read_plain(&hash, None, || Ok(()))?;
+                std::io::copy(&mut plain, &mut std::io::sink())?;
+            }
+            let Some(name) = &unit.batch else {
+                return Ok(None);
+            };
+            let hash = hashed_blobs::Hash(
+                sinex_rows::unhex(name.strip_prefix("blake3:").ok_or_else(|| {
+                    polylogue_store::StoreError::Invalid("missing batch hash".into())
+                })?)?
+                .try_into()
+                .map_err(|_| {
+                    polylogue_store::StoreError::Invalid("invalid batch hash length".into())
+                })?,
+            );
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut reader.read(&hash)?, &mut bytes)?;
+            Ok(Some(bytes))
+        })?;
+        done.units = selected.len() as u64;
         Ok(done)
     }
 }
@@ -476,3 +606,17 @@ fn checked(ack: Acknowledgment) -> Result<Acknowledgment> {
         None => Ok(ack),
     }
 }
+
+fn parse_hash(name: &str) -> Result<hashed_blobs::Hash> {
+    let hex = name
+        .strip_prefix("blake3:")
+        .ok_or_else(|| Error::Invalid("missing BLAKE3 hash".into()))?;
+    Ok(hashed_blobs::Hash(
+        sinex_rows::unhex(hex)?
+            .try_into()
+            .map_err(|_| Error::Invalid("invalid BLAKE3 hash length".into()))?,
+    ))
+}
+
+#[cfg(test)]
+mod tests;

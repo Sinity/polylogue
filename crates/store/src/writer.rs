@@ -556,15 +556,15 @@ impl Inner {
         Ok(())
     }
 
-    /// One excision in its own transactions: `archive.db`, `index.db` and
-    /// `embeddings.db` commit together or not at all (a dry run rolls all
-    /// three back); the blob files it replaced are deleted after they
-    /// commit.
+    /// One transaction per database; a dry run rolls all of them back.
+    /// The archive commits first, followed by the derived stores. Local blob
+    /// cleanup follows those commits; external backing roots stay read-only.
     fn write_excision(
         &mut self,
         request: &crate::excise::ExciseRequest,
         store: &hashed_blobs::Store,
     ) -> Result<crate::excise::Excised> {
+        let local_store = store.primary_only();
         let embeddings = if self.embeddings_db.exists() {
             let e = open_write(&self.embeddings_db, crate::archive::cache::SETUP)?;
             e.execute_batch("BEGIN IMMEDIATE")?;
@@ -609,10 +609,12 @@ impl Inner {
             e.execute_batch("COMMIT")?;
         }
         for hash in files {
-            if let Err(e) = store.delete(&hashed_blobs::Hash(hash.0)) {
-                self.report
+            match local_store.delete(&hashed_blobs::Hash(hash.0)) {
+                Ok(()) | Err(hashed_blobs::Error::Missing(_)) => {}
+                Err(e) => self
+                    .report
                     .errors
-                    .push(format!("excision: delete blob {hash}: {e}"));
+                    .push(format!("excision: delete local blob {hash}: {e}")),
             }
         }
         self.refused.sessions.extend(done.sessions.iter().cloned());
