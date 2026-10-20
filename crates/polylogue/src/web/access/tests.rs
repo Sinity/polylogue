@@ -68,3 +68,25 @@ fn publish_writes_private_files() {
     let mode = fs::metadata(rt.join("token")).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600);
 }
+
+#[test]
+fn republishing_restricts_existing_files_and_ignores_stale_temporary_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let token = dir.path().join("token");
+    let other = dir.path().join("other");
+    fs::write(&token, "old").unwrap();
+    fs::set_permissions(&token, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::write(&other, "unchanged").unwrap();
+    std::os::unix::fs::symlink(&other, dir.path().join("token.tmp")).unwrap();
+    publish(dir.path(), "new", 4321).unwrap();
+    assert_eq!(fs::read_to_string(token).unwrap(), "new");
+    assert_eq!(fs::read_to_string(other).unwrap(), "unchanged");
+    assert_eq!(
+        fs::metadata(dir.path().join("token"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+}

@@ -363,3 +363,16 @@ fn the_host_manifest_admits_only_the_named_extension() {
         json!(["chrome-extension://abcdefghijklmnop/"])
     );
 }
+
+#[test]
+fn failed_capture_publication_cleans_up_its_temporary_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("capture.json");
+    std::fs::create_dir(&target).unwrap();
+    assert!(super::write_durable(&target, b"new content").is_err());
+    let entries: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, [std::ffi::OsString::from("capture.json")]);
+}

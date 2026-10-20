@@ -153,13 +153,9 @@ pub fn write_durable(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .parent()
         .ok_or_else(|| std::io::Error::other("no parent directory"))?;
     fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{}.tmp", new_id()));
-    let mut f = fs::File::create(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    fs::rename(&tmp, path)?;
-    fs::File::open(dir)?.sync_all()
+    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
+        .write(|file| file.write_all(bytes))
+        .map_err(Into::into)
 }
 
 #[cfg(test)]

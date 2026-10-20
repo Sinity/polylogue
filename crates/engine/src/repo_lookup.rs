@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// What a repository directory says about itself.
@@ -140,9 +140,10 @@ pub fn refresh(
             "read_at": read_at,
         });
         fs::create_dir_all(dir)?;
-        let tmp = file.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_vec(&doc).expect("json"))?;
-        fs::rename(&tmp, &file)?;
+        let bytes = serde_json::to_vec(&doc)?;
+        atomicwrites::AtomicFile::new(&file, atomicwrites::AllowOverwrite)
+            .write(|output| output.write_all(&bytes))
+            .map_err(io::Error::from)?;
         changed += 1;
     }
     Ok(changed)
