@@ -25,6 +25,15 @@ result = "exit"
 timeout_seconds = 1800
 cache = "none"
 
+[operations.compile]
+description = "Compile selected packages without waiting behind bulk qualification"
+exec = ["nix", "develop", "--command", "cargo", "check", "--locked"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 1800
+cache = "none"
+
 [operations.focused]
 description = "Selected package or test checks with the normal development queue"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]

@@ -146,3 +146,10 @@ child's acknowledgement file, a closed connection) with no deadline of their
 own. A hung test is ended by nextest's slow-timeout (`.config/nextest.toml`),
 so run the suite through `xtask check` or `cargo nextest run`; under plain
 `cargo test` a hung test waits forever.
+
+### Selected compile feedback
+
+Run `agentctl job start polylogue compile -- -p <crate>` for a compiler check
+in the normal development queue. Update `Cargo.lock` when adding a dependency
+before invoking this locked operation. Full tests and package qualification
+remain separate bulk jobs.
