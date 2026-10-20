@@ -68,6 +68,8 @@ pub enum StoreError {
     WriterGone,
     #[error("the read pool has closed")]
     ReadPoolClosed,
+    #[error("read pool is full while this thread holds a reader; reuse or release it")]
+    ReadPoolNested,
     #[error("request {0} was already used for different content")]
     Conflict(String),
     #[error("{0} not found")]

@@ -233,3 +233,51 @@ fn standalone_start_does_not_resolve_operator_backing() {
     );
     assert!(!dir.path().join("sinex-store").exists());
 }
+
+#[test]
+fn admission_stop_releases_full_pool_requests_before_workers_or_admitted_readers_finish() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut runtime = start(
+        &dir.path().join("archive"),
+        config(dir.path()),
+        Backing::Standalone,
+    )
+    .unwrap();
+    let daemon = Arc::clone(&runtime.daemon);
+    let reader = daemon.reads.reader().unwrap();
+    let mut requests = Vec::new();
+    let entered = Arc::new(std::sync::Barrier::new(9));
+    for _ in 0..8 {
+        let daemon = Arc::clone(&daemon);
+        let entered = Arc::clone(&entered);
+        requests.push(std::thread::spawn(move || {
+            entered.wait();
+            handle(Request::Status, &daemon)
+        }));
+    }
+    entered.wait();
+    runtime.stop_admission();
+    for request in requests {
+        assert!(
+            matches!(request.join().unwrap(), Response::Error { kind, .. } if kind == "daemon_stopping")
+        );
+    }
+    runtime.shutdown().unwrap();
+    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+    assert!(
+        matches!(handle(Request::Status, &daemon), Response::Error { kind, .. } if kind == "daemon_stopping")
+    );
+}
+
+#[test]
+fn invalid_reader_resource_configuration_refuses_startup_and_releases_the_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    for (workers, memory) in [(0, 128 << 20), (2, 3 * 3072 - 1)] {
+        let mut config = config(dir.path());
+        config.workers = workers;
+        config.reader_memory_bytes = memory;
+        assert!(start(&root, config, Backing::Standalone).is_err());
+        assert!(Archive::open_or_create(&root).is_ok());
+    }
+}

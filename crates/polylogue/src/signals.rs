@@ -449,6 +449,9 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                 }),
             }
         }
+        // No snapshot is needed for deliveries or the timer wait. Release the
+        // client slot before either can block.
+        drop(reader);
         if let Ok(mut s) = d.signals.lock() {
             *s = summary(&usable, &unusable);
         }

@@ -9,7 +9,9 @@ fn unit(v: &[f32]) -> Vec<f32> {
 fn stores_scans_and_survives_reopening() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
-    let mut v = Vectors::open(&archive).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut v = reader.vectors_writer().unwrap();
     let key = "local/test/3/document/unit";
     v.put(
         key,
@@ -36,7 +38,11 @@ fn stores_scans_and_survives_reopening() {
     .unwrap();
     v.fail(key, &[3], "too long").unwrap();
     drop(v);
-    let v = Vectors::open_read(&archive).unwrap();
+    drop(reader);
+    drop(pool);
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let v = reader.vectors().unwrap();
     let near = v.nearest(key, &unit(&[1.0, 0.05, 0.0]), 2).unwrap();
     assert_eq!(near.len(), 2);
     assert_eq!(near[0].0, vec![1]);
@@ -48,4 +54,73 @@ fn stores_scans_and_survives_reopening() {
     assert_eq!(s.keys[0].failures, 1);
     // Another key's vectors never answer this one.
     assert!(v.nearest("other", &[1.0, 0.0, 0.0], 5).unwrap().is_empty());
+}
+
+#[test]
+fn admitted_readers_share_one_budget_with_their_single_optional_vector_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    let budget = (8 << 20) + 123;
+    let pool = crate::ReadPool::with_budget(&archive, 3, budget).unwrap();
+    let readers: Vec<_> = (0..3).map(|_| pool.reader().unwrap()).collect();
+    let mut total = 0;
+    for reader in &readers {
+        for schema in ["main", "a"] {
+            let row = reader
+                .query(&format!("PRAGMA {schema}.cache_size"), &[])
+                .unwrap();
+            total += row[0]["cache_size"].as_i64().unwrap().unsigned_abs() * 1024;
+        }
+        let vectors = reader.vectors().unwrap();
+        let cache: i64 = vectors
+            .conn
+            .pragma_query_value(None, "cache_size", |r| r.get(0))
+            .unwrap();
+        let mmap: i64 = vectors
+            .conn
+            .pragma_query_value(None, "mmap_size", |r| r.get(0))
+            .unwrap();
+        assert!(cache < 0);
+        assert_eq!(mmap, 0);
+        total += cache.unsigned_abs() * 1024;
+        assert!(reader.vectors().is_err());
+        assert!(reader.vectors_writer().is_err());
+    }
+    assert!(total <= budget);
+    assert!(budget - total < 3 * 3 * 1024);
+}
+
+#[test]
+fn vector_write_upgrade_keeps_its_cache_share_and_retains_read_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    let pool = crate::ReadPool::with_budget(&archive, 1, 3 << 20).unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(reader.vectors().unwrap().status().unwrap().keys.is_empty());
+    let mut vectors = reader.vectors_writer().unwrap();
+    let cache: i64 = vectors
+        .conn
+        .pragma_query_value(None, "cache_size", |r| r.get(0))
+        .unwrap();
+    let mmap: i64 = vectors
+        .conn
+        .pragma_query_value(None, "mmap_size", |r| r.get(0))
+        .unwrap();
+    assert_eq!(cache, -1024);
+    assert_eq!(mmap, 0);
+    vectors
+        .put(
+            "synthetic",
+            &[Vector {
+                text_hash: vec![1],
+                chunk: 0,
+                values: vec![1.0],
+            }],
+        )
+        .unwrap();
+    drop(vectors);
+    assert_eq!(
+        reader.vectors().unwrap().status().unwrap().keys[0].vectors,
+        1
+    );
 }

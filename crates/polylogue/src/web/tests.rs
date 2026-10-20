@@ -330,3 +330,33 @@ fn owned_http_shutdown_closes_partial_peers_and_releases_daemon() {
     drop(world);
     assert!(weak.upgrade().is_none());
 }
+
+#[test]
+fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = polylogue_engine::Config::from_env();
+    config.home = dir.path().to_owned();
+    config.tool_dirs.clear();
+    config.workers = 1;
+    let mut runtime = crate::daemon::service::start(
+        &dir.path().join("archive"),
+        config,
+        crate::daemon::service::Backing::Standalone,
+    )
+    .unwrap();
+    let daemon = Arc::clone(&runtime.daemon);
+    let reader = daemon.reads.reader().unwrap();
+    let mut server = start_on(Arc::clone(&daemon), 0).unwrap();
+    let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+    write!(
+        peer,
+        "GET /api/v1/status HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n\r\n",
+        server.port, server.token
+    )
+    .unwrap();
+    runtime.stop_admission();
+    server.shutdown().unwrap();
+    runtime.shutdown().unwrap();
+    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+}

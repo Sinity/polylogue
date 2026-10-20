@@ -37,6 +37,7 @@ fn converge(root: &Path, home: &Path, blob_roots: Vec<PathBuf>) {
         home: home.to_path_buf(),
         tool_dirs: Default::default(),
         workers: 2,
+        reader_memory_bytes: 128 << 20,
         bytes_in_flight: 16 << 20,
         machine: "proof-machine".into(),
         host: "proof".into(),

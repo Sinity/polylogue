@@ -15,10 +15,10 @@
 //! `--yes` after a preview.
 
 use crate::daemon::Response;
-use crate::daemon::service::{Daemon, error, now_ms, ok, store_error};
+use crate::daemon::service::{error, now_ms, ok, store_error};
+use polylogue_store::Reader;
 use polylogue_store::user_writes::machine_id;
 use polylogue_store::vectors::{Vector, Vectors};
-use polylogue_store::{Archive, Reader};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::time::Instant;
@@ -257,13 +257,12 @@ fn done_for(
 }
 
 pub fn preview(
-    archive: &Archive,
     reader: &Reader<'_>,
     provider: &Provider,
     sessions: Option<&[String]>,
     limit: Option<u64>,
 ) -> Result<Preview, EmbedError> {
-    let vectors = Vectors::open_read(archive)?;
+    let vectors = reader.vectors()?;
     let done = done_for(&vectors, provider)?;
     let mut p = Preview {
         provider: provider.name().into(),
@@ -285,14 +284,13 @@ pub fn preview(
 }
 
 pub fn build(
-    archive: &Archive,
     reader: &Reader<'_>,
     provider: &Provider,
     sessions: Option<&[String]>,
     limit: Option<u64>,
 ) -> Result<Built, EmbedError> {
     let started = Instant::now();
-    let mut vectors = Vectors::open(archive)?;
+    let mut vectors = reader.vectors_writer()?;
     let done = done_for(&vectors, provider)?;
     let mut out = Built::default();
     // (text hash, chunk number, chunk text)
@@ -374,12 +372,11 @@ pub fn build(
 /// query binds (`[[text id, similarity], ...]`). Embeds the query text
 /// once with the provider.
 pub fn nearest_json(
-    archive: &Archive,
     reader: &Reader<'_>,
     provider: &Provider,
     text: &str,
 ) -> Result<String, EmbedError> {
-    let vectors = Vectors::open_read(archive)?;
+    let vectors = reader.vectors()?;
     let Some(key) = vectors
         .status()?
         .keys
@@ -403,16 +400,16 @@ pub fn nearest_json(
 }
 
 /// Whether `near:` can rank: a provider is set and vectors exist for it.
-pub fn available(archive: &Archive, provider: Option<&Provider>) -> bool {
+pub fn available(reader: &Reader<'_>, provider: Option<&Provider>) -> bool {
     let Some(p) = provider else { return false };
-    Vectors::open_read(archive)
+    reader
+        .vectors()
         .and_then(|v| v.status())
         .is_ok_and(|s| s.keys.iter().any(|k| k.key.starts_with(&p.key_prefix())))
 }
 
 /// Embedding status, cost preview and build ([`crate::embeddings`]).
 pub fn handle(
-    d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
     what: &str,
     query: Option<&str>,
@@ -424,8 +421,7 @@ pub fn handle(
         Err(e) => return error("bad_request", e),
     };
     if what == "status" {
-        let vectors =
-            polylogue_store::vectors::Vectors::open_read(&d.archive).and_then(|v| v.status());
+        let vectors = reader.vectors().and_then(|v| v.status());
         return match vectors {
             Ok(s) => ok(serde_json::json!({
                 "provider": provider.as_ref().map(|p| serde_json::json!({
@@ -479,7 +475,7 @@ pub fn handle(
         }
     };
     let result = match what {
-        "preview" => preview(&d.archive, reader, &provider, sessions.as_deref(), limit)
+        "preview" => preview(reader, &provider, sessions.as_deref(), limit)
             .map(|p| serde_json::to_value(p).unwrap_or_default()),
         "build" => {
             if provider.kind == ProviderKind::Voyage && !yes {
@@ -488,7 +484,7 @@ pub fn handle(
                     "Voyage is paid: `polylogue embed preview` shows the cost; build with --yes",
                 );
             }
-            build(&d.archive, reader, &provider, sessions.as_deref(), limit)
+            build(reader, &provider, sessions.as_deref(), limit)
                 .map(|b| serde_json::to_value(b).unwrap_or_default())
         }
         other => {
