@@ -58,18 +58,18 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
         ("POLYLOGUE_HOME", home.as_path()),
     ];
 
-    let mut child = Command::new(crate::BIN)
+    let child = Command::new(crate::BIN)
         .arg("daemon")
         .env("POLYLOGUE_ARCHIVE", &archive)
         .env("POLYLOGUE_HOME", &home)
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut daemon = Daemon(child);
+    let mut stderr = BufReader::new(daemon.0.stderr.take().unwrap());
     let mut first = String::new();
     stderr.read_line(&mut first).unwrap();
     assert!(first.contains("serving"), "{first}");
-    let daemon = Daemon(child);
 
     // The live file is picked up by the loop's first pass.
     let deadline = Instant::now() + Duration::from_secs(30);
