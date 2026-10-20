@@ -3,6 +3,9 @@
 use super::*;
 use text_matches::TextMatches;
 
+mod bytes;
+use bytes::PlainBytes;
+
 const READ_CHUNK: usize = 64 * 1024;
 const WRITE_CHUNK: usize = 1024 * 1024;
 type Chain = (String, i64);
@@ -11,6 +14,7 @@ type Ranges = Vec<(u64, u64)>;
 pub(super) struct StoredText {
     ranges: BTreeMap<Chain, Ranges>,
     fill: u8,
+    bytes: PlainBytes,
 }
 
 #[derive(Clone)]
@@ -36,55 +40,6 @@ fn extent(r: &rusqlite::Row<'_>) -> rusqlite::Result<Extent> {
     })
 }
 
-fn visit(
-    archive: &rusqlite::Connection,
-    store: &hashed_blobs::Store,
-    e: &Extent,
-    mut f: impl FnMut(&[u8], u64) -> Result<()>,
-) -> Result<()> {
-    let (place, encoding): (String, String) = archive.query_row(
-        "SELECT place, encoding FROM blob WHERE hash = ?1",
-        [&e.blob.0[..]],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    if encoding != "plain" {
-        let format =
-            archive.query_row("SELECT format FROM input WHERE id = ?1", [&e.input], |r| {
-                r.get(0)
-            })?;
-        return Err(StoreError::ExcisionFormat {
-            input: e.input.clone(),
-            format,
-            detail: format!("blob encoding {encoding} needs its own text-excision decoder"),
-        });
-    }
-    let inline = if place == "inline" {
-        Some(crate::blobs::read(archive, store, &e.blob)?)
-    } else {
-        None
-    };
-    let mut at = 0;
-    while at < e.length {
-        let take = (e.length - at).min(READ_CHUNK as u64);
-        match &inline {
-            Some(bytes) => {
-                let start = (e.blob_offset + at) as usize;
-                let bytes = bytes
-                    .get(start..start + take as usize)
-                    .ok_or_else(|| StoreError::Invalid("extent exceeds its stored blob".into()))?;
-                f(bytes, e.offset + at)?;
-            }
-            None => {
-                let bytes =
-                    store.read_range(&hashed_blobs::Hash(e.blob.0), e.blob_offset + at, take)?;
-                f(&bytes, e.offset + at)?;
-            }
-        }
-        at += take;
-    }
-    Ok(())
-}
-
 /// Preflight every retained chain before any replacement is installed. Appends
 /// share a chain: its longest revision includes every earlier prefix.
 pub(super) fn find(t: &Transactions<'_, '_>, needle: &str) -> Result<StoredText> {
@@ -97,6 +52,7 @@ pub(super) fn find_in(
     needle: &str,
 ) -> Result<StoredText> {
     let mut ranges = BTreeMap::new();
+    let mut bytes = PlainBytes::new()?;
     let mut chains = archive.prepare(
         "SELECT r.input, r.chain, max(r.length), i.format FROM revision r
          JOIN input i ON i.id = r.input GROUP BY r.input, r.chain ORDER BY r.input, r.chain",
@@ -136,7 +92,7 @@ pub(super) fn find_in(
                     )));
                 }
                 e.length = e.length.min(length - pos);
-                visit(archive, store, &e, |bytes, _at| {
+                bytes.visit(archive, store, &e, |bytes, _at| {
                     if header.len() < 16 {
                         header.extend_from_slice(&bytes[..bytes.len().min(16 - header.len())]);
                         if header.starts_with(b"SQLite format 3\0") {
@@ -177,6 +133,7 @@ pub(super) fn find_in(
     Ok(StoredText {
         ranges,
         fill: text_matches::replacement(needle)?,
+        bytes,
     })
 }
 
@@ -214,7 +171,7 @@ impl StoredText {
     }
 
     pub(super) fn overwrite(
-        &self,
+        &mut self,
         t: &Transactions<'_, '_>,
         req: &ExciseRequest,
         refused: &mut RefusedJson,
@@ -261,7 +218,7 @@ impl StoredText {
                 let mut batch = t.store.batch(hashed_blobs::Durability::PerFile);
                 let mut buffer = Vec::with_capacity(WRITE_CHUNK);
                 let mut pieces = Vec::new();
-                visit(t.archive, t.store, &e, |bytes, at| {
+                self.bytes.visit(t.archive, t.store, &e, |bytes, at| {
                     let mut bytes = bytes.to_vec();
                     if let Some(ranges) = ranges {
                         for &(start, end) in ranges {

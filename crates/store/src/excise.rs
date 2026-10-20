@@ -381,7 +381,7 @@ impl Plan {
         req: &ExciseRequest,
         done: &mut Excised,
     ) -> Result<(Excised, Vec<BlobHash>)> {
-        let text_matches = self
+        let mut text_matches = self
             .text
             .as_ref()
             .map(|text| stored_text::find(t, text))
@@ -405,7 +405,7 @@ impl Plan {
             self.text_scope(
                 t,
                 &text,
-                text_matches.as_ref().expect("text scope preflight"),
+                text_matches.as_mut().expect("text scope preflight"),
                 req,
                 done,
                 &mut refused,
@@ -555,7 +555,7 @@ impl Plan {
         &mut self,
         t: &Transactions<'_, '_>,
         text: &str,
-        matches: &stored_text::StoredText,
+        matches: &mut stored_text::StoredText,
         req: &ExciseRequest,
         done: &mut Excised,
         refused: &mut RefusedJson,
