@@ -1,4 +1,3 @@
-const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const AUTO_REFRESH_MS = 8000;
 // `operator_status.js` is loaded immediately before this file as a classic
 // script.  Its top-level function declarations therefore occupy the shared
@@ -376,14 +375,14 @@ function renderQueue(queue) {
   renderWorkQueue();
 }
 
-function renderReceiverPairing(pairing, health = null, configuredUrl = "") {
-  const statusNode = document.getElementById("receiver-pairing-status");
-  const detailNode = document.getElementById("receiver-pairing-detail");
+function renderNativeHost(pairing, health = null, configuredUrl = "") {
+  const statusNode = document.getElementById("native-host-status");
+  const detailNode = document.getElementById("native-host-detail");
   if (!statusNode || !detailNode) return;
-  const presentation = operatorStatusApi.receiverPairingPresentation({ pairing, health, configuredUrl });
+  const presentation = operatorStatusApi.nativeHostPresentation({ health });
   statusNode.textContent = presentation.headline;
   detailNode.textContent = presentation.detail;
-  statusNode.title = pairing?.receiver_id || "";
+  statusNode.title = "";
 }
 
 function renderReceiverHealth(health, pairing = null, configuredUrl = "") {
@@ -393,16 +392,13 @@ function renderReceiverHealth(health, pairing = null, configuredUrl = "") {
     node.textContent = "--";
     node.title = "";
     node.className = "state-chip neutral";
-    renderReceiverPairing(pairing, health, configuredUrl);
+    renderNativeHost(pairing, health, configuredUrl);
     return;
   }
   const labels = {
     ok: "Online",
     recovered: "Recovered",
-    unauthorized: "Token required",
-    pairing_mismatch: "Identity mismatch",
     unreachable: "Receiver offline",
-    dev_override_stale: "Dev receiver unreachable",
     error: "Receiver error",
   };
   const tone = ["ok", "recovered"].includes(health.status)
@@ -414,7 +410,7 @@ function renderReceiverHealth(health, pairing = null, configuredUrl = "") {
   node.title = health.detail || "";
   node.className = `state-chip ${tone}`;
   currentReceiverOnline = ["ok", "recovered"].includes(health.status);
-  renderReceiverPairing(pairing || health.pairing || null, health, configuredUrl);
+  renderNativeHost(pairing || health.pairing || null, health, configuredUrl);
   renderWorkQueue();
 }
 
@@ -600,14 +596,11 @@ async function render() {
     polylogueState: null,
     polylogueSessionLedger: {},
     polylogueConversationTimeline: {},
-    polylogueReceiverPairing: null,
     polylogueAmbientSettings: { enabled: true, disabled_sites: {} },
-    receiverBaseUrl: DEFAULT_RECEIVER,
   });
   renderLog(stored.polylogueCaptureLog);
   renderDebugLog(stored.polylogueDebugLog);
-  document.getElementById("receiver-url").value = stored.receiverBaseUrl;
-  document.getElementById("receiver").textContent = stored.receiverBaseUrl;
+  document.getElementById("receiver").textContent = "Native messaging";
 
   const [tab, openTabs, mission, browserActions] = await Promise.all([
     activeTab(),
@@ -657,7 +650,7 @@ async function render() {
     const nextAttempt = candidates.length ? Math.min(...candidates) : null;
     cooldown.textContent = nextAttempt ? new Date(nextAttempt).toISOString() : "Not reported";
   }
-  const pairing = mission?.receiver?.pairing || state?.receiver_pairing || stored.polylogueReceiverPairing || null;
+  const pairing = mission?.receiver?.pairing || state?.receiver_pairing || null;
   const health = mission?.receiver?.health || state?.receiver_health || (
     state?.error === "unauthorized"
       ? { status: "unauthorized", detail: "unauthorized", pairing }
@@ -670,8 +663,8 @@ async function render() {
   currentReceiverOnline = health
     ? ["ok", "recovered"].includes(health.status)
     : state?.online !== false;
-  if (health) renderReceiverHealth(health, pairing, mission?.receiver?.configured_url || stored.receiverBaseUrl);
-  else renderReceiverPairing(pairing, null, stored.receiverBaseUrl);
+  if (health) renderReceiverHealth(health, pairing, mission?.receiver?.configured_url || "Native messaging");
+  else renderNativeHost(pairing, null, "Native messaging");
 
   const status = operatorStatusApi.operatorStatusForState(state || {});
   const requestNode = document.getElementById("receiver-request");
@@ -783,13 +776,13 @@ document.getElementById("copy-ref").addEventListener("click", async () => {
 
 document.getElementById("open-polylogue").addEventListener("click", async () => {
   await withAction("open-polylogue", async () => {
-    const [stored, state] = await Promise.all([
-      chrome.storage.local.get({ receiverBaseUrl: DEFAULT_RECEIVER }),
-      currentActiveConversationState(),
-    ]);
+    const state = await currentActiveConversationState();
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.readerLocation" });
+    if (!result?.ok || !result.url) throw new Error(result?.error || "reader_unavailable");
+    const url = new URL(result.url);
     const providerSessionId = state.provider_session_id || state.last_capture?.provider_session_id;
-    const url = `${String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "")}/?q=${encodeURIComponent(providerSessionId || "")}`;
-    await chrome.tabs.create({ url });
+    if (providerSessionId) url.searchParams.set("q", providerSessionId);
+    await chrome.tabs.create({ url: String(url) });
   }, { busy: "Opening" });
 });
 
@@ -827,17 +820,6 @@ document.getElementById("backfill-controls")?.addEventListener("click", async (e
   await refreshStatus("popup_backfill_control");
 });
 
-document.getElementById("reset-pairing")?.addEventListener("click", async () => {
-  const confirmed = typeof globalThis.confirm !== "function"
-    || globalThis.confirm("Reset the trusted receiver identity? Capture and backfill queues will be preserved.");
-  if (!confirmed) return;
-  await withAction("reset-pairing", async () => {
-    const result = await chrome.runtime.sendMessage({ type: "polylogue.receiverPairing.reset" });
-    renderReceiverHealth(result?.health, result?.pairing, result?.health?.endpoint || "");
-    await render();
-  }, { busy: "Resetting", ok: "Pairing reset" });
-});
-
 document.getElementById("ambient-enabled")?.addEventListener("change", async (event) => {
   await chrome.runtime.sendMessage({
     type: "polylogue.ambient.configure",
@@ -862,30 +844,6 @@ document.getElementById("automatic-capture-enabled")?.addEventListener("change",
     automatic_capture_enabled: Boolean(event.target.checked),
   });
   await render();
-});
-
-document.getElementById("save").addEventListener("click", async () => {
-  await withAction("save", async () => {
-    const receiverBaseUrl = document.getElementById("receiver-url").value;
-    // A non-default receiver port is an optional host permission (leak audit
-    // L7): request it here, inside the operator's click, because
-    // chrome.permissions.request needs a user gesture the service worker
-    // does not have. The background refuses the settings if it is denied.
-    const normalized = String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "");
-    if (normalized && normalized !== DEFAULT_RECEIVER && chrome.permissions?.request) {
-      let origin = null;
-      try {
-        origin = `${new URL(normalized).origin}/*`;
-      } catch {
-        throw new Error("receiver_url_invalid");
-      }
-      const granted = await chrome.permissions.request({ origins: [origin] });
-      if (!granted) throw new Error("receiver_origin_not_permitted");
-    }
-    const result = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl });
-    if (result && result.ok === false) throw new Error(result.error || "configure_receiver_failed");
-    await refreshStatus("popup_configure_receiver");
-  }, { busy: "Saving", ok: "Saved" });
 });
 
 // The support packet exists to be exported and shared with an operator or a

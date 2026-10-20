@@ -106,6 +106,7 @@ function copyTree(src, dst) {
 
 const ARCHIVE_EXCLUDE_DIRS = new Set([
   ".cache",
+  ".npm-cache",
   ".local",
   "node_modules",
   "tests",

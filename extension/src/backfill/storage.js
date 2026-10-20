@@ -1,4 +1,4 @@
-import { canonicalJson } from "./capture_jobs.js";
+import { canonicalJson } from "./encoding.js";
 import { createSha256 } from "../vendor/sha256.js";
 import { BACKFILL_DB_NAME, BACKFILL_DB_VERSION, BACKFILL_RECOVERY_CHECKPOINT_VERSION, TERMINAL_QUEUE_STATES } from "./models.js";
 

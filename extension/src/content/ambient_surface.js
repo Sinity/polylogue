@@ -442,13 +442,12 @@
       count.textContent = presentation.status?.partialFidelity ? "!" : "";
       chip.setAttribute("aria-label", `Open Polylogue capture status; ${status.label}`);
 
-      const pairing = root.PolylogueOperatorStatus?.receiverPairingPresentation?.({
-        pairing: nextSnapshot?.receiver?.pairing,
+      const host = root.PolylogueOperatorStatus?.nativeHostPresentation?.({
         health: nextSnapshot?.receiver?.health,
         configuredUrl: nextSnapshot?.receiver?.configured_url,
       });
-      receiverHeadline.textContent = pairing?.headline || "Receiver state unavailable";
-      receiverDetail.textContent = pairing?.detail || "";
+      receiverHeadline.textContent = host?.headline || "Receiver state unavailable";
+      receiverDetail.textContent = host?.detail || "";
 
       renderTimeline(nextSnapshot?.timeline);
       renderIntelligence(nextSnapshot?.intelligence);

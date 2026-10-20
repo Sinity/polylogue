@@ -40,18 +40,10 @@ const ALLOWED_HOST_GLOBS = [
   /^https:\/\/x\.com\/\*$/,
   /^https:\/\/twitter\.com\/\*$/,
   /^https:\/\/gemini\.google\.com\/\*$/,
-  // Port-scoped to the receiver's own default. The unscoped
-  // http://127.0.0.1/* also covers the unauthenticated archive API on 8766,
-  // and extension fetches are not subject to CORS (2026-07-31 leak audit L7,
-  // polylogue-tztk), so the broad loopback grant moved to
-  // optional_host_permissions: a non-default receiver port now needs an
-  // explicit operator grant from the popup.
-  /^http:\/\/127\.0\.0\.1:\d+\/\*$/,
+
 ];
 
-//: Loopback origins the operator may grant at runtime but which are not
-//: granted at install time.
-const ALLOWED_OPTIONAL_HOST_GLOBS = [/^http:\/\/127\.0\.0\.1\/\*$/];
+const ALLOWED_OPTIONAL_HOST_GLOBS = [];
 
 function fail(errors) {
   process.stderr.write(`manifest validation failed (${errors.length} issues):\n`);

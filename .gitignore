@@ -7,3 +7,5 @@
 extension/node_modules/
 extension/.npm-cache/
 extension/dist/
+
+extension/.cache/

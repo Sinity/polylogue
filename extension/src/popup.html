@@ -343,15 +343,11 @@
         </section>
 
         <section aria-labelledby="receiver-heading">
-          <div class="section-head"><strong id="receiver-heading">Paired receiver</strong><span id="receiver-health" class="state-chip neutral">--</span></div>
+          <div class="section-head"><strong id="receiver-heading">Native host</strong><span id="receiver-health" class="state-chip neutral">--</span></div>
           <div class="surface-card">
-            <div id="receiver-pairing-status" class="pairing-id">Identity not checked</div>
-            <p id="receiver-pairing-detail" class="log-meta">Polylogue will bind the first compatible authenticated receiver it reaches.</p>
+            <div id="native-host-status" class="pairing-id">Host not checked</div>
+            <p id="native-host-detail" class="log-meta">The installed native host admits this extension; no endpoint or pairing is configured.</p>
           </div>
-          <div class="controls">
-            <button id="reset-pairing" class="danger"><span class="button-label">Reset pairing</span><span class="button-status"></span></button>
-          </div>
-          <p class="section-note">Reset removes only the trusted receiver identity. It does not delete automatic capture queues.</p>
         </section>
 
         <section aria-labelledby="work-heading">
@@ -377,7 +373,7 @@
             <button id="debug-export" class="link-button"><span class="button-label">Export support packet</span><span class="button-status"></span></button>
           </div>
           <div id="debug-panel" hidden>
-            <div class="row"><span class="label">Receiver</span><span id="receiver" class="value mono">127.0.0.1:8765</span></div>
+            <div class="row"><span class="label">Receiver</span><span id="receiver" class="value mono">Native messaging</span></div>
             <div class="row"><span class="label">Receiver contract</span><span id="receiver-contract" class="value mono">--</span></div>
             <div class="row"><span class="label">Cooldown</span><span id="cooldown" class="value mono">Not reported</span></div>
             <div class="row"><span class="label">Archive state</span><span id="archive" class="value">Not checked</span></div>
@@ -389,15 +385,7 @@
           </div>
         </section>
 
-        <section aria-labelledby="settings-heading">
-          <strong id="settings-heading">Receiver settings</strong>
-          <label class="label" for="receiver-url">Local receiver URL</label>
-          <div class="setting-row">
-            <input id="receiver-url" value="http://127.0.0.1:8765">
-            <button id="save"><span class="button-label">Save</span><span class="button-status"></span></button>
-          </div>
-          <p class="section-note">The installed native host authenticates the local receiver. No credential is stored in the extension.</p>
-        </section>
+
       </details>
 
       <section aria-labelledby="ambient-heading">

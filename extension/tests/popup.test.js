@@ -240,32 +240,6 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("state-detail").textContent).toContain("catching up");
   });
 
-  it("renders an unauthorized receiver as a pairing prompt, not a generic offline state", async () => {
-    await loadPopup({
-      polylogueState: {
-        online: false,
-        captured: false,
-        error: "unauthorized",
-        updated_at: new Date().toISOString(),
-      },
-    });
-
-    expect(globalThis.document.getElementById("archive").textContent).toBe("Needs attention");
-    expect(globalThis.document.getElementById("state-detail").textContent).toContain("native host and receiver use the same local archive");
-
-    const attentionSection = globalThis.document.getElementById("attention-section");
-    await vi.waitFor(() => expect(attentionSection.hidden).toBe(false));
-    expect(globalThis.document.getElementById("attention-heading").textContent)
-      .toBe("Receiver authentication failed");
-    const actionButton = globalThis.document.getElementById("attention-action");
-    expect(actionButton.hidden).toBe(false);
-
-    const diagnostics = globalThis.document.getElementById("diagnostics");
-    diagnostics.open = false;
-    actionButton.dispatchEvent(new globalThis.window.Event("click", { bubbles: true }));
-    expect(diagnostics.open).toBe(true);
-  });
-
   it("shows no attention item and a zero pending-action count when everything is healthy", async () => {
     await loadPopup({
       polylogueState: { online: true, captured: true, archive_state: { state: "archived" } },
@@ -993,27 +967,6 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("queue-log").textContent).toContain("No captures queued for retry.");
   });
 
-  it("saves endpoint settings without a credential", async () => {
-    const sent = [];
-    await loadPopup({}, [CHATGPT_TAB], async message => { sent.push(message); return { ok: true }; });
-    document.getElementById("save").click();
-    await vi.waitFor(() => expect(sent.some(message => message.type === "polylogue.configureReceiver")).toBe(true));
-    const configured = sent.find(message => message.type === "polylogue.configureReceiver");
-    expect(configured).toEqual({ type: "polylogue.configureReceiver", receiverBaseUrl: "http://127.0.0.1:8765" });
-    expect(document.getElementById("receiver-token")).toBeNull();
-    expect(document.getElementById("pairing-code")).toBeNull();
-  });
-
-});
-
-describe("popup DOM/action budget", () => {
-  // AC6 (polylogue-yyvg.7): the healthy compact surface -- everything
-  // outside the collapsed <details id="diagnostics"> -- must stay small and
-  // bounded, not silently regrow toward the old always-visible control
-  // panel. Ceilings carry headroom above the current count (6 controls / 67
-  // nodes) rather than pinning the exact number, so ordinary additions to
-  // the compact surface don't require bumping this test every time; a large
-  // jump means something meant for progressive disclosure landed outside it.
   it("keeps the always-visible surface within a small interactive-control and DOM-node budget", () => {
     const html = readFileSync(join(TEST_DIR, "..", "src", "popup.html"), "utf8");
     const dom = new JSDOM(html);

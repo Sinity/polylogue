@@ -364,7 +364,7 @@ describe("durable capture staging", () => {
     const prepared = await staging.prepare({ session: { turns } });
     const delivered = JSON.parse(await prepared.body.text());
     for (const turn of delivered.session.turns) {
-      expect(turn.attachments[0].inline_base64).toBe("Ynl0ZXM=");
+      expect(turn.attachments[0].content_base64).toBe("Ynl0ZXM=");
       expect(turn.attachments[0].provider_meta).toEqual(assets[0].provider_meta);
     }
   });
