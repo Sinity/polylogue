@@ -28,6 +28,59 @@ fn a_first_build_stores_and_parses_and_a_second_pass_reads_nothing() {
 }
 
 #[test]
+fn an_unchanged_incomplete_tail_waits_without_rereading_stored_bytes() {
+    let w = ClaudeHome::new();
+    let partial = user("u2", "s1", "still being written");
+    w.append("s1.jsonl", &(user("u1", "s1", "complete") + &partial[..20]));
+    {
+        let (mut e, _lock) = w.engine(64 << 20);
+        e.converge().unwrap();
+        assert_eq!(w.texts("s1"), ["complete"]);
+        let quiet = e.converge().unwrap();
+        assert_eq!(quiet.bytes_read, 0, "unchanged pending bytes are not work");
+    }
+    let (mut e, _lock) = w.engine(64 << 20);
+    let quiet = e.converge().unwrap();
+    assert_eq!(
+        quiet.bytes_read, 0,
+        "restart preserves the pending-tail wait"
+    );
+    w.append("s1.jsonl", &partial[20..]);
+    let grown = e.converge().unwrap();
+    assert!(grown.errors.is_empty(), "{:?}", grown.errors);
+    assert_eq!(w.texts("s1"), ["complete", "still being written"]);
+    let whole = ClaudeHome::new();
+    whole.append("s1.jsonl", &(user("u1", "s1", "complete") + &partial));
+    let (mut engine, _lock) = whole.engine(64 << 20);
+    engine.converge().unwrap();
+    assert_eq!(w.export("claude-code:s1"), whole.export("claude-code:s1"));
+}
+
+#[test]
+fn waiting_tail_retries_after_parser_version_or_source_changes() {
+    let w = ClaudeHome::new();
+    w.append("s1.jsonl", &(user("u1", "s1", "before") + "{\"type\":"));
+    {
+        let (mut e, _lock) = w.engine(64 << 20);
+        e.converge().unwrap();
+    }
+    let conn = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+    conn.execute("UPDATE parse_state SET parser_version = 0", [])
+        .unwrap();
+    drop(conn);
+    let (mut e, _lock) = w.engine(64 << 20);
+    let changed = e.converge().unwrap();
+    assert!(
+        changed.bytes_read > 0,
+        "the new parser must retry pending bytes"
+    );
+    assert_eq!(e.converge().unwrap().bytes_read, 0);
+    fs::write(w.file("s1.jsonl"), user("u1", "s1", "rewritten")).unwrap();
+    e.converge().unwrap();
+    assert_eq!(w.texts("s1"), ["rewritten"]);
+}
+
+#[test]
 fn appends_cost_only_their_bytes_and_a_partial_line_waits() {
     let w = ClaudeHome::new();
     let first = user("u1", "s1", "one");

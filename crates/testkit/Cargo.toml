@@ -14,5 +14,8 @@ hashed-blobs.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [lints]
 workspace = true

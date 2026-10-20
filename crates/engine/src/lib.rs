@@ -224,6 +224,8 @@ struct InputState {
     stored: u64,
     parsed_upto: u64,
     parser_version: Option<u32>,
+    /// A successful parse reached source EOF with an incomplete last record.
+    waiting: bool,
     carry: Option<Json>,
     tail: Option<Vec<u8>>,
     /// The revision chain whose bytes are stored, when known from the
@@ -287,6 +289,7 @@ impl Plan {
             start,
             piece_from,
             end,
+            at_end: end == self.size,
             length,
             carry: self.carry.take(),
             priority: self.priority,
@@ -410,6 +413,7 @@ impl Engine {
                 st.chain = k.chain;
                 st.stored = k.stored;
                 st.parsed_upto = k.parsed_upto;
+                st.waiting = k.waiting;
                 st.carry = None;
                 st.tail = None;
                 st.failed = None;
@@ -494,6 +498,7 @@ impl Engine {
                     stored: k.stored,
                     parsed_upto: k.parsed_upto,
                     parser_version: k.parser_version,
+                    waiting: k.waiting,
                     carry: None,
                     tail: None,
                     chain: k.chain,
@@ -628,6 +633,7 @@ impl Engine {
                         stored: 0,
                         parsed_upto: 0,
                         parser_version: None,
+                        waiting: false,
                         carry: None,
                         tail: None,
                         chain: None,
@@ -776,7 +782,7 @@ impl Engine {
         };
         let parsed = st.origin.support == Support::Parsed;
         let version_changed = st.parser_version != Some(st.origin.parser_version);
-        let behind = st.parsed_upto < st.stored || version_changed;
+        let behind = (!st.waiting && st.parsed_upto < st.stored) || version_changed;
         let Some(chain) = st.chain else {
             return Ok(None);
         };
@@ -892,6 +898,7 @@ impl Engine {
                 // Tried again when the bytes or the parser change; the facts
                 // stay old, so a change is still seen as one.
                 st.carry = None;
+                st.waiting = false;
                 st.failed = plan.facts.map(|f| (f, plan.origin.parser_version));
                 return;
             }
@@ -902,6 +909,7 @@ impl Engine {
             st.facts = plan.facts;
             st.parsed_upto = plan.parse_pos.min(plan.size);
             st.parser_version = Some(plan.origin.parser_version);
+            st.waiting = plan.waiting;
             st.carry = if recent { plan.carry } else { None };
             st.tail = plan.tail;
         }
@@ -920,7 +928,7 @@ impl Engine {
         let wake = tx.clone();
         let mut watcher =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                if res.is_ok() {
+                if res.as_ref().is_ok_and(collect::requires_scan) {
                     let _ = wake.send(LoopMsg::Changed);
                 }
             })?;
