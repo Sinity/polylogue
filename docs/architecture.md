@@ -51,6 +51,11 @@ use the same application operations. Signal evaluation and embedding providers
 have their own modules. This is an internal boundary in the application crate,
 not another service or crate.
 
+Production startup resolves optional backing from operator configuration and
+passes it explicitly to `service::start`. In-process fixtures select
+`Backing::Standalone`; changing a fixture's source home does not select its
+backing. The daemon subprocess fixture uses its own configuration directory.
+
 `service::Runtime` owns the convergence and signal workers, the optional
 Sinex publisher and the archive lock. Socket and HTTP servers own their listeners and client work and stop
 before the application runtime. Shutdown wakes signal timers, closes transport

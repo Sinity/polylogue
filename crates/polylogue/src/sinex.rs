@@ -69,17 +69,23 @@ impl Drop for Publisher {
     }
 }
 
-pub fn start(archive: &Archive, config: &mut Config) -> std::io::Result<Option<Publisher>> {
-    let sinex = match SinexConfig::load() {
-        Ok(Some(c)) if c.mode == Mode::Primary => c,
-        Ok(_) => return Ok(None),
-        Err(e) => {
-            // A broken file never switches the mode silently: publishing
-            // waits until it parses (`status` shows the error).
-            eprintln!("polylogue: Sinex publishing paused: {e}");
-            return Ok(None);
+/// Resolves operator configuration only at the production entry point.
+pub fn configured() -> Option<SinexConfig> {
+    match SinexConfig::load() {
+        Ok(Some(config)) if config.mode == Mode::Primary => Some(config),
+        Ok(_) => None,
+        Err(error) => {
+            eprintln!("polylogue: Sinex publishing paused: {error}");
+            None
         }
-    };
+    }
+}
+
+pub fn start(
+    archive: &Archive,
+    config: &mut Config,
+    sinex: SinexConfig,
+) -> std::io::Result<Publisher> {
     config.blob_roots.push(sinex.store.clone());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -120,7 +126,6 @@ pub fn start(archive: &Archive, config: &mut Config) -> std::io::Result<Option<P
             tokio::time::sleep(PUBLISH_EVERY).await;
         }
     })
-    .map(Some)
 }
 
 #[cfg(test)]

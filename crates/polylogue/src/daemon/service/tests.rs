@@ -94,7 +94,7 @@ fn config(home: &std::path::Path) -> Config {
 fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
-    let mut runtime = start(&root, config(dir.path())).unwrap();
+    let mut runtime = start(&root, config(dir.path()), Backing::Standalone).unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     assert!(daemon.archive.lock_held());
     let (done, stopped) = sync_channel(1);
@@ -122,7 +122,7 @@ fn startup_failure_after_workers_start_releases_the_runtime_and_lock() {
     let root = dir.path().join("archive");
     let weak;
     {
-        let runtime = start(&root, config(dir.path())).unwrap();
+        let runtime = start(&root, config(dir.path()), Backing::Standalone).unwrap();
         weak = Arc::downgrade(&runtime.daemon);
         // A directory cannot be replaced by the Unix socket binder.
         std::fs::create_dir(runtime.daemon.archive.socket()).unwrap();
@@ -160,7 +160,7 @@ fn repeated_test_daemon_drops_release_every_shared_daemon_reference() {
 fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
-    let mut runtime = start(&root, config(dir.path())).unwrap();
+    let mut runtime = start(&root, config(dir.path()), Backing::Standalone).unwrap();
     let old = Arc::clone(&runtime.daemon);
     assert!(matches!(handle(Request::Status, &old), Response::Ok { .. }));
     runtime.shutdown().unwrap();
@@ -168,7 +168,7 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
         old.reads.reader(),
         Err(StoreError::ReadPoolClosed)
     ));
-    let mut next = start(&root, config(dir.path())).unwrap();
+    let mut next = start(&root, config(dir.path()), Backing::Standalone).unwrap();
     assert!(matches!(
         handle(Request::Status, &next.daemon),
         Response::Ok { .. }
@@ -177,4 +177,59 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     assert!(
         matches!(handle(Request::Status, &old), Response::Error { kind, .. } if kind == "daemon_stopping")
     );
+}
+
+#[cfg(feature = "sinex")]
+#[test]
+fn standalone_start_does_not_resolve_operator_backing() {
+    const CHILD: &str = "POLYLOGUE_TEST_STANDALONE_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        assert!(
+            crate::sinex::configured().is_some(),
+            "synthetic primary configuration was not loaded"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = start(
+            &dir.path().join("archive"),
+            config(dir.path()),
+            Backing::Standalone,
+        )
+        .unwrap();
+        assert!(runtime.publisher.is_none());
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("polylogue");
+    std::fs::create_dir_all(&config).unwrap();
+    // A configured primary is deliberately present in the child process.
+    // Its invalid endpoint cannot contact a real account if isolation fails.
+    std::fs::write(
+        config.join("sinex.toml"),
+        format!(
+            "mode = 'primary'\nnats = 'invalid://'\nstore = {:?}\n",
+            dir.path().join("sinex-store")
+        ),
+    )
+    .unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "daemon::service::tests::standalone_start_does_not_resolve_operator_backing",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env("XDG_CONFIG_HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("1 passed"),
+        "child did not execute its control: {stdout}"
+    );
+    assert!(!dir.path().join("sinex-store").exists());
 }

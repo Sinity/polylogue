@@ -559,16 +559,28 @@ impl Drop for Runtime {
     }
 }
 
+/// Backing selected by the caller, independently of source discovery paths.
+pub enum Backing {
+    Standalone,
+    #[cfg(feature = "sinex")]
+    Sinex(polylogue_sinex::Config),
+}
+
 /// Opens the archive and starts owned application workers. Startup errors
 /// join any workers already started before releasing the archive lock.
-pub fn start(root: &std::path::Path, config: Config) -> std::io::Result<Runtime> {
+pub fn start(root: &std::path::Path, config: Config, backing: Backing) -> std::io::Result<Runtime> {
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
     let (archive, lock) = Archive::open_or_create(root).map_err(|e| to_io(&e))?;
     let paths = config.clone();
     #[allow(unused_mut)]
     let mut config = config;
     #[cfg(feature = "sinex")]
-    let publisher = crate::sinex::start(&archive, &mut config)?;
+    let publisher = match backing {
+        Backing::Standalone => None,
+        Backing::Sinex(sinex) => Some(crate::sinex::start(&archive, &mut config, sinex)?),
+    };
+    #[cfg(not(feature = "sinex"))]
+    let _ = backing;
     let mut engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
     let writes = engine.writer().map_err(|e| to_io(&e))?;
     let reads = ReadPool::open(&archive).map_err(|e| to_io(&e))?;
