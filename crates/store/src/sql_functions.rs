@@ -86,7 +86,7 @@ fn decompress(ctx: &Context<'_>, i: usize) -> rusqlite::Result<Option<Vec<u8>>> 
     let Some(packed) = ctx.get::<Option<Vec<u8>>>(i)? else {
         return Ok(None);
     };
-    zstd::stream::decode_all(packed.as_slice())
+    crate::encoding::unpack_bytes(&packed)
         .map(Some)
         .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))
 }

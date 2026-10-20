@@ -9,7 +9,7 @@
 //! that made them. The session's live task is its open claim.
 
 use crate::Result;
-use crate::writer::{unpack_block, unpack_text};
+use crate::encoding::{unpack_block, unpack_text};
 use polylogue_model::command::{Stage, effective_stages};
 use polylogue_model::{Block, Json, WorkEdgeKind, WorkNodeKind};
 use rusqlite::{OptionalExtension, Transaction, params};

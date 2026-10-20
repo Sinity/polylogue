@@ -12,6 +12,7 @@ pub mod blobs;
 pub mod context;
 pub mod cost;
 pub mod derive;
+mod encoding;
 pub mod excise;
 pub mod fault;
 #[cfg(any(test, feature = "fixture"))]

@@ -29,7 +29,7 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
         .query_row([session_pk], |r| r.get(0))
         .optional()?;
     let title = match body {
-        Some(b) => title_of(&crate::writer::unpack_text(&b)?),
+        Some(b) => title_of(&crate::encoding::unpack_text(&b)?),
         None => None,
     };
     tx.prepare_cached(

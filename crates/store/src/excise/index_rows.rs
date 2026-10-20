@@ -244,7 +244,7 @@ pub(super) fn redact_deliveries(
             "UPDATE delivery SET body = ?2, content_hash = ?3 WHERE id = ?1",
             params![
                 id,
-                zstd::bulk::compress(new.as_bytes(), 1)?,
+                crate::encoding::pack_text(&new)?,
                 &blake3::hash(new.as_bytes()).as_bytes()[..]
             ],
         )?;

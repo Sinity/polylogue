@@ -139,7 +139,7 @@ impl Fixture {
 
     fn text(&self, body: &str, bit: i64) -> Result<i64> {
         let hash = blake3::hash(body.as_bytes());
-        let packed = zstd::bulk::compress(body.as_bytes(), 3)?;
+        let packed = crate::encoding::pack_text(body)?;
         self.index.execute(
             "INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, ?3)
              ON CONFLICT(hash) DO UPDATE SET indexed = indexed | ?3",
@@ -167,7 +167,7 @@ impl Fixture {
         text_id: Option<i64>,
         body: serde_json::Value,
     ) -> Result<i64> {
-        let packed = zstd::bulk::compress(body.to_string().as_bytes(), 3)?;
+        let packed = crate::encoding::pack_json(&body)?;
         self.index.execute(
             "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -323,7 +323,7 @@ impl Fixture {
 
     pub fn event(&mut self, session_pk: i64, kind: &str, at: Option<i64>) -> Result<()> {
         self.seq += 1;
-        let data = zstd::bulk::compress(b"{}", 3)?;
+        let data = crate::encoding::pack_json(&serde_json::json!({}))?;
         self.index.execute(
             "INSERT INTO event(id, session_pk, seq, kind, at, input_pk, parser_version, data)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
