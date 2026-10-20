@@ -200,7 +200,7 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
             })
         }
         UserWrite::Deliver(d) => {
-            let body = zstd::bulk::compress(d.text.as_bytes(), 3)?;
+            let body = crate::encoding::pack_text(&d.text)?;
             tx.execute(
                 "INSERT INTO delivery(id, recipient_kind, recipient_id, sender, event, cwd, at,
                      content_hash, bytes, body, refs_json, left_out_json, commit_seq)

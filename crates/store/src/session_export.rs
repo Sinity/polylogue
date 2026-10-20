@@ -57,7 +57,7 @@ impl Reader<'_> {
         let mut out = Vec::new();
         for row in rows {
             let (kind, at, after, start, end, data) = row?;
-            let data: Json = serde_json::from_slice(&zstd::stream::decode_all(&data[..])?)?;
+            let data: Json = crate::encoding::unpack_json(&data)?;
             out.push(Event {
                 session: id.clone(),
                 kind,

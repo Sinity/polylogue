@@ -164,7 +164,7 @@ impl Reader<'_> {
         let mut out: Vec<Prompt> = Vec::new();
         for row in rows {
             let (message_id, at, body) = row?;
-            let text = crate::writer::unpack_text(&body)?;
+            let text = crate::encoding::unpack_text(&body)?;
             match out.last_mut() {
                 // Several text blocks of one message are one prompt.
                 Some(last) if last.message_id == message_id => {
@@ -232,8 +232,7 @@ impl Reader<'_> {
                 .query_row("SELECT body FROM a.delivery WHERE id = ?1", [id], |r| {
                     r.get(0)
                 })?;
-        let text = String::from_utf8(zstd::stream::decode_all(body.as_slice())?)
-            .map_err(|e| crate::StoreError::Io(std::io::Error::other(e)))?;
+        let text = crate::encoding::unpack_text(&body)?;
         Ok(Some((row, text)))
     }
 

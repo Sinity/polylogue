@@ -62,7 +62,7 @@ impl ParseStep {
             .iter()
             .map(|r| message_hash(&r.message))
             .collect();
-        let mut packer = zstd::bulk::Compressor::new(TEXT_LEVEL).ok();
+        let mut packer = crate::encoding::TextPacker::new().ok();
         for row in &self.output.messages {
             for block in &row.message.blocks {
                 let Some(text) = block_text(block) else {
@@ -71,7 +71,7 @@ impl ParseStep {
                 let hash = *blake3::hash(text.as_bytes()).as_bytes();
                 if let (std::collections::hash_map::Entry::Vacant(slot), Some(p)) =
                     (self.packed.entry(hash), packer.as_mut())
-                    && let Ok(bytes) = p.compress(text.as_bytes())
+                    && let Ok(bytes) = p.pack(text)
                 {
                     slot.insert(bytes);
                 }
@@ -118,50 +118,6 @@ impl ParseStep {
                 e.data = Json::Null;
             }
         }
-    }
-}
-
-/// A block as the `block.body` column stores it.
-pub(super) fn pack_block(block: &Block) -> Result<Vec<u8>> {
-    let mut body = block.clone();
-    take_text(&mut body);
-    Ok(zstd::bulk::compress(
-        &serde_json::to_vec(&body)?,
-        TEXT_LEVEL,
-    )?)
-}
-
-/// An event's id (computed from its session, kind, time and payload, so the
-/// same record parsed again is the same row) and stored payload.
-pub(super) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
-    let data = serde_json::to_vec(&e.data)?;
-    let mut h = blake3::Hasher::new();
-    h.update(e.session.to_string().as_bytes());
-    h.update(b"\0");
-    h.update(e.kind.as_bytes());
-    h.update(b"\0");
-    h.update(&ms(e.at).unwrap_or(i64::MIN).to_le_bytes());
-    h.update(&data);
-    Ok((
-        h.finalize().to_hex().to_string(),
-        zstd::bulk::compress(&data, TEXT_LEVEL)?,
-    ))
-}
-
-/// Reads a block back from `block.body`.
-pub(crate) fn unpack_block(packed: &[u8]) -> Result<Block> {
-    Ok(serde_json::from_slice(&zstd::stream::decode_all(packed)?)?)
-}
-
-/// The text a block keeps in the `text` table (see [`take_text`]).
-pub(super) fn block_text(block: &Block) -> Option<&str> {
-    match block {
-        Block::Text { text } if !text.is_empty() => Some(text),
-        Block::Thinking { text: Some(t), .. } if !t.is_empty() => Some(t),
-        Block::ToolResult {
-            output: Some(o), ..
-        } if !o.is_empty() => Some(o),
-        _ => None,
     }
 }
 

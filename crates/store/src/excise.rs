@@ -25,7 +25,7 @@
 //! observed); its blobs are what it is verified by afterwards.
 
 use crate::blobs::{Piece, Stored};
-use crate::writer::unpack_text;
+use crate::encoding::unpack_text;
 use crate::{Result, StoreError};
 use polylogue_model::{BlobHash, SessionId};
 use rusqlite::{OptionalExtension, Transaction, params};

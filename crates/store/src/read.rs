@@ -4,7 +4,7 @@
 use crate::Result;
 use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
-use crate::writer::{restore_text, unpack_block, unpack_text};
+use crate::encoding::{restore_text, unpack_block, unpack_text};
 use polylogue_model::{
     Block, Message, MessageId, PromptKind, Role, Session, SessionId, Timestamp, Usage,
 };

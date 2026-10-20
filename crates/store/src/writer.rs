@@ -29,12 +29,11 @@ mod excluded;
 mod rows;
 mod search;
 
-pub(crate) use batch::unpack_block;
+use crate::encoding::{block_text, pack_block, pack_event, pack_text, unpack_block, unpack_text};
+use batch::message_hash;
 pub use batch::{Batch, InFlight, InputKey, Observation, ParseStep, WriteReport};
-use batch::{block_text, message_hash, pack_block, pack_event};
 use bytes::*;
 use excluded::*;
-pub(crate) use rows::restore_text;
 use rows::*;
 use search::*;
 
@@ -62,16 +61,6 @@ enum Msg {
 pub struct Writer {
     tx: Option<SyncSender<Msg>>,
     handle: Option<JoinHandle<()>>,
-}
-
-/// zstd level for text bodies in `index.db`: fast enough for the writer
-/// thread (about 500 MB/s per core) and about a quarter of the size.
-const TEXT_LEVEL: i32 = 1;
-
-/// Unpacks a `text.body`.
-pub(crate) fn unpack_text(packed: &[u8]) -> Result<String> {
-    let bytes = zstd::stream::decode_all(packed)?;
-    String::from_utf8(bytes).map_err(|e| StoreError::Io(std::io::Error::other(e)))
 }
 
 /// Rows written per transaction before committing; a transaction also

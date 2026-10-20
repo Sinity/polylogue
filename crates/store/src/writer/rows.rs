@@ -761,7 +761,7 @@ impl Ctx<'_, '_> {
             None => {
                 let packed = match self.packed.get(hash.as_bytes()) {
                     Some(p) => std::borrow::Cow::Borrowed(p.as_slice()),
-                    None => zstd::bulk::compress(body.as_bytes(), TEXT_LEVEL)?.into(),
+                    None => pack_text(body)?.into(),
                 };
                 // A first build marks the text for its search index now and
                 // writes the entry when the build ends.
@@ -950,30 +950,6 @@ impl Ctx<'_, '_> {
             }
         }
         Ok(())
-    }
-}
-
-/// Moves a block's prose or output text out, for the `text` table; the
-/// body keeps an empty string in its place. Returns the text and which
-/// search index it belongs in (1 prose, 2 tool output).
-pub(super) fn take_text(block: &mut Block) -> (Option<String>, i64) {
-    match block {
-        Block::Text { text } if !text.is_empty() => (Some(std::mem::take(text)), 1),
-        Block::Thinking { text: Some(t), .. } if !t.is_empty() => (Some(std::mem::take(t)), 1),
-        Block::ToolResult {
-            output: Some(o), ..
-        } if !o.is_empty() => (Some(std::mem::take(o)), 2),
-        _ => (None, 0),
-    }
-}
-
-/// Puts a block's text back from its `text` row.
-pub(crate) fn restore_text(block: &mut Block, text: String) {
-    match block {
-        Block::Text { text: t } => *t = text,
-        Block::Thinking { text: t, .. } => *t = Some(text),
-        Block::ToolResult { output, .. } => *output = Some(text),
-        _ => {}
     }
 }
 

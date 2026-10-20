@@ -13,7 +13,7 @@
 //! folds case and accents, and letters with a stroke are folded first, so
 //! `lodz` finds `Łódź`.
 
-use crate::writer::unpack_text;
+use crate::encoding::unpack_text;
 use crate::{Reader, Result};
 use polylogue_model::text::{key, tokens};
 use rusqlite::{OptionalExtension, params};

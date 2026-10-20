@@ -243,7 +243,7 @@ impl Reader<'_> {
             out.push(ProseText {
                 id,
                 hash,
-                text: crate::writer::unpack_text(&body)?,
+                text: crate::encoding::unpack_text(&body)?,
             });
         }
         Ok(out)
