@@ -280,3 +280,61 @@ fn repeated_conversation_markers_follow_logical_order_and_repeated_facts_keep_th
         1
     );
 }
+
+#[test]
+fn pending_ordinary_live_input_commits_before_bulk_array_delivery() {
+    let w = ClaudeHome::new();
+    let path = w.dir.path().join("conversations.json");
+    fs::write(
+        &path,
+        serde_json::to_vec(&vec![conversation("bulk", 1, &[("b", "bulk")])]).unwrap(),
+    )
+    .unwrap();
+    let live_path = w.dir.path().join("live.jsonl");
+    fs::write(
+        &live_path,
+        polylogue_testkit::claude_user("l", "live", "live"),
+    )
+    .unwrap();
+    let (mut e, _lock) = engine(&w, 8);
+    let mut report = ImportReport::default();
+    let mut plans = Vec::new();
+    for (path, origin, priority) in [
+        (&path, "chatgpt", Priority::Bulk),
+        (&live_path, "claude-code", Priority::Live),
+    ] {
+        let captured = Captured::read(&e.blobs, fs::File::open(path).unwrap()).unwrap();
+        let mut plan = e
+            .import_plan(
+                path,
+                polylogue_sources::origin::by_name(origin).unwrap(),
+                captured,
+                None,
+                &mut report,
+            )
+            .unwrap()
+            .unwrap();
+        plan.priority = priority;
+        plans.push(plan);
+    }
+    let live_id = plans[1].input.id.clone();
+    let db = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE delivery_order(seq INTEGER PRIMARY KEY,id TEXT);
+        CREATE TRIGGER record_delivery AFTER INSERT ON parse_state BEGIN
+          INSERT INTO delivery_order(id) SELECT id FROM input_ref WHERE pk=NEW.input_pk;
+        END;",
+    )
+    .unwrap();
+    let mut pass = Pass::default();
+    e.execute(plans, &mut pass).unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let rows = e
+        .reads
+        .reader()
+        .unwrap()
+        .query("SELECT id FROM delivery_order ORDER BY seq", &[])
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], live_id);
+}

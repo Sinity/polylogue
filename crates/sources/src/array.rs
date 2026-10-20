@@ -13,6 +13,7 @@ struct Tap {
     last: Option<(u64, u8)>,
     captured: Option<(u64, Vec<u8>)>,
     stats: ScanStats,
+    failure: Option<ScanError>,
 }
 
 struct Tapped<R> {
@@ -38,6 +39,18 @@ impl<R: Read> Read for Tapped<R> {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ScanError {
+    #[error("malformed export array: {0}")]
+    Malformed(serde_json::Error),
+    #[error("reading export array: {0}")]
+    Input(serde_json::Error),
+    #[error("export callback: {0}")]
+    Callback(String),
+    #[error("Serde element bytes differ from observed source bytes")]
+    Span,
+}
+
 #[derive(Default, Debug, Clone, Copy)]
 pub struct ScanStats {
     pub elements: u64,
@@ -50,19 +63,30 @@ pub struct ScanStats {
 pub fn scan(
     reader: impl Read,
     mut item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
-) -> serde_json::Result<ScanStats> {
+) -> Result<ScanStats, ScanError> {
     let tap = Rc::new(RefCell::new(Tap::default()));
     let input = Tapped {
         reader: BufReader::new(reader),
         tap: Rc::clone(&tap),
     };
     let mut de = serde_json::Deserializer::from_reader(input);
-    ArraySeed {
-        tap: &tap,
-        item: &mut item,
+    let result = (|| {
+        ArraySeed {
+            tap: &tap,
+            item: &mut item,
+        }
+        .deserialize(&mut de)?;
+        de.end()
+    })();
+    if let Err(error) = result {
+        return Err(tap.borrow_mut().failure.take().unwrap_or_else(|| {
+            if error.is_io() {
+                ScanError::Input(error)
+            } else {
+                ScanError::Malformed(error)
+            }
+        }));
     }
-    .deserialize(&mut de)?;
-    de.end()?;
     let stats = tap.borrow().stats;
     Ok(stats)
 }
@@ -105,11 +129,11 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed
         // Serde's IoRead presents the element's first byte to SeqAccess before
         // invoking the seed. Verify that byte and every subsequent byte against
         // RawValue; incompatible read-ahead fails instead of inventing a span.
-        let (start, first) = self
-            .tap
-            .borrow()
-            .last
-            .ok_or_else(|| D::Error::custom("missing array element byte"))?;
+        let last = self.tap.borrow().last;
+        let Some((start, first)) = last else {
+            self.tap.borrow_mut().failure = Some(ScanError::Span);
+            return Err(D::Error::custom("missing array element byte"));
+        };
         self.tap.borrow_mut().captured = Some((start, vec![first]));
         let raw = Box::<RawValue>::deserialize(de)?;
         let (_, captured) = self
@@ -119,6 +143,7 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed
             .take()
             .expect("capture started");
         if !captured.starts_with(raw.get().as_bytes()) {
+            self.tap.borrow_mut().failure = Some(ScanError::Span);
             return Err(D::Error::custom(
                 "Serde element bytes differ from observed source bytes",
             ));
@@ -132,7 +157,10 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed
                 .max(captured.len() + raw.get().len());
         }
         drop(captured);
-        (self.item)(start..start + raw.get().len() as u64, &raw).map_err(D::Error::custom)
+        (self.item)(start..start + raw.get().len() as u64, &raw).map_err(|error| {
+            self.tap.borrow_mut().failure = Some(ScanError::Callback(error));
+            D::Error::custom("export callback failed")
+        })
     }
 }
 

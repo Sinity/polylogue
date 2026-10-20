@@ -163,8 +163,10 @@ global oldest-first ordering and first-owner message deduplication through this
 same object; Claude preserves physical array order. Scratch disappears when the
 operation ends and is rebuilt from retained bytes on retry.
 
-Delivery decodes one conversation and waits for its writer commit before
-decoding the next. Message order is a separate logical ordinal; message and
+The existing live-before-bulk and size ordering applies across parser kinds.
+Preceding ordinary work drains through the parse pool and commits before the
+serial array driver runs with the pool inactive. That driver decodes one
+conversation and waits for its writer commit before decoding the next. Message order is a separate logical ordinal; message and
 event locations cite the complete original conversation span. Repeated event
 facts retain their latest logical source order, including across replay. Memory therefore
 scales with the largest conversation and its parser output, rather than the

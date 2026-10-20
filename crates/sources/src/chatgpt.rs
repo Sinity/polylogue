@@ -72,10 +72,13 @@ pub struct Export;
 
 impl crate::array::ArrayParser for Export {
     fn order_key(&self, raw: &serde_json::value::RawValue) -> Option<f64> {
-        serde_json::from_str::<Json>(raw.get())
-            .ok()?
-            .get("create_time")?
-            .as_f64()
+        #[derive(serde::Deserialize)]
+        struct Header {
+            create_time: Option<Json>,
+        }
+        // Unrelated fields deserialize as IgnoredAny, including the mapping.
+        let header: Header = serde_json::from_str(raw.get()).ok()?;
+        header.create_time?.as_f64()
     }
     fn item(
         &self,

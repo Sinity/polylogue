@@ -13,6 +13,9 @@ pub fn parse(parser: &Parse, bytes: &[u8]) -> Result<Step, String> {
         items.push((range, raw.to_owned()));
         Ok(())
     }) {
+        let polylogue_sources::array::ScanError::Malformed(error) = error else {
+            return Err(error.to_string());
+        };
         return Ok(polylogue_sources::array::refused(
             error.to_string(),
             bytes.len() as u64,

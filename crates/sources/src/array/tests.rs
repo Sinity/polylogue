@@ -105,3 +105,41 @@ fn scan_buffers_follow_element_size_rather_than_array_size_or_whitespace() {
         .chain(io::Cursor::new(b"[{}]"));
     assert!(scan(reader, |_, _| Ok(())).unwrap().peak_element_bytes <= 5);
 }
+
+#[test]
+fn scan_failures_distinguish_provider_syntax_input_callback_and_span() {
+    struct Broken;
+    impl Read for Broken {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("source unavailable"))
+        }
+    }
+    assert!(matches!(
+        scan(Broken, |_, _| Ok(())),
+        Err(ScanError::Input(_))
+    ));
+    assert!(matches!(
+        scan(b"[{},]".as_slice(), |_, _| Ok(())),
+        Err(ScanError::Malformed(_))
+    ));
+    assert!(matches!(
+        scan(b"[{}]".as_slice(), |_, _| Err(
+            "Serde element bytes differ".into()
+        )),
+        Err(ScanError::Callback(_))
+    ));
+    let tap = Rc::new(RefCell::new(Tap {
+        last: Some((0, b'!')),
+        ..Default::default()
+    }));
+    let mut callback = |_: Range<u64>, _: &RawValue| Ok(());
+    assert!(
+        ItemSeed {
+            tap: &tap,
+            item: &mut callback
+        }
+        .deserialize(&mut serde_json::Deserializer::from_str("{}"))
+        .is_err()
+    );
+    assert!(matches!(tap.borrow().failure, Some(ScanError::Span)));
+}

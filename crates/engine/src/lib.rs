@@ -923,11 +923,16 @@ impl Engine {
         if plans.is_empty() {
             return Ok(());
         }
+        // Keep the existing priority/size order across parser kinds. An array
+        // runs serially only after preceding pool work has committed.
+        let mut plans = plans;
+        plans.sort_by_key(|p| (p.priority == Priority::Bulk, std::cmp::Reverse(p.size)));
         let mut ordinary = Vec::new();
         for mut plan in plans {
             if let Some(polylogue_sources::parse::Parse::Array(parser)) =
                 (plan.origin.open)(&plan.path)
             {
+                self.execute_pool(std::mem::take(&mut ordinary), pass)?;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     self.execute_array(&mut plan, &*parser, pass)
                 }));
@@ -951,7 +956,10 @@ impl Engine {
                 ordinary.push(plan);
             }
         }
-        let plans = ordinary;
+        self.execute_pool(ordinary, pass)
+    }
+
+    fn execute_pool(&mut self, plans: Vec<Plan>, pass: &mut Pass) -> Result<(), EngineError> {
         if plans.is_empty() {
             return Ok(());
         }
@@ -965,10 +973,6 @@ impl Engine {
         );
         let mut running: HashMap<PathBuf, Plan> = HashMap::new();
         let mut outstanding = 0usize;
-        let mut plans = plans;
-        // Live work first; large bulk inputs first among the bulk, so the
-        // longest jobs do not start last.
-        plans.sort_by_key(|p| (p.priority == Priority::Bulk, std::cmp::Reverse(p.size)));
         for mut plan in plans {
             if plan.finished() {
                 self.settle(plan);

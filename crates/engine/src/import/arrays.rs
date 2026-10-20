@@ -37,14 +37,10 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let mut scratch = ExportArray::new()?;
-        let mut storage_error = None;
         let mut ingest = |range, raw: &serde_json::value::RawValue| {
             scratch
                 .push(range, parser.order_key(raw), raw.get().as_bytes())
-                .map_err(|e| {
-                    storage_error = Some(e.to_string());
-                    e.to_string()
-                })
+                .map_err(|e| e.to_string())
         };
         let scanned = match &plan.source {
             pool::Bytes::Import(source) => {
@@ -72,13 +68,10 @@ impl Engine {
                 );
             }
         };
-        if let Some(error) = storage_error {
-            return Err(std::io::Error::other(error).into());
-        }
         if let Err(error) = scanned {
-            if error.is_io() || error.to_string().contains("Serde element bytes differ") {
+            let array::ScanError::Malformed(error) = error else {
                 return Err(std::io::Error::other(error).into());
-            }
+            };
             let step = array::refused(error.to_string(), plan.size);
             self.write_array_step(plan, step.output, step.accounting, 0, true, true, pass)?;
             plan.parse_pos = plan.size;
