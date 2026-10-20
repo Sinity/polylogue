@@ -34,7 +34,7 @@
       code: "receiver_offline",
       label: "Receiver offline",
       tone: "warn",
-      detail: "The paired local receiver is unavailable. Existing local queues and evidence are preserved.",
+      detail: "The native host is unavailable. Existing local queues and evidence are preserved.",
     }),
     provider_warning: Object.freeze({
       code: "provider_warning",

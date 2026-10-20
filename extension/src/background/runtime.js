@@ -4005,7 +4005,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // the same automatic-capture policy.
         const capture = await captureTab(sender.tab, message.reason || "provider_page_hint");
         // captureTab returns null when it never reached the content script
-        // (no session identity, paused policy, unpaired receiver); say so.
+        // (no session identity, paused policy, unavailable native host); say so.
         sendResponse(capture ? { ok: true, scheduled: false, capture } : { ok: false, scheduled: false, error: "capture_not_started" });
         return;
       }

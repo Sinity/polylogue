@@ -254,7 +254,7 @@
       details { margin-top: 10px; }
       summary { color: var(--muted); cursor: pointer; }
       .mono,
-      .pairing-id,
+      .status-id,
       .log-time { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace; }
       .empty { color: var(--muted); padding: 5px 0; }
       @media (max-width: 520px) {
@@ -333,7 +333,7 @@
         <section id="browser-action-approval" tabindex="-1" hidden aria-labelledby="browser-action-approval-heading">
           <div class="section-head"><strong id="browser-action-approval-heading">Browser action approval</strong></div>
           <div class="surface-card">
-            <div id="browser-action-approval-summary" class="pairing-id">--</div>
+            <div id="browser-action-approval-summary" class="status-id">--</div>
             <p id="browser-action-approval-detail" class="log-meta">This will post a real reply into an existing conversation. It stays held until you decide.</p>
           </div>
           <div class="controls">
@@ -345,7 +345,7 @@
         <section aria-labelledby="receiver-heading">
           <div class="section-head"><strong id="receiver-heading">Native host</strong><span id="receiver-health" class="state-chip neutral">--</span></div>
           <div class="surface-card">
-            <div id="native-host-status" class="pairing-id">Host not checked</div>
+            <div id="native-host-status" class="status-id">Host not checked</div>
             <p id="native-host-detail" class="log-meta">The installed native host admits this extension; no endpoint or pairing is configured.</p>
           </div>
         </section>

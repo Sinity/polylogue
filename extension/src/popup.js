@@ -150,7 +150,6 @@ function activeConversationState(tab, globalState, ledger) {
   const onlineState = {
     online: globalState?.online ?? true,
     error: globalState?.error || null,
-    receiver_pairing: globalState?.receiver_pairing || null,
     receiver_health: globalState?.receiver_health || null,
   };
   if (context.provider === "unknown") return {
@@ -377,7 +376,7 @@ function renderQueue(queue) {
   renderWorkQueue();
 }
 
-function renderNativeHost(_pairing, health = null, _configuredUrl = "") {
+function renderNativeHost(health = null) {
   const statusNode = document.getElementById("native-host-status");
   const detailNode = document.getElementById("native-host-detail");
   if (!statusNode || !detailNode) return;
@@ -387,14 +386,14 @@ function renderNativeHost(_pairing, health = null, _configuredUrl = "") {
   statusNode.title = "";
 }
 
-function renderReceiverHealth(health, pairing = null, configuredUrl = "") {
+function renderReceiverHealth(health) {
   const node = document.getElementById("receiver-health");
   if (!node) return;
   if (!health) {
     node.textContent = "--";
     node.title = "";
     node.className = "state-chip neutral";
-    renderNativeHost(pairing, health, configuredUrl);
+    renderNativeHost(health);
     return;
   }
   const labels = {
@@ -405,14 +404,14 @@ function renderReceiverHealth(health, pairing = null, configuredUrl = "") {
   };
   const tone = ["ok", "recovered"].includes(health.status)
     ? "ok"
-    : ["unauthorized", "pairing_mismatch", "error", "dev_override_stale"].includes(health.status)
+    : ["unauthorized", "error"].includes(health.status)
       ? "bad"
       : "warn";
   node.textContent = labels[health.status] || health.status || "--";
   node.title = health.detail || "";
   node.className = `state-chip ${tone}`;
   currentReceiverOnline = ["ok", "recovered"].includes(health.status);
-  renderNativeHost(pairing || health.pairing || null, health, configuredUrl);
+  renderNativeHost(health);
   renderWorkQueue();
 }
 
@@ -665,7 +664,7 @@ async function render() {
   const receiverContract = document.getElementById("receiver-contract");
   if (receiverContract) {
     receiverContract.textContent = [
-      mission?.receiver?.health?.receiver_status?.api_schema || mission?.receiver?.pairing?.api_schema,
+      mission?.receiver?.health?.receiver_status?.api_schema,
       mission?.extension?.contract_epoch,
     ].filter(Boolean).join(" · ") || "Not reported";
   }
@@ -682,21 +681,16 @@ async function render() {
     const nextAttempt = candidates.length ? Math.min(...candidates) : null;
     cooldown.textContent = nextAttempt ? new Date(nextAttempt).toISOString() : "Not reported";
   }
-  const pairing = mission?.receiver?.pairing || state?.receiver_pairing || null;
   const health = mission?.receiver?.health || state?.receiver_health || (
-    state?.error === "unauthorized"
-      ? { status: "unauthorized", detail: "unauthorized", pairing }
-      : state?.error === "receiver_pairing_mismatch"
-        ? { status: "pairing_mismatch", detail: "receiver_pairing_mismatch", pairing }
-        : state?.online === false
-          ? { status: "unreachable", detail: state?.error || "receiver_unavailable", pairing }
-          : null
+    state?.online === false
+      ? { status: "unreachable", detail: state?.error || "native_host_unavailable" }
+      : null
   );
   currentReceiverOnline = health
     ? ["ok", "recovered"].includes(health.status)
     : state?.online !== false;
-  if (health) renderReceiverHealth(health, pairing, mission?.receiver?.configured_url || "Native messaging");
-  else renderNativeHost(pairing, null, "Native messaging");
+  if (health) renderReceiverHealth(health);
+  else renderNativeHost();
 
   const status = operatorStatusApi.operatorStatusForState(state || {});
   const requestNode = document.getElementById("receiver-request");
@@ -776,7 +770,6 @@ async function render() {
 
   renderAttention(operatorStatusApi.computeAttention({
     conversationState: state,
-    pairing,
     health,
     workItems: attentionWorkItems,
     browserActions: currentBrowserActions,

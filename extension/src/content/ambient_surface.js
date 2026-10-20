@@ -262,14 +262,14 @@
     const intelligenceDetail = createElement(doc, "p", "meta", "The receiver is resolving canonical evidence.");
     const costLine = createElement(doc, "p", "meta", "Session cost: unknown");
     const assertionList = createElement(doc, "div", "list");
-    const archiveLink = createElement(doc, "a", "secondary", "Open canonical archive");
-    archiveLink.setAttribute("aria-label", "Open this conversation in the canonical Polylogue archive");
+    const archiveLink = createElement(doc, "a", "secondary", "Open Polylogue");
+    archiveLink.setAttribute("aria-label", "Open the Polylogue reader");
     archiveLink.hidden = true;
     intelligenceSection.append(intelligenceStatus, intelligenceDetail, costLine, assertionList, archiveLink);
     panel.appendChild(intelligenceSection);
 
     const receiverSection = createElement(doc, "section", "section");
-    receiverSection.appendChild(createElement(doc, "h3", "", "Receiver pairing"));
+    receiverSection.appendChild(createElement(doc, "h3", "", "Native host"));
     const receiverHeadline = createElement(doc, "div", "item-title", "Checking receiver…");
     const receiverDetail = createElement(doc, "p", "meta");
     receiverSection.append(receiverHeadline, receiverDetail);
