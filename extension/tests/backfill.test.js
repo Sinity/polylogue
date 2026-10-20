@@ -14,7 +14,7 @@ import { IndexedDbBackfillStore, MemoryBackfillStore } from "../src/backfill/sto
 
 const captureOwners = new Map();
 async function serializedContentHash(file) { return createHash("sha256").update(Buffer.from(await file.arrayBuffer())).digest("hex"); }
-async function captureContentHash(envelope, file) { return envelope.receiver_native?.sha256 || serializedContentHash(file); }
+async function captureContentHash(_envelope, file) { return serializedContentHash(file); }
 async function* checkpointResults(store, failures = []) {
   for await (const job of store.jobRecords()) {
     yield failures.find((failure) => failure.job_id === job.id) || { job_id: job.id, error: null, outcome: "committed" };
@@ -25,9 +25,11 @@ function coordinatorFixture(options) {
   if (!captureOwners.has(key)) captureOwners.set(key, stagingRuntime());
   const { staging } = captureOwners.get(key);
   return new BackfillCoordinator({
-    prepareCapture: (envelope, item, signal) => envelope.receiver_native
-      ? { contentHash: envelope.receiver_native.sha256 }
-      : staging.prepare(envelope, staging.conversionId(`backfill:${item.id}`), { delivery_kind: "backfill", id: item.id, job_id: item.job_id }, signal),
+    prepareCapture: (envelope, item, signal) => {
+      const source = captureOwners.get(envelope.capture_record_ref)?.staging || staging;
+      return source.prepare(envelope, source.conversionId(`backfill:${item.id}`),
+        { delivery_kind: "backfill", id: item.id, job_id: item.job_id }, signal);
+    },
     ...options,
   });
 }
@@ -659,7 +661,7 @@ describe("background backfill coordinator", () => {
     expect(await retainedNativeCapture(capture)).toEqual(native);
     expect(capture.provider_meta.capture_fidelity).toBe("native_full");
     expect(capture.session.turns).toEqual([]);
-    expect(capture.receiver_native).toBeDefined();
+    expect(capture.raw_provider_payload).toBeDefined();
     const fixture = new FixtureAdapter([native.id]); fixture.responses = [response(native)];
     const h = harness({ adapter: fixture }); const job = await startJob(h);
     await enumerateThenAdvance(h, job); await h.coordinator.wake(job.id);
@@ -1024,7 +1026,7 @@ describe("provider adapter contracts", () => {
     const capture = await adapter.normalizeCapture(await adapter.fetchNative("gpt-1"), inventory.items[0], { job_id: "j", queue_id: "q", instance_id: "i" });
     expect(await retainedNativeCapture(capture)).toEqual(chatGptNative("gpt-1"));
     expect(capture.session.turns).toEqual([]);
-    expect(capture.receiver_native).toBeDefined();
+    expect(capture.raw_provider_payload).toBeDefined();
     expect(capture.session.provider_meta.backfill.instance_id).toBe("i");
 
     const drifted = new ChatGptBackfillAdapter(vi.fn(async () => response({ conversations: [] })));
@@ -1050,7 +1052,7 @@ describe("provider adapter contracts", () => {
     const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-ci", title: "Code interpreter run" }, {});
 
     expect(await retainedNativeCapture(capture)).toEqual(native);
-    expect(capture.receiver_native).toBeDefined();
+    expect(capture.raw_provider_payload).toBeDefined();
     // Canonical pairing: native-rich-blocks-v1.json through actual receiver
     // parity and test_code_interpreter_call_and_result_share_a_tool_id.
 
@@ -1083,7 +1085,7 @@ describe("provider adapter contracts", () => {
 
     expect(await retainedNativeCapture(capture)).toEqual(native);
     expect(capture.capture_summary.turnCount).toBeGreaterThan(0);
-    expect(capture.receiver_native).toBeDefined();
+    expect(capture.raw_provider_payload).toBeDefined();
   });
 
   it("does not misclassify a thinking-only Claude turn as no_turns", async () => {
@@ -1104,7 +1106,7 @@ describe("provider adapter contracts", () => {
 
     expect(await retainedNativeCapture(capture)).toEqual(body);
     expect(capture.capture_summary.turnCount).toBeGreaterThan(0);
-    expect(capture.receiver_native).toBeDefined();
+    expect(capture.raw_provider_payload).toBeDefined();
   });
 
   it("retains a recipient-addressed JSON tool call for canonical receiver classification", async () => {
@@ -1119,7 +1121,7 @@ describe("provider adapter contracts", () => {
     const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-tool", title: "Web search" }, {});
 
     expect(await retainedNativeCapture(capture)).toEqual(native);
-    expect(capture.receiver_native).toBeDefined();
+    expect(capture.raw_provider_payload).toBeDefined();
   });
 
   it("refuses a false-empty ChatGPT inventory without proven page auth context", async () => {
@@ -1245,7 +1247,7 @@ describe("provider adapter contracts", () => {
     expect((await retainedNativeCapture(capture)).chat_messages[0]).toMatchObject({
       sender: "claude", parent_message_uuid: "parent", model: "claude-opus",
     });
-    expect(capture.receiver_native).toBeDefined();
+    expect(capture.raw_provider_payload).toBeDefined();
     expect(fetchImpl.mock.calls[2][0]).toContain("tree=True");
     expect(fetchImpl.mock.calls[2][0]).toContain("render_all_tools=true");
     expect(fetchImpl.mock.calls[2][0]).toContain("consistency=strong");
@@ -1315,7 +1317,7 @@ describe("provider adapter contracts", () => {
     expect(capture.session.provider).toBe("grok");
     expect(capture.session.session_kind).toBe("temporary");
     expect(capture.session.turns).toEqual([]);
-    expect(capture.receiver_native).toBeDefined();
+    expect(capture.raw_provider_payload).toBeDefined();
     expect(fetchImpl.mock.calls[1][0]).toContain("/responses");
     const retained = await retainedNativeCapture(capture);
     expect(retained.conversation).toMatchObject({ conversationId: "g-1", temporary: true });

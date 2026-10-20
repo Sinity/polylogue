@@ -3467,7 +3467,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (message.type === "polylogue.backfill.import.cancel") {
         operation.controller.abort(new globalThis.DOMException("Import cancelled", "AbortError"));
         if (operation.running) await operation.running.catch(() => undefined);
-        else await captureStaging.discard(operation.ref.id);
+        else await captureStaging.cancel(operation.ref, operation.owner);
         checkpointImports.delete(message.import_id); sendResponse({ ok: true }); return;
       }
       if (message.type !== "polylogue.backfill.import.finish" || operation.running) throw new Error("checkpoint_import_operation_invalid");

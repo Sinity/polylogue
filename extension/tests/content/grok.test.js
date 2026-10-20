@@ -184,12 +184,12 @@ describe("Grok native capture end to end", () => {
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "auto_capture_missing" });
 
     expect(response.ok).toBe(true);
-    expect(response.envelope.receiver_native).toBeTruthy();
+    expect(response.envelope.raw_provider_payload).toBeTruthy();
     expect(response.envelope.session.provider_session_id).toBe(conversationId);
     expect(response.envelope.session.session_kind).toBe("standard");
     const retained = await dom.__captureRuntime.retainedNativeReplies(response.envelope);
     expect(retained.responses.responses).toEqual([humanResponse(), assistantResponse()]);
-    expect(response.envelope.receiver_native).toBeDefined();
+    expect(response.envelope.raw_provider_payload).toBeDefined();
     expect(response.envelope.session.turns).toEqual([]);
     expect(runtimeMessages.filter((message) => message.type === "polylogue.capture")).toEqual([expect.objectContaining({ reason: "auto_capture_missing" })]);
   });
@@ -237,7 +237,7 @@ describe("Grok native capture end to end", () => {
     expect(response.ok).toBe(true);
     const retained = await dom.__captureRuntime.retainedNativeReplies(response.envelope);
     expect(retained.responses.responses[1].toolResponses).toEqual(withOddTool.toolResponses);
-    expect(response.envelope.receiver_native).toBeDefined();
+    expect(response.envelope.raw_provider_payload).toBeDefined();
   });
 
   it("retains web search evidence verbatim for canonical receiver tool blocks", async () => {
@@ -252,7 +252,7 @@ describe("Grok native capture end to end", () => {
 
     const retained = await dom.__captureRuntime.retainedNativeReplies(response.envelope);
     expect(retained.responses.responses[0]).toEqual(searchResponse);
-    expect(response.envelope.receiver_native).toBeDefined();
+    expect(response.envelope.raw_provider_payload).toBeDefined();
   });
 
   it("fails loud instead of sending an empty capture when the responses endpoint is unavailable", async () => {

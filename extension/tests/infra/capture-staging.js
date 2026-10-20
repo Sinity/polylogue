@@ -106,7 +106,7 @@ export function stagingRuntime(storage = memoryOriginStorage(), owner = { tab_id
     },
     setDispatch(value) { dispatch = value; },
     async materialize(envelope) {
-      if (envelope.receiver_native) return envelope;
+      if (envelope.raw_provider_payload && envelope.capture_record_ref) return envelope;
       const prepared = await staging.prepare(envelope);
       return JSON.parse(await prepared.body.text());
     },

@@ -162,7 +162,7 @@ describe("ambient capture status surface", () => {
 
     const text = api.shadow.textContent;
     expect(text).toContain("Safe / current");
-    expect(text).toContain("Paired receiver rx-ambient");
+    expect(text).toContain("Native host online");
     expect(text).toContain("Observed; no action needed");
     expect(text).toContain("Archive was already current");
     expect(text).toContain("Save assertion — receiver API unavailable");

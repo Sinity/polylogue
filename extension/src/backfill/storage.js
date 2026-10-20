@@ -86,39 +86,6 @@ function checkpointRevision(revision) {
   return globalThis.structuredClone(safe);
 }
 
-function recoveryValueDigest(value) {
-  const safe = { ...value };
-  delete safe.recovery_source_checkpoint;
-  delete safe.recovery_checkpoint_outcome;
-  return createSha256().update(canonicalJson(safe)).hex();
-}
-
-function canAdvanceRecovery(current, root) {
-  if (!current) return true;
-  const proof = current.recovery_source_checkpoint;
-  // An operator mutation or locally acquired custody is never replaced by a
-  // metadata checkpoint. The proof hashes the exact installed row, including
-  // its paused state, rather than a lossy checkpoint projection.
-  if (!proof || proof.value_digest !== recoveryValueDigest(current)) return false;
-  if (proof.account_scope !== root.account_scope) throw new Error("checkpoint_recovery_scope_conflict");
-  if (proof.remote_job_id === root.remote_job_id) {
-    if (proof.sequence === root.sequence && proof.digest !== root.digest) throw new Error("checkpoint_recovery_source_conflict");
-    return root.sequence > proof.sequence;
-  }
-  const prior = Date.parse(proof.acknowledged_at || "");
-  const next = Date.parse(root.acknowledged_at || "");
-  if (!Number.isFinite(prior) || !Number.isFinite(next) || prior === next) throw new Error("checkpoint_recovery_source_conflict");
-  return next > prior;
-}
-
-function recoveredRow(value, root) {
-  return { ...value, recovery_source_checkpoint: {
-    account_scope: root.account_scope, remote_job_id: root.remote_job_id,
-    digest: root.digest, sequence: root.sequence, acknowledged_at: root.acknowledged_at,
-    value_digest: recoveryValueDigest(value),
-  } };
-}
-
 export function nativeCacheOrder(current, incoming) {
   const revision = (row) => {
     const value = row.headers?.update_time ?? row.headers?.updated_at ?? row.headers?.updatedAt ?? row.headers?.modifyTime;

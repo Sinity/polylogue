@@ -16,6 +16,7 @@ export function nativeEnvelope(capture, attachments = false) {
     raw_provider_payload: payload,
     session: { provider: capture.provider, provider_session_id: capture.native_id,
       title: capture.title || capture.native_id, session_kind: capture.session_kind,
+      provider_meta: { capture_fidelity: "native_full", ...capture.attribution },
       turns: [], ...(attachments ? { attachments: { staged_session_attachments: capture.id } } : {}) },
     capture_source_refs: capture.source_refs, capture_record_ref: capture.id };
 }

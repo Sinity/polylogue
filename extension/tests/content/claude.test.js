@@ -266,7 +266,7 @@ describe("claude.js native capture (real source)", () => {
     expect(retained.chat_messages[2].text).toBe("");
     expect(retained.name).toBe("Native Claude title");
     expect(result.envelope.session.provider_session_id).toBe("conversation-1");
-    expect(result.envelope.receiver_native).toBeDefined();
+    expect(result.envelope.raw_provider_payload).toBeDefined();
     expect(result.envelope.session.turns).toEqual([]);
   });
 
@@ -408,7 +408,7 @@ describe("Claude original native attachment custody", () => {
     expect(result.ok).toBe(true);
     const retained = await dom.__captureRuntime.retainedNativeReplies(result.envelope);
     expect(retained).toEqual(payload);
-    expect(result.envelope.receiver_native).toBeDefined();
+    expect(result.envelope.raw_provider_payload).toBeDefined();
     expect(result.envelope.session.turns).toEqual([]);
     expect(retained.chat_messages[0].attachments.map((item) => item.extracted_content)).toEqual(["first", "second"]);
     expect(retained.chat_messages[1].files[0].file_uuid).toBe("synthetic-file");
