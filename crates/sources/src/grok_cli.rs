@@ -9,10 +9,10 @@
 //! message after it.
 
 use crate::document::{first_key, message_id, session_id, str_of, string_of};
-use crate::fields::{Fields, Rule, unaccounted};
+use crate::fields::{Fields, Rule};
 use crate::frame::Record;
 use crate::parse::{MessageRow, Output, Parse, Parser};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{
     Block, Event, Json, Message, MessageId, PromptKind, Role, Session, SessionKind, ToolAction,
     ToolOutcome,
@@ -146,18 +146,16 @@ impl Parser for GrokCli {
         str_of(value, "type").unwrap_or("?").to_owned()
     }
 
-    fn record(
+    fn parse_record(
         &self,
         carry: &mut Carry,
         record: Record<'_>,
         value: &Json,
         out: &mut Output,
-        acc: &mut Accounting,
+        records: &mut Records,
     ) -> Disposition {
         let kind = self.kind(value);
-        for path in unaccounted(value, FIELDS) {
-            acc.unread(&kind, &path);
-        }
+        records.fields(&kind, value, FIELDS);
         let Some(sid) = session_id(ORIGIN, &self.place.session) else {
             return Disposition::refused("unusable session directory name");
         };

@@ -14,10 +14,10 @@
 //! transcript.
 
 use crate::document::{first_key, session_id, str_of};
-use crate::fields::{Fields, Rule, unaccounted};
+use crate::fields::{Fields, Rule};
 use crate::frame::Record;
 use crate::parse::{Output, Parse, Parser};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{Event, Json, Session, SessionKind};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -98,18 +98,16 @@ impl Parser for HookSpool {
             .to_owned()
     }
 
-    fn record(
+    fn parse_record(
         &self,
         _carry: &mut Carry,
         record: Record<'_>,
         value: &Json,
         out: &mut Output,
-        acc: &mut Accounting,
+        records: &mut Records,
     ) -> Disposition {
         let kind = self.kind(value);
-        for path in unaccounted(value, FIELDS) {
-            acc.unread(&kind, &path);
-        }
+        records.fields(&kind, value, FIELDS);
         let Some(event_type) = str_of(value, "event_type").or_else(|| str_of(value, "event"))
         else {
             return Disposition::refused("no event_type");

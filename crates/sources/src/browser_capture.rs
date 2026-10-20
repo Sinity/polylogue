@@ -13,9 +13,9 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
-use crate::fields::{Fields, Rule, unaccounted};
+use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, Parse};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use base64::Engine as _;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, PromptKind, Role,
@@ -103,21 +103,23 @@ pub fn session_for(
 pub struct Capture;
 
 impl DocumentParser for Capture {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let capture = match serde_json::from_slice::<Json>(bytes) {
             Ok(v) if v.is_object() => v,
-            Ok(_) => return sink.record("capture", &Disposition::refused("not an object")),
+            Ok(_) => {
+                return sink
+                    .records
+                    .record("capture", &Disposition::refused("not an object"));
+            }
             Err(e) => {
-                return sink.record(
+                return sink.records.record(
                     "capture",
                     &Disposition::refused(format!("malformed JSON: {e}")),
                 );
             }
         };
-        for path in unaccounted(&capture, CAPTURE_FIELDS) {
-            sink.acc.unread("capture", &path);
-        }
+        sink.records.fields("capture", &capture, CAPTURE_FIELDS);
         // `source` names the capturing program (`browser-extension`); the
         // provider whose conversation it is sits in the session.
         let Some(provider) = capture
@@ -125,16 +127,18 @@ impl DocumentParser for Capture {
             .and_then(Json::as_str)
             .filter(|p| !p.is_empty())
         else {
-            return sink.record("capture", &Disposition::refused("no session.provider"));
+            return sink
+                .records
+                .record("capture", &Disposition::refused("no session.provider"));
         };
         let origin = origin_of(provider);
         if polylogue_model::Origin::new(origin).is_err() {
-            return sink.record(
+            return sink.records.record(
                 "capture",
                 &Disposition::refused(format!("source {origin:?} is not an origin name")),
             );
         }
-        sink.record("capture", &Disposition::Materialized);
+        sink.records.record("capture", &Disposition::Materialized);
 
         let raw = capture
             .get("raw_provider_payload")
@@ -149,7 +153,7 @@ impl DocumentParser for Capture {
             }
             _ => match capture.get("session").filter(|s| s.is_object()) {
                 Some(session) => turns(origin, session, &mut sink),
-                None => sink.record(
+                None => sink.records.record(
                     "session",
                     &Disposition::refused("neither provider JSON nor turns"),
                 ),
@@ -182,11 +186,13 @@ impl DocumentParser for Capture {
 /// conversation JSON.
 fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
     let Some(native) = str_of(session, "provider_session_id") else {
-        sink.record("session", &Disposition::refused("no provider_session_id"));
+        sink.records
+            .record("session", &Disposition::refused("no provider_session_id"));
         return;
     };
     let Some(sid) = session_id(origin, native) else {
-        sink.record("session", &Disposition::refused("unusable session ID"));
+        sink.records
+            .record("session", &Disposition::refused("unusable session ID"));
         return;
     };
     let mut facts = Session::new(sid.clone(), SessionKind::Main);
@@ -197,7 +203,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         facts.offer_start(at);
     }
     sink.out.sessions.push(facts);
-    sink.record("session", &Disposition::Materialized);
+    sink.records.record("session", &Disposition::Materialized);
     let mut list: Vec<&Json> = session
         .get("turns")
         .and_then(Json::as_array)
@@ -207,9 +213,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
     list.sort_by_key(|t| t.get("ordinal").and_then(Json::as_i64).unwrap_or(i64::MAX));
     for (i, turn) in list.into_iter().enumerate() {
         let role_name = str_of(turn, "role").unwrap_or("?").to_owned();
-        for path in unaccounted(turn, TURN_FIELDS) {
-            sink.acc.unread("turn", &path);
-        }
+        sink.records.fields("turn", turn, TURN_FIELDS);
         let (role, prompt_kind, direction) = match role_name.as_str() {
             "user" | "human" => (
                 Role::User,
@@ -219,7 +223,8 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             "assistant" | "model" => (Role::Assistant, None, AttachmentDirection::Output),
             "system" => (Role::System, None, AttachmentDirection::Input),
             other => {
-                sink.record(other, &Disposition::unknown(format!("role {other}")));
+                sink.records
+                    .record(other, &Disposition::unknown(format!("role {other}")));
                 continue;
             }
         };
@@ -233,7 +238,8 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             format!("{native}#{place}")
         });
         let Some(id) = message_id(origin, &turn_native) else {
-            sink.record(&role_name, &Disposition::refused("unusable turn ID"));
+            sink.records
+                .record(&role_name, &Disposition::refused("unusable turn ID"));
             continue;
         };
         let mut blocks: Vec<Block> = turn
@@ -277,7 +283,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             end: offset + 1,
             message,
         });
-        sink.record(&role_name, &Disposition::Materialized);
+        sink.records.record(&role_name, &Disposition::Materialized);
     }
 }
 

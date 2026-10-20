@@ -9,9 +9,9 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of};
-use crate::fields::{Fields, Rule, unaccounted};
+use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Json, Message, PromptKind, Role, Session, SessionKind,
     TitleSource, ToolAction, ToolOutcome, Usage,
@@ -63,12 +63,12 @@ const MESSAGE_FIELDS: Fields = &[
 ];
 
 impl DocumentParser for OpenAiChat {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let doc = match serde_json::from_slice::<Json>(bytes) {
             Ok(v) => v,
             Err(e) => {
-                return sink.record(
+                return sink.records.record(
                     "chat",
                     &Disposition::refused(format!("malformed JSON: {e}")),
                 );
@@ -78,38 +78,45 @@ impl DocumentParser for OpenAiChat {
             Json::Array(items) => (items.as_slice(), None),
             Json::Object(_) => match doc.get("messages").and_then(Json::as_array) {
                 Some(items) => (items.as_slice(), Some(&doc)),
-                None => return sink.record("chat", &Disposition::refused("no messages array")),
+                None => {
+                    return sink
+                        .records
+                        .record("chat", &Disposition::refused("no messages array"));
+                }
             },
-            _ => return sink.record("chat", &Disposition::refused("not an array or object")),
+            _ => {
+                return sink
+                    .records
+                    .record("chat", &Disposition::refused("not an array or object"));
+            }
         };
         if let Some(h) = header {
-            for path in unaccounted(h, DOCUMENT_FIELDS) {
-                sink.acc.unread("chat", &path);
-            }
+            sink.records.fields("chat", h, DOCUMENT_FIELDS);
         }
         let native = header
             .and_then(|h| str_of(h, "id"))
             .unwrap_or(&self.file)
             .to_owned();
         let Some(sid) = session_id(ORIGIN, &native) else {
-            return sink.record("chat", &Disposition::refused("unusable session name"));
+            return sink
+                .records
+                .record("chat", &Disposition::refused("unusable session name"));
         };
         let mut session = Session::new(sid.clone(), SessionKind::Main);
         if let Some(title) = header.and_then(|h| str_of(h, "title")) {
             session.offer_title(title, TitleSource::Generated);
         }
         sink.out.sessions.push(session);
-        sink.record("chat", &Disposition::Materialized);
+        sink.records.record("chat", &Disposition::Materialized);
         let model = header.and_then(|h| string_of(h, "model"));
 
         let mut previous = None;
         for (i, m) in messages.iter().enumerate() {
             let kind = str_of(m, "role").unwrap_or("?").to_owned();
-            for path in unaccounted(m, MESSAGE_FIELDS) {
-                sink.acc.unread(&kind, &path);
-            }
+            sink.records.fields(&kind, m, MESSAGE_FIELDS);
             let Some(id) = message_id(ORIGIN, &format!("{native}#{i}")) else {
-                sink.record(&kind, &Disposition::refused("unusable message ID"));
+                sink.records
+                    .record(&kind, &Disposition::refused("unusable message ID"));
                 continue;
             };
             let role = match kind.as_str() {
@@ -119,7 +126,7 @@ impl DocumentParser for OpenAiChat {
                 // A tool's answer reaches the model in the user's turn.
                 "tool" | "function" => Role::User,
                 other => {
-                    sink.record(
+                    sink.records.record(
                         &kind,
                         &Disposition::refused(format!("unknown role {other}")),
                     );
@@ -128,7 +135,8 @@ impl DocumentParser for OpenAiChat {
             };
             let blocks = blocks(m, role);
             if blocks.is_empty() {
-                sink.record(&kind, &Disposition::unknown("a message with no content"));
+                sink.records
+                    .record(&kind, &Disposition::unknown("a message with no content"));
                 continue;
             }
             let harness = matches!(kind.as_str(), "tool" | "function");
@@ -157,7 +165,7 @@ impl DocumentParser for OpenAiChat {
                 end: offset + 1,
                 message,
             });
-            sink.record(&kind, &Disposition::Materialized);
+            sink.records.record(&kind, &Disposition::Materialized);
         }
     }
 }

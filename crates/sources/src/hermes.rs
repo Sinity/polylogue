@@ -4,7 +4,7 @@
 
 use crate::frame::Record;
 use crate::parse::{Output, Parse, Parser};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::Json;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -39,13 +39,13 @@ impl Parser for HermesDatabase {
         }
     }
 
-    fn record(
+    fn parse_record(
         &self,
         _: &mut NoState,
         _: Record<'_>,
         v: &Json,
         _: &mut Output,
-        _: &mut Accounting,
+        _: &mut Records,
     ) -> Disposition {
         if v.get("schema").is_some() {
             Disposition::Materialized

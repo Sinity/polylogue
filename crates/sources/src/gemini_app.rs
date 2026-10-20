@@ -11,7 +11,7 @@
 
 use crate::document::{Sink, message_id, session_id};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Event, Json, Message, PromptKind, Role, Session,
     SessionKind, Timestamp, Usage,
@@ -48,14 +48,16 @@ struct Entry {
 }
 
 impl DocumentParser for GeminiApp {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let html = String::from_utf8_lossy(bytes);
         let mut entries = Vec::new();
         for cell in html.split(CELL).skip(1) {
             match entry(cell) {
                 Some(e) => entries.push(e),
-                None => sink.record("activity", &Disposition::refused("no content cell")),
+                None => sink
+                    .records
+                    .record("activity", &Disposition::refused("no content cell")),
             }
         }
         // The export lists newest first; a conversation reads oldest first.
@@ -72,7 +74,8 @@ impl DocumentParser for GeminiApp {
                 .clone()
                 .unwrap_or_else(|| format!("entry-{stamp}"));
             let Some(sid) = session_id(ORIGIN, &native) else {
-                sink.record(&e.verb, &Disposition::refused("unusable conversation ID"));
+                sink.records
+                    .record(&e.verb, &Disposition::refused("unusable conversation ID"));
                 continue;
             };
             if made.insert(native.clone()) {
@@ -93,14 +96,15 @@ impl DocumentParser for GeminiApp {
                         "verb": e.verb, "text": e.prompt, "notes": e.notes, "detail": e.response
                     }),
                 });
-                sink.record(&e.verb, &Disposition::Materialized);
+                sink.records.record(&e.verb, &Disposition::Materialized);
                 continue;
             }
             let (Some(user_id), Some(reply_id)) = (
                 message_id(ORIGIN, &format!("{native}#{stamp}-prompt")),
                 message_id(ORIGIN, &format!("{native}#{stamp}-response")),
             ) else {
-                sink.record(&e.verb, &Disposition::refused("unusable message ID"));
+                sink.records
+                    .record(&e.verb, &Disposition::refused("unusable message ID"));
                 continue;
             };
             let mut prompt_blocks = vec![Block::Text { text: e.prompt }];
@@ -146,7 +150,7 @@ impl DocumentParser for GeminiApp {
                 });
             }
             last.insert(native, reply_id);
-            sink.record("Prompted", &Disposition::Materialized);
+            sink.records.record("Prompted", &Disposition::Materialized);
         }
     }
 }

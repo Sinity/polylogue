@@ -17,7 +17,7 @@
 
 use crate::Disposition;
 use crate::document::{Sink, message_id, session_id, str_of, string_of, time_of};
-use crate::fields::{Fields, Rule, unaccounted};
+use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, ErrorReason, Event, Json, Link, LinkKind, Message,
@@ -71,8 +71,8 @@ fn recognize_name(path: &Path) -> bool {
 pub struct Export;
 
 impl DocumentParser for Export {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut crate::Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut crate::Records) {
+        let mut sink = Sink::new(out, records);
         match serde_json::from_slice::<Json>(bytes) {
             Ok(Json::Array(items)) => {
                 // Oldest first: a conversation branched into a new chat
@@ -94,8 +94,10 @@ impl DocumentParser for Export {
                     conversation(&items[i], &mut sink, &mut owners);
                 }
             }
-            Ok(_) => sink.record("export", &Disposition::refused("not a JSON array")),
-            Err(e) => sink.record(
+            Ok(_) => sink
+                .records
+                .record("export", &Disposition::refused("not a JSON array")),
+            Err(e) => sink.records.record(
                 "export",
                 &Disposition::refused(format!("malformed JSON: {e}")),
             ),
@@ -161,29 +163,32 @@ pub struct Owners {
 /// routes produce the same IDs and unite (architecture 5.5).
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
     let Some(obj) = conv.as_object() else {
-        sink.record("conversation", &Disposition::refused("not an object"));
+        sink.records
+            .record("conversation", &Disposition::refused("not an object"));
         return;
     };
     if obj.is_empty() {
-        sink.record(
+        sink.records.record(
             "conversation",
             &Disposition::unknown("empty object in the export"),
         );
         return;
     }
     let Some(native) = str_of(conv, "conversation_id").or_else(|| str_of(conv, "id")) else {
-        sink.record("conversation", &Disposition::refused("no conversation ID"));
+        sink.records
+            .record("conversation", &Disposition::refused("no conversation ID"));
         return;
     };
     let Some(sid) = session_id(ORIGIN, native) else {
-        sink.record(
+        sink.records.record(
             "conversation",
             &Disposition::refused("unusable conversation ID"),
         );
         return;
     };
     let Some(mapping) = conv.get("mapping").and_then(Json::as_object) else {
-        sink.record("conversation", &Disposition::refused("no mapping"));
+        sink.records
+            .record("conversation", &Disposition::refused("no mapping"));
         return;
     };
 
@@ -195,7 +200,8 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
         session.offer_start(at);
     }
     sink.out.sessions.push(session);
-    sink.record("conversation", &Disposition::Materialized);
+    sink.records
+        .record("conversation", &Disposition::Materialized);
 
     // The conversation's own settings (custom GPT, archive and star state,
     // memory scope) are kept whole as one event.
@@ -220,9 +226,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
     let mut nodes: Vec<(&String, &Json)> = mapping.iter().collect();
     nodes.sort_by_key(|(id, _)| places.get(id.as_str()).copied());
     for (index, (node_id, node)) in nodes.into_iter().enumerate() {
-        for path in unaccounted(node, NODE_FIELDS) {
-            sink.acc.unread("node", &path);
-        }
+        sink.records.fields("node", node, NODE_FIELDS);
         let Some(msg) = node.get("message").filter(|m| !m.is_null()) else {
             continue; // The root and other empty nodes hold no record.
         };
@@ -231,9 +235,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
             .and_then(Json::as_str)
             .unwrap_or("?")
             .to_owned();
-        for path in unaccounted(msg, MESSAGE_FIELDS) {
-            sink.acc.unread(&kind, &path);
-        }
+        sink.records.fields(&kind, msg, MESSAGE_FIELDS);
         match message(&sid, node_id, msg, &tree, default_model.as_deref()) {
             Ok(m) => {
                 let time = msg
@@ -241,9 +243,9 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
                     .and_then(Json::as_f64)
                     .unwrap_or(f64::MIN);
                 rows.push((time, index, m));
-                sink.record(&kind, &Disposition::Materialized);
+                sink.records.record(&kind, &Disposition::Materialized);
             }
-            Err(d) => sink.record(&kind, &d),
+            Err(d) => sink.records.record(&kind, &d),
         }
     }
     // A message without a time keeps its place in the tree among its

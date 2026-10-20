@@ -8,7 +8,7 @@ use super::{items::str_field, session_id};
 use crate::frame::Record;
 use crate::parse::{Output, Parser};
 use crate::time;
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::{Event, Json, Session, SessionKind, TitleSource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -25,13 +25,13 @@ impl Parser for History {
         "prompt".into()
     }
 
-    fn record(
+    fn parse_record(
         &self,
         _: &mut NoState,
         record: Record<'_>,
         v: &Json,
         out: &mut Output,
-        _: &mut Accounting,
+        _: &mut Records,
     ) -> Disposition {
         let Some(session) = str_field(v, "session_id").and_then(session_id) else {
             return Disposition::refused("prompt without a session ID");
@@ -69,13 +69,13 @@ impl Parser for SessionIndex {
         "thread_name".into()
     }
 
-    fn record(
+    fn parse_record(
         &self,
         carry: &mut Names,
         _: Record<'_>,
         v: &Json,
         _: &mut Output,
-        _: &mut Accounting,
+        _: &mut Records,
     ) -> Disposition {
         let (Some(id), Some(name)) = (str_field(v, "id"), str_field(v, "thread_name")) else {
             return Disposition::unknown("index line without a thread ID or name");

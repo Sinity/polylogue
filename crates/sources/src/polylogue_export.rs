@@ -6,7 +6,7 @@
 
 use crate::document::Sink;
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
-use crate::{Accounting, Disposition};
+use crate::{Disposition, Records};
 use polylogue_model::export::{Document, FORMAT};
 use std::path::Path;
 
@@ -27,19 +27,21 @@ pub fn open(_path: &Path) -> Option<Parse> {
 pub struct Export;
 
 impl DocumentParser for Export {
-    fn document(&self, bytes: &[u8], out: &mut Output, acc: &mut Accounting) {
-        let mut sink = Sink::new(out, acc);
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        let mut sink = Sink::new(out, records);
         let text = match std::str::from_utf8(bytes) {
             Ok(t) => t,
             Err(e) => {
-                sink.record("export", &Disposition::refused(format!("not UTF-8: {e}")));
+                sink.records
+                    .record("export", &Disposition::refused(format!("not UTF-8: {e}")));
                 return;
             }
         };
         let doc = match Document::from_json(text) {
             Ok(d) => d,
             Err(e) => {
-                sink.record("export", &Disposition::refused(e.to_string()));
+                sink.records
+                    .record("export", &Disposition::refused(e.to_string()));
                 return;
             }
         };
@@ -60,7 +62,7 @@ impl DocumentParser for Export {
                 sink.out.events.push(event);
             }
             sink.out.links.extend(s.links);
-            sink.record("session", &Disposition::Materialized);
+            sink.records.record("session", &Disposition::Materialized);
         }
     }
 }

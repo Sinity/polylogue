@@ -4,9 +4,8 @@ use super::*;
 fn a_lookup_document_becomes_one_row() {
     let doc = br#"{"path":"/work/repo","remote":"https://github.com/o/r.git","root_commit":"abc123","read_at":"2026-10-19T00:00:00Z"}"#;
     assert!(recognize(Path::new("/s/polylogue/repo-lookup/x.json"), doc));
-    let mut out = Output::default();
-    let mut acc = Accounting::default();
-    Lookup.document(doc, &mut out, &mut acc);
+    let step = crate::run_document(&Lookup, doc).unwrap();
+    let out = step.output;
     assert_eq!(
         out.repo_lookups,
         [RepoLookup {
@@ -15,14 +14,13 @@ fn a_lookup_document_becomes_one_row() {
             root_commit: Some("abc123".into()),
         }]
     );
-    assert_eq!(acc.framed, 1);
+    assert_eq!(step.accounting.framed, 1);
 }
 
 #[test]
 fn a_lookup_without_a_remote_keeps_its_root() {
     let doc = br#"{"path":"/work/local","remote":null,"root_commit":"def","read_at":"x"}"#;
-    let mut out = Output::default();
-    Lookup.document(doc, &mut out, &mut Accounting::default());
+    let out = crate::run_document(&Lookup, doc).unwrap().output;
     assert_eq!(out.repo_lookups[0].remote, None);
     assert_eq!(out.repo_lookups[0].root_commit.as_deref(), Some("def"));
 }
