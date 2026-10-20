@@ -178,23 +178,23 @@ function browserActionExecutorId() {
 
 async function withExtensionInstanceAttribution(envelope, sender = null) {
   if (envelope.receiver_native) {
-    const witness = await captureStore.getCapture(envelope.capture_record_ref);
-    if (!witness || witness.state !== "ready" || witness.receiver_native.sha256 !== envelope.receiver_native.sha256 ||
-        (sender && (witness.owner.tab_id !== sender.tab?.id || witness.owner.document_id !== sender.documentId))) throw new Error("native_preparation_owner_mismatch");
+    const captureRecord = await captureStore.getCapture(envelope.capture_record_ref);
+    if (!captureRecord || captureRecord.state !== "ready" || captureRecord.receiver_native.sha256 !== envelope.receiver_native.sha256 ||
+        (sender && (captureRecord.owner.tab_id !== sender.tab?.id || captureRecord.owner.document_id !== sender.documentId))) throw new Error("native_preparation_owner_mismatch");
     return envelope;
   }
   const instanceId = await extensionInstanceId();
   const { capture_observation_ref: observationRef, ...body } = envelope;
-  const witness = envelope.capture_record_ref
+  const captureRecord = envelope.capture_record_ref
     ? await captureStore.getCapture(envelope.capture_record_ref)
     : observationRef ? await captureStore.getCapture(observationRef.id) : null;
-  if (envelope.capture_record_ref && (!witness || witness.state !== "ready" || typeof witness.raw_ref !== "string" ||
-      typeof witness.raw_revision_sha256 !== "string" || !Number.isSafeInteger(witness.record_count))) {
+  if (envelope.capture_record_ref && (!captureRecord || captureRecord.state !== "ready" || typeof captureRecord.raw_ref !== "string" ||
+      typeof captureRecord.raw_revision_sha256 !== "string" || !Number.isSafeInteger(captureRecord.record_count))) {
     throw new Error("capture_observation_record_unavailable");
   }
-  if (witness && (witness.provider !== envelope.session.provider || witness.native_id !== envelope.session.provider_session_id)) throw new Error("capture_observation_identity_mismatch");
-  if (witness && sender && (witness.owner.tab_id !== sender.tab?.id || witness.owner.document_id !== (sender.documentId || null))) throw new Error("capture_observation_owner_mismatch");
-  if (observationRef && (!witness || witness.kind !== "dom-observation" || witness.token !== observationRef.token)) throw new Error("capture_observation_owner_mismatch");
+  if (captureRecord && (captureRecord.provider !== envelope.session.provider || captureRecord.native_id !== envelope.session.provider_session_id)) throw new Error("capture_observation_identity_mismatch");
+  if (captureRecord && sender && (captureRecord.owner.tab_id !== sender.tab?.id || captureRecord.owner.document_id !== (sender.documentId || null))) throw new Error("capture_observation_owner_mismatch");
+  if (observationRef && (!captureRecord || captureRecord.kind !== "dom-observation" || captureRecord.token !== observationRef.token)) throw new Error("capture_observation_owner_mismatch");
   const provenance = { ...(envelope?.provenance || {}) };
   delete provenance.acquisition_sequence;
   return {
@@ -204,9 +204,9 @@ async function withExtensionInstanceAttribution(envelope, sender = null) {
       // The service worker owns this persistent identity. Do not trust an
       // independently reloadable content script to choose the attribution.
       extension_instance_id: instanceId,
-      ...(witness ? { captured_at: witness.observed_at } : {}),
-      ...(Number.isSafeInteger(witness?.acquisition_sequence) && witness.acquisition_sequence > 0
-        ? { acquisition_sequence: witness.acquisition_sequence } : {}),
+      ...(captureRecord ? { captured_at: captureRecord.observed_at } : {}),
+      ...(Number.isSafeInteger(captureRecord?.acquisition_sequence) && captureRecord.acquisition_sequence > 0
+        ? { acquisition_sequence: captureRecord.acquisition_sequence } : {}),
     },
     ...(observationRef ? { capture_observation_ref: observationRef } : {}),
   };

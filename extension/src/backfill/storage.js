@@ -110,8 +110,8 @@ export function nativeCacheOrder(current, incoming) {
   if (Number.isSafeInteger(current.acquisition_sequence) && Number.isSafeInteger(incoming.acquisition_sequence)) {
     return incoming.acquisition_sequence - current.acquisition_sequence;
   }
-  // Passive app responses have no pre-request witness. Keep their honest
-  // background observation time; never turn publication order into a counter.
+  // Passive responses carry the background's observation time. Do not
+  // substitute publication order for an acquisition sequence.
   const priorObserved = Date.parse(current.observed_at || ""); const nextObserved = Date.parse(incoming.observed_at || "");
   return Number.isFinite(priorObserved) && Number.isFinite(nextObserved) ? nextObserved - priorObserved : 0;
 }
@@ -530,8 +530,8 @@ export class IndexedDbBackfillStore {
     if (row.queue_context) {
       const queue = tx.objectStore("queue"); const item = await requestResult(queue.get(row.queue_context.itemId));
       const job = await requestResult(tx.objectStore("jobs").get(row.queue_context.jobId));
-      // A sealed reply remains evidence after lease loss. Only the current
-      // execution may publish its progress into the queue item.
+      // Keep fully received response bytes when execution ownership changes.
+      // Only the current execution may publish progress into the queue item.
       if (item?.capture_bundle_ref === row.id && item.lease_owner === row.queue_context.owner &&
           job?.status === "running" && job.execution_owner === row.queue_context.owner &&
           job.execution_generation === row.queue_context.generation) {
