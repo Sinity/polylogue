@@ -111,30 +111,42 @@ fn saved_queries(
 fn kept_results(
     reader: &Reader<'_>,
 ) -> Result<std::collections::BTreeMap<String, polylogue_query::Kept>, Failure> {
-    Ok(reader
+    reader
         .query(
             "SELECT id, json_extract(rows_json, '$.unit') AS unit, \
              json_extract(rows_json, '$.columns') AS columns, \
-             json_extract(rows_json, '$.match_columns') AS match_columns FROM a.kept_result",
+             json_extract(rows_json, '$.match_columns') AS match_columns, \
+             json_type(rows_json, '$.match_columns') AS match_columns_type FROM a.kept_result",
             &[],
         )?
         .iter()
-        .filter_map(|r| {
-            let parse = |k: &str| -> Vec<polylogue_query::Column> {
-                r[k].as_str()
-                    .and_then(|s| serde_json::from_str(s).ok())
-                    .unwrap_or_default()
+        .map(|r| {
+            let invalid = |field: &str| Failure {
+                kind: "store".into(),
+                message: format!("kept result {} has invalid {field}", r["id"]),
+                detail: None,
             };
-            Some((
-                r["id"].as_str()?.to_owned(),
+            let parse = |field: &str| -> Result<Vec<polylogue_query::Column>, Failure> {
+                let text = r[field].as_str().ok_or_else(|| invalid(field))?;
+                serde_json::from_str(text).map_err(|_| invalid(field))
+            };
+            Ok((
+                r["id"].as_str().ok_or_else(|| invalid("id"))?.to_owned(),
                 polylogue_query::Kept {
-                    unit: r["unit"].as_str().unwrap_or("sessions").to_owned(),
-                    columns: parse("columns"),
-                    match_columns: parse("match_columns"),
+                    unit: r["unit"]
+                        .as_str()
+                        .ok_or_else(|| invalid("unit"))?
+                        .to_owned(),
+                    columns: parse("columns")?,
+                    match_columns: if r["match_columns_type"].is_null() {
+                        Vec::new()
+                    } else {
+                        parse("match_columns")?
+                    },
                 },
             ))
         })
-        .collect())
+        .collect()
 }
 
 /// Runs a query in full for keeping: its rows, and, when it has one
