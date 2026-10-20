@@ -264,8 +264,8 @@ impl Writer {
         derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
     }
 
-    /// Waits until every batch sent before this call is committed, and
-    /// returns what was written since the previous flush.
+    /// Waits until earlier batches are committed and their memory reservations
+    /// are released, then returns what was written since the previous flush.
     pub fn flush(&self) -> Result<WriteReport> {
         let (reply, wait) = sync_channel(1);
         self.tx
@@ -410,6 +410,9 @@ impl Inner {
                     self.report.errors.push(format!("derive: {e}"));
                 }
             }
+            // Later queue replies also observe release of the parsed batches'
+            // memory reservations, not only their committed database rows.
+            drop(group);
             for (request, reply) in users.drain(..) {
                 let _ = reply.send(self.write_user(&request));
             }
