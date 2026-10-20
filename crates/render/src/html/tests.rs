@@ -2,16 +2,25 @@ use super::*;
 use crate::{Format, tests::conversation};
 
 #[test]
-fn exported_document_uses_the_same_content_as_the_reader() {
+fn document_and_reader_keep_the_selected_view_and_mask_credentials() {
     let messages = conversation();
     let items: Vec<_> = messages.iter().map(Rendered::Message).collect();
-    for view in [View::Full, View::Dialogue, View::Prompts, View::Actions] {
-        let body = fragment(&items, view);
+    for (view, prompt, assistant, thinking, tools) in [
+        (View::Full, true, true, true, true),
+        (View::Dialogue, true, true, true, false),
+        (View::Prompts, true, false, false, false),
+        (View::Actions, false, false, false, true),
+    ] {
         let mut document = Vec::new();
         crate::render(&items, Format::Html, view, &mut document).unwrap();
-        let document = String::from_utf8(document).unwrap();
-        assert!(document.contains(&body));
-        assert!(!body.contains("sk-ant-api03-AAAA"));
+        for body in [fragment(&items, view), String::from_utf8(document).unwrap()] {
+            assert_eq!(body.contains("run the tests"), prompt);
+            assert_eq!(body.contains("Running them."), assistant);
+            assert_eq!(body.contains("<summary>thinking</summary>"), thinking);
+            assert_eq!(body.contains("test failed"), tools);
+            assert_eq!(body.contains("cargo test"), tools);
+            assert!(!body.contains("sk-ant-api03-AAAA"));
+        }
     }
 }
 
