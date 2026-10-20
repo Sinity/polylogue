@@ -585,7 +585,11 @@ export class IndexedDbBackfillStore {
       if (item.raw_acquisition_ref?.id !== rawId) return;
       cursor.update({ ...item, raw_acquisition_ref: null, source_refs: (item.source_refs || []).filter((ref) => ref !== rawId) });
     });
-    tx.objectStore("captures").delete(`raw:${rawId}`);
+    const captures = tx.objectStore("captures");
+    // Late startup callbacks may still hold pre-retirement OPFS metadata.
+    // The marker owns no bytes and shares the publication transaction lock.
+    captures.put({ id: `retired-native:${rawId}`, kind: "native-acquisition-retired" });
+    captures.delete(`raw:${rawId}`);
     await done;
   }
 
@@ -857,6 +861,11 @@ export class IndexedDbBackfillStore {
   async putCapture(capture) {
     const db = await this.database(); const tx = db.transaction("captures", "readwrite");
     const done = transactionDone(tx); const records = tx.objectStore("captures");
+    if (capture.kind === "native-acquisition") {
+      const rawId = capture.raw_ref?.id || capture.raw_ref;
+      const retired = await requestResult(records.get(`retired-native:${rawId}`));
+      if (retired) { await done; return retired; }
+    }
     if (capture.kind === "native-acquisition" && capture.state === "acquiring") {
       const current = await requestResult(records.get(capture.id));
       if (!current && capture.invocation_ref) {

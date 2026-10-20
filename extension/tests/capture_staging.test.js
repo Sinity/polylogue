@@ -9,6 +9,22 @@ function digest(bytes) { return createHash("sha256").update(bytes).digest("hex")
 function acceptedReceipt(requestId, contentHash) { return { receiver_request_id: requestId, content_hash: contentHash, submitted_content_hash: contentHash, outcome: "accepted" }; }
 
 describe("durable capture staging", () => {
+  it("does not let stale acquiring or sealed publication recreate a retired raw owner", async () => {
+    const { staging, store } = stagingRuntime();
+    const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://synthetic.invalid/native" });
+    const acquiring = await staging.metadata(ref.id);
+    await staging.append(ref, owner, 0, globalThis.Buffer.from('{"id":"session","mapping":{}}').toString("base64"));
+    await staging.seal(ref, owner); const sealed = await staging.metadata(ref.id);
+    await store.retireNativeAcquisition(ref.id);
+    await staging.publishNativeAcquisition(acquiring);
+    await staging.publishNativeAcquisition(sealed);
+    expect(await store.getCapture(`raw:${ref.id}`)).toBeUndefined();
+    expect(await store.captureReferences(ref.id)).toBe(false);
+    expect(await (await staging.file(ref.id)).text()).toContain('"id":"session"');
+    const fresh = await staging.begin(owner, { kind: "native-response" });
+    expect(await store.getCapture(`raw:${fresh.id}`)).toMatchObject({ state: "acquiring" });
+  });
+
   it.each([
     '{"id":"session","is_temporary":true}',
     '{"id":"session","is_temporary":true,"mapping":null}',
