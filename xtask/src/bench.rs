@@ -6,16 +6,17 @@
 //! and writes its manifest under `analysis/bench/` of the project home.
 //! `bench run` copies the sample into the bench directory once, runs the
 //! release `first_build` over it under the real-data lock, records the
-//! per-stage result with the host's load, and prints the prediction for the
-//! full corpus. `--incremental` then appends the rest of every session file
-//! and measures the incremental pass. `bench validate` compares the latest
-//! prediction with a full run's result.
+//! per-stage result with periodic host-load observations, and prints an
+//! uncalibrated linear input-byte estimate. `--incremental` appends the rest
+//! of every session file and measures the incremental pass. `bench validate`
+//! compares that assumption with a supplied full run; it does not establish
+//! calibration across sizes or check candidate/input identity.
 //!
 //! `--target largest` does the same over the largest Claude Code session and
 //! the largest Codex database, which a sample of a few GB cannot hold; it
 //! measures peak memory and throughput on one huge input and predicts
 //! nothing.
-use devkit::bench::{self, Candidate, HostLoad, Manifest};
+use devkit::bench::{self, Candidate, LoadMonitor, Manifest};
 use devkit::history::Store;
 use serde_json::{Value, json};
 use std::{
@@ -37,7 +38,7 @@ fn bench_home() -> PathBuf {
 /// What a bench runs over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Target {
-    /// The stratified sample; its run predicts the full corpus.
+    /// The stratified sample; its run permits an uncalibrated linear estimate.
     Sample,
     /// The largest Claude Code session and the largest Codex database,
     /// which the sample cannot hold: memory and throughput on one huge
@@ -104,8 +105,8 @@ pub enum Bench {
         #[arg(long)]
         incremental: bool,
     },
-    /// Compare the latest prediction with a full run's result (the JSON line
-    /// `first_build` prints, inside any file).
+    /// Compare the latest linear estimate with a supplied full-run result.
+    /// Candidate/input matching and multi-size calibration remain unchecked.
     Validate { result: PathBuf },
     /// Recorded runs and comparisons (devkit's shared commands).
     #[command(flatten)]
@@ -411,18 +412,19 @@ fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
         fs::remove_dir_all(&out).map_err(|e| e.to_string())?;
     }
     let binary = first_build_binary()?;
-    let load = HostLoad::now();
+    let load = LoadMonitor::start()?;
     let result = first_build(&binary, &sample_home, &out)?;
+    let load = load.finish()?;
     let mut metrics = result.clone();
-    let prediction = (target == Target::Sample).then(|| {
-        let scale = manifest.representativeness()["scale"]
-            .as_f64()
-            .unwrap_or(1.0);
-        let seconds = result["seconds"].as_f64().unwrap_or(0.0);
-        bench::predict(seconds, &stages_of(&result), scale)
+    let estimate = (target == Target::Sample).then(|| {
+        bench::linear_estimate(
+            result["seconds"].as_f64(),
+            &stages_of(&result),
+            manifest.representativeness()["scale"].as_f64(),
+        )
     });
-    if let Some(p) = &prediction {
-        metrics["prediction"] = p.clone();
+    if let Some(value) = &estimate {
+        metrics["linear_estimate"] = value.clone();
     }
     let store = Store::open().map_err(|e| e.to_string())?;
     let checkout = env::current_dir().unwrap_or_default();
@@ -433,26 +435,30 @@ fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
         target.bench(),
         &manifest.id(),
         &out,
-        load,
+        &load,
         &metrics,
     )
     .map_err(|e| e.to_string())?;
     println!(
         "{}",
-        json!({"run": id, "storage": bench::storage_of(&out), "quiet": load.quiet(),
-               "load": {"load1": load.load1, "io_full": load.io_full, "memory_full": load.memory_full},
-               "result": result, "prediction": prediction})
+        json!({"run": id, "storage": bench::storage_of(&out),
+               "load_checks_passed": load.checks_passed(), "load": load.to_json(),
+               "result": result, "linear_estimate": estimate})
     );
     if incremental {
         let appended = manifest
             .grow(&sample_home)
             .map_err(|e| format!("append: {e}"))?;
-        let load = HostLoad::now();
+        let load = LoadMonitor::start()?;
         let result = first_build(&binary, &sample_home, &out)?;
-        let seconds = result["seconds"].as_f64().unwrap_or(0.0);
+        let load = load.finish()?;
+        let seconds = result["seconds"]
+            .as_f64()
+            .filter(|n| n.is_finite() && *n > 0.0);
         let mut metrics = result.clone();
         metrics["appended_mb"] = json!(appended as f64 / 1e6);
-        metrics["appended_mb_per_s"] = json!(appended as f64 / 1e6 / seconds.max(1e-9));
+        metrics["appended_mb_per_s"] =
+            json!(seconds.map(|seconds| appended as f64 / 1e6 / seconds));
         let id = bench::record(
             &store,
             &checkout,
@@ -460,11 +466,14 @@ fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
             &format!("{}-incremental", target.bench()),
             &manifest.id(),
             &out,
-            load,
+            &load,
             &metrics,
         )
         .map_err(|e| e.to_string())?;
-        println!("{}", json!({"run": id, "incremental": metrics}));
+        println!(
+            "{}",
+            json!({"run": id, "incremental": metrics, "load": load.to_json()})
+        );
     }
     if storage == "memory" {
         let _ = fs::remove_dir_all(&out);
@@ -489,20 +498,37 @@ fn validate(path: &Path) -> Result<(), String> {
         .iter()
         .find(|r| r.bench == "first_build" && r.storage == "disk")
         .ok_or("no recorded first_build bench run on disk")?;
-    let predicted = run.metrics["prediction"]["seconds"].as_f64().unwrap_or(0.0);
-    let real = actual["seconds"].as_f64().unwrap_or(0.0);
+    let mut report = validation_report(&run.metrics["linear_estimate"], &actual)?;
+    report["bench_run"] = json!(run.id);
+    report["sample_load_checks_passed"] = json!(run.load_checks_passed);
+    report["sample_load"] = run.load.clone();
     println!(
         "{}",
-        serde_json::to_string_pretty(&json!({
-            "bench_run": run.id,
-            "bench_quiet": run.quiet,
-            "predicted_seconds": predicted,
-            "actual_seconds": real,
-            "error": if real > 0.0 { (predicted - real) / real } else { f64::NAN },
-            "actual_input_mb": actual["input_mb"],
-            "predicted_scale": run.metrics["prediction"]["scale"],
-        }))
-        .unwrap_or_default()
+        serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
     );
     Ok(())
 }
+
+fn validation_report(estimate: &Value, actual: &Value) -> Result<Value, String> {
+    let seconds = |v: &Value| v.as_f64().filter(|n| n.is_finite() && *n >= 0.0);
+    if estimate["method"] != "linear_in_input_bytes" {
+        return Err(
+            "the recorded run has no explicit linear estimate; make a new sample run".into(),
+        );
+    }
+    let estimated =
+        seconds(&estimate["estimate"]["seconds"]).ok_or("the recorded estimate is unavailable")?;
+    let real = seconds(&actual["seconds"]).ok_or("the supplied run has no valid seconds value")?;
+    Ok(json!({
+        "estimated_seconds": estimated, "actual_seconds": real,
+        "relative_error": (real > 0.0).then(|| (estimated - real) / real),
+        "scale": estimate["scale"], "assumptions": estimate["assumptions"],
+        "actual_input_mb": actual["input_mb"], "calibrated": false,
+        "candidate_match": "not_verified", "input_match": "not_verified",
+        "full_run_load": actual.get("load"),
+        "limitation": "One supplied result does not establish multi-size calibration or matching work."
+    }))
+}
+
+#[cfg(test)]
+mod tests;

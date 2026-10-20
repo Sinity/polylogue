@@ -100,6 +100,18 @@ The benchmark runs its builds and measurements inside that job. It does not
 use a separate build-slot script or queue nested jobs. The real-data lock
 still prevents overlapping corpus benchmarks.
 
+Benchmark reports retain wall time, per-stage time (including pool thread-seconds),
+input bytes, child-reported physical I/O and final storage sizes separately.
+These counters do not measure the same work, and thread-seconds cannot be added
+to obtain wall time. Load is sampled throughout the outer command, including
+lock waits; reports show peaks, unknown readings and the largest sampling gap.
+Passing load checks screens measured contention, not timing reliability.
+
+The full-corpus estimate explicitly assumes linear time per input byte and is
+uncalibrated. Missing times or scale leave it unknown. `bench validate` compares
+that estimate with a supplied full-run result; matching input/candidate identity,
+full-run load and multi-size calibration remain unverified by that command.
+
 ## Keeping checks fast
 
 Use the recorded stages to distinguish compilation, service setup and test
