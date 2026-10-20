@@ -41,6 +41,8 @@ Optimize for fast integration. See `docs/development.md`.
   current review and status requirements.
 - Run the full suite (AgentCTL operation `check`) on batches of merged work,
   not before every merge. Fix what it finds afterwards.
+- Give each writable Cargo target directory one active build owner. Coordinate
+  sequential warm-cache reuse; concurrent worktrees use separate targets.
 - Merge small PRs often. Rebase before pushing; do not keep long-lived
   branches.
 - Report what you ran and what you did not. A merge is not evidence of testing.
