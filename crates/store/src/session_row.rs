@@ -4,8 +4,8 @@
 //! is stored and read in one place.
 
 use crate::Result;
-use crate::read::{parse_name, ts};
-use polylogue_model::{Session, SessionId, SessionKind, Timestamp, TitleSource};
+use crate::read::ts;
+use polylogue_model::{Session, SessionId, Timestamp, TitleSource};
 use rusqlite::{Connection, Row, params};
 
 /// The columns [`read`] expects, in order, for a `SELECT`.
@@ -21,7 +21,7 @@ pub(crate) fn write(conn: &Connection, pk: i64, s: &Session) -> Result<()> {
     )?
     .execute(params![
         pk,
-        name(&s.kind),
+        s.kind.as_str(),
         s.title.as_ref().map(|t| t.text.as_str()),
         s.title.as_ref().map(|t| name(&t.source)),
         serde_json::to_string(&s.cwd)?,
@@ -37,19 +37,22 @@ pub(crate) fn write(conn: &Connection, pk: i64, s: &Session) -> Result<()> {
 
 /// The session `id` from a row selecting [`COLUMNS`].
 pub(crate) fn read(id: SessionId, r: &Row<'_>) -> rusqlite::Result<Session> {
-    let mut s = Session::new(
-        id,
-        parse_name(&r.get::<_, String>(0)?).unwrap_or(SessionKind::Main),
-    );
+    let mut s = Session::new(id, decode_name(&r.get::<_, String>(0)?, 0)?);
     let title: Option<String> = r.get(1)?;
     let source: Option<String> = r.get(2)?;
-    if let (Some(text), Some(source)) = (title, source.as_deref().and_then(parse_name::<TitleSource>))
-    {
+    if let (Some(text), Some(source)) = (
+        title,
+        source
+            .as_deref()
+            .map(|v| decode_name::<TitleSource>(v, 2))
+            .transpose()?,
+    ) {
         s.offer_title(&text, source);
     }
     s.cwd = r
         .get::<_, Option<String>>(3)?
-        .and_then(|c| serde_json::from_str(&c).ok())
+        .map(|c| serde_json::from_str(&c).map_err(|e| invalid(3, e)))
+        .transpose()?
         .unwrap_or_default();
     s.git_branch = r.get(4)?;
     s.repo = r.get(5)?;
@@ -64,4 +67,12 @@ fn name<T: serde::Serialize>(v: &T) -> String {
         Ok(serde_json::Value::String(s)) => s,
         _ => String::new(),
     }
+}
+
+fn invalid(column: usize, error: serde_json::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(error))
+}
+
+fn decode_name<T: serde::de::DeserializeOwned>(s: &str, column: usize) -> rusqlite::Result<T> {
+    serde_json::from_value(serde_json::Value::String(s.to_owned())).map_err(|e| invalid(column, e))
 }

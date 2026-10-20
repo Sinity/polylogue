@@ -22,13 +22,13 @@
 
 use super::Derivation;
 use crate::Result;
-use polylogue_model::{Session, Timestamp, TitleSource};
-use rusqlite::{Transaction, params};
+use polylogue_model::{Session, TitleSource};
+use rusqlite::Transaction;
 use std::cmp::Ordering;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "session",
-    version: 1,
+    version: 2,
     after: &[],
     run,
 };
@@ -85,25 +85,8 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
             .then_with(|| content(&a.facts).cmp(&content(&b.facts)))
     });
     let merged = merge(&inputs);
-    let title = merged.title.as_ref().map(|t| t.text.clone());
-    let title_source = merged.title.as_ref().map(|t| name(&t.source));
-    tx.prepare_cached(
-        "UPDATE session SET kind = ?2, title = ?3, title_source = ?4, cwd_json = ?5, cwd = ?6,
-             branch = ?7, harness_version = ?8, started_at = ?9, record_repo = ?10, stub = 0
-         WHERE pk = ?1",
-    )?
-    .execute(params![
-        session_pk,
-        name(&merged.kind),
-        title,
-        title_source,
-        serde_json::to_string(&merged.cwd)?,
-        merged.cwd.last(),
-        merged.git_branch,
-        merged.tool_version,
-        merged.started.map(Timestamp::unix_ms),
-        merged.repo,
-    ])?;
+    crate::session_row::write(tx, session_pk, &merged)?;
+    tx.execute("UPDATE session SET stub = 0 WHERE pk = ?1", [session_pk])?;
     Ok(())
 }
 
@@ -157,11 +140,4 @@ fn precedence(source: TitleSource) -> u8 {
 
 fn content(s: &Session) -> String {
     serde_json::to_string(s).unwrap_or_default()
-}
-
-fn name<T: serde::Serialize>(v: &T) -> String {
-    match serde_json::to_value(v) {
-        Ok(serde_json::Value::String(s)) => s,
-        _ => String::new(),
-    }
 }
