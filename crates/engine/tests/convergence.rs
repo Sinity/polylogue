@@ -748,3 +748,79 @@ fn every_origin_s_shell_and_file_calls_reach_failing_commands_and_files() {
     assert!(repositories.contains(&"cwd:/work/g"), "{repositories:?}");
     assert!(repositories.contains(&"cwd:/work/c"), "{repositories:?}");
 }
+
+#[test]
+fn text_excision_decodes_json_escapes_reparses_and_survives_restart() {
+    let w = ClaudeHome::new();
+    let secret = "secrét😀";
+    let original = user("u1", "s1", &format!("before {secret} after"))
+        .replace(secret, r"s\u0065cr\u00E9t\uD83D\uDE00");
+    w.append("s1.jsonl", &original);
+    w.append("s2.jsonl", &user("u2", "s2", "unrelated bytes"));
+    let (mut e, lock) = w.engine(300);
+    assert!(e.converge().unwrap().errors.is_empty());
+    assert_eq!(w.texts("s1"), [format!("before {secret} after")]);
+    let before_other = w.texts("s2");
+    let preview = excise(&mut e, &format!("text:{secret}"), true);
+    assert_eq!(w.texts("s1"), [format!("before {secret} after")]);
+    let done = excise(&mut e, &format!("text:{secret}"), false);
+    assert_eq!(done.inputs_overwritten, preview.inputs_overwritten);
+    assert_eq!(done.on_disk.len(), 1);
+    assert!(!stored(&w.root, secret));
+    let clean = w.texts("s1");
+    assert_eq!(clean.len(), 1);
+    assert!(clean[0].starts_with("before ") && clean[0].ends_with(" after"));
+    assert!(!clean[0].contains(secret));
+    assert_eq!(w.texts("s2"), before_other);
+    drop(e);
+    drop(lock);
+    let (mut e, _lock) = w.engine(300);
+    assert!(e.converge().unwrap().errors.is_empty());
+    assert_eq!(w.texts("s1"), clean);
+    assert_eq!(w.texts("s2"), before_other);
+    assert_eq!(fs::read_to_string(w.file("s1.jsonl")).unwrap(), original);
+}
+
+#[test]
+fn text_excision_reaches_encoded_codex_tool_arguments() {
+    let w = ClaudeHome::new();
+    let rollouts = w.home.join(".codex/sessions/2026/03/01");
+    fs::create_dir_all(&rollouts).unwrap();
+    let thread = "019a0000-0000-7000-8000-000000000001";
+    let env = |ty: &str, payload: serde_json::Value| {
+        serde_json::json!({"timestamp":"2026-03-01T10:00:00.000Z", "type":ty, "payload":payload})
+            .to_string()
+            + "\n"
+    };
+    let source = env(
+        "session_meta",
+        serde_json::json!({"id":thread, "cwd":"/work/c"}),
+    ) + &env(
+        "response_item",
+        serde_json::json!({"type":"function_call", "name":"shell_command", "call_id":"k1",
+            "arguments":r#"{"command":"echo s\u0065cret","keep":"exact"}"#}),
+    );
+    let path = rollouts.join(format!("rollout-2026-03-01T10-00-00-{thread}.jsonl"));
+    fs::write(&path, &source).unwrap();
+    let (mut e, _lock) = w.engine(300);
+    assert!(e.converge().unwrap().errors.is_empty());
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM tool_call WHERE command = 'echo secret'"),
+        1
+    );
+    excise(&mut e, "text:secret", false);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM tool_call WHERE command LIKE '%secret%'"),
+        0
+    );
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM tool_call WHERE command LIKE 'echo %'"),
+        1
+    );
+    let id = SessionId::parse(&format!("codex:{thread}")).unwrap();
+    let pool = w.reads();
+    let messages = pool.reader().unwrap().messages(&id, false).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].session, id);
+    assert_eq!(fs::read_to_string(path).unwrap(), source);
+}

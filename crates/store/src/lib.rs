@@ -70,6 +70,12 @@ pub enum StoreError {
     Conflict(String),
     #[error("{0} not found")]
     NotFound(String),
+    #[error("text excision cannot inspect input {input} ({format}): {detail}")]
+    ExcisionFormat {
+        input: String,
+        format: String,
+        detail: String,
+    },
     #[error("{0}")]
     Invalid(String),
 }

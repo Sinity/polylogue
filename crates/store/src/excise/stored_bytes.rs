@@ -4,28 +4,13 @@
 
 use super::*;
 
-/// Stored blobs (input bytes, inline or file) that contain `needle`, as
-/// written or as JSON escapes it: how an excision is checked afterwards.
+/// Blobs contributing a retained input-chain match of `needle`, including
+/// decoded JSON spellings and matches spanning several blobs. Uses the
+/// excision preflight, so unsupported retained representations return an error.
 pub fn stored_blobs_containing(archive: &crate::Archive, needle: &str) -> Result<Vec<BlobHash>> {
     let conn = crate::archive::open_read(&archive.archive_db())?;
     let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600)?;
-    let needles = needles(needle);
-    let hashes: Vec<Vec<u8>> = conn
-        .prepare("SELECT hash FROM blob WHERE state = 'present'")?
-        .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    let mut out = Vec::new();
-    for h in hashes {
-        let Ok(arr) = <[u8; 32]>::try_from(h.as_slice()) else {
-            continue;
-        };
-        let hash = BlobHash(arr);
-        let bytes = crate::blobs::read(&conn, &store, &hash)?;
-        if !find_all(&bytes, &needles).is_empty() {
-            out.push(hash);
-        }
-    }
-    Ok(out)
+    stored_text::find_in(&conn, &store, needle)?.blobs(&conn)
 }
 
 /// Every `table.column` of `index.db` holding `needle` in some row, as
@@ -146,21 +131,7 @@ pub(super) fn replace_blob(
     if piece.hash == *old {
         return Ok(None);
     }
-    let (place, stored_size, data) = match &piece.stored {
-        Stored::Inline(z) => ("inline", z.len() as i64, Some(z.as_slice())),
-        Stored::File { stored_size } => ("file", *stored_size as i64, None),
-    };
-    t.archive.execute(
-        "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state, data)
-         VALUES (?1, ?2, ?3, ?4, 'plain', 'present', ?5)",
-        params![
-            &piece.hash.0[..],
-            piece.size as i64,
-            stored_size,
-            place,
-            data
-        ],
-    )?;
+    record_piece(t, &piece)?;
     t.archive.execute(
         "UPDATE extent SET blob = ?2 WHERE blob = ?1",
         params![&old.0[..], &piece.hash.0[..]],
@@ -328,4 +299,17 @@ pub(super) fn blank_document(
         insert_excised_observations(t, input, req, Some(&serde_json::Value::Array(spans_json)))?;
     }
     Ok(left)
+}
+
+pub(super) fn record_piece(t: &Transactions<'_, '_>, piece: &Piece) -> Result<()> {
+    let (place, size, data) = match &piece.stored {
+        Stored::Inline(z) => ("inline", z.len() as i64, Some(z.as_slice())),
+        Stored::File { stored_size } => ("file", *stored_size as i64, None),
+    };
+    t.archive.execute(
+        "INSERT OR IGNORE INTO blob(hash, size, stored_size, place, encoding, state, data)
+        VALUES (?1, ?2, ?3, ?4, 'plain', 'present', ?5)",
+        params![&piece.hash.0[..], piece.size as i64, size, place, data],
+    )?;
+    Ok(())
 }

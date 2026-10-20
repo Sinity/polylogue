@@ -26,3 +26,5 @@ fn finds_written_and_json_escaped_forms() {
     let hay = br#"{"t":"a\"b"} a"b"#;
     assert_eq!(find_all(hay, &n).len(), 2);
 }
+
+mod retained;

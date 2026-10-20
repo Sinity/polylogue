@@ -66,7 +66,7 @@ it.
 | `measure usage\|cost\|sessions\|quota\|outcomes\|failing\|drift\|unanswered\|survival\|survival-turns\|daily\|process\|rhythm` | Tokens by kind and cost, subscription quota windows, tool outcomes, commands failing now, format drift and other analyses. Unknown figures stay unknown, never 0. |
 | `live`, `notices`, `changes`, `work` | Sessions running now, signal notices, what changed since a cursor, the work graph. |
 | `sql STATEMENT` | Read-only SQL over the stable views. |
-| `excise TARGET` | Remove a session, input or text from every file and derived product, for good. |
+| `excise TARGET` | Remove a session, input or text. [Text excision and supported representations](docs/excision.md). |
 | `embed preview\|build\|status` | Opt-in embeddings for semantic search, with a cost preview. |
 | `setting KEY [VALUE]` | Read or set a setting. |
 | `web` | Open the web reader. |

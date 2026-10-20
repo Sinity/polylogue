@@ -24,17 +24,20 @@ pub(super) fn clear_for_reparse(
 ) -> Result<Vec<String>> {
     let i = t.index;
     // Texts holding it, and the sessions whose blocks show them.
-    let texts: Vec<(i64, Vec<u8>, Vec<u8>)> = i
-        .prepare("SELECT id, hash, body FROM text")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+    let mut stmt = i.prepare("SELECT id, hash, body FROM text")?;
+    let mut rows = stmt.query([])?;
     let mut held = Vec::new();
-    for (id, hash, body) in texts {
-        if unpack_text(&body).is_ok_and(|b| b.contains(text)) {
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let hash: Vec<u8> = row.get(1)?;
+        let body: Vec<u8> = row.get(2)?;
+        if unpack_text(&body)?.contains(text) {
             removed_texts.insert(hash);
             held.push(id);
         }
     }
+    drop(rows);
+    drop(stmt);
     let mut sessions: BTreeSet<(i64, String)> = BTreeSet::new();
     let mut by_text = i.prepare(
         "SELECT DISTINCT s.pk, s.id FROM block b JOIN session s ON s.pk = b.session_pk
