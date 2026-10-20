@@ -34,7 +34,8 @@ message model. `POST /v1/browser-captures/inspect` accepts the final capture
 envelope and returns its summary and attachment descriptors without a write.
 Acquired files travel by value in `session.attachments[].content_base64`;
 Claude inline media stays in the raw payload and is linked to retained blobs.
-`POST /v1/browser-captures` acknowledges the durable spool write. Each conversation has one length/digest framed append log; the host syncs its
+`POST /v1/browser-captures` acknowledges the durable spool write. Each
+conversation has one length/digest framed append log; the host syncs its
 new envelope before acknowledgement. Exact envelope bytes identify retries: an
 older retry is a no-op; a new observation, including a reversion, carries new
 observation provenance. Existing single-envelope spools convert on the next
@@ -51,9 +52,15 @@ The rebuildable index retains normalized message versions with exact source
 ranges, sharing prose in the text store. Ordinary reads, queries and
 derivations use current projections. Only explicit complete-session coverage
 can retire absent members; current browser acquisitions supply partial
-coverage, including native payloads. Session facts merge with earlier supplied facts; complete population coverage
-does not clear omitted metadata. Historical chains replay through the same parser and writer,
-with chain and snapshot range ordering preserving the latest projection.
+coverage, including native payloads. Session facts merge with earlier supplied
+facts; complete population coverage does not clear omitted metadata. Historical
+chains replay through the same parser and writer, with chain and snapshot
+range ordering preserving the latest projection.
+
+An event's message anchor participates in its identity. Active-branch
+selection chooses each input's newest marker by revision, snapshot and record
+order. Across inputs, known event time takes precedence and content identity
+resolves ties. Database row IDs do not describe observation order.
 
 `GET /v1/reader-location` resolves the running reader's published port and
 sign-in fragment after checking the listener owner. The CLI uses the same

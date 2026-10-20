@@ -34,6 +34,98 @@ fn read(w: &World) -> Vec<String> {
         .collect()
 }
 
+fn active(w: &World) -> Vec<Json> {
+    let pool = ReadPool::open(&w.archive).unwrap();
+    pool.reader()
+        .unwrap()
+        .query("SELECT id FROM current_message WHERE on_active_path=1", &[])
+        .unwrap()
+}
+
+#[test]
+fn repeated_active_leaf_uses_snapshot_order_in_both_replay_orders() {
+    for reverse in [false, true] {
+        let w = world();
+        let mut seed = batch("a", 0, 0, vec![], &[]);
+        seed.length = 300;
+        seed.parse.clear();
+        w.writer.send(seed).unwrap();
+        w.writer.flush().unwrap();
+        let mut observations = Vec::new();
+        for (at, leaf) in [(0, "a"), (100, "b"), (200, "a")] {
+            let mut b = snapshot("a", at, false, &[("a", "A"), ("b", "B")]);
+            b.change = Change::Reparse { chain: 1 };
+            b.length = 300;
+            b.parse[0].output.events.push(polylogue_model::Event {
+                session: sid("s"),
+                kind: "active_leaf".into(),
+                at: None,
+                after: Some(MessageId::parse(&format!("claude-code:{leaf}")).unwrap()),
+                range: None,
+                data: Json::Null,
+            });
+            observations.push(b);
+        }
+        if reverse {
+            observations.reverse();
+        }
+        for (index, b) in observations.into_iter().enumerate() {
+            w.writer.send(b).unwrap();
+            w.writer.derive().unwrap();
+            if !reverse {
+                let expected = ["claude-code:a", "claude-code:b", "claude-code:a"][index];
+                assert_eq!(
+                    active(&w),
+                    [serde_json::json!({"id": expected})],
+                    "observation {index}"
+                );
+            }
+        }
+        assert_eq!(
+            active(&w),
+            [serde_json::json!({"id": "claude-code:a"})],
+            "reverse replay: {reverse}"
+        );
+    }
+}
+
+#[test]
+fn active_leaf_across_inputs_uses_known_time_and_stable_content_ties() {
+    for timed in [false, true] {
+        let mut forward = None;
+        for reverse in [false, true] {
+            let w = world();
+            let mut observations = [("a", "a", 200), ("z", "b", 100)];
+            if reverse {
+                observations.reverse();
+            }
+            for (input, leaf, at) in observations {
+                let mut b = snapshot(input, 0, false, &[("a", "A"), ("b", "B")]);
+                b.parse[0].output.events.push(polylogue_model::Event {
+                    session: sid("s"),
+                    kind: "active_leaf".into(),
+                    at: timed.then(|| Timestamp::from_unix_ms(at).unwrap()),
+                    after: Some(MessageId::parse(&format!("claude-code:{leaf}")).unwrap()),
+                    range: None,
+                    data: Json::Null,
+                });
+                w.writer.send(b).unwrap();
+            }
+            w.writer.derive().unwrap();
+            let selected = active(&w);
+            assert_eq!(selected.len(), 1);
+            if timed {
+                assert_eq!(selected, [serde_json::json!({"id": "claude-code:a"})]);
+            }
+            if let Some(expected) = &forward {
+                assert_eq!(&selected, expected, "timed: {timed}");
+            } else {
+                forward = Some(selected);
+            }
+        }
+    }
+}
+
 #[test]
 fn partial_snapshots_keep_absent_members_and_complete_snapshots_retire_them() {
     let w = world();
