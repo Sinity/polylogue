@@ -23,7 +23,7 @@
       packages.${system} = { default = polylogue; inherit polylogue; };
       checks.${system}.polylogue = polylogue;
       devShells.${system}.default = pkgs.mkShell {
-        packages = [ pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.gcc pkgs.pkg-config pkgs.zstd ];
+        packages = [ pkgs.cargo pkgs.cargo-nextest pkgs.rustc pkgs.rustfmt pkgs.clippy pkgs.nodejs_22 pkgs.gcc pkgs.pkg-config pkgs.zstd ];
       };
     };
 }

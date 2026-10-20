@@ -30,10 +30,17 @@ function decode(data) {
   return Uint8Array.from(text, char => char.charCodeAt(0));
 }
 
+// Native constructors can return buffers from another realm (including the
+// browser page). Check the built-in brand, not a realm-specific instanceof.
+const arrayBufferSize = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
+function isArrayBuffer(value) {
+  try { arrayBufferSize.call(value); return true; } catch { return false; }
+}
+
 async function* bodyChunks(body) {
   if (body === null || body === undefined) return;
   if (typeof body === "string") body = new Blob([body]);
-  if (body instanceof ArrayBuffer) body = new Uint8Array(body);
+  if (isArrayBuffer(body)) body = new Uint8Array(body);
   if (ArrayBuffer.isView(body)) {
     const bytes = new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
     for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) yield bytes.subarray(offset, offset + CHUNK_BYTES);

@@ -1,12 +1,14 @@
 import { AttachmentSha256 } from "../actions/sha256.js";
 import { NativeCaptureNormalizer } from "../capture/native.js";
+import { prepareNativeCapture as prepareNativeTransport } from "../capture/native_transport.js";
 import { CaptureStaging } from "../capture/staging.js";
 import { BackfillCoordinator } from "../backfill/coordinator.js";
 import { BACKFILL_RECOVERY_CHECKPOINT_VERSION, DURABLE_RECEIVER_ACK_FIELDS, retryAfterMs, receiverAckContractError } from "../backfill/models.js";
 import { providerAdapters } from "../backfill/providers.js";
 import { executeProviderPageRequest } from "../backfill/page_transport.js";
 import { IndexedDbBackfillStore, nativeCacheOrder } from "../backfill/storage.js";
-import { CaptureJobClient, deriveAccountScope } from "../backfill/capture_jobs.js";
+import { importCheckpoint } from "../backfill/import.js";
+import { deriveAccountScope } from "../backfill/encoding.js";
 import {
   classifyBrowserActionFailure,
   executeChatGptBrowserActionInPage,
@@ -42,6 +44,7 @@ function trackNativeOperation(operation) {
   operation.finish = () => { nativeNormalizations.delete(operation.controller.signal); drained(); };
   nativeNormalizations.set(operation.controller.signal, operation);
 }
+const checkpointImports = new Map();
 const captureDeliveries = new Map();
 const foregroundDeliveryCompletions = new Map();
 
@@ -52,13 +55,11 @@ const foregroundDeliveryCompletions = new Map();
 // only needs a stable, regex-valid ([A-Za-z0-9_-]{1,256}) truthy signal that
 // a temporary-chat URL is a real, capturable conversation.
 const TEMPORARY_CHAT_SENTINEL = "__polylogue_temporary_chat__";
-const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
+const NATIVE_HOST = "polylogue://native";
 const EXTENSION_CONTRACT_EPOCH = "canonical-capture-mission-control-v1";
 const RECEIVER_API_SCHEMA = "polylogue-browser-capture/v1";
-const RECEIVER_PAIRING_KEY = "polylogueReceiverPairing";
 const RECEIVER_HEALTH_TIMEOUT_MS = 5000;
 const MISSION_INTELLIGENCE_TIMEOUT_MS = 7000;
-const RECEIVER_TRUST_CACHE_MS = 10000;
 const AMBIENT_SETTINGS_KEY = "polylogueAmbientSettings";
 const BACKGROUND_CAPTURE_MIN_INTERVAL_MS = 30000;
 const ACTIVE_TAB_STATE_MIN_INTERVAL_MS = 4000;
@@ -96,8 +97,6 @@ let browserActionPollPromise = null;
 let captureFreshnessPollPromise = null;
 let storageMutationQueue = Promise.resolve();
 let captureQueueMutationQueue = Promise.resolve();
-let trustedReceiverHealthCache = null;
-
 function serializeStorageMutation(mutation) {
   const result = storageMutationQueue.then(mutation, mutation);
   storageMutationQueue = result.then(() => undefined, () => undefined);
@@ -213,95 +212,6 @@ async function withExtensionInstanceAttribution(envelope, sender = null) {
   };
 }
 
-async function* commitCaptureJobsToReceiver(instanceId) {
-  const settings = await receiverSettings();
-  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
-  for await (const job of captureStore.jobs()) {
-    try {
-      if (!/^h1:[A-Za-z0-9_-]{43}$/.test(job.account_scope || "")) throw new Error("capture_job_account_scope_unresolved");
-      const handle = await providerAccountHandle(job.provider);
-      if (!handle) throw new Error(`capture_job_identity_unavailable:${job.provider}`);
-      let adopted = await client.recoverOrCreate({ provider: job.provider, accountHandle: handle,
-        locator: { kind: "backfill", provider: job.provider, cutoff: job.cutoff },
-        intentPayload: { provider: job.provider, cutoff: job.cutoff }, sessionId: instanceId });
-      if (adopted.scope.kind !== "account" || adopted.scope.key !== job.account_scope) throw new Error("capture_job_account_scope_mismatch");
-      for (;;) {
-        let snapshot = await captureStore.pendingRecoverySnapshot(job.id);
-        const recovered = Boolean(snapshot);
-        if (snapshot) {
-          const meta = await captureStaging.metadata(snapshot.artifact_id).catch((error) => {
-            if (error?.name === "NotFoundError") return null;
-            throw error;
-          });
-          if (meta?.state === "checkpoint-acknowledged") {
-            await captureStaging.releaseCheckpoint(snapshot, meta.receiver_receipt);
-            continue;
-          }
-        } else {
-          const snapshotId = `checkpoint:${globalThis.crypto.randomUUID()}`;
-          const artifactId = captureStaging.producerStageId({ checkpoint_snapshot_id: snapshotId }, snapshotId);
-          snapshot = await captureStore.createRecoverySnapshot(job.id, snapshotId, artifactId);
-        }
-        const prepared = await captureStaging.prepareCheckpoint(snapshot);
-        adopted = await client.update(adopted, captureJobRetryState(snapshot.job));
-        const result = await client.checkpoint(adopted, prepared);
-        const unchanged = adopted.job.checkpoint_digest === prepared.digest;
-        adopted = { ...adopted, job: result.job };
-        await captureStaging.releaseCheckpoint(snapshot, result.receipt || result.job.latest_receipt);
-        // A fresh consistent snapshot after ACK detects mutations that occurred
-        // during the upload. Stable canonical bytes terminate without HTTP.
-        if (unchanged && !recovered) break;
-      }
-      yield { job_id: job.id, error: null, outcome: "committed" };
-    } catch (error) {
-      yield { job_id: job.id, error: String(error?.message || error), outcome: error?.outcome || null,
-        retry_after_ms: Number.isFinite(error?.retryAfterMs) ? error.retryAfterMs : null,
-        retry_until_ms: Number.isFinite(error?.retryUntilMs) ? error.retryUntilMs : null };
-    }
-  }
-}
-
-function captureJobRetryState(job) {
-  const attempt = Number.isSafeInteger(job.transport_failures) && job.transport_failures >= 0
-    ? job.transport_failures
-    : 0;
-  const nextEligible = Number.isFinite(job.cooldown_until_ms)
-    ? new Date(job.cooldown_until_ms).toISOString()
-    : null;
-  let state = "ready";
-  if (job.status === "complete") state = "completed";
-  else if (job.status === "cancelled") state = "abandoned";
-  else if (job.status === "paused") state = "held";
-  else if (nextEligible) state = "retry_wait";
-  return {
-    state,
-    attempt,
-    reason: job.cooldown_reason || job.last_error || null,
-    next_eligible_at: state === "retry_wait" ? nextEligible : null,
-  };
-}
-
-async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
-  const settings = await receiverSettings();
-  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
-  const successfulProviders = [];
-  const unavailableProviders = [];
-  for (const provider of providers) {
-    try {
-      const accountHandle = await providerAccountHandle(provider);
-      for await (const entry of client.discoverRecovery(provider, accountHandle, instanceId)) {
-        if (!entry.lease) throw new Error("capture_job_recovery_lease_held");
-        await client.restoreCheckpoint(entry, captureStore, captureStaging);
-      }
-      successfulProviders.push(provider);
-    } catch (error) {
-      unavailableProviders.push(provider);
-      await appendDebugLog({ stage: "capture_job_recovery_unavailable", provider, error: String(error.message || error) });
-    }
-  }
-  return { successfulProviders, unavailableProviders };
-}
-
 async function convertAcquiredBackfillRow(store, original) {
   if (await store.localCheckpointRecordPublished("queue", original)) return;
   const envelope = globalThis.structuredClone(original.envelope);
@@ -346,11 +256,17 @@ async function backfillCoordinator() {
         await runtimeChrome.storage.local.remove(BACKFILL_RECOVERY_CHECKPOINT_KEY);
       }
       for await (const original of store.unconvertedBackfillBodies()) await convertAcquiredBackfillRow(store, original);
-      const providers = ["chatgpt", "claude-ai", "grok"];
-      const recovery = await loadBackfillCheckpointFromCaptureJobs(instanceId, providers);
       const adapters = providerAdapters(providerPageFetch, { requirePageContext: true, nativeBundleOwner: backfillNativeBundleOwner() });
       const coordinator = new BackfillCoordinator({
-        prepareCapture: (envelope, item, signal) => envelope.receiver_native ? { contentHash: envelope.receiver_native.sha256 } : captureStaging.prepare(envelope, captureStaging.conversionId(`backfill:${item.id}`), { delivery_kind: "backfill", id: item.id, job_id: item.job_id }, signal),
+        prepareCapture: async (envelope, item, signal) => {
+          if (envelope.receiver_native) {
+            const restored = await restoreNativeEnvelope(envelope.capture_record_ref, signal);
+            delete envelope.receiver_native;
+            Object.assign(envelope, restored);
+          }
+          return captureStaging.prepare(envelope, captureStaging.conversionId(`backfill:${item.id}`),
+            { delivery_kind: "backfill", id: item.id, job_id: item.job_id }, signal);
+        },
         receiverAcked: (envelope) => envelope.receiver_native ? captureStaging.acknowledgeNative(envelope.capture_record_ref) : captureStaging.acknowledge(envelope.capture_body_ref),
         store,
         adapters,
@@ -362,13 +278,10 @@ async function backfillCoordinator() {
           signal,
         ),
         receiverPreflight: backfillReceiverPreflight,
-        checkpoint: () => commitCaptureJobsToReceiver(instanceId),
         alarms: runtimeChrome.alarms,
         instanceId,
         receiverContractEpoch: BACKFILL_WORKER_EPOCH,
       });
-      coordinator.unavailableRecoveryProviders = recovery.unavailableProviders;
-      coordinator.recoveryInstanceId = instanceId;
       return coordinator;
     })();
     backfillCoordinatorPromise = candidate;
@@ -376,27 +289,7 @@ async function backfillCoordinator() {
       if (backfillCoordinatorPromise === candidate) backfillCoordinatorPromise = null;
     });
   }
-  const coordinator = await backfillCoordinatorPromise;
-  if (!initializing && coordinator.unavailableRecoveryProviders.length) {
-    const tabs = await runtimeChrome.tabs.query({});
-    const providers = coordinator.unavailableRecoveryProviders.filter(
-      (provider) => tabs.some((tab) => archiveProviderForUrl(tab.url || tab.pendingUrl || "") === provider),
-    );
-    if (!providers.length) return coordinator;
-    if (!coordinator.recoveryPromise) {
-      coordinator.recoveryPromise = (async () => {
-        const recovery = await loadBackfillCheckpointFromCaptureJobs(
-          coordinator.recoveryInstanceId, providers,
-        );
-        coordinator.unavailableRecoveryProviders = [
-          ...coordinator.unavailableRecoveryProviders.filter((provider) => !providers.includes(provider)),
-          ...recovery.unavailableProviders,
-        ];
-      })().finally(() => { coordinator.recoveryPromise = null; });
-    }
-    await coordinator.recoveryPromise;
-  }
-  return coordinator;
+  return backfillCoordinatorPromise;
 }
 
 async function startBackfill(request) {
@@ -422,11 +315,9 @@ async function startBackfill(request) {
   if (inFlight) return inFlight;
   const pending = (async () => {
     const coordinator = await backfillCoordinator();
-    const settings = await receiverSettings();
-    const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
     const handle = await providerAccountHandle(provider);
     if (!handle) throw new Error(`capture_job_identity_unavailable:${provider}`);
-    const accountScope = await deriveAccountScope(await client.scopeNamespace(), provider, handle);
+    const accountScope = await deriveAccountScope(await extensionInstanceId(), provider, handle);
     const job = await coordinator.start({
       provider,
       account_scope: accountScope,
@@ -516,250 +407,6 @@ function injectionPlanForUrl(url) {
   return [];
 }
 
-async function receiverSettings() {
-  const stored = await runtimeChrome.storage.local.get({
-    receiverBaseUrl: DEFAULT_RECEIVER,
-  });
-  return {
-    baseUrl: String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, ""),
-  };
-}
-
-// The manifest grants http://127.0.0.1:8765/* at install time and nothing
-// wider. The unscoped loopback grant it used to carry also covered the
-// unauthenticated archive API on 8766, and extension fetches are not subject
-// to CORS (2026-07-31 leak audit L7, polylogue-tztk), so a non-default
-// receiver port is now an optional permission the operator grants from the
-// popup. This is the enforcement point: settings that name an origin the
-// extension does not hold are refused rather than stored, so a wedged or
-// hostile configure message cannot point the capture stream at another
-// loopback service.
-async function loopbackOriginIsGranted(baseUrl) {
-  let origin;
-  try {
-    origin = `${new globalThis.URL(baseUrl).origin}/*`;
-  } catch {
-    return false;
-  }
-  if (!runtimeChrome.permissions?.contains) return false;
-  try {
-    return Boolean(await runtimeChrome.permissions.contains({ origins: [origin] }));
-  } catch {
-    return false;
-  }
-}
-
-// All settings and pairing writes share this owner; slow status probes run
-// outside it and may publish only while their captured configuration remains.
-let receiverConfigurationRevision = 0;
-async function receiverScopeIsCurrent(scope) {
-  if (scope.revision !== receiverConfigurationRevision) return false;
-  const current = await receiverSettings();
-  return scope.revision === receiverConfigurationRevision
-    && current.baseUrl === scope.settings.baseUrl;
-}
-async function receiverHealthScope() {
-  return serializeStorageMutation(async () => ({
-    settings: await receiverSettings(),
-    pairing: await storedReceiverPairing(),
-    revision: receiverConfigurationRevision,
-  }));
-}
-async function restoreReceiverSettings(previous, owned) {
-  return serializeStorageMutation(async () => {
-    const keys = ["receiverBaseUrl", RECEIVER_PAIRING_KEY];
-    if (!previous || typeof previous !== "object" || Array.isArray(previous)
-      || !owned || typeof owned.baseUrl !== "string"
-      || !(owned.receiverId === null || typeof owned.receiverId === "string")
-      || !(owned.revision === null || (Number.isSafeInteger(owned.revision) && owned.revision >= 0))) {
-      throw new Error("proof_receiver_configuration_changed");
-    }
-    if ((Object.hasOwn(previous, "receiverBaseUrl") && typeof previous.receiverBaseUrl !== "string")
-      || (Object.hasOwn(previous, RECEIVER_PAIRING_KEY) && previous[RECEIVER_PAIRING_KEY] !== null
-        && (typeof previous[RECEIVER_PAIRING_KEY] !== "object" || Array.isArray(previous[RECEIVER_PAIRING_KEY])))) {
-      throw new Error("proof_receiver_configuration_changed");
-    }
-    if (previous.receiverBaseUrl && previous.receiverBaseUrl !== DEFAULT_RECEIVER
-      && !(await loopbackOriginIsGranted(previous.receiverBaseUrl))) {
-      throw new Error("receiver_origin_not_permitted");
-    }
-    const current = await runtimeChrome.storage.local.get(keys);
-    const unchanged = keys.every(key => Object.hasOwn(current, key) === Object.hasOwn(previous, key)
-      && JSON.stringify(current[key]) === JSON.stringify(previous[key]));
-    if (unchanged) return { ...await receiverSettings(), configurationRevision: receiverConfigurationRevision };
-    if (owned.revision !== receiverConfigurationRevision) throw new Error("proof_receiver_configuration_changed");
-    if (current.receiverBaseUrl !== owned.baseUrl
-      || (owned.receiverId !== null && current[RECEIVER_PAIRING_KEY]?.receiver_id !== owned.receiverId)) {
-      throw new Error("proof_receiver_configuration_changed");
-    }
-    receiverConfigurationRevision += 1;
-    trustedReceiverHealthCache = null;
-    const values = {}; const missing = [];
-    for (const key of keys) {
-      if (Object.hasOwn(previous, key)) values[key] = previous[key]; else missing.push(key);
-    }
-    await runtimeChrome.storage.local.set(values);
-    if (missing.length) await runtimeChrome.storage.local.remove(missing);
-    return { ...await receiverSettings(), configurationRevision: receiverConfigurationRevision };
-  });
-}
-
-async function saveReceiverSettings(receiverBaseUrl) {
-  return serializeStorageMutation(async () => {
-    trustedReceiverHealthCache = null;
-    const normalizedBaseUrl = String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "") || DEFAULT_RECEIVER;
-    if (normalizedBaseUrl !== DEFAULT_RECEIVER && !(await loopbackOriginIsGranted(normalizedBaseUrl))) {
-      const error = new Error("receiver_origin_not_permitted");
-      error.origin = normalizedBaseUrl;
-      throw error;
-    }
-    receiverConfigurationRevision += 1;
-    await runtimeChrome.storage.local.set({
-      receiverBaseUrl: normalizedBaseUrl,
-    });
-    // An operator who explicitly types a non-canonical endpoint into settings
-    // is declaring a deliberate development pairing, not drifting there by
-    // accident. Record that intent on the pairing itself so a later stale
-    // probe reports loudly instead of silently self-healing back to the
-    // canonical endpoint out from under an intentional dev-loop session
-    // (polylogue-jlme.5). Pointing settings back at the canonical endpoint is
-    // an equally explicit act and clears the flag.
-    const prior = await storedReceiverPairing();
-    const isDevOverride = normalizedBaseUrl !== DEFAULT_RECEIVER;
-    if (prior && Boolean(prior.dev_override) !== isDevOverride) {
-      await persistReceiverPairing({ ...prior, dev_override: isDevOverride });
-    } else if (!prior && isDevOverride) {
-      await persistReceiverPairing({
-        state: "legacy",
-        endpoint: normalizedBaseUrl,
-        dev_override: true,
-        last_seen_at: null,
-        checked_at: new Date().toISOString(),
-        last_error: null,
-      });
-    }
-    const settings = await receiverSettings();
-    return { ...settings, configurationRevision: receiverConfigurationRevision };
-  });
-}
-
-async function storedReceiverPairing() {
-  const stored = await runtimeChrome.storage.local.get({ [RECEIVER_PAIRING_KEY]: null });
-  const pairing = stored[RECEIVER_PAIRING_KEY];
-  return pairing && typeof pairing === "object" ? pairing : null;
-}
-
-async function persistReceiverPairing(pairing) {
-  await runtimeChrome.storage.local.set({ [RECEIVER_PAIRING_KEY]: pairing });
-  return pairing;
-}
-
-async function markReceiverPairingUnavailable(detail, scope) {
-  return serializeStorageMutation(async () => {
-    if (!await receiverScopeIsCurrent(scope)) return null;
-    trustedReceiverHealthCache = null;
-    const pairing = await storedReceiverPairing();
-    if (!pairing) return null;
-    // A deliberately dev-overridden pairing going stale is not ordinary
-    // "receiver asleep" (calm, expected, self-heals) -- it is the operator's
-    // chosen endpoint disappearing, and canonical failover is intentionally
-    // suppressed for it (see checkReceiverHealth). Give it a distinct, loud
-    // state so the popup does not present it as routine.
-    return persistReceiverPairing({
-      ...pairing,
-      state: pairing.dev_override ? "dev_override_stale" : "offline",
-      last_error: String(detail || "receiver_unavailable"),
-      checked_at: new Date().toISOString(),
-    });
-  });
-}
-
-async function observeReceiverIdentity(status, endpoint, scope) {
-  return serializeStorageMutation(async () => {
-    if (!await receiverScopeIsCurrent(scope)) return null;
-    const now = new Date().toISOString();
-    const prior = await storedReceiverPairing();
-    const receiverId = typeof status?.receiver_id === "string" ? status.receiver_id : null;
-    const apiSchema = typeof status?.api_schema === "string" ? status.api_schema : null;
-
-    if (!receiverId || !apiSchema) {
-      if (prior?.receiver_id) {
-        trustedReceiverHealthCache = null;
-        return persistReceiverPairing({
-          ...prior,
-          state: "mismatch",
-          observed_endpoint: endpoint,
-          observed_receiver_id: receiverId,
-          observed_api_schema: apiSchema || "legacy",
-          checked_at: now,
-          last_error: "receiver_pairing_metadata_missing",
-        });
-      }
-      return persistReceiverPairing({
-        state: "legacy",
-        endpoint,
-        dev_override: Boolean(prior?.dev_override),
-        last_seen_at: now,
-        checked_at: now,
-        last_error: null,
-      });
-    }
-
-    if (apiSchema !== RECEIVER_API_SCHEMA) {
-      trustedReceiverHealthCache = null;
-      return persistReceiverPairing({
-        ...(prior || {}),
-        state: "mismatch",
-        endpoint: prior?.endpoint || endpoint,
-        observed_endpoint: endpoint,
-        observed_receiver_id: receiverId,
-        observed_api_schema: apiSchema,
-        checked_at: now,
-        last_error: "receiver_api_schema_mismatch",
-      });
-    }
-
-    if (prior?.receiver_id && prior.receiver_id !== receiverId) {
-      trustedReceiverHealthCache = null;
-      return persistReceiverPairing({
-        ...prior,
-        state: "mismatch",
-        observed_endpoint: endpoint,
-        observed_receiver_id: receiverId,
-        observed_api_schema: apiSchema,
-        checked_at: now,
-        last_error: "receiver_identity_mismatch",
-      });
-    }
-
-    return persistReceiverPairing({
-      receiver_id: receiverId,
-      api_schema: apiSchema,
-      endpoint,
-      dev_override: Boolean(prior?.dev_override),
-      paired_at: prior?.paired_at || now,
-      last_seen_at: now,
-      checked_at: now,
-      state: "online",
-      last_error: null,
-    });
-  });
-}
-
-async function clearReceiverPairing(expectedRevision = null) {
-  return serializeStorageMutation(async () => {
-    if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision !== receiverConfigurationRevision)) {
-      throw new Error("receiver_configuration_changed");
-    }
-    receiverConfigurationRevision += 1;
-    trustedReceiverHealthCache = null;
-    await runtimeChrome.storage.local.remove?.(RECEIVER_PAIRING_KEY);
-    // Test doubles and older browser shims may not expose remove(). Setting null
-    // is equivalent for all readers and keeps reset bounded to this one key.
-    if (!runtimeChrome.storage.local.remove) await runtimeChrome.storage.local.set({ [RECEIVER_PAIRING_KEY]: null });
-    return { settings: await receiverSettings(), revision: receiverConfigurationRevision };
-  });
-}
 
 function hostnameForUrl(url) {
   try {
@@ -1002,6 +649,7 @@ async function reconcileCaptureRoots() {
       try { await captureStaging.seal({ id: meta.id, token: meta.token }, meta.owner); }
       catch (error) { await appendDebugLog({ stage: "capture_acquisition_recovery_pending", ref: meta.id, error: String(typeof error.code === "string" ? error.code : (error.message || error)) }); }
     }
+    if (meta.import_staged && !await captureStaging.referenced(meta.id)) { await captureStaging.discard(meta.id); continue; }
     if (meta.retired) { await captureStaging.discardUnreferenced(meta.id); continue; }
     if (!meta.owner?.tab_id || await captureStaging.referenced(meta.id)) continue;
     const tab = await tabIfPresent(meta.owner.tab_id);
@@ -1429,164 +1077,18 @@ async function probeReceiverStatus(baseUrl) {
   }
 }
 
-async function checkReceiverHealth({ allowCanonicalRecovery = true, expectedScope = null } = {}) {
-  let scope = await receiverHealthScope();
-  if (expectedScope && !await receiverScopeIsCurrent(expectedScope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint: scope.settings.baseUrl, pairing: null };
-  const settings = scope.settings;
-  const pairingBefore = scope.pairing;
-
-  async function classifyProbe(endpoint, probe, recoveredFrom = null) {
-    if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint, pairing: null };
-    const body = probe.body;
-    if (!body || typeof body !== "object") {
-      return {
-        ok: false,
-        status: "unreachable",
-        detail: "non_json_response",
-        endpoint,
-        receiver_request_id: probe.receiverRequestId || null,
-        pairing: pairingBefore,
-      };
-    }
-    if (body.error === "unauthorized" || probe.response?.status === 401) {
-      if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint, pairing: null };
-      const pairing = pairingBefore
-        ? await serializeStorageMutation(async () => await receiverScopeIsCurrent(scope) ? persistReceiverPairing({
-          ...pairingBefore,
-          state: "unauthorized",
-          checked_at: new Date().toISOString(),
-          last_error: "unauthorized",
-        }) : null)
-        : null;
-      return {
-        ok: true,
-        status: "unauthorized",
-        detail: "unauthorized",
-        endpoint,
-        receiver_request_id: probe.receiverRequestId || null,
-        pairing,
-      };
-    }
-    if (body.ok === true && probe.response?.ok !== false) {
-      const pairing = await observeReceiverIdentity(body, endpoint, scope);
-      if (!pairing || !await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint, pairing: null };
-      if (pairing?.state === "mismatch") {
-        return {
-          ok: true,
-          status: "pairing_mismatch",
-          detail: pairing.last_error || "receiver_pairing_mismatch",
-          endpoint,
-          receiver_status: body,
-          receiver_request_id: probe.receiverRequestId || null,
-          pairing,
-        };
-      }
-      const result = {
-        ok: true,
-        status: recoveredFrom ? "recovered" : "ok",
-        detail: null,
-        endpoint,
-        recovered_from: recoveredFrom,
-        receiver_status: body,
-        receiver_request_id: probe.receiverRequestId || null,
-        pairing,
-      };
-      const published = await serializeStorageMutation(async () => {
-        if (!await receiverScopeIsCurrent(scope)) return false;
-        if (pairing?.receiver_id && pairing.state === "online") {
-          trustedReceiverHealthCache = {
-            checkedAt: Date.now(),
-            endpoint,
-            receiverId: pairing.receiver_id,
-            apiSchema: pairing.api_schema,
-            health: result,
-          };
-        }
-        return true;
-      });
-      return published ? result : { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint, pairing: null };
-    }
-    return {
-      ok: true,
-      status: "error",
-      detail: body.error || `http_${probe.response?.status || 0}`,
-      endpoint,
-      receiver_status: body,
-      receiver_request_id: probe.receiverRequestId || null,
-      pairing: pairingBefore,
-    };
-  }
-
-  let primaryFailure = null;
+async function checkNativeHost() {
   try {
-    const primary = await probeReceiverStatus(settings.baseUrl);
-    const classified = await classifyProbe(settings.baseUrl, primary);
-    if (classified.status !== "unreachable") return classified;
-    primaryFailure = classified.detail || "receiver_unavailable";
+    const probe = await probeReceiverStatus(NATIVE_HOST);
+    const body = probe.body;
+    if (!probe.response.ok || body?.ok !== true || body.api_schema !== RECEIVER_API_SCHEMA) {
+      return { ok: false, status: "error", detail: body?.error || "native_host_contract_incompatible",
+        receiver_status: body, receiver_request_id: probe.receiverRequestId };
+    }
+    return { ok: true, status: "ok", receiver_status: body, receiver_request_id: probe.receiverRequestId };
   } catch (error) {
-    primaryFailure = String(error.message || error);
-    if (["receiver_identity_mismatch", "receiver_authentication_failed"].includes(primaryFailure)) {
-      const mismatch = primaryFailure === "receiver_identity_mismatch";
-      const pairing = await serializeStorageMutation(async () => {
-        if (!await receiverScopeIsCurrent(scope)) return null;
-        trustedReceiverHealthCache = null;
-        return persistReceiverPairing({ ...pairingBefore, endpoint: settings.baseUrl,
-          state: mismatch ? "mismatch" : "unauthorized", last_error: primaryFailure,
-          checked_at: new Date().toISOString() });
-      });
-      if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint: settings.baseUrl, pairing: null };
-      return { ok: false, status: mismatch ? "pairing_mismatch" : "unauthorized", detail: primaryFailure, endpoint: settings.baseUrl, pairing };
-    }
+    return { ok: false, status: "unreachable", detail: String(error.message || error) };
   }
-
-  if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint: settings.baseUrl, pairing: null };
-
-  if (
-    allowCanonicalRecovery
-    && settings.baseUrl !== DEFAULT_RECEIVER
-    && pairingBefore?.receiver_id
-    // A deliberate dev-override pairing must not silently self-heal to the
-    // canonical endpoint: that is precisely the "quiet drift" this bounded
-    // recovery exists to fix for an *accidental* stale pairing, but here the
-    // non-canonical endpoint is the operator's explicit choice. Report the
-    // failure loudly instead (see markReceiverPairingUnavailable) and
-    // require an explicit reset/settings change, same as an identity
-    // mismatch.
-    && !pairingBefore?.dev_override
-  ) {
-    try {
-      const canonical = await probeReceiverStatus(DEFAULT_RECEIVER);
-      const body = canonical.body;
-      if (
-        body?.ok === true
-        && canonical.response?.ok !== false
-        && body.receiver_id === pairingBefore.receiver_id
-        && body.api_schema === RECEIVER_API_SCHEMA
-      ) {
-        const recovered = await serializeStorageMutation(async () => {
-          if (!await receiverScopeIsCurrent(scope)) return null;
-          receiverConfigurationRevision += 1;
-          trustedReceiverHealthCache = null;
-          await runtimeChrome.storage.local.set({ receiverBaseUrl: DEFAULT_RECEIVER });
-          return { settings: await receiverSettings(), revision: receiverConfigurationRevision };
-        });
-        if (recovered) { scope = recovered; return classifyProbe(DEFAULT_RECEIVER, canonical, settings.baseUrl); }
-      }
-    } catch {
-      // Recovery is intentionally bounded to one canonical endpoint. The
-      // original failure remains the operator-facing result.
-    }
-  }
-
-  const pairing = await markReceiverPairingUnavailable(primaryFailure, scope);
-  if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint: settings.baseUrl, pairing: null };
-  return {
-    ok: false,
-    status: pairing?.state === "dev_override_stale" ? "dev_override_stale" : "unreachable",
-    detail: primaryFailure,
-    endpoint: settings.baseUrl,
-    pairing,
-  };
 }
 
 async function appendCaptureLog(entry) {
@@ -1770,171 +1272,60 @@ async function requestHeaders({ hasBody = false, requestId = "" } = {}) {
   return headers;
 }
 
-async function ensureTrustedReceiver() {
-  const pairing = await storedReceiverPairing();
-  if (!pairing?.receiver_id) return null;
-  const settings = await receiverSettings();
-  const cached = trustedReceiverHealthCache;
-  if (
-    cached
-    && Date.now() - cached.checkedAt < RECEIVER_TRUST_CACHE_MS
-    && cached.endpoint === settings.baseUrl
-    && cached.receiverId === pairing.receiver_id
-    && cached.apiSchema === pairing.api_schema
-  ) return cached.health;
-
-  const health = await checkReceiverHealth({ allowCanonicalRecovery: true });
-  if (!["ok", "recovered"].includes(health.status)) {
-    const code = health.status === "pairing_mismatch"
-      ? "receiver_pairing_mismatch"
-      : health.status === "unauthorized"
-        ? "unauthorized"
-        : "receiver_unavailable";
-    const error = new Error(code === "receiver_unavailable" ? health.detail || code : code);
-    error.code = code;
-    error.status = code === "receiver_pairing_mismatch" ? 409 : code === "unauthorized" ? 401 : 503;
-    error.receiverRequestId = health.receiver_request_id || null;
-    error.receiverHealth = health;
-    throw error;
-  }
-  return health;
-}
-
-// A page capture reads authenticated provider data before its envelope can be
-// submitted to the receiver.  Do not begin that irreversible read merely to
-// discover later that this browser has never established a receiver identity.
-// `checkReceiverHealth` remains available for pairing diagnostics; this guard
-// is specifically the admission boundary for automatic provider-native work.
-async function requirePairedTrustedReceiver() {
-  const pairing = await storedReceiverPairing();
-  if (!pairing?.receiver_id || !pairing?.api_schema) {
-    const error = new Error("receiver_unpaired");
-    error.code = "receiver_unpaired";
-    error.status = 401;
-    throw error;
-  }
-  return ensureTrustedReceiver();
-}
-
-async function prepareNativeCapture(capture, { rawRef, relatedRefs, queueContext, signal, summaryOnly = false, onProgress = null }) {
-  const progress = (phase, state) => { try { onProgress?.(phase, state); } catch { /* Diagnostics cannot change capture. */ } };
-  progress("native_prepare", "BEGIN");
-  await ensureTrustedReceiver();
-  const settings = await receiverSettings();
-  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
-  client.nativeOwnerChanged = async (adopted) => {
-    const retained = await captureStore.getCapture(capture.id);
-    if (!retained) throw new Error("native_preparation_owner_missing");
-    await captureStore.putCapture({ ...retained, receiver_native: { ...retained.receiver_native, adopted,
-      acquisition_id: capture.acquisition_id, preparation_instance_id: capture.preparation_instance_id } });
-  };
-  const refs = capture.provider === "grok" ? { responses: rawRef, ...relatedRefs } : { conversation: rawRef };
-  const members = {};
-  for (const [name, ref] of Object.entries(refs)) {
-    const meta = await captureStaging.metadata(ref.id);
-    captureStaging.requireOwner(meta, ref, capture.owner);
-    if (meta.state !== "sealed") throw new Error("capture_staging_asset_unsealed");
-    members[name] = { sha256: meta.sha256, size_bytes: meta.bytes };
-  }
-  const rawRevision = await client.nativeRevision(capture.provider, capture.native_id, members);
-  const binding = { preparation_instance_id: capture.preparation_instance_id,
-    extension_instance_id: capture.extension_instance_id, acquisition_sequence: capture.acquisition_sequence,
-    invocation_id: capture.invocation_id, raw_revision: rawRevision, native_id: capture.native_id,
-    source_url: capture.source_url, document_id: capture.owner.document_id };
-  let adopted;
-  if (capture.receiver_native?.adopted) adopted = await client.refreshNativeOwner(capture.receiver_native.adopted, capture.preparation_instance_id, signal);
-  else if (queueContext) {
-    const job = await captureStore.assertJobExecution(queueContext.jobId, queueContext.owner, queueContext.generation);
-    const accountHandle = await providerAccountHandle(capture.provider);
-    if (!accountHandle) throw new Error("capture_job_account_scope_unresolved");
-    adopted = await client.recoverOrCreate({ provider: capture.provider, accountHandle,
-      locator: { kind: "backfill", provider: capture.provider, cutoff: job.cutoff },
-      intentPayload: { provider: capture.provider, cutoff: job.cutoff }, sessionId: capture.preparation_instance_id });
-    if (adopted.scope.key !== job.account_scope) throw new Error("capture_job_account_scope_mismatch");
-  } else adopted = await client.recoverInvocation({ provider: capture.provider, creationToken: capture.preparation_token,
-    binding, sessionId: capture.preparation_instance_id });
-  const reference = { adopted, acquisition_id: capture.acquisition_id, preparation_instance_id: capture.preparation_instance_id };
-  capture = { ...capture, receiver_native: reference, raw_revision_sha256: rawRevision };
-  await captureStore.putCapture(capture);
-  await client.beginNative(adopted, capture.acquisition_id, binding, Object.keys(refs), signal);
-  for (const [name, ref] of Object.entries(refs)) {
-    adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
-    const meta = await captureStaging.metadata(ref.id);
-    await client.nativeMember(adopted, capture.acquisition_id, name, await captureStaging.file(ref.id), meta.response_metadata || {}, meta.sha256, signal);
-  }
-  adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
-  const prepared = await client.prepareNative(adopted, capture.acquisition_id, {
-    captured_at: capture.observed_at, extension_instance_id: capture.extension_instance_id,
-    acquisition_sequence: capture.acquisition_sequence, source_url: capture.source_url,
-    extension_id: runtimeChrome.runtime.id || null, adapter_name: `${capture.provider}-native-v1`,
-    adapter_version: capture.extension_version, capture_mode: "snapshot", provider_meta: capture.attribution },
-    { capture_fidelity: "native_full", ...capture.attribution }, signal);
-  const preparedRoot = await captureStore.getCapture(capture.id);
-  await captureStore.putCapture({ ...preparedRoot, receiver_summary: { raw_revision: rawRevision, plan_digest: prepared.plan_digest, summary: prepared.summary } });
-  progress("native_prepare", "END");
-  if (summaryOnly) return { rawRevision, summary: prepared.summary, reference: { ...reference, adopted, plan_digest: prepared.plan_digest } };
-  progress("native_assets", "BEGIN");
-  for await (const asset of client.nativePlan(adopted, capture.acquisition_id, capture.preparation_instance_id, signal)) {
-    if (asset.receipt) continue;
-    const descriptor = asset.descriptor;
-    let outcome = { status: "no_resolvable_source" }; let file = null; let sha256 = null;
-    if (descriptor.provider_meta.native_inline_sha256) {
-      outcome = { status: "retained_native_bytes", sha256: descriptor.provider_meta.native_inline_sha256, size_bytes: descriptor.provider_meta.native_inline_size_bytes };
-    } else if (capture.provider !== "claude-ai") {
-      signal?.throwIfAborted();
-      const cancel = () => { void runtimeChrome.tabs.sendMessage(capture.owner.tab_id, { type: "polylogue.cancelRecordAssets", capture_ref: rawRef.id }, { documentId: capture.owner.document_id }).catch(() => undefined); };
+async function prepareNativeCapture(capture, { rawRef, signal, summaryOnly = false, onProgress = null }) {
+  return prepareNativeTransport({ capture, staging: captureStaging, store: captureStore, signal, summaryOnly, onProgress,
+    inspect: async (body, signal) => {
+      const response = await runtimeNetwork(`${NATIVE_HOST}/v1/browser-captures/inspect`, {
+        method: "POST", headers: await requestHeaders({ hasBody: true, requestId: buildReceiverRequestId() }), body, signal });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      return result;
+    },
+    acquire: async (descriptor, ordinal, signal) => {
+      if (capture.provider === "claude-ai") return { attachments: [], outcome: { failed: [{
+        provider_attachment_id: descriptor.provider_attachment_id, status: "no_resolvable_source" }] } };
+      const cancel = () => { void runtimeChrome.tabs.sendMessage(capture.owner.tab_id,
+        { type: "polylogue.cancelRecordAssets", capture_ref: rawRef.id }, { documentId: capture.owner.document_id }).catch(() => undefined); };
       signal?.addEventListener("abort", cancel, { once: true });
       try {
         const result = await runtimeChrome.tabs.sendMessage(capture.owner.tab_id, { type: "polylogue.acquireRecordAssets",
           provider: capture.provider, nativeId: capture.native_id, capture_ref: rawRef.id,
           recordKey: descriptor.original_record_key ?? String(descriptor.original_record_ordinal),
-          attachmentOrdinal: asset.ordinal, attachments: [descriptor] }, { documentId: capture.owner.document_id });
+          attachmentOrdinal: ordinal, attachments: [descriptor] }, { documentId: capture.owner.document_id });
         signal?.throwIfAborted();
         if (!result?.ok) throw new Error(result?.error || "native_asset_acquisition_failed");
-        const acquired = result.acquisition.attachments?.[0];
-        if (acquired?.staged_asset) {
-          const meta = await captureStaging.metadata(acquired.staged_asset.id);
-          captureStaging.requireOwner(meta, acquired.staged_asset, capture.owner);
-          file = await captureStaging.file(meta.id); sha256 = meta.sha256; outcome = { status: "acquired" };
-        } else outcome = { status: result.acquisition.outcome.failed?.[0]?.status || "no_resolvable_source" };
+        return result.acquisition;
       } finally { signal?.removeEventListener("abort", cancel); }
-    }
-    adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
-    await client.nativeAsset(adopted, capture.acquisition_id, asset, outcome, file, sha256, signal);
-  }
-  progress("native_assets", "END");
-  progress("native_finalize", "BEGIN");
-  adopted = await client.refreshNativeOwner(adopted, capture.preparation_instance_id, signal);
-  const final = await client.finalizeNative(adopted, capture.acquisition_id, prepared.plan_digest, signal);
-  progress("native_finalize", "END");
-  return { rawRevision, summary: prepared.summary, reference: { ...reference, adopted,
-    plan_digest: prepared.plan_digest, sha256: final.sha256, size_bytes: final.size_bytes } };
+    } });
 }
 
-async function publishNativeCapture(reference, recordRef, signal) {
-  await ensureTrustedReceiver();
+async function restoreNativeEnvelope(recordRef, signal) {
   const capture = await captureStore.getCapture(recordRef);
-  if (!capture || capture.state !== "ready" || capture.receiver_native.sha256 !== reference.sha256) throw new Error("native_final_artifact_conflict");
-  if (capture.receiver_receipt) return capture.receiver_receipt;
-  const settings = await receiverSettings();
-  const client = new CaptureJobClient({ baseUrl: settings.baseUrl, fetchImpl: runtimeNetwork });
-  client.nativeOwnerChanged = async (adopted) => {
-    const retained = await captureStore.getCapture(recordRef);
-    if (!retained) throw new Error("native_preparation_owner_missing");
-    await captureStore.putCapture({ ...retained, receiver_native: { ...reference, adopted } });
-  };
-  const adopted = await client.refreshNativeOwner(reference.adopted, reference.preparation_instance_id, signal);
-  const receipt = await client.publishNative(adopted, reference.acquisition_id, reference.plan_digest, reference.sha256, signal);
-  const error = receiverAckContractError(receipt, reference.sha256);
-  if (error) throw error;
-  await captureStore.putCapture({ ...capture, receiver_native: { ...reference, adopted }, receiver_receipt: receipt });
+  if (!capture?.raw_ref) throw new Error("native_original_reply_unavailable");
+  const meta = await captureStaging.metadata(capture.raw_ref);
+  return nativeNormalizer.normalize({ provider: capture.provider, nativeId: capture.native_id,
+    rawRef: { id: meta.id, token: meta.token }, relatedRefs: capture.related_refs || {},
+    acquisition: capture.acquisition, extensionVersion: capture.extension_version,
+    instanceId: capture.preparation_instance_id || await extensionInstanceId(), signal });
+}
+
+// Retained deliveries from the receiver-job client keep their raw reply roots.
+// Convert them through the native parser before posting; never discard or send
+// the obsolete remote preparation reference as a conversation body.
+async function publishNativeCapture(reference, recordRef, signal) {
+  const capture = await captureStore.getCapture(recordRef);
+  if (capture?.receiver_receipt) return capture.receiver_receipt;
+  const envelope = await restoreNativeEnvelope(recordRef, signal);
+  const receipt = await postJson("/v1/browser-captures", envelope, null, true, signal);
+  const retained = await captureStore.getCapture(recordRef);
+  if (retained) await captureStore.putCapture({ ...retained, receiver_receipt: receipt,
+    receiver_native: { ...reference, sha256: receipt.content_hash } });
   return receipt;
 }
 
 async function postJson(path, payload, serializedBody = null, requireReceiverRequestId = false, signal = null) {
   if (path === "/v1/browser-captures" && payload.receiver_native) return publishNativeCapture(payload.receiver_native, payload.capture_record_ref, signal);
-  await ensureTrustedReceiver();
-  const settings = await receiverSettings();
+
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
   let captureBody = null;
@@ -1946,7 +1337,7 @@ async function postJson(path, payload, serializedBody = null, requireReceiverReq
   }
   signal?.throwIfAborted();
   try {
-    const response = await runtimeNetwork(`${settings.baseUrl}${path}`, {
+    const response = await runtimeNetwork(`${NATIVE_HOST}${path}`, {
       method: "POST",
       headers: await requestHeaders({ hasBody: true, requestId }),
       body: serializedBody || JSON.stringify(payload),
@@ -2020,14 +1411,13 @@ async function reportCaptureHealth(event, payload = {}) {
 }
 
 async function getJson(path, timeoutMs = null) {
-  await ensureTrustedReceiver();
-  const settings = await receiverSettings();
+
   const requestId = buildReceiverRequestId();
   await appendDebugLog({ stage: "receiver_request", method: "GET", path, request_id: requestId });
   const controller = timeoutMs ? new globalThis.AbortController() : null;
   const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort("receiver_request_timeout"), timeoutMs) : 0;
   try {
-    const response = await runtimeNetwork(`${settings.baseUrl}${path}`, {
+    const response = await runtimeNetwork(`${NATIVE_HOST}${path}`, {
       headers: await requestHeaders({ requestId }),
       signal: controller?.signal,
     });
@@ -2070,9 +1460,8 @@ async function getJson(path, timeoutMs = null) {
 // Layer 2 is a read-only projection. It deliberately uses the daemon's
 // canonical session id and typed read routes; provider DOM text and local
 // storage ledgers are not authority for cost, assertions, or archive links.
-async function missionIntelligenceProjection(state, configuredUrl) {
+async function missionIntelligenceProjection(state) {
   const indexedSessionId = state?.archive_state?.indexed_session_id || null;
-  const base = String(configuredUrl || "").replace(/\/+$/, "");
   const unavailable = (status, reason) => ({
     status,
     reason,
@@ -2097,16 +1486,16 @@ async function missionIntelligenceProjection(state, configuredUrl) {
     const status = error?.status === 401 ? "unauthorized" : error?.status === 404 ? "incompatible" : error?.status ? "receiver_error" : "offline";
     return unavailable(status, error?.message || "projection_unavailable");
   }
-  const archiveUrl = new globalThis.URL(base);
-  // The receiver (8765) does not serve archive pages. The daemon's canonical
-  // reader is the separate web endpoint (8766) and uses /s/:session_id.
-  if (archiveUrl.port === "8765") archiveUrl.port = "8766";
-  archiveUrl.pathname = `/s/${encodeURIComponent(indexedSessionId)}`;
-  archiveUrl.search = "";
-  archiveUrl.hash = "";
+  let archiveUrl = null;
+  try {
+    const location = await getJson("/v1/reader-location");
+    if (location.ok && location.url) {
+      archiveUrl = new globalThis.URL(location.url);
+    }
+  } catch { /* Reader availability is independent of archive evidence. */ }
   return {
     ...projection,
-    archive: { ...projection.archive, url: archiveUrl.toString() },
+    archive: { ...projection.archive, url: archiveUrl?.toString() || null },
     cost: {
       ...(projection.cost || {}),
       status: projection.cost?.status === "unavailable" ? "unknown" : (projection.cost?.status || "unknown"),
@@ -2133,21 +1522,14 @@ async function backfillReceiverPreflight() {
 }
 
 async function refreshReceiverState() {
-  const health = await checkReceiverHealth();
+  const health = await checkNativeHost();
   const online = ["ok", "recovered"].includes(health.status);
   await setState({
     online,
     captured: false,
     status: health.receiver_status || null,
-    receiver_pairing: health.pairing || null,
     receiver_health: health,
-    error: health.status === "unauthorized"
-      ? "unauthorized"
-      : health.status === "pairing_mismatch"
-        ? "receiver_pairing_mismatch"
-        : online
-          ? null
-          : health.detail || "receiver_unavailable",
+    error: online ? null : health.detail || "native_host_unavailable",
     last_receiver_request_id: health.receiver_request_id || health.receiver_status?.receiver_request_id || null,
   });
 }
@@ -2700,7 +2082,6 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
   if (reason !== "popup_sync_open_tabs" && !(await automaticCaptureEnabled())) {
     return { ok: false, skipped: true, reason: "automatic_capture_paused" };
   }
-  if (reason !== "popup_sync_open_tabs") await requirePairedTrustedReceiver();
   const now = Date.now();
   const lastCaptureAt = recentBackgroundCaptures.get(tab.id) || 0;
   if (
@@ -2899,7 +2280,7 @@ async function captureProviderConversation(
   if (!/^[A-Za-z0-9_-]{1,256}$/.test(String(providerSessionId || ""))) {
     throw new Error("exact_provider_capture_invalid_session_id");
   }
-  await requirePairedTrustedReceiver();
+
   return withProviderTransportOperation(provider, async () => {
     const transport = await providerTab(provider);
     await ensureCaptureScripts(transport.tab);
@@ -3094,11 +2475,6 @@ async function runCaptureFreshnessSweep() {
   if (!(await automaticCaptureEnabled())) {
     return { skipped: true, reason: "automatic_capture_paused" };
   }
-  try {
-    await requirePairedTrustedReceiver();
-  } catch (error) {
-    return { skipped: true, reason: "receiver_not_paired", error: String(error?.message || error) };
-  }
   const now = Date.now();
   let queue = await storedCaptureFreshnessQueue();
   if (queue.sweep_not_before_ms > now) return { skipped: true, reason: "sweep_backoff" };
@@ -3217,7 +2593,6 @@ async function decideBrowserActionApproval(actionId, decision) {
 }
 
 async function transferBrowserActionAttachments(action, ownerInstanceId, transport) {
-  const settings = await receiverSettings();
   const transfer = async (command, item = null, offset = 0, encoded = "") => {
     const [result] = await runtimeChrome.scripting.executeScript({
       target: { tabId: transport.tab.id }, world: "MAIN",
@@ -3235,7 +2610,7 @@ async function transferBrowserActionAttachments(action, ownerInstanceId, transpo
       await transfer("start", item);
       const requestId = buildReceiverRequestId();
       const response = await runtimeNetwork(
-        `${settings.baseUrl}/v1/browser-actions/${encodeURIComponent(action.action_id)}/attachments/${encodeURIComponent(item.attachment_id)}`,
+        `${NATIVE_HOST}/v1/browser-actions/${encodeURIComponent(action.action_id)}/attachments/${encodeURIComponent(item.attachment_id)}`,
         { headers: await requestHeaders({ requestId }) },
       );
       if (!response.ok) {
@@ -3447,12 +2822,6 @@ async function dispatchBrowserAction(action, ownerInstanceId) {
 }
 
 async function pollBrowserActionsOnce() {
-  // Browser-action polling is autonomous work.  An unpaired profile has no
-  // trusted receiver identity, so it must remain entirely local instead of
-  // turning the wake alarm into recurring unauthenticated receiver traffic.
-  if (!(await storedReceiverPairing())?.receiver_id) {
-    return { actions: [], skipped: true, reason: "receiver_unpaired" };
-  }
   const ownerInstanceId = await browserActionExecutorId();
   const claimed = await getJson(`/v1/browser-actions?claim_by=${encodeURIComponent(ownerInstanceId)}`)
     .catch(() => ({ actions: [] }));
@@ -3600,11 +2969,9 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
         tabId: tab?.id || null,
         onlyIfEmpty: true,
       });
-      const pairing = await storedReceiverPairing();
       await setStateForTab(tab?.id || null, {
         online: true,
         captured: Boolean(state.captured),
-        receiver_pairing: pairing,
         archive_state: state,
         provider,
         provider_session_id: providerSessionId,
@@ -3677,21 +3044,14 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
       return state.state || "unknown";
     }
 
-    const health = await checkReceiverHealth();
+    const health = await checkNativeHost();
     const online = ["ok", "recovered"].includes(health.status);
     await setStateForTab(tab?.id || null, {
       online,
       captured: false,
       status: health.receiver_status || null,
-      receiver_pairing: health.pairing || null,
       receiver_health: health,
-      error: health.status === "unauthorized"
-        ? "unauthorized"
-        : health.status === "pairing_mismatch"
-          ? "receiver_pairing_mismatch"
-          : online
-            ? null
-            : health.detail || "receiver_unavailable",
+      error: online ? null : health.detail || "native_host_unavailable",
       provider,
       provider_session_id: null,
       active_page_state: provider ? "supported_no_session" : "unsupported",
@@ -3702,7 +3062,7 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
     return "not_conversation";
   } catch (error) {
     if (allowRecovery) {
-      const health = await checkReceiverHealth({ allowCanonicalRecovery: true });
+      const health = await checkNativeHost();
       if (health.status === "recovered") {
         recentActiveTabStateChecks.delete(throttleKey);
         await appendConversationTimeline({
@@ -3716,7 +3076,6 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
         return refreshActiveTabArchiveState(tab, `${reason}_receiver_recovered`, false);
       }
     }
-    const pairing = await storedReceiverPairing();
     await appendConversationTimeline({
       provider,
       providerSessionId,
@@ -3728,7 +3087,6 @@ async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowReco
     await setStateForTab(tab?.id || null, {
       online: false,
       captured: false,
-      receiver_pairing: pairing,
       provider,
       provider_session_id: providerSessionId,
       active_page_state: provider ? "receiver_error" : "unsupported",
@@ -3754,7 +3112,7 @@ async function refreshCurrentActiveTab(reason = "active_tab") {
   await refreshActiveTabArchiveState(tab, reason);
 }
 
-function stateSnapshotForTab(tab, globalState, ledger, pairing, health, capturedSessionId) {
+function stateSnapshotForTab(tab, globalState, ledger, health, capturedSessionId) {
   const url = tab?.url || tab?.pendingUrl || "";
   const provider = archiveProviderForUrl(url);
   const providerSessionId = capturedSessionId;
@@ -3764,20 +3122,13 @@ function stateSnapshotForTab(tab, globalState, ledger, pairing, health, captured
     ? ledger?.[sessionKey(provider, providerSessionId)] || {}
     : {};
   const receiverOnline = ["ok", "recovered"].includes(health?.status);
-  const receiverError = health?.status === "unauthorized"
-    ? "unauthorized"
-    : health?.status === "pairing_mismatch"
-      ? "receiver_pairing_mismatch"
-      : receiverOnline
-        ? null
-        : health?.detail || "receiver_unavailable";
+  const receiverError = receiverOnline ? null : health?.detail || "native_host_unavailable";
 
   if (sameGlobalSession) {
     return {
       ...globalState,
       online: receiverOnline,
       error: receiverError || (receiverOnline ? globalState?.error || null : receiverError),
-      receiver_pairing: pairing,
       receiver_health: health,
     };
   }
@@ -3796,7 +3147,6 @@ function stateSnapshotForTab(tab, globalState, ledger, pairing, health, captured
     attachment_count: ledgerItem.attachment_count ?? null,
     last_receiver_request_id: ledgerItem.receiver_request_id || null,
     updated_at: ledgerItem.updated_at || null,
-    receiver_pairing: pairing,
     receiver_health: health,
   };
 }
@@ -3806,10 +3156,10 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     ? (await runtimeChrome.tabs.query({ active: true, currentWindow: true }))[0]
     : null);
   const tabUrl = resolvedTab?.url || resolvedTab?.pendingUrl || "";
-  const health = await checkReceiverHealth();
+  const health = await checkNativeHost();
   const receiverOnline = ["ok", "recovered"].includes(health.status);
 
-  // Do not touch archive or queue routes after a pairing mismatch,
+  // Keep unavailable archive evidence explicit.
   // authorization failure, or offline result. This keeps the mission-control
   // surface read-only and fail-closed until receiver identity is trustworthy.
   if (refresh && resolvedTab && receiverOnline) {
@@ -3830,18 +3180,15 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
       [CONVERSATION_TIMELINE_KEY]: {},
       [CAPTURE_QUEUE_KEY]: CAPTURE_QUEUE_EMPTY,
       [CAPTURE_FRESHNESS_QUEUE_KEY]: null,
-      [RECEIVER_PAIRING_KEY]: null,
     }),
     backfillStatusPromise,
     ambientSettings(hostnameForUrl(tabUrl)),
   ]);
-  const pairing = health.pairing || stored[RECEIVER_PAIRING_KEY] || null;
   const capturedSessionId = await capturedConversationIdForTab(resolvedTab).catch(() => null);
   const baseState = stateSnapshotForTab(
     resolvedTab,
     stored.polylogueState,
     stored.polylogueSessionLedger || {},
-    pairing,
     health,
     capturedSessionId,
   );
@@ -3854,8 +3201,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
   const timeline = state.provider && state.provider_session_id
     ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
     : [];
-  const settings = await receiverSettings();
-  const intelligence = includeIntelligence ? await missionIntelligenceProjection(state, settings.baseUrl) : null;
+  const intelligence = includeIntelligence ? await missionIntelligenceProjection(state, NATIVE_HOST) : null;
   let assertionCapability = false;
   if (includeIntelligence && receiverOnline) {
     try {
@@ -3891,8 +3237,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     timeline,
     receiver: {
       health,
-      pairing,
-      configured_url: settings.baseUrl,
+        configured_url: NATIVE_HOST,
     },
     work: {
       capture_queue: await captureQueuePage(),
@@ -3928,14 +3273,11 @@ export function startBackgroundRuntime(adapters) {
   captureFreshnessPollPromise = null;
   storageMutationQueue = Promise.resolve();
   captureQueueMutationQueue = Promise.resolve();
-  trustedReceiverHealthCache = null;
-  cachedQueueLength = 0;
+    cachedQueueLength = 0;
   runtimeChrome = adapters;
   // Retire stored credentials without reading or transferring their value.
   void runtimeChrome.storage.local.remove("receiverAuthToken");
-  runtimeNetwork = async (input, init = {}) => adapters.network(input, {
-    ...init, receiverId: (await storedReceiverPairing())?.receiver_id || null,
-  });
+  runtimeNetwork = adapters.network;
   captureStore = captureRetryStore;
   captureStaging = adapters.captureStaging || new CaptureStaging(globalThis.navigator?.storage, captureStore);
   runtimeWorkerId = globalThis.crypto.randomUUID();
@@ -3986,7 +3328,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true, outcome: "cancelled" }); return;
       }
       if (nativeId !== message.native_id) throw new Error("capture_observation_identity_mismatch");
-      await requirePairedTrustedReceiver();
+
       const ref = await captureStore.reserveCaptureObservation(owner, nativeId);
       sendResponse({ ok: true, observation_ref: ref }); return;
     }
@@ -4035,21 +3377,14 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true });
       return;
     }
-    if (message.type === "polylogue.receiverPairing.status") {
-      const health = await checkReceiverHealth();
-      sendResponse({ ok: true, health, pairing: health.pairing || await storedReceiverPairing() });
+    if (message.type === "polylogue.readerLocation") {
+      try { sendResponse(await getJson("/v1/reader-location")); }
+      catch (error) { sendResponse({ ok: false, error: String(error.message || error) }); }
       return;
     }
-    if (message.type === "polylogue.receiverPairing.reset") {
-      let reset;
-      try {
-        if (Object.hasOwn(message, "expectedConfigurationRevision") && !Number.isSafeInteger(message.expectedConfigurationRevision)) throw new Error("receiver_configuration_changed");
-        reset = await clearReceiverPairing(message.expectedConfigurationRevision ?? null);
-        const health = await checkReceiverHealth({ allowCanonicalRecovery: false, expectedScope: reset });
-        sendResponse({ ok: true, health, pairing: health.pairing, configurationRevision: reset.revision });
-      } catch (error) {
-        sendResponse({ ok: false, error: error?.message || "receiver_pairing_reset_failed", configurationRevision: reset?.revision ?? null });
-      }
+    if (message.type === "polylogue.nativeHost.status") {
+      const health = await checkNativeHost();
+      sendResponse({ ok: true, health });
       return;
     }
     if (message.type === "polylogue.ambient.configure") {
@@ -4081,7 +3416,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       try {
-        await requirePairedTrustedReceiver();
+
         const result = await postJson("/v1/assertion-candidates", {
           body_text: candidate.body,
           kind: candidate.kind,
@@ -4099,23 +3434,6 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       return;
     }
-    if (message.type === "polylogue.configureReceiver") {
-      let settings;
-      try {
-        const restoring = Object.hasOwn(message, "restore");
-        if (restoring && (!message.restore || typeof message.restore !== "object" || Array.isArray(message.restore))) {
-          throw new Error("proof_receiver_configuration_changed");
-        }
-        settings = restoring
-          ? await restoreReceiverSettings(message.restore.previous, message.restore.owned)
-          : await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER);
-      } catch (error) {
-        sendResponse({ ok: false, error: error?.message || "configure_receiver_failed" });
-        return;
-      }
-      sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, configurationRevision: settings.configurationRevision });
-      return;
-    }
     if (message.type === "polylogue.backfill.start") {
       const job = await startBackfill(message);
       sendResponse({ ok: true, job });
@@ -4129,6 +3447,35 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "polylogue.backfill.status") {
       const coordinator = await backfillCoordinator();
       sendResponse({ ok: true, ...await coordinator.listStatus({ cursor: message.cursor || null, pageSize: message.pageSize || 25, activeOnly: message.activeOnly === true }) });
+      return;
+    }
+    if (message.type?.startsWith("polylogue.backfill.import.")) {
+      if (sender.url !== `chrome-extension://${runtimeChrome.runtime.id}/src/popup.html`) throw new Error("checkpoint_import_sender_invalid");
+      if (message.type === "polylogue.backfill.import.begin") {
+        const owner = { checkpoint_import_id: globalThis.crypto.randomUUID() };
+        const ref = await captureStaging.begin(owner, { kind: "checkpoint-import-body" });
+        await captureStaging.save({ ...await captureStaging.metadata(ref.id), import_staged: true });
+        checkpointImports.set(owner.checkpoint_import_id, { ref, owner, controller: new AbortController() });
+        sendResponse({ ok: true, import_id: owner.checkpoint_import_id }); return;
+      }
+      const operation = checkpointImports.get(message.import_id);
+      if (!operation) throw new Error("checkpoint_import_unavailable");
+      if (message.type === "polylogue.backfill.import.append") {
+        sendResponse({ ok: true, ...await captureStaging.append(operation.ref, operation.owner, message.sequence, message.base64) }); return;
+      }
+      if (message.type === "polylogue.backfill.import.cancel") {
+        operation.controller.abort(new globalThis.DOMException("Import cancelled", "AbortError"));
+        if (operation.running) await operation.running.catch(() => undefined);
+        else await captureStaging.cancel(operation.ref, operation.owner);
+        checkpointImports.delete(message.import_id); sendResponse({ ok: true }); return;
+      }
+      if (message.type !== "polylogue.backfill.import.finish" || operation.running) throw new Error("checkpoint_import_operation_invalid");
+      operation.running = (async () => {
+        await captureStaging.seal(operation.ref, operation.owner);
+        return importCheckpoint(await captureStaging.file(operation.ref.id), { staging: captureStaging, store: captureStore, signal: operation.controller.signal });
+      })();
+      try { sendResponse({ ok: true, ...await operation.running }); }
+      finally { checkpointImports.delete(message.import_id); await captureStaging.discard(operation.ref.id); }
       return;
     }
     if (["polylogue.backfill.export", "polylogue.backfill.exportAck"].includes(message.type)) {
@@ -4168,7 +3515,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (provider !== "grok" || message.provider !== provider) throw new Error("native_bundle_owner_mismatch");
       const owner = { tab_id: sender.tab.id, document_id: sender.documentId || null, provider };
       if (message.type === "polylogue.nativeBundle.begin") {
-        await requirePairedTrustedReceiver(); await requireProviderThrottleAvailability(provider);
+         await requireProviderThrottleAvailability(provider);
         if (conversationIdForUrl(sender.tab.url) !== message.native_id) throw new Error("native_capture_identity_mismatch");
         const bundle = await captureStore.beginNativeBundle({ extensionInstanceId: await extensionInstanceId(), owner, provider, nativeId: message.native_id, bundleId: message.bundle_id,
           requiredReplies: ["conversation", "responses"] });
@@ -4355,7 +3702,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await Promise.all(drains);
         sendResponse({ ok: true, outcome: "cancelled" }); return;
       }
-      await requirePairedTrustedReceiver(); await requireProviderThrottleAvailability(provider);
+       await requireProviderThrottleAvailability(provider);
       if (message.invocation_ref) await requireNativeInvocation(message.invocation_ref, owner, message.native_id);
       nativePreparationProgress(progressContext, "normalize_admission", "END");
       const controller = new globalThis.AbortController();
@@ -4392,7 +3739,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!["chatgpt", "claude-ai", "grok"].includes(provider) || (message.provider && message.provider !== provider)) throw new Error("capture_staging_sender_invalid");
       const owner = { tab_id: sender.tab.id, document_id: sender.documentId || null, provider };
       if (message.type === "polylogue.asset.begin") {
-        await requirePairedTrustedReceiver();
+
         await requireProviderThrottleAvailability(provider);
         if (typeof message.request_id !== "string" || !message.request_id) throw new Error("capture_staging_request_invalid");
         if (message.invocation_ref) {
@@ -4421,9 +3768,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               requested.operation !== "conversation" || requested.params.nativeId !== message.queue_context.nativeId) throw new Error("native_acquisition_claim_invalid");
           const job = await captureStore.assertJobExecution(message.queue_context.jobId, message.queue_context.owner, message.queue_context.generation);
           if (typeof message.account_handle !== "string" || !message.account_handle) throw new Error("capture_job_account_scope_unresolved");
-          const settings = await receiverSettings();
-          const client = new CaptureJobClient({ baseUrl: settings.baseUrl, cache: runtimeChrome.storage.local, fetchImpl: runtimeNetwork });
-          const observedScope = await deriveAccountScope(await client.scopeNamespace(), provider, message.account_handle);
+          const observedScope = await deriveAccountScope(await extensionInstanceId(), provider, message.account_handle);
           if (observedScope !== job.account_scope) throw new Error("capture_job_account_scope_mismatch");
         }
         const ref = await captureStaging.begin(owner, { kind: message.kind, source_url: message.source_url, response_metadata: message.response_metadata,
@@ -4496,10 +3841,6 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       let result;
       let delivery = null;
       try {
-        // Content scripts in an existing provider tab may outlive an extension
-        // reload. Do not let one of those stale producers turn an unpaired
-        // receiver into unauthenticated receiver traffic.
-        if (sender.tab) await requirePairedTrustedReceiver();
         delivery = await retainCaptureForDelivery({ envelope, reason: message.reason, tab: sender.tab, signal: operation.controller.signal, operation });
         result = await completeForegroundDelivery(delivery, operation.controller.signal);
         if (Array.isArray(result?.accepted_identities)) {
@@ -4661,10 +4002,10 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (provider !== "chatgpt" && sender.tab) {
         // The freshness queue only knows how to refetch ChatGPT. Other
         // providers recapture their own tab through captureTab, which applies
-        // the same automatic-capture policy and receiver pairing checks.
+        // the same automatic-capture policy.
         const capture = await captureTab(sender.tab, message.reason || "provider_page_hint");
         // captureTab returns null when it never reached the content script
-        // (no session identity, paused policy, unpaired receiver); say so.
+        // (no session identity, paused policy, unavailable native host); say so.
         sendResponse(capture ? { ok: true, scheduled: false, capture } : { ok: false, scheduled: false, error: "capture_not_started" });
         return;
       }
@@ -4696,7 +4037,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.checkReceiverHealth") {
-      const health = await checkReceiverHealth();
+      const health = await checkNativeHost();
       sendResponse(health);
       return;
     }
@@ -4740,7 +4081,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (message.type === "polylogue.status") {
-      const health = await checkReceiverHealth();
+      const health = await checkNativeHost();
       if (["ok", "recovered"].includes(health.status)) {
         await refreshCurrentActiveTab(message.reason || "status");
       } else {
@@ -4749,14 +4090,9 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         await setState({
           ...previous,
           online: false,
-          receiver_pairing: health.pairing || previous.receiver_pairing || null,
           receiver_health: health,
           last_receiver_request_id: health.receiver_request_id || previous.last_receiver_request_id || null,
-          error: health.status === "unauthorized"
-            ? "unauthorized"
-            : health.status === "pairing_mismatch"
-              ? "receiver_pairing_mismatch"
-              : health.detail || "receiver_unavailable",
+          error: health.detail || "native_host_unavailable",
         });
       }
       const stored = await runtimeChrome.storage.local.get({ polylogueState: null });
@@ -4766,7 +4102,6 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ok: false,
           error: state.error || "receiver_unavailable",
           receiver_request_id: state.last_receiver_request_id || null,
-          receiver_pairing: state.receiver_pairing || null,
         });
         return;
       }

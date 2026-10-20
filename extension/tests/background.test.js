@@ -1,48 +1,12 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { Script } from "node:vm";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
-import { JSDOM } from "jsdom";
 import { setImmediate } from "node:timers/promises";
-import { canonicalJson, deriveAccountScope } from "../src/backfill/capture_jobs.js";
+import { deriveAccountScope } from "../src/backfill/encoding.js";
 import { IndexedDbBackfillStore } from "../src/backfill/storage.js";
 import { CaptureStaging } from "../src/capture/staging.js";
 import { NativeCaptureNormalizer } from "../src/capture/native.js";
 import { memoryOriginStorage, receiverContractPreparation } from "./infra/capture-staging.js";
-import { checkpointReceiverState } from "./infra/capture-job-checkpoints.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
-
-const checkpointArtifacts = new Map();
-const receiverCheckpointState = checkpointReceiverState();
-beforeEach(() => { receiverCheckpointState.clear(); checkpointArtifacts.clear(); });
-async function checkpointFixtureResponse(job, options) {
-  const result = await receiverCheckpointState.checkpoint(job, options);
-  const payload = JSON.parse(result.bytes);
-  checkpointArtifacts.set(result.job.checkpoint_digest, { bytes: result.bytes, cutoff: payload.jobs[0]?.cutoff });
-  return responseJson({ job: result.job, receipt: result.receipt });
-}
-function checkpointFixture(payload, sequence = 1) {
-  const bytes = canonicalJson(payload);
-  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  checkpointArtifacts.set(digest, { bytes, cutoff: payload.jobs[0].cutoff });
-  return { sequence, digest, artifact_ref: digest, size_bytes: globalThis.Buffer.byteLength(bytes) };
-}
-function checkpointArtifactFixtureResponse(url) {
-  const path = new globalThis.URL(url).pathname;
-  if (!path.includes("/checkpoint-artifacts/")) return null;
-  const digest = decodeURIComponent(path.split("/checkpoint-artifacts/")[1]);
-  const artifact = checkpointArtifacts.get(digest);
-  if (!artifact) return new globalThis.Response(null, { status: 404 });
-  return new globalThis.Response(artifact.bytes, { headers: { "Content-Type": "application/json" } });
-}
-function captureJobRequestBody(options) {
-  if (options.headers?.["X-Polylogue-Native"]) return JSON.parse(options.headers["X-Polylogue-Native"]);
-  return options.headers?.["X-Polylogue-Checkpoint"]
-    ? JSON.parse(options.headers["X-Polylogue-Checkpoint"])
-    : options.body ? JSON.parse(options.body) : {};
-}
 
 async function deliveryEntries() {
   const entries = [];
@@ -147,11 +111,10 @@ function installChromeMock(storagePatch = {}) {
           lease: { lease_id: "synthetic-lease", generation: 1, proof: "synthetic-proof" } });
       }
       const response = await globalThis.fetch(...args);
-      if (response.ok && options.method === "POST" && (path === "/v1/browser-captures" || path.endsWith("/native/publish"))) {
+      if (response.ok && options.method === "POST" && path === "/v1/browser-captures") {
         // Explicit malformed fields override valid synthetic receipt defaults.
         const body = await response.json();
-        const hash = path.endsWith("/native/publish") ? captureJobRequestBody(options).sha256
-          : createHash("sha256").update(typeof options.body === "string" ? options.body : new Uint8Array(await options.body.arrayBuffer())).digest("hex");
+        const hash = createHash("sha256").update(typeof options.body === "string" ? options.body : new Uint8Array(await options.body.arrayBuffer())).digest("hex");
         response.json = async () => ({ outcome: "accepted", content_hash: hash, submitted_content_hash: hash, ...body });
       }
       return response;
@@ -287,7 +250,7 @@ function installChromeMock(storagePatch = {}) {
   };
   globalThis.fetch = vi.fn(async (url, options = {}) => {
     fetchCalls.push({ url, options });
-    const captureJobResponse = captureJobFixtureResponse(url, options);
+    const captureJobResponse = nativeInspectionFixtureResponse(url, options);
     if (captureJobResponse) return captureJobResponse;
     if (String(url).endsWith("/v1/browser-captures/capabilities")) {
       return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] }, { requestId: "capability-1" });
@@ -296,74 +259,10 @@ function installChromeMock(storagePatch = {}) {
   });
 }
 
-function captureJobFixtureResponse(url, options = {}) {
-  const artifactResponse = checkpointArtifactFixtureResponse(url);
-  if (artifactResponse) return artifactResponse;
-  const path = new globalThis.URL(url).pathname;
-  if (!path.startsWith("/v1/capture-jobs")) return null;
-  const body = captureJobRequestBody(options);
-  if (path === "/v1/capture-jobs/capabilities") {
-    return responseJson({
-      schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1",
-      protocol_min: 2,
-      protocol_max: 2,
-      scope_namespace: "cjs1:fixture-stable-namespace",
-    });
-  }
-  if (path === "/v1/capture-jobs/discover") return responseJson({ jobs: [] });
-  if (path === "/v1/capture-jobs") {
-    const scope = body.scope.kind === "invocation" ? { kind: "invocation", resume_capability: "fixture-resume-capability" } : body.scope;
-    return responseJson({ scope, job: receiverCheckpointState.job({
-      job_id: "fixture-capture-job", provider: body.provider, scope,
-      intent_key: body.intent.intent_key, revision: 0, lease_generation: 0,
-    }) }, { status: 201 });
-  }
-  if (path.endsWith("/adopt")) {
-    return responseJson({
-      job: receiverCheckpointState.job({
-        job_id: "fixture-capture-job", provider: body.provider, scope: body.scope,
-        intent_key: "fixture-intent", revision: 1, lease_generation: 1,
-      }),
-      lease: { lease_id: "fixture-lease", generation: 1, proof: "fixture-proof", expires_at: "2099-01-01T00:00:00Z" },
-    });
-  }
-  if (path.endsWith("/update")) {
-    return responseJson({
-      job: receiverCheckpointState.job({
-        job_id: "fixture-capture-job", provider: body.provider, scope: body.scope,
-        intent_key: "fixture-intent", revision: 2, lease_generation: 1,
-        lease_expires_at: "2099-01-01T00:00:00Z", checkpoint_sequence: null,
-      }),
-      receipt: { kind: "capture_job_update", revision: 2 },
-    });
-  }
-  if (path.endsWith("/checkpoint")) {
-    return checkpointFixtureResponse({ job_id: "fixture-capture-job", revision: 3 }, options);
-  }
-  if (path === "/v1/capture-jobs/fixture-capture-job" && (!options.method || options.method === "GET")) {
-    return responseJson({ job: receiverCheckpointState.job({ job_id: "fixture-capture-job" }) });
-  }
-  if (path.endsWith("/native/begin")) {
-    receiverCheckpointState.job({ job_id: "fixture-capture-job", native_binding: body.binding });
-    return responseJson({ acquisition_id: body.acquisition_id, state: "acquiring" });
-  }
-  if (path.endsWith("/native/member")) {
-    return (async () => {
-      expect(options.body.size).toBe(body.size_bytes);
-      expect(createHash("sha256").update(globalThis.Buffer.from(await options.body.arrayBuffer())).digest("hex")).toBe(body.sha256);
-      return responseJson({ member_name: body.member_name, sha256: body.sha256, size_bytes: body.size_bytes });
-    })();
-  }
-  if (path.endsWith("/native/prepare")) return responseJson({ plan_digest: "sha256:" + "a".repeat(64),
-    summary: { title: null, turn_count: 2, attachment_count: 0, session_kind: "standard", needs_follow_up: false } });
-  if (path.endsWith("/native/plan")) return responseJson({ plan_digest: "sha256:" + "a".repeat(64), assets: [], after: null });
-  if (path.endsWith("/native/finalize")) return responseJson({ sha256: "b".repeat(64), size_bytes: 1234 });
-  if (path.endsWith("/native/publish")) {
-    const job = receiverCheckpointState.job({ job_id: "fixture-capture-job" });
-    return responseJson({ ok: true, provider: job.provider, provider_session_id: job.native_binding.native_id,
-      content_hash: body.sha256 });
-  }
-  return responseJson({ error: "unexpected_capture_job_request" }, { ok: false, status: 500 });
+function nativeInspectionFixtureResponse(url) {
+  if (new URL(url).pathname !== "/v1/browser-captures/inspect") return null;
+  return responseJson({ ok: true, attachments: [], summary: { title: "Synthetic", turn_count: 2,
+    attachment_count: 0, session_kind: "main", needs_follow_up: false } });
 }
 
 async function loadBackground(storagePatch = {}, beforeImport = () => {}) {
@@ -400,13 +299,6 @@ async function captureReceipt(body, options, responseOptions) {
 }
 
 function responseJson(body, { ok = true, status = 200, requestId = "receiver-request-1" } = {}) {
-  if (body.job) body = { ...body, job: receiverCheckpointState.job(body.job) };
-  for (const job of [...(body.jobs || []), ...(body.job ? [body.job] : [])]) {
-    if (!job.checkpoint?.artifact_ref) continue;
-    const artifact = checkpointArtifacts.get(job.checkpoint.artifact_ref);
-    job.intent ||= { payload: { cutoff: artifact.cutoff } };
-    job.checkpoint_updated_at ||= "2026-07-16T10:00:00Z";
-  }
   return {
     headers: {
       get: vi.fn((name) => (name === "X-Request-ID" ? requestId : null)),
@@ -576,209 +468,39 @@ describe("background receiver diagnostics", () => {
     expect(fetchCalls.filter((call) => String(call.url).startsWith("https://"))).toEqual([]);
   });
 
-  it.each(["capabilities", "prepare"].flatMap(boundary => ["success", "cancel"].map(outcome => [boundary, outcome])))("distinguishes the original preparation await despite identical markers: %s/%s", async (boundary, outcome) => {
-    stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
+  it.each(["success", "cancel"])("keeps inspection progress and cancellation attached to the original raw capture: %s", async (outcome) => {
     tabs[0].url = "https://chatgpt.com/c/session";
     const owner = { tab_id: 42, document_id: "owned-document", provider: "chatgpt" };
     const store = new IndexedDbBackfillStore(globalThis.indexedDB);
     const staging = new CaptureStaging(globalThis.navigator.storage, store);
     const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://chatgpt.com/backend-api/conversation/session" });
     const raw = JSON.stringify({ id: "session", mapping: {} });
-    await staging.append(ref, owner, 0, globalThis.Buffer.from(raw).toString("base64"));
-    await staging.seal(ref, owner);
-    const operations = []; let release; let pending = 0; let memberBytes;
-    const originalFetch = globalThis.fetch;
+    await staging.append(ref, owner, 0, globalThis.Buffer.from(raw).toString("base64")); await staging.seal(ref, owner);
+    let release; let pending = 0;
     globalThis.fetch = vi.fn(async (url, options) => {
-      const path = new globalThis.URL(url).pathname;
-      const operation = path === "/v1/capture-jobs/capabilities" ? "capabilities" : path.split("/native/")[1];
-      if (operation) operations.push(operation);
-      if (operation === "member") memberBytes = await options.body.text();
-      if (operation === boundary) {
-        pending++;
-        try { await new Promise(resolve => { release = resolve; }); }
-        finally { pending--; }
-      }
-      if (path === "/v1/status") return responseJson({ ok: true, receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1" });
-      return captureJobFixtureResponse(url, options) || originalFetch(url, options);
+      expect(new URL(url).pathname).toBe("/v1/browser-captures/inspect");
+      expect(await options.body.text()).toContain(`"raw_provider_payload":${raw}`);
+      pending++;
+      try { await new Promise(resolve => { release = resolve; }); } finally { pending--; }
+      return responseJson({ ok: true, attachments: [], summary: { turn_count: 0, attachment_count: 0 } });
     });
+    const sender = { tab: tabs[0], documentId: owner.document_id };
     const normalization = sendRuntimeMessage({ type: "polylogue.normalizeNativeCapture", provider: "chatgpt", raw_ref: ref,
-      native_id: "session", native_request_id: "polylogue-native-fetch-1-original" }, { tab: tabs[0], documentId: owner.document_id });
-    let result; normalization.then(value => { result = value; });
+      native_id: "session", native_request_id: "polylogue-native-fetch-1-original" }, sender);
     await vi.waitFor(() => expect(release).toBeDefined());
-    await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([
-      expect.objectContaining({ stage: "native_preparation_progress", phase: "native_prepare", state: "BEGIN", native_request_id: "polylogue-native-fetch-1-original" }),
-    ])));
-    expect(result).toBeUndefined(); expect(pending).toBe(1);
-    expect(stored.polylogueDebugLog.some(row => row.phase === "native_prepare" && row.state === "END")).toBe(false);
-    if (boundary === "capabilities") {
-      expect(operations).toEqual(["capabilities"]); expect(memberBytes).toBeUndefined();
-    } else {
-      expect(operations).toEqual(["capabilities", "begin", "member", "prepare"]);
-      expect(memberBytes).toBe(raw);
-    }
-    let cancellation; let cancellationSettled = false;
+    expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: "native_prepare", state: "BEGIN", native_request_id: "polylogue-native-fetch-1-original" }),
+    ]));
+    let cancellation; let settled = false;
     if (outcome === "cancel") {
-      cancellation = sendRuntimeMessage({ type: "polylogue.cancelNativeCapture", provider: "chatgpt", raw_ref: ref }, { tab: tabs[0], documentId: owner.document_id });
-      cancellation.then(() => { cancellationSettled = true; });
-      await setImmediate();
-      expect(cancellationSettled).toBe(false); expect(result).toBeUndefined(); expect(pending).toBe(1);
+      cancellation = sendRuntimeMessage({ type: "polylogue.cancelNativeCapture", provider: "chatgpt", raw_ref: ref }, sender);
+      cancellation.then(() => { settled = true; }); await setImmediate();
+      expect(settled).toBe(false); expect(pending).toBe(1);
     }
-    release();
-    result = await normalization;
+    release(); const result = await normalization;
     if (cancellation) expect(await cancellation).toMatchObject({ ok: true, outcome: "cancelled" });
-    expect(pending).toBe(0);
     expect(result.ok).toBe(outcome === "success");
-    if (outcome === "cancel") expect(result.outcome).toBe("cancelled");
-    else expect(result.envelope.receiver_native).toHaveProperty("sha256");
-  });
-
-  it.each([
-    ["admission", "success"],
-    ...["prepare", "plan", "finalize"].flatMap(boundary => ["success", "failure", "cancel"].map(outcome => [boundary, outcome])),
-    ["prepare", "diagnostic_failure"], ["prepare", "missing_id"], ["prepare", "malformed_id"],
-  ])("records private fixed progress before the actual suspended native %s request: %s", async (boundary, outcome) => {
-    stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
-    tabs[0].url = "https://chatgpt.com/c/session";
-    const owner = { tab_id: 42, document_id: "owned-document", provider: "chatgpt" };
-    const store = new IndexedDbBackfillStore(globalThis.indexedDB);
-    const staging = new CaptureStaging(globalThis.navigator.storage, store);
-    const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://chatgpt.com/backend-api/conversation/session" });
-    await staging.append(ref, owner, 0, globalThis.Buffer.from(JSON.stringify({ id: "session", mapping: {} })).toString("base64"));
-    await staging.seal(ref, owner);
-    if (outcome === "diagnostic_failure") {
-      const originalSet = globalThis.chrome.storage.local.set;
-      globalThis.chrome.storage.local.set = async patch => {
-        if (patch.polylogueDebugLog?.[0]?.stage === "native_preparation_progress") throw new Error("synthetic debug write refusal");
-        return originalSet(patch);
-      };
-    }
-    let release; const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async (url, options) => {
-      const path = new globalThis.URL(url).pathname;
-      if (path.endsWith(`/native/${boundary}`) || (boundary === "admission" && path === "/v1/status")) await new Promise((resolve, reject) => { release = () => outcome === "failure" ? reject(new Error("synthetic native request refusal")) : resolve(); });
-      if (path === "/v1/status") return responseJson({ ok: true, receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1" });
-      return captureJobFixtureResponse(url, options) || originalFetch(url, options);
-    });
-    const normalization = sendRuntimeMessage({ type: "polylogue.normalizeNativeCapture", provider: "chatgpt", raw_ref: ref, native_id: "session", native_request_id: outcome === "missing_id" ? undefined : outcome === "malformed_id" ? "staging-uuid" : "polylogue-native-fetch-1-original" }, { tab: tabs[0], documentId: owner.document_id });
-    let earlyResponse; normalization.then(value => { earlyResponse = value; });
-    await vi.waitFor(() => expect(release, JSON.stringify(earlyResponse)).toBeDefined());
-    const phase = { admission: "normalize_admission", prepare: "native_prepare", plan: "native_assets", finalize: "native_finalize" }[boundary];
-    if (!["diagnostic_failure", "missing_id", "malformed_id"].includes(outcome)) await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([
-      expect.objectContaining({stage:"native_preparation_progress",phase,state:"BEGIN",acquisition_ref:ref.id}),
-    ])));
-    const begun = stored.polylogueDebugLog.find(row => row.phase === phase && row.state === "BEGIN");
-    if (!["diagnostic_failure", "missing_id", "malformed_id"].includes(outcome)) expect(Object.keys(begun).sort()).toEqual(["acquisition_ref","at","native_request_id","phase","stage","state"]);
-    else expect(begun).toBeUndefined();
-    expect(stored.polylogueDebugLog.some(row => row.phase === phase && row.state === "END")).toBe(false);
-    const cancellation = outcome === "cancel" ? sendRuntimeMessage({ type: "polylogue.cancelNativeCapture", provider: "chatgpt", raw_ref: ref }, { tab: tabs[0], documentId: owner.document_id }) : null;
-    if (cancellation) await setImmediate();
-    release();
-    const result = await normalization;
-    if (cancellation) await cancellation;
-    expect(result.ok).toBe(["success", "diagnostic_failure", "missing_id", "malformed_id"].includes(outcome));
-    if (outcome === "success") await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([
-      expect.objectContaining({stage:"native_preparation_progress",phase:"native_finalize",state:"END",acquisition_ref:ref.id}),
-    ])));
-    if (["failure", "cancel"].includes(outcome)) expect(stored.polylogueDebugLog.some(row => row.phase === phase && row.state === "END")).toBe(false);
-  });
-
-  it.each(["same_clock", "interleaved", "missing_id", "malformed_id"])("carries ORIGINAL MAIN request through replaced headers, private log and strict report: %s", async schedule => {
-    stored.polylogueAmbientSettings = { enabled: true, automatic_capture_enabled: false, disabled_sites: [] };
-    stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1", endpoint: stored.receiverBaseUrl };
-    tabs[0].url = "https://chatgpt.com/c/session";
-    const owner = { tab_id: 42, document_id: "owned-document", provider: "chatgpt" };
-    const store = new IndexedDbBackfillStore(globalThis.indexedDB);
-    const staging = new CaptureStaging(globalThis.navigator.storage, store);
-    const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://chatgpt.com/backend-api/conversation/session" });
-    await staging.append(ref, owner, 0, globalThis.Buffer.from(JSON.stringify({ id: "session", mapping: {} })).toString("base64"));
-    await staging.seal(ref, owner);
-    const fixedClock = Date.now(); vi.spyOn(Date, "now").mockReturnValue(fixedClock);
-    const allStorageListeners = new Set(); const pages = []; const normalizations = []; const releases = [];
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async (url, options) => {
-      if (new globalThis.URL(url).pathname.endsWith("/native/prepare")) await new Promise(resolve => { releases.push(resolve); });
-      if (new globalThis.URL(url).pathname === "/v1/status") return responseJson({ ok: true, receiver_id: "rx-1", api_schema: "polylogue-browser-capture/v1" });
-      return captureJobFixtureResponse(url, options) || originalFetch(url, options);
-    });
-    const originalSet = globalThis.chrome.storage.local.set;
-    globalThis.chrome.storage.local.set = async patch => {
-      const changes = Object.fromEntries(Object.entries(patch).map(([key, value]) => [key, { oldValue: stored[key], newValue: value }]));
-      await originalSet(patch);
-      for (const listener of allStorageListeners) listener(changes, "local");
-    };
-    try {
-      for (let index = 0; index < (schedule === "interleaved" ? 2 : 1); index++) {
-        const dom = new JSDOM("<!doctype html><title>Neutral capture fixture</title>", { url: tabs[0].url, runScripts: "outside-only" });
-        const listeners = []; const storageListeners = new Set(); const page = { dom, storageListeners, registrationListeners: null, requestId: null, capture: null };
-        pages.push(page); dom.window.Date.now = () => fixedClock;
-        dom.window.chrome = {
-          storage: { onChanged: { addListener: listener => { storageListeners.add(listener); allStorageListeners.add(listener); }, removeListener: listener => { storageListeners.delete(listener); allStorageListeners.delete(listener); } } },
-          runtime: { id: globalThis.chrome.runtime.id, getManifest: globalThis.chrome.runtime.getManifest,
-            onMessage: { addListener: listener => listeners.push(listener) },
-            sendMessage: async message => {
-              const request = { ...message };
-              if (message.type === "polylogue.normalizeNativeCapture") {
-                expect(storageListeners.size).toBe(2); // Registration plus original preparation observer, before runtime send.
-                expect(message.native_request_id).toBe(page.requestId);
-                expect(message.raw_ref).toEqual(ref); // Header response actually replaced the acquisition descriptor.
-                normalizations.push(message);
-                if (schedule === "missing_id") delete request.native_request_id;
-                if (schedule === "malformed_id") request.native_request_id = "staging-uuid";
-              }
-              const result = await sendRuntimeMessage(request, { tab: tabs[0], documentId: owner.document_id });
-              // The real header handler is retained; the neutral fixture presents
-              // an identical owned raw revision for both concurrent responses.
-              return message.type === "polylogue.nativeCaptureHeader" && result?.ok
-                ? { ...result, capture: { ...result.capture, bodyRef: ref } } : result;
-            } },
-        };
-        dom.window.fetch = async input => new globalThis.Response(JSON.stringify(new globalThis.URL(String(input)).pathname === "/api/auth/session" ? { detail: "not_found" } : { id: "session", mapping: {} }), { status: new globalThis.URL(String(input)).pathname === "/api/auth/session" ? 404 : 200, headers: { "content-type": "application/json" } });
-        dom.window.postMessage = data => {
-          if (data.type === `polylogue.page.v2.${dom.window.chrome.runtime.id}.chatgpt.nativeFetchRequest`) page.requestId = data.requestId;
-          dom.window.queueMicrotask(() => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { source: dom.window, origin: dom.window.location.origin, data })));
-        };
-        const context = dom.getInternalVMContext();
-        for (const file of ["content/asset_stream.js", "content/chatgpt_bridge.js", "common.js", "content/chatgpt.js"]) new Script(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), `../src/${file}`), "utf8")).runInContext(context);
-        page.registrationListeners = new Set(storageListeners);
-        page.dispatch = message => new Promise((resolve, reject) => {
-          if (!listeners.some(listener => listener(message, {}, resolve) === true)) reject(new Error("synthetic content listener missing"));
-        });
-        page.capture = page.dispatch({ type: "polylogue.capturePage", deferReceiver: true });
-      }
-      await vi.waitFor(() => expect(releases.length).toBe(pages.length));
-      expect(normalizations).toHaveLength(pages.length);
-      expect(new Set(pages.map(page => page.requestId)).size).toBe(pages.length);
-      for (const page of pages) expect(page.requestId).toMatch(/^polylogue-native-fetch-\d+-[a-z0-9]+$/);
-      if (!["missing_id", "malformed_id"].includes(schedule)) for (const page of pages) {
-        await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([expect.objectContaining({ stage: "native_preparation_progress", phase: "normalize_admission", state: "BEGIN", native_request_id: page.requestId, acquisition_ref: ref.id })])));
-      }
-      const cancellations = pages.map(page => page.dispatch({ type: "polylogue.cancelCapture" }));
-      expect(allStorageListeners.size).toBe(pages.length);
-      for (const page of pages) expect(page.storageListeners).toEqual(page.registrationListeners);
-      for (const release of releases) release();
-      await Promise.all(cancellations);
-      for (const page of pages) {
-        const progress = await page.capture;
-        expect(progress).toMatchObject({ ok: false, outcome: "cancelled" });
-        const rows = progress.native_progress.filter(row => row.source === "background_debug_log");
-        if (["missing_id", "malformed_id"].includes(schedule)) expect(rows).toEqual([]);
-        else expect(rows).toContainEqual({ stage: "normalize_admission", state: "BEGIN", source: "background_debug_log" });
-        expect(JSON.stringify(progress.native_progress)).not.toContain(page.requestId);
-        expect(JSON.stringify(progress.native_progress)).not.toContain(ref.id);
-        const snapshot = JSON.stringify(progress.native_progress);
-        // A real late private write after original cancellation cannot revive an observer.
-        await globalThis.chrome.storage.local.set({ polylogueDebugLog: [{ at: new Date().toISOString(), stage: "native_preparation_progress", phase: "native_finalize", state: "END", native_request_id: page.requestId, acquisition_ref: ref.id }] });
-        expect(JSON.stringify(progress.native_progress)).toBe(snapshot);
-      }
-    } finally {
-      const cancellations = pages.map(page => page.dispatch?.({ type: "polylogue.cancelCapture" }));
-      for (const release of releases) release();
-      await Promise.allSettled(cancellations);
-      await Promise.allSettled(pages.map(page => page.capture));
-      for (const page of pages) { page.dom.window.dispatchEvent(new page.dom.window.Event("pagehide")); page.dom.window.close(); }
-      expect(allStorageListeners.size).toBe(0);
-      vi.restoreAllMocks();
-    }
+    expect(await (await staging.file(ref.id)).text()).toBe(raw);
   });
 
   it("uses the supported Claude native id header without inventing a uuid", async () => {
@@ -788,7 +510,7 @@ describe("background receiver diagnostics", () => {
     const staging = new CaptureStaging(globalThis.navigator.storage, store);
     const ref = await staging.begin(owner, { kind: "native-response", source_url: "https://claude.ai/api/organizations/fixture/chat_conversations/native-id" });
     const raw = JSON.stringify({ id: "native-id", chat_messages: [] });
-    await staging.append(ref, owner, 0, globalThis.Buffer.from(raw).toString("base64"));
+    await staging.append(ref, owner, 0, globalThis.globalThis.Buffer.from(raw).toString("base64"));
     await staging.seal(ref, owner);
     const result = await sendRuntimeMessage({ type: "polylogue.nativeCaptureHeader", provider: "claude-ai", raw_ref: ref },
       { tab: tabs[0], documentId: owner.document_id });
@@ -919,7 +641,7 @@ describe("background receiver diagnostics", () => {
 
     expect(response.receiver_request_id).toBe("receiver-request-1");
     expect(fetchCalls).toHaveLength(1);
-    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/browser-captures");
+    expect(fetchCalls[0].url).toBe("polylogue://native/v1/browser-captures");
     expect(fetchCalls[0].options.headers.Authorization).toBeUndefined();
     expect(fetchCalls[0].options.headers["Content-Type"]).toBe("application/json");
     expect(fetchCalls[0].options.headers["X-Request-ID"]).toMatch(/^polylogue-ext-/);
@@ -944,14 +666,14 @@ describe("background receiver diagnostics", () => {
       nativeId: "session", extensionVersion: "0.3.0", instanceId: "synthetic-preparation-instance", signal: new globalThis.AbortController().signal });
     const sender = { tab: tabs[0], documentId: owner.document_id };
     globalThis.fetch = vi.fn(async (url) => {
-      if (String(url).endsWith("/native/publish")) throw new TypeError("Failed to fetch");
+      if (String(url).endsWith("/v1/browser-captures")) throw new TypeError("Failed to fetch");
       return responseJson({ ok: true, receiver_id: stored.polylogueReceiverPairing.receiver_id,
         api_schema: stored.polylogueReceiverPairing.api_schema });
     });
     expect(await sendRuntimeMessage({ type: "polylogue.capture", envelope }, sender)).toMatchObject({ queued: true });
     let uploads = 0; let drained = false;
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      if (!String(url).endsWith("/native/publish")) return responseJson({ ok: true,
+      if (!String(url).endsWith("/v1/browser-captures")) return responseJson({ ok: true,
         receiver_id: stored.polylogueReceiverPairing.receiver_id, api_schema: stored.polylogueReceiverPairing.api_schema });
       uploads += 1;
       try { await new Promise((resolve, reject) => {
@@ -986,7 +708,7 @@ describe("background receiver diagnostics", () => {
     const sender = { tab: tabs[0], documentId: owner.document_id };
     let finishUpload; let uploads = 0; let uploadSignal; let uploadBody;
     globalThis.fetch = vi.fn(async (url, options) => {
-      if (!String(url).endsWith("/native/publish")) return responseJson({ ok: true,
+      if (!String(url).endsWith("/v1/browser-captures")) return responseJson({ ok: true,
         receiver_id: stored.polylogueReceiverPairing.receiver_id, api_schema: stored.polylogueReceiverPairing.api_schema });
       uploads += 1; uploadSignal = options.signal; uploadBody = options.body;
       await new Promise((resolve) => { finishUpload = resolve; });
@@ -1004,7 +726,7 @@ describe("background receiver diagnostics", () => {
     expect(await sendRuntimeMessage({ type: "polylogue.cancelCaptureDelivery", request_id: "shared-second" }, sender)).toMatchObject({ ok: true });
     expect(await second).toMatchObject({ ok: false, error: "capture_cancelled" });
     expect(uploadSignal.aborted).toBe(false);
-    expect(JSON.parse(uploadBody).sha256).toBe(envelope.receiver_native.sha256);
+    expect(JSON.parse(await uploadBody.text()).raw_provider_payload).toHaveProperty("mapping");
     expect(await (await staging.file(ref.id)).text()).toContain("shared evidence");
     expect(await deliveryEntries()).toHaveLength(1);
     finishUpload();
@@ -1029,7 +751,7 @@ describe("background receiver diagnostics", () => {
     const sender = { tab: tabs[0], documentId: owner.document_id };
     let finishDrain; let closing = false; let uploads = 0;
     globalThis.fetch = vi.fn(async (url, options) => {
-      if (!String(url).endsWith("/native/publish")) return responseJson({ ok: true,
+      if (!String(url).endsWith("/v1/browser-captures")) return responseJson({ ok: true,
         receiver_id: stored.polylogueReceiverPairing.receiver_id, api_schema: stored.polylogueReceiverPairing.api_schema });
       uploads += 1;
       if (uploads === 1) {
@@ -1310,23 +1032,9 @@ describe("background receiver diagnostics", () => {
       error: "unauthorized",
       receiver_request_id: "reject-42",
     });
-    expect(response.receiver_pairing).toBeNull();
+    expect(response.receiver_pairing).toBeUndefined();
     expect(stored.polylogueState.online).toBe(false);
     expect(stored.polylogueState.last_receiver_request_id).toBe("reject-42");
-  });
-
-  it("refuses an unpaired content capture before a receiver POST", async () => {
-    delete stored.polylogueReceiverPairing;
-
-    const response = await sendRuntimeMessage({
-      type: "polylogue.capture",
-      envelope: { session: { provider: "chatgpt", provider_session_id: "unpaired-content", turns: [] } },
-    }, { tab: tabs[0] });
-
-    expect(response).toMatchObject({ ok: false, error: "receiver_unpaired" });
-    expect(fetchCalls).toHaveLength(0);
-    expect(stored.polylogueCaptureQueue?.entries || []).toHaveLength(0);
-    expect(stored.polylogueSessionLedger["chatgpt:unpaired-content"].last_error).toBe("receiver_unpaired");
   });
 
   it("records a held decision when archive-state cannot be checked", async () => {
@@ -1523,7 +1231,7 @@ describe("background receiver diagnostics", () => {
     activatedListener({ tabId: 78 });
 
     await vi.waitFor(() => expect(fetchCalls).toHaveLength(1));
-    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/status");
+    expect(fetchCalls[0].url).toBe("polylogue://native/v1/status");
     expect(stored.polylogueSessionLedger).toBeUndefined();
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
@@ -1545,50 +1253,10 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState).toMatchObject({ online: true, error: "no_turns" });
   });
 
-  it("refuses unpaired freshness inventory before any provider operation", async () => {
-    stored.polylogueReceiverPairing = null;
-    let release;
-    const get = globalThis.chrome.storage.local.get.getMockImplementation();
-    globalThis.chrome.storage.local.get.mockImplementation((defaults) => {
-      if (Object.hasOwn(defaults, "polylogueReceiverPairing")) return new Promise(resolve => { release = () => resolve({ polylogueReceiverPairing: null }); });
-      return get(defaults);
-    });
-    alarmListener({ name: "polylogueCaptureFreshnessSweep" });
-    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
-    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
-    release();
-    await new Promise(resolve => globalThis.setTimeout(resolve, 0));
-    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
-    expect(fetchCalls.filter(call => String(call.url).startsWith("https://"))).toEqual([]);
-  });
-
-  it.each(["archived", "spooled_only"])("installs freshness observers in existing %s tabs without recapturing", async (state) => {
-    expect(installedListener).toBeTypeOf("function");
-    tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-installed", title: "ChatGPT" }];
-    globalThis.fetch = vi.fn(async () => responseJson({
-      provider: "chatgpt",
-      provider_session_id: "conv-installed",
-      state,
-      captured: true,
-    }));
-
-    installedListener();
-
-    await vi.waitFor(() => expect(stored.polylogueSessionLedger["chatgpt:conv-installed"]?.archive_state)
-      .toMatchObject({ state }));
-    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
-    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
-      target: { tabId: 42 }, files: ["src/content/asset_stream.js", "src/content/chatgpt_bridge.js"], world: "MAIN",
-    });
-    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
-      target: { tabId: 42 }, files: expect.arrayContaining(["src/common.js", "src/content/chatgpt.js"]),
-    });
-  });
-
   it("routes backfill inventory through an existing provider page without creating a tab", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] }, { requestId: "capability-1" });
@@ -1625,7 +1293,7 @@ describe("background receiver diagnostics", () => {
   it("keeps concurrent backfill requests with different cutoffs distinct", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
@@ -1654,7 +1322,7 @@ describe("background receiver diagnostics", () => {
 
   it("coalesces equivalent concurrent backfill requests", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
@@ -1675,7 +1343,7 @@ describe("background receiver diagnostics", () => {
 
   it("coalesces equivalent requests despite object insertion order", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
@@ -1899,7 +1567,7 @@ describe("background receiver diagnostics", () => {
   it("admits receiver capability preflight without an invented request deadline", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] }, { requestId: "capability-1" });
     });
@@ -1910,7 +1578,7 @@ describe("background receiver diagnostics", () => {
   });
 
   it("classifies a reachable receiver missing the capability route as contract-incompatible", async () => {
-    globalThis.fetch = vi.fn(async (url, options = {}) => captureJobFixtureResponse(url, options)
+    globalThis.fetch = vi.fn(async (url, options = {}) => nativeInspectionFixtureResponse(url, options)
       || responseJson({ error: "not_found" }, { ok: false, status: 404 }));
     const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
     // Name the refusal: reaching for `started.job.id` on a rejected start
@@ -1951,110 +1619,19 @@ describe("background receiver diagnostics", () => {
     )).toHaveLength(pageWorkBeforeAlarm);
   });
 
-  it("commits the immutable checkpoint artifact through CaptureJobs without recreating the retired local ledger", async () => {
+  it("derives local scope from provider identity without disclosing the handle to the host", async () => {
+    const accountHandle = "neutral-account";
+    globalThis.chrome.scripting.executeScript = mockPageScript(async (details) => details.args?.[0]?.operation === "identity"
+      ? [{ result: { ok: true, response: { accountHandle } } }]
+      : [{ result: { ok: true, response: { ok: true, status: 200, body: JSON.stringify({ items: [], total: 0 }) } } }]);
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
-      if (captureJobResponse) return captureJobResponse;
-      if (String(url).endsWith("/v1/browser-captures/capabilities")) {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
-      }
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+      return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
     });
-
-    await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
-
-    expect(fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/backfill-checkpoint")).toBe(false);
-    const captureJobCommit = fetchCalls.findIndex((call) => new globalThis.URL(call.url).pathname.endsWith("/checkpoint"));
-    expect(captureJobCommit).toBeGreaterThanOrEqual(0);
-    const uploaded = fetchCalls[captureJobCommit].options;
-    const descriptor = captureJobRequestBody(uploaded);
-    const bytes = await uploaded.body.text();
-    expect(descriptor.digest).toBe(`sha256:${createHash("sha256").update(bytes).digest("hex")}`);
-    expect(JSON.parse(bytes).jobs).toEqual([expect.objectContaining({ provider: "chatgpt", status: "running" })]);
-    expect(stored.polylogueBackfillRecoveryCheckpoint).toBeUndefined();
-    expect(globalThis.chrome.storage.local.set.mock.calls.some(([patch]) => "polylogueBackfillRecoveryCheckpoint" in patch)).toBe(false);
-  });
-
-  it("derives CaptureJob scope from live provider identity without disclosing the handle", async () => {
-    const accountHandle = "stable-chatgpt-account-id";
-    globalThis.chrome.scripting.executeScript = mockPageScript(async (details) => {
-      const request = details.args?.[0];
-      if (request?.operation === "identity") {
-        return [{ result: { ok: true, response: { accountHandle } } }];
-      }
-      const body = request?.operation === "inventory"
-        ? { items: [], total: 0 }
-        : { id: "backfill-1", mapping: { node: { id: "node", parent: null, message: { id: "message", author: { role: "user" }, content: { content_type: "text", parts: ["synthetic message"] } } } } };
-      return [{ result: { ok: true, response: {
-        ok: true,
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(body),
-      } } }];
-    });
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
-      const path = new globalThis.URL(url).pathname;
-      if (path === "/v1/capture-jobs/capabilities") {
-        return responseJson({
-          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1",
-          protocol_min: 2,
-          protocol_max: 2,
-          scope_namespace: "cjs1:identity-test-namespace",
-        });
-      }
-      if (path === "/v1/browser-captures/capabilities") {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
-      }
-      if (path === "/v1/capture-jobs/discover") return responseJson({ jobs: [] });
-      if (path === "/v1/capture-jobs") {
-        return responseJson({ job: {
-          job_id: "capture-job-1", provider: "chatgpt", revision: 0, lease_generation: 0,
-        } }, { status: 201 });
-      }
-      if (path.endsWith("/adopt")) {
-        return responseJson({
-          job: { job_id: "capture-job-1", provider: "chatgpt", revision: 1, lease_generation: 1 },
-          lease: { lease_id: "lease-1", generation: 1, proof: "proof-1" },
-        });
-      }
-      if (path.endsWith("/update")) {
-        return responseJson({
-          job: {
-            job_id: "capture-job-1", provider: "chatgpt", revision: 2, lease_generation: 1,
-            lease_expires_at: "2026-07-16T10:02:00Z",
-          },
-          receipt: { kind: "capture_job_update" },
-        });
-      }
-      if (path.endsWith("/checkpoint")) {
-        return checkpointFixtureResponse({ job_id: "capture-job-1", revision: 3 }, options);
-      }
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-
-    await sendRuntimeMessage({
-      type: "polylogue.backfill.start",
-      provider: "chatgpt",
-      cutoff: "2026-01-01T00:00:00Z",
-    });
-
-    await vi.waitFor(() => expect(fetchCalls.some(
-      (call) => new globalThis.URL(call.url).pathname.endsWith("/checkpoint") && call.options.method === "PUT",
-    )).toBe(true));
-    const captureJobCalls = fetchCalls.filter((call) => new globalThis.URL(call.url).pathname.startsWith("/v1/capture-jobs"));
-    expect(captureJobCalls.length).toBeGreaterThanOrEqual(5);
-    for (const call of captureJobCalls) {
-      if (!call.options.body) continue;
-      const encoded = typeof call.options.body === "string" ? call.options.body : await call.options.body.text();
-      expect(encoded).not.toContain(accountHandle);
-      expect(encoded).not.toContain("paired:");
-      const body = captureJobRequestBody(call.options);
-      if (body.scope?.kind === "account") expect(body.scope.key).toMatch(/^h1:/);
-    }
+    const result = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+    expect(result).toMatchObject({ ok: true, job: { account_scope: expect.stringMatching(/^h1:/) } });
+    expect(JSON.stringify(fetchCalls)).not.toContain(accountHandle);
+    expect(fetchCalls.every(call => !new URL(call.url).pathname.startsWith("/v1/capture-jobs"))).toBe(true);
     expect(JSON.stringify(stored)).not.toContain(accountHandle);
   });
 
@@ -2085,8 +1662,6 @@ describe("background receiver diagnostics", () => {
     }, { accountHandle: null });
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
       const path = new globalThis.URL(url).pathname;
       if (path === "/v1/capture-jobs/capabilities") {
         return responseJson({
@@ -2150,10 +1725,8 @@ describe("background receiver diagnostics", () => {
     });
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
       const path = new globalThis.URL(url).pathname;
       if (path === "/v1/status") {
         return responseJson({ ok: true, receiver_id: pairing.receiver_id, api_schema: pairing.api_schema });
@@ -2194,7 +1767,7 @@ describe("background receiver diagnostics", () => {
         // clock again. A later wake may have nothing left to do once the
         // item is already captured, so this does not assert growth.
         await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
-        if (fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish") && call.options.method === "POST")) break;
+        if (fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")) break;
       }
       // The four partitions all resolve to the same single native id, so the
       // Submitting the reassembled capture to the receiver is its own wake
@@ -2202,20 +1775,18 @@ describe("background receiver diagnostics", () => {
       // before the provider-fetch loop in runLeasedJob), so it can still be
       // pending after the wake that only just finished the provider fetch.
       for (let submitWake = 0; submitWake < 3; submitWake += 1) {
-        if (fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish") && call.options.method === "POST")) break;
+        if (fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")) break;
         simulatedNowMs += 20000;
         alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
         await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
       }
-      await vi.waitFor(() => expect(fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish") && call.options.method === "POST")).toBe(true), { timeout: 4000 });
+      await vi.waitFor(() => expect(fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")).toBe(true), { timeout: 4000 });
     } finally {
       clockSpy.mockRestore();
     }
 
-    const memberCall = fetchCalls.find((call) => new globalThis.URL(call.url).pathname.endsWith("/native/member"));
-    expect(JSON.parse(await memberCall.options.body.text())).toEqual(conversationBody);
-    const publication = fetchCalls.find((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish"));
-    expect(JSON.parse(publication.options.body).sha256).toBe("b".repeat(64));
+    const publication = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures");
+    expect(JSON.parse(await publication.options.body.text()).raw_provider_payload).toEqual(conversationBody);
   }, 20000);
 
   it("retains thoughts literally through native member publication", async () => {
@@ -2256,10 +1827,8 @@ describe("background receiver diagnostics", () => {
     });
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
+      const captureJobResponse = nativeInspectionFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
       const path = new globalThis.URL(url).pathname;
       if (path === "/v1/status") {
         return responseJson({ ok: true, receiver_id: pairing.receiver_id, api_schema: pairing.api_schema });
@@ -2288,7 +1857,7 @@ describe("background receiver diagnostics", () => {
       expect(started, `backfill start refused: ${started.error || "unknown"}`).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
       const capturePosted = () =>
-        fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish") && call.options.method === "POST");
+        fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST");
       // The coordinator advances one step per wake, so wakes -- not elapsed
       // real time -- are what drive it forward. Wake it again as soon as the
       // previous wake has released the job's execution lease, and never while
@@ -2322,553 +1891,9 @@ describe("background receiver diagnostics", () => {
       clockSpy.mockRestore();
     }
 
-    const memberCall = fetchCalls.find((call) => new globalThis.URL(call.url).pathname.endsWith("/native/member"));
-    expect(JSON.parse(await memberCall.options.body.text())).toEqual(conversationBody);
-    const publication = fetchCalls.find((call) => new globalThis.URL(call.url).pathname.endsWith("/native/publish"));
-    expect(JSON.parse(publication.options.body).sha256).toBe("b".repeat(64));
+    const publication = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/browser-captures");
+    expect(JSON.parse(await publication.options.body.text()).raw_provider_payload).toEqual(conversationBody);
   }, 20000);
-
-  it("holds the job visibly when the receiver authority cannot commit", async () => {
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      if (!new globalThis.URL(url).pathname.endsWith("/checkpoint")) {
-        const admitted = captureJobFixtureResponse(url, options);
-        if (admitted) return admitted;
-      }
-      if (String(url).endsWith("/v1/browser-captures/capabilities")) {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
-      }
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-
-    const started = await sendRuntimeMessage({
-      type: "polylogue.backfill.start",
-      provider: "chatgpt",
-      cutoff: "2026-01-01T00:00:00Z",
-    });
-
-    expect(started.job.recovery_checkpoint_error).toBe("capture_job_request_failed");
-    expect(started.job).toMatchObject({
-      status: "paused",
-      cooldown_reason: "receiver_capture_job_authority_unavailable",
-    });
-    expect(stored.polylogueBackfillRecoveryCheckpoint).toBeUndefined();
-  });
-
-  it("does not adopt accountless legacy checkpoint evidence after profile loss", async () => {
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const captureJobResponse = captureJobFixtureResponse(url, options);
-      if (captureJobResponse) return captureJobResponse;
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-    expect(status.jobs).toEqual([]);
-    expect(fetchCalls.some((call) => new globalThis.URL(call.url).pathname === "/v1/backfill-checkpoint")).toBe(false);
-  });
-
-  it.each(["missing_tab", "receiver_refusal"])("retries cached recovery after %s and joins concurrent observers", async (failure) => {
-    const existingTabs = tabs;
-    if (failure === "missing_tab") tabs = [];
-    const accountHandle = "neutral-recovery-account";
-    const checkpoint = { version: 1, jobs: [{
-      id: "recovered-local-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z",
-      status: "complete", inventory_cursor: "done", inventory_complete: true,
-      policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
-      learned_cadence_ms: 40000, daily_requests: 1, last_ack: null,
-    }], queue: [], revisions: [] };
-    let providerWorkCalls = 0;
-    globalThis.chrome.scripting.executeScript = mockPageScript(async (details) => {
-      if (details.args?.[0]?.operation === "identity") return [{ result: { ok: true, response: { accountHandle } } }];
-      providerWorkCalls += 1;
-      throw new Error("unexpected_provider_work");
-    });
-    // Settle initialization with no provider document, then test the concrete
-    // receiver refusal on the separate recovery route with its document present.
-    tabs = [];
-    await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-    tabs = failure === "missing_tab" ? [] : existingTabs;
-    let discoveryCalls = 0;
-    let releaseDiscovery;
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const path = new globalThis.URL(url).pathname;
-      const artifact = checkpointArtifactFixtureResponse(url);
-      if (artifact) return artifact;
-      if (path === "/v1/capture-jobs/capabilities") return captureJobFixtureResponse(url, options);
-      if (path === "/v1/capture-jobs/discover") {
-        const body = JSON.parse(options.body);
-        // Intent-specific checkpoint publication is a separate existing call;
-        // suspend only the original account-wide recovery discovery.
-        if (body.intent_key) return captureJobFixtureResponse(url, options);
-        if (body.provider !== "chatgpt") return responseJson({ jobs: [] });
-        discoveryCalls += 1;
-        if (failure === "receiver_refusal" && discoveryCalls === 1) return responseJson({ error: "unavailable" }, { ok: false, status: 503 });
-        await new Promise(resolve => { releaseDiscovery = resolve; });
-        return responseJson({ jobs: [{
-          job_id: "receiver-recovered-job", provider: "chatgpt", scope: body.scope,
-          intent_key: "recovered-intent", revision: 4, lease_generation: 1,
-          updated_at: "2026-07-16T10:00:00Z", checkpoint: checkpointFixture(checkpoint),
-        }] });
-      }
-      if (path === "/v1/capture-jobs/receiver-recovered-job/adopt") return responseJson({
-        job: { job_id: "receiver-recovered-job", provider: "chatgpt", intent_key: "recovered-intent",
-          revision: 5, lease_generation: 2, checkpoint: checkpointFixture(checkpoint) },
-        lease: { lease_id: "recovery-lease", generation: 2, proof: "recovery-proof" },
-      });
-      return captureJobFixtureResponse(url, options) || responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: true, jobs: [] });
-    // The first post-initialization retry refuses; the next status owns the suspended retry.
-    expect(discoveryCalls).toBe(failure === "missing_tab" ? 0 : 1);
-    tabs = existingTabs;
-    const first = sendRuntimeMessage({ type: "polylogue.backfill.status" });
-    await vi.waitFor(() => expect(releaseDiscovery).toBeTypeOf("function"));
-    const second = sendRuntimeMessage({ type: "polylogue.backfill.status" });
-    await new Promise(resolve => globalThis.setTimeout(resolve, 0));
-    expect(discoveryCalls).toBe(failure === "missing_tab" ? 1 : 2);
-    releaseDiscovery();
-    for (const status of await Promise.all([first, second])) {
-      expect(status).toMatchObject({ ok: true, jobs: [expect.objectContaining({
-        id: "recovered-local-job", status: "complete", inventory_cursor: "done",
-      })] });
-    }
-    await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-    expect(discoveryCalls).toBe(failure === "missing_tab" ? 1 : 2);
-    expect(providerWorkCalls).toBe(0);
-    const scopedCalls = fetchCalls.filter(call => new globalThis.URL(call.url).pathname === "/v1/capture-jobs/discover");
-    expect(scopedCalls.every(call => !call.options.body.includes(accountHandle))).toBe(true);
-    expect(JSON.parse(scopedCalls.at(-1).options.body).scope).toMatchObject({ kind: "account", key: expect.stringMatching(/^h1:/) });
-  });
-
-  it("retries exact-scope receiver recovery after a provider tab appears", async () => {
-    const existingTabs = tabs;
-    tabs = [];
-    const accountHandle = "stable-account-after-profile-loss";
-    const remoteCheckpoint = {
-      version: 1,
-      jobs: [{
-        id: "capture-job-local-work", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z", status: "running",
-        inventory_cursor: "9", policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 2,
-        learned_cadence_ms: 40000, daily_requests: 3, last_ack: null,
-      }],
-      queue: [],
-      revisions: [],
-    };
-    let providerWorkCalls = 0;
-    globalThis.chrome.scripting.executeScript = mockPageScript(async (details) => {
-      const request = details.args?.[0];
-      if (request?.operation === "identity") {
-        return [{ result: { ok: true, response: { accountHandle } } }];
-      }
-      providerWorkCalls += 1;
-      return [{ result: { ok: true, response: {
-        ok: true, status: 200, contentType: "application/json", body: JSON.stringify({ items: [], total: 0 }),
-      } } }];
-    });
-    let adoptAttempts = 0;
-    let receiverScope = null;
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
-      const path = new globalThis.URL(url).pathname;
-      if (path === "/v1/capture-jobs/capabilities") {
-        return responseJson({
-          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1",
-          protocol_min: 2,
-          protocol_max: 2,
-          scope_namespace: "cjs1:new-profile-recovery-namespace",
-        });
-      }
-      if (path === "/v1/capture-jobs/discover") {
-        const body = captureJobRequestBody(options);
-        if (body.provider !== "chatgpt") return responseJson({ jobs: [] });
-        receiverScope = body.scope;
-        return responseJson({ jobs: [{
-          job_id: "receiver-capture-job",
-          provider: "chatgpt",
-          scope: receiverScope,
-          intent_key: "receiver-intent",
-          revision: 4,
-          lease_generation: 1,
-          updated_at: "2026-07-16T10:00:00Z",
-          checkpoint: checkpointFixture(remoteCheckpoint),
-        }] });
-      }
-      if (path.endsWith("/adopt")) {
-        adoptAttempts += 1;
-        if (adoptAttempts <= 2) {
-          return responseJson({ error: { code: "lease_held" } }, { ok: false, status: 409 });
-        }
-        return responseJson({
-          job: {
-            job_id: "receiver-capture-job", provider: "chatgpt", scope: receiverScope, intent_key: "receiver-intent",
-            revision: 5, lease_generation: 2, checkpoint: checkpointFixture(remoteCheckpoint),
-          },
-          lease: { lease_id: "recovery-lease", generation: 2, proof: "recovery-proof" },
-        });
-      }
-      if (path.endsWith("/update")) {
-        return responseJson({
-          job: {
-            job_id: "receiver-capture-job", provider: "chatgpt", scope: receiverScope, intent_key: "receiver-intent",
-            revision: 6, lease_generation: 2, lease_expires_at: "2099-01-01T00:00:00Z",
-            checkpoint_sequence: 1, checkpoint: checkpointFixture(remoteCheckpoint),
-          },
-          receipt: { kind: "capture_job_update", revision: 6 },
-        });
-      }
-      if (path.endsWith("/checkpoint")) {
-        return checkpointFixtureResponse({ job_id: "receiver-capture-job", revision: 7 }, options);
-      }
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-
-    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: true, jobs: [] });
-    tabs = existingTabs;
-    // The scoped artifact remains inaccessible while another lease is held.
-    // Two explicit observations precede the fixture's lease release.
-    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: true, jobs: [] });
-    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: true, jobs: [] });
-    expect(adoptAttempts).toBe(2);
-    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-
-    expect(status.jobs[0]).toMatchObject({
-      id: "capture-job-local-work",
-      status: "paused",
-      cooldown_reason: "browser_profile_recovery_required",
-      inventory_cursor: "9",
-    });
-    const discoverCall = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/capture-jobs/discover");
-    expect(discoverCall).toBeDefined();
-    expect(discoverCall.options.body).not.toContain(accountHandle);
-    expect(JSON.parse(discoverCall.options.body).scope).toMatchObject({ kind: "account", key: expect.stringMatching(/^h1:/) });
-    expect(stored.polylogueExtensionInstanceId).toBeDefined();
-    expect(JSON.stringify(stored)).not.toContain(accountHandle);
-    expect(fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/adopt"))).toBe(true);
-    // Recovery adopts once after release; current paused checkpoint publication
-    // independently obtains its own verified lease.
-    expect(adoptAttempts).toBe(4);
-    expect(providerWorkCalls).toBe(0);
-    expect(fetchCalls.filter((call) => new globalThis.URL(call.url).pathname.includes("/checkpoint-artifacts/")).length).toBe(1);
-    expect(fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/checkpoint"))).toBe(true);
-    // Recovering ChatGPT must retain the missing-page obligation for another
-    // provider. Its later appearance needs a fresh exact-scope discovery.
-    expect(fetchCalls.some((call) => new globalThis.URL(call.url).pathname.endsWith("/discover") &&
-      captureJobRequestBody(call.options).provider === "claude-ai")).toBe(false);
-    tabs = [...existingTabs, { id: 52, url: "https://claude.ai/new", title: "Claude" }];
-    await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-    expect(fetchCalls.filter((call) => new globalThis.URL(call.url).pathname.endsWith("/discover") &&
-      captureJobRequestBody(call.options).provider === "claude-ai")).toHaveLength(1);
-    expect(providerWorkCalls).toBe(0);
-  });
-
-  it("keeps the newest same-provider recovery revision after a partial receiver commit", async () => {
-    const checkpoint = (contentHash) => ({
-      version: 1,
-      jobs: [{
-        id: "local-chatgpt", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z",
-        status: "complete", inventory_cursor: "done", inventory_complete: true,
-        policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 2,
-        learned_cadence_ms: 40000, daily_requests: 3,
-        cooldown_reason: null, last_error: null,
-        last_ack: { receiver_request_id: `ack-${contentHash}`, content_hash: contentHash },
-      }],
-      queue: [{
-        id: "queue-chatgpt", job_id: "local-chatgpt", provider: "chatgpt", native_id: "native-chatgpt",
-        state: "complete", content_hash: contentHash, completed_at: "2026-07-16T10:00:00Z",
-      }],
-      revisions: [{
-        id: "chatgpt:native-chatgpt", provider: "chatgpt", native_id: "native-chatgpt",
-        provider_updated_at: "2026-07-16T09:00:00Z", content_hash: contentHash,
-      }],
-    });
-    const receiverJobs = [
-      {
-        job_id: "receiver-new", provider: "chatgpt", intent_key: "intent-new", revision: 8,
-        lease_generation: 2, checkpoint_sequence: 2, updated_at: "2026-07-16T10:06:00Z",
-        checkpoint_updated_at: "2026-07-16T10:05:00Z",
-        checkpoint: checkpointFixture(checkpoint("hash-new"), 2),
-      },
-      {
-        job_id: "receiver-old", provider: "chatgpt", intent_key: "intent-old", revision: 4,
-        lease_generation: 1, checkpoint_sequence: 1, updated_at: "2026-07-16T10:20:00Z",
-        checkpoint_updated_at: "2026-07-16T10:00:00Z",
-        checkpoint: checkpointFixture(checkpoint("hash-old"), 1),
-      },
-    ];
-    let providerWorkCalls = 0;
-    globalThis.chrome.scripting.executeScript = mockPageScript(async (details) => {
-      const request = details.args?.[0];
-      if (request?.operation === "identity") {
-        return [{ result: { ok: true, response: { accountHandle: `${request.provider}-account` } } }];
-      }
-      providerWorkCalls += 1;
-      return [{ result: { ok: false, error: "provider_work_must_not_replay" } }];
-    });
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
-      const path = new globalThis.URL(url).pathname;
-      const body = captureJobRequestBody(options);
-      if (path === "/v1/capture-jobs/capabilities") {
-        return responseJson({
-          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1", protocol_min: 2, protocol_max: 2,
-          scope_namespace: "cjs1:revision-recovery-namespace",
-        });
-      }
-      if (path === "/v1/capture-jobs/discover") {
-        if (body.provider !== "chatgpt") return responseJson({ jobs: [] });
-        return responseJson({ jobs: body.intent_key ? [receiverJobs[0]] : receiverJobs });
-      }
-      if (path.endsWith("/adopt")) {
-        const recovered = receiverJobs.find((job) => path.includes(job.job_id));
-        return responseJson({
-          job: {
-            ...recovered, revision: recovered.revision + 1,
-            lease_generation: recovered.lease_generation + 1,
-            updated_at: recovered.job_id === "receiver-old"
-              ? "2026-07-16T10:10:00Z"
-              : "2026-07-16T10:09:00Z",
-          },
-          lease: { lease_id: `lease-${recovered.job_id}`, generation: recovered.lease_generation + 1, proof: `proof-${recovered.job_id}` },
-        });
-      }
-      if (path.endsWith("/update")) {
-        return responseJson({
-          job: {
-            job_id: "receiver-new", provider: "chatgpt", intent_key: "intent-new", revision: 10,
-            lease_generation: 3, lease_expires_at: "2099-01-01T00:00:00Z", checkpoint_sequence: 2,
-          },
-          receipt: { kind: "capture_job_update", revision: 10 },
-        });
-      }
-      if (path.endsWith("/checkpoint")) {
-        return checkpointFixtureResponse({ job_id: "receiver-new", revision: 11 }, options);
-      }
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-
-    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-
-    expect(status.jobs[0].recovery_checkpoint_error).toBeNull();
-    expect(status.jobs[0].last_ack.content_hash).toBe("hash-new");
-    const committed = await Promise.all(fetchCalls
-      .filter((call) => {
-        const path = new globalThis.URL(call.url).pathname;
-        return path.startsWith("/v1/capture-jobs/") && path.endsWith("/checkpoint");
-      })
-      .map(async (call) => JSON.parse(await call.options.body.text())));
-    const latestCommitted = committed.at(-1);
-    expect(latestCommitted.revisions).toEqual([expect.objectContaining({ content_hash: "hash-new" })]);
-    expect(providerWorkCalls).toBe(0);
-  });
-
-  it("adopts and merges every provider checkpoint without replaying acknowledged work", async () => {
-    tabs = [
-      { id: 42, url: "https://chatgpt.com/?temporary-chat=true", title: "ChatGPT" },
-      { id: 43, url: "https://claude.ai/new", title: "Claude" },
-    ];
-    const checkpoints = Object.fromEntries(["chatgpt", "claude-ai"].map((provider) => [provider, {
-      version: 1,
-      jobs: [{
-        id: `local-${provider}`, provider, cutoff: "2026-01-01T00:00:00Z", status: "running",
-        inventory_cursor: "done", inventory_complete: true,
-        policy: { leaseMs: 180000, maxDailyRequests: 10, maxCapturesPerWake: 1 },
-        execution_generation: 2, learned_cadence_ms: 40000, daily_requests: 3,
-        last_ack: { receiver_request_id: `ack-${provider}`, content_hash: `hash-${provider}` },
-      }],
-      queue: [{
-        id: `queue-${provider}`, job_id: `local-${provider}`, provider, native_id: `native-${provider}`,
-        state: "complete", content_hash: `hash-${provider}`, completed_at: "2026-07-16T10:00:00Z",
-      }],
-      revisions: [{
-        id: `${provider}:native-${provider}`, provider, native_id: `native-${provider}`,
-        provider_updated_at: "2026-07-16T09:00:00Z", content_hash: `hash-${provider}`,
-      }],
-    }]));
-    let providerWorkCalls = 0;
-    globalThis.chrome.scripting.executeScript = mockPageScript(async (details) => {
-      const request = details.args?.[0];
-      if (request?.operation === "identity") {
-        return [{ result: { ok: true, response: { accountHandle: `${request.provider}-account` } } }];
-      }
-      providerWorkCalls += 1;
-      return [{ result: { ok: false, error: "provider_work_must_not_replay" } }];
-    });
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
-      const path = new globalThis.URL(url).pathname;
-      const body = captureJobRequestBody(options);
-      if (path === "/v1/capture-jobs/capabilities") {
-        return responseJson({
-          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1",
-          protocol_min: 2,
-          protocol_max: 2,
-          scope_namespace: "cjs1:multi-provider-namespace",
-        });
-      }
-      if (path === "/v1/browser-captures/capabilities") {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
-      }
-      if (path === "/v1/capture-jobs/discover") {
-        const provider = body.provider;
-        return responseJson({ jobs: checkpoints[provider] ? [{
-          job_id: `receiver-${provider}`, provider, intent_key: `intent-${provider}`,
-          revision: 4, lease_generation: 1, checkpoint_sequence: 1,
-          updated_at: "2026-07-16T10:00:00Z", checkpoint: checkpointFixture(checkpoints[provider]),
-        }] : [] });
-      }
-      if (path.endsWith("/adopt")) {
-        const provider = body.provider;
-        return responseJson({
-          job: {
-            job_id: `receiver-${provider}`, provider, intent_key: `intent-${provider}`,
-            revision: 5, lease_generation: 2, checkpoint_sequence: 1,
-            updated_at: "2026-07-16T10:00:00Z",
-            checkpoint: checkpointFixture(checkpoints[provider]),
-          },
-          lease: { lease_id: `lease-${provider}`, generation: 2, proof: `proof-${provider}` },
-        });
-      }
-      if (path.endsWith("/update")) {
-        return responseJson({
-          job: {
-            job_id: path.split("/")[3], provider: body.provider, intent_key: `intent-${body.provider}`,
-            revision: 6, lease_generation: 2, lease_expires_at: "2099-01-01T00:00:00Z",
-            checkpoint_sequence: 1,
-          },
-          receipt: { kind: "capture_job_update", revision: 6 },
-        });
-      }
-      if (path.endsWith("/checkpoint")) {
-        return checkpointFixtureResponse({ job_id: path.split("/")[3], revision: 7 }, options);
-      }
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-
-    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-
-    expect(status.jobs.map((job) => job.id).sort()).toEqual(["local-chatgpt", "local-claude-ai"]);
-    expect(status.jobs.every((job) => job.status === "paused")).toBe(true);
-    expect(status.jobs.map((job) => job.last_ack.receiver_request_id).sort()).toEqual([
-      "ack-chatgpt", "ack-claude-ai",
-    ]);
-    const adoptedPaths = fetchCalls
-      .filter((call) => new globalThis.URL(call.url).pathname.endsWith("/adopt"))
-      .map((call) => new globalThis.URL(call.url).pathname);
-    expect(new Set(adoptedPaths)).toEqual(new Set([
-      "/v1/capture-jobs/receiver-chatgpt/adopt",
-      "/v1/capture-jobs/receiver-claude-ai/adopt",
-    ]));
-    await sendRuntimeMessage({
-      type: "polylogue.backfill.control", job_id: "local-chatgpt", action: "resume",
-    });
-    alarmListener({ name: "polylogueBackfillWake:local-chatgpt" });
-    await vi.waitFor(async () => {
-      const refreshed = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-      expect(refreshed.jobs.find((job) => job.id === "local-chatgpt")?.status).toBe("complete");
-    });
-    expect(providerWorkCalls).toBe(0);
-  });
-
-  it("preserves a failed provider partition while reconciling another provider", async () => {
-    const declaredClaudeScope = await deriveAccountScope("cjs1:partial-provider-namespace", "claude-ai", "declared-claude-account");
-    const localJob = (id, provider) => ({
-      id, provider, cutoff: "2026-01-01T00:00:00Z", status: "paused",
-      inventory_cursor: "1", inventory_complete: false,
-      policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
-      learned_cadence_ms: 40000, daily_requests: 1,
-      cooldown_reason: "manual_pause", last_error: null, last_ack: null,
-    });
-    await loadBackground({
-      polylogueBackfillRecoveryCheckpoint: {
-        version: 1,
-        jobs: [localJob("local-chatgpt", "chatgpt"), { ...localJob("local-claude", "claude-ai"), account_scope: declaredClaudeScope }],
-        queue: [],
-        revisions: [],
-      },
-    });
-    tabs = [
-      { id: 42, url: "https://chatgpt.com/", title: "ChatGPT" },
-      { id: 43, url: "https://claude.ai/new", title: "Claude" },
-    ];
-    globalThis.chrome.scripting.executeScript = mockPageScript(async (details) => {
-      const request = details.args?.[0];
-      if (request?.operation === "identity" && request.provider === "chatgpt") {
-        return [{ result: { ok: true, response: { accountHandle: "chatgpt-account" } } }];
-      }
-      if (request?.operation === "identity") {
-        return [{ result: { ok: false, error: "claude_auth_unavailable" } }];
-      }
-      return [{ result: { ok: false, error: "provider_work_must_not_run" } }];
-    });
-    const remoteCheckpoint = {
-      version: 1,
-      jobs: [{
-        ...localJob("remote-chatgpt", "chatgpt"), status: "complete",
-        cooldown_reason: null, inventory_complete: true, last_ack: { receiver_request_id: "remote-ack" },
-      }],
-      queue: [],
-      revisions: [],
-    };
-    globalThis.fetch = vi.fn(async (url, options = {}) => {
-      fetchCalls.push({ url, options });
-      const artifactResponse = checkpointArtifactFixtureResponse(url);
-      if (artifactResponse) return artifactResponse;
-      const path = new globalThis.URL(url).pathname;
-      const body = captureJobRequestBody(options);
-      if (path === "/v1/capture-jobs/capabilities") {
-        return responseJson({
-          schema: "polylogue.capture-jobs.capabilities.v1", checkpoint_transport: "canonical-artifact-v1", protocol_min: 2, protocol_max: 2,
-          scope_namespace: "cjs1:partial-provider-namespace",
-        });
-      }
-      if (path === "/v1/capture-jobs/discover") {
-        return responseJson({ jobs: body.provider === "chatgpt" ? [{
-          job_id: "receiver-chatgpt", provider: "chatgpt", intent_key: "intent-chatgpt",
-          revision: 4, lease_generation: 1, checkpoint_sequence: 1,
-          updated_at: "2026-07-16T10:00:00Z", checkpoint_updated_at: "2026-07-16T09:59:00Z",
-          checkpoint: checkpointFixture(remoteCheckpoint),
-        }] : [] });
-      }
-      if (path.endsWith("/adopt")) {
-        return responseJson({
-          job: {
-            job_id: "receiver-chatgpt", provider: "chatgpt", intent_key: "intent-chatgpt",
-            revision: 5, lease_generation: 2, checkpoint_sequence: 1,
-            updated_at: "2026-07-16T10:01:00Z", checkpoint: checkpointFixture(remoteCheckpoint),
-          },
-          lease: { lease_id: "lease-chatgpt", generation: 2, proof: "proof-chatgpt" },
-        });
-      }
-      if (path.endsWith("/update")) {
-        return responseJson({
-          job: {
-            job_id: "receiver-chatgpt", provider: "chatgpt", revision: 6, lease_generation: 2,
-            lease_expires_at: "2099-01-01T00:00:00Z", checkpoint_sequence: 1,
-          },
-          receipt: {},
-        });
-      }
-      if (path.endsWith("/checkpoint")) return checkpointFixtureResponse({ job_id: "receiver-chatgpt", revision: 7 }, options);
-      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
-    });
-
-    const status = await sendRuntimeMessage({ type: "polylogue.backfill.status" });
-
-    expect(status.jobs.map((job) => job.id).sort()).toEqual(["local-chatgpt", "local-claude", "remote-chatgpt"]);
-    expect(status.jobs.find((job) => job.id === "remote-chatgpt")).toMatchObject({ status: "complete" });
-    // Current account identity cannot reassign the unscoped historical job.
-    expect(status.jobs.find((job) => job.id === "local-chatgpt")).toMatchObject({ status: "paused" });
-    expect(status.jobs.find((job) => job.id === "local-claude")).toMatchObject({
-      status: "paused", recovery_checkpoint_error: "claude_auth_unavailable",
-    });
-  });
 
   it("preserves local recovery without querying accountless legacy evidence", async () => {
     await loadBackground({
@@ -3073,7 +2098,7 @@ describe("background receiver diagnostics", () => {
     await vi.waitFor(() => expect(stored.polylogueState?.active_page_state).toBe("conversation"));
     await vi.waitFor(() => expect(stored.polylogueState?.captured).toBe(true));
     expect(fetchCalls.map((call) => call.url)).toContain(
-      "http://127.0.0.1:8875/v1/archive-state?provider=chatgpt&provider_session_id=conv-123",
+      "polylogue://native/v1/archive-state?provider=chatgpt&provider_session_id=conv-123",
     );
     expect(stored.polylogueState.captured).toBe(true);
     expect(stored.polylogueState.last_receiver_request_id).toBe("capture-request-1");
@@ -3082,7 +2107,7 @@ describe("background receiver diagnostics", () => {
       type: "polylogue.capturePage",
       reason: "auto_capture_missing",
     });
-    expect(fetchCalls.map((call) => call.url)).toContain("http://127.0.0.1:8875/v1/browser-captures");
+    expect(fetchCalls.map((call) => call.url)).toContain("polylogue://native/v1/browser-captures");
     const timeline = stored.polylogueConversationTimeline["chatgpt:conv-123"];
     expect(timeline.map((entry) => entry.event)).toEqual(["captured", "detected_new", "first_seen"]);
     expect(timeline[0]).toMatchObject({ reason: "auto_capture_missing", detail: "spooled_only" });
@@ -3097,7 +2122,7 @@ describe("background receiver diagnostics", () => {
       fetchCalls.push({ url: String(input) });
       if (String(input).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "rx-temporary", api_schema: "polylogue-browser-capture/v1" });
       if (new globalThis.URL(input).pathname === "/v1/archive-state") return responseJson({ provider: "chatgpt", provider_session_id: "temp-1", state: "archived", captured: true });
-      return captureJobFixtureResponse(input) || responseJson({ ok: true });
+      return nativeInspectionFixtureResponse(input) || responseJson({ ok: true });
     });
     activatedListener({ tabId: 42 });
     await vi.waitFor(() => expect(stored.polylogueState).toMatchObject({ provider_session_id: "temp-1", captured: true }));
@@ -3130,7 +2155,7 @@ describe("background receiver diagnostics", () => {
       fetchCalls.push({ url: String(input) });
       if (String(input).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "rx-temporary", api_schema: "polylogue-browser-capture/v1" });
       if (new globalThis.URL(input).pathname === "/v1/archive-state") return responseJson({ provider: "chatgpt", provider_session_id: "temp-1", state: "missing", captured: false });
-      return captureJobFixtureResponse(input) || responseJson({ ok: true });
+      return nativeInspectionFixtureResponse(input) || responseJson({ ok: true });
     });
     await sendRuntimeMessage({ type: "polylogue.missionControl.status" }, { tab: tabs[0] });
     expect(identityReads).toBeGreaterThanOrEqual(2);
@@ -3207,7 +2232,7 @@ describe("background receiver diagnostics", () => {
     await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalled());
     expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, expect.objectContaining({ type: "polylogue.capturePage" }));
     await vi.waitFor(() => expect(stored.polylogueState?.captured).toBe(true));
-    expect(fetchCalls.map((call) => call.url)).toContain("http://127.0.0.1:8875/v1/browser-captures");
+    expect(fetchCalls.map((call) => call.url)).toContain("polylogue://native/v1/browser-captures");
   });
 
   it("queries a temporary chat using its current content-script identity", async () => {
@@ -3225,14 +2250,6 @@ describe("background receiver diagnostics", () => {
     const archiveRequest = fetchCalls.find((call) => new globalThis.URL(call.url).pathname === "/v1/archive-state");
     expect(new globalThis.URL(archiveRequest.url).searchParams.get("provider_session_id")).toBe("temp-1");
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalledWith(42, expect.objectContaining({ type: "polylogue.capturePage" }));
-  });
-
-  it("does not enumerate authenticated inventory during an unpaired freshness sweep", async () => {
-    stored.polylogueReceiverPairing = null;
-    alarmListener({ name: "polylogueCaptureFreshnessSweep" });
-    await vi.waitFor(() => expect(globalThis.chrome.storage.local.get).toHaveBeenCalled());
-    await new Promise((resolve) => globalThis.setTimeout(resolve, 25));
-    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
   });
 
   it("does not recapture an already-safe conversation on activation", async () => {
@@ -3277,7 +2294,7 @@ describe("background receiver diagnostics", () => {
       details.target.tabId === 42 && details.files?.includes("src/content/chatgpt.js"))).toBe(true);
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalledWith(42,
       expect.objectContaining({ type: "polylogue.capturePage" }));
-    expect(fetchCalls.every(({ url }) => new globalThis.URL(String(url)).hostname === "127.0.0.1")).toBe(true);
+    expect(fetchCalls.every(({ url }) => new globalThis.URL(String(url)).protocol === "polylogue:")).toBe(true);
   });
 
   it("never fetches a terminal ChatGPT conversation across a receiver outage and a service-worker restart", async () => {
@@ -3388,25 +2405,6 @@ describe("background receiver diagnostics", () => {
       type: "polylogue.capturePage",
       reason: "auto_capture_missing",
     }));
-  });
-
-  it("does not read a provider conversation from an unpaired freshness hint", async () => {
-    vi.spyOn(Date, "now").mockReturnValue(100_000);
-    await sendRuntimeMessage({
-      type: "polylogue.captureFreshnessHint",
-      provider: "chatgpt",
-      provider_session_id: "unpaired-freshness",
-      reason: "generation_completed",
-      delay_ms: 0,
-    });
-
-    alarmListener({ name: "polylogueCaptureFreshnessWake" });
-
-    await vi.waitFor(() => expect(
-      stored.polylogueCaptureFreshnessQueue.entries["chatgpt:unpaired-freshness"]?.last_error,
-    ).toBe("receiver_unpaired"));
-    expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
-    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
   it("accepts a temporary chat's freshness hint even though its real ephemeral id differs from the URL sentinel", async () => {
@@ -3810,7 +2808,7 @@ describe("background receiver diagnostics", () => {
     updatedListener(42, { status: "complete" }, tabs[0]);
 
     await vi.waitFor(() => expect(stored.polylogueState?.active_page_state).toBe("supported_no_session"));
-    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/status");
+    expect(fetchCalls[0].url).toBe("polylogue://native/v1/status");
     expect(stored.polylogueState.provider).toBe("chatgpt");
     expect(stored.polylogueState.last_receiver_request_id).toBe("status-1");
     expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
@@ -4218,28 +3216,6 @@ describe("browser action polling", () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     await loadBackground();
-  });
-
-  it("keeps an unpaired alarm wake entirely local", async () => {
-    expect(alarmListener).toBeTypeOf("function");
-
-    alarmListener({ name: "polylogueBrowserActionWake" });
-
-    await vi.waitFor(() => expect(fetchCalls).toHaveLength(0));
-  });
-});
-
-describe("browser action explicit-approval decision (polylogue-yyvg.7)", () => {
-  beforeEach(async () => {
-    vi.restoreAllMocks();
-    vi.useRealTimers();
-    await loadBackground({
-      polylogueReceiverPairing: {
-        state: "online",
-        receiver_id: "rx-approval-test",
-        api_schema: "polylogue-browser-capture/v1",
-      },
-    });
   });
 
   it("posts an explicit approve decision and wakes the poll loop, never auto-declining", async () => {
@@ -4780,17 +3756,17 @@ describe("receiver health probe", () => {
   it.each([
     ["receiver_identity_mismatch", "pairing_mismatch", "mismatch"],
     ["receiver_authentication_failed", "unauthorized", "unauthorized"],
-  ])("classifies native %s without transferring a credential", async (code, status, state) => {
+  ])("classifies native %s without transferring a credential", async (code) => {
     await loadBackground({ receiverAuthToken: "neutral-retired", neutralUnrelatedSetting: "preserved", polylogueReceiverPairing: {
       receiver_id: "neutral-original", api_schema: "polylogue-browser-capture/v1", state: "online",
     } });
     globalThis.fetch = vi.fn(async (_url, init) => {
-      expect(init.receiverId).toBe("neutral-original");
+      expect(init.receiverId).toBeUndefined();
       expect(init.headers.Authorization).toBeUndefined();
       throw new Error(code);
     });
     const result = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
-    expect(result).toMatchObject({ ok: false, status, detail: code, pairing: { state, receiver_id: "neutral-original" } });
+    expect(result).toMatchObject({ ok: false, status: "unreachable", detail: code });
     expect(globalThis.fetch).toHaveBeenCalledOnce();
     expect(stored.receiverAuthToken).toBeUndefined();
     expect(stored.neutralUnrelatedSetting).toBe("preserved");
@@ -4816,283 +3792,10 @@ describe("receiver health probe", () => {
     expect(response).toMatchObject({
       ok: true,
       status: "ok",
-      detail: null,
-      endpoint: "http://127.0.0.1:8875",
       receiver_request_id: "receiver-request-1",
-      pairing: {
-        state: "online",
-        receiver_id: "rx-health",
-        api_schema: "polylogue-browser-capture/v1",
-      },
+      receiver_status: { receiver_id: "rx-health", api_schema: "polylogue-browser-capture/v1" },
     });
-    expect(fetchCalls[0].url).toBe("http://127.0.0.1:8875/v1/status");
-  });
-
-  it("preflights paired writes and reuses the short trusted-identity cache", async () => {
-    await loadBackground({
-      polylogueReceiverPairing: {
-        state: "online",
-        receiver_id: "rx-stable",
-        api_schema: "polylogue-browser-capture/v1",
-        endpoint: "http://127.0.0.1:8875",
-      },
-    });
-    globalThis.fetch = vi.fn(async (url, options) => {
-      fetchCalls.push({ url });
-      if (String(url).endsWith("/v1/status")) {
-        return responseJson({
-          ok: true,
-          api_schema: "polylogue-browser-capture/v1",
-          receiver_id: "rx-stable",
-        });
-      }
-      if (String(url).endsWith("/v1/browser-captures")) {
-        return captureReceipt({ provider: "chatgpt", provider_session_id: "conv-trusted", state: "spooled_only" }, options);
-      }
-      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
-    });
-
-    const message = {
-      type: "polylogue.capture",
-      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-trusted", turns: [{ role: "user" }] } },
-    };
-    expect(await sendRuntimeMessage(message)).toMatchObject({ ok: true });
-    expect(await sendRuntimeMessage(message)).toMatchObject({ ok: true });
-
-    expect(fetchCalls.filter((call) => String(call.url).endsWith("/v1/status"))).toHaveLength(1);
-    expect(fetchCalls.filter((call) => String(call.url).endsWith("/v1/browser-captures"))).toHaveLength(2);
-  });
-
-  it("fails closed before a paired capture reaches a different receiver", async () => {
-    await loadBackground({
-      polylogueReceiverPairing: {
-        state: "online",
-        receiver_id: "rx-expected",
-        api_schema: "polylogue-browser-capture/v1",
-        endpoint: "http://127.0.0.1:8875",
-      },
-    });
-    globalThis.fetch = vi.fn(async (url) => {
-      fetchCalls.push({ url });
-      return responseJson({
-        ok: true,
-        api_schema: "polylogue-browser-capture/v1",
-        receiver_id: "rx-replacement",
-      });
-    });
-
-    const response = await sendRuntimeMessage({
-      type: "polylogue.capture",
-      reason: "content_script_capture",
-      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-mismatch", turns: [{ role: "user" }] } },
-    });
-
-    expect(response).toMatchObject({ ok: false, error: "receiver_pairing_mismatch" });
-    expect(fetchCalls).toHaveLength(1);
-    expect(String(fetchCalls[0].url)).toMatch(/\/v1\/status$/);
-    expect(stored.polylogueCaptureQueue?.entries || []).toHaveLength(0);
-    expect(stored.polylogueReceiverPairing).toMatchObject({
-      state: "mismatch",
-      receiver_id: "rx-expected",
-      observed_receiver_id: "rx-replacement",
-    });
-    expect(stored.polylogueConversationTimeline["chatgpt:conv-mismatch"][0]).toMatchObject({
-      event: "held_with_reason",
-      detail: "receiver_pairing_mismatch",
-    });
-  });
-
-  it("recovers only at the canonical endpoint when the paired identity matches", async () => {
-    await loadBackground({
-      polylogueReceiverPairing: {
-        state: "offline",
-        receiver_id: "rx-recover",
-        api_schema: "polylogue-browser-capture/v1",
-        endpoint: "http://127.0.0.1:8875",
-      },
-    });
-    globalThis.fetch = vi.fn(async (url) => {
-      fetchCalls.push({ url });
-      if (String(url).startsWith("http://127.0.0.1:8875")) throw new TypeError("old endpoint offline");
-      return responseJson({
-        ok: true,
-        api_schema: "polylogue-browser-capture/v1",
-        receiver_id: "rx-recover",
-      });
-    });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
-
-    expect(response).toMatchObject({
-      ok: true,
-      status: "recovered",
-      endpoint: "http://127.0.0.1:8765",
-      recovered_from: "http://127.0.0.1:8875",
-    });
-    expect(stored.receiverBaseUrl).toBe("http://127.0.0.1:8765");
-    expect(fetchCalls.map((call) => call.url)).toEqual([
-      "http://127.0.0.1:8875/v1/status",
-      "http://127.0.0.1:8765/v1/status",
-    ]);
-  });
-
-  it("does not adopt the canonical endpoint when its receiver identity differs", async () => {
-    await loadBackground({
-      polylogueReceiverPairing: {
-        state: "offline",
-        receiver_id: "rx-expected",
-        api_schema: "polylogue-browser-capture/v1",
-        endpoint: "http://127.0.0.1:8875",
-      },
-    });
-    globalThis.fetch = vi.fn(async (url) => {
-      fetchCalls.push({ url });
-      if (String(url).startsWith("http://127.0.0.1:8875")) throw new TypeError("old endpoint offline");
-      return responseJson({
-        ok: true,
-        api_schema: "polylogue-browser-capture/v1",
-        receiver_id: "rx-other",
-      });
-    });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
-
-    expect(response).toMatchObject({ ok: false, status: "unreachable", endpoint: "http://127.0.0.1:8875" });
-    expect(stored.receiverBaseUrl).toBe("http://127.0.0.1:8875");
-    expect(stored.polylogueReceiverPairing.receiver_id).toBe("rx-expected");
-  });
-
-  it("does not auto-recover a deliberate dev-override pairing even when the canonical identity would match (polylogue-jlme.5)", async () => {
-    // Reproduces the exact polylogue-jlme.5 incident shape in reverse: an
-    // operator has explicitly configured this profile to a dev-loop
-    // receiver (dev_override: true). That receiver goes offline. Unlike the
-    // ordinary "wandered off" case, this must NOT silently fail over to the
-    // canonical endpoint -- the operator chose the dev endpoint on purpose
-    // and needs to know loudly that it died, not have the extension quietly
-    // reconnect somewhere else mid dev-loop session.
-    await loadBackground({
-      polylogueReceiverPairing: {
-        state: "offline",
-        receiver_id: "rx-dev-loop",
-        api_schema: "polylogue-browser-capture/v1",
-        endpoint: "http://127.0.0.1:8876",
-        dev_override: true,
-      },
-    });
-    globalThis.fetch = vi.fn(async (url) => {
-      fetchCalls.push({ url });
-      if (String(url).startsWith("http://127.0.0.1:8875")) throw new TypeError("dev endpoint offline");
-      // The canonical endpoint is live and WOULD satisfy identity+schema
-      // match -- this is exactly what proves recovery is suppressed
-      // deliberately, not merely because canonical happened to be unreachable.
-      return responseJson({
-        ok: true,
-        api_schema: "polylogue-browser-capture/v1",
-        receiver_id: "rx-dev-loop",
-      });
-    });
-    await globalThis.chrome.storage.local.set({ receiverBaseUrl: "http://127.0.0.1:8875" });
-
-    const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
-
-    expect(response).toMatchObject({ ok: false, status: "dev_override_stale", endpoint: "http://127.0.0.1:8875" });
-    // Canonical was never even probed.
-    expect(fetchCalls.map((call) => call.url)).toEqual(["http://127.0.0.1:8875/v1/status"]);
-    expect(stored.receiverBaseUrl).toBe("http://127.0.0.1:8875");
-    expect(stored.polylogueReceiverPairing).toMatchObject({
-      state: "dev_override_stale",
-      dev_override: true,
-      receiver_id: "rx-dev-loop",
-    });
-  });
-
-  it("marks a manually configured non-canonical endpoint as a deliberate dev override", async () => {
-    await loadBackground({
-      polylogueReceiverPairing: {
-        state: "online",
-        receiver_id: "rx-canonical",
-        api_schema: "polylogue-browser-capture/v1",
-        endpoint: "http://127.0.0.1:8765",
-      },
-    });
-
-    grantedOrigins.add("http://127.0.0.1:8876/*");
-    await sendRuntimeMessage({
-      type: "polylogue.configureReceiver",
-      receiverBaseUrl: "http://127.0.0.1:8876",
-      });
-
-    expect(stored.polylogueReceiverPairing).toMatchObject({ dev_override: true });
-
-    // Repointing settings back at the canonical endpoint is an equally
-    // explicit act and must clear the flag.
-    await sendRuntimeMessage({
-      type: "polylogue.configureReceiver",
-      receiverBaseUrl: "http://127.0.0.1:8765",
-      });
-
-    expect(stored.polylogueReceiverPairing).toMatchObject({ dev_override: false });
-  });
-
-  it("refuses a receiver origin the extension does not hold permission for", async () => {
-    // polylogue-tztk (leak audit L7): the manifest used to grant
-    // http://127.0.0.1/*, which also covers the unauthenticated archive API
-    // on 8766, and extension fetches bypass CORS. Anti-vacuity: drop the
-    // loopbackOriginIsGranted check in saveReceiverSettings and the settings
-    // are stored, making both assertions below red.
-    await loadBackground();
-    const before = stored.receiverBaseUrl;
-
-    const response = await sendRuntimeMessage({
-      type: "polylogue.configureReceiver",
-      receiverBaseUrl: "http://127.0.0.1:8766",
-      });
-
-    expect(response).toMatchObject({ ok: false, error: "receiver_origin_not_permitted" });
-    expect(stored.receiverBaseUrl).toBe(before);
-  });
-
-  it("accepts a non-default receiver origin once the operator has granted it", async () => {
-    await loadBackground();
-    grantedOrigins.add("http://127.0.0.1:8766/*");
-
-    const response = await sendRuntimeMessage({
-      type: "polylogue.configureReceiver",
-      receiverBaseUrl: "http://127.0.0.1:8766",
-      });
-
-    expect(response).toMatchObject({ ok: true });
-    expect(stored.receiverBaseUrl).toBe("http://127.0.0.1:8766");
-  });
-
-  it("resets only the pairing key and preserves pending work", async () => {
-    const queue = { version: 3, dropped_count: 0 };
-    await loadBackground({
-      polylogueCaptureQueue: queue,
-      polylogueReceiverPairing: {
-        state: "mismatch",
-        receiver_id: "rx-old",
-        api_schema: "polylogue-browser-capture/v1",
-      },
-    });
-    const captureStore = new IndexedDbBackfillStore(globalThis.indexedDB);
-    const staging = new CaptureStaging(globalThis.navigator.storage, captureStore);
-    const delivery = { id: "queued-capture", delivery_kind: "foreground", held: true, queued_at: "2026-01-01T00:00:00Z" };
-    const prepared = await staging.prepare({ session: { provider: "chatgpt", provider_session_id: "queued-session", turns: [{ text: "retained acquired evidence" }] } }, null, delivery);
-    const before = await captureStore.getDelivery(delivery.id);
-    const body = await prepared.body.text();
-    globalThis.fetch = vi.fn(async () => responseJson({
-      ok: true,
-      api_schema: "polylogue-browser-capture/v1",
-      receiver_id: "rx-new",
-    }));
-
-    const response = await sendRuntimeMessage({ type: "polylogue.receiverPairing.reset" });
-
-    expect(response.pairing).toMatchObject({ state: "online", receiver_id: "rx-new" });
-    expect(stored.polylogueCaptureQueue).toEqual(queue);
-    expect(await captureStore.getDelivery(delivery.id)).toEqual(before);
-    expect(await (await staging.file(prepared.ref)).text()).toBe(body);
+    expect(fetchCalls[0].url).toBe("polylogue://native/v1/status");
   });
 
   it("reports the receiver as unreachable when the fetch itself fails", async () => {
@@ -5117,7 +3820,7 @@ describe("receiver health probe", () => {
 
     const response = await sendRuntimeMessage({ type: "polylogue.checkReceiverHealth" });
 
-    expect(response).toMatchObject({ ok: false, status: "unreachable", detail: "non_json_response" });
+    expect(response).toMatchObject({ ok: false, status: "error", detail: "native_host_contract_incompatible" });
   });
 });
 

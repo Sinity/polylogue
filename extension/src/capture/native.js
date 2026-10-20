@@ -1,3 +1,4 @@
+import { nativeEnvelope } from "./native_transport.js";
 import JSONParser from "../vendor/streamparser-json/jsonparser.js";
 import TokenType from "../vendor/streamparser-json/utils/types/tokenType.js";
 
@@ -97,7 +98,7 @@ export class NativeCaptureNormalizer {
     signal?.throwIfAborted();
     const prepared = await this.prepareNative(capture, { rawRef, relatedRefs, queueContext, signal, summaryOnly, onProgress });
     if (summaryOnly) return { summary: prepared.summary, rawRevision: prepared.rawRevision };
-    capture = { ...capture, state: "ready", receiver_native: prepared.reference,
+    capture = { ...capture, state: "ready", title: prepared.summary.title,
       raw_revision_sha256: prepared.rawRevision, turn_count: prepared.summary.turn_count,
       record_count: prepared.summary.turn_count, attachment_count: prepared.summary.attachment_count,
       session_kind: prepared.summary.session_kind,
@@ -108,17 +109,8 @@ export class NativeCaptureNormalizer {
     return envelope;
   }
   envelope(capture) {
-    return { schema_version: 1, polylogue_capture_kind: "browser_llm_session", source: "browser-extension",
-      provider_meta: { capture_fidelity: "native_full", ...capture.attribution },
-      provenance: { captured_at: capture.observed_at, extension_instance_id: capture.extension_instance_id,
-        acquisition_sequence: capture.acquisition_sequence, source_url: capture.source_url },
-      session: { provider: capture.provider, provider_session_id: capture.native_id,
-        title: capture.native_id,
-        session_kind: capture.session_kind,
-        provider_meta: { capture_fidelity: "native_full", ...capture.attribution }, turns: [] },
-      receiver_native: capture.receiver_native, capture_source_refs: capture.source_refs,
-      capture_record_ref: capture.id,
-      capture_summary: { title: capture.native_id,
+    return { ...nativeEnvelope(capture, true),
+      capture_summary: { title: capture.title || capture.native_id,
         provider: capture.provider, providerSessionId: capture.native_id, captureMode: "native_full",
         needsFollowUp: capture.headers.needs_follow_up, turnCount: capture.turn_count, attachmentCount: capture.attachment_count } };
   }

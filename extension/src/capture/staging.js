@@ -1,6 +1,6 @@
 import { createSha256 } from "../vendor/sha256.js";
 import { receiverAckContractError } from "../backfill/models.js";
-import { canonicalJson } from "../backfill/capture_jobs.js";
+import { canonicalJson } from "../backfill/encoding.js";
 
 const CHUNK_BYTES = 48 * 1024;
 const encoder = new TextEncoder();
@@ -297,13 +297,14 @@ export class CaptureStaging {
     }
   }
   async *assetJson(asset, signal = null, canonical = false) {
-    const keys = Object.keys(asset).filter((key) => key !== "staged_asset" && asset[key] !== undefined);
-    if (asset.staged_asset && !keys.includes("inline_base64")) keys.push("inline_base64");
+    const keys = Object.keys(asset).filter((key) => key !== "staged_asset" && asset[key] !== undefined)
+      .map((key) => key === "inline_base64" ? "content_base64" : key);
+    if (asset.staged_asset && !keys.includes("content_base64")) keys.push("content_base64");
     if (canonical) keys.sort();
     yield "{"; let first = true;
     for (const key of keys) {
       if (!first) yield ","; first = false; yield `${JSON.stringify(key)}:`;
-      if (key !== "inline_base64" || !asset.staged_asset) { yield* this.json(asset[key], signal, canonical); continue; }
+      if (key !== "content_base64" || !asset.staged_asset) { yield* this.json(key === "content_base64" ? asset.content_base64 ?? asset.inline_base64 : asset[key], signal, canonical); continue; }
       const ref = asset.staged_asset; const meta = await this.metadata(ref.id);
       if (meta.token !== ref.token || meta.state !== "sealed") throw stageError("capture_staging_asset_unsealed");
       yield '"';
@@ -578,7 +579,12 @@ export class CaptureStaging {
             if (record.record_kind !== "checkpoint:queue") continue;
             await append(`${first ? "" : ","}{"queue_id":${JSON.stringify(record.checkpoint_value.id)},"capture":`); first = false;
             for await (const text of this.json(record.export_capture, signal)) await append(text);
-            await append(',"files":['); let firstFile = true;
+            await append(',"records":['); let firstRecord = true;
+            if (record.record_ref) for await (const native of this.records.captureRecords(record.record_ref)) {
+              await append(firstRecord ? "" : ","); firstRecord = false;
+              for await (const text of this.json(native, signal)) await append(text);
+            }
+            await append('],"files":['); let firstFile = true;
             const evidence = async (ref) => {
               if (!ref) return;
               await append(firstFile ? "" : ","); firstFile = false;
@@ -631,47 +637,6 @@ export class CaptureStaging {
     }
     else await this.records.discardCapture(snapshot.id);
     await this.discardUnreferenced(snapshot.artifact_id);
-  }
-
-  async receiveCheckpoint(root, response, signal = null) {
-    const owner = { checkpoint_recovery_id: root.id };
-    const ref = await this.begin(owner, { kind: "checkpoint-recovery" }, root.id);
-    if (ref.id !== root.artifact_id) throw stageError("checkpoint_artifact_owner_mismatch");
-    return this.serialize(ref.id, async () => {
-      const meta = await this.metadata(ref.id);
-      if (meta.state === "sealed") {
-        await response.body?.cancel();
-        if (`sha256:${meta.sha256}` !== root.digest) throw stageError("checkpoint_digest_mismatch");
-        return this.file(meta.id);
-      }
-      const reader = response.body?.getReader();
-      if (!reader) throw stageError("checkpoint_body_unavailable");
-      const abort = () => { void reader.cancel(signal.reason).catch(() => undefined); };
-      signal?.addEventListener("abort", abort, { once: true });
-      const directory = await this.directory();
-      const writer = await (await directory.getFileHandle(`${meta.id}.bytes`, { create: true })).createWritable();
-      const hash = createSha256(); let bytes = 0;
-      try {
-        for (;;) {
-          signal?.throwIfAborted();
-          const { value, done } = await reader.read();
-          if (done) break;
-          hash.update(value); bytes += value.length; await writer.write(value);
-        }
-        signal?.throwIfAborted();
-        if (`sha256:${hash.hex()}` !== root.digest || bytes !== root.size_bytes) throw stageError("checkpoint_digest_mismatch");
-        await writer.close();
-        await this.save({ ...meta, state: "sealed", bytes, sha256: hash.hex() });
-        return this.file(meta.id);
-      } catch (error) {
-        await reader.cancel(error).catch(() => undefined);
-        await writer.abort().catch(() => undefined);
-        throw error;
-      } finally {
-        signal?.removeEventListener("abort", abort);
-        reader.releaseLock();
-      }
-    });
   }
 
   conversionId(queueId) { return createSha256().update(`queue:${queueId}`).hex(); }

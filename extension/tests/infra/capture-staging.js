@@ -5,8 +5,7 @@ import { NativeCaptureNormalizer } from "../../src/capture/native.js";
 import { CaptureStaging } from "../../src/capture/staging.js";
 
 /** Receiver-contract fixture: no provider content is parsed in JavaScript.
- * Canonical parser and final-artifact parity belong to the Python integration
- * selection. These explicit plans exercise browser byte/occurrence custody.
+ * Canonical parser parity belongs to the native host integration. These explicit plans exercise browser byte/occurrence custody.
  */
 export function receiverContractPreparation(staging, store, contract = {}) {
   return async (capture, { rawRef, relatedRefs, signal, summaryOnly = false }) => {
@@ -18,19 +17,18 @@ export function receiverContractPreparation(staging, store, contract = {}) {
       staging.requireOwner(meta, ref, capture.owner);
       retained[name] = { sha256: meta.sha256, size_bytes: meta.bytes };
     }
-    const reference = { adopted: { job: { job_id: "synthetic-receiver-job", provider: capture.provider },
-      lease: { lease_id: "synthetic-lease", generation: 1, proof: "synthetic-proof" },
-      scope: { kind: "invocation", resume_capability: "synthetic-receiver-resume-capability" } },
-      acquisition_id: capture.acquisition_id, preparation_instance_id: capture.preparation_instance_id,
-      plan_digest: "a".repeat(64), sha256: "b".repeat(64), size_bytes: 1234 };
-    await store.putCapture({ ...capture, receiver_native: reference });
-    await contract.onPrepare?.({ capture, members: retained, reference, signal });
+    await contract.onPrepare?.({ capture, members: retained, signal });
     for (const asset of summaryOnly ? [] : contract.plan || []) {
       signal?.throwIfAborted();
       const result = await contract.acquire?.({ capture, rawRef, asset, signal });
       contract.receipts?.push({ ordinal: asset.ordinal, result });
+      for (const [index, attachment] of (result?.attachments || []).entries()) await store.putCaptureRecord({
+        capture_id: capture.id, key: `attachment:${asset.ordinal}:${index}`, record_kind: "session-attachment",
+        order_time: 0, order_id: "", occurrence: asset.ordinal + index, session_attachment: attachment,
+        asset_failures: result?.outcome?.failed || [],
+      });
     }
-    return { rawRevision: "c".repeat(64), reference,
+    return { rawRevision: "c".repeat(64),
       summary: { title: null, turn_count: 1, attachment_count: (contract.plan || []).length,
         session_kind: "standard", needs_follow_up: false, ...contract.summary } };
   };
@@ -113,7 +111,7 @@ export function stagingRuntime(storage = memoryOriginStorage(), owner = { tab_id
     },
     setDispatch(value) { dispatch = value; },
     async materialize(envelope) {
-      if (envelope.receiver_native) return envelope;
+      if (envelope.raw_provider_payload && envelope.capture_record_ref) return envelope;
       const prepared = await staging.prepare(envelope);
       return JSON.parse(await prepared.body.text());
     },

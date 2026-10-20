@@ -197,7 +197,7 @@ describe("connected capture recovery", () => {
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", deferReceiver: true, providerSessionId: "conversation-1" });
     expect(result.ok).toBe(true);
     expect(await dom.__captureRuntime.retainedNativeReplies(result.envelope)).toEqual(native);
-    expect(result.envelope.receiver_native.sha256).toBe("b".repeat(64));
+    expect(result.envelope.raw_provider_payload.staged_raw_json).toEqual(expect.any(String));
     // Canonical thinking/text blocks: test_chatgpt_thoughts_node_produces_nonempty_thinking_text_end_to_end.
     expect(result.envelope.session.turns).toEqual([]);
   });
@@ -245,7 +245,7 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
     const fetch = vi.fn(async () => jsonResponse(payload));
     const { dom, sendRuntimeMessage } = installChatgpt({ fetch });
     const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "backfill_exact_capture", providerSessionId: "conversation-1", deferReceiver: true });
-    expect(result).toMatchObject({ ok: true, deferred: true, envelope: { session: { provider_session_id: "conversation-1", turns: [] }, receiver_native: expect.any(Object) } });
+    expect(result).toMatchObject({ ok: true, deferred: true, envelope: { session: { provider_session_id: "conversation-1", turns: [] }, raw_provider_payload: expect.any(Object) } });
     const retained = await dom.__captureRuntime.retainedNativeReplies(result.envelope);
     expect(retained).toEqual(payload);
     expect(retained.mapping.reasoning.message.content.thoughts.map(item => item.content || item.summary).join("\n")).toBe(text);

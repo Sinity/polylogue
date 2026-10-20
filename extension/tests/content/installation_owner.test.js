@@ -16,8 +16,7 @@ function page({ mainRuntime, provider = "claude", fetch = async () => new global
   const location = new URL(provider === "claude" ? "https://claude.ai/chat/neutral" : "https://chatgpt.com/c/neutral");
   function realm(ownerId, { eligible = false, refuse = false } = {}) {
     const listeners = new Map(), calls = [], storageListeners = [];
-    const stored = { polylogueAmbientSettings: { enabled: eligible, automatic_capture_enabled: eligible },
-      polylogueReceiverPairing: refuse ? null : { receiver_id: "neutral", state: "online" } };
+    const stored = { polylogueAmbientSettings: { enabled: eligible, automatic_capture_enabled: eligible } };
     const window = { location, crypto: webcrypto, btoa: value => globalThis.Buffer.from(value, "binary").toString("base64"), fetch,
       document: { getElementById: () => null }, performance: { getEntriesByType: () => [] },
       localStorage: { getItem: () => JSON.stringify({ orgUuid: "11111111-1111-4111-8111-111111111111" }) },
@@ -39,7 +38,7 @@ function page({ mainRuntime, provider = "claude", fetch = async () => new global
     const context = createContext({ window, chrome, crypto: webcrypto, AbortController: globalThis.AbortController, DOMException: globalThis.DOMException, URL, Response: globalThis.Response, Uint8Array, TextEncoder, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout });
     const result = { window, listeners, calls, stored, storageListeners, context,
       load(name) { new Script(source(name)).runInContext(context); },
-      async configure(settings, pairing = stored.polylogueReceiverPairing) { stored.polylogueAmbientSettings = settings; stored.polylogueReceiverPairing = pairing; storageListeners.forEach(fn => fn({ polylogueAmbientSettings: { newValue: settings } }, "local")); await flush(); },
+      async configure(settings) { stored.polylogueAmbientSettings = settings; storageListeners.forEach(fn => fn({ polylogueAmbientSettings: { newValue: settings } }, "local")); await flush(); },
     };
     realms.push(result); return result;
   }
@@ -121,7 +120,7 @@ describe("installation-owned original page transport", () => {
   it("observes each eligible owner with its own clone and preserves the original app response across stale wrappers", async () => {
     const original = new globalThis.Response('{"id":"neutral"}', { headers: { "content-type": "application/json" } });
     const fetch = vi.fn(async () => original), h = page({ provider: "chatgpt", fetch });
-    const a = h.realm(ownerA, { eligible: true }), b = h.realm(ownerB, { eligible: true }), c = h.realm(ownerC, { eligible: true, refuse: true });
+    const a = h.realm(ownerA, { eligible: true }), b = h.realm(ownerB, { eligible: true }), c = h.realm(ownerC, { eligible: false, refuse: true });
     h.main.window.__polylogueFetchHookInstalled = true;
     h.main.window.polylogueAssetStream = { stageResponse: vi.fn() };
     // Actual old hook pattern: a borrowed clone is handed to the global
@@ -131,7 +130,7 @@ describe("installation-owned original page transport", () => {
       void h.main.window.polylogueAssetStream.stageResponse(response.clone(), "chatgpt", new globalThis.AbortController().signal).catch(() => undefined); return response; };
     h.main.load("asset_stream"); a.load("asset_stream"); b.load("asset_stream"); c.load("asset_stream"); h.main.load("chatgpt_bridge");
     await flush();
-    await b.configure({ enabled: true, automatic_capture_enabled: true }, { receiver_id: "neutral", state: "offline" });
+    await b.configure({ enabled: true, automatic_capture_enabled: true });
     expect(h.main.window.polylogueAssetStream.eligibleOwners()).toEqual([ownerA, ownerB]);
     const response = await h.main.window.fetch("https://chatgpt.com/backend-api/conversation/neutral");
     expect(response).toBe(original); expect(await response.text()).toBe('{"id":"neutral"}');

@@ -202,62 +202,17 @@ describe("shared operator status vocabulary", () => {
     });
   });
 
-  it("distinguishes paired, offline, recovered, unauthorized, and mismatched receivers", () => {
-    const paired = api.receiverPairingPresentation({
-      pairing: {
-        state: "online",
-        receiver_id: "rx-123",
-        api_schema: "polylogue-browser-capture/v1",
-        endpoint: "http://127.0.0.1:8765",
-      },
-      health: { status: "ok" },
-    });
-    expect(paired).toMatchObject({
-      status: { code: "safe_current" },
-      headline: "Paired receiver rx-123",
-    });
-
-    expect(api.receiverPairingPresentation({
-      pairing: { state: "offline", receiver_id: "rx-123" },
-      health: { status: "unreachable" },
-    }).status.code).toBe("receiver_offline");
-    expect(api.receiverPairingPresentation({ health: { status: "recovered", endpoint: "http://127.0.0.1:8765" } }).headline)
-      .toBe("Receiver recovered");
-    expect(api.receiverPairingPresentation({ health: { status: "unauthorized" } }).headline)
-      .toBe("Receiver authentication failed");
-    expect(api.receiverPairingPresentation({
-      pairing: { state: "mismatch" },
-      health: { status: "pairing_mismatch" },
-    })).toMatchObject({
-      status: { code: "needs_attention" },
-      headline: "Receiver identity changed",
-    });
-
-    // A deliberate dev-override pairing going stale must present loudly,
-    // distinctly from ordinary calm receiver-offline framing (polylogue-jlme.5).
-    expect(api.receiverPairingPresentation({
-      pairing: { state: "dev_override_stale", dev_override: true, receiver_id: "rx-dev-loop", endpoint: "http://127.0.0.1:8876" },
-      health: { status: "dev_override_stale" },
-    })).toMatchObject({
-      status: { code: "needs_attention", tone: "bad" },
-      headline: "Dev-override receiver unreachable",
-    });
+  it("reports native host availability without a pairing workflow", () => {
+    expect(api.nativeHostPresentation({ health: { status: "ok", receiver_status: { api_schema: "native/v1" } } }))
+      .toMatchObject({ headline: "Native host online", detail: "native/v1" });
+    expect(api.nativeHostPresentation({ health: { status: "unreachable", detail: "host missing" } }))
+      .toMatchObject({ headline: "Native host unavailable", detail: "host missing" });
   });
 
   it("surfaces at most one attention item, in strict priority order", () => {
     expect(api.computeAttention({})).toBeNull();
     expect(api.computeAttention({ conversationState: { online: true, archive_state: { state: "archived" } } }))
       .toBeNull();
-
-    const pairingMismatch = api.computeAttention({
-      pairing: { state: "mismatch" },
-      health: { status: "pairing_mismatch" },
-      browserActions: [{ status: "outcome_unknown" }],
-    });
-    expect(pairingMismatch).toMatchObject({ kind: "auth_pairing_mismatch", actionId: "reset-pairing" });
-
-    const unauthorized = api.computeAttention({ health: { status: "unauthorized" } });
-    expect(unauthorized).toMatchObject({ kind: "auth_pairing_mismatch", actionId: "receiver-url" });
 
     const unknownOutcome = api.computeAttention({
       browserActions: [
@@ -298,11 +253,7 @@ describe("shared operator status vocabulary", () => {
       conversationState: { archive_state: { state: "failed", latest_failure: "index rejected" } },
     })).toBeNull();
 
-    const devOverrideStale = api.computeAttention({
-      pairing: { state: "dev_override_stale", dev_override: true },
-      health: { status: "dev_override_stale" },
-    });
-    expect(devOverrideStale).toMatchObject({ kind: "auth_pairing_mismatch", tone: "bad", actionId: "reset-pairing" });
+
   });
 
   it("ranks an unconfirmed action outcome above explicit-approval, and explicit-approval above a capability mismatch", () => {

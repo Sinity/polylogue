@@ -79,3 +79,12 @@ result = "exit"
 timeout_seconds = 7200
 scratch = "nvme"
 cache = "none"
+
+[operations.extension]
+description = "Run extension npm commands: ci, test -- <files>, run validate, run build"
+exec = ["nix", "develop", "--command", "env", "npm_config_cache=extension/.npm-cache", "npm", "--prefix", "extension"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+timeout_seconds = 900
+cache = "none"

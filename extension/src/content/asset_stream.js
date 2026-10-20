@@ -1,5 +1,5 @@
 (function () {
-  if (window.polylogueAssetStream?.protocolVersion === 2 && window.polylogueAssetStream?.implementationRevision >= 3) return;
+  if (window.polylogueAssetStream?.protocolVersion === 2 && window.polylogueAssetStream?.implementationRevision >= 4) return;
   const chunkMessage = "polylogue.assetChunk";
   const ackMessage = "polylogue.assetChunkAck";
   const origin = window.location.origin;
@@ -34,18 +34,16 @@
   let registrationActive = true;
   function registerOwner() {
     registration = registration.catch(() => undefined).then(async () => {
-      const stored = await chrome.storage.local.get({ polylogueAmbientSettings: {}, polylogueReceiverPairing: null });
+      const stored = await chrome.storage.local.get({ polylogueAmbientSettings: {} });
       const settings = stored.polylogueAmbientSettings || {};
-      const pairing = stored.polylogueReceiverPairing;
       const eligible = settings.enabled !== false && settings.automatic_capture_enabled !== false
-        && settings.disabled_sites?.[window.location.hostname] !== true
-        && Boolean(pairing?.receiver_id) && pairing.state !== "mismatch";
+        && settings.disabled_sites?.[window.location.hostname] !== true;
       if (registrationActive) pageMessage({ type: "polylogue.ownerRegistration", eligible });
     });
     void registration.catch(() => undefined);
   }
   const registrationChanged = (changes, area) => {
-    if (area === "local" && (changes.polylogueAmbientSettings || changes.polylogueReceiverPairing)) registerOwner();
+    if (area === "local" && changes.polylogueAmbientSettings) registerOwner();
   };
   if (isContent) {
     registerOwner();
@@ -374,6 +372,6 @@
       return summaryOnly ? result.summary : result.envelope;
     } finally { signal.removeEventListener("abort", onAbort); }
   }
-  window.polylogueAssetStream = { protocolVersion: 2, implementationRevision: 3, pageMessage, readPageMessage, eligibleOwners: () => [...owners].filter(([, eligible]) => eligible).map(([owner]) => owner), stream, request, prepareResponse, stageResponse, nativeHeaders, settleNativeHeaders, restoreNative, nativeEnvelope, nativeBundle };
+  window.polylogueAssetStream = { protocolVersion: 2, implementationRevision: 4, pageMessage, readPageMessage, eligibleOwners: () => [...owners].filter(([, eligible]) => eligible).map(([owner]) => owner), stream, request, prepareResponse, stageResponse, nativeHeaders, settleNativeHeaders, restoreNative, nativeEnvelope, nativeBundle };
   if (!isContent) window.postMessage({ type: "polylogue.page.v2.registrationRequested" }, origin);
 })();

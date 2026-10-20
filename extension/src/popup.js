@@ -1,4 +1,3 @@
-const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const AUTO_REFRESH_MS = 8000;
 // `operator_status.js` is loaded immediately before this file as a classic
 // script.  Its top-level function declarations therefore occupy the shared
@@ -12,6 +11,8 @@ let currentFreshnessQueue = { entries: {}, dropped_count: 0 };
 let currentBackfillJobs = [];
 let currentReceiverOnline = true;
 let currentBrowserActions = [];
+const pendingBackupExports = new Map();
+let pendingBackupImport = null;
 
 function hostMatches(hostname, domain) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
@@ -149,7 +150,6 @@ function activeConversationState(tab, globalState, ledger) {
   const onlineState = {
     online: globalState?.online ?? true,
     error: globalState?.error || null,
-    receiver_pairing: globalState?.receiver_pairing || null,
     receiver_health: globalState?.receiver_health || null,
   };
   if (context.provider === "unknown") return {
@@ -335,7 +335,7 @@ function renderBackfillControls(jobs) {
   const active = currentBackfillJobs.filter((job) => !["complete", "completed", "cancelled", "failed"].includes(job.status));
   node.innerHTML = active.length ? active.map((job) => {
     const resume = job.status === "paused";
-    return `<div class="work-item"><div class="work-title">${escapeHtml(job.job_title || `${job.provider || "Provider"} history backfill`)} · ${escapeHtml(job.status || "unknown")}</div><div class="controls"><button data-backfill-action="${resume ? "resume" : "pause"}" data-backfill-id="${escapeHtml(job.id)}">${resume ? "Resume" : "Pause"}</button><button data-backfill-action="cancel" data-backfill-id="${escapeHtml(job.id)}">Cancel</button><button data-backfill-action="export" data-backfill-id="${escapeHtml(job.id)}">Export</button></div></div>`;
+    return `<div class="work-item"><div class="work-title">${escapeHtml(job.job_title || `${job.provider || "Provider"} history backfill`)} · ${escapeHtml(job.status || "unknown")}</div><div class="controls"><button data-backfill-action="${resume ? "resume" : "pause"}" data-backfill-id="${escapeHtml(job.id)}">${resume ? "Resume" : "Pause"}</button><button data-backfill-action="cancel" data-backfill-id="${escapeHtml(job.id)}">Cancel</button><button data-backfill-action="export" data-backfill-id="${escapeHtml(job.id)}">Export</button>${pendingBackupExports.has(job.id) ? `<button data-backfill-action="exportAck" data-backfill-id="${escapeHtml(job.id)}">Confirm saved</button>` : ""}</div></div>`;
   }).join("") : '<div class="empty">No persisted backfill jobs need operator controls.</div>';
 }
 
@@ -376,45 +376,42 @@ function renderQueue(queue) {
   renderWorkQueue();
 }
 
-function renderReceiverPairing(pairing, health = null, configuredUrl = "") {
-  const statusNode = document.getElementById("receiver-pairing-status");
-  const detailNode = document.getElementById("receiver-pairing-detail");
+function renderNativeHost(health = null) {
+  const statusNode = document.getElementById("native-host-status");
+  const detailNode = document.getElementById("native-host-detail");
   if (!statusNode || !detailNode) return;
-  const presentation = operatorStatusApi.receiverPairingPresentation({ pairing, health, configuredUrl });
+  const presentation = operatorStatusApi.nativeHostPresentation({ health });
   statusNode.textContent = presentation.headline;
   detailNode.textContent = presentation.detail;
-  statusNode.title = pairing?.receiver_id || "";
+  statusNode.title = "";
 }
 
-function renderReceiverHealth(health, pairing = null, configuredUrl = "") {
+function renderReceiverHealth(health) {
   const node = document.getElementById("receiver-health");
   if (!node) return;
   if (!health) {
     node.textContent = "--";
     node.title = "";
     node.className = "state-chip neutral";
-    renderReceiverPairing(pairing, health, configuredUrl);
+    renderNativeHost(health);
     return;
   }
   const labels = {
     ok: "Online",
     recovered: "Recovered",
-    unauthorized: "Token required",
-    pairing_mismatch: "Identity mismatch",
     unreachable: "Receiver offline",
-    dev_override_stale: "Dev receiver unreachable",
     error: "Receiver error",
   };
   const tone = ["ok", "recovered"].includes(health.status)
     ? "ok"
-    : ["unauthorized", "pairing_mismatch", "error", "dev_override_stale"].includes(health.status)
+    : ["unauthorized", "error"].includes(health.status)
       ? "bad"
       : "warn";
   node.textContent = labels[health.status] || health.status || "--";
   node.title = health.detail || "";
   node.className = `state-chip ${tone}`;
   currentReceiverOnline = ["ok", "recovered"].includes(health.status);
-  renderReceiverPairing(pairing || health.pairing || null, health, configuredUrl);
+  renderNativeHost(health);
   renderWorkQueue();
 }
 
@@ -435,7 +432,37 @@ function ambientFallback(raw, tabUrl) {
 }
 
 function renderAmbient(ambient, tabUrl = "", assertions = null) {
-  const enabledNode = document.getElementById("ambient-enabled");
+  const enabledNode = document.getElementById("backfill-import")?.addEventListener("change", async event => {
+  const file = event.target.files?.[0]; if (!file) return;
+  const status = document.getElementById("backup-status");
+  const cancel = document.getElementById("cancel-backfill-import");
+  try {
+    const begin = await chrome.runtime.sendMessage({ type: "polylogue.backfill.import.begin" });
+    if (!begin?.ok) throw new Error(begin?.error || "checkpoint_import_failed");
+    const id = begin.import_id; pendingBackupImport = id; if (cancel) cancel.hidden = false;
+    for (let offset = 0, sequence = 0; offset < file.size; offset += 48 * 1024, sequence++) {
+      if (pendingBackupImport !== id) throw new Error("Import cancelled");
+      const bytes = new Uint8Array(await file.slice(offset, offset + 48 * 1024).arrayBuffer());
+      let text = ""; for (let index = 0; index < bytes.length; index += 8192) text += String.fromCharCode(...bytes.subarray(index, index + 8192));
+      const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.import.append", import_id: id, sequence, base64: btoa(text) });
+      if (!result?.ok) throw new Error(result?.error || "checkpoint_import_failed");
+    }
+    if (pendingBackupImport !== id) throw new Error("Import cancelled");
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.import.finish", import_id: id });
+    if (!result?.ok) throw new Error(result?.error || "checkpoint_import_failed");
+    if (status) status.textContent = "Backup restored. The job is paused for review; its original account scope is preserved.";
+  } catch (error) {
+    if (pendingBackupImport) await chrome.runtime.sendMessage({ type: "polylogue.backfill.import.cancel", import_id: pendingBackupImport }).catch(() => undefined);
+    if (status) status.textContent = String(error.message || error);
+  } finally { pendingBackupImport = null; if (cancel) cancel.hidden = true; event.target.value = ""; await render(); }
+});
+
+document.getElementById("cancel-backfill-import")?.addEventListener("click", async () => {
+  const id = pendingBackupImport; pendingBackupImport = null;
+  if (id) await chrome.runtime.sendMessage({ type: "polylogue.backfill.import.cancel", import_id: id });
+});
+
+document.getElementById("ambient-enabled");
   const siteNode = document.getElementById("ambient-site-enabled");
   const siteLabel = document.getElementById("ambient-site");
   const automaticCaptureNode = document.getElementById("automatic-capture-enabled");
@@ -600,14 +627,11 @@ async function render() {
     polylogueState: null,
     polylogueSessionLedger: {},
     polylogueConversationTimeline: {},
-    polylogueReceiverPairing: null,
     polylogueAmbientSettings: { enabled: true, disabled_sites: {} },
-    receiverBaseUrl: DEFAULT_RECEIVER,
   });
   renderLog(stored.polylogueCaptureLog);
   renderDebugLog(stored.polylogueDebugLog);
-  document.getElementById("receiver-url").value = stored.receiverBaseUrl;
-  document.getElementById("receiver").textContent = stored.receiverBaseUrl;
+  document.getElementById("receiver").textContent = "Native messaging";
 
   const [tab, openTabs, mission, browserActions] = await Promise.all([
     activeTab(),
@@ -640,7 +664,7 @@ async function render() {
   const receiverContract = document.getElementById("receiver-contract");
   if (receiverContract) {
     receiverContract.textContent = [
-      mission?.receiver?.health?.receiver_status?.api_schema || mission?.receiver?.pairing?.api_schema,
+      mission?.receiver?.health?.receiver_status?.api_schema,
       mission?.extension?.contract_epoch,
     ].filter(Boolean).join(" · ") || "Not reported";
   }
@@ -657,21 +681,16 @@ async function render() {
     const nextAttempt = candidates.length ? Math.min(...candidates) : null;
     cooldown.textContent = nextAttempt ? new Date(nextAttempt).toISOString() : "Not reported";
   }
-  const pairing = mission?.receiver?.pairing || state?.receiver_pairing || stored.polylogueReceiverPairing || null;
   const health = mission?.receiver?.health || state?.receiver_health || (
-    state?.error === "unauthorized"
-      ? { status: "unauthorized", detail: "unauthorized", pairing }
-      : state?.error === "receiver_pairing_mismatch"
-        ? { status: "pairing_mismatch", detail: "receiver_pairing_mismatch", pairing }
-        : state?.online === false
-          ? { status: "unreachable", detail: state?.error || "receiver_unavailable", pairing }
-          : null
+    state?.online === false
+      ? { status: "unreachable", detail: state?.error || "native_host_unavailable" }
+      : null
   );
   currentReceiverOnline = health
     ? ["ok", "recovered"].includes(health.status)
     : state?.online !== false;
-  if (health) renderReceiverHealth(health, pairing, mission?.receiver?.configured_url || stored.receiverBaseUrl);
-  else renderReceiverPairing(pairing, null, stored.receiverBaseUrl);
+  if (health) renderReceiverHealth(health);
+  else renderNativeHost();
 
   const status = operatorStatusApi.operatorStatusForState(state || {});
   const requestNode = document.getElementById("receiver-request");
@@ -751,7 +770,6 @@ async function render() {
 
   renderAttention(operatorStatusApi.computeAttention({
     conversationState: state,
-    pairing,
     health,
     workItems: attentionWorkItems,
     browserActions: currentBrowserActions,
@@ -783,13 +801,10 @@ document.getElementById("copy-ref").addEventListener("click", async () => {
 
 document.getElementById("open-polylogue").addEventListener("click", async () => {
   await withAction("open-polylogue", async () => {
-    const [stored, state] = await Promise.all([
-      chrome.storage.local.get({ receiverBaseUrl: DEFAULT_RECEIVER }),
-      currentActiveConversationState(),
-    ]);
-    const providerSessionId = state.provider_session_id || state.last_capture?.provider_session_id;
-    const url = `${String(stored.receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "")}/?q=${encodeURIComponent(providerSessionId || "")}`;
-    await chrome.tabs.create({ url });
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.readerLocation" });
+    if (!result?.ok || !result.url) throw new Error(result?.error || "reader_unavailable");
+    const url = new URL(result.url);
+    await chrome.tabs.create({ url: String(url) });
   }, { busy: "Opening" });
 });
 
@@ -812,30 +827,28 @@ document.getElementById("backfill-controls")?.addEventListener("click", async (e
   if (!jobId) return;
   if (action === "export") {
     const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.export", job_id: jobId });
-    if (result?.ok) {
-      const blob = new globalThis.Blob([`${JSON.stringify(result.ledger, null, 2)}\n`], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `polylogue-backfill-${jobId}.json`;
-      link.click();
-      URL.revokeObjectURL(url);
-    }
+    if (!result?.ok) throw new Error(result?.error || "checkpoint_export_failed");
+    if (!/^[a-f0-9-]+$/.test(result.artifact_ref || "")) throw new Error("checkpoint_export_invalid_ref");
+    const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("polylogue-capture");
+    const metadata = JSON.parse(await (await (await directory.getFileHandle(`${result.artifact_ref}.json`)).getFile()).text());
+    const file = await (await directory.getFileHandle(`${result.artifact_ref}.bytes`)).getFile();
+    if (`sha256:${metadata.sha256}` !== result.digest || file.size !== result.size_bytes) throw new Error("checkpoint_export_file_mismatch");
+    const url = URL.createObjectURL(file);
+    const link = document.createElement("a"); link.href = url; link.download = `polylogue-backfill-${jobId}.json`;
+    link.click(); URL.revokeObjectURL(url);
+    pendingBackupExports.set(jobId, result);
+    const status = document.getElementById("backup-status");
+    if (status) status.textContent = "Save the backup file, then choose Confirm saved. The original job and its evidence remain intact.";
+  } else if (action === "exportAck") {
+    const exported = pendingBackupExports.get(jobId);
+    if (!exported) throw new Error("checkpoint_export_unavailable");
+    const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.exportAck", ...exported });
+    if (!result?.ok) throw new Error(result?.error || "checkpoint_export_ack_failed");
+    pendingBackupExports.delete(jobId);
   } else {
     await chrome.runtime.sendMessage({ type: "polylogue.backfill.control", job_id: jobId, action });
   }
   await refreshStatus("popup_backfill_control");
-});
-
-document.getElementById("reset-pairing")?.addEventListener("click", async () => {
-  const confirmed = typeof globalThis.confirm !== "function"
-    || globalThis.confirm("Reset the trusted receiver identity? Capture and backfill queues will be preserved.");
-  if (!confirmed) return;
-  await withAction("reset-pairing", async () => {
-    const result = await chrome.runtime.sendMessage({ type: "polylogue.receiverPairing.reset" });
-    renderReceiverHealth(result?.health, result?.pairing, result?.health?.endpoint || "");
-    await render();
-  }, { busy: "Resetting", ok: "Pairing reset" });
 });
 
 document.getElementById("ambient-enabled")?.addEventListener("change", async (event) => {
@@ -862,30 +875,6 @@ document.getElementById("automatic-capture-enabled")?.addEventListener("change",
     automatic_capture_enabled: Boolean(event.target.checked),
   });
   await render();
-});
-
-document.getElementById("save").addEventListener("click", async () => {
-  await withAction("save", async () => {
-    const receiverBaseUrl = document.getElementById("receiver-url").value;
-    // A non-default receiver port is an optional host permission (leak audit
-    // L7): request it here, inside the operator's click, because
-    // chrome.permissions.request needs a user gesture the service worker
-    // does not have. The background refuses the settings if it is denied.
-    const normalized = String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "");
-    if (normalized && normalized !== DEFAULT_RECEIVER && chrome.permissions?.request) {
-      let origin = null;
-      try {
-        origin = `${new URL(normalized).origin}/*`;
-      } catch {
-        throw new Error("receiver_url_invalid");
-      }
-      const granted = await chrome.permissions.request({ origins: [origin] });
-      if (!granted) throw new Error("receiver_origin_not_permitted");
-    }
-    const result = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", receiverBaseUrl });
-    if (result && result.ok === false) throw new Error(result.error || "configure_receiver_failed");
-    await refreshStatus("popup_configure_receiver");
-  }, { busy: "Saving", ok: "Saved" });
 });
 
 // The support packet exists to be exported and shared with an operator or a

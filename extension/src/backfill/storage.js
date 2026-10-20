@@ -1,4 +1,4 @@
-import { canonicalJson } from "./capture_jobs.js";
+import { canonicalJson } from "./encoding.js";
 import { createSha256 } from "../vendor/sha256.js";
 import { BACKFILL_DB_NAME, BACKFILL_DB_VERSION, BACKFILL_RECOVERY_CHECKPOINT_VERSION, TERMINAL_QUEUE_STATES } from "./models.js";
 
@@ -10,6 +10,13 @@ function captureRecordRow(record) {
   ] };
 }
 
+
+function retireRawOwner(captures, rawId) {
+  // Late callbacks may hold metadata from before the ownership transfer.
+  // This marker owns no bytes and shares the publication transaction lock.
+  captures.put({ id: `retired-native:${rawId}`, kind: "native-acquisition-retired" });
+  captures.delete(`raw:${rawId}`);
+}
 
 function jobRow(job) { return { ...job, active_page: ["complete", "completed", "cancelled", "failed"].includes(job.status) ? 0 : 1 }; }
 
@@ -91,32 +98,6 @@ function recoveryValueDigest(value) {
   delete safe.recovery_source_checkpoint;
   delete safe.recovery_checkpoint_outcome;
   return createSha256().update(canonicalJson(safe)).hex();
-}
-
-function canAdvanceRecovery(current, root) {
-  if (!current) return true;
-  const proof = current.recovery_source_checkpoint;
-  // An operator mutation or locally acquired custody is never replaced by a
-  // metadata checkpoint. The proof hashes the exact installed row, including
-  // its paused state, rather than a lossy checkpoint projection.
-  if (!proof || proof.value_digest !== recoveryValueDigest(current)) return false;
-  if (proof.account_scope !== root.account_scope) throw new Error("checkpoint_recovery_scope_conflict");
-  if (proof.remote_job_id === root.remote_job_id) {
-    if (proof.sequence === root.sequence && proof.digest !== root.digest) throw new Error("checkpoint_recovery_source_conflict");
-    return root.sequence > proof.sequence;
-  }
-  const prior = Date.parse(proof.acknowledged_at || "");
-  const next = Date.parse(root.acknowledged_at || "");
-  if (!Number.isFinite(prior) || !Number.isFinite(next) || prior === next) throw new Error("checkpoint_recovery_source_conflict");
-  return next > prior;
-}
-
-function recoveredRow(value, root) {
-  return { ...value, recovery_source_checkpoint: {
-    account_scope: root.account_scope, remote_job_id: root.remote_job_id,
-    digest: root.digest, sequence: root.sequence, acknowledged_at: root.acknowledged_at,
-    value_digest: recoveryValueDigest(value),
-  } };
 }
 
 export function nativeCacheOrder(current, incoming) {
@@ -611,7 +592,8 @@ export class IndexedDbBackfillStore {
       if (item.raw_acquisition_ref?.id !== rawId) return;
       cursor.update({ ...item, raw_acquisition_ref: null, source_refs: (item.source_refs || []).filter((ref) => ref !== rawId) });
     });
-    tx.objectStore("captures").delete(`raw:${rawId}`);
+    const captures = tx.objectStore("captures");
+    retireRawOwner(captures, rawId);
     await done;
   }
 
@@ -817,7 +799,7 @@ export class IndexedDbBackfillStore {
       tx.abort(); throw new Error("native_acquisition_custody_transfer_invalid");
     }
     captures.put({ ...capture, delivery_kind: "foreground" });
-    captures.delete(`raw:${capture.raw_ref}`);
+    retireRawOwner(captures, capture.raw_ref);
     await transactionDone(tx);
   }
 
@@ -842,7 +824,7 @@ export class IndexedDbBackfillStore {
       tx.abort(); throw new Error("native_acquisition_custody_transfer_invalid");
     }
     captures.put(capture);
-    captures.delete(`raw:${capture.raw_ref}`);
+    retireRawOwner(captures, capture.raw_ref);
     queue.put(queueRow({ ...item, envelope, capture_record_ref: capture.id, capture_source_refs: capture.source_refs,
       capture_bundle_ref: null, capture_bundle_replies: null, resume_state: "captured_waiting_receiver" }));
     if (item.capture_bundle_ref) captures.delete(item.capture_bundle_ref);
@@ -883,6 +865,11 @@ export class IndexedDbBackfillStore {
   async putCapture(capture) {
     const db = await this.database(); const tx = db.transaction("captures", "readwrite");
     const done = transactionDone(tx); const records = tx.objectStore("captures");
+    if (capture.kind === "native-acquisition") {
+      const rawId = capture.raw_ref?.id || capture.raw_ref;
+      const retired = await requestResult(records.get(`retired-native:${rawId}`));
+      if (retired) { await done; return retired; }
+    }
     if (capture.kind === "native-acquisition" && capture.state === "acquiring") {
       const current = await requestResult(records.get(capture.id));
       if (!current && capture.invocation_ref) {
@@ -1342,116 +1329,27 @@ export class IndexedDbBackfillStore {
     await done;
   }
 
-  async beginCheckpointRecovery(root) {
-    if (!Number.isSafeInteger(root.sequence) || root.sequence < 0 ||
-        typeof root.account_scope !== "string" || !root.account_scope ||
-        typeof root.digest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(root.digest)) {
-      throw new Error("checkpoint_recovery_source_invalid");
-    }
-    const db = await this.database(); const tx = db.transaction("captures", "readwrite");
-    const done = transactionDone(tx); const captures = tx.objectStore("captures");
-    const prior = await requestResult(captures.get(root.id));
-    if (prior && (prior.kind !== "checkpoint-recovery" || prior.remote_job_id !== root.remote_job_id ||
-        prior.account_scope !== root.account_scope || prior.digest !== root.digest)) {
-      tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_recovery_owner_mismatch");
-    }
-    let selected = prior;
-    if (!prior) captures.add({ ...root, kind: "checkpoint-recovery", state: "receiving", record_count: 0 });
-    else if (root.sequence > prior.sequence) {
-      selected = { ...prior, sequence: root.sequence, acknowledged_at: root.acknowledged_at };
-      captures.put(selected);
-    }
-    await done; return selected || root;
-  }
-
-  async retireCheckpointRecovery(rootId) {
-    const db = await this.database(); const tx = db.transaction(["captures", "capture_records"], "readwrite");
-    const done = transactionDone(tx); const captures = tx.objectStore("captures");
-    const root = await requestResult(captures.get(rootId));
-    if (root?.kind !== "checkpoint-recovery" || root.state !== "published") {
-      tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_recovery_not_published");
-    }
-    // The exact publication witness prevents a replay from resurrecting local
-    // records retired after recovery. It owns no delivery or artifact bytes.
-    captures.put({ ...root, source_refs: [], artifact_id: null, record_count: 0 });
-    tx.objectStore("capture_records").delete(globalThis.IDBKeyRange.bound([rootId], [rootId, []], false, true));
-    await done;
-  }
-
-  async appendCheckpointRecoveryRecord(rootId, collection, value) {
-    if (!["jobs", "queue", "revisions"].includes(collection) || !value || typeof value !== "object" ||
-        Array.isArray(value) || typeof value.id !== "string" || !value.id) throw new Error("checkpoint_recovery_record_invalid");
-    const db = await this.database(); const tx = db.transaction(["captures", "capture_records"], "readwrite");
-    const done = transactionDone(tx); const captures = tx.objectStore("captures");
-    const root = await requestResult(captures.get(rootId));
-    if (root?.kind !== "checkpoint-recovery" || root.state !== "receiving" || value.provider !== root.provider) {
-      tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_recovery_owner_mismatch");
-    }
-    const records = tx.objectStore("capture_records");
-    const key = `${collection}:${value.id}`;
-    const prior = await requestResult(records.get([rootId, key]));
-    if (prior && JSON.stringify(prior.checkpoint_value) !== JSON.stringify(value)) {
-      tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_recovery_record_conflict");
-    }
-    if (!prior) {
-      records.add({ capture_id: rootId, key, record_kind: `checkpoint:${collection}`, order_time: 0,
-        order_id: "", occurrence: root.record_count++, checkpoint_value: value });
-      captures.put(root);
-    }
-    await done;
-  }
-
-  async finishCheckpointRecovery(rootId, shape) {
-    if (shape.version !== BACKFILL_RECOVERY_CHECKPOINT_VERSION ||
-        !["jobs", "queue", "revisions"].every((name) => shape[name] === "array")) throw new Error("checkpoint_recovery_shape_invalid");
-    const db = await this.database(); const tx = db.transaction(["captures", "capture_records"], "readwrite");
-    const done = transactionDone(tx); const captures = tx.objectStore("captures");
-    const root = await requestResult(captures.get(rootId));
-    if (root?.kind !== "checkpoint-recovery") { tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_recovery_owner_mismatch"); }
-    let job = null;
-    await visitCursor(tx.objectStore("capture_records").openCursor(globalThis.IDBKeyRange.bound([rootId], [rootId, []], false, true)), (cursor) => {
-      if (cursor.value.record_kind !== "checkpoint:jobs") return;
-      if (job) throw new Error("checkpoint_recovery_job_conflict");
-      job = cursor.value.checkpoint_value;
-    });
-    if (!job || job.cutoff !== root.cutoff || (job.account_scope && job.account_scope !== root.account_scope)) {
-      tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_recovery_intent_mismatch");
-    }
-    captures.put({ ...root, state: "ready", job_id: job.id });
-    await done;
-  }
-
-  async publishCheckpointRecovery(rootId) {
-    const db = await this.database(); const tx = db.transaction(["captures", "capture_records", "jobs", "queue", "revisions"], "readwrite");
-    const done = transactionDone(tx); const captures = tx.objectStore("captures");
-    const root = await requestResult(captures.get(rootId));
-    if (root?.kind !== "checkpoint-recovery" || root.state !== "ready") {
-      tx.abort(); await done.catch(() => undefined); throw new Error("checkpoint_recovery_not_ready");
-    }
-    let restored = 0;
-    await visitCursor(tx.objectStore("capture_records").openCursor(globalThis.IDBKeyRange.bound([rootId], [rootId, []], false, true)), async (cursor) => {
-      const record = cursor.value; const collection = record.record_kind.slice("checkpoint:".length);
-      const value = record.checkpoint_value; const target = tx.objectStore(collection);
-      const current = await requestResult(target.get(value.id));
-      if (current?.provider && current.provider !== root.provider) throw new Error("checkpoint_recovery_provider_conflict");
-      if (collection === "jobs") {
-        if (current && current.account_scope !== root.account_scope) throw new Error("checkpoint_recovery_scope_unresolved");
-        if (canAdvanceRecovery(current, root)) {
-          target.put(recoveredRow(jobRow({ ...recoveryCheckpointJob(value, true), account_scope: root.account_scope, receiver_job_id: root.remote_job_id }), root));
-          restored += 1;
-        }
-      } else if (collection === "queue") {
-        if (value.job_id !== root.job_id) throw new Error("checkpoint_recovery_job_conflict");
-        // Locally acquired custody is stronger than a metadata-only remote
-        // snapshot. Never replace its real body or resume operator work here.
-        const acquired = current && (current.body_ref || current.record_ref || current.raw_acquisition_ref || current.capture_bundle_ref || current.envelope);
-        if (!acquired && canAdvanceRecovery(current, root)) target.put(recoveredRow(queueRow(recoveryRequiredItem(convertAcquisitionRefusal(value))), root));
-      } else if (collection === "revisions") {
-        if (canAdvanceRecovery(current, root)) target.put(recoveredRow(value, root));
-      } else throw new Error("checkpoint_recovery_collection_invalid");
-    });
-    captures.put({ ...root, state: "published" });
-    await done; return { restored, reason: "receiver_authority_reconciled" };
+  async publishImportedCheckpoint({ job, queue, revisions, captures, records }, signal = null) {
+    const db = await this.database();
+    const tx = db.transaction(["jobs", "queue", "revisions", "captures", "capture_records"], "readwrite");
+    const done = transactionDone(tx);
+    const cancel = () => { try { tx.abort(); } catch { /* A completed commit is final. */ } };
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      signal?.throwIfAborted();
+      if (await requestResult(tx.objectStore("jobs").get(job.id))) throw new Error("checkpoint_import_job_exists");
+      tx.objectStore("jobs").add(jobRow(job));
+      for (const row of queue) { signal?.throwIfAborted(); tx.objectStore("queue").add(queueRow(row)); }
+      for (const row of revisions) {
+        signal?.throwIfAborted();
+        if (!await requestResult(tx.objectStore("revisions").get(row.id))) tx.objectStore("revisions").add(row);
+      }
+      for (const row of captures) { signal?.throwIfAborted(); tx.objectStore("captures").add(row); }
+      for (const row of records) { signal?.throwIfAborted(); tx.objectStore("capture_records").add(captureRecordRow(row)); }
+      signal?.throwIfAborted(); await done;
+      return { job_id: job.id, restored: queue.length, status: "paused" };
+    } catch (error) { cancel(); await done.catch(() => undefined); throw error; }
+    finally { signal?.removeEventListener("abort", cancel); }
   }
 
   async *unconvertedBackfillBodies() {

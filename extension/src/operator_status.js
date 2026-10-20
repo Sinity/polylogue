@@ -34,7 +34,7 @@
       code: "receiver_offline",
       label: "Receiver offline",
       tone: "warn",
-      detail: "The paired local receiver is unavailable. Existing local queues and evidence are preserved.",
+      detail: "The native host is unavailable. Existing local queues and evidence are preserved.",
     }),
     provider_warning: Object.freeze({
       code: "provider_warning",
@@ -95,17 +95,6 @@
         state.active_page_state === "supported_no_session"
           ? "No conversation is selected on this provider page. Polylogue remains available and observes conversations automatically."
           : OPERATOR_STATUS.not_conversation.detail,
-      );
-    } else if (state.receiver_pairing?.state === "dev_override_stale" || state.error === "dev_override_stale") {
-      status = withDetail(
-        OPERATOR_STATUS.needs_attention,
-        "This profile is pinned to a deliberate dev receiver that is unreachable. It will not silently fail over -- reset pairing or repoint settings.",
-      );
-      status.tone = "bad";
-    } else if (state.receiver_pairing?.state === "mismatch" || state.error === "receiver_pairing_mismatch") {
-      status = withDetail(
-        OPERATOR_STATUS.needs_attention,
-        "The configured endpoint answered as a different receiver. Reset pairing only after verifying the local receiver.",
       );
     } else if (state.error === "unauthorized") {
       status = withDetail(OPERATOR_STATUS.needs_attention, "The native host could not authenticate the local receiver.");
@@ -179,20 +168,6 @@
     };
 
     const status = operatorStatusForState(state);
-    if (state.receiver_pairing?.state === "dev_override_stale" || state.error === "dev_override_stale") return {
-      status,
-      badge: ["bad", "needs attention"],
-      archive: status.label,
-      headline: "Dev-override receiver unreachable.",
-      detail: status.detail,
-    };
-    if (state.receiver_pairing?.state === "mismatch" || state.error === "receiver_pairing_mismatch") return {
-      status,
-      badge: ["bad", "needs attention"],
-      archive: status.label,
-      headline: "Receiver identity changed.",
-      detail: status.detail,
-    };
     if (state.error === "unauthorized") return {
       status,
       badge: ["bad", "needs attention"],
@@ -201,15 +176,12 @@
       detail: 'Check that the native host and receiver use the same local archive.',
     };
     if (state.online === false) {
-      const lastSeen = state.receiver_pairing?.last_seen_at
-        ? ` Last contact: ${new Date(state.receiver_pairing.last_seen_at).toLocaleString()}.`
-        : "";
       return {
         status,
         badge: ["warn", "receiver offline"],
         archive: status.label,
         headline: "Receiver offline; local work remains intact.",
-        detail: `${status.detail}${lastSeen}`,
+        detail: status.detail,
       };
     }
 
@@ -472,101 +444,17 @@
     };
   }
 
-  function receiverPairingPresentation({ pairing = null, health = null, configuredUrl = "" } = {}) {
-    if (pairing?.state === "dev_override_stale" || health?.status === "dev_override_stale") {
-      return {
-        status: { ...OPERATOR_STATUS.needs_attention, tone: "bad" },
-        headline: "Dev-override receiver unreachable",
-        detail: `${configuredUrl || pairing?.endpoint || "the configured endpoint"} is deliberately pinned and will not auto-recover to the canonical receiver. Reset pairing or point settings back at the canonical endpoint.`,
-      };
-    }
-    if (pairing?.state === "mismatch" || health?.status === "pairing_mismatch") {
-      return {
-        status: { ...OPERATOR_STATUS.needs_attention, tone: "bad" },
-        headline: "Receiver identity changed",
-        detail: "The configured endpoint answered as a different receiver. Verify it before resetting pairing.",
-      };
-    }
-    if (health?.status === "unauthorized") {
-      return {
-        status: { ...OPERATOR_STATUS.needs_attention, tone: "bad" },
-        headline: "Receiver authentication failed",
-        detail: configuredUrl || pairing?.endpoint || "Local receiver",
-      };
-    }
-    if (["unreachable", "offline"].includes(health?.status) || pairing?.state === "offline") {
-      return {
-        status: { ...OPERATOR_STATUS.receiver_offline },
-        headline: pairing?.receiver_id ? `Paired receiver ${pairing.receiver_id}` : "Receiver offline",
-        detail: pairing?.last_seen_at ? `Last seen ${new Date(pairing.last_seen_at).toLocaleString()}` : "No successful contact recorded",
-      };
-    }
-    if (health?.status === "recovered") {
-      return {
-        status: { ...OPERATOR_STATUS.safe_current },
-        headline: "Receiver recovered",
-        detail: `Recovered at ${health.endpoint || configuredUrl}`,
-      };
-    }
-    if (pairing?.receiver_id) {
-      return {
-        status: { ...OPERATOR_STATUS.safe_current },
-        headline: `Paired receiver ${pairing.receiver_id}`,
-        detail: `${pairing.api_schema || "legacy schema"} · ${pairing.endpoint || configuredUrl}`,
-      };
-    }
-    return {
-      status: { ...OPERATOR_STATUS.needs_attention },
-      headline: "Receiver identity unavailable",
-      detail: "This receiver is reachable but does not advertise stable pairing metadata.",
+  function nativeHostPresentation({ health = null } = {}) {
+    if (health?.status === "ok") return {
+      status: { ...OPERATOR_STATUS.safe_current }, headline: "Native host online",
+      detail: health.receiver_status?.api_schema || "The installed host is available.",
+    };
+    return { status: { ...OPERATOR_STATUS.receiver_offline }, headline: "Native host unavailable",
+      detail: health?.detail || "Check the native host installation and Polylogue daemon.",
     };
   }
 
-  // The exception-driven popup surfaces at most one attention item at a
-  // time (polylogue-yyvg.7 AC3). This is a strict typed priority list, not a
-  // free-form aggregation. Every returned kind has a producer and a bounded
-  // resolution contract: auth/pairing mismatch, unknown action outcome,
-  // explicit submit approval, or provider capability mismatch. Ordinary
-  // archive failures and automatic waits remain evidence in diagnostics; they
-  // do not invent a fifth operator state.
-  function computeAttention({
-    conversationState = null,
-    pairing = null,
-    health = null,
-    workItems = [],
-    browserActions = [],
-  } = {}) {
-    if (pairing?.state === "dev_override_stale" || health?.status === "dev_override_stale") {
-      return {
-        kind: "auth_pairing_mismatch",
-        tone: "bad",
-        headline: "Dev-override receiver unreachable",
-        detail: "This profile is deliberately pinned to a non-canonical receiver and will not silently fail over. Reset pairing or repoint settings at the canonical endpoint.",
-        actionId: "reset-pairing",
-        actionLabel: "Reset pairing",
-      };
-    }
-    if (pairing?.state === "mismatch" || health?.status === "pairing_mismatch") {
-      return {
-        kind: "auth_pairing_mismatch",
-        tone: "bad",
-        headline: "Receiver identity changed",
-        detail: "The configured endpoint answered as a different receiver. Verify it, then reset pairing.",
-        actionId: "reset-pairing",
-        actionLabel: "Reset pairing",
-      };
-    }
-    if (health?.status === "unauthorized" || conversationState?.error === "unauthorized") {
-      return {
-        kind: "auth_pairing_mismatch",
-        tone: "bad",
-        headline: "Receiver authentication failed",
-        detail: "Check that the native host and receiver use the same local archive.",
-        actionId: "receiver-url",
-        actionLabel: "Open receiver settings",
-      };
-    }
-
+  function computeAttention({ workItems = [], browserActions = [] } = {}) {
     const unknownAction = (Array.isArray(browserActions) ? browserActions : [])
       .find((action) => action?.status === "outcome_unknown");
     if (unknownAction) {
@@ -634,6 +522,6 @@
     operatorStatusLabel,
     pendingBrowserActionCount,
     providerLabel,
-    receiverPairingPresentation,
+    nativeHostPresentation,
   });
 })(globalThis);

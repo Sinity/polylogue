@@ -1,3 +1,5 @@
+import { File } from "node:buffer";
+import { memoryOriginStorage } from "./infra/capture-staging.js";
 import { JSDOM } from "jsdom";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -52,9 +54,7 @@ function installDom() {
       <span id="receiver"></span>
       <span id="page"></span>
       <span id="archive"></span>
-      <input id="receiver-url" />
       <p id="state-detail"></p>
-      <button id="save"><span class="button-status"></span></button>
       <button id="copy-ref" class="conversation-only"><span class="button-status"></span></button>
       <button id="open-polylogue" class="conversation-only"><span class="button-status"></span></button>
       <button id="debug-toggle"><span class="button-status"></span></button>
@@ -72,12 +72,14 @@ function installDom() {
         <button id="browser-action-decline"><span class="button-status"></span></button>
       </section>
       <span id="receiver-health"></span>
-      <span id="receiver-pairing-status"></span>
-      <span id="receiver-pairing-detail"></span>
-      <button id="reset-pairing"><span class="button-status"></span></button>
+      <span id="native-host-status"></span>
+      <span id="native-host-detail"></span>
       <span id="work-count"></span>
       <div id="work-queue"></div>
       <div id="backfill-controls"></div>
+      <input id="backfill-import" type="file">
+      <button id="cancel-backfill-import" hidden>Cancel</button>
+      <p id="backup-status"></p>
       <span id="queue-count"></span>
       <div id="queue-log"></div>
       <span id="log-count"></span>
@@ -238,32 +240,6 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("archive").textContent).toBe("Catching up");
     expect(globalThis.document.getElementById("operator-state").textContent).toBe("Catching up");
     expect(globalThis.document.getElementById("state-detail").textContent).toContain("catching up");
-  });
-
-  it("renders an unauthorized receiver as a pairing prompt, not a generic offline state", async () => {
-    await loadPopup({
-      polylogueState: {
-        online: false,
-        captured: false,
-        error: "unauthorized",
-        updated_at: new Date().toISOString(),
-      },
-    });
-
-    expect(globalThis.document.getElementById("archive").textContent).toBe("Needs attention");
-    expect(globalThis.document.getElementById("state-detail").textContent).toContain("native host and receiver use the same local archive");
-
-    const attentionSection = globalThis.document.getElementById("attention-section");
-    await vi.waitFor(() => expect(attentionSection.hidden).toBe(false));
-    expect(globalThis.document.getElementById("attention-heading").textContent)
-      .toBe("Receiver authentication failed");
-    const actionButton = globalThis.document.getElementById("attention-action");
-    expect(actionButton.hidden).toBe(false);
-
-    const diagnostics = globalThis.document.getElementById("diagnostics");
-    diagnostics.open = false;
-    actionButton.dispatchEvent(new globalThis.window.Event("click", { bubbles: true }));
-    expect(diagnostics.open).toBe(true);
   });
 
   it("shows no attention item and a zero pending-action count when everything is healthy", async () => {
@@ -593,6 +569,11 @@ describe("popup capture", () => {
   });
 
   it("keeps persisted paused backfills controllable and exportable", async () => {
+    const storage = memoryOriginStorage();
+    const bytes = '{"schema":"polylogue.backfill-export.v2","synthetic":"evidence"}';
+    storage.files.set("abcd.bytes", new TextEncoder().encode(bytes));
+    storage.files.set("abcd.json", new TextEncoder().encode(JSON.stringify({ sha256: "a".repeat(64) })));
+    Object.defineProperty(globalThis.navigator, "storage", { configurable: true, value: storage });
     const messages = [];
     await loadPopup({}, [CHATGPT_TAB], async (message) => {
       messages.push(message);
@@ -604,7 +585,7 @@ describe("popup capture", () => {
         ] },
         ambient: { enabled: true, site_enabled: true }, timeline: [],
       };
-      if (message.type === "polylogue.backfill.export") return { ok: true, ledger: { job: { id: message.job_id } } };
+      if (message.type === "polylogue.backfill.export") return { ok: true, artifact_ref: "abcd", digest: "sha256:" + "a".repeat(64), size_bytes: new TextEncoder().encode(bytes).length, snapshot_id: "snapshot", token: "token" };
       return { ok: true };
     });
     const controls = document.getElementById("backfill-controls");
@@ -619,6 +600,32 @@ describe("popup capture", () => {
     await vi.waitFor(() => expect(messages).toContainEqual({
       type: "polylogue.backfill.export", job_id: "persisted-paused",
     }));
+  });
+
+  it("opens the published reader URL while preserving its authentication fragment", async () => {
+    await loadPopup({}, [CHATGPT_TAB], async message => message.type === "polylogue.readerLocation"
+      ? { ok: true, url: "http://127.0.0.1:41917/auth#synthetic-reader-token" } : { ok: true });
+    document.getElementById("open-polylogue").click();
+    await vi.waitFor(() => expect(chrome.tabs.create).toHaveBeenCalled());
+    const url = new URL(chrome.tabs.create.mock.calls.at(-1)[0].url);
+    expect(url.port).toBe("41917"); expect(url.hash).toBe("#synthetic-reader-token");
+  });
+
+  it("uploads a local backup in ordered chunks and reports the paused import", async () => {
+    const messages = [];
+    await loadPopup({}, [CHATGPT_TAB], async message => {
+      messages.push(message);
+      if (message.type === "polylogue.backfill.import.begin") return { ok: true, import_id: "import" };
+      return { ok: true };
+    });
+    const input = document.getElementById("backfill-import");
+    const bytes = "synthetic backup".repeat(4000);
+    Object.defineProperty(input, "files", { value: [new File([bytes], "backup.json")] });
+    input.dispatchEvent(new globalThis.window.Event("change"));
+    await vi.waitFor(() => expect(messages.some(m => m.type === "polylogue.backfill.import.finish")).toBe(true));
+    const parts = messages.filter(m => m.type === "polylogue.backfill.import.append");
+    expect(parts.map(m => m.sequence)).toEqual([0, 1]);
+    expect(parts.map(m => globalThis.atob(m.base64)).join("")).toBe(bytes);
   });
 
   it("redacts caller supplied idempotency keys from exported support packets", async () => {
@@ -993,27 +1000,6 @@ describe("popup capture", () => {
     expect(globalThis.document.getElementById("queue-log").textContent).toContain("No captures queued for retry.");
   });
 
-  it("saves endpoint settings without a credential", async () => {
-    const sent = [];
-    await loadPopup({}, [CHATGPT_TAB], async message => { sent.push(message); return { ok: true }; });
-    document.getElementById("save").click();
-    await vi.waitFor(() => expect(sent.some(message => message.type === "polylogue.configureReceiver")).toBe(true));
-    const configured = sent.find(message => message.type === "polylogue.configureReceiver");
-    expect(configured).toEqual({ type: "polylogue.configureReceiver", receiverBaseUrl: "http://127.0.0.1:8765" });
-    expect(document.getElementById("receiver-token")).toBeNull();
-    expect(document.getElementById("pairing-code")).toBeNull();
-  });
-
-});
-
-describe("popup DOM/action budget", () => {
-  // AC6 (polylogue-yyvg.7): the healthy compact surface -- everything
-  // outside the collapsed <details id="diagnostics"> -- must stay small and
-  // bounded, not silently regrow toward the old always-visible control
-  // panel. Ceilings carry headroom above the current count (6 controls / 67
-  // nodes) rather than pinning the exact number, so ordinary additions to
-  // the compact surface don't require bumping this test every time; a large
-  // jump means something meant for progressive disclosure landed outside it.
   it("keeps the always-visible surface within a small interactive-control and DOM-node budget", () => {
     const html = readFileSync(join(TEST_DIR, "..", "src", "popup.html"), "utf8");
     const dom = new JSDOM(html);
