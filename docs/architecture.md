@@ -30,6 +30,26 @@ permissions; hook installation refuses managed symlinks.
 writer serializes archive changes; readers use read transactions. Original
 observations and authored values differ from derived indexes. Session reads,
 derivation and exports share one row mapping, including repository and mode.
+The daemon admits at most `Config.workers` client read connections, with one
+separate connection reserved for convergence so waiting clients cannot starve
+the loop. The default `Config.reader_memory_bytes` is 128 MiB for all these
+readers together. Each connection gets an equal share, split between the main
+index and attached archive page caches (rounded down to KiB); both databases
+have mmap disabled. Workers must be positive and the budget must provide at
+least 1 KiB per database per slot. This is SQLite's suggested page-cache target,
+not a hard process memory limit: query work space, statement caches and returned
+values still use memory. It imposes no row or content-size refusal.
+
+A full read pool waits for a released slot; opening connections also count
+against the cap. Open, BEGIN and transaction-completion failures release slots.
+A Reader is thread-affine: acquire, use and drop it within one thread. HTTP
+handlers acquire it inside their blocking application worker, outside async
+network work. Nested readers on the same thread may use spare slots for snapshot comparisons;
+a checkout that would wait while that thread already holds a slot refuses with
+`ReadPoolNested`. Callers reuse or drop their reader before retrying. Closing a
+pool wakes every waiter, refuses checkouts still opening, releases idle
+connections and lets already admitted transactions finish.
+
 Within store, `encoding.rs` owns packed row bodies and block-text separation;
 `text_rows.rs` owns text deduplication, pending search entries and removal.
 Fixtures use the same text-storage path as ingestion.
@@ -66,8 +86,10 @@ backing. The daemon subprocess fixture uses its own configuration directory.
 
 `service::Runtime` owns the convergence and signal workers, the optional
 Sinex publisher and the archive lock. Socket and HTTP servers own their listeners and client work and stop
-before the application runtime. Shutdown wakes signal timers, closes transport
-admission and joins workers before releasing the writer lock. Unfinished
+before the application runtime. Application shutdown first marks request
+admission stopped and closes the client read pool, waking checkouts before
+transport or signal-worker joins. It then stops workers before releasing the
+writer lock. Independent transport shutdown still permits transport restart. Unfinished
 socket input or response writes fail when peers close; already admitted store
 writes finish before the writer joins. Retained writer-sender handles refuse
 new work after shutdown. Shutdown closes the read pool and releases its idle

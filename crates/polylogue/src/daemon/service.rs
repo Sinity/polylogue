@@ -43,6 +43,7 @@ pub(crate) fn error(kind: &str, message: impl ToString) -> Response {
 pub(crate) fn store_error(e: &StoreError) -> Response {
     match e {
         StoreError::Conflict(_) => error("conflict", e),
+        StoreError::ReadPoolClosed => error("daemon_stopping", e),
         StoreError::NotFound(_) => error("not_found", e),
         StoreError::Invalid(_) => error("bad_request", e),
         StoreError::ExcisionFormat { input, format, .. } => Response::Error {
@@ -135,6 +136,9 @@ pub fn handle(request: Request, d: &Daemon) -> Response {
     }
     let reader = match d.reads.reader() {
         Ok(r) => r,
+        Err(StoreError::ReadPoolClosed) => {
+            return error("daemon_stopping", StoreError::ReadPoolClosed);
+        }
         Err(e) => return error("store", e),
     };
     match request {
@@ -512,8 +516,15 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn shutdown(&mut self) -> std::io::Result<()> {
+    /// Wake pending read admissions before joining transports or workers.
+    /// Admitted readers and writes keep their existing completion semantics.
+    pub fn stop_admission(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
+        self.daemon.reads.close();
+    }
+
+    pub fn shutdown(&mut self) -> std::io::Result<()> {
+        self.stop_admission();
         if let Some(stop) = self.signals_stop.take() {
             let _ = stop.send(());
         }
@@ -583,7 +594,11 @@ pub fn start(root: &std::path::Path, config: Config, backing: Backing) -> std::i
     let _ = backing;
     let mut engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
     let writes = engine.writer().map_err(|e| to_io(&e))?;
-    let reads = ReadPool::open(&archive).map_err(|e| to_io(&e))?;
+    let per_reader = paths
+        .reader_memory_per_connection()
+        .map_err(|e| to_io(&e))?;
+    let reads = ReadPool::with_budget(&archive, paths.workers, per_reader * paths.workers as u64)
+        .map_err(|e| to_io(&e))?;
     let (tx, rx) = channel();
     let status = Arc::new(Mutex::new(Pass::default()));
     let daemon = Arc::new(Daemon {

@@ -11,25 +11,41 @@ use polylogue_model::{
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
+use std::thread::ThreadId;
 
 /// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {
     archive: Archive,
     state: Mutex<PoolState>,
+    available: Condvar,
+    max_connections: usize,
+    cache_kib: i64,
+    #[cfg(test)]
+    changed: Condvar,
 }
 
 #[derive(Default)]
 struct PoolState {
     idle: Vec<Connection>,
     closed: bool,
+    /// Includes idle, checked-out and still-opening connections.
+    live: usize,
+    owners: HashMap<ThreadId, usize>,
+    #[cfg(test)]
+    waiters: usize,
 }
 
 /// One consistent read: a read transaction on `index.db` with `archive.db`
-/// attached as `a`. Returned to the pool when dropped.
+/// attached as `a`. Acquire, use and drop it on the same thread. Returned to
+/// the pool when dropped.
 pub struct Reader<'a> {
     pool: &'a ReadPool,
     conn: Option<Connection>,
+    owner: ThreadId,
+    // ThreadId ownership detects self-exhaustion only if live readers stay
+    // on their checkout thread. The marker makes that invariant enforceable.
+    thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
 /// What the loop knows about a path from its last look, for comparing
@@ -72,10 +88,43 @@ pub struct Status {
 }
 
 impl ReadPool {
+    /// Standalone callers use a bounded connection and page-cache allocation.
     pub fn open(archive: &Archive) -> Result<Self> {
+        Self::with_budget(archive, 4, 128 << 20)
+    }
+
+    /// `memory_bytes` is the combined SQLite page-cache target of all pool
+    /// connections, including both index and attached archive. Mmap is disabled
+    /// so mapped pages cannot multiply outside that allocation.
+    /// This is not a process RSS limit: result values and SQLite work space vary.
+    pub fn with_budget(
+        archive: &Archive,
+        max_connections: usize,
+        memory_bytes: u64,
+    ) -> Result<Self> {
+        let divisor = u64::try_from(max_connections)
+            .ok()
+            .and_then(|n| n.checked_mul(2 * 1024))
+            .filter(|n| *n != 0)
+            .ok_or_else(|| {
+                StoreError::Invalid("read pool needs a positive connection limit".into())
+            })?;
+        let cache_kib = i64::try_from(memory_bytes / divisor)
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| {
+                StoreError::Invalid(
+                    "read pool budget needs at least 1 KiB per database per connection".into(),
+                )
+            })?;
         Ok(Self {
             archive: archive.clone(),
             state: Mutex::new(PoolState::default()),
+            available: Condvar::new(),
+            max_connections,
+            cache_kib,
+            #[cfg(test)]
+            changed: Condvar::new(),
         })
     }
 
@@ -83,49 +132,111 @@ impl ReadPool {
         let conn = open_read(&self.archive.index_db())?;
         let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
         conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+        for schema in ["main", "a"] {
+            conn.pragma_update(Some(schema), "cache_size", -self.cache_kib)?;
+            conn.pragma_update(Some(schema), "mmap_size", 0)?;
+        }
         Ok(conn)
     }
 
+    /// Waits for a connection while the pool is full. Reuse the existing Reader
+    /// within a request. Nested checkouts are allowed while capacity remains;
+    /// waiting while this thread already holds a slot refuses to avoid deadlock.
     pub fn reader(&self) -> Result<Reader<'_>> {
+        self.acquire(|| self.connect())
+    }
+
+    fn acquire(&self, connect: impl FnOnce() -> Result<Connection>) -> Result<Reader<'_>> {
+        let owner = std::thread::current().id();
         let idle = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| StoreError::Invalid("read pool lock poisoned".into()))?;
-            if state.closed {
-                return Err(StoreError::ReadPoolClosed);
+            let mut state = self.state.lock().map_err(|_| pool_poisoned())?;
+            loop {
+                if state.closed {
+                    return Err(StoreError::ReadPoolClosed);
+                }
+                if let Some(conn) = state.idle.pop() {
+                    *state.owners.entry(owner).or_default() += 1;
+                    break Some(conn);
+                }
+                if state.live < self.max_connections {
+                    state.live += 1;
+                    *state.owners.entry(owner).or_default() += 1;
+                    break None;
+                }
+                if state.owners.contains_key(&owner) {
+                    return Err(StoreError::ReadPoolNested);
+                }
+                #[cfg(test)]
+                {
+                    state.waiters += 1;
+                    self.changed.notify_all();
+                }
+                state = self.available.wait(state).map_err(|_| pool_poisoned())?;
+                #[cfg(test)]
+                {
+                    state.waiters -= 1;
+                }
             }
-            state.idle.pop()
+        };
+        // Own the reservation before fallible open/BEGIN work. Every failure
+        // releases its slot and wakes a waiter, including a racing close.
+        let mut reader = Reader {
+            pool: self,
+            conn: None,
+            owner,
+            thread_bound: std::marker::PhantomData,
         };
         let conn = match idle {
             Some(conn) => conn,
-            None => self.connect()?,
+            None => connect()?,
         };
         conn.execute_batch("BEGIN")?;
-        Ok(Reader {
-            pool: self,
-            conn: Some(conn),
-        })
+        let state = self.state.lock().map_err(|_| pool_poisoned())?;
+        if state.closed {
+            return Err(StoreError::ReadPoolClosed);
+        }
+        reader.conn = Some(conn);
+        drop(state);
+        Ok(reader)
     }
 
-    /// Refuses new reads and releases idle connections. Readers already admitted
-    /// keep their transaction until dropped; they are not returned to this pool.
+    /// Refuses new reads, wakes waiting checkouts and releases idle connections.
+    /// Readers already admitted keep their transaction until dropped.
     pub fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.closed = true;
+        state.live -= state.idle.len();
         state.idle.clear();
+        self.available.notify_all();
     }
+}
+
+fn pool_poisoned() -> StoreError {
+    StoreError::Invalid("read pool lock poisoned".into())
 }
 
 impl Drop for Reader<'_> {
     fn drop(&mut self) {
-        if let Some(conn) = self.conn.take()
-            && conn.execute_batch("COMMIT").is_ok()
-            && let Ok(mut state) = self.pool.state.lock()
-            && !state.closed
-        {
-            state.idle.push(conn);
+        let conn = self
+            .conn
+            .take()
+            .filter(|conn| conn.execute_batch("COMMIT").is_ok());
+        let mut state = self
+            .pool
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(held) = state.owners.get_mut(&self.owner) {
+            *held -= 1;
+            if *held == 0 {
+                state.owners.remove(&self.owner);
+            }
         }
+        match conn {
+            Some(conn) if !state.closed => state.idle.push(conn),
+            _ => state.live -= 1,
+        }
+        self.pool.available.notify_one();
     }
 }
 

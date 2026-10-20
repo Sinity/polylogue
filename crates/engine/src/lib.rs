@@ -57,6 +57,9 @@ pub struct Config {
     pub tool_dirs: BTreeMap<String, PathBuf>,
     /// Parse workers; defaults to the number of cores.
     pub workers: usize,
+    /// Combined SQLite page-cache target for client and convergence readers.
+    /// Mapped reader pages are disabled. This is not a total RSS limit.
+    pub reader_memory_bytes: u64,
     /// Bytes admitted into the parse pool at once. The pool takes new work
     /// only while the bytes in flight stay under this.
     pub bytes_in_flight: u64,
@@ -73,6 +76,30 @@ pub struct Config {
 }
 
 impl Config {
+    /// One reader slot is reserved for convergence; client reads have `workers`
+    /// slots. All slots share one page-cache target, split again between index
+    /// and archive by the store. Integer division leaves unused bytes.
+    pub fn reader_memory_per_connection(&self) -> polylogue_store::Result<u64> {
+        if self.workers == 0 {
+            return Err(polylogue_store::StoreError::Invalid(
+                "workers must be positive".into(),
+            ));
+        }
+        let slots = u64::try_from(self.workers)
+            .ok()
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| {
+                polylogue_store::StoreError::Invalid("reader slot count overflow".into())
+            })?;
+        let bytes = self.reader_memory_bytes / slots;
+        if bytes < 2 * 1024 {
+            return Err(polylogue_store::StoreError::Invalid(
+                "reader memory budget needs at least 2 KiB per connection".into(),
+            ));
+        }
+        Ok(bytes)
+    }
+
     /// The directory an origin's locations are relative to.
     pub fn root(&self, root: polylogue_sources::origin::Root) -> PathBuf {
         match root.env.and_then(|var| self.tool_dirs.get(var)) {
@@ -130,6 +157,7 @@ impl Config {
                 .unwrap_or_else(|| PathBuf::from("/")),
             tool_dirs,
             workers: std::thread::available_parallelism().map_or(4, |n| n.get()),
+            reader_memory_bytes: 128 << 20,
             bytes_in_flight: 512 << 20,
             machine: read("/etc/machine-id"),
             host: read("/proc/sys/kernel/hostname"),
@@ -335,8 +363,9 @@ impl Engine {
 
     /// Starts the writer on an archive the caller has locked.
     pub fn new(config: Config, archive: Archive) -> Result<Self, EngineError> {
+        let reader_memory = config.reader_memory_per_connection()?;
         let writer = Writer::start(&archive)?;
-        let reads = ReadPool::open(&archive)?;
+        let reads = ReadPool::with_budget(&archive, 1, reader_memory)?;
         let blobs = Arc::new(hashed_blobs::Store::open(
             archive.root.clone(),
             config.blob_roots.clone(),

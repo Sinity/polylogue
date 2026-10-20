@@ -66,7 +66,7 @@ pub fn serve() -> std::io::Result<()> {
             None
         }
     };
-    server.wait()
+    server.wait(|| runtime.stop_admission())
 }
 
 /// Owns socket admission and every accepted client thread.
@@ -74,22 +74,25 @@ pub struct Server {
     stop: Option<Sender<()>>,
     thread: Option<JoinHandle<std::io::Result<()>>>,
     socket: Option<PathBuf>,
+    quiescing: Receiver<()>,
 }
 
 impl Server {
     pub fn start(daemon: Arc<Daemon>) -> std::io::Result<Self> {
         let listener = bind(&daemon)?;
         let (stop, stopped) = channel();
+        let (quiesce, quiescing) = channel();
         let mut server = Self {
             stop: Some(stop),
             thread: None,
             socket: Some(daemon.archive.socket()),
+            quiescing,
         };
         listener.set_nonblocking(true)?;
         server.thread = Some(
             std::thread::Builder::new()
                 .name("polylogue-socket".into())
-                .spawn(move || listen(listener, daemon, stopped))?,
+                .spawn(move || listen(listener, daemon, stopped, quiesce))?,
         );
         Ok(server)
     }
@@ -117,7 +120,9 @@ impl Server {
         result.and(cleanup)
     }
 
-    fn wait(mut self) -> std::io::Result<()> {
+    fn wait(mut self, before_join: impl FnOnce()) -> std::io::Result<()> {
+        let _ = self.quiescing.recv();
+        before_join();
         self.join()
     }
 }
@@ -145,6 +150,7 @@ fn listen(
     listener: UnixListener,
     daemon: Arc<Daemon>,
     stopped: Receiver<()>,
+    quiesce: Sender<()>,
 ) -> std::io::Result<()> {
     let mut clients: Vec<(UnixStream, JoinHandle<()>)> = Vec::new();
     let mut failure = None;
@@ -200,6 +206,7 @@ fn listen(
         }
     }
     drop(listener);
+    let _ = quiesce.send(());
     // Closing peers makes incomplete input and blocked response writes fail
     // explicitly. A request already in handle finishes before its thread joins.
     for (stream, _) in &clients {

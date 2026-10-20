@@ -83,3 +83,64 @@ fn dropping_a_stopped_socket_owner_does_not_remove_the_next_socket() {
     drop(old);
     assert!(UnixStream::connect(first.daemon.archive.socket()).is_ok());
 }
+
+#[test]
+fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::from_env();
+    config.home = dir.path().to_owned();
+    config.tool_dirs.clear();
+    config.workers = 1;
+    let mut runtime = service::start(
+        &dir.path().join("archive"),
+        config,
+        service::Backing::Standalone,
+    )
+    .unwrap();
+    let daemon = Arc::clone(&runtime.daemon);
+    let reader = daemon.reads.reader().unwrap();
+    let mut server = Server::start(Arc::clone(&daemon)).unwrap();
+    let mut stream = UnixStream::connect(daemon.archive.socket()).unwrap();
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&Request::Status).unwrap()
+    )
+    .unwrap();
+    runtime.stop_admission();
+    server.shutdown().unwrap();
+    runtime.shutdown().unwrap();
+    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+}
+
+#[test]
+fn listener_wait_stops_application_admission_before_joining_clients() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::from_env();
+    config.home = dir.path().to_owned();
+    config.tool_dirs.clear();
+    config.workers = 1;
+    let runtime = service::start(
+        &dir.path().join("archive"),
+        config,
+        service::Backing::Standalone,
+    )
+    .unwrap();
+    let daemon = Arc::clone(&runtime.daemon);
+    let reader = daemon.reads.reader().unwrap();
+    let server = Server::start(Arc::clone(&daemon)).unwrap();
+    let mut stream = UnixStream::connect(daemon.archive.socket()).unwrap();
+    writeln!(
+        stream,
+        "{}",
+        serde_json::to_string(&Request::Status).unwrap()
+    )
+    .unwrap();
+    server.stop.as_ref().unwrap().send(()).unwrap();
+    server.wait(|| runtime.stop_admission()).unwrap();
+    assert!(matches!(
+        daemon.reads.reader(),
+        Err(polylogue_store::StoreError::ReadPoolClosed)
+    ));
+    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+}

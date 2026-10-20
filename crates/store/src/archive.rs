@@ -247,8 +247,10 @@ pub fn open_read(path: &Path) -> Result<Connection> {
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_URI,
     )?;
-    conn.pragma_update(None, "cache_size", -65_536)?;
-    conn.pragma_update(None, "mmap_size", 1_i64 << 32)?;
+    // One-off readers use the setup allocation; pools override both databases
+    // from their aggregate budget after attaching archive.db.
+    conn.pragma_update(None, "cache_size", -(cache::SETUP * 1024))?;
+    conn.pragma_update(None, "mmap_size", 0)?;
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
     crate::sql_functions::register(&conn)?;
     Ok(conn)
