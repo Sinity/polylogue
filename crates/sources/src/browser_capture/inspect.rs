@@ -6,6 +6,15 @@ use sha2::{Digest, Sha256};
 
 pub fn inspect(bytes: &[u8]) -> Result<Json, String> {
     let envelope: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if envelope.get("raw_provider_payload").is_some_and(|raw| {
+        unresolved_staging(raw)
+            || (envelope.pointer("/session/provider").and_then(Json::as_str) == Some("grok")
+                && ["conversation", "responses", "response_nodes"]
+                    .iter()
+                    .any(|key| raw.get(key).is_some_and(unresolved_staging)))
+    }) {
+        return Err("unresolved_staged_raw_json".into());
+    }
     let step = run_document(&Capture, bytes).map_err(|e| e.to_string())?;
     if step.output.sessions.len() != 1 {
         return Err("capture must contain one usable session".into());
@@ -78,4 +87,10 @@ pub fn inspect(bytes: &[u8]) -> Result<Json, String> {
         "session_kind": if envelope.pointer("/raw_provider_payload/is_temporary").and_then(Json::as_bool).unwrap_or(false) || envelope.pointer("/raw_provider_payload/conversation/temporary").and_then(Json::as_bool).unwrap_or(false) {"temporary"} else {"main"},
         "needs_follow_up":false,
     }, "attachments":attachments}))
+}
+
+fn unresolved_staging(value: &Json) -> bool {
+    value.as_object().is_some_and(|fields| {
+        fields.len() == 1 && fields.get("staged_raw_json").is_some_and(Json::is_string)
+    })
 }

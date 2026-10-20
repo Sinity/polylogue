@@ -29,12 +29,16 @@ pub const LOCATIONS: &[&str] = &["polylogue/browser-capture/*/*.json"];
 
 const KIND_KEY: &str = "polylogue_capture_kind";
 
-/// A capture starts `{"polylogue_capture_kind"`, or `{"capture_id"` when
-/// the extension wrote its keys sorted.
+/// Recognizes ordered and streamed envelopes, including schema-first native
+/// captures, without treating an unrelated schema-versioned JSON file as one.
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     path.extension().is_some_and(|e| e == "json")
         && first_byte(head) == Some(b'{')
-        && matches!(first_key(head), Some(KIND_KEY | "capture_id"))
+        && (matches!(first_key(head), Some(KIND_KEY | "capture_id"))
+            || (first_key(head) == Some("schema_version")
+                && head
+                    .windows(b"\"polylogue_capture_kind\"".len())
+                    .any(|part| part == b"\"polylogue_capture_kind\"")))
 }
 
 pub fn open(path: &Path) -> Option<Parse> {

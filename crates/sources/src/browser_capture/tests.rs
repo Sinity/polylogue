@@ -179,3 +179,46 @@ fn claude_inline_media_is_linked_to_retained_bytes_and_reported_as_inline() {
     );
     assert_eq!(inspected["attachments"][1]["name"], "notes.txt");
 }
+
+#[test]
+fn inspection_refuses_local_raw_refs_but_accepts_empty_provider_conversations() {
+    let session = json!({"provider":"grok", "provider_session_id":"g1"});
+    let refs = capture(
+        json!({"conversation":{"staged_raw_json":"local-conversation"}, "responses":{"staged_raw_json":"local-responses"}}),
+        session.clone(),
+    );
+    assert_eq!(
+        inspect::inspect(&refs).unwrap_err(),
+        "unresolved_staged_raw_json"
+    );
+    let empty = capture(
+        json!({"conversation":{"conversationId":"g1"}, "responses":{"responses":[]}}),
+        session,
+    );
+    assert_eq!(
+        inspect::inspect(&empty).unwrap()["summary"]["turn_count"],
+        0
+    );
+}
+
+#[test]
+fn streamed_native_envelopes_are_recognized_with_schema_version_first() {
+    let bytes = br#"{"schema_version":1,"polylogue_capture_kind":"browser_llm_session","session":{"provider":"grok","provider_session_id":"g1","turns":[]}}"#;
+    assert!(recognize(Path::new("capture.json"), &bytes[..64]));
+    assert!(!recognize(
+        Path::new("other.json"),
+        br#"{"schema_version":1,"unrelated":true}"#
+    ));
+}
+
+#[test]
+fn inspection_preserves_literal_staging_names_inside_provider_data() {
+    let bytes = capture(
+        json!({"conversation":{"conversationId":"g1", "metadata":{"staged_raw_json":"provider-literal"}}, "responses":{"responses":[]}}),
+        json!({"provider":"grok","provider_session_id":"g1"}),
+    );
+    assert_eq!(
+        inspect::inspect(&bytes).unwrap()["summary"]["turn_count"],
+        0
+    );
+}
