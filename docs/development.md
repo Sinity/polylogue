@@ -3,18 +3,23 @@
 Checks run on the development machine; there is no hosted CI. Run commands
 inside `nix develop`.
 
+The shell uses Cargo's incremental builds directly. A persistent compiler
+cache daemon must have its own lifecycle owner before it is enabled: a daemon
+started inside a queued job keeps that job occupied after the command exits.
+
 | Check | Command | When | Typical time |
 | --- | --- | --- | --- |
-| Focused tests | `cargo test -p <crate> <filter>` | while editing | seconds |
-| Fast check | `cargo run -p xtask -- fast` | every push (pre-push hook) | 2-16 s warm, 35 s cold |
-| Full suite | `cargo run -p xtask -- check` | a batch of merged work | 30 s warm, 2-3 min after an edit, 9 min cold |
+| Focused tests | `agentctl job start polylogue exec --workspace <worktree> -- cargo nextest run -p <crate> <filter>` | while editing | seconds |
+| Fast check | `agentctl job start polylogue exec --workspace <worktree> -- cargo run -p xtask -- fast` | before pushing a change | 2-16 s warm, minutes in a fresh worktree |
+| Full suite | `agentctl job start polylogue check --workspace <worktree>` | a batch of merged work | 30 s warm, 2-3 min after an edit, 9 min cold |
 | Changed packages | `cargo run -p xtask -- test --changed` | before pushing a focused change | depends on the change |
 | End-to-end scenarios | `cargo run -p xtask -- scenarios` | after daemon, CLI or MCP changes | about a minute warm |
 | Package build | `nix flake check` | after dependency or packaging changes | about 2.5 min |
 
 - **Fast check:** formatting, crate boundaries (`xtask boundaries`) and
   clippy of every target, tests included, with warnings denied. The pre-push
-  hook runs it, so a lint cannot land.
+  hook runs only its formatting and boundaries steps; clippy runs in the
+  AgentCTL job so it queues with the rest of the machine's work.
 - **Full suite:** formatting, boundaries, clippy and `cargo nextest run --workspace`
   (configuration in `.config/nextest.toml`). Each test runs in its own
   process, all binaries in parallel; a test still running after two minutes
@@ -76,8 +81,8 @@ TimescaleDB and `nats-server`:
 nix develop <sinex> --command cargo nextest run -p polylogue-sinex --run-ignored all`.
 
 The pre-push hook is `.githooks/pre-push`; enable it with
-`git config core.hooksPath .githooks`. It skips pushes that change no Rust
-build inputs.
+`git config core.hooksPath .githooks`. It checks formatting and crate
+boundaries, and skips pushes that change no Rust build inputs.
 
 ## AgentCTL operations
 
@@ -88,7 +93,22 @@ agentctl job start polylogue check --workspace <worktree>      # full suite
 agentctl job start polylogue scenarios --workspace <worktree>  # end-to-end tests
 agentctl job start polylogue package --workspace <worktree>    # nix flake check
 agentctl job start polylogue exec --workspace <worktree> -- cargo test -p polylogue-store
+agentctl job start polylogue bench --workspace <worktree> -- run
 ```
+
+The benchmark runs its builds and measurements inside that job. It does not
+use a separate build-slot script or queue nested jobs. The real-data lock
+still prevents overlapping corpus benchmarks.
+
+## Keeping checks fast
+
+Use the recorded stages to distinguish compilation, service setup and test
+execution. A cold build is not a warm-suite timing. If the suite slows down,
+inspect its slowest tests and CPU, memory and I/O waits; check for orphaned
+services and repeated fixture setup before increasing limits. Keep assertions
+and populations unchanged while diagnosing. Record the candidate, command,
+stage times and remaining failures in the owning Bead. Recheck after changes
+to the runner, fixtures or dependency profiles, and at integration batches.
 
 ## Merging
 

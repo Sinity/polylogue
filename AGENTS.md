@@ -30,15 +30,20 @@ is kept for reference; the rewrite uses its own archive.
 
 Optimize for fast integration. See `docs/development.md`.
 
-- Run focused tests for the change while editing.
-- The pre-push hook runs the fast check, `cargo run -p xtask -- fast`
-  (seconds). There is no hosted CI and no required check; open a PR and merge
-  it when it is ready.
+- Every cargo build or test runs as an AgentCTL job, which queues it against
+  the rest of the machine's work: `agentctl job start polylogue check
+  --workspace <worktree>`, or `exec -- <command>` for focused tests.
+- The pre-push hook checks formatting and crate boundaries only (seconds).
+  There is no hosted CI and no required check; open a PR and merge it when it
+  is ready.
 - Run the full suite (AgentCTL operation `check`) on batches of merged work,
   not before every merge. Fix what it finds afterwards.
 - Merge small PRs often. Rebase before pushing; do not keep long-lived
   branches.
 - Report what you ran and what you did not. A merge is not evidence of testing.
+- Keep the loop fast: compare build, setup and test times separately. When a
+  run slows down, inspect its slow tests, resource waits and cleanup before
+  increasing timeouts or reducing coverage. Record measurements in Beads.
 
 ## Code
 

@@ -41,14 +41,26 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
     let got = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())? + "\n";
     let expected_path = dir.join("expected.json");
     let bless = std::env::var_os("POLYLOGUE_BLESS").is_some();
-    match fs::read_to_string(&expected_path) {
-        Ok(expected) if !bless => {
+    compare_expected(&expected_path, &value, &got, bless)
+}
+
+fn compare_expected(
+    expected_path: &Path,
+    value: &serde_json::Value,
+    got: &str,
+    bless: bool,
+) -> Result<(), String> {
+    if bless {
+        return fs::write(expected_path, got).map_err(|e| e.to_string());
+    }
+    match fs::read_to_string(expected_path) {
+        Ok(expected) => {
             // Compared as values: a workspace build can turn on serde_json's
             // preserve_order (through the Sinex crates), which changes key
             // order but not content.
             let expected: serde_json::Value =
                 serde_json::from_str(&expected).map_err(|e| e.to_string())?;
-            if expected == value {
+            if &expected == value {
                 Ok(())
             } else {
                 Err(format!(
@@ -57,8 +69,29 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
                 ))
             }
         }
-        _ => fs::write(&expected_path, got).map_err(|e| e.to_string()),
+        Err(error) => Err(format!("read {}: {error}", expected_path.display())),
     }
+}
+
+#[test]
+fn missing_expectation_fails_without_creating_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let expected = dir.path().join("expected.json");
+    let value = serde_json::json!({"output": []});
+    assert!(compare_expected(&expected, &value, "{}\n", false).is_err());
+    assert!(!expected.exists());
+}
+
+#[test]
+fn invalid_expectation_is_preserved_until_explicit_update() {
+    let dir = tempfile::tempdir().unwrap();
+    let expected = dir.path().join("expected.json");
+    fs::write(&expected, "invalid JSON").unwrap();
+    let value = serde_json::json!({});
+    assert!(compare_expected(&expected, &value, "{}\n", false).is_err());
+    assert_eq!(fs::read_to_string(&expected).unwrap(), "invalid JSON");
+    compare_expected(&expected, &value, "{}\n", true).unwrap();
+    compare_expected(&expected, &value, "{}\n", false).unwrap();
 }
 
 #[test]
