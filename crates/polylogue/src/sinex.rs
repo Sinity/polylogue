@@ -9,20 +9,75 @@
 use polylogue_engine::Config;
 use polylogue_sinex::{Config as SinexConfig, Mode, Sinex};
 use polylogue_store::Archive;
+use std::thread::JoinHandle;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 /// How often the publisher asks Sinex what it holds and sends the rest.
 const PUBLISH_EVERY: Duration = Duration::from_secs(60);
 
-pub fn start(archive: &Archive, config: &mut Config) -> std::io::Result<()> {
+/// Owns the optional publisher and its connection. A stop drops the current
+/// async pass; frames without a committed acknowledgment remain unknown and
+/// are checked through `have` on the next pass, using their stable frame keys.
+pub struct Publisher {
+    stop: Option<oneshot::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Publisher {
+    fn spawn(
+        runtime: tokio::runtime::Runtime,
+        work: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let (stop, stopped) = oneshot::channel();
+        let thread = std::thread::Builder::new()
+            .name("polylogue-sinex".into())
+            .spawn(move || {
+                runtime.block_on(async move {
+                    tokio::select! {
+                        biased;
+                        _ = stopped => eprintln!(
+                            "polylogue: Sinex publisher stopped; unacknowledged frames will be checked on restart"
+                        ),
+                        _ = work => {},
+                    }
+                });
+            })?;
+        Ok(Self {
+            stop: Some(stop),
+            thread: Some(thread),
+        })
+    }
+
+    pub fn shutdown(&mut self) -> std::io::Result<()> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        self.thread.take().map_or(Ok(()), |thread| {
+            thread
+                .join()
+                .map_err(|_| std::io::Error::other("Sinex publisher panicked"))
+        })
+    }
+}
+
+impl Drop for Publisher {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown() {
+            eprintln!("polylogue: Sinex shutdown: {error}");
+        }
+    }
+}
+
+pub fn start(archive: &Archive, config: &mut Config) -> std::io::Result<Option<Publisher>> {
     let sinex = match SinexConfig::load() {
         Ok(Some(c)) if c.mode == Mode::Primary => c,
-        Ok(_) => return Ok(()),
+        Ok(_) => return Ok(None),
         Err(e) => {
             // A broken file never switches the mode silently: publishing
             // waits until it parses (`status` shows the error).
             eprintln!("polylogue: Sinex publishing paused: {e}");
-            return Ok(());
+            return Ok(None);
         }
     };
     config.blob_roots.push(sinex.store.clone());
@@ -47,27 +102,26 @@ pub fn start(archive: &Archive, config: &mut Config) -> std::io::Result<()> {
         }
     }
     let root = archive.root.clone();
-    std::thread::Builder::new()
-        .name("polylogue-sinex".into())
-        .spawn(move || {
-            runtime.block_on(async {
-                let mut connected: Option<Sinex> = None;
-                loop {
-                    if connected.is_none() {
-                        match Sinex::connect(&sinex).await {
-                            Ok(s) => connected = Some(s),
-                            Err(e) => eprintln!("polylogue: Sinex: {e}"),
-                        }
-                    }
-                    if let Some(s) = connected.as_mut()
-                        && let Err(e) = s.publish(&root).await
-                    {
-                        eprintln!("polylogue: publishing to Sinex: {e}");
-                        connected = None;
-                    }
-                    tokio::time::sleep(PUBLISH_EVERY).await;
+    Publisher::spawn(runtime, async move {
+        let mut connected: Option<Sinex> = None;
+        loop {
+            if connected.is_none() {
+                match Sinex::connect(&sinex).await {
+                    Ok(s) => connected = Some(s),
+                    Err(e) => eprintln!("polylogue: Sinex: {e}"),
                 }
-            });
-        })?;
-    Ok(())
+            }
+            if let Some(s) = connected.as_mut()
+                && let Err(e) = s.publish(&root).await
+            {
+                eprintln!("polylogue: publishing to Sinex: {e}");
+                connected = None;
+            }
+            tokio::time::sleep(PUBLISH_EVERY).await;
+        }
+    })
+    .map(Some)
 }
+
+#[cfg(test)]
+mod tests;
