@@ -600,7 +600,13 @@ impl Ctx<'_, '_> {
             1
         };
         let text_id = match block_text(block) {
-            Some(t) => Some(self.intern(t, bit)?),
+            Some(t) => Some(crate::text_rows::intern(
+                self.tx,
+                t,
+                bit,
+                Some(self.packed),
+                self.bulk,
+            )?),
             None => None,
         };
         let (kind, call_id, attachment) = match block {
@@ -745,49 +751,6 @@ impl Ctx<'_, '_> {
                 .execute(params![pk, result_pk, outcome, reason, exit])?;
         }
         Ok(())
-    }
-
-    /// The text row for `body`, stored once per distinct content, and its
-    /// entry in the search index `bit` names (1 prose, 2 tool output).
-    fn intern(&self, body: &str, bit: i64) -> Result<i64> {
-        let hash = blake3::hash(body.as_bytes());
-        let found: Option<(i64, i64)> = self
-            .tx
-            .prepare_cached("SELECT id, indexed FROM text WHERE hash = ?1")?
-            .query_row([&hash.as_bytes()[..]], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()?;
-        let (id, indexed) = match found {
-            Some(f) => f,
-            None => {
-                let packed = match self.packed.get(hash.as_bytes()) {
-                    Some(p) => std::borrow::Cow::Borrowed(p.as_slice()),
-                    None => pack_text(body)?.into(),
-                };
-                // A first build marks the text for its search index now and
-                // writes the entry when the build ends.
-                let claimed = if self.bulk { bit } else { 0 };
-                self.tx
-                    .prepare_cached("INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, ?3)")?
-                    .execute(params![&hash.as_bytes()[..], &*packed, claimed])?;
-                (self.tx.last_insert_rowid(), claimed)
-            }
-        };
-        // `indexed` marks a text for its search index; the entry itself is
-        // written after this transaction commits: by the search thread, or by
-        // a first build in bulk when it ends.
-        if indexed & bit == 0 {
-            if !self.bulk {
-                self.tx
-                    .prepare_cached(
-                        "INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (?1, ?2)",
-                    )?
-                    .execute(params![id, bit])?;
-            }
-            self.tx
-                .prepare_cached("UPDATE text SET indexed = indexed | ?2 WHERE id = ?1")?
-                .execute(params![id, bit])?;
-        }
-        Ok(id)
     }
 
     /// `packed` is the event's id and stored payload ([`pack_event`]).

@@ -149,7 +149,7 @@ pub(super) fn clear_for_reparse(
             )
             .optional()?;
         if let Some(indexed) = row {
-            remove_text(i, tid, indexed)?;
+            crate::text_rows::remove(i, tid, indexed)?;
         }
     }
     Ok(inputs.into_iter().map(|(_, id)| id).collect())
@@ -387,7 +387,7 @@ pub(super) fn delete_session(
             )
             .optional()?;
         if let Some((hash, indexed)) = row {
-            remove_text(i, tid, indexed)?;
+            crate::text_rows::remove(i, tid, indexed)?;
             removed_texts.insert(hash);
         }
     }
@@ -473,18 +473,6 @@ pub(super) fn clear_session(
     i.execute("DELETE FROM message WHERE session_pk = ?1", [pk])?;
     i.execute("DELETE FROM session WHERE pk = ?1", [pk])?;
     Ok((text_ids, blobs))
-}
-
-pub(super) fn remove_text(i: &Transaction<'_>, id: i64, indexed: i64) -> Result<()> {
-    if indexed & 1 != 0 {
-        i.execute("DELETE FROM text_fts WHERE rowid = ?1", [id])?;
-    }
-    if indexed & 2 != 0 {
-        i.execute("DELETE FROM output_fts WHERE rowid = ?1", [id])?;
-    }
-    i.execute("DELETE FROM search_pending WHERE text_id = ?1", [id])?;
-    i.execute("DELETE FROM text WHERE id = ?1", [id])?;
-    Ok(())
 }
 
 /// Ordinary tables in `index.db` and their column names.

@@ -78,7 +78,7 @@ pub(super) fn search_thread(
             }
         }
         if let Some(c) = &conn
-            && let Err(e) = write_pending_search(c, SEARCH_BATCH)
+            && let Err(e) = crate::text_rows::index_pending(c, SEARCH_BATCH)
         {
             eprintln!("polylogue: search thread: {e}");
         }
@@ -87,43 +87,3 @@ pub(super) fn search_thread(
 
 /// Search entries written per transaction by the search thread.
 pub(super) const SEARCH_BATCH: i64 = 2_000;
-
-/// Writes waiting search entries, at most `limit` per transaction, until
-/// none wait; returns how many it wrote.
-pub(super) fn write_pending_search(conn: &Connection, limit: i64) -> Result<u64> {
-    let mut written = 0;
-    loop {
-        // Immediate: it writes, and a deferred transaction that has read
-        // cannot wait for the writer's lock to upgrade.
-        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-        let rows: Vec<(i64, i64, Vec<u8>)> = tx
-            .prepare_cached(
-                "SELECT p.text_id, p.fts_table, t.body FROM search_pending p JOIN text t ON t.id = p.text_id
-                 ORDER BY p.text_id, p.fts_table LIMIT ?1",
-            )?
-            .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        if rows.is_empty() {
-            // Entries whose text was removed meanwhile (excision) are dropped.
-            tx.execute(
-                "DELETE FROM search_pending WHERE text_id NOT IN (SELECT id FROM text)",
-                [],
-            )?;
-            tx.commit()?;
-            return Ok(written);
-        }
-        for (id, bit, packed) in &rows {
-            let folded = polylogue_model::text::fold(&unpack_text(packed)?);
-            let sql = if *bit == 1 {
-                "INSERT INTO text_fts(rowid, body) VALUES (?1, ?2)"
-            } else {
-                "INSERT INTO output_fts(rowid, body) VALUES (?1, ?2)"
-            };
-            tx.prepare_cached(sql)?.execute(params![id, folded])?;
-            tx.prepare_cached("DELETE FROM search_pending WHERE text_id = ?1 AND fts_table = ?2")?
-                .execute(params![id, bit])?;
-        }
-        written += rows.len() as u64;
-        tx.commit()?;
-    }
-}

@@ -22,6 +22,9 @@ available.
 writer serializes archive changes; readers use read transactions. Original
 observations and authored values differ from derived indexes. Session reads,
 derivation and exports share one row mapping, including repository and mode.
+Within store, `encoding.rs` owns packed row bodies and block-text separation;
+`text_rows.rs` owns text deduplication, pending search entries and removal.
+Fixtures use the same text-storage path as ingestion.
 
 `polylogue-query` binds the query language and compiles parameterized SQL.
 `daemon/query.rs` executes it through a store reader, computes the final answer
