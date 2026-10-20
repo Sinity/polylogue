@@ -3,15 +3,16 @@
 //! branch (0). A session whose source names no leaf keeps NULL: unknown,
 //! read as on the path.
 
-use super::Derivation;
+use super::{Derivation, Version};
 use crate::Result;
 use rusqlite::Transaction;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "active_path",
-    version: 1,
+    version: Version::Rules(1),
     after: &[],
-    run,
+    run: |tx, pk, _| run(tx, pk),
+    finish: None,
 };
 
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {

@@ -4,16 +4,17 @@
 //! `repo_root` comes from that lookup; its `repo` too, unless a record of
 //! its own named the repository (`record_repo`).
 
-use super::Derivation;
+use super::{Derivation, Version};
 use crate::Result;
 use rusqlite::{OptionalExtension, Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "repository",
-    version: 1,
+    version: Version::Rules(1),
     // Reads the session's working directory and recorded repository.
     after: &["session"],
-    run,
+    run: |tx, pk, _| run(tx, pk),
+    finish: None,
 };
 
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {

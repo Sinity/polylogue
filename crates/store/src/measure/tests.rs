@@ -80,6 +80,7 @@ fn model_message(f: &mut Fixture, s: i64, id: &str, model: &str, at: i64, u: &Us
         )
         .unwrap();
     f.usage(pk, u, None).unwrap();
+    f.derive().unwrap();
     pk
 }
 
@@ -178,6 +179,7 @@ fn law_70_unpriced_models_and_credits() {
         &tokens(5, 0, None, 5),
     );
     f.usage(pk, &tokens(5, 0, None, 5), Some(credits)).unwrap();
+    f.derive().unwrap();
     model_message(
         &mut f,
         mixed,
@@ -301,6 +303,7 @@ fn outlook_reads_reported_windows_and_projects_exhaustion() {
         );
         let q = reading("codex", 300, false, Some(pct), reset, None);
         f.usage(pk, &tokens(10, 0, None, 10), Some(q)).unwrap();
+        f.derive().unwrap();
     }
     let claude = session(&mut f, "claude-code:s");
     let rejected = reading(
@@ -321,6 +324,7 @@ fn outlook_reads_reported_windows_and_projects_exhaustion() {
     );
     f.usage(pk, &tokens(1, 0, Some(0), 1), Some(rejected))
         .unwrap();
+    f.derive().unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
     let o = quota::quota(&r, T0 + 3_600_000 + 1, KNOWN).unwrap();

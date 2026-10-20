@@ -2,15 +2,16 @@
 //! a call without a result earns once its session moved on. The call's
 //! action comes from its origin's parser.
 
-use super::Derivation;
+use super::{Derivation, Version};
 use crate::Result;
 use rusqlite::{Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "tool_calls",
-    version: 2,
+    version: Version::Rules(2),
     after: &[],
-    run,
+    run: |tx, pk, _| run(tx, pk),
+    finish: None,
 };
 
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {

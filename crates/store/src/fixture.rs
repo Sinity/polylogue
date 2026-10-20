@@ -84,7 +84,7 @@ impl Fixture {
         })
     }
 
-    /// Runs the work graph's derive step over the rows written so far.
+    /// Runs all derivations over the raw rows written so far.
     pub fn derive(&mut self) -> Result<u64> {
         crate::derive::run(&mut self.index)
     }
@@ -329,25 +329,21 @@ impl Fixture {
         Ok(())
     }
 
-    /// A model message's token counts, priced by the build's catalog the way
-    /// the writer prices them, and the quota state the tool sent with it.
+    /// Stores raw token counts and quota. Call `derive` before reading catalog
+    /// costs; direct `MessageFacts` costs remain useful for read-only fixtures.
     pub fn usage(
         &mut self,
         message_pk: i64,
         usage: &polylogue_model::Usage,
         quota: Option<serde_json::Value>,
     ) -> Result<()> {
-        let model: Option<String> = self.index.query_row(
-            "SELECT model FROM message WHERE pk = ?1",
-            [message_pk],
-            |r| r.get(0),
-        )?;
-        let cost = polylogue_model::Catalog::builtin().cost_nusd(model.as_deref(), usage);
         let n = |x: Option<u64>| x.map(|x| x as i64);
         let attrs = quota.map(|q| serde_json::json!({"production": {"quota": q}}).to_string());
         self.index.execute(
             "UPDATE message SET input_tokens = ?2, cache_read_tokens = ?3, cache_write_tokens = ?4,
-                 output_tokens = ?5, reasoning_tokens = ?6, cost_nusd = ?7, attrs_json = ?8
+                 output_tokens = ?5, reasoning_tokens = ?6, attrs_json = ?7,
+                 cache_write_5m_tokens = ?8, cache_write_1h_tokens = ?9,
+                 service_tier = ?10, speed = ?11
              WHERE pk = ?1",
             params![
                 message_pk,
@@ -356,9 +352,20 @@ impl Fixture {
                 n(usage.cache_write),
                 n(usage.output),
                 n(usage.reasoning),
-                cost,
-                attrs
+                attrs,
+                usage
+                    .cache_write_1h
+                    .and(usage.cache_write)
+                    .map(|w| w.saturating_sub(usage.cache_write_1h.unwrap_or(0)) as i64),
+                n(usage.cache_write_1h),
+                usage.service_tier,
+                usage.speed,
             ],
+        )?;
+        self.index.execute(
+            "UPDATE session SET changed = changed + 1
+             WHERE pk = (SELECT session_pk FROM message WHERE pk = ?1)",
+            [message_pk],
         )?;
         Ok(())
     }

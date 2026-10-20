@@ -26,6 +26,13 @@ Within store, `encoding.rs` owns packed row bodies and block-text separation;
 `text_rows.rs` owns text deduplication, pending search entries and removal.
 Fixtures use the same text-storage path as ingestion.
 
+`store/derive.rs` orders session derivations and records the source-change counter
+and rule version for each. Message costs use the same path, with the complete
+catalog digest and its published label in their version. Changing prices does
+not invalidate unrelated derivations. The work graph and its orphan cleanup
+live under `derive/work.rs`. Provider-reported costs remain recorded facts.
+The index schema version and SQL digest are pinned together in a test.
+
 `polylogue-query` binds the query language and compiles parameterized SQL.
 `daemon/query.rs` executes it through a store reader, computes the final answer
 count and prepares pages. Recall uses this path too. Saved-query and kept-result
