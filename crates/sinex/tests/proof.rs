@@ -123,18 +123,19 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
         .unwrap();
     }
     let _daemon = Daemon(
-        Command::new(&sinexd)
-            .arg("run")
-            .args(["--database", &url])
-            .arg("--store")
-            .arg(&store)
-            .args(["--nats", nats.url(), "--subjects", "proof"])
-            .arg("--tokens")
-            .arg(&tokens)
-            .arg("--socket")
-            .arg(dir.path().join("sinexd.sock"))
-            .spawn()
-            .unwrap(),
+        polylogue_testkit::spawn_daemon(
+            Command::new(&sinexd)
+                .arg("run")
+                .args(["--database", &url])
+                .arg("--store")
+                .arg(&store)
+                .args(["--nats", nats.url(), "--subjects", "proof"])
+                .arg("--tokens")
+                .arg(&tokens)
+                .arg("--socket")
+                .arg(dir.path().join("sinexd.sock")),
+        )
+        .unwrap(),
     );
     let client = async_nats::connect(nats.url()).await.unwrap();
     let js = jetstream::new(client);

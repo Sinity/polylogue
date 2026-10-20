@@ -232,6 +232,7 @@ impl WriterWorld {
                 start,
                 parsed_upto: self.offset,
                 parser_version: 1,
+                at_end: true,
                 hashes: vec![],
                 packed: Default::default(),
                 bodies: vec![],

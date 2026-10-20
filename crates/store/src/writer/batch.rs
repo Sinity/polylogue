@@ -37,6 +37,8 @@ pub struct ParseStep {
     /// Offset after the last complete record parsed.
     pub parsed_upto: u64,
     pub parser_version: u32,
+    /// The parse observed source EOF; an unconsumed suffix waits for growth.
+    pub at_end: bool,
     /// BLAKE3 of each message's canonical JSON, in `output.messages` order,
     /// computed on the parse pool ([`ParseStep::hash_messages`]). Empty
     /// means the writer computes them.

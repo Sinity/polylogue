@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn read_access_does_not_wake_collection_but_changes_and_unknown_events_do() {
+    use notify::EventKind;
+    use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
+    for kind in [
+        AccessKind::Read,
+        AccessKind::Open(AccessMode::Any),
+        AccessKind::Open(AccessMode::Read),
+        AccessKind::Open(AccessMode::Write),
+        AccessKind::Close(AccessMode::Read),
+    ] {
+        assert!(!requires_scan(&notify::Event::new(EventKind::Access(kind))));
+    }
+    for kind in [
+        EventKind::Create(CreateKind::File),
+        EventKind::Modify(ModifyKind::Any),
+        EventKind::Remove(RemoveKind::File),
+        EventKind::Access(AccessKind::Close(AccessMode::Write)),
+        EventKind::Access(AccessKind::Close(AccessMode::Any)),
+        EventKind::Any,
+        EventKind::Other,
+    ] {
+        assert!(requires_scan(&notify::Event::new(kind)));
+    }
+}
+
+#[test]
 fn a_path_ends_in_a_layout() {
     let grok = Path::new("/x/.grok/sessions/%2Fhome/01a0/chat_history.jsonl");
     assert!(ends_in(grok, ".grok/sessions/*/*/chat_history.jsonl"));

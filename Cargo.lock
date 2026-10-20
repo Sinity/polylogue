@@ -2602,6 +2602,7 @@ dependencies = [
  "polylogue-engine",
  "polylogue-model",
  "polylogue-store",
+ "polylogue-testkit",
  "serde",
  "serde_json",
  "sinex-model",
@@ -2647,6 +2648,7 @@ name = "polylogue-testkit"
 version = "0.1.0"
 dependencies = [
  "hashed-blobs",
+ "libc",
  "polylogue-engine",
  "polylogue-model",
  "polylogue-store",

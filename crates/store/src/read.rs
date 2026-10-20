@@ -66,6 +66,8 @@ pub struct KnownInput {
     /// parser version that parsed it.
     pub parsed_upto: u64,
     pub parser_version: Option<u32>,
+    /// A successful parse reached source EOF with only an incomplete suffix.
+    pub waiting: bool,
 }
 
 /// Totals for `status`. Unknown is never shown as zero: a count that could
@@ -79,7 +81,7 @@ pub struct Status {
     pub revisions: u64,
     /// Bytes of input content stored (uncompressed).
     pub stored_bytes: u64,
-    /// Input chains by parse status (`done`, `parsing`).
+    /// Input chains by parse status (`done`, `parsing`, `waiting` for growth).
     pub parse_states: BTreeMap<String, u64>,
     /// The most frequent record kinds and fields parsers did not read.
     pub unrecognized: Vec<(String, u64)>,
@@ -684,22 +686,30 @@ impl Reader<'_> {
                 stored: length.unwrap_or(0) as u64,
                 parsed_upto: 0,
                 parser_version: None,
+                waiting: false,
             });
         }
         let mut stmt = self.conn().prepare_cached(
-            "SELECT p.parsed_upto, p.parser_version FROM parse_state p
+            "SELECT p.parsed_upto, p.parser_version, p.status, p.detail FROM parse_state p
              JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1 AND p.chain = ?2",
         )?;
         for k in &mut out {
             if let Some(chain) = k.chain
-                && let Some((upto, version)) = stmt
+                && let Some((upto, version, status, detail)) = stmt
                     .query_row(params![k.input_id, chain], |r| {
-                        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                        ))
                     })
                     .optional()?
             {
                 k.parsed_upto = upto as u64;
                 k.parser_version = Some(version as u32);
+                k.waiting = status == "waiting"
+                    && detail.and_then(|end| end.parse::<u64>().ok()) == Some(k.stored);
             }
         }
         Ok(out)

@@ -35,6 +35,8 @@ pub struct Job {
     /// Where new bytes start; `None` when the range is only parsed again.
     pub piece_from: Option<u64>,
     pub end: u64,
+    /// This range reaches the observed source end, not merely a chunk boundary.
+    pub at_end: bool,
     /// The input's stored length once this job is written.
     pub length: u64,
     pub carry: Option<Json>,
@@ -367,6 +369,7 @@ fn run(
                     start: job.start,
                     parsed_upto: job.start + step.consumed,
                     parser_version: job.origin.parser_version,
+                    at_end: job.at_end,
                     hashes: Vec::new(),
                     packed: Default::default(),
                     bodies: Vec::new(),

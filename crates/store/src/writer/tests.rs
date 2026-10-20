@@ -91,6 +91,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             start,
             parsed_upto: start + 100,
             parser_version: 1,
+            at_end: false,
             hashes: vec![],
             packed: Default::default(),
             bodies: vec![],
@@ -528,8 +529,36 @@ fn revisions_extents_and_parse_state_follow_appends() {
     assert_eq!(known.len(), 1);
     assert_eq!(known[0].stored, 25);
     assert_eq!(known[0].parsed_upto, 18);
+    assert!(!known[0].waiting, "an unfinished chunk still has work");
     let state = r.query("SELECT status FROM parse_state", &[]).unwrap();
     assert_eq!(state[0]["status"], "parsing");
+}
+
+#[test]
+fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
+    let w = world();
+    let store = hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap();
+    let mut first = batch("i", 0, 0, vec![], &[]);
+    first.piece = Some(Piece::prepare(&store, b"line\npartial").unwrap());
+    first.length = 12;
+    let parse = first.parse.as_mut().unwrap();
+    parse.parsed_upto = 5;
+    parse.at_end = true;
+    w.writer.send(first).unwrap();
+    w.writer.flush().unwrap();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    assert!(pool.reader().unwrap().known_inputs("m").unwrap()[0].waiting);
+
+    let mut append = batch("i", 0, 12, vec![], &[]);
+    append.piece = Some(Piece::prepare(&store, b"rest").unwrap());
+    append.length = 16;
+    append.parse = None;
+    w.writer.send(append).unwrap();
+    w.writer.flush().unwrap();
+    let known = pool.reader().unwrap().known_inputs("m").unwrap();
+    assert_eq!(known[0].stored, 16);
+    assert_eq!(known[0].parsed_upto, 5);
+    assert!(!known[0].waiting, "the EOF proof covered only twelve bytes");
 }
 
 #[test]

@@ -850,24 +850,27 @@ impl Ctx<'_, '_> {
         let refused: u64 = a.refused.values().sum();
         let status = if p.parsed_upto >= b.length {
             "done"
+        } else if p.at_end {
+            "waiting"
         } else {
             "parsing"
         };
+        let detail = (status == "waiting").then(|| b.length.to_string());
         let whole = p.start == 0;
         let sql = if whole {
             "INSERT INTO parse_state(input_pk, chain, parser_version, status, parsed_upto, framed,
-                 used, unrecognized_n, undecodable)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 used, unrecognized_n, undecodable, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(input_pk, chain) DO UPDATE SET parser_version = excluded.parser_version,
-                 status = excluded.status, parsed_upto = excluded.parsed_upto,
+                 status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail,
                  framed = excluded.framed, used = excluded.used,
                  unrecognized_n = excluded.unrecognized_n, undecodable = excluded.undecodable"
         } else {
             "INSERT INTO parse_state(input_pk, chain, parser_version, status, parsed_upto, framed,
-                 used, unrecognized_n, undecodable)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 used, unrecognized_n, undecodable, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(input_pk, chain) DO UPDATE SET parser_version = excluded.parser_version,
-                 status = excluded.status, parsed_upto = excluded.parsed_upto,
+                 status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail,
                  framed = framed + excluded.framed, used = used + excluded.used,
                  unrecognized_n = unrecognized_n + excluded.unrecognized_n,
                  undecodable = undecodable + excluded.undecodable"
@@ -882,6 +885,7 @@ impl Ctx<'_, '_> {
             used as i64,
             unknown as i64,
             refused as i64,
+            detail,
         ])?;
         if whole {
             self.tx

@@ -2,6 +2,8 @@
 //! home directory, driven through the CLI.
 
 use std::io::{BufRead, BufReader};
+#[cfg(target_os = "linux")]
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -13,6 +15,214 @@ impl Drop for Daemon {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+fn start_daemon(env: &[(&str, &Path)]) -> Daemon {
+    let mut command = Command::new(crate::BIN);
+    command.arg("daemon").stderr(Stdio::piped());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let mut daemon = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
+    let mut first = String::new();
+    BufReader::new(daemon.0.stderr.as_mut().unwrap())
+        .read_line(&mut first)
+        .unwrap();
+    assert!(first.contains("serving"), "{first}");
+    daemon
+}
+
+fn wait_status(
+    env: &[(&str, &Path)],
+    ready: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    loop {
+        let out = cli(env, &["--json", "status"]);
+        assert!(out.status.success(), "{out:?}");
+        let status = json(&out);
+        if ready(&status) {
+            return status;
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn killing_the_test_parent_stops_its_real_daemon() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut owner = Daemon(
+        polylogue_testkit::spawn_daemon(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "cli::daemon_parent_fixture",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("POLYLOGUE_DAEMON_PARENT_FIXTURE", dir.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .unwrap(),
+    );
+    let mut stdout = BufReader::new(owner.0.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        assert_ne!(stdout.read_line(&mut line).unwrap(), 0, "{line}");
+        if line.contains("daemon_pid:") {
+            break;
+        }
+        line.clear();
+    }
+    let daemon_pid: u64 = line
+        .split_once("daemon_pid:")
+        .unwrap()
+        .1
+        .trim()
+        .parse()
+        .unwrap();
+    let mut stderr = BufReader::new(owner.0.stderr.take().unwrap());
+    loop {
+        line.clear();
+        assert_ne!(
+            stderr.read_line(&mut line).unwrap(),
+            0,
+            "no daemon readiness"
+        );
+        if line.contains("serving") {
+            break;
+        }
+    }
+    let running = Command::new(crate::BIN)
+        .args(["--json", "status"])
+        .env("POLYLOGUE_ARCHIVE", dir.path().join("archive"))
+        .env("POLYLOGUE_HOME", dir.path().join("home"))
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .output()
+        .unwrap();
+    assert!(running.status.success(), "{running:?}");
+    assert_eq!(json(&running)["pid"].as_u64(), Some(daemon_pid));
+    owner.0.kill().unwrap();
+    assert_eq!(owner.0.wait().unwrap().signal(), Some(9));
+    // Both processes inherited this pipe. EOF requires the daemon to exit too;
+    // nextest owns the hung-test deadline if the kernel guard regresses.
+    let mut remaining = String::new();
+    stderr.read_to_string(&mut remaining).unwrap();
+    let (_archive, _lock) = polylogue_store::Archive::open_or_create(&dir.path().join("archive"))
+        .expect("the killed owner's daemon must release its archive lock");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "subprocess fixture for killing_the_test_parent_stops_its_real_daemon"]
+fn daemon_parent_fixture() {
+    let Some(dir) = std::env::var_os("POLYLOGUE_DAEMON_PARENT_FIXTURE") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let daemon = Daemon(
+        polylogue_testkit::spawn_daemon(
+            Command::new(crate::BIN)
+                .arg("daemon")
+                .env("POLYLOGUE_ARCHIVE", dir.join("archive"))
+                .env("POLYLOGUE_HOME", dir.join("home"))
+                .env("XDG_CONFIG_HOME", dir.join("config"))
+                .stderr(Stdio::inherit()),
+        )
+        .unwrap(),
+    );
+    println!("daemon_pid:{}", daemon.0.id());
+    std::io::stdout().flush().unwrap();
+    let mut end = String::new();
+    std::io::stdin().read_line(&mut end).unwrap();
+    drop(daemon);
+}
+
+#[cfg(target_os = "linux")]
+fn io_counts(pid: u64) -> (u64, u64) {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/io")).unwrap();
+    let value = |name: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(name))
+            .unwrap()
+            .trim()
+            .parse::<u64>()
+            .unwrap()
+    };
+    (value("rchar:"), value("read_bytes:"))
+}
+
+#[test]
+fn idle_passes_do_not_reread_complete_or_waiting_input_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let archive = dir.path().join("archive");
+    let config = dir.path().join("config");
+    let project = home.join(".claude/projects/-idle");
+    std::fs::create_dir_all(&project).unwrap();
+    let complete = line("u1", "idle", &"synthetic content ".repeat(4096));
+    std::fs::write(
+        project.join("complete.jsonl"),
+        line("c1", "complete", &"another complete input ".repeat(4096)),
+    )
+    .unwrap();
+    let partial = line("u2", "idle", "the record is still being written");
+    std::fs::write(
+        project.join("idle.jsonl"),
+        format!("{complete}{}", &partial[..20]),
+    )
+    .unwrap();
+    let env = [
+        ("POLYLOGUE_ARCHIVE", archive.as_path()),
+        ("POLYLOGUE_HOME", home.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+    ];
+    let first = start_daemon(&env);
+    wait_status(&env, |s| s["last_pass"]["inputs_seen"].as_u64() == Some(2));
+    drop(first);
+    let daemon = start_daemon(&env);
+    let mut status = wait_status(&env, |s| s["last_pass"]["inputs_seen"].as_u64() == Some(2));
+    assert_eq!(status["store"]["messages"], 2);
+    assert_eq!(status["store"]["parse_states"]["waiting"], 1);
+    assert_eq!(status["last_pass"]["bytes_read"], 0, "{status}");
+    for generation in 0..3 {
+        // An irrelevant path under the watched tree wakes a real pass without
+        // changing a source. The pass reply, not a sleep, delimits observation.
+        let previous = status["last_pass"]["seconds"].clone();
+        #[cfg(target_os = "linux")]
+        let before = io_counts(u64::from(daemon.0.id()));
+        std::fs::write(project.join(".idle-wakeup"), generation.to_string()).unwrap();
+        status = wait_status(&env, |s| s["last_pass"]["seconds"] != previous);
+        assert_eq!(status["last_pass"]["bytes_read"], 0, "{status}");
+        assert_eq!(status["last_pass"]["bytes_stored"], 0, "{status}");
+        assert_eq!(status["last_pass"]["inputs_changed"], 0, "{status}");
+        #[cfg(target_os = "linux")]
+        {
+            let after = io_counts(u64::from(daemon.0.id()));
+            eprintln!(
+                "idle pass {generation}: /proc/io rchar delta {}, physical read_bytes delta {}; input-content bytes_read 0",
+                after.0 - before.0,
+                after.1 - before.1
+            );
+        }
+    }
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(project.join("idle.jsonl"))
+            .unwrap();
+        std::io::Write::write_all(&mut file, &partial.as_bytes()[20..]).unwrap();
+    }
+    status = wait_status(&env, |s| {
+        s["store"]["messages"].as_u64() == Some(3)
+            && s["last_pass"]["bytes_stored"]
+                .as_u64()
+                .is_some_and(|n| n > 0)
+    });
+    assert_eq!(status["store"]["parse_states"]["done"], 2);
 }
 
 fn cli(env: &[(&str, &Path)], args: &[&str]) -> Output {
@@ -60,19 +270,7 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
         ("XDG_CONFIG_HOME", config.as_path()),
     ];
 
-    let child = Command::new(crate::BIN)
-        .arg("daemon")
-        .env("POLYLOGUE_ARCHIVE", &archive)
-        .env("POLYLOGUE_HOME", &home)
-        .env("XDG_CONFIG_HOME", &config)
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut daemon = Daemon(child);
-    let mut stderr = BufReader::new(daemon.0.stderr.take().unwrap());
-    let mut first = String::new();
-    stderr.read_line(&mut first).unwrap();
-    assert!(first.contains("serving"), "{first}");
+    let daemon = start_daemon(&env);
 
     // The live file is picked up by the loop's first pass.
     let deadline = Instant::now() + Duration::from_secs(30);

@@ -9,6 +9,8 @@
 
 mod claude_home;
 mod morrow;
+mod process;
 
 pub use claude_home::{ClaudeHome, claude_assistant, claude_user, delete_index};
 pub use morrow::{Morrow, Set, morrow_dir, session, short};
+pub use process::spawn_daemon;

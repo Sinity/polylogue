@@ -438,7 +438,7 @@ CREATE TABLE parse_state (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   parser_version    INTEGER NOT NULL,
-  status            TEXT NOT NULL,          -- parsing: started, not yet at the chain's stored length (waiting work);
+  status            TEXT NOT NULL,          -- parsing: more stored bytes need parsing; waiting: incomplete record at observed EOF;
                                             --   done: at the stored length; companion: read with its main input
                                             --   (detail: that input's id); no_sessions | refused | failed | no_parser_yet
   excisions_seen    INTEGER NOT NULL DEFAULT 0,  -- number of `excised` observations of the input when parsed;
@@ -451,6 +451,7 @@ CREATE TABLE parse_state (
                                             --   "what an incremental parse carries forward"); NULL = start over
   detail            TEXT,                   -- the reason for refused, failed and no_sessions; for
                                             --   no_parser_yet, the slice that adds the parser, or 'none planned'
+                                            --   waiting: the observed source-end offset, valid only at that stored length
   framed            INTEGER NOT NULL DEFAULT 0,  -- law 120's accounting for this chain (sources/README.md): records
   used              INTEGER NOT NULL DEFAULT 0,  --   framed = used + ignored + unrecognized + undecodable; an append
   ignored           INTEGER NOT NULL DEFAULT 0,  --   adds to the counts, a whole parse replaces them; written in the

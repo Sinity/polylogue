@@ -16,6 +16,19 @@ pub struct Found {
     pub origin: &'static OriginSpec,
 }
 
+/// Reading a watched file or directory is not new input. In particular, the
+/// collector's own directory opens must not wake another collection pass.
+pub(crate) fn requires_scan(event: &notify::Event) -> bool {
+    use notify::EventKind;
+    use notify::event::{AccessKind, AccessMode};
+    !matches!(
+        event.kind,
+        EventKind::Access(
+            AccessKind::Read | AccessKind::Open(_) | AccessKind::Close(AccessMode::Read)
+        )
+    )
+}
+
 /// Origins the loop collects from fixed locations.
 fn collected() -> impl Iterator<Item = &'static OriginSpec> {
     ORIGINS
