@@ -202,6 +202,21 @@ The next pass asks Sinex which stable frame keys it holds before resending.
 Synchronous archive and blob operations finish before cancellation is polled;
 this does not impose a hard shutdown deadline or qualify primary mode.
 
+Excision records retain exact unit identities and content-addressed replacement
+batches or tombstones. Restore validates and folds all confirmed replacement
+metadata before opening payloads, then replaces the selected owner rows in one
+transaction. A nonempty target belonging to a different archive refuses before
+payload reads or changes. Same-archive updates must include every local excision's
+exact metadata; stale confirmed views refuse before reopening removed content.
+Pending batches remain in this archive's primary blob
+root, and local file cleanup never follows external read roots. Cataloged source
+blobs survive pending-batch retirement. Original provider files are untouched. Native Sinex material
+retirement remains a separate operation; publishing a logical replacement does
+not prove physical removal. Publication handles non-prefix acknowledgments;
+an interrupted pending suffix has an explicit gap and restore refuses it until
+the missing units arrive. Legacy excisions lacking replacement metadata refuse
+primary publication and restore rather than reconstructing deleted identities by guesswork.
+
 ## Changing a boundary
 
 Keep a rule with its owner and update connected callers together. Add a

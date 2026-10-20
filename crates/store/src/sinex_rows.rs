@@ -8,21 +8,36 @@
 //! Rows travel as JSON lines, one `{"table": …, "row": {…}}` per line, with
 //! every column under its own name: integers and reals as numbers, text as
 //! strings, blobs as `{"hex": …}`, null as null.
+use serde::{Deserialize, Serialize};
+
+mod excision;
+pub(crate) use excision::{Capture, retired_local};
+pub use excision::{ExcisionPublication, Replacement};
+mod restore;
+pub use restore::{RestoreUnit, Selection, select};
+
 use rusqlite::types::{Value as Sql, ValueRef};
 use rusqlite::{Connection, params_from_iter};
 use serde_json::{Map, Value, json};
 
 /// One unit of rows, before its rows are read.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Unit {
     pub commit_seq: i64,
-    pub kind: &'static str,
+    pub kind: String,
     /// `<input>/<number>` for a revision, the row ID otherwise.
     pub key: String,
 }
 
-/// The units at or after `after` (exclusive), in write order.
-pub fn units(archive: &Connection, after: i64) -> rusqlite::Result<Vec<Unit>> {
+/// Units strictly after `after`, in write order.
+pub fn units(archive: &Connection, after: i64) -> crate::Result<Vec<Unit>> {
+    let legacy: bool = archive.query_row(
+        "SELECT EXISTS(SELECT 1 FROM excision WHERE json_type(refused_json, '$.publication') IS NULL)",
+        [], |r| r.get(0),
+    )?;
+    if legacy {
+        return Err(crate::StoreError::Invalid("primary publication cannot reconstruct unit identities for legacy excisions without replacement metadata".into()));
+    }
     let mut stmt = archive.prepare(
         "SELECT commit_seq, 'revision', input || '/' || number FROM revision WHERE commit_seq > ?1
          UNION ALL SELECT commit_seq, 'note', id FROM note WHERE commit_seq > ?1
@@ -35,17 +50,23 @@ pub fn units(archive: &Connection, after: i64) -> rusqlite::Result<Vec<Unit>> {
         let kind: String = r.get(1)?;
         Ok(Unit {
             commit_seq: r.get(0)?,
-            kind: match kind.as_str() {
-                "revision" => "revision",
-                "note" => "note",
-                "excision" => "excision",
-                "setting" => "setting",
-                _ => "delivery",
-            },
+            kind,
             key: r.get(2)?,
         })
     })?;
-    rows.collect()
+    let mut units: Vec<Unit> = rows.collect::<rusqlite::Result<_>>()?;
+    for publication in excision::publications(archive)? {
+        units.extend(
+            publication
+                .replacements
+                .into_iter()
+                .map(|r| r.unit)
+                .filter(|u| u.commit_seq > after),
+        );
+    }
+    units.sort();
+    units.dedup();
+    Ok(units)
 }
 
 /// A unit's rows as JSON lines, and the input blobs they cite.
@@ -64,11 +85,20 @@ pub fn read(archive: &Connection, unit: &Unit) -> rusqlite::Result<Batch> {
         blobs: Vec::new(),
     };
     let key = [Sql::Text(unit.key.clone())];
-    match unit.kind {
+    match unit.kind.as_str() {
         "revision" => {
             let (input, number) = unit.key.rsplit_once('/').unwrap_or((&unit.key, "0"));
             let number: i64 = number.parse().unwrap_or(0);
             let args = [Sql::Text(input.to_owned()), Sql::Integer(number)];
+            let exists: bool = archive.query_row(
+                "SELECT EXISTS(SELECT 1 FROM revision WHERE input = ?1 AND number = ?2)",
+                params_from_iter(args.iter()),
+                |r| r.get(0),
+            )?;
+            if !exists {
+                return Ok(out);
+            }
+
             add(
                 archive,
                 &mut out,
@@ -138,13 +168,38 @@ pub fn read(archive: &Connection, unit: &Unit) -> rusqlite::Result<Batch> {
                 &key,
             )?;
         }
-        "excision" => add(
-            archive,
-            &mut out,
-            "excision",
-            "SELECT * FROM excision WHERE id = ?1",
-            &key,
-        )?,
+        "excision" => {
+            // Deleted revision units still name an input. Keep that descriptor
+            // with the excision rather than reopening a retired original batch.
+            add(archive,&mut out,"input",
+                "SELECT * FROM input WHERE id IN (
+                    SELECT input FROM observation WHERE class='excised' AND excision=?1
+                    UNION SELECT i.id FROM input i,excision x,json_each(x.refused_json,'$.publication.replacements') j
+                    WHERE x.id=?1 AND json_extract(j.value,'$.unit.kind')='revision'
+                      AND substr(json_extract(j.value,'$.unit.key'),1,length(i.id)+1)=i.id||'/'
+                      AND instr(substr(json_extract(j.value,'$.unit.key'),length(i.id)+2),'/')=0)",&key)?;
+            add(
+                archive,
+                &mut out,
+                "machine",
+                "SELECT * FROM machine WHERE id IN (SELECT machine FROM observation WHERE class='excised' AND excision=?1)",
+                &key,
+            )?;
+            add(
+                archive,
+                &mut out,
+                "excision",
+                "SELECT * FROM excision WHERE id = ?1",
+                &key,
+            )?;
+            add(
+                archive,
+                &mut out,
+                "observation",
+                "SELECT * FROM observation WHERE class = 'excised' AND excision = ?1 ORDER BY rowid",
+                &key,
+            )?;
+        }
         "setting" => add(
             archive,
             &mut out,
@@ -214,10 +269,9 @@ fn add(
     Ok(())
 }
 
-/// Inserts a batch's rows into `archive.db`. A row already present is left
-/// as it is, so restoring a unit twice changes nothing. Returns the rows
-/// inserted.
-pub fn apply(archive: &Connection, lines: &[u8]) -> crate::Result<u64> {
+/// Inserts rows, reusing identical rows already present. A conflicting row
+/// refuses rather than silently retaining different content.
+fn apply(archive: &Connection, lines: &[u8]) -> crate::Result<u64> {
     let mut inserted = 0;
     for line in lines.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
         let v: Value = serde_json::from_slice(line)?;
@@ -251,7 +305,25 @@ pub fn apply(archive: &Connection, lines: &[u8]) -> crate::Result<u64> {
                 .join(", ")
         );
         let values: Vec<Sql> = row.values().map(to_sql).collect::<Result<_, _>>()?;
-        inserted += archive.execute(&sql, params_from_iter(values.iter()))? as u64;
+        let added = archive.execute(&sql, params_from_iter(values.iter()))?;
+        if added == 0 {
+            let matching = format!(
+                "SELECT EXISTS(SELECT 1 FROM {table} WHERE {})",
+                cols.iter()
+                    .enumerate()
+                    .map(|(i, c)| format!("{c} IS ?{}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join(" AND ")
+            );
+            let same: bool =
+                archive.query_row(&matching, params_from_iter(values.iter()), |r| r.get(0))?;
+            if !same {
+                return Err(crate::StoreError::Invalid(format!(
+                    "restored {table} row conflicts with existing unrelated data"
+                )));
+            }
+        }
+        inserted += added as u64;
     }
     Ok(inserted)
 }
@@ -339,11 +411,29 @@ impl Published {
     }
 
     pub fn units(&self, after: i64) -> crate::Result<Vec<Unit>> {
-        Ok(units(&self.conn, after)?)
+        units(&self.conn, after)
     }
 
     pub fn read(&self, unit: &Unit) -> crate::Result<Batch> {
         Ok(read(&self.conn, unit)?)
+    }
+
+    pub fn publication(&self, unit: &Unit) -> crate::Result<Option<ExcisionPublication>> {
+        excision::publication(&self.conn, unit)
+    }
+
+    /// A frozen replacement batch, checked by its content address.
+    pub fn replacement(&self, name: &str) -> crate::Result<Vec<u8>> {
+        use std::io::Read;
+        let hash = excision::batch_hash(name)?;
+        let mut bytes = Vec::new();
+        self.blobs.read(&hash)?.read_to_end(&mut bytes)?;
+        if blake3::hash(&bytes).as_bytes() != &hash.0 {
+            return Err(crate::StoreError::Invalid(
+                "replacement batch hash mismatch".into(),
+            ));
+        }
+        Ok(bytes)
     }
 
     /// A stored blob's bytes, verified.
@@ -367,27 +457,17 @@ impl Restoring {
         })
     }
 
-    /// Inserts one unit's rows in one transaction; returns the rows inserted.
-    pub fn apply(&mut self, lines: &[u8]) -> crate::Result<u64> {
-        let tx = self.conn.transaction()?;
-        let n = apply(&tx, lines)?;
-        tx.commit()?;
-        Ok(n)
-    }
-
-    /// Takes over the restored archive's identity and write counter.
-    pub fn finish(&self, archive_id: &str, commit_seq: i64) -> crate::Result<()> {
-        for (key, value) in [
-            ("archive_id", archive_id.to_owned()),
-            ("write_counter", commit_seq.to_string()),
-        ] {
-            self.conn.execute(
-                "INSERT INTO meta(key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [key, value.as_str()],
-            )?;
-        }
-        Ok(())
+    /// Installs a complete selected view atomically. Payload lookup happens only
+    /// after `select`, so intentionally retired before-images are never required.
+    /// A same-archive update must include every local excision's exact manifest;
+    /// an older confirmed view cannot overwrite unpublished local removals.
+    pub fn install(
+        &mut self,
+        archive_id: &str,
+        units: &Selection,
+        fetch: impl FnMut(&RestoreUnit) -> crate::Result<Option<Vec<u8>>>,
+    ) -> crate::Result<u64> {
+        restore::install(&mut self.conn, units, Some(archive_id), fetch)
     }
 }
 

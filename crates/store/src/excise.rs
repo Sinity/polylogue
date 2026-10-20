@@ -191,6 +191,8 @@ struct RefusedJson {
     revisions: Vec<String>,
     #[serde(default)]
     blobs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication: Option<crate::sinex_rows::ExcisionPublication>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -386,6 +388,11 @@ impl Plan {
             .as_ref()
             .map(|text| stored_text::find(t, text))
             .transpose()?;
+        let capture = if req.dry_run {
+            None
+        } else {
+            Some(crate::sinex_rows::Capture::start(t.archive, &req.id)?)
+        };
         let mut refused = RefusedJson::default();
         let mut delete_files = Vec::new();
         let mut removed_texts: BTreeSet<Vec<u8>> = BTreeSet::new();
@@ -535,6 +542,11 @@ impl Plan {
             .map(|l| format!("{}:{}", l.machine, l.path))
             .collect();
 
+        if let Some(capture) = capture {
+            let publication = capture.finish(t.archive, t.store)?;
+            delete_files.extend(crate::sinex_rows::retired_local(t.archive, &publication)?);
+            refused.publication = Some(publication);
+        }
         if !req.dry_run {
             t.archive.execute(
                 "UPDATE excision SET refused_json = ?2, message_ids_json = ?3 WHERE id = ?1",

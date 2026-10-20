@@ -158,6 +158,18 @@ async fn an_archive_restored_from_sinex_gives_the_same_answers() {
         archive: None,
     };
     let mut sinex = Sinex::connect(&config).await.unwrap();
+    let deadline = Instant::now();
+    loop {
+        match sinex.have(&["readiness-probe".into()]).await {
+            Ok(_) => break,
+            Err(polylogue_sinex::Error::Unreachable(_))
+                if deadline.elapsed() < Duration::from_secs(10) =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await
+            }
+            other => panic!("producer have endpoint did not become ready: {other:?}"),
+        }
+    }
     let first = sinex.publish(&a).await.unwrap();
     assert!(first.units > 0 && first.held == 0, "{first:?}");
     let second = sinex.publish(&a).await.unwrap();
