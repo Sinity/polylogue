@@ -795,13 +795,29 @@ impl Engine {
             .reads
             .reader()?
             .stored_chain(&input_id, chain, stored)?;
+        let route_rank = self
+            .reads
+            .reader()?
+            .retained_input(&input_id)?
+            .ok_or_else(|| {
+                polylogue_store::StoreError::Invalid("retained revision disappeared".into())
+            })?
+            .route_rank;
+        let source = match bytes.single_file_blob() {
+            Some(hash) => pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::open(
+                &self.blobs,
+                hash,
+                stored,
+            )?))),
+            None => pool::Bytes::Stored(Arc::new(bytes)),
+        };
         Ok(Some(Plan {
             path: path.to_path_buf(),
             origin,
             input: InputKey {
                 id: input_id,
                 format: origin.name.into(),
-                route_rank: 0,
+                route_rank,
             },
             change: Change::Unchanged,
             observation: None,
@@ -818,7 +834,7 @@ impl Engine {
             tracked: true,
             failed: false,
             waiting: false,
-            source: pool::Bytes::Stored(Arc::new(bytes)),
+            source,
         }))
     }
 
