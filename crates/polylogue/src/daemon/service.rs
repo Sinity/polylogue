@@ -537,6 +537,7 @@ impl Runtime {
                 }
             }
         }
+        self.daemon.reads.close();
         self.lock.take();
         failure.map_or(Ok(()), Err)
     }

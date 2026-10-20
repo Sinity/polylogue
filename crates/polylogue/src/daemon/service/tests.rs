@@ -155,3 +155,26 @@ fn repeated_test_daemon_drops_release_every_shared_daemon_reference() {
         assert!(weak.upgrade().is_none());
     }
 }
+
+#[test]
+fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    let mut runtime = start(&root, config(dir.path())).unwrap();
+    let old = Arc::clone(&runtime.daemon);
+    assert!(matches!(handle(Request::Status, &old), Response::Ok { .. }));
+    runtime.shutdown().unwrap();
+    assert!(matches!(
+        old.reads.reader(),
+        Err(StoreError::ReadPoolClosed)
+    ));
+    let mut next = start(&root, config(dir.path())).unwrap();
+    assert!(matches!(
+        handle(Request::Status, &next.daemon),
+        Response::Ok { .. }
+    ));
+    next.shutdown().unwrap();
+    assert!(
+        matches!(handle(Request::Status, &old), Response::Error { kind, .. } if kind == "daemon_stopping")
+    );
+}

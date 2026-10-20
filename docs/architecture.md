@@ -55,8 +55,9 @@ before the application runtime. Shutdown wakes signal timers, closes transport
 admission and joins workers before releasing the writer lock. Unfinished
 socket input or response writes fail when peers close; already admitted store
 writes finish before the writer joins. Retained writer-sender handles refuse
-new work after shutdown. External `Arc<Daemon>` handles can still retain read-pool
-connections after workers stop; runtime shutdown does not reclaim those handles.
+new work after shutdown. Shutdown closes the read pool and releases its idle
+connections even when an external `Arc<Daemon>` survives. A reader already
+admitted keeps its transaction until its caller drops it.
 
 The in-process `TestDaemon` follows that order on ordinary drop and panic,
 before removing its temporary archive. This does not establish cleanup after

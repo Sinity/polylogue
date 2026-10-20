@@ -66,6 +66,8 @@ pub enum StoreError {
     Counts(#[from] polylogue_model::CountMismatch),
     #[error("the writer has stopped")]
     WriterGone,
+    #[error("the read pool has closed")]
+    ReadPoolClosed,
     #[error("request {0} was already used for different content")]
     Conflict(String),
     #[error("{0} not found")]
