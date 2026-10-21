@@ -5,7 +5,7 @@
 
 use super::*;
 
-mod arrays;
+mod exports;
 
 impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original

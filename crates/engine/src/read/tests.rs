@@ -91,7 +91,7 @@ fn array_scanning_uses_one_forward_decode_after_verification() {
     )
     .unwrap();
     let verified = source.reader.stats();
-    let scan = polylogue_sources::array::scan(source.stream().unwrap(), |_, _| Ok(())).unwrap();
+    let scan = polylogue_sources::export::scan(source.stream().unwrap(), |_, _| Ok(())).unwrap();
     assert_eq!(scan.elements, 10_001);
     assert!(scan.peak_element_bytes < 256);
     let stats = source.reader.stats();

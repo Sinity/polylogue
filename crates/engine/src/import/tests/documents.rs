@@ -5,15 +5,16 @@ use serde_json::json;
 #[test]
 fn whole_documents_cite_the_retained_bytes_and_preserve_reading_order_on_rebuild() {
     let w = ClaudeHome::new();
-    let path = w.dir.path().join("OpenRouter Chat example.json");
+    let path = w.dir.path().join("design_chats/example.json");
     let bytes = br#"{
-        "version":"example", "title":"Example", "characters":{}, "messages":{
-            "a-last":{"id":"a-last","type":"assistant","createdAt":"2026-01-01T00:01:00Z",
-                "parentMessageId":"z-first","content":"Second"},
-            "z-first":{"id":"z-first","type":"user","createdAt":"2026-01-01T00:00:00Z","content":"First"}
-        }}"#.to_vec();
+        "uuid":"example", "title":"Example", "project":{}, "messages":[
+            {"uuid":"z-first","role":"user","content":{"content":"First"}},
+            {"uuid":"a-last","role":"assistant","content":{"content":"Second"}}
+        ]}"#
+    .to_vec();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, &bytes).unwrap();
-    let sid = polylogue_model::SessionId::parse("openrouter:z-first").unwrap();
+    let sid = polylogue_model::SessionId::parse("claude-design:example").unwrap();
     for rebuild in [false, true] {
         if rebuild {
             std::fs::remove_file(&path).unwrap();

@@ -165,9 +165,9 @@ fn interrupted_array_delivery_replays_retained_bytes_and_resets_accounting() {
 #[test]
 fn array_delivery_waits_for_the_previous_conversations_commit() {
     struct Probe(std::sync::mpsc::Sender<()>);
-    impl ArrayParser for Probe {
-        fn order_key(&self, _: &serde_json::value::RawValue) -> Option<f64> {
-            None
+    impl ExportParser for Probe {
+        fn order_key(&self, _: &serde_json::value::RawValue) -> Vec<u8> {
+            Vec::new()
         }
         fn item(
             &mut self,
@@ -199,7 +199,7 @@ fn array_delivery_waits_for_the_previous_conversations_commit() {
                 .unwrap();
             ready_tx.send(()).unwrap();
             go_rx.recv().unwrap();
-            e.execute_array(&mut plan, &mut Probe(item_tx), &mut Pass::default())
+            e.execute_export(&mut plan, &mut Probe(item_tx), &mut Pass::default())
                 .unwrap();
         });
         ready_rx.recv().unwrap();
@@ -342,12 +342,12 @@ fn pending_ordinary_live_input_commits_before_bulk_array_delivery() {
 #[test]
 fn a_live_append_during_bulk_array_processing_is_served_by_the_next_pass() {
     struct Paused {
-        parser: Box<dyn ArrayParser>,
+        parser: Box<dyn ExportParser>,
         entered: std::sync::mpsc::Sender<()>,
         resume: std::sync::mpsc::Receiver<()>,
     }
-    impl ArrayParser for Paused {
-        fn order_key(&self, raw: &serde_json::value::RawValue) -> Option<f64> {
+    impl ExportParser for Paused {
+        fn order_key(&self, raw: &serde_json::value::RawValue) -> Vec<u8> {
             self.parser.order_key(raw)
         }
         fn item(
@@ -386,10 +386,10 @@ fn a_live_append_during_bulk_array_processing_is_served_by_the_next_pass() {
                 .import_plan(&bulk, origin, captured, None, &mut ImportReport::default())
                 .unwrap()
                 .unwrap();
-            let Some(polylogue_sources::Parse::Array(parser)) = (origin.open)(&bulk) else {
+            let Some(polylogue_sources::Parse::Export(parser)) = (origin.open)(&bulk) else {
                 panic!("array");
             };
-            e.execute_array(
+            e.execute_export(
                 &mut plan,
                 &mut Paused {
                     parser,
@@ -419,3 +419,5 @@ mod gemini_cli;
 mod openai_chat;
 
 mod polylogue_export;
+
+mod openrouter;

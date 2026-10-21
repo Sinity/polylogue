@@ -1,7 +1,7 @@
 //! Shared helpers for tests that drive one origin's parser on bytes written
 //! inline: the knowledge ported from the Python predecessor's tests.
 
-#[path = "../../src/array/fixture.rs"]
+#[path = "../../src/export/fixture.rs"]
 pub mod array_fixture;
 
 use polylogue_sources::origin::by_name;

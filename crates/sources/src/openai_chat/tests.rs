@@ -6,8 +6,8 @@ fn parse(file: &str, doc: Json) -> crate::parse::Step {
         file: file.into(),
         state: ChatState::default(),
     };
-    crate::array::fixture::parse(
-        &mut Parse::Array(Box::new(parser)),
+    crate::export::fixture::parse(
+        &mut Parse::Export(Box::new(parser)),
         &serde_json::to_vec(&doc).unwrap(),
     )
     .unwrap()

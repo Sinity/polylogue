@@ -49,8 +49,8 @@ pub struct Step {
 pub enum ParseError {
     #[error("a document must be parsed from its first byte, got offset {0}")]
     NotWhole(u64),
-    #[error("array exports require the retained array reader")]
-    Array,
+    #[error("exports require the retained item reader")]
+    Export,
     #[error("invalid snapshot stream: {0}")]
     Snapshot(String),
     #[error(transparent)]
@@ -166,8 +166,8 @@ pub enum Parse {
     /// One record per line; appends are parsed from where the last step
     /// stopped.
     Lines(Box<dyn StepParser>),
-    /// One retained export array, externally ordered and delivered per element.
-    Array(Box<dyn crate::array::ArrayParser>),
+    /// Retained export records, externally ordered and delivered one at a time.
+    Export(Box<dyn crate::export::ExportParser>),
     /// One document (or archive) read whole: an export, a capture the
     /// extension rewrites. Any change parses the whole input again.
     Document(Box<dyn DocumentParser + Send>),
@@ -193,7 +193,7 @@ impl Parse {
         base: u64,
     ) -> Result<(Step, Json), ParseError> {
         match self {
-            Parse::Array(_) => Err(ParseError::Array),
+            Parse::Export(_) => Err(ParseError::Export),
             Parse::Lines(p) => p.step(carry, bytes, base),
             Parse::Snapshots(_) => {
                 let (mut steps, carry) = self.steps(carry, bytes, base)?;

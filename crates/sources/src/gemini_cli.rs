@@ -6,9 +6,9 @@
 //! events. A tool call carries its result in the same turn, so call and
 //! result sit together in the assistant message.
 
-use crate::array::{ArrayParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
+use crate::export::{ExportParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse};
 use crate::{Disposition, Records};
@@ -40,7 +40,7 @@ pub fn resume(native: &str) -> Option<Vec<String>> {
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
-    in_chats_dir(path).then(|| Parse::Array(Box::new(GeminiCli::default())))
+    in_chats_dir(path).then(|| Parse::Export(Box::new(GeminiCli::default())))
 }
 
 #[derive(Default)]
@@ -95,19 +95,24 @@ const MESSAGE_FIELDS: Fields = &[
     ),
 ];
 
-impl ArrayParser for GeminiCli {
+impl ExportParser for GeminiCli {
     fn scan(
         &mut self,
         reader: &mut dyn std::io::Read,
         item: &mut ItemSink<'_>,
     ) -> Result<ScanStats, ScanError> {
         self.state = SessionState::default();
-        let (metadata, stats) =
-            crate::array::scan_nested(reader, &["messages"], |range, raw| item(range, None, raw))?;
+        let (metadata, stats) = crate::export::scan_nested(reader, &["messages"], |range, raw| {
+            item(range, Vec::new(), None, raw)
+        })?;
         self.state.metadata = Some(metadata);
         Ok(stats)
     }
-    fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
+    fn begin(
+        &mut self,
+        length: u64,
+        _first: Option<&Json>,
+    ) -> Result<Option<crate::parse::Step>, String> {
         let doc = self
             .state
             .metadata

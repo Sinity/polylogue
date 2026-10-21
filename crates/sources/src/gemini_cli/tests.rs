@@ -28,7 +28,7 @@ fn a_turn_with_a_tool_call_and_its_result() {
                "content": "Request cancelled."}),
     ]);
     let step =
-        crate::array::fixture::parse(&mut Parse::Array(Box::new(GeminiCli::default())), &bytes)
+        crate::export::fixture::parse(&mut Parse::Export(Box::new(GeminiCli::default())), &bytes)
             .unwrap();
     let msgs: Vec<&Message> = step.output.messages.iter().map(|r| &r.message).collect();
     assert_eq!(msgs[0].text(), "list files");

@@ -35,7 +35,7 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 
 pub fn open(path: &Path) -> Option<Parse> {
     let named = path.file_name().and_then(|n| n.to_str()) == Some("conversations.json");
-    named.then(|| Parse::Array(Box::new(Export)))
+    named.then(|| Parse::Export(Box::new(Export)))
 }
 
 /// `design_chats/<uuid>.json`: one Claude Design chat.
@@ -58,12 +58,12 @@ fn in_design_dir(path: &Path) -> bool {
 
 pub struct Export;
 
-impl crate::array::ArrayParser for Export {
+impl crate::export::ExportParser for Export {
     fn item(
         &mut self,
         value: &Json,
         sink: &mut Sink<'_>,
-        _: &mut dyn crate::array::Owners,
+        _: &mut dyn crate::export::Owners,
     ) -> Result<(), String> {
         conversation(value, sink);
         Ok(())

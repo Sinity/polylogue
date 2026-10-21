@@ -17,7 +17,7 @@ fn parse(native: &str, bytes: &[u8]) -> crate::parse::Step {
         title: Some("Electrons".into()),
         state: PromptState::default(),
     };
-    crate::array::fixture::parse(&mut Parse::Array(Box::new(parser)), bytes).unwrap()
+    crate::export::fixture::parse(&mut Parse::Export(Box::new(parser)), bytes).unwrap()
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn the_listing_names_the_prompts() {
     ]}))
     .unwrap();
     let step =
-        crate::array::fixture::parse(&mut Parse::Array(Box::new(Listing::default())), &bytes)
+        crate::export::fixture::parse(&mut Parse::Export(Box::new(Listing::default())), &bytes)
             .unwrap();
     let s = &step.output.sessions[0];
     assert_eq!(s.id.native().as_str(), "1AbC");
@@ -204,7 +204,7 @@ fn listings_distinguish_empty_invalid_and_refused_entries() {
         ),
     ] {
         let step =
-            crate::array::fixture::parse(&mut Parse::Array(Box::new(Listing::default())), bytes)
+            crate::export::fixture::parse(&mut Parse::Export(Box::new(Listing::default())), bytes)
                 .unwrap();
         assert_eq!(step.accounting.framed, framed);
         assert_eq!(step.accounting.refused.values().sum::<u64>(), refused);

@@ -21,7 +21,7 @@ fn text(parts: &[&str]) -> Json {
 
 fn export(convs: &[Json]) -> crate::parse::Step {
     let bytes = serde_json::to_vec(&Json::Array(convs.to_vec())).unwrap();
-    crate::array::fixture::parse(&mut Parse::Array(Box::new(Export)), &bytes).unwrap()
+    crate::export::fixture::parse(&mut Parse::Export(Box::new(Export)), &bytes).unwrap()
 }
 
 fn conv(id: &str, current: &str, nodes: Vec<(String, Json)>) -> Json {

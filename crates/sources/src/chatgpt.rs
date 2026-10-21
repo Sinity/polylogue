@@ -58,7 +58,7 @@ pub(crate) fn first_byte(head: &[u8]) -> Option<u8> {
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
-    recognize_name(path).then(|| Parse::Array(Box::new(Export)))
+    recognize_name(path).then(|| Parse::Export(Box::new(Export)))
 }
 
 fn recognize_name(path: &Path) -> bool {
@@ -70,21 +70,24 @@ fn recognize_name(path: &Path) -> bool {
 /// The export's conversation array.
 pub struct Export;
 
-impl crate::array::ArrayParser for Export {
-    fn order_key(&self, raw: &serde_json::value::RawValue) -> Option<f64> {
+impl crate::export::ExportParser for Export {
+    fn order_key(&self, raw: &serde_json::value::RawValue) -> Vec<u8> {
         #[derive(serde::Deserialize)]
         struct Header {
             create_time: Option<Json>,
         }
         // Unrelated fields deserialize as IgnoredAny, including the mapping.
-        let header: Header = serde_json::from_str(raw.get()).ok()?;
-        header.create_time?.as_f64()
+        let time = serde_json::from_str::<Header>(raw.get())
+            .ok()
+            .and_then(|h| h.create_time)
+            .and_then(|v| v.as_f64());
+        crate::export::number_order(time)
     }
     fn item(
         &mut self,
         value: &Json,
         sink: &mut Sink<'_>,
-        owners: &mut dyn crate::array::Owners,
+        owners: &mut dyn crate::export::Owners,
     ) -> Result<(), String> {
         conversation_with_owners(value, sink, owners)
     }
@@ -143,7 +146,7 @@ pub struct Owners {
     first: HashMap<String, polylogue_model::SessionId>,
 }
 
-impl crate::array::Owners for Owners {
+impl crate::export::Owners for Owners {
     fn claim(
         &mut self,
         native: &str,
@@ -167,7 +170,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
 fn conversation_with_owners(
     conv: &Json,
     sink: &mut Sink<'_>,
-    owners: &mut dyn crate::array::Owners,
+    owners: &mut dyn crate::export::Owners,
 ) -> Result<(), String> {
     let Some(obj) = conv.as_object() else {
         sink.records

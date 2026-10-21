@@ -1,8 +1,8 @@
 //! A complete retained export, framed and externally ordered before publication.
 use super::*;
-use polylogue_model::{Accounting, Output};
-use polylogue_sources::array::{self, ArrayParser, Owners};
-use polylogue_store::{Batch, ParseStep, Piece, export_array::ExportArray};
+use polylogue_model::{Accounting, Json, Output};
+use polylogue_sources::export::{self, ExportParser, Owners};
+use polylogue_store::{Batch, ParseStep, Piece, export_items::ExportItems};
 
 struct Counted<R> {
     reader: R,
@@ -16,7 +16,7 @@ impl<R: std::io::Read> std::io::Read for Counted<R> {
     }
 }
 
-struct OwnerLookup<'a>(&'a mut ExportArray);
+struct OwnerLookup<'a>(&'a mut ExportItems);
 impl Owners for OwnerLookup<'_> {
     fn claim(
         &mut self,
@@ -30,21 +30,22 @@ impl Owners for OwnerLookup<'_> {
 }
 
 impl Engine {
-    pub(crate) fn execute_array(
+    pub(crate) fn execute_export(
         &mut self,
         plan: &mut Plan,
-        parser: &mut dyn ArrayParser,
+        parser: &mut dyn ExportParser,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         if matches!(plan.source, pool::Bytes::File) {
-            self.retain_array(plan, pass)?;
+            self.retain_export(plan, pass)?;
         }
-        let mut scratch = ExportArray::new()?;
-        let mut ingest = |range, key, raw: &serde_json::value::RawValue| {
-            scratch
-                .push(range, key, raw.get().as_bytes())
-                .map_err(|e| e.to_string())
-        };
+        let mut scratch = ExportItems::new()?;
+        let mut ingest =
+            |range, key, source_key: Option<&str>, raw: &serde_json::value::RawValue| {
+                scratch
+                    .push(range, key, source_key, raw.get().as_bytes())
+                    .map_err(|e| e.to_string())
+            };
         let scanned = match &plan.source {
             pool::Bytes::Import(source) => {
                 let mut source = source.lock().expect("import lock");
@@ -67,37 +68,38 @@ impl Engine {
             }
             pool::Bytes::File => {
                 return Err(
-                    std::io::Error::other("array exports must be retained before parsing").into(),
+                    std::io::Error::other("exports must be retained before parsing").into(),
                 );
             }
         };
         if let Err(error) = scanned {
-            let array::ScanError::Malformed(error) = error else {
+            let export::ScanError::Malformed(error) = error else {
                 return Err(std::io::Error::other(error).into());
             };
-            let step = array::refused(error.to_string(), plan.size);
-            self.write_array_step(plan, step.output, step.accounting, 0, true, true, pass)?;
+            let step = export::refused(error.to_string(), plan.size);
+            self.write_export_step(plan, step.output, step.accounting, 0, true, true, pass)?;
             plan.parse_pos = plan.size;
             return Ok(());
         }
+        let mut next = next_value(&mut scratch)?;
         let mut order_from = 0;
         let mut first = true;
-        if let Some(step) = parser.begin(plan.size).map_err(std::io::Error::other)? {
+        if let Some(step) = parser
+            .begin(plan.size, next.as_ref().map(|(_, value)| value))
+            .map_err(std::io::Error::other)?
+        {
             order_from = (step.output.messages.len() as u64).max(1);
-            self.write_array_step(plan, step.output, step.accounting, 0, true, false, pass)?;
+            self.write_export_step(plan, step.output, step.accounting, 0, true, false, pass)?;
             first = false;
         }
-        while let Some(item) = scratch.next_item()? {
-            let value = serde_json::from_reader(item.reader)
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
+        while let Some((range, value)) = next {
             polylogue_store::fault::check("parse", &plan.path.to_string_lossy())?;
-            let step =
-                array::parse_item(parser, &value, item.range, &mut OwnerLookup(&mut scratch))
-                    .map_err(std::io::Error::other)?;
+            let step = export::parse_item(parser, &value, range, &mut OwnerLookup(&mut scratch))
+                .map_err(std::io::Error::other)?;
             let count = step.output.messages.len() as u64;
             // Flush is a commit acknowledgement. A second conversation is not
             // decoded while the writer still holds the preceding one's output.
-            self.write_array_step(
+            self.write_export_step(
                 plan,
                 step.output,
                 step.accounting,
@@ -108,8 +110,9 @@ impl Engine {
             )?;
             first = false;
             order_from += count.max(1);
+            next = next_value(&mut scratch)?;
         }
-        self.write_array_step(
+        self.write_export_step(
             plan,
             Output::default(),
             Accounting::default(),
@@ -122,15 +125,15 @@ impl Engine {
         Ok(())
     }
 
-    /// Native watched arrays retain their next source extent before parsing.
+    /// Native watched exports retain their next source extent before parsing.
     /// The existing revision chain assembles genuine appends; rewrites start
     /// a new chain. Parsing then uses that pinned representation.
-    fn retain_array(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
+    fn retain_export(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
         use std::io::{Read, Seek, SeekFrom};
         let mut file = std::fs::File::open(&plan.path)?;
         let before = FileFacts::of(&file.metadata()?);
         if Some(before) != plan.facts || before.size != plan.size {
-            return Err(std::io::Error::other("source changed before array capture").into());
+            return Err(std::io::Error::other("source changed before export capture").into());
         }
         let mut tail = vec![0; plan.size.min(read::TAIL as u64) as usize];
         file.seek(SeekFrom::Start(plan.size - tail.len() as u64))?;
@@ -140,7 +143,7 @@ impl Engine {
         if FileFacts::of(&file.metadata()?) != before
             || captured.piece.size != plan.size - plan.piece_pos
         {
-            return Err(std::io::Error::other("source changed during array capture").into());
+            return Err(std::io::Error::other("source changed during export capture").into());
         }
         let bytes = captured.piece.size;
         self.writer.send(Batch {
@@ -163,7 +166,7 @@ impl Engine {
         let r = self.reads.reader()?;
         let retained = r
             .retained_input(&plan.input.id)?
-            .ok_or_else(|| std::io::Error::other("array capture has no retained revision"))?;
+            .ok_or_else(|| std::io::Error::other("export capture has no retained revision"))?;
         let chain = r.stored_chain(&plan.input.id, retained.chain, retained.length)?;
         plan.source = pool::Bytes::Stored(Arc::new(chain));
         plan.change = Change::Unchanged;
@@ -175,7 +178,7 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn write_array_step(
+    fn write_export_step(
         &mut self,
         plan: &Plan,
         mut output: Output,
@@ -223,6 +226,19 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+fn next_value(
+    scratch: &mut ExportItems,
+) -> Result<Option<(std::ops::Range<u64>, Json)>, EngineError> {
+    scratch
+        .next_item()?
+        .map(|item| {
+            let value = serde_json::from_reader(item.reader)
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            Ok((item.range, value))
+        })
+        .transpose()
 }
 
 #[cfg(test)]
