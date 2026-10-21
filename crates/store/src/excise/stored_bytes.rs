@@ -4,6 +4,8 @@
 
 use super::*;
 
+mod records;
+
 /// Blobs contributing a retained input-chain match of `needle`, including
 /// decoded JSON spellings and matches spanning several blobs. Uses the
 /// excision preflight, so unsupported retained representations return an error.
@@ -160,6 +162,7 @@ pub(super) fn overwrite(
     req: &ExciseRequest,
     refused: &mut RefusedJson,
     delete_files: &mut Vec<BlobHash>,
+    sessions: &[(i64, String)],
 ) -> Result<()> {
     // Blob ranges by blob.
     let mut by_blob: BTreeMap<Vec<u8>, Vec<(usize, usize)>> = BTreeMap::new();
@@ -186,11 +189,13 @@ pub(super) fn overwrite(
                 .push((from as usize, to as usize));
         }
     }
+    let planned = records::preflight(t, input, spans, by_blob, sessions)?;
     if req.dry_run {
         return Ok(());
     }
     let mut spans_json = Vec::new();
-    for (hash, ranges) in by_blob {
+    for (hash, plan) in planned {
+        let ranges = plan.ranges;
         let Ok(arr) = <[u8; 32]>::try_from(hash.as_slice()) else {
             continue;
         };

@@ -1,4 +1,4 @@
-# Text excision
+# Excision
 
 A text excision scans every retained revision chain, including earlier rewrites and bytes split across stored pieces. Plain UTF-8 inputs are matched as text. In JSON inputs, matching uses decoded string values, including mixed Unicode escapes, surrogate pairs and JSON payloads embedded in string values. A matching JSON object key refuses the operation: the store cannot decide whether it is structural syntax or arbitrary payload. Keys and identities remain unchanged. Matching preserves byte lengths, line breaks, revision IDs and offsets; it does not normalize or reserialize other records.
 
@@ -11,3 +11,11 @@ Retained ZIP containers, SQLite page images, PDF and gzip streams, non-UTF-8 rep
 Provider files remain untouched. `on_disk` identifies locations whose stored history held a match; scrub those original files separately before a future full read could collect their text again. Earlier external backups and filesystem snapshots are outside this operation. Successful synthetic checks of this path do not qualify interrupted cross-database commits or the full session/primary-mode purge protocol.
 
 A scan keeps one verified copy of each unique plain blob in an unlinked, mode-0600 temporary file under the process's temporary directory. File blobs use the shared sequential reader: one whole-name verification pass and one forward copy, including oversized historical frames. Inline blobs use incremental SQLite BLOB I/O and a streaming decoder. Logical extents and the rewrite reuse those verified copies, so shared or reordered slices do not trigger another decode. Memory holds fixed transfer buffers, decoder state, match ranges and blob/extent metadata rather than complete input bodies. Temporary disk use can reach the total decoded size of the unique blobs visited; it is released when the attempt ends. This is a decode-work guarantee, not a general latency or peak-RSS claim. The excision API currently has no caller cancellation token; errors from the logical visitor stop that visit.
+
+## Sessions in shared exports
+
+Removing a session from a retained JSON export erases its complete records and the necessary array separators. Other bytes, line breaks and offsets stay unchanged, so an index rebuilt from the retained export can still read the surviving sessions. Preview performs the same boundary and overlap checks as execution.
+
+This path requires complete, independently decodable JSON pieces. Citations that cut through scalar values, object-member removals, gaps or split records, and bytes shared with an input outside the rewrite return `unsupported_excision`. Removal also refuses overlaps with surviving sessions' message or event citations. A refusal leaves stored bytes, indexed records and authored notes unchanged.
+
+Session-record planning currently reads one complete blob at a time. The streaming text-scan memory description above does not apply to this path. Interrupted cross-database commits and physical retirement remain separate qualification work.
