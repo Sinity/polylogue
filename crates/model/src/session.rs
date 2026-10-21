@@ -43,6 +43,8 @@ pub enum TitleSource {
     Summary,
     /// The agent's name, for a spawned session.
     AgentName,
+    /// The imported file's name, used when no recorded title is available.
+    FileName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

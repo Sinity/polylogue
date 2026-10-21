@@ -1,6 +1,23 @@
 use super::*;
 
 #[test]
+fn a_recorded_title_beats_a_file_name_in_either_arrival_order() {
+    for recorded_first in [false, true] {
+        let mut s = Session::new(SessionId::parse("ai-studio:p").unwrap(), SessionKind::Main);
+        let recorded = ("Electrons", TitleSource::Generated);
+        let file = ("drive-id", TitleSource::FileName);
+        for (text, source) in if recorded_first {
+            [recorded, file]
+        } else {
+            [file, recorded]
+        } {
+            s.offer_title(text, source);
+        }
+        assert_eq!(s.title.unwrap().text, "Electrons");
+    }
+}
+
+#[test]
 fn merge_is_idempotent_and_keeps_the_earliest_start() {
     let mut a = session();
     a.offer_cwd("/a");

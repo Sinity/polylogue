@@ -1,5 +1,4 @@
 use super::*;
-use crate::parse::run_document;
 use serde_json::json;
 
 fn prompt(chunks: Vec<Json>) -> Vec<u8> {
@@ -68,6 +67,10 @@ fn chunks_become_messages_with_thoughts_split_out() {
     assert_eq!(
         step.output.sessions[0].title.as_ref().unwrap().text,
         "Electrons"
+    );
+    assert_eq!(
+        step.output.sessions[0].title.as_ref().unwrap().source,
+        TitleSource::FileName
     );
     assert!(
         step.accounting.unread_fields.is_empty(),
@@ -169,7 +172,9 @@ fn the_listing_names_the_prompts() {
          "createdTime": "2026-05-17T12:20:00Z", "modifiedTime": "2026-05-17T12:30:00Z"}
     ]}))
     .unwrap();
-    let step = run_document(&Listing, &bytes).unwrap();
+    let step =
+        crate::array::fixture::parse(&mut Parse::Array(Box::new(Listing::default())), &bytes)
+            .unwrap();
     let s = &step.output.sessions[0];
     assert_eq!(s.id.native().as_str(), "1AbC");
     assert_eq!(s.title.as_ref().unwrap().text, "Electrons");
@@ -178,4 +183,31 @@ fn the_listing_names_the_prompts() {
         Path::new("/s/polylogue/drive/ai-studio/files.json"),
         br#"{"files": ["#
     ));
+}
+
+#[test]
+fn listings_distinguish_empty_invalid_and_refused_entries() {
+    for (bytes, framed, refused, sessions) in [
+        (br#"{"files":[]}"#.as_slice(), 0, 0, 0),
+        (br#"{"files":false}"#.as_slice(), 1, 1, 0),
+        (
+            br#"{"files":[{"name":"missing ID"},{"id":"p","name":"Useful"}]}"#.as_slice(),
+            2,
+            1,
+            1,
+        ),
+        (
+            br#"{"files":[{"id":"not-published"}]} trailing"#.as_slice(),
+            1,
+            1,
+            0,
+        ),
+    ] {
+        let step =
+            crate::array::fixture::parse(&mut Parse::Array(Box::new(Listing::default())), bytes)
+                .unwrap();
+        assert_eq!(step.accounting.framed, framed);
+        assert_eq!(step.accounting.refused.values().sum::<u64>(), refused);
+        assert_eq!(step.output.sessions.len(), sessions);
+    }
 }

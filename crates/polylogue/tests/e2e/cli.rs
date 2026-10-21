@@ -320,6 +320,64 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
 }
 
 #[test]
+fn ai_studio_import_and_drive_title_read_identically_after_a_retained_rebuild() {
+    let w = polylogue_testkit::ClaudeHome::new();
+    let config = w.dir.path().join("config");
+    let dir = w.config(8).spool_dir("ai-studio");
+    std::fs::create_dir_all(&dir).unwrap();
+    let listing = dir.join("files.json");
+    std::fs::write(&listing,serde_json::to_vec(&serde_json::json!({"files":[{"id":"drive-id","name":"Electrons","createdTime":"2026-05-17T12:00:00Z"}]})).unwrap()).unwrap();
+    let prompt = w.dir.path().join("drive-id.json");
+    std::fs::write(&prompt,serde_json::to_vec(&serde_json::json!({
+        "chunkedPrompt":{"chunks":[{"role":"user","text":"What is an electron?"},{"role":"model","text":"A lepton.","tokenCount":3}]},
+        "runSettings":{"model":"models/example"},"systemInstruction":{"text":"Be brief."}
+    })).unwrap()).unwrap();
+    let env = [
+        ("POLYLOGUE_ARCHIVE", w.root.as_path()),
+        ("POLYLOGUE_HOME", w.home.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+    ];
+    let daemon = start_daemon(&env);
+    wait_status(&env, |s| s["store"]["sessions"].as_u64() == Some(1));
+    let imported = cli(&env, &["--json", "import", prompt.to_str().unwrap()]);
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let read = cli(&env, &["--json", "read", "ai-studio:drive-id"]);
+    assert!(
+        read.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    let before = json(&read);
+    assert_eq!(before["session"]["title"]["text"], "Electrons");
+    assert_eq!(before["messages"][0]["blocks"][0]["text"], "Be brief.");
+    assert_eq!(
+        before["messages"][1]["blocks"][0]["text"],
+        "What is an electron?"
+    );
+    assert_eq!(before["messages"][2]["blocks"][0]["text"], "A lepton.");
+    assert_eq!(before["messages"][2]["model"], "example");
+    assert_eq!(before["messages"][2]["usage"]["output"], 3);
+    drop(daemon);
+    std::fs::remove_file(prompt).unwrap();
+    std::fs::remove_file(listing).unwrap();
+    polylogue_testkit::delete_index(&w.root);
+    let daemon = start_daemon(&env);
+    wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(3));
+    let after = cli(&env, &["--json", "read", "ai-studio:drive-id"]);
+    assert!(
+        after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert_eq!(json(&after), before);
+    drop(daemon);
+}
+
+#[test]
 fn the_hook_spools_where_the_daemon_reads_never_outside_polylogue_home() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
