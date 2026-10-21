@@ -572,6 +572,28 @@ impl Inner {
         if !request.dry_run {
             self.settle()?;
         }
+        if request.dry_run {
+            return self.write_excision_rows(request, store);
+        }
+        // Canonical replacement rows and cleanup intent must be durable before
+        // removing old files. Ordinary ingestion keeps its existing sync mode.
+        let previous: i64 = self
+            .archive
+            .pragma_query_value(None, "synchronous", |r| r.get(0))?;
+        self.archive
+            .pragma_update(None, "synchronous", previous.max(2))?;
+        let result = self.write_excision_rows(request, store);
+        self.archive
+            .pragma_update(None, "synchronous", previous)
+            .map_err(|e| StoreError::ExcisionInterrupted(Box::new(e.into())))?;
+        result
+    }
+
+    fn write_excision_rows(
+        &mut self,
+        request: &crate::excise::ExciseRequest,
+        store: &hashed_blobs::Store,
+    ) -> Result<crate::excise::Excised> {
         let embeddings = if self.location.embeddings_db().exists() {
             let e = open_write(&self.location.embeddings_db(), crate::archive::cache::SETUP)?;
             e.pragma_update(None, "synchronous", "full")?;
