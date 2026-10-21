@@ -184,6 +184,7 @@ pub(super) struct Version {
     chain: i64,
     snapshot: i64,
     order: i64,
+    parser_version: i64,
     current: bool,
     start: i64,
     end: i64,
@@ -213,10 +214,13 @@ impl Version {
             if self.chain != cur.chain {
                 return self.chain > cur.chain;
             }
-            if self.snapshot != -1 || cur.snapshot != -1 {
-                return self.snapshot >= cur.snapshot;
+            if self.snapshot != cur.snapshot {
+                return self.snapshot > cur.snapshot;
             }
-            return self.order <= cur.order;
+            if self.parser_version != cur.parser_version {
+                return self.parser_version > cur.parser_version;
+            }
+            return self.snapshot != -1 || self.order <= cur.order;
         }
         if self.main != cur.main {
             return self.main;
@@ -354,6 +358,7 @@ impl Ctx<'_, '_> {
             chain: self.chain,
             snapshot: self.snapshot.map_or(-1, |snapshot| snapshot.start as i64),
             order: position,
+            parser_version: self.parser_version,
             current: self.snapshot_current(session_pk)?,
             start: offset,
             end: row.end.max(row.offset) as i64,
@@ -366,7 +371,7 @@ impl Ctx<'_, '_> {
             .tx
             .prepare_cached(
                 "SELECT m.pk, m.order_input_pk, m.seq, m.input_pk, m.source_chain, m.source_start,
-                        m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind, m.order_input_id, s.source_snapshot, s.current, s.session_pk, s.main, COALESCE(s.source_order,m.seq)
+                        m.in_progress, m.route_rank, s.version_hash, m.session_pk, ss.kind, m.order_input_id, s.source_snapshot, s.current, s.session_pk, s.main, COALESCE(s.source_order,m.seq), COALESCE(s.parser_version,m.parser_version)
                  FROM message m LEFT JOIN message_source s
                    ON s.message_pk = m.pk AND s.preferred = 1
                  JOIN session ss ON ss.pk = m.session_pk
@@ -382,6 +387,7 @@ impl Ctx<'_, '_> {
                         chain: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
                         snapshot: r.get::<_, Option<i64>>(12)?.unwrap_or(-1),
                         order: r.get(16)?,
+                        parser_version: r.get(17)?,
                         current: r.get::<_, Option<i64>>(13)?.unwrap_or(1) != 0,
                         start: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
                         end: 0,
@@ -409,19 +415,21 @@ impl Ctx<'_, '_> {
             return Ok(true);
         };
 
-        // Within one chain the earliest record of a message wins: a later
-        // duplicate (a repeated uuid) is not another version.
-        let prior: Option<i64> = self
+        // Earliest duplicate wins within one parser. A newer parser may move
+        // the same occurrence; replay by an older parser cannot replace it.
+        let prior: Option<(i64,i64)> = self
             .tx
             .prepare_cached(
-                "SELECT source_order FROM message_source
+                "SELECT source_order,parser_version FROM message_source
                  WHERE message_pk = ?1 AND input_pk = ?2 AND chain = ?3 AND source_snapshot = ?4 AND session_pk=?5",
             )?
             .query_row(params![pk, self.input_pk, self.chain, new.snapshot, new.session_pk], |r| {
-                r.get(0)
+                Ok((r.get(0)?,r.get(1)?))
             })
             .optional()?;
-        if prior.is_some_and(|order| position > order) {
+        if prior.is_some_and(|(order, version)| {
+            version > self.parser_version || (version == self.parser_version && position > order)
+        }) {
             return Ok(false);
         }
         crate::versions::retain(self.tx, &new.hash, m, bodies, self.packed, self.bulk)?;
@@ -430,7 +438,12 @@ impl Ctx<'_, '_> {
             return Ok(false);
         }
         let order = (order_input, order_seq);
-        let new_order = if (self.snapshot.is_some() && order_id == self.input_id)
+        let reinterpreted = prior.is_some_and(|(_, version)| version != self.parser_version);
+        let new_order = if ((self.snapshot.is_some()
+            || (reinterpreted
+                && self.chain == preferred.chain
+                && new.snapshot == preferred.snapshot))
+            && order_id == self.input_id)
             || (self.input_id, position) < (order_id.as_str(), order_seq)
         {
             (self.input_pk, position)
@@ -480,13 +493,14 @@ impl Ctx<'_, '_> {
         let old:Option<Vec<u8>>=self.tx.query_row("SELECT version_hash FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND source_snapshot=?4 AND session_pk=?5",params![pk,v.input_pk,v.chain,v.snapshot,v.session_pk],|r|r.get(0)).optional()?.flatten();
         self.tx.execute(
             "INSERT INTO message_source(message_pk, input_pk, chain, source_snapshot, source_start, source_end, session_pk,
-                 preferred, complete, version_hash, current, source_order, route_rank, main)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?14, ?7, ?8, ?9, ?13, ?10, ?11, ?12)
+                 preferred, complete, version_hash, current, source_order, route_rank, main, parser_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?14, ?7, ?8, ?9, ?13, ?10, ?11, ?12, ?15)
              ON CONFLICT(message_pk, input_pk, chain, source_snapshot, session_pk) DO UPDATE SET
                  source_start=excluded.source_start, source_end=excluded.source_end, session_pk=excluded.session_pk, preferred=excluded.preferred,
                  complete=excluded.complete, version_hash=excluded.version_hash, current=excluded.current,
-                 source_order=excluded.source_order, route_rank=excluded.route_rank, main=excluded.main",
-            params![pk, v.input_pk, v.chain, v.snapshot, v.start, v.end, i64::from(preferred), i64::from(v.complete), v.hash, v.order, v.rank, i64::from(v.main), i64::from(v.current),v.session_pk],
+                 source_order=excluded.source_order, route_rank=excluded.route_rank, main=excluded.main,
+                 parser_version=excluded.parser_version",
+            params![pk, v.input_pk, v.chain, v.snapshot, v.start, v.end, i64::from(preferred), i64::from(v.complete), v.hash, v.order, v.rank, i64::from(v.main), i64::from(v.current),v.session_pk,self.parser_version],
         )?;
         if let Some(old) = old.filter(|old| old != &v.hash) {
             self.tx.execute("DELETE FROM message_version WHERE hash=?1 AND NOT EXISTS (SELECT 1 FROM message_source WHERE version_hash=?1)",[old])?;
@@ -612,7 +626,7 @@ impl Ctx<'_, '_> {
             n(m.duration_ms),
             attrs,
             words,
-            self.parser_version,
+            v.parser_version,
             v.end,
             reported_nusd(m.reported_cost_usd.as_ref()),
             // The five-minute part is known only when the one-hour part is.

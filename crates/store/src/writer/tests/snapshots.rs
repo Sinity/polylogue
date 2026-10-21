@@ -243,19 +243,19 @@ fn removing_an_input_promotes_only_remaining_current_versions_and_prunes_history
             &[("a", "preferred current version")],
         ))
         .unwrap();
-    w.writer
-        .send(batch(
-            "b",
-            1,
-            0,
-            vec![MessageRow {
-                offset: 0,
-                end: 100,
-                message: text_message("a", "s", Role::User, "remaining current version", None),
-            }],
-            &["s"],
-        ))
-        .unwrap();
+    let mut remaining = batch(
+        "b",
+        1,
+        0,
+        vec![MessageRow {
+            offset: 0,
+            end: 100,
+            message: text_message("a", "s", Role::User, "remaining current version", None),
+        }],
+        &["s"],
+    );
+    remaining.parse[0].parser_version = 7;
+    w.writer.send(remaining).unwrap();
     w.writer.derive().unwrap();
     let store = std::sync::Arc::new(
         hashed_blobs::Store::open(w.archive.root.clone(), vec![], 0o600).unwrap(),
@@ -285,6 +285,12 @@ fn removing_an_input_promotes_only_remaining_current_versions_and_prunes_history
         .query("SELECT count(*) AS n FROM message_version", &[])
         .unwrap();
     assert_eq!(rows[0]["n"], 1);
+    assert_eq!(
+        reader
+            .query("SELECT parser_version FROM message", &[])
+            .unwrap()[0]["parser_version"],
+        7
+    );
 }
 
 #[test]

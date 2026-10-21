@@ -170,7 +170,7 @@ impl Ctx<'_, '_> {
     }
 
     pub(super) fn promote_current(&self, pk: i64) -> Result<()> {
-        let mut stmt = self.tx.prepare("SELECT s.input_pk,s.chain,s.source_snapshot,s.source_start,s.source_end,s.complete,s.route_rank,s.main,s.version_hash,s.source_order,r.id,s.preferred,m.present,s.session_pk FROM message_source s JOIN input_ref r ON r.pk=s.input_pk JOIN message m ON m.pk=s.message_pk WHERE s.message_pk=?1 AND s.current=1 ORDER BY r.id,s.chain,s.source_snapshot")?;
+        let mut stmt = self.tx.prepare("SELECT s.input_pk,s.chain,s.source_snapshot,s.source_start,s.source_end,s.complete,s.route_rank,s.main,s.version_hash,s.source_order,r.id,s.preferred,m.present,s.session_pk,s.parser_version FROM message_source s JOIN input_ref r ON r.pk=s.input_pk JOIN message m ON m.pk=s.message_pk WHERE s.message_pk=?1 AND s.current=1 ORDER BY r.id,s.chain,s.source_snapshot")?;
         let mut best: Option<(Version, String, bool)> = None;
         let rows = stmt.query_map([pk], |row| {
             Ok((
@@ -186,6 +186,7 @@ impl Ctx<'_, '_> {
                     main: row.get::<_, i64>(7)? != 0,
                     hash: row.get(8)?,
                     order: row.get(9)?,
+                    parser_version: row.get(14)?,
                     current: true,
                 },
                 row.get::<_, String>(10)?,
