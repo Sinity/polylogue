@@ -5,6 +5,8 @@ use rusqlite::Connection;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek};
 
+mod revision;
+
 pub(super) fn install<R: Read>(
     unit: &RestoreUnit,
     payload: Option<R>,
@@ -67,6 +69,11 @@ impl Rows {
 
 fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result<()> {
     scratch.execute("DELETE FROM allowed", [])?;
+    let revision = if unit.unit.kind == "revision" {
+        Some(revision::Revision::prepare(unit, rows, scratch)?)
+    } else {
+        None
+    };
     if unit.unit.kind == "excision" {
         rows.each(|value| {
             let row = &value["row"];
@@ -177,9 +184,12 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
                             && row["commit_seq"] == unit.unit.commit_seq
                     }
                     "input" => row["id"] == input,
-                    "extent" => row["input"] == input,
+                    "extent" => revision.as_ref().expect("revision prepared").extent(row),
                     "observation" => row["input"] == input && row["revision"] == number,
-                    "blob" | "machine" => true,
+                    "blob" | "machine" => revision
+                        .as_ref()
+                        .expect("revision prepared")
+                        .contains(table, row)?,
                     _ => false,
                 }
             }
@@ -195,6 +205,9 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
     }
     if owning != 1 {
         return Err(invalid("selected batch has no unique owning row"));
+    }
+    if let Some(revision) = revision {
+        revision.finish()?;
     }
     Ok(())
 }
