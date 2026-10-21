@@ -383,6 +383,10 @@ file bodies use the existing sequential plain reader. Publication keeps the
 verified bytes in one anonymous temporary file before placing them through the
 checked blob writer. Corrupt source bytes reach no destination blob, and a
 corrupt existing destination refuses placement while preserving the source.
+Placement queries and checks acknowledgment groups of at most 500 blob
+references before requesting the next group, releasing each group's frame names
+and reply map. A refusal stops later groups; retry asks about every reference
+again. The caller's unit/manifest reference list is still materialized.
 Memory holds copy and codec buffers plus frame metadata. Staging disk grows
 with one source blob, alongside the destination writer's temporary encoded
 file. This path handles plain catalog entries; encoded and sealed

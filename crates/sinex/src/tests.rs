@@ -438,3 +438,5 @@ fn inventory_units(published: &super::ArchiveRows) -> Vec<polylogue_store::sinex
         .map(|position| inventory.unit(position).unwrap())
         .collect()
 }
+
+mod placement;
