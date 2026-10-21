@@ -598,7 +598,7 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_retain
             } else {
                 let report = e.import(std::slice::from_ref(&path)).unwrap();
                 assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
-                assert_eq!(report.imported, [path.clone()]);
+                assert_eq!(report.imported.as_slice(), std::slice::from_ref(&path));
             }
             let r = e.reads.reader().unwrap();
             let shown = r.messages(&sid, false).unwrap();
