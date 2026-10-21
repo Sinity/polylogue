@@ -22,13 +22,13 @@
 
 use super::{Derivation, Version};
 use crate::Result;
-use polylogue_model::{Session, TitleSource};
+use polylogue_model::Session;
 use rusqlite::Transaction;
 use std::cmp::Ordering;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "session",
-    version: Version::Rules(3),
+    version: Version::Rules(4),
     after: &[],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
@@ -102,8 +102,8 @@ fn merge(inputs: &[Input]) -> Session {
         .iter()
         .filter_map(|i| i.facts.title.as_ref().map(|t| (t, i.last)))
         .max_by(|(a, at), (b, bt)| {
-            precedence(b.source)
-                .cmp(&precedence(a.source))
+            b.source
+                .cmp(&a.source)
                 .then_with(|| later(*at, *bt))
                 .then_with(|| a.text.cmp(&b.text))
         })
@@ -128,16 +128,6 @@ fn merge(inputs: &[Input]) -> Session {
     s.repo = latest(|f| &f.repo);
     s.started = inputs.iter().filter_map(|i| i.facts.started).min();
     s
-}
-
-/// Lower is stronger: the operator's rename beats the tool's names.
-fn precedence(source: TitleSource) -> u8 {
-    match source {
-        TitleSource::Custom => 0,
-        TitleSource::Generated => 1,
-        TitleSource::Summary => 2,
-        TitleSource::AgentName => 3,
-    }
 }
 
 fn content(s: &Session) -> String {

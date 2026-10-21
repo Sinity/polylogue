@@ -171,8 +171,11 @@ chunk at a time. Its state is the model name, previous message ID, chunk ordinal
 and whether a start time was found. Chunk messages cite exact original chunk
 spans; the system message and settings cite the enclosing prompt. Duplicate
 fields on the selected array path refuse the input before publication, rather
-than combining two ambiguous chunk populations. The Drive listing remains a
-whole-document parser. Unknown fields remain accounted and raw bytes retained.
+than combining two ambiguous chunk populations. The Drive listing uses the
+same visitor for `files`, emitting session facts one entry at a time. A recorded
+Drive title outranks the separate `file_name` fallback from a loose import,
+regardless of arrival order. Unknown fields remain accounted and raw bytes
+retained.
 
 The existing live-before-bulk and size ordering applies to work already planned.
 Preceding ordinary work drains through the parse pool and commits before the

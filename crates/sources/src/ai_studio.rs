@@ -15,7 +15,7 @@ use crate::array::{ArrayParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};
-use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, Parse};
+use crate::parse::{InlineBlob, MessageRow, Output, Parse};
 use crate::{Disposition, Records};
 use base64::Engine as _;
 use polylogue_model::{
@@ -57,7 +57,7 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 
 pub fn open(path: &Path) -> Option<Parse> {
     if is_listing(path) {
-        return Some(Parse::Document(Box::new(Listing)));
+        return Some(Parse::Array(Box::new(Listing::default())));
     }
     let native = native_of(path)?;
     let title = title_of(path);
@@ -210,7 +210,7 @@ impl ArrayParser for AiStudio {
             sink.records.fields("prompt", &doc, DOCUMENT_FIELDS);
             let mut session = Session::new(sid.clone(), SessionKind::Main);
             if let Some(title) = &self.title {
-                session.offer_title(title, TitleSource::Generated);
+                session.offer_title(title, TitleSource::FileName);
             }
             sink.out.sessions.push(session);
             sink.records.record("prompt", &Disposition::Materialized);
@@ -616,7 +616,10 @@ fn media_blocks(chunk: &Json, role: Role, sink: &mut Sink<'_>) -> Vec<Block> {
 }
 
 /// The collector's listing: session facts only, one record per prompt.
-pub struct Listing;
+#[derive(Default)]
+pub struct Listing {
+    files_array: bool,
+}
 
 const LISTING_FIELDS: Fields = &[
     ("id", Rule::Read),
@@ -637,36 +640,50 @@ const LISTING_FIELDS: Fields = &[
     ("size", Rule::Excluded("each stored revision has its size")),
 ];
 
-impl DocumentParser for Listing {
-    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let files = match serde_json::from_slice::<Json>(bytes) {
-            Ok(v) => v.get("files").and_then(Json::as_array).cloned(),
-            Err(e) => {
-                return records.record(
-                    "listing",
-                    &Disposition::refused(format!("malformed JSON: {e}")),
-                );
-            }
-        };
-        let Some(files) = files else {
-            return records.record("listing", &Disposition::refused("no files array"));
-        };
-        for f in &files {
-            records.fields("file", f, LISTING_FIELDS);
-            let Some(sid) = str_of(f, "id").and_then(|id| session_id(ORIGIN, id)) else {
-                records.record("file", &Disposition::refused("no id"));
-                continue;
-            };
-            let mut session = Session::new(sid, SessionKind::Main);
-            if let Some(name) = str_of(f, "name") {
-                session.offer_title(name, TitleSource::Generated);
-            }
-            if let Some(at) = f.get("createdTime").and_then(time_of) {
-                session.offer_start(at);
-            }
-            out.sessions.push(session);
-            records.record("file", &Disposition::Materialized);
+impl ArrayParser for Listing {
+    fn scan(
+        &mut self,
+        reader: &mut dyn std::io::Read,
+        item: &mut ItemSink<'_>,
+    ) -> Result<ScanStats, ScanError> {
+        let (metadata, stats) =
+            crate::array::scan_nested(reader, &["files"], |range, raw| item(range, None, raw))?;
+        self.files_array = metadata.get("files").is_some_and(Json::is_array);
+        Ok(stats)
+    }
+    fn order_key(&self, _: &serde_json::value::RawValue) -> Option<f64> {
+        None
+    }
+    fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
+        if self.files_array {
+            return Ok(None);
         }
+        let mut records = Records::default();
+        records.record("listing", &Disposition::refused("no files array"));
+        Ok(Some(crate::parse::Step {
+            output: Output::default(),
+            accounting: records.finish().map_err(|e| e.to_string())?,
+            start: 0,
+            consumed: length,
+            snapshot: None,
+        }))
+    }
+    fn item(&mut self, f: &Json, sink: &mut Sink<'_>, _: &mut dyn Owners) -> Result<(), String> {
+        sink.records.fields("file", f, LISTING_FIELDS);
+        let Some(sid) = str_of(f, "id").and_then(|id| session_id(ORIGIN, id)) else {
+            sink.records.record("file", &Disposition::refused("no id"));
+            return Ok(());
+        };
+        let mut session = Session::new(sid, SessionKind::Main);
+        if let Some(name) = str_of(f, "name") {
+            session.offer_title(name, TitleSource::Generated);
+        }
+        if let Some(at) = f.get("createdTime").and_then(time_of) {
+            session.offer_start(at);
+        }
+        sink.out.sessions.push(session);
+        sink.records.record("file", &Disposition::Materialized);
+        Ok(())
     }
 }
 

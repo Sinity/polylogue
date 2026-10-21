@@ -23,7 +23,7 @@ CREATE TABLE session (
   stub              INTEGER NOT NULL DEFAULT 0,  -- 1: created by a hook or process line naming a session that has no
                                             --   transcript yet, so its live state exists; cleared when its messages arrive
   title             TEXT,                   -- provider title only
-  title_source      TEXT,                   -- custom | generated | summary | agent_name (precedence, model Session)
+  title_source      TEXT,                   -- title provenance; precedence is owned by model TitleSource
   derived_title     TEXT,                   -- derived (title): first line of the first typed prompt; shown when
                                             --   title is NULL, never exported as recorded
   title_at          INTEGER,                -- the provider time of the title (model.md, Session, rule 6 input)
