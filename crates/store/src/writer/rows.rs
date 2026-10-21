@@ -304,8 +304,12 @@ impl Ctx<'_, '_> {
             )?
             .query_row(params![pk, self.input_pk, self.chain, self.parser_version], |r| r.get(0))
             .optional()?;
-        let merged = match stored.as_deref().map(serde_json::from_str::<Session>) {
-            Some(Ok(mut cur)) => {
+        let merged = match stored
+            .as_deref()
+            .map(serde_json::from_str::<Session>)
+            .transpose()?
+        {
+            Some(mut cur) => {
                 let before = cur.clone();
                 cur.merge(s);
                 if cur == before {
@@ -313,7 +317,7 @@ impl Ctx<'_, '_> {
                 }
                 cur
             }
-            _ => s.clone(),
+            None => s.clone(),
         };
         self.tx
             .prepare_cached(
