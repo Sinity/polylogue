@@ -166,6 +166,7 @@ CREATE TABLE message_source (
   source_snapshot   INTEGER NOT NULL DEFAULT -1, -- snapshot start, or -1 for ordinary upserts
   current           INTEGER NOT NULL DEFAULT 1,
   source_order      INTEGER NOT NULL DEFAULT 0,
+  parser_version    INTEGER NOT NULL,
   route_rank        INTEGER NOT NULL DEFAULT 0,
   main              INTEGER NOT NULL DEFAULT 1,
   source_start      INTEGER NOT NULL,

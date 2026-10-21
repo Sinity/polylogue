@@ -13,6 +13,14 @@ shared `Records` sink owns disposition and wire-field counts. Line parsing
 supplies an independent framed total; document parsers submit the items they
 discover. Finishing either path checks the same accounting invariant.
 
+Each message-source occurrence records its parser version. Within the same
+input, revision chain and capture, a newer parser may replace an older
+interpretation even if the logical position moves later. Same-version
+duplicates keep their earliest occurrence; older-parser replay cannot overwrite
+newer coordinates or content. Parser numbers from different inputs do not
+compete, and newer revision/capture scopes keep their precedence. Promoting a
+remaining source retains that source's parser version.
+
 `polylogue-engine` discovers changes, retains input bytes and coordinates
 parsing. Existing input directories are watched recursively. A missing location
 keeps a nonrecursive watch on its nearest existing ancestor; directory creation
