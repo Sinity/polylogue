@@ -15,8 +15,8 @@ pub(super) fn write_rows(
     counter: i64,
     bulk: bool,
 ) -> Result<u64> {
-    tx.prepare_cached("INSERT OR IGNORE INTO input_ref(id) VALUES (?1)")?
-        .execute([&b.input.id])?;
+    tx.prepare_cached("INSERT INTO input_ref(id,format) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format")?
+        .execute(params![&b.input.id,&b.input.format])?;
     let input_pk: i64 = tx
         .prepare_cached("SELECT pk FROM input_ref WHERE id = ?1")?
         .query_row([&b.input.id], |r| r.get(0))?;
@@ -1036,18 +1036,20 @@ impl Ctx<'_, '_> {
         let whole = p.reset;
         let sql = if whole {
             "INSERT INTO parse_state(input_pk, chain, parser_version, status, parsed_upto, framed,
-                 used, unrecognized_n, undecodable, detail)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 used, unrecognized_n, undecodable, detail, source_eof, source_length, retired_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?3)
              ON CONFLICT(input_pk, chain) DO UPDATE SET parser_version = excluded.parser_version,
                  status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail,
+                 source_eof = excluded.source_eof, source_length = excluded.source_length,
                  framed = excluded.framed, used = excluded.used,
                  unrecognized_n = excluded.unrecognized_n, undecodable = excluded.undecodable"
         } else {
             "INSERT INTO parse_state(input_pk, chain, parser_version, status, parsed_upto, framed,
-                 used, unrecognized_n, undecodable, detail)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 used, unrecognized_n, undecodable, detail, source_eof, source_length, retired_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?3)
              ON CONFLICT(input_pk, chain) DO UPDATE SET parser_version = excluded.parser_version,
                  status = excluded.status, parsed_upto = excluded.parsed_upto, detail = excluded.detail,
+                 source_eof = excluded.source_eof, source_length = excluded.source_length,
                  framed = framed + excluded.framed, used = used + excluded.used,
                  unrecognized_n = unrecognized_n + excluded.unrecognized_n,
                  undecodable = undecodable + excluded.undecodable"
@@ -1063,6 +1065,8 @@ impl Ctx<'_, '_> {
             unknown as i64,
             refused as i64,
             detail,
+            p.at_end,
+            b.length as i64,
         ])?;
         if whole {
             self.tx
@@ -1115,4 +1119,10 @@ pub(super) fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>,
 fn reported_nusd(usd: Option<&serde_json::Number>) -> Option<i64> {
     let usd = usd?.as_f64()?;
     usd.is_finite().then(|| (usd * 1e9).round() as i64)
+}
+
+pub(super) fn require_parser(tx: &Transaction<'_>, format: &str, version: u32) -> Result<()> {
+    tx.prepare_cached("INSERT INTO required_parser(format,version) VALUES (?1,?2) ON CONFLICT(format) DO UPDATE SET version=excluded.version WHERE version<excluded.version")?
+        .execute(params![format,version])?;
+    Ok(())
 }

@@ -930,6 +930,12 @@ impl Engine {
         if plans.is_empty() {
             return Ok(());
         }
+        let versions: std::collections::BTreeMap<_, _> = plans
+            .iter()
+            .map(|p| (p.origin.name, p.origin.parser_version))
+            .collect();
+        self.writer
+            .require_parsers(&versions.into_iter().collect::<Vec<_>>())?;
         // Keep the existing priority/size order across parser kinds. An array
         // runs serially only after preceding pool work has committed.
         let mut plans = plans;

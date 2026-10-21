@@ -94,7 +94,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             start,
             parsed_upto: start + 100,
             parser_version: 1,
-            at_end: false,
+            at_end: true,
             hashes: vec![],
             packed: Default::default(),
             bodies: vec![],
@@ -500,6 +500,7 @@ fn revisions_extents_and_parse_state_follow_appends() {
     b2.piece = Some(Piece::prepare(&store, b"line two\npartial").unwrap());
     b2.length = 25;
     b2.parse.first_mut().unwrap().parsed_upto = 18;
+    b2.parse.first_mut().unwrap().at_end = false;
     w.writer.send(b1).unwrap();
     w.writer.send(b2).unwrap();
     w.writer.flush().unwrap();

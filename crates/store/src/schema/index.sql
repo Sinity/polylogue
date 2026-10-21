@@ -11,6 +11,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE input_ref (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- archive.db input.id
+  format            TEXT NOT NULL DEFAULT '', -- parser declaration used for this input
   excised           INTEGER NOT NULL DEFAULT 0  -- 1 once an input excision removed the input; the row stays (above)
 ) STRICT;
 
@@ -439,6 +440,9 @@ CREATE TABLE parse_state (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   parser_version    INTEGER NOT NULL,
+  retired_version   INTEGER NOT NULL DEFAULT 0, -- parser version whose obsolete rows have been retired
+  source_eof        INTEGER NOT NULL DEFAULT 0,
+  source_length     INTEGER NOT NULL DEFAULT 0,
   status            TEXT NOT NULL,          -- parsing: more stored bytes need parsing; waiting: incomplete record at observed EOF;
                                             --   done: at the stored length; companion: read with its main input
                                             --   (detail: that input's id); no_sessions | refused | failed | no_parser_yet
@@ -701,3 +705,11 @@ CREATE TABLE excision_applied (
   id_hash BLOB PRIMARY KEY CHECK(length(id_hash)=32),
   policy_hash BLOB NOT NULL CHECK(length(policy_hash)=32)
 ) STRICT, WITHOUT ROWID;
+
+-- Parser versions selected by the engine, before any selected jobs emit rows.
+CREATE TABLE required_parser (
+  format TEXT PRIMARY KEY,
+  version INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX parse_retirement_pending ON parse_state(input_pk,chain) WHERE parser_version>retired_version;

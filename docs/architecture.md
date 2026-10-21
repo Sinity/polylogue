@@ -76,6 +76,16 @@ facts; complete population coverage does not clear omitted metadata. Historical
 chains replay through the same parser and writer, with chain and snapshot
 range ordering preserving the latest projection.
 
+Before selected parse jobs emit rows, the engine supplies their required
+format versions to the writer. The index retains those requirements and each
+chain's observed EOF, source length and last fully retired parser version.
+Replacing one input can update matching records immediately, but obsolete
+session-owned records remain until that session's contributing inputs complete
+their required parses. A shared input's sessions retire independently; links
+wait for their existing endpoints. Pending work survives writer restart and is
+shown as `reparsing`. Ready sessions and affected identities are deduplicated
+in operation-scoped SQLite, without collecting their bodies.
+
 An event's message anchor participates in its identity. The event table keeps
 its shared facts; `event_source` owns each observation's input, revision,
 snapshot, parser version, order and byte range. Current reads select a source
