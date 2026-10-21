@@ -104,9 +104,9 @@ pub(super) fn install(
 ) -> Result<u64> {
     // Hash all descriptors, including tombstones. A repeat cannot reapply stale
     // row bodies, and the checkpoint commits with the corresponding rows.
-    let fingerprint = blake3::hash(&serde_json::to_vec(&(identity, units))?)
-        .to_hex()
-        .to_string();
+    let mut fingerprint = blake3::Hasher::new();
+    serde_json::to_writer(&mut fingerprint, &(identity, units))?;
+    let fingerprint = fingerprint.finalize().to_hex().to_string();
     let tx = conn.transaction()?;
     if let Some(archive_id) = identity {
         if archive_id.is_empty() {
@@ -195,17 +195,14 @@ fn check_batch(unit: &RestoreUnit, payload: Option<&[u8]>) -> Result<()> {
                     "selected unit payload failed its hash/length check",
                 ));
             }
-            let rows: Vec<_> = bytes
-                .split(|b| *b == b'\n')
-                .filter(|l| !l.is_empty())
-                .collect();
-            if rows.len() as u64 != unit.rows {
+            let rows = bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty());
+            if rows.clone().count() as u64 != unit.rows {
                 return Err(invalid("selected unit row count differs"));
             }
             let mut inputs = std::collections::BTreeSet::new();
             let mut machines = std::collections::BTreeSet::new();
             if unit.unit.kind == "excision" {
-                for line in &rows {
+                for line in rows.clone() {
                     let value: serde_json::Value = serde_json::from_slice(line)?;
                     let row = &value["row"];
                     if value["table"] == "observation" {

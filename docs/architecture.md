@@ -295,6 +295,14 @@ The next pass asks Sinex which stable frame keys it holds before resending.
 Synchronous archive and blob operations finish before cancellation is polled;
 this does not impose a hard shutdown deadline or qualify primary mode.
 
+Restore keeps the complete confirmed unit catalog in memory to resolve later
+replacements before reading payloads. It verifies source blobs as streams, but
+loads one selected row batch at a time. Memory therefore scales with the catalog
+and the largest batch, which can contain all extents of a revision. Descriptor
+hashing writes directly to the hash function, and row validation iterates over
+the batch without collecting row boundaries. This does not bound the catalog
+or individual batch size.
+
 Excision records retain exact unit identities and content-addressed replacement
 batches or tombstones. Restore validates and folds all confirmed replacement
 metadata before opening payloads, then replaces the selected owner rows in one
