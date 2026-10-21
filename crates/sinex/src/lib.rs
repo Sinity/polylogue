@@ -268,28 +268,30 @@ impl Sinex {
         hashes: &[[u8; 32]],
         done: &mut Published,
     ) -> Result<()> {
-        let frames: Vec<_> = hashes
-            .iter()
-            .map(|h| format!("blob:{}", sinex_rows::hex(h)))
-            .collect();
-        let known = self.have(&frames).await?;
-        for (hash, frame) in hashes.iter().zip(frames) {
-            if let Some(ack) = known.get(&frame) {
-                checked(ack.clone())?;
-                continue;
+        for hashes in hashes.chunks(500) {
+            let frames: Vec<_> = hashes
+                .iter()
+                .map(|h| format!("blob:{}", sinex_rows::hex(h)))
+                .collect();
+            let known = self.have(&frames).await?;
+            for (hash, frame) in hashes.iter().zip(frames) {
+                if let Some(ack) = known.get(&frame) {
+                    checked(ack.clone())?;
+                    continue;
+                }
+                let length = archive.copy_blob_to(hash, &self.store)?;
+                let expected = hashed_blobs::Hash(*hash);
+                self.material(
+                    frame,
+                    None,
+                    &expected,
+                    length,
+                    format!("blob:{}", expected.hex()),
+                    serde_json::json!({"archive":id}),
+                )
+                .await?;
+                done.blobs += 1;
             }
-            let length = archive.copy_blob_to(hash, &self.store)?;
-            let expected = hashed_blobs::Hash(*hash);
-            self.material(
-                frame,
-                None,
-                &expected,
-                length,
-                format!("blob:{}", expected.hex()),
-                serde_json::json!({"archive":id}),
-            )
-            .await?;
-            done.blobs += 1;
         }
         Ok(())
     }
