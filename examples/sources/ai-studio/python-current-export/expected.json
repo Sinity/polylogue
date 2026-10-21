@@ -56,13 +56,17 @@
           "topP": 0.95
         },
         "kind": "run_settings",
+        "range": [
+          0,
+          3410
+        ],
         "session": "ai-studio:current_export"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 3410,
         "message": {
           "blocks": [
             {
@@ -77,7 +81,7 @@
         "offset": 0
       },
       {
-        "end": 2,
+        "end": 165,
         "message": {
           "at": "2026-01-05T09:00:00Z",
           "blocks": [
@@ -99,10 +103,10 @@
             "reasoning": null
           }
         },
-        "offset": 1
+        "offset": 39
       },
       {
-        "end": 3,
+        "end": 390,
         "message": {
           "blocks": [
             {
@@ -124,10 +128,10 @@
             "reasoning": 3
           }
         },
-        "offset": 2
+        "offset": 170
       },
       {
-        "end": 4,
+        "end": 695,
         "message": {
           "blocks": [
             {
@@ -149,10 +153,10 @@
             "reasoning": null
           }
         },
-        "offset": 3
+        "offset": 395
       },
       {
-        "end": 5,
+        "end": 809,
         "message": {
           "blocks": [
             {
@@ -167,10 +171,10 @@
           "role": "user",
           "session": "ai-studio:current_export"
         },
-        "offset": 4
+        "offset": 700
       },
       {
-        "end": 6,
+        "end": 917,
         "message": {
           "blocks": [
             {
@@ -185,10 +189,10 @@
           "role": "user",
           "session": "ai-studio:current_export"
         },
-        "offset": 5
+        "offset": 814
       },
       {
-        "end": 7,
+        "end": 1025,
         "message": {
           "blocks": [
             {
@@ -203,10 +207,10 @@
           "role": "user",
           "session": "ai-studio:current_export"
         },
-        "offset": 6
+        "offset": 922
       },
       {
-        "end": 8,
+        "end": 1133,
         "message": {
           "blocks": [
             {
@@ -221,10 +225,10 @@
           "role": "user",
           "session": "ai-studio:current_export"
         },
-        "offset": 7
+        "offset": 1030
       },
       {
-        "end": 9,
+        "end": 1435,
         "message": {
           "blocks": [
             {
@@ -241,10 +245,10 @@
           "role": "user",
           "session": "ai-studio:current_export"
         },
-        "offset": 8
+        "offset": 1316
       },
       {
-        "end": 10,
+        "end": 1559,
         "message": {
           "blocks": [
             {
@@ -261,10 +265,10 @@
           "role": "user",
           "session": "ai-studio:current_export"
         },
-        "offset": 9
+        "offset": 1440
       },
       {
-        "end": 11,
+        "end": 1693,
         "message": {
           "blocks": [
             {
@@ -292,10 +296,10 @@
             "reasoning": null
           }
         },
-        "offset": 10
+        "offset": 1564
       },
       {
-        "end": 12,
+        "end": 1830,
         "message": {
           "blocks": [
             {
@@ -324,10 +328,10 @@
             "reasoning": null
           }
         },
-        "offset": 11
+        "offset": 1698
       },
       {
-        "end": 13,
+        "end": 2004,
         "message": {
           "blocks": [
             {
@@ -349,10 +353,10 @@
             "reasoning": null
           }
         },
-        "offset": 12
+        "offset": 1835
       },
       {
-        "end": 14,
+        "end": 2114,
         "message": {
           "blocks": [
             {
@@ -368,10 +372,10 @@
           "session": "ai-studio:current_export",
           "stop_reason": "OTHER"
         },
-        "offset": 13
+        "offset": 2009
       },
       {
-        "end": 15,
+        "end": 2351,
         "message": {
           "blocks": [
             {
@@ -385,10 +389,14 @@
           "role": "user",
           "session": "ai-studio:current_export"
         },
-        "offset": 14
+        "offset": 2119
       }
     ],
     "sessions": [
+      {
+        "id": "ai-studio:current_export",
+        "kind": "main"
+      },
       {
         "id": "ai-studio:current_export",
         "kind": "main",

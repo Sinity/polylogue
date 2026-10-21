@@ -11,6 +11,7 @@
 //! the same message. `parts` split a model chunk into thoughts and answer
 //! text; joined, they equal the chunk's `text`.
 
+use crate::array::{ArrayParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};
@@ -60,7 +61,11 @@ pub fn open(path: &Path) -> Option<Parse> {
     }
     let native = native_of(path)?;
     let title = title_of(path);
-    Some(Parse::Document(Box::new(AiStudio { native, title })))
+    Some(Parse::Array(Box::new(AiStudio {
+        native,
+        title,
+        state: PromptState::default(),
+    })))
 }
 
 /// The prompt's identity: the Drive file ID the collector names its files
@@ -89,6 +94,16 @@ pub struct AiStudio {
     native: String,
     /// The file name, used as the title when the document names none.
     title: Option<String>,
+    state: PromptState,
+}
+
+#[derive(Default)]
+struct PromptState {
+    metadata: Option<Json>,
+    model: Option<String>,
+    previous: Option<polylogue_model::MessageId>,
+    position: usize,
+    started: bool,
 }
 
 const DOCUMENT_FIELDS: Fields = &[
@@ -159,118 +174,132 @@ const CHUNK_FIELDS: Fields = &[
     ),
 ];
 
-impl DocumentParser for AiStudio {
-    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let mut sink = Sink::new(out, records);
-        let doc = match serde_json::from_slice::<Json>(bytes) {
-            Ok(v) if v.is_object() => v,
-            Ok(_) => {
-                return sink
-                    .records
-                    .record("prompt", &Disposition::refused("not an object"));
-            }
-            Err(e) => {
-                return sink.records.record(
-                    "prompt",
-                    &Disposition::refused(format!("malformed JSON: {e}")),
-                );
-            }
-        };
-        let Some(sid) = session_id(ORIGIN, &self.native) else {
-            return sink
-                .records
-                .record("prompt", &Disposition::refused("unusable file name"));
-        };
-        sink.records.fields("prompt", &doc, DOCUMENT_FIELDS);
-        let chunks = doc
-            .pointer("/chunkedPrompt/chunks")
-            .and_then(Json::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+impl ArrayParser for AiStudio {
+    fn scan(
+        &mut self,
+        reader: &mut dyn std::io::Read,
+        item: &mut ItemSink<'_>,
+    ) -> Result<ScanStats, ScanError> {
+        self.state = PromptState::default();
+        let (metadata, stats) =
+            crate::array::scan_nested(reader, &["chunkedPrompt", "chunks"], |range, raw| {
+                item(range, None, raw)
+            })?;
+        self.state.metadata = Some(metadata);
+        Ok(stats)
+    }
 
-        let mut session = Session::new(sid.clone(), SessionKind::Main);
-        if let Some(title) = &self.title {
-            session.offer_title(title, TitleSource::Generated);
+    fn order_key(&self, _: &serde_json::value::RawValue) -> Option<f64> {
+        None
+    }
+
+    fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
+        let doc = self
+            .state
+            .metadata
+            .take()
+            .ok_or("prompt metadata not scanned")?;
+        let mut out = Output::default();
+        let mut records = Records::default();
+        let sink = Sink::new(&mut out, &mut records);
+        if !doc.is_object() {
+            sink.records
+                .record("prompt", &Disposition::refused("not an object"));
+        } else {
+            let sid = session_id(ORIGIN, &self.native).ok_or("unusable file name")?;
+            sink.records.fields("prompt", &doc, DOCUMENT_FIELDS);
+            let mut session = Session::new(sid.clone(), SessionKind::Main);
+            if let Some(title) = &self.title {
+                session.offer_title(title, TitleSource::Generated);
+            }
+            sink.out.sessions.push(session);
+            sink.records.record("prompt", &Disposition::Materialized);
+            let settings = doc.get("runSettings").cloned().unwrap_or(Json::Null);
+            self.state.model = str_of(&settings, "model")
+                .map(|m| m.strip_prefix("models/").unwrap_or(m).to_owned());
+            sink.out.events.push(Event {
+                session: sid.clone(),
+                kind: "run_settings".into(),
+                at: None,
+                after: None,
+                range: Some((0, length)),
+                data: settings,
+            });
+            if let Some(text) = system_text(doc.get("systemInstruction")) {
+                let id = message_id(ORIGIN, &format!("{}#system", self.native))
+                    .ok_or("unusable system id")?;
+                sink.out.messages.push(MessageRow {
+                    offset: 0,
+                    end: length,
+                    message: plain(id.clone(), sid, Role::System, vec![Block::Text { text }]),
+                });
+                self.state.previous = Some(id);
+            }
         }
-        if let Some(at) = chunks
-            .iter()
-            .find_map(|c| c.get("createTime").and_then(time_of))
+        Ok(Some(crate::parse::Step {
+            output: out,
+            accounting: records.finish().map_err(|e| e.to_string())?,
+            start: 0,
+            consumed: length,
+            snapshot: None,
+        }))
+    }
+
+    fn item(
+        &mut self,
+        chunk: &Json,
+        sink: &mut Sink<'_>,
+        _: &mut dyn Owners,
+    ) -> Result<(), String> {
+        let sid = session_id(ORIGIN, &self.native).ok_or("unusable file name")?;
+        let i = self.state.position;
+        self.state.position += 1;
+        let kind = chunk_role(chunk).unwrap_or("?").to_owned();
+        sink.records.fields(&kind, chunk, CHUNK_FIELDS);
+        if !self.state.started
+            && let Some(at) = chunk.get("createTime").and_then(time_of)
         {
+            let mut session = Session::new(sid.clone(), SessionKind::Main);
             session.offer_start(at);
+            sink.out.sessions.push(session);
+            self.state.started = true;
         }
-        sink.out.sessions.push(session);
-        sink.records.record("prompt", &Disposition::Materialized);
-
-        let settings = doc.get("runSettings").cloned().unwrap_or(Json::Null);
-        let model =
-            str_of(&settings, "model").map(|m| m.strip_prefix("models/").unwrap_or(m).to_owned());
-        sink.out.events.push(Event {
-            session: sid.clone(),
-            kind: "run_settings".into(),
-            at: None,
-            after: None,
-            range: None,
-            data: settings,
-        });
-
-        let mut previous = None;
-        if let Some(text) = system_text(doc.get("systemInstruction")) {
-            let id = message_id(ORIGIN, &format!("{}#system", self.native));
-            if let Some(id) = id {
+        if i == 0
+            && let Some(parent) = chunk
+                .pointer("/branchParent/promptId")
+                .and_then(Json::as_str)
+                .and_then(|p| session_id(ORIGIN, p))
+        {
+            sink.out.links.push(Link {
+                kind: LinkKind::Fork,
+                parent,
+                child: sid.clone(),
+                at: None,
+                call_id: None,
+                evidence: "branchParent.promptId".into(),
+            });
+        }
+        match self.message(
+            &sid,
+            i,
+            chunk,
+            self.state.model.as_deref(),
+            self.state.previous.clone(),
+            sink,
+        ) {
+            Ok(message) => {
+                self.state.previous = Some(message.id.clone());
                 let offset = sink.position();
                 sink.out.messages.push(MessageRow {
                     offset,
                     end: offset + 1,
-                    message: plain(
-                        id.clone(),
-                        sid.clone(),
-                        Role::System,
-                        vec![Block::Text { text }],
-                    ),
+                    message,
                 });
-                previous = Some(id);
+                sink.records.record(&kind, &Disposition::Materialized);
             }
+            Err(d) => sink.records.record(&kind, &d),
         }
-
-        for (i, chunk) in chunks.iter().enumerate() {
-            let kind = chunk_role(chunk).unwrap_or("?").to_owned();
-            sink.records.fields(&kind, chunk, CHUNK_FIELDS);
-            if i == 0
-                && let Some(parent) = chunk
-                    .pointer("/branchParent/promptId")
-                    .and_then(Json::as_str)
-                    .and_then(|p| session_id(ORIGIN, p))
-            {
-                sink.out.links.push(Link {
-                    kind: LinkKind::Fork,
-                    parent,
-                    child: sid.clone(),
-                    at: None,
-                    call_id: None,
-                    evidence: "branchParent.promptId".into(),
-                });
-            }
-            match self.message(
-                &sid,
-                i,
-                chunk,
-                model.as_deref(),
-                previous.clone(),
-                &mut sink,
-            ) {
-                Ok(message) => {
-                    previous = Some(message.id.clone());
-                    let offset = sink.position();
-                    sink.out.messages.push(MessageRow {
-                        offset,
-                        end: offset + 1,
-                        message,
-                    });
-                    sink.records.record(&kind, &Disposition::Materialized);
-                }
-                Err(d) => sink.records.record(&kind, &d),
-            }
-        }
+        Ok(())
     }
 }
 

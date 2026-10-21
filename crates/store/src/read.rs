@@ -74,6 +74,7 @@ pub struct KnownInput {
 /// source path. Imports use this to retry parsing without retaining bytes twice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetainedInput {
+    pub chain: i64,
     pub route_rank: u8,
     pub waiting: bool,
     pub length: u64,
@@ -738,6 +739,7 @@ impl Reader<'_> {
                 Ok((
                     r.get(0)?,
                     RetainedInput {
+                        chain: r.get(0)?,
                         length: r.get::<_, i64>(1)? as u64,
                         parsed_upto: r.get::<_, i64>(2)? as u64,
                         parser_version: r.get::<_, Option<i64>>(3)?.map(|v| v as u32),
@@ -753,7 +755,7 @@ impl Reader<'_> {
         let row = self
             .conn()
             .prepare_cached(
-                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.parser_version, r.produced, COALESCE(p.status = 'waiting', 0)
+                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.parser_version, r.produced, COALESCE(p.status = 'waiting', 0), r.chain
              FROM a.revision r
              LEFT JOIN input_ref i ON i.id = r.input
              LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain
@@ -766,10 +768,11 @@ impl Reader<'_> {
                     r.get::<_, Option<i64>>(2)?,
                     r.get::<_, String>(3)?,
                     r.get::<_, bool>(4)?,
+                    r.get::<_, i64>(5)?,
                 ))
             })
             .optional()?;
-        let Some((length, parsed_upto, parser_version, produced, waiting)) = row else {
+        let Some((length, parsed_upto, parser_version, produced, waiting, chain)) = row else {
             return Ok(None);
         };
         let route_rank = match produced.as_str() {
@@ -782,6 +785,7 @@ impl Reader<'_> {
             }
         };
         Ok(Some(RetainedInput {
+            chain,
             route_rank,
             waiting,
             length: length as u64,

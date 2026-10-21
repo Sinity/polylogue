@@ -17,13 +17,17 @@
       {
         "data": null,
         "kind": "run_settings",
+        "range": [
+          0,
+          998
+        ],
         "session": "ai-studio:code_execution_session"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 226,
         "message": {
           "at": "2025-02-01T11:00:02Z",
           "blocks": [
@@ -37,10 +41,10 @@
           "role": "user",
           "session": "ai-studio:code_execution_session"
         },
-        "offset": 0
+        "offset": 39
       },
       {
-        "end": 2,
+        "end": 436,
         "message": {
           "at": "2025-02-01T11:00:05Z",
           "blocks": [
@@ -54,10 +58,10 @@
           "role": "assistant",
           "session": "ai-studio:code_execution_session"
         },
-        "offset": 1
+        "offset": 231
       },
       {
-        "end": 3,
+        "end": 796,
         "message": {
           "at": "2025-02-01T11:00:08Z",
           "blocks": [
@@ -94,10 +98,10 @@
           "role": "assistant",
           "session": "ai-studio:code_execution_session"
         },
-        "offset": 2
+        "offset": 441
       },
       {
-        "end": 4,
+        "end": 989,
         "message": {
           "at": "2025-02-01T11:00:18Z",
           "blocks": [
@@ -119,10 +123,14 @@
             "reasoning": null
           }
         },
-        "offset": 3
+        "offset": 801
       }
     ],
     "sessions": [
+      {
+        "id": "ai-studio:code_execution_session",
+        "kind": "main"
+      },
       {
         "id": "ai-studio:code_execution_session",
         "kind": "main",

@@ -143,3 +143,62 @@ fn scan_failures_distinguish_provider_syntax_input_callback_and_span() {
     );
     assert!(matches!(tap.borrow().failure, Some(ScanError::Span)));
 }
+
+#[test]
+fn nested_chunks_keep_exact_spans_and_metadata_on_either_side() {
+    let input = br#"{"before":17,"chunkedPrompt":{"pendingInputs":[{"text":"draft"}],"chunks":[{"role":"user","text":"[,{}]"},{"role":"model","text":"answer"}],"after":false},"runSettings":{"model":"models/example"}}"#;
+    for fragment in 1..=17 {
+        let mut chunks = Vec::new();
+        let (metadata, stats) = scan_nested(
+            Fragmented {
+                bytes: input,
+                fragment,
+            },
+            &["chunkedPrompt", "chunks"],
+            |range, raw| {
+                assert_eq!(
+                    &input[range.start as usize..range.end as usize],
+                    raw.get().as_bytes()
+                );
+                chunks.push(serde_json::from_str::<polylogue_model::Json>(raw.get()).unwrap());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(stats.elements, 2);
+        assert_eq!(chunks[1]["text"], "answer");
+        let mut expected: polylogue_model::Json = serde_json::from_slice(input).unwrap();
+        expected["chunkedPrompt"]["chunks"] = serde_json::json!([]);
+        assert_eq!(metadata, expected);
+    }
+}
+
+#[test]
+fn nested_scan_validates_suffix_refuses_duplicate_paths_and_bounds_element_buffers() {
+    for input in [
+        r#"{"chunkedPrompt":{"chunks":[{}]}} false"#,
+        r#"{"chunkedPrompt":{"chunks":[{}],"chunks":[]}}"#,
+        r#"{"chunkedPrompt":{"chunks":[]},"chunkedPrompt":{"chunks":[]}}"#,
+    ] {
+        assert!(matches!(
+            scan_nested(
+                input.as_bytes(),
+                &["chunkedPrompt", "chunks"],
+                |_, _| Ok(())
+            ),
+            Err(ScanError::Malformed(_))
+        ));
+    }
+    let mut peaks = Vec::new();
+    for n in [100, 10_000] {
+        let reader = io::Cursor::new(b"{\"chunkedPrompt\":{\"chunks\":[{}".as_slice())
+            .chain(Repeated { left: n, at: 0 })
+            .chain(io::Cursor::new(b"]},\"runSettings\":{}}"));
+        let (metadata, stats) =
+            scan_nested(reader, &["chunkedPrompt", "chunks"], |_, _| Ok(())).unwrap();
+        assert_eq!(stats.elements, n as u64 + 1);
+        assert_eq!(metadata["chunkedPrompt"]["chunks"], serde_json::json!([]));
+        peaks.push(stats.peak_element_bytes);
+    }
+    assert_eq!(peaks[0], peaks[1]);
+}

@@ -17,13 +17,17 @@
       {
         "data": null,
         "kind": "run_settings",
+        "range": [
+          0,
+          962
+        ],
         "session": "ai-studio:multi_turn_prompt"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 219,
         "message": {
           "at": "2025-02-03T10:00:00Z",
           "blocks": [
@@ -43,10 +47,10 @@
           "role": "user",
           "session": "ai-studio:multi_turn_prompt"
         },
-        "offset": 0
+        "offset": 39
       },
       {
-        "end": 2,
+        "end": 382,
         "message": {
           "at": "2025-02-03T10:00:30Z",
           "blocks": [
@@ -60,10 +64,10 @@
           "role": "assistant",
           "session": "ai-studio:multi_turn_prompt"
         },
-        "offset": 1
+        "offset": 224
       },
       {
-        "end": 3,
+        "end": 676,
         "message": {
           "at": "2025-02-03T10:01:00Z",
           "blocks": [
@@ -85,10 +89,10 @@
             "reasoning": null
           }
         },
-        "offset": 2
+        "offset": 387
       },
       {
-        "end": 4,
+        "end": 778,
         "message": {
           "at": "2025-02-03T10:01:30Z",
           "blocks": [
@@ -103,10 +107,10 @@
           "role": "user",
           "session": "ai-studio:multi_turn_prompt"
         },
-        "offset": 3
+        "offset": 681
       },
       {
-        "end": 5,
+        "end": 953,
         "message": {
           "at": "2025-02-03T10:02:00Z",
           "blocks": [
@@ -128,10 +132,14 @@
             "reasoning": null
           }
         },
-        "offset": 4
+        "offset": 783
       }
     ],
     "sessions": [
+      {
+        "id": "ai-studio:multi_turn_prompt",
+        "kind": "main"
+      },
       {
         "id": "ai-studio:multi_turn_prompt",
         "kind": "main",

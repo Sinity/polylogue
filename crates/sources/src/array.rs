@@ -57,6 +57,9 @@ pub struct ScanStats {
     pub peak_element_bytes: usize,
 }
 
+mod nested;
+pub use nested::scan_nested;
+
 /// Calls `item` once per complete element. Only the current raw element is
 /// buffered. A callback error stops decoding; the outer document is valid only
 /// after this returns successfully, including the trailing EOF check.
@@ -78,17 +81,25 @@ pub fn scan(
         .deserialize(&mut de)?;
         de.end()
     })();
-    if let Err(error) = result {
-        return Err(tap.borrow_mut().failure.take().unwrap_or_else(|| {
-            if error.is_io() {
-                ScanError::Input(error)
-            } else {
-                ScanError::Malformed(error)
-            }
-        }));
-    }
-    let stats = tap.borrow().stats;
-    Ok(stats)
+    finish_scan(result, &tap)
+}
+
+fn finish_scan(
+    result: Result<(), serde_json::Error>,
+    tap: &Rc<RefCell<Tap>>,
+) -> Result<ScanStats, ScanError> {
+    result.map_err(|error| scan_error(error, tap))?;
+    Ok(tap.borrow().stats)
+}
+
+fn scan_error(error: serde_json::Error, tap: &Rc<RefCell<Tap>>) -> ScanError {
+    tap.borrow_mut().failure.take().unwrap_or_else(|| {
+        if error.is_io() {
+            ScanError::Input(error)
+        } else {
+            ScanError::Malformed(error)
+        }
+    })
 }
 
 struct ArraySeed<'a, F> {
@@ -165,10 +176,23 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed
 }
 
 /// An export item parser. Ordering is separate from the physical record span.
+pub type ItemSink<'a> = dyn FnMut(Range<u64>, Option<f64>, &RawValue) -> Result<(), String> + 'a;
+
 pub trait ArrayParser: Send {
+    fn scan(
+        &mut self,
+        reader: &mut dyn Read,
+        item: &mut ItemSink<'_>,
+    ) -> Result<ScanStats, ScanError> {
+        scan(reader, |range, raw| item(range, self.order_key(raw), raw))
+    }
+    /// Prompt-level output after the complete source validates, before its items.
+    fn begin(&mut self, _length: u64) -> Result<Option<crate::parse::Step>, String> {
+        Ok(None)
+    }
     fn order_key(&self, raw: &RawValue) -> Option<f64>;
     fn item(
-        &self,
+        &mut self,
         value: &polylogue_model::Json,
         sink: &mut crate::document::Sink<'_>,
         owners: &mut dyn Owners,
@@ -185,7 +209,7 @@ pub trait Owners {
 }
 
 pub fn parse_item(
-    parser: &dyn ArrayParser,
+    parser: &mut dyn ArrayParser,
     value: &polylogue_model::Json,
     range: Range<u64>,
     owners: &mut dyn Owners,

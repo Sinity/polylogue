@@ -28,8 +28,8 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
     if !(spec.recognize)(path, head) {
         return Err(format!("{} does not recognize {}", origin, path.display()));
     }
-    let parser = (spec.open)(path).ok_or("origin does not open this path")?;
-    let step = super::support::array_fixture::parse(&parser, &input)?;
+    let mut parser = (spec.open)(path).ok_or("origin does not open this path")?;
+    let step = super::support::array_fixture::parse(&mut parser, &input)?;
     if step.consumed != input.len() as u64 {
         return Err(format!(
             "consumed {} of {} bytes",

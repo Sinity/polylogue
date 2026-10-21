@@ -33,13 +33,16 @@ impl Engine {
     pub(crate) fn execute_array(
         &mut self,
         plan: &mut Plan,
-        parser: &dyn ArrayParser,
+        parser: &mut dyn ArrayParser,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
+        if matches!(plan.source, pool::Bytes::File) {
+            self.retain_array(plan, pass)?;
+        }
         let mut scratch = ExportArray::new()?;
-        let mut ingest = |range, raw: &serde_json::value::RawValue| {
+        let mut ingest = |range, key, raw: &serde_json::value::RawValue| {
             scratch
-                .push(range, parser.order_key(raw), raw.get().as_bytes())
+                .push(range, key, raw.get().as_bytes())
                 .map_err(|e| e.to_string())
         };
         let scanned = match &plan.source {
@@ -49,7 +52,7 @@ impl Engine {
                     reader: source.stream()?,
                     count: 0,
                 };
-                let result = array::scan(&mut reader, &mut ingest);
+                let result = parser.scan(&mut reader, &mut ingest);
                 pass.bytes_read += reader.count;
                 result
             }
@@ -58,7 +61,7 @@ impl Engine {
                     reader: chain.reader(Arc::clone(&self.blobs)),
                     count: 0,
                 };
-                let result = array::scan(&mut reader, &mut ingest);
+                let result = parser.scan(&mut reader, &mut ingest);
                 pass.bytes_read += reader.count;
                 result
             }
@@ -79,6 +82,11 @@ impl Engine {
         }
         let mut order_from = 0;
         let mut first = true;
+        if let Some(step) = parser.begin(plan.size).map_err(std::io::Error::other)? {
+            order_from = (step.output.messages.len() as u64).max(1);
+            self.write_array_step(plan, step.output, step.accounting, 0, true, false, pass)?;
+            first = false;
+        }
         while let Some(item) = scratch.next_item()? {
             let value = serde_json::from_reader(item.reader)
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -111,6 +119,58 @@ impl Engine {
             pass,
         )?;
         plan.parse_pos = plan.size;
+        Ok(())
+    }
+
+    /// Native watched arrays retain their next source extent before parsing.
+    /// The existing revision chain assembles genuine appends; rewrites start
+    /// a new chain. Parsing then uses that pinned representation.
+    fn retain_array(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(&plan.path)?;
+        let before = FileFacts::of(&file.metadata()?);
+        if Some(before) != plan.facts || before.size != plan.size {
+            return Err(std::io::Error::other("source changed before array capture").into());
+        }
+        let mut tail = vec![0; plan.size.min(read::TAIL as u64) as usize];
+        file.seek(SeekFrom::Start(plan.size - tail.len() as u64))?;
+        file.read_exact(&mut tail)?;
+        file.seek(SeekFrom::Start(plan.piece_pos))?;
+        let captured = Captured::read(&self.blobs, (&mut file).take(plan.size - plan.piece_pos))?;
+        if FileFacts::of(&file.metadata()?) != before
+            || captured.piece.size != plan.size - plan.piece_pos
+        {
+            return Err(std::io::Error::other("source changed during array capture").into());
+        }
+        let bytes = captured.piece.size;
+        self.writer.send(Batch {
+            input: plan.input.clone(),
+            change: plan.change.clone(),
+            observation: plan.observation.take(),
+            continues: false,
+            piece: Some(captured.piece),
+            blobs: Vec::new(),
+            length: plan.size,
+            parse: Vec::new(),
+            release: Default::default(),
+        })?;
+        let written = self.writer.flush()?;
+        if !written.errors.is_empty() {
+            return Err(std::io::Error::other(written.errors.join("; ")).into());
+        }
+        pass.bytes_read += bytes + tail.len() as u64;
+        pass.bytes_stored += bytes;
+        let r = self.reads.reader()?;
+        let retained = r
+            .retained_input(&plan.input.id)?
+            .ok_or_else(|| std::io::Error::other("array capture has no retained revision"))?;
+        let chain = r.stored_chain(&plan.input.id, retained.chain, retained.length)?;
+        plan.source = pool::Bytes::Stored(Arc::new(chain));
+        plan.change = Change::Unchanged;
+        plan.piece_pos = plan.size;
+        plan.piece_started = true;
+        plan.parse_pos = 0;
+        plan.tail = Some(tail);
         Ok(())
     }
 

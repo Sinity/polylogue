@@ -22,13 +22,17 @@
       {
         "data": null,
         "kind": "run_settings",
+        "range": [
+          0,
+          983
+        ],
         "session": "ai-studio:multimodal_session"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 316,
         "message": {
           "at": "2025-02-01T12:00:02Z",
           "blocks": [
@@ -49,10 +53,10 @@
           "role": "user",
           "session": "ai-studio:multimodal_session"
         },
-        "offset": 0
+        "offset": 39
       },
       {
-        "end": 2,
+        "end": 499,
         "message": {
           "at": "2025-02-01T12:00:05Z",
           "blocks": [
@@ -70,10 +74,10 @@
           "role": "user",
           "session": "ai-studio:multimodal_session"
         },
-        "offset": 1
+        "offset": 321
       },
       {
-        "end": 3,
+        "end": 646,
         "message": {
           "at": "2025-02-01T12:00:07Z",
           "blocks": [
@@ -92,10 +96,10 @@
           "role": "user",
           "session": "ai-studio:multimodal_session"
         },
-        "offset": 2
+        "offset": 504
       },
       {
-        "end": 4,
+        "end": 974,
         "message": {
           "at": "2025-02-01T12:00:25Z",
           "blocks": [
@@ -117,10 +121,14 @@
             "reasoning": null
           }
         },
-        "offset": 3
+        "offset": 651
       }
     ],
     "sessions": [
+      {
+        "id": "ai-studio:multimodal_session",
+        "kind": "main"
+      },
       {
         "id": "ai-studio:multimodal_session",
         "kind": "main",

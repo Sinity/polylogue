@@ -20,13 +20,17 @@
           "temperature": 0.2
         },
         "kind": "run_settings",
+        "range": [
+          0,
+          1006
+        ],
         "session": "ai-studio:text_and_parts_prompt"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 247,
         "message": {
           "at": "2026-01-05T10:00:00Z",
           "blocks": [
@@ -40,10 +44,10 @@
           "role": "user",
           "session": "ai-studio:text_and_parts_prompt"
         },
-        "offset": 0
+        "offset": 122
       },
       {
-        "end": 2,
+        "end": 659,
         "message": {
           "at": "2026-01-05T10:00:02Z",
           "blocks": [
@@ -59,10 +63,10 @@
           "role": "assistant",
           "session": "ai-studio:text_and_parts_prompt"
         },
-        "offset": 1
+        "offset": 252
       },
       {
-        "end": 3,
+        "end": 997,
         "message": {
           "at": "2026-01-05T10:00:04Z",
           "blocks": [
@@ -85,10 +89,14 @@
             "reasoning": null
           }
         },
-        "offset": 2
+        "offset": 664
       }
     ],
     "sessions": [
+      {
+        "id": "ai-studio:text_and_parts_prompt",
+        "kind": "main"
+      },
       {
         "id": "ai-studio:text_and_parts_prompt",
         "kind": "main",

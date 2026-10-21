@@ -13,9 +13,9 @@ use std::path::Path;
 pub fn parse(origin: &str, path: &str, input: &[u8]) -> Value {
     let spec = by_name(origin).unwrap_or_else(|| panic!("unknown origin {origin}"));
     let path = Path::new(path);
-    let parser =
+    let mut parser =
         (spec.open)(path).unwrap_or_else(|| panic!("{origin} does not open {}", path.display()));
-    let step = array_fixture::parse(&parser, input).expect("parse step");
+    let step = array_fixture::parse(&mut parser, input).expect("parse step");
     assert_eq!(
         step.consumed,
         input.len() as u64,

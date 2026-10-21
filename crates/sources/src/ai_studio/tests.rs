@@ -16,8 +16,9 @@ fn parse(native: &str, bytes: &[u8]) -> crate::parse::Step {
     let parser = AiStudio {
         native: native.into(),
         title: Some("Electrons".into()),
+        state: PromptState::default(),
     };
-    run_document(&parser, bytes).unwrap()
+    crate::array::fixture::parse(&mut Parse::Array(Box::new(parser)), bytes).unwrap()
 }
 
 #[test]
