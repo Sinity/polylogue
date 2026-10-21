@@ -1,6 +1,6 @@
 //! Compare excision revisions inside a read snapshot; index data is derived.
 use crate::{Result, StoreError};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Revision {
@@ -37,21 +37,86 @@ pub(crate) fn set(conn: &Connection, revision: &Revision) -> Result<()> {
     Ok(())
 }
 
+// A revision counter detects stale snapshots. These receipts additionally
+// prevent a newer fork from silently dropping an already applied removal.
+fn policy_hash(row: &rusqlite::Row<'_>) -> rusqlite::Result<blake3::Hash> {
+    let mut hash = blake3::Hasher::new();
+    for i in 0..3 {
+        let value = row.get_ref(i)?.as_str()?;
+        hash.update(&(value.len() as u64).to_be_bytes());
+        hash.update(value.as_bytes());
+    }
+    Ok(hash.finalize())
+}
+
+/// The caller includes receipts and revision in the index transaction.
 pub(crate) fn acknowledge(archive: &Connection, index: &Connection) -> Result<()> {
+    index.execute("DELETE FROM excision_applied", [])?;
+    let mut select = archive
+        .prepare("SELECT scope,refused_json,message_ids_json,id FROM excision ORDER BY id")?;
+    let mut insert =
+        index.prepare("INSERT INTO excision_applied(id_hash,policy_hash) VALUES (?1,?2)")?;
+    let mut rows = select.query([])?;
+    while let Some(row) = rows.next()? {
+        insert.execute(params![
+            blake3::hash(row.get::<_, String>(3)?.as_bytes())
+                .as_bytes()
+                .as_slice(),
+            policy_hash(row)?.as_bytes().as_slice()
+        ])?;
+    }
     set(index, &current(archive)?)
 }
 
-pub(crate) fn needs_rebuild(applied: &Revision, current: &Revision) -> Result<bool> {
+pub(crate) fn needs_rebuild(archive: &Connection, index: &Connection) -> Result<bool> {
+    let applied = current(index)?;
+    let current = current(archive)?;
+    let conflict = || StoreError::ExcisionConflict {
+        archive: current.version,
+        index: applied.version,
+    };
+    let has_receipts: bool = index.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='excision_applied')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_receipts {
+        let count: i64 =
+            index.query_row("SELECT count(*) FROM excision_applied", [], |r| r.get(0))?;
+        let mut matched = 0i64;
+        let mut policies = archive
+            .prepare("SELECT scope,refused_json,message_ids_json,id FROM excision ORDER BY id")?;
+        let mut receipt =
+            index.prepare("SELECT policy_hash FROM excision_applied WHERE id_hash=?1")?;
+        let mut rows = policies.query([])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(3)?;
+            let id_hash = blake3::hash(id.as_bytes());
+            let expected: Option<Vec<u8>> = receipt
+                .query_row([id_hash.as_bytes().as_slice()], |r| r.get(0))
+                .optional()?;
+            if let Some(expected) = expected {
+                if policy_hash(row)?.as_bytes().as_slice() != expected {
+                    return Err(conflict());
+                }
+                matched += 1;
+            }
+        }
+        if matched != count {
+            return Err(conflict());
+        }
+    } else if applied.version != 0 {
+        // Pre-receipt indexes have no known policy history. A marked index
+        // missing its receipt table cannot be treated as such a predecessor.
+        return Err(conflict());
+    }
     if applied == current {
         return Ok(false);
     }
     if current.version > applied.version {
         return Ok(true);
     }
-    Err(StoreError::ExcisionConflict {
-        archive: current.version,
-        index: applied.version,
-    })
+    Err(conflict())
 }
 
 pub(crate) fn check_snapshot(conn: &Connection) -> Result<()> {
@@ -112,3 +177,6 @@ pub(crate) fn fingerprint(conn: &Connection) -> Result<blake3::Hash> {
     }
     Ok(hash.finalize())
 }
+
+#[cfg(test)]
+mod tests;

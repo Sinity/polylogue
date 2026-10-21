@@ -580,6 +580,10 @@ impl Inner {
         {
             return Err(StoreError::ExcisionPending);
         }
+        // Persist removal receipts with WAL semantics even during a first build.
+        if !request.dry_run {
+            self.settle()?;
+        }
         let local_store = store.primary_only();
         let embeddings = if self.embeddings_db.exists() {
             let e = open_write(&self.embeddings_db, crate::archive::cache::SETUP)?;

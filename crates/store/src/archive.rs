@@ -136,7 +136,9 @@ impl Archive {
         schema::ensure_index(&index)?;
         if fresh {
             let archive = open_read(&self.archive_db())?;
-            crate::excise::recovery::acknowledge(&archive, &index)?;
+            let tx = index.unchecked_transaction()?;
+            crate::excise::recovery::acknowledge(&archive, &tx)?;
+            tx.commit()?;
         }
         Ok(())
     }
@@ -145,7 +147,7 @@ impl Archive {
 /// An index built by another version, or left unsynced by a stop in the
 /// middle of a first build, is moved aside (`index.db.v<N>`,
 /// `index.db.unsynced`), so a new one is built from `archive.db` by the
-/// loop. Nothing in it is lost: every row is recomputed from stored bytes.
+/// loop. Previously applied removal rules are checked before retiring it.
 fn set_aside_old_index(archive: &Archive) -> Result<()> {
     let path = archive.index_db();
     if !path.exists() {
@@ -153,16 +155,20 @@ fn set_aside_old_index(archive: &Archive) -> Result<()> {
     }
     let conn = open_read(&path)?;
     let found = schema::version(&conn)?;
-    let unsynced = found == schema::INDEX_VERSION && schema::unsynced(&conn)?;
-    let excision_stale = if found == schema::INDEX_VERSION && !unsynced {
+    let has_meta: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
+        [],
+        |r| r.get(0),
+    )?;
+    // Check known removal rules before every retirement path, including an
+    // ordinary schema upgrade and an interrupted first build.
+    let excision_stale = if has_meta {
         let archive_conn = open_read(&archive.archive_db())?;
-        crate::excise::recovery::needs_rebuild(
-            &crate::excise::recovery::current(&conn)?,
-            &crate::excise::recovery::current(&archive_conn)?,
-        )?
+        crate::excise::recovery::needs_rebuild(&archive_conn, &conn)?
     } else {
         false
     };
+    let unsynced = has_meta && schema::unsynced(&conn)?;
     drop(conn);
     let suffix_for = if excision_stale {
         format!("excision-{}", uuid::Uuid::now_v7())

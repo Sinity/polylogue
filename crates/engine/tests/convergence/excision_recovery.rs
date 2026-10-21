@@ -54,7 +54,13 @@ fn an_archive_committed_excision_recovers_when_the_index_commit_was_lost() {
 
 #[test]
 fn older_or_conflicting_excision_authority_is_not_rebuilt_away() {
-    for conflicting in [false, true] {
+    for (conflicting, rebuild) in [
+        (0, "none"),
+        (1, "none"),
+        (2, "none"),
+        (2, "schema"),
+        (2, "unsynced"),
+    ] {
         let w = ClaudeHome::new();
         w.append(
             "victim.jsonl",
@@ -93,24 +99,39 @@ fn older_or_conflicting_excision_authority_is_not_rebuilt_away() {
             }
         }
         fs::rename(before, Archive::at(&w.root).archive_db()).unwrap();
-        if conflicting {
-            // An independently changed authority with the same revision number
-            // must not be mistaken for the index's removal history.
+        if conflicting != 0 {
+            // An independent history can have the same or a greater counter
+            // while lacking the removal already applied by this index.
             let a = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
             a.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('different','session:claude-code:other',1,9)",[]).unwrap();
             a.execute(
                 "UPDATE meta SET value=?1 WHERE key='excision_version'",
-                [applied],
+                [(applied.parse::<u64>().unwrap() + u64::from(conflicting == 2)).to_string()],
             )
             .unwrap();
         }
+        let index = rusqlite::Connection::open(Archive::at(&w.root).index_db()).unwrap();
+        match rebuild {
+            "schema" => index
+                .pragma_update(
+                    None,
+                    "user_version",
+                    polylogue_store::schema::INDEX_VERSION - 1,
+                )
+                .unwrap(),
+            "unsynced" => {
+                index.execute("INSERT INTO meta(key,value) VALUES ('unsynced','1') ON CONFLICT(key) DO UPDATE SET value='1'", []).unwrap();
+            }
+            _ => {}
+        }
+        drop(index);
         let result = Archive::open_or_create(&w.root);
         assert!(
             matches!(
                 result,
                 Err(polylogue_store::StoreError::ExcisionConflict { .. })
             ),
-            "{result:?}"
+            "fork={conflicting}, rebuild={rebuild}: {result:?}"
         );
         assert!(Archive::at(&w.root).index_db().exists());
         assert!(!fs::read_dir(&w.root).unwrap().any(|entry| {
