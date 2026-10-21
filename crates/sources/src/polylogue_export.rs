@@ -34,8 +34,8 @@ pub struct Export {
 impl ExportParser for Export {
     fn scan(
         &mut self,
-        reader: &mut dyn std::io::Read,
-        item: &mut ItemSink<'_>,
+        reader: &mut dyn crate::export::Input,
+        item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         self.valid = false;
         self.refusal = None;
@@ -48,7 +48,7 @@ impl ExportParser for Export {
                 {
                     invalid_session = Some(error.to_string());
                 }
-                item(range, Vec::new(), None, raw)
+                item.push(range, Vec::new(), None, raw)
             })?;
         self.refusal = Document::from_json(&metadata.to_string())
             .err()

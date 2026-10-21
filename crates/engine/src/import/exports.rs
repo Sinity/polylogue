@@ -4,15 +4,64 @@ use polylogue_model::{Accounting, Json, Output};
 use polylogue_sources::export::{self, ExportParser, Owners};
 use polylogue_store::{Batch, ParseStep, Piece, export_items::ExportItems};
 
-struct Counted<R> {
-    reader: R,
+struct Counted<F, R> {
+    open: F,
+    reader: std::io::BufReader<R>,
     count: u64,
 }
-impl<R: std::io::Read> std::io::Read for Counted<R> {
+impl<F: FnMut() -> R, R: std::io::Read> Counted<F, R> {
+    fn new(mut open: F) -> Self {
+        Self {
+            reader: std::io::BufReader::new(open()),
+            open,
+            count: 0,
+        }
+    }
+}
+impl<F, R: std::io::Read> std::io::Read for Counted<F, R> {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         let n = self.reader.read(out)?;
         self.count += n as u64;
         Ok(n)
+    }
+}
+impl<F, R: std::io::Read> std::io::BufRead for Counted<F, R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        std::io::BufRead::fill_buf(&mut self.reader)
+    }
+    fn consume(&mut self, n: usize) {
+        std::io::BufRead::consume(&mut self.reader, n);
+        self.count += n as u64;
+    }
+}
+impl<F: FnMut() -> R, R: std::io::Read> export::Input for Counted<F, R> {
+    fn rewind(&mut self) -> std::io::Result<()> {
+        self.reader = std::io::BufReader::new((self.open)());
+        Ok(())
+    }
+}
+
+struct ItemWriter<'a>(&'a mut ExportItems);
+impl export::ItemSink for ItemWriter<'_> {
+    fn push(
+        &mut self,
+        range: std::ops::Range<u64>,
+        key: Vec<u8>,
+        source_key: Option<&str>,
+        raw: &serde_json::value::RawValue,
+    ) -> Result<(), String> {
+        self.0
+            .push(range, key, source_key, raw.get().as_bytes())
+            .map_err(|e| e.to_string())
+    }
+    fn begin(&mut self) -> Result<(), String> {
+        self.0.begin_scan().map_err(|e| e.to_string())
+    }
+    fn commit(&mut self) -> Result<(), String> {
+        self.0.commit_scan().map_err(|e| e.to_string())
+    }
+    fn rollback(&mut self) -> Result<(), String> {
+        self.0.rollback_scan().map_err(|e| e.to_string())
     }
 }
 
@@ -22,9 +71,9 @@ impl Owners for OwnerLookup<'_> {
         &mut self,
         native: &str,
         session: &polylogue_model::SessionId,
-    ) -> Result<polylogue_model::SessionId, String> {
+    ) -> Result<Option<polylogue_model::SessionId>, String> {
         self.0
-            .claim_message(native, session)
+            .claim_owner(native, session)
             .map_err(|e| e.to_string())
     }
 }
@@ -40,38 +89,14 @@ impl Engine {
             self.retain_export(plan, pass)?;
         }
         let mut scratch = ExportItems::new()?;
-        let mut ingest =
-            |range, key, source_key: Option<&str>, raw: &serde_json::value::RawValue| {
-                scratch
-                    .push(range, key, source_key, raw.get().as_bytes())
-                    .map_err(|e| e.to_string())
-            };
-        let scanned = match &plan.source {
-            pool::Bytes::Import(source) => {
-                let mut source = source.lock().expect("import lock");
-                let mut reader = Counted {
-                    reader: source.stream()?,
-                    count: 0,
-                };
-                let result = parser.scan(&mut reader, &mut ingest);
-                pass.bytes_read += reader.count;
-                result
-            }
-            pool::Bytes::Stored(chain) => {
-                let mut reader = Counted {
-                    reader: chain.reader(Arc::clone(&self.blobs)),
-                    count: 0,
-                };
-                let result = parser.scan(&mut reader, &mut ingest);
-                pass.bytes_read += reader.count;
-                result
-            }
-            pool::Bytes::File => {
-                return Err(
-                    std::io::Error::other("exports must be retained before parsing").into(),
-                );
-            }
+        let pool::Bytes::Stored(chain) = &plan.source else {
+            return Err(
+                std::io::Error::other("exports must have a retained chain before parsing").into(),
+            );
         };
+        let mut reader = Counted::new(|| chain.reader(Arc::clone(&self.blobs)));
+        let scanned = parser.scan(&mut reader, &mut ItemWriter(&mut scratch));
+        pass.bytes_read += reader.count;
         if let Err(error) = scanned {
             let export::ScanError::Malformed(error) = error else {
                 return Err(std::io::Error::other(error).into());

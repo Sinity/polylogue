@@ -4,6 +4,7 @@
 //! origins accept it, by the layout its path sits in.
 
 use super::*;
+use polylogue_sources::origin::Route;
 
 mod exports;
 
@@ -140,6 +141,26 @@ impl Engine {
             }
             report.pass.bytes_stored += piece.size;
         }
+        let source = if matches!(
+            (origin.open)(path),
+            Some(polylogue_sources::Parse::Export(_))
+        ) {
+            let reader = self.reads.reader()?;
+            let retained = reader
+                .retained_input(&input.id)?
+                .ok_or_else(|| std::io::Error::other("import has no retained revision"))?;
+            pool::Bytes::Stored(Arc::new(reader.stored_chain(
+                &input.id,
+                retained.chain,
+                retained.length,
+            )?))
+        } else {
+            pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::open(
+                &self.blobs,
+                piece.hash,
+                piece.size,
+            )?)))
+        };
         Ok(Some(Plan {
             path: path.to_path_buf(),
             origin,
@@ -159,11 +180,7 @@ impl Engine {
             tracked: false,
             failed: false,
             waiting: false,
-            source: pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::open(
-                &self.blobs,
-                piece.hash,
-                piece.size,
-            )?))),
+            source,
         }))
     }
 }
@@ -240,15 +257,17 @@ pub(super) fn recognize_member(at: &Path, bytes: &[u8]) -> &'static OriginSpec {
 /// is preferred, so a Grok CLI history or a hook carrier copied with its
 /// directories keeps its origin.
 pub(super) fn recognize_import(path: &Path, head: &[u8]) -> Option<&'static OriginSpec> {
-    let mut found = ORIGINS
+    let found = ORIGINS
         .iter()
         .filter(|o| o.support == Support::Parsed && (o.recognize)(path, head));
-    let first = found.next()?;
-    let in_layout = |o: &OriginSpec| o.locations.iter().any(|l| collect::ends_in(path, l));
-    if in_layout(first) {
-        return Some(first);
-    }
-    Some(found.find(|o| in_layout(o)).unwrap_or(first))
+    let first = found.clone().next()?;
+    // Provider layout wins; outside it, an export's content signature wins
+    // over a live parser that accepts arbitrary JSONL filenames.
+    found
+        .clone()
+        .find(|o| o.locations.iter().any(|l| collect::ends_in(path, l)))
+        .or_else(|| found.clone().find(|o| o.route == Route::Import))
+        .or(Some(first))
 }
 
 /// The origin of export members no parser reads: kept as bytes.

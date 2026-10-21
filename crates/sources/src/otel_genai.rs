@@ -11,13 +11,14 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
-use crate::parse::{DocumentParser, MessageRow, Output, Parse};
+use crate::export::{ExportParser, Owners};
+use crate::parse::{MessageRow, Parse, Step};
 use crate::{Disposition, Records};
 use polylogue_model::{
     Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, Timestamp, ToolAction,
     ToolOutcome, Usage,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const ORIGIN: &str = "otel-genai";
@@ -30,150 +31,127 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 }
 
 pub fn open(_path: &Path) -> Option<Parse> {
-    Some(Parse::Document(Box::new(OtelGenAi)))
+    Some(Parse::Export(Box::new(OtelGenAi::default())))
 }
 
-pub struct OtelGenAi;
+#[derive(Default)]
+pub struct OtelGenAi {
+    refused_lines: u64,
+}
+
+mod stream;
 
 /// One span with its attributes decoded from OTLP `AnyValue`s.
-struct Span {
-    trace: String,
-    span: String,
+struct Span<'a> {
+    trace: &'a str,
     start: Option<Timestamp>,
     end_ns: Option<u64>,
     start_ns: Option<u64>,
     attrs: BTreeMap<String, Json>,
     status_error: bool,
-    raw: Json,
+    raw: &'a Json,
 }
 
-impl DocumentParser for OtelGenAi {
-    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let mut sink = Sink::new(out, records);
-        let documents: Vec<Json> = match serde_json::from_slice::<Json>(bytes) {
-            Ok(v) => vec![v],
-            Err(_) => {
-                let mut docs = Vec::new();
-                for line in bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-                    match serde_json::from_slice::<Json>(line) {
-                        Ok(v) => docs.push(v),
-                        Err(e) => sink.records.record(
-                            "line",
-                            &Disposition::refused(format!("malformed JSON: {e}")),
-                        ),
-                    }
-                }
-                docs
-            }
-        };
-        let mut spans = Vec::new();
-        for doc in &documents {
-            collect_spans(doc, &mut spans);
-        }
-        spans.sort_by(|a, b| (a.start_ns, &a.span).cmp(&(b.start_ns, &b.span)));
+fn nanos(span: &Json, key: &str) -> Option<u64> {
+    span.get(key).and_then(|v| match v {
+        Json::String(t) => t.parse().ok(),
+        other => other.as_u64(),
+    })
+}
 
-        // Places already written, per conversation.
-        let mut written: BTreeMap<String, HashSet<usize>> = BTreeMap::new();
-        let mut sessions_made: HashSet<String> = HashSet::new();
-        for span in spans {
-            let op = span
-                .attrs
-                .get("gen_ai.operation.name")
-                .and_then(Json::as_str)
-                .map(str::to_owned);
-            let is_genai = op.is_some() || span.attrs.keys().any(|k| k.starts_with("gen_ai."));
-            if !is_genai {
-                sink.records
-                    .record("span", &Disposition::unknown("not a GenAI span"));
-                continue;
-            }
-            let conversation = span
-                .attrs
-                .get("gen_ai.conversation.id")
-                .and_then(Json::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| span.trace.clone());
-            let Some(sid) = session_id(ORIGIN, &conversation) else {
-                sink.records
-                    .record("span", &Disposition::refused("unusable conversation ID"));
-                continue;
-            };
-            if sessions_made.insert(conversation.clone()) {
-                let mut s = Session::new(sid.clone(), SessionKind::Main);
-                if let Some(at) = span.start {
-                    s.offer_start(at);
-                }
-                sink.out.sessions.push(s);
-            }
-            sink.out.events.push(Event {
-                session: sid.clone(),
-                kind: "otel_span".into(),
-                at: span.start,
-                after: None,
-                range: None,
-                data: span.raw.clone(),
-            });
-            let seen = written.entry(conversation.clone()).or_default();
-            match op.as_deref() {
-                Some("execute_tool") => tool_span(&span, &conversation, &sid, seen, &mut sink),
-                _ => model_span(&span, &conversation, &sid, seen, &mut sink),
-            }
-            sink.records.record(
-                op.as_deref().unwrap_or("gen_ai"),
-                &Disposition::Materialized,
-            );
-        }
+fn span(raw: &Json) -> Span<'_> {
+    let start_ns = nanos(raw, "startTimeUnixNano");
+    Span {
+        trace: raw.get("traceId").and_then(Json::as_str).unwrap_or(""),
+        start: start_ns.and_then(|n| Timestamp::from_unix_ms((n / 1_000_000) as i64)),
+        start_ns,
+        end_ns: nanos(raw, "endTimeUnixNano"),
+        attrs: attributes(raw.get("attributes")),
+        status_error: raw
+            .pointer("/status/code")
+            .is_some_and(|c| c.as_i64() == Some(2) || c.as_str() == Some("STATUS_CODE_ERROR")),
+        raw,
     }
 }
 
-fn collect_spans(doc: &Json, out: &mut Vec<Span>) {
-    for rs in doc
-        .get("resourceSpans")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-    {
-        for ss in rs
-            .get("scopeSpans")
-            .and_then(Json::as_array)
-            .into_iter()
-            .flatten()
-        {
-            for s in ss
-                .get("spans")
-                .and_then(Json::as_array)
-                .into_iter()
-                .flatten()
-            {
-                let nanos = |k: &str| {
-                    s.get(k).and_then(|v| match v {
-                        Json::String(t) => t.parse::<u64>().ok(),
-                        other => other.as_u64(),
-                    })
-                };
-                let start_ns = nanos("startTimeUnixNano");
-                out.push(Span {
-                    trace: s
-                        .get("traceId")
-                        .and_then(Json::as_str)
-                        .unwrap_or("")
-                        .to_owned(),
-                    span: s
-                        .get("spanId")
-                        .and_then(Json::as_str)
-                        .unwrap_or("")
-                        .to_owned(),
-                    start: start_ns.and_then(|n| Timestamp::from_unix_ms((n / 1_000_000) as i64)),
-                    start_ns,
-                    end_ns: nanos("endTimeUnixNano"),
-                    attrs: attributes(s.get("attributes")),
-                    status_error: s.pointer("/status/code").is_some_and(|c| {
-                        c.as_i64() == Some(2) || c.as_str() == Some("STATUS_CODE_ERROR")
-                    }),
-                    raw: s.clone(),
-                });
-            }
+impl ExportParser for OtelGenAi {
+    fn scan(
+        &mut self,
+        reader: &mut dyn crate::export::Input,
+        items: &mut dyn crate::export::ItemSink,
+    ) -> Result<crate::export::ScanStats, crate::export::ScanError> {
+        self.refused_lines = 0;
+        let (stats, refused) = stream::scan(reader, items)?;
+        self.refused_lines = refused;
+        Ok(stats)
+    }
+    fn begin(&mut self, length: u64, _: Option<&Json>) -> Result<Option<Step>, String> {
+        if self.refused_lines == 0 {
+            return Ok(None);
         }
+        let mut records = Records::default();
+        for _ in 0..self.refused_lines {
+            records.record("line", &Disposition::refused("malformed JSON line"));
+        }
+        Ok(Some(Step {
+            output: Default::default(),
+            accounting: records.finish().map_err(|e| e.to_string())?,
+            start: 0,
+            consumed: length,
+            snapshot: None,
+        }))
+    }
+    fn item(
+        &mut self,
+        value: &Json,
+        sink: &mut Sink<'_>,
+        owners: &mut dyn Owners,
+    ) -> Result<(), String> {
+        let span = span(value);
+        let op = span
+            .attrs
+            .get("gen_ai.operation.name")
+            .and_then(Json::as_str);
+        if op.is_none() && !span.attrs.keys().any(|k| k.starts_with("gen_ai.")) {
+            sink.records
+                .record("span", &Disposition::unknown("not a GenAI span"));
+            return Ok(());
+        }
+        let conversation = span
+            .attrs
+            .get("gen_ai.conversation.id")
+            .and_then(Json::as_str)
+            .unwrap_or(span.trace);
+        let Some(sid) = session_id(ORIGIN, conversation) else {
+            sink.records
+                .record("span", &Disposition::refused("unusable conversation ID"));
+            return Ok(());
+        };
+        if owners
+            .claim(&format!("session\0{conversation}"), &sid)?
+            .is_none()
+        {
+            let mut s = Session::new(sid.clone(), SessionKind::Main);
+            if let Some(at) = span.start {
+                s.offer_start(at);
+            }
+            sink.out.sessions.push(s);
+        }
+        sink.out.events.push(Event {
+            session: sid.clone(),
+            kind: "otel_span".into(),
+            at: span.start,
+            after: None,
+            range: None,
+            data: span.raw.clone(),
+        });
+        match op {
+            Some("execute_tool") => tool_span(&span, &sid, sink),
+            _ => model_span(&span, conversation, &sid, owners, sink)?,
+        }
+        sink.records
+            .record(op.unwrap_or("gen_ai"), &Disposition::Materialized);
+        Ok(())
     }
 }
 
@@ -229,9 +207,9 @@ fn model_span(
     span: &Span,
     conversation: &str,
     sid: &polylogue_model::SessionId,
-    seen: &mut HashSet<usize>,
+    owners: &mut dyn Owners,
     sink: &mut Sink<'_>,
-) {
+) -> Result<(), String> {
     let inputs = messages_attr(span, "gen_ai.input.messages");
     let outputs = messages_attr(span, "gen_ai.output.messages");
     let model = span
@@ -250,7 +228,10 @@ fn model_span(
     };
     let n = inputs.len();
     for (place, m) in inputs.iter().chain(outputs.iter()).enumerate() {
-        if !seen.insert(place) {
+        if owners
+            .claim(&format!("message\0{conversation}#{place}"), sid)?
+            .is_some()
+        {
             continue;
         }
         let is_output = place >= n;
@@ -308,17 +289,12 @@ fn model_span(
             message,
         });
     }
+    Ok(())
 }
 
 /// An `execute_tool` span: its call and result, when no model message
 /// carried them, as an event on the conversation.
-fn tool_span(
-    span: &Span,
-    _conversation: &str,
-    sid: &polylogue_model::SessionId,
-    _seen: &mut HashSet<usize>,
-    sink: &mut Sink<'_>,
-) {
+fn tool_span(span: &Span, sid: &polylogue_model::SessionId, sink: &mut Sink<'_>) {
     sink.out.events.push(Event {
         session: sid.clone(),
         kind: "tool_execution".into(),

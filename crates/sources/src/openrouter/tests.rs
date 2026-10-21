@@ -164,6 +164,16 @@ fn many_room_entries_scan_with_one_message_buffer() {
             }
         }
     }
+    impl std::io::Seek for Room {
+        fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+            if from != std::io::SeekFrom::Start(0) {
+                return Err(std::io::ErrorKind::Unsupported.into());
+            }
+            self.part = std::io::Cursor::new(vec![]);
+            self.next = 0;
+            Ok(0)
+        }
+    }
     fn peak() -> u64 {
         std::fs::read_to_string("/proc/self/status")
             .unwrap()
@@ -179,11 +189,14 @@ fn many_room_entries_scan_with_one_message_buffer() {
     let mut count = 0;
     let stats = parser
         .scan(
-            &mut Room {
+            &mut std::io::BufReader::new(Room {
                 part: std::io::Cursor::new(vec![]),
                 next: 0,
-            },
-            &mut |_, _, _, _| {
+            }),
+            &mut |_: std::ops::Range<u64>,
+                  _: Vec<u8>,
+                  _: Option<&str>,
+                  _: &serde_json::value::RawValue| {
                 count += 1;
                 Ok(())
             },

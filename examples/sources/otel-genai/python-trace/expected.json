@@ -120,8 +120,8 @@
         },
         "kind": "otel_span",
         "range": [
-          0,
-          4208
+          1571,
+          3265
         ],
         "session": "otel-genai:conversation-demo-7"
       },
@@ -191,8 +191,8 @@
         },
         "kind": "otel_span",
         "range": [
-          0,
-          4208
+          395,
+          1557
         ],
         "session": "otel-genai:conversation-demo-7"
       },
@@ -209,8 +209,8 @@
         },
         "kind": "tool_execution",
         "range": [
-          0,
-          4208
+          395,
+          1557
         ],
         "session": "otel-genai:conversation-demo-7"
       },
@@ -262,8 +262,8 @@
         },
         "kind": "otel_span",
         "range": [
-          0,
-          4208
+          3279,
+          4165
         ],
         "session": "otel-genai:conversation-demo-7"
       },
@@ -278,8 +278,8 @@
         },
         "kind": "tool_execution",
         "range": [
-          0,
-          4208
+          3279,
+          4165
         ],
         "session": "otel-genai:conversation-demo-7"
       }
@@ -287,7 +287,7 @@
     "links": [],
     "messages": [
       {
-        "end": 4208,
+        "end": 3265,
         "message": {
           "blocks": [
             {
@@ -300,10 +300,10 @@
           "role": "user",
           "session": "otel-genai:conversation-demo-7"
         },
-        "offset": 0
+        "offset": 1571
       },
       {
-        "end": 4208,
+        "end": 3265,
         "message": {
           "at": "2025-01-01T00:00:01Z",
           "blocks": [
@@ -326,7 +326,7 @@
             "reasoning": null
           }
         },
-        "offset": 0
+        "offset": 1571
       }
     ],
     "sessions": [

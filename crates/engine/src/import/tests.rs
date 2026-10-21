@@ -267,3 +267,21 @@ fn replayed_import_does_not_replace_the_native_winner() {
 mod documents;
 
 mod reparse;
+
+#[test]
+fn an_export_signature_wins_over_the_loose_jsonl_fallback() {
+    let head = br#"{"resourceSpans":[{"scopeSpans":[{"spans":[]}"#;
+    for name in ["/backup/traces.jsonl", "/backup/traces.json"] {
+        assert_eq!(
+            recognize_import(Path::new(name), head).unwrap().name,
+            "otel-genai"
+        );
+    }
+    let claude = br#"{"type":"user","sessionId":"s1"}"#;
+    assert_eq!(
+        recognize_import(Path::new("/backup/s1.jsonl"), claude)
+            .unwrap()
+            .name,
+        "claude-code"
+    );
+}

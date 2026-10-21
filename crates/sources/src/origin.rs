@@ -419,7 +419,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     reserved!("grok", Import, []),
     OriginSpec {
         name: crate::otel_genai::ORIGIN,
-        parser_version: 3,
+        parser_version: 4,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,
