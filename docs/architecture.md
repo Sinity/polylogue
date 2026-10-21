@@ -295,13 +295,23 @@ The next pass asks Sinex which stable frame keys it holds before resending.
 Synchronous archive and blob operations finish before cancellation is polled;
 this does not impose a hard shutdown deadline or qualify primary mode.
 
-Restore keeps the complete confirmed unit catalog in memory to resolve later
-replacements before reading payloads. It verifies source blobs as streams, but
-loads one selected row batch at a time. Memory therefore scales with the catalog
-and the largest batch, which can contain all extents of a revision. Descriptor
-hashing writes directly to the hash function, and row validation iterates over
-the batch without collecting row boundaries. This does not bound the catalog
-or individual batch size.
+Restore orders confirmations and folds later replacements in an operation-scoped
+SQLite file. It checks exact repeats, conflicting positions, gaps and unit order
+before opening payloads. The same scratch database holds excision's input and
+machine membership sets. Its page-cache target is 1 MiB with mmap disabled;
+this is not a hard process memory cap. The catalog is discarded after the
+operation, and checkpoint serialization preserves the previous ordered JSON
+representation.
+
+Selected row batches use the blob store's sequential plain reader. Restore
+copies one batch to an anonymous temporary file while checking its content hash
+and length, then validates and applies one JSON row at a time. A bad later row,
+read failure or unavailable scratch space rolls back the whole target
+transaction. Repeated restores still verify payloads. Temporary disk scales
+with catalog metadata and the largest selected batch. Memory includes the
+largest descriptor, JSON row and decoded values, plus SQLite and blob-reader
+buffers and frame metadata; it does not hold every unit or batch row at once.
+A very large individual row or excision manifest still needs that much memory.
 
 Excision records retain exact unit identities and content-addressed replacement
 batches or tombstones. Restore validates and folds all confirmed replacement

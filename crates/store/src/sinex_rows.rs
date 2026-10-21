@@ -14,7 +14,9 @@ mod excision;
 pub(crate) use excision::{Capture, retired_local};
 pub use excision::{ExcisionPublication, Replacement};
 mod restore;
-pub use restore::{RestoreUnit, Selection, select};
+#[cfg(test)]
+use restore::select;
+pub use restore::{Catalog, RestoreUnit, Selection};
 
 use rusqlite::types::{Value as Sql, ValueRef};
 use rusqlite::{Connection, params_from_iter};
@@ -271,61 +273,63 @@ fn add(
 
 /// Inserts rows, reusing identical rows already present. A conflicting row
 /// refuses rather than silently retaining different content.
+#[cfg(test)]
 fn apply(archive: &Connection, lines: &[u8]) -> crate::Result<u64> {
     let mut inserted = 0;
     for line in lines.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-        let v: Value = serde_json::from_slice(line)?;
-        let table = v["table"]
-            .as_str()
-            .filter(|t| TABLES.contains(t))
-            .ok_or_else(|| {
-                crate::StoreError::Invalid(format!("a row names no known table: {v}"))
-            })?;
-        let row = v["row"]
-            .as_object()
-            .ok_or_else(|| crate::StoreError::Invalid("a row is not an object".into()))?;
-        let cols: Vec<&String> = row.keys().collect();
-        if cols
-            .iter()
-            .any(|c| !c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
-        {
-            return Err(crate::StoreError::Invalid(format!(
-                "bad column name in {table}"
-            )));
-        }
-        let sql = format!(
-            "INSERT OR IGNORE INTO {table}({}) VALUES ({})",
-            cols.iter()
-                .map(|c| c.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-            (1..=cols.len())
-                .map(|i| format!("?{i}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        let values: Vec<Sql> = row.values().map(to_sql).collect::<Result<_, _>>()?;
-        let added = archive.execute(&sql, params_from_iter(values.iter()))?;
-        if added == 0 {
-            let matching = format!(
-                "SELECT EXISTS(SELECT 1 FROM {table} WHERE {})",
-                cols.iter()
-                    .enumerate()
-                    .map(|(i, c)| format!("{c} IS ?{}", i + 1))
-                    .collect::<Vec<_>>()
-                    .join(" AND ")
-            );
-            let same: bool =
-                archive.query_row(&matching, params_from_iter(values.iter()), |r| r.get(0))?;
-            if !same {
-                return Err(crate::StoreError::Invalid(format!(
-                    "restored {table} row conflicts with existing unrelated data"
-                )));
-            }
-        }
-        inserted += added as u64;
+        inserted += apply_row(archive, serde_json::from_slice(line)?)?;
     }
     Ok(inserted)
+}
+
+fn apply_row(archive: &Connection, v: Value) -> crate::Result<u64> {
+    let table = v["table"]
+        .as_str()
+        .filter(|t| TABLES.contains(t))
+        .ok_or_else(|| crate::StoreError::Invalid(format!("a row names no known table: {v}")))?;
+    let row = v["row"]
+        .as_object()
+        .ok_or_else(|| crate::StoreError::Invalid("a row is not an object".into()))?;
+    let cols: Vec<&String> = row.keys().collect();
+    if cols
+        .iter()
+        .any(|c| !c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+    {
+        return Err(crate::StoreError::Invalid(format!(
+            "bad column name in {table}"
+        )));
+    }
+    let sql = format!(
+        "INSERT OR IGNORE INTO {table}({}) VALUES ({})",
+        cols.iter()
+            .map(|c| c.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        (1..=cols.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let values: Vec<Sql> = row.values().map(to_sql).collect::<Result<_, _>>()?;
+    let added = archive.execute(&sql, params_from_iter(values.iter()))?;
+    if added == 0 {
+        let matching = format!(
+            "SELECT EXISTS(SELECT 1 FROM {table} WHERE {})",
+            cols.iter()
+                .enumerate()
+                .map(|(i, c)| format!("{c} IS ?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        );
+        let same: bool =
+            archive.query_row(&matching, params_from_iter(values.iter()), |r| r.get(0))?;
+        if !same {
+            return Err(crate::StoreError::Invalid(format!(
+                "restored {table} row conflicts with existing unrelated data"
+            )));
+        }
+    }
+    Ok(added as u64)
 }
 
 /// The tables a batch may restore into.
@@ -464,11 +468,11 @@ impl Restoring {
     /// after `select`, so intentionally retired before-images are never required.
     /// A same-archive update must include every local excision's exact manifest;
     /// an older confirmed view cannot overwrite unpublished local removals.
-    pub fn install(
+    pub fn install<R: std::io::Read>(
         &mut self,
         archive_id: &str,
         units: &Selection,
-        fetch: impl FnMut(&RestoreUnit) -> crate::Result<Option<Vec<u8>>>,
+        fetch: impl FnMut(&RestoreUnit) -> crate::Result<Option<R>>,
     ) -> crate::Result<u64> {
         restore::install(&mut self.conn, units, Some(archive_id), fetch)
     }
