@@ -1,6 +1,13 @@
 use super::*;
 
-fn send(w: &World, change: Change, version: u32, order: u64, range: (u64, u64), text: &str) {
+pub(super) fn send(
+    w: &World,
+    change: Change,
+    version: u32,
+    order: u64,
+    range: (u64, u64),
+    text: &str,
+) {
     let mut b = batch(
         "input",
         0,

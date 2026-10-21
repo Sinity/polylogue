@@ -265,3 +265,5 @@ fn replayed_import_does_not_replace_the_native_winner() {
 }
 
 mod documents;
+
+mod reparse;

@@ -96,14 +96,14 @@ pub(super) fn clear_for_reparse(
     }
     let mut freed = BTreeSet::new();
     for (pk, id) in &sessions {
-        let (text_ids, session_blobs) = clear_session(i, *pk, id, t.counter)?;
+        let (text_ids, session_blobs) = crate::session_row::remove(i, *pk, id, t.counter)?;
         freed.extend(text_ids);
         blobs.extend(session_blobs);
     }
     // Rows of these inputs that belong to no one session (links,
     // processes, runs, repository lookups, parse positions), with the
     // rows that refer to them; parsing the inputs again writes them anew.
-    let tables = columns(i)?;
+    let tables = crate::schema::index_columns(i)?;
     let pks: Vec<i64> = inputs.iter().map(|(pk, _)| *pk).collect();
     let list = pks
         .iter()
@@ -398,7 +398,7 @@ pub(super) fn delete_session(
         removed_texts.extend(hashes);
         return Ok(());
     }
-    let (text_ids, session_blobs) = clear_session(i, pk, id, t.counter)?;
+    let (text_ids, session_blobs) = crate::session_row::remove(i, pk, id, t.counter)?;
     blobs.extend(session_blobs);
     i.execute(
         "INSERT INTO removed_session(session_id, changed) VALUES (?1, ?2)
@@ -427,113 +427,6 @@ pub(super) fn delete_session(
 /// Deletes one session's rows from every `index.db` table that names the
 /// session, its messages or its tool calls, whichever component added the
 /// table. Returns the texts its blocks held and the blobs they named.
-pub(super) fn clear_session(
-    i: &Transaction<'_>,
-    pk: i64,
-    id: &str,
-    counter: i64,
-) -> Result<(Vec<i64>, Vec<Vec<u8>>)> {
-    i.execute("DELETE FROM snapshot WHERE pk IN (SELECT snapshot_pk FROM snapshot_session WHERE session_pk=?1)", [pk])?;
-    let text_ids: Vec<i64> = i
-        .prepare(
-            "SELECT DISTINCT text_id FROM block WHERE session_pk = ?1 AND text_id IS NOT NULL
-             UNION SELECT v.text_id FROM version_block v JOIN message_source ms ON ms.version_hash=v.version_hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.text_id IS NOT NULL",
-        )?
-        .query_map([pk], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    let blobs: Vec<Vec<u8>> = i
-        .prepare(
-            "SELECT DISTINCT blob_hash FROM block WHERE session_pk = ?1 AND blob_hash IS NOT NULL
-             UNION SELECT v.blob_hash FROM version_block v JOIN message_source ms ON ms.version_hash=v.version_hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.blob_hash IS NOT NULL",
-        )?
-        .query_map([pk], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    let copies:Vec<i64>=i.prepare("SELECT DISTINCT s.message_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE s.session_pk=?1 AND m.session_pk<>?1")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
-    i.execute("DELETE FROM message_source WHERE session_pk=?1 OR message_pk IN (SELECT pk FROM message WHERE session_pk=?1)",[pk])?;
-    // Trigram entries before their tool calls.
-    let calls: Vec<(i64, Option<String>, Option<String>)> = i
-        .prepare("SELECT pk, command, path FROM tool_call WHERE session_pk = ?1")?
-        .query_map([pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (cpk, command, path) in &calls {
-        i.execute(
-            "INSERT INTO tool_call_trigram(tool_call_trigram, rowid, command, path)
-             VALUES ('delete', ?1, ?2, ?3)",
-            params![cpk, command, path],
-        )?;
-    }
-    // Every table that names the session, its messages or its tool calls,
-    // whichever component added it.
-    let tables = columns(i)?;
-    for (table, cols) in &tables {
-        if table == "session" || table == "message" || table == "tool_call" {
-            continue;
-        }
-        if cols.contains("tool_call_pk") {
-            i.execute(
-                &format!(
-                    "DELETE FROM {table} WHERE tool_call_pk IN
-                     (SELECT pk FROM tool_call WHERE session_pk = ?1)"
-                ),
-                [pk],
-            )?;
-        }
-    }
-    for (table, cols) in &tables {
-        if table == "session" || table == "message" || table == "tool_call" {
-            continue;
-        }
-        if cols.contains("message_pk") && !cols.contains("session_pk") {
-            i.execute(
-                &format!(
-                    "DELETE FROM {table} WHERE message_pk IN
-                     (SELECT pk FROM message WHERE session_pk = ?1)"
-                ),
-                [pk],
-            )?;
-        }
-    }
-    i.execute("DELETE FROM tool_call WHERE session_pk = ?1", [pk])?;
-    for (table, cols) in &tables {
-        if table == "session" || table == "message" {
-            continue;
-        }
-        if cols.contains("session_pk") {
-            i.execute(&format!("DELETE FROM {table} WHERE session_pk = ?1"), [pk])?;
-        }
-    }
-    i.execute(
-        "DELETE FROM link WHERE parent_id = ?1 OR child_id = ?1",
-        [id],
-    )?;
-    i.execute("DELETE FROM message WHERE session_pk = ?1", [pk])?;
-    i.execute("DELETE FROM session WHERE pk = ?1", [pk])?;
-    crate::writer::promote_current(i, &copies, counter)?;
-    crate::versions::prune(i)?;
-    Ok((text_ids, blobs))
-}
-
-/// Ordinary tables in `index.db` and their column names.
-pub(super) fn columns(i: &Transaction<'_>) -> Result<Vec<(String, HashSet<String>)>> {
-    let names: Vec<String> = i
-        .prepare(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%'
-             AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%' AND name NOT LIKE 'fts_%'
-             AND name NOT LIKE 'tool_call_trigram%'",
-        )?
-        .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    let mut out = Vec::new();
-    for name in names {
-        let cols: HashSet<String> = i
-            .prepare(&format!("SELECT name FROM pragma_table_info('{name}')"))?
-            .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        out.push((name, cols));
-    }
-    Ok(out)
-}
-
 pub(super) fn session_pk(i: &Transaction<'_>, id: &str) -> Result<Option<i64>> {
     Ok(
         i.query_row("SELECT pk FROM session WHERE id = ?1", [id], |r| r.get(0))

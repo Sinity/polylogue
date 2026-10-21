@@ -5,6 +5,7 @@
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
+use std::collections::HashSet;
 
 pub const ARCHIVE: &str = include_str!("schema/archive.sql");
 pub const INDEX: &str = include_str!("schema/index.sql");
@@ -12,7 +13,7 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
 /// Bumped whenever `INDEX` changes; a different stored version means the
 /// index is rebuilt into a new file.
-pub const INDEX_VERSION: u32 = 22;
+pub const INDEX_VERSION: u32 = 23;
 
 /// Migrations for `archive.db`, applied in order after the base schema.
 /// Each is additive; an archive at a higher number than this list is refused.
@@ -93,6 +94,29 @@ pub fn migrate_archive(conn: &mut Connection) -> Result<()> {
     }
     tx.commit()?;
     Ok(())
+}
+
+/// Ordinary tables in `index.db` and their column names.
+pub(crate) fn index_columns(
+    i: &rusqlite::Transaction<'_>,
+) -> Result<Vec<(String, HashSet<String>)>> {
+    let names: Vec<String> = i
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%'
+             AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%' AND name NOT LIKE 'fts_%'
+             AND name NOT LIKE 'tool_call_trigram%'",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
+    for name in names {
+        let cols: HashSet<String> = i
+            .prepare(&format!("SELECT name FROM pragma_table_info('{name}')"))?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        out.push((name, cols));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

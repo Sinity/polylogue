@@ -109,3 +109,34 @@ pub(crate) fn apply(
     }
     Ok(())
 }
+
+/// Recompute hook-derived columns after source interpretation changes. Process
+/// and task evidence retain their independent derivations.
+pub(crate) fn rebuild(tx: &Transaction<'_>, session_pk: i64, counter: i64) -> Result<()> {
+    tx.execute(
+        "UPDATE session SET live_last_event=NULL,live_last_event_at=NULL,live_open_tool_pk=NULL,
+        live_waiting_on=NULL,live_waiting_since=NULL,live_todo=NULL,live_changed=?2 WHERE pk=?1",
+        params![session_pk, counter],
+    )?;
+    let id: String = tx.query_row("SELECT id FROM session WHERE pk=?1", [session_pk], |r| {
+        r.get(0)
+    })?;
+    let session = polylogue_model::SessionId::parse(&id)
+        .map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
+    let mut statement = tx.prepare("SELECT kind,at,data FROM current_event WHERE session_pk=?1 AND substr(kind,1,5)='hook_' ORDER BY at,seq,id")?;
+    let mut rows = statement.query([session_pk])?;
+    while let Some(row) = rows.next()? {
+        let event = Event {
+            session: session.clone(),
+            kind: row.get(0)?,
+            at: row
+                .get::<_, Option<i64>>(1)?
+                .and_then(polylogue_model::Timestamp::from_unix_ms),
+            after: None,
+            range: None,
+            data: crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(2)?)?,
+        };
+        apply(tx, session_pk, &event, counter)?;
+    }
+    Ok(())
+}

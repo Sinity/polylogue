@@ -533,7 +533,9 @@ CREATE TABLE repo_lookup (
   path              TEXT PRIMARY KEY,       -- the directory holding .git
   remote            TEXT,                   -- origin's URL without credentials; NULL when there is none
   root_commit       TEXT,                   -- NULL when it could not be read (shallow clone)
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  parser_version    INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
 
 
@@ -584,8 +586,10 @@ CREATE INDEX work_edge_to ON work_edge(to_pk);
 CREATE TABLE session_record (
   session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  parser_version    INTEGER NOT NULL,
   facts             TEXT NOT NULL,
-  PRIMARY KEY (session_pk, input_pk)
+  PRIMARY KEY (session_pk, input_pk, chain, parser_version)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX session_record_input ON session_record(input_pk);   -- excision scope, foreign-key check
 
@@ -632,6 +636,7 @@ CREATE INDEX version_block_blob ON version_block(blob_hash);
 
 CREATE TABLE snapshot (
   pk INTEGER PRIMARY KEY,
+  parser_version INTEGER NOT NULL,
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,
   source_start INTEGER NOT NULL,
@@ -662,6 +667,7 @@ CREATE TABLE event_source (
   PRIMARY KEY(event_id, input_pk, chain, source_snapshot)
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE link_source (
+  parser_version INTEGER NOT NULL,
   link_pk INTEGER NOT NULL REFERENCES link(pk) ON DELETE CASCADE,
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,

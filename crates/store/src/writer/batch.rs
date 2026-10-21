@@ -43,6 +43,8 @@ pub struct ParseStep {
     pub parsed_upto: u64,
     pub parser_version: u32,
     /// The parse observed source EOF; an unconsumed suffix waits for growth.
+    /// Retiring an older interpretation also needs this: consuming all stored
+    /// bytes can mean only that the currently captured prefix was parsed.
     pub at_end: bool,
     /// BLAKE3 of each message's canonical JSON, in `output.messages` order,
     /// computed on the parse pool ([`ParseStep::hash_messages`]). Empty
