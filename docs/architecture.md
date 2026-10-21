@@ -21,6 +21,17 @@ newer coordinates or content. Parser numbers from different inputs do not
 compete, and newer revision/capture scopes keep their precedence. Promoting a
 remaining source retains that source's parser version.
 
+A completed newer parse retires the previous parser's contributions to that
+revision chain, including omitted messages, events, links and session metadata.
+Completion requires source EOF and accounting through the selected length; a
+fully consumed captured prefix is insufficient. Until then, old contributions
+remain available alongside the new rows. Session facts merge within each
+input/chain/parser interpretation, then across inputs; obsolete interpretations
+cannot supply omitted fields after completion. The writer recomputes affected
+source selection and hook-derived live state. A disposable SQLite file holds
+affected IDs with a 1 MiB cache and mmap disabled. Derived session-row removal
+is shared with excision; it does not change raw bytes, authored rows or embeddings.
+
 `polylogue-engine` discovers changes, retains input bytes and coordinates
 parsing. Existing input directories are watched recursively. A missing location
 keeps a nonrecursive watch on its nearest existing ancestor; directory creation

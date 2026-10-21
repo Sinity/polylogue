@@ -15,8 +15,8 @@ impl Ctx<'_, '_> {
         let Some(snapshot) = &p.snapshot else {
             return Ok(Vec::new());
         };
-        self.tx.execute("INSERT INTO snapshot(input_pk,chain,source_start,source_end,accounting) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(input_pk,chain,source_start) DO UPDATE SET source_end=excluded.source_end,accounting=excluded.accounting",
-            params![self.input_pk,self.chain,snapshot.start as i64,snapshot.end as i64,pack_json(&p.accounting)?])?;
+        self.tx.execute("INSERT INTO snapshot(input_pk,chain,source_start,source_end,accounting,parser_version) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(input_pk,chain,source_start) DO UPDATE SET source_end=excluded.source_end,accounting=excluded.accounting,parser_version=excluded.parser_version",
+            params![self.input_pk,self.chain,snapshot.start as i64,snapshot.end as i64,pack_json(&p.accounting)?,self.parser_version])?;
         let snapshot_pk: i64 = self.tx.query_row(
             "SELECT pk FROM snapshot WHERE input_pk=?1 AND chain=?2 AND source_start=?3",
             params![self.input_pk, self.chain, snapshot.start as i64],
@@ -53,34 +53,7 @@ impl Ctx<'_, '_> {
         for id in &snapshot.covered {
             let session_pk = self.session_row(id, false)?;
             self.project_session(id, session_pk, p)?;
-            // A complete scope is a deletion barrier. Partial scopes replace
-            // only members they observed, independently of replay order.
-            for (table, key, scope) in [
-                ("message_source", "message_pk", "s.session_pk=?2"),
-                (
-                    "event_source",
-                    "event_id",
-                    "s.event_id IN (SELECT id FROM event WHERE session_pk=?2)",
-                ),
-                (
-                    "link_source",
-                    "link_pk",
-                    "s.link_pk IN (SELECT pk FROM link WHERE parent_id=(SELECT id FROM session WHERE pk=?2) OR child_id=(SELECT id FROM session WHERE pk=?2))",
-                ),
-            ] {
-                let placement = if table == "message_source" {
-                    "AND n.session_pk=s.session_pk"
-                } else {
-                    ""
-                };
-                let sql = format!(
-                    "UPDATE {table} AS s SET current=NOT EXISTS (SELECT 1 FROM snapshot h JOIN snapshot_session c ON c.snapshot_pk=h.pk WHERE h.input_pk=s.input_pk AND c.session_pk=?2 AND c.complete=1 AND (h.chain>s.chain OR (h.chain=s.chain AND h.source_start>s.source_snapshot))) AND NOT EXISTS (SELECT 1 FROM {table} n WHERE n.input_pk=s.input_pk AND n.{key}=s.{key} {placement} AND (n.chain>s.chain OR (n.chain=s.chain AND n.source_snapshot>s.source_snapshot))) WHERE s.input_pk=?1 AND (s.current=1 OR (s.chain=?3 AND s.source_snapshot=?4)) AND ({scope})"
-                );
-                self.tx.execute(
-                    &sql,
-                    params![self.input_pk, session_pk, self.chain, snapshot.start as i64],
-                )?;
-            }
+            self.refresh_sources(session_pk)?;
             for row in &p.output.messages {
                 if &row.message.session == id {
                     let pk = self
@@ -111,6 +84,33 @@ impl Ctx<'_, '_> {
         Ok(())
     }
 
+    pub(super) fn refresh_sources(&self, session_pk: i64) -> Result<()> {
+        for (table, key, scope) in [
+            ("message_source", "message_pk", "s.session_pk=?2"),
+            (
+                "event_source",
+                "event_id",
+                "s.event_id IN (SELECT id FROM event WHERE session_pk=?2)",
+            ),
+            (
+                "link_source",
+                "link_pk",
+                "s.link_pk IN (SELECT pk FROM link WHERE parent_id=(SELECT id FROM session WHERE pk=?2) OR child_id=(SELECT id FROM session WHERE pk=?2))",
+            ),
+        ] {
+            let placement = if table == "message_source" {
+                "AND n.session_pk=s.session_pk"
+            } else {
+                ""
+            };
+            let sql = format!(
+                "UPDATE {table} AS s SET current=NOT EXISTS (SELECT 1 FROM snapshot h JOIN snapshot_session c ON c.snapshot_pk=h.pk WHERE h.input_pk=s.input_pk AND c.session_pk=?2 AND c.complete=1 AND (h.chain>s.chain OR (h.chain=s.chain AND h.source_start>s.source_snapshot))) AND NOT EXISTS (SELECT 1 FROM {table} n WHERE n.input_pk=s.input_pk AND n.{key}=s.{key} {placement} AND (n.chain>s.chain OR (n.chain=s.chain AND n.source_snapshot>s.source_snapshot))) WHERE s.input_pk=?1 AND ({scope})"
+            );
+            self.tx.execute(&sql, params![self.input_pk, session_pk])?;
+        }
+        Ok(())
+    }
+
     fn project_session(
         &self,
         id: &polylogue_model::SessionId,
@@ -124,8 +124,8 @@ impl Ctx<'_, '_> {
                 let old: Option<String> = self
                     .tx
                     .query_row(
-                        "SELECT facts FROM session_record WHERE input_pk=?1 AND session_pk=?2",
-                        params![self.input_pk, session_pk],
+                        "SELECT facts FROM session_record WHERE input_pk=?1 AND session_pk=?2 AND chain=?3 AND parser_version=?4",
+                        params![self.input_pk, session_pk, self.chain, self.parser_version],
                         |r| r.get(0),
                     )
                     .optional()?;
@@ -138,7 +138,7 @@ impl Ctx<'_, '_> {
                 }
             }
             if let Some(next) = next {
-                self.tx.execute("INSERT INTO session_record(session_pk,input_pk,facts) VALUES (?1,?2,?3) ON CONFLICT(session_pk,input_pk) DO UPDATE SET facts=excluded.facts",params![session_pk,self.input_pk,serde_json::to_string(&next)?])?;
+                self.tx.execute("INSERT INTO session_record(session_pk,input_pk,facts,chain,parser_version) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(session_pk,input_pk,chain,parser_version) DO UPDATE SET facts=excluded.facts",params![session_pk,self.input_pk,serde_json::to_string(&next)?,self.chain,self.parser_version])?;
                 self.tx.execute(
                     "UPDATE session SET stub=0,changed=?2 WHERE pk=?1",
                     params![session_pk, self.counter],
@@ -146,11 +146,12 @@ impl Ctx<'_, '_> {
             }
             return Ok(());
         }
-        let mut stmt=self.tx.prepare("SELECT c.facts FROM snapshot_session c JOIN snapshot s ON s.pk=c.snapshot_pk WHERE s.input_pk=?1 AND c.session_pk=?2 ORDER BY s.chain,s.source_start")?;
+        let mut stmt=self.tx.prepare("SELECT c.facts FROM snapshot_session c JOIN snapshot s ON s.pk=c.snapshot_pk WHERE s.input_pk=?1 AND c.session_pk=?2 AND s.chain=?3 AND s.parser_version=?4 ORDER BY s.chain,s.source_start")?;
         let mut facts: Option<Session> = None;
-        for row in stmt.query_map(params![self.input_pk, session_pk], |r| {
-            r.get::<_, Vec<u8>>(0)
-        })? {
+        for row in stmt.query_map(
+            params![self.input_pk, session_pk, self.chain, self.parser_version],
+            |r| r.get::<_, Vec<u8>>(0),
+        )? {
             let bytes = row?;
             let next: Session = unpack_json(&bytes)?;
             if facts.is_none() {
@@ -160,7 +161,7 @@ impl Ctx<'_, '_> {
             }
         }
         if let Some(facts) = facts {
-            self.tx.execute("INSERT INTO session_record(session_pk,input_pk,facts) VALUES (?1,?2,?3) ON CONFLICT(session_pk,input_pk) DO UPDATE SET facts=excluded.facts", params![session_pk,self.input_pk,serde_json::to_string(&facts)?])?;
+            self.tx.execute("INSERT INTO session_record(session_pk,input_pk,facts,chain,parser_version) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(session_pk,input_pk,chain,parser_version) DO UPDATE SET facts=excluded.facts", params![session_pk,self.input_pk,serde_json::to_string(&facts)?,self.chain,self.parser_version])?;
             self.tx.execute(
                 "UPDATE session SET stub=0,changed=?2 WHERE pk=?1",
                 params![session_pk, self.counter],

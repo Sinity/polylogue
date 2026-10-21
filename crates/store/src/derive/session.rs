@@ -57,25 +57,38 @@ fn later(a: Option<i64>, b: Option<i64>) -> Ordering {
 
 fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     tx.execute("UPDATE session SET last_activity_at=(SELECT max(at) FROM current_message WHERE session_pk=?1) WHERE pk=?1",[session_pk])?;
-    let rows: Vec<(String, Option<i64>, Option<i64>)> = tx
-        .prepare_cached(
-            "SELECT r.facts,
-                    (SELECT MIN(m.at) FROM message_source ms JOIN current_message m ON m.pk = ms.message_pk
-                     WHERE ms.input_pk = r.input_pk AND ms.current=1 AND m.session_pk = r.session_pk),
-                    (SELECT MAX(m.at) FROM message_source ms JOIN current_message m ON m.pk = ms.message_pk
-                     WHERE ms.input_pk = r.input_pk AND ms.current=1 AND m.session_pk = r.session_pk)
-             FROM session_record r WHERE r.session_pk = ?1",
-        )?
-        .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    let mut inputs: Vec<Input> = rows
-        .into_iter()
-        .filter_map(|(facts, first, last)| {
-            serde_json::from_str(&facts)
-                .ok()
-                .map(|facts| Input { facts, first, last })
-        })
-        .collect();
+    let mut statement = tx.prepare_cached(
+        "SELECT r.input_pk,r.facts,
+                (SELECT MIN(m.at) FROM message_source ms JOIN current_message m ON m.pk=ms.message_pk
+                 WHERE ms.input_pk=r.input_pk AND ms.current=1 AND m.session_pk=r.session_pk),
+                (SELECT MAX(m.at) FROM message_source ms JOIN current_message m ON m.pk=ms.message_pk
+                 WHERE ms.input_pk=r.input_pk AND ms.current=1 AND m.session_pk=r.session_pk)
+         FROM session_record r WHERE r.session_pk=?1
+         ORDER BY r.input_pk,r.chain,r.parser_version",
+    )?;
+    let mut rows = statement.query([session_pk])?;
+    let mut inputs: Vec<Input> = Vec::new();
+    let mut previous = None;
+    while let Some(row) = rows.next()? {
+        let input: i64 = row.get(0)?;
+        let facts: Session = serde_json::from_str(&row.get::<_, String>(1)?)?;
+        if previous == Some(input) {
+            inputs
+                .last_mut()
+                .expect("previous input exists")
+                .facts
+                .merge(&facts);
+        } else {
+            inputs.push(Input {
+                facts,
+                first: row.get(2)?,
+                last: row.get(3)?,
+            });
+            previous = Some(input);
+        }
+    }
+    drop(rows);
+    drop(statement);
     if inputs.is_empty() {
         // Named only by events so far: a stub keeps its placeholder row.
         return Ok(());

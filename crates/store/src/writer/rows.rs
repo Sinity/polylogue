@@ -1,6 +1,7 @@
 //! `index.db` rows for parsed records: sessions, messages and their
 //! versions, blocks, tool calls, events, links and parse positions.
 
+mod reparse;
 mod snapshots;
 
 use super::*;
@@ -19,6 +20,19 @@ pub(super) fn write_rows(
     let input_pk: i64 = tx
         .prepare_cached("SELECT pk FROM input_ref WHERE id = ?1")?
         .query_row([&b.input.id], |r| r.get(0))?;
+    let newer: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM parse_state WHERE input_pk=?1 AND chain=?2 AND parser_version>?3)",
+        params![input_pk, chain, p.parser_version], |r| r.get(0),
+    )?;
+    if newer && p.snapshot.is_none() {
+        return Ok(0);
+    }
+    if let Some(snapshot) = &p.snapshot {
+        let newer_scope: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM snapshot WHERE input_pk=?1 AND chain=?2 AND source_start=?3 AND parser_version>?4)",params![input_pk,chain,snapshot.start as i64,p.parser_version],|r|r.get(0))?;
+        if newer_scope {
+            return Ok(0);
+        }
+    }
     let ctx = Ctx {
         tx,
         input_pk,
@@ -108,7 +122,12 @@ pub(super) fn write_rows(
         ctx.write_link(l)?;
     }
     for l in &p.output.repo_lookups {
-        crate::repo_lookup::upsert_lookup(tx, l, input_pk, counter)?;
+        crate::repo_lookup::upsert_lookup(tx, l, input_pk, chain, ctx.parser_version, counter)?;
+    }
+    if let Some(snapshot) = &p.snapshot {
+        for id in &snapshot.covered {
+            ctx.session_pk(&mut sessions, id)?;
+        }
     }
     // Every session these records touched is derived again.
     for pk in sessions.values() {
@@ -131,13 +150,15 @@ pub(super) fn write_rows(
     }
     for pk in sessions.values() {
         tx.prepare_cached(
-            "INSERT OR IGNORE INTO parsed(input_pk, chain, session_pk, parser_version)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO parsed(input_pk, chain, session_pk, parser_version)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(input_pk,chain,session_pk) DO UPDATE SET parser_version=excluded.parser_version",
         )?
         .execute(params![input_pk, chain, pk, ctx.parser_version])?;
     }
     ctx.finish_snapshot(p, &affected)?;
     ctx.write_parse_state(b, p)?;
+    ctx.finish_reparse(p, b.length)?;
     Ok(written)
 }
 
@@ -279,9 +300,9 @@ impl Ctx<'_, '_> {
         let stored: Option<String> = self
             .tx
             .prepare_cached(
-                "SELECT facts FROM session_record WHERE session_pk = ?1 AND input_pk = ?2",
+                "SELECT facts FROM session_record WHERE session_pk = ?1 AND input_pk = ?2 AND chain=?3 AND parser_version=?4",
             )?
-            .query_row(params![pk, self.input_pk], |r| r.get(0))
+            .query_row(params![pk, self.input_pk, self.chain, self.parser_version], |r| r.get(0))
             .optional()?;
         let merged = match stored.as_deref().map(serde_json::from_str::<Session>) {
             Some(Ok(mut cur)) => {
@@ -296,10 +317,10 @@ impl Ctx<'_, '_> {
         };
         self.tx
             .prepare_cached(
-                "INSERT INTO session_record(session_pk, input_pk, facts) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(session_pk, input_pk) DO UPDATE SET facts = excluded.facts",
+                "INSERT INTO session_record(session_pk, input_pk, facts, chain, parser_version) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(session_pk, input_pk, chain, parser_version) DO UPDATE SET facts = excluded.facts",
             )?
-            .execute(params![pk, self.input_pk, serde_json::to_string(&merged)?])?;
+            .execute(params![pk, self.input_pk, serde_json::to_string(&merged)?, self.chain, self.parser_version])?;
         self.tx
             .prepare_cached("UPDATE session SET changed = ?2, stub = 0 WHERE pk = ?1")?
             .execute(params![pk, self.counter])?;
@@ -991,7 +1012,7 @@ impl Ctx<'_, '_> {
             }
             None => self.snapshot.is_none(),
         };
-        self.tx.execute("INSERT INTO link_source(link_pk,input_pk,chain,source_snapshot,current,facts) VALUES (?1,?2,?3,?4,?6,?5) ON CONFLICT(link_pk,input_pk,chain,source_snapshot) DO UPDATE SET current=excluded.current,facts=excluded.facts", params![pk,self.input_pk,self.chain,self.snapshot.map_or(-1,|snapshot|snapshot.start as i64),crate::encoding::pack_json(l)?,i64::from(current)])?;
+        self.tx.execute("INSERT INTO link_source(link_pk,input_pk,chain,source_snapshot,current,facts,parser_version) VALUES (?1,?2,?3,?4,?6,?5,?7) ON CONFLICT(link_pk,input_pk,chain,source_snapshot) DO UPDATE SET current=excluded.current,facts=excluded.facts,parser_version=excluded.parser_version", params![pk,self.input_pk,self.chain,self.snapshot.map_or(-1,|snapshot|snapshot.start as i64),crate::encoding::pack_json(l)?,i64::from(current),self.parser_version])?;
         self.project_link(pk)?;
         Ok(())
     }
