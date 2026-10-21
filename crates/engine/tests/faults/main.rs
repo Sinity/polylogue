@@ -121,3 +121,5 @@ fn law_45_a_failed_read_is_never_empty() {
 }
 
 mod excision;
+
+mod blob_cleanup;

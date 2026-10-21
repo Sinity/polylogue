@@ -133,6 +133,7 @@ pub(super) fn replace_blob(
     if piece.hash == *old {
         return Ok(None);
     }
+    super::blob_cleanup::require_no_delta_base(t.archive, old)?;
     record_piece(t, &piece)?;
     t.archive.execute(
         "UPDATE extent SET blob = ?2 WHERE blob = ?1",

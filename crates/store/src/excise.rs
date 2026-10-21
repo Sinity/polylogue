@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 mod authored;
+pub(crate) mod blob_cleanup;
 mod index_rows;
 mod record_ranges;
 pub(crate) mod recovery;
@@ -214,7 +215,7 @@ struct Span {
 }
 
 /// The two transactions an excision runs in, with the blob store. Files of
-/// deleted blobs are removed by the caller after both commit.
+/// deleted blobs are recorded as local cleanup intent before commit.
 pub struct Transactions<'a, 'b> {
     pub archive: &'a Transaction<'b>,
     pub index: &'a Transaction<'b>,
@@ -226,9 +227,9 @@ pub struct Transactions<'a, 'b> {
     pub counter: i64,
 }
 
-/// Runs an excision. Returns what went and the blob files to delete once
-/// both transactions have committed.
-pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<(Excised, Vec<BlobHash>)> {
+/// Runs an excision and records local file cleanup with its canonical rows.
+/// The writer replays that cleanup after all database transactions commit.
+pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<Excised> {
     let mut done = Excised {
         dry_run: req.dry_run,
         ..Excised::default()
@@ -385,7 +386,7 @@ impl Plan {
         t: &Transactions<'_, '_>,
         req: &ExciseRequest,
         done: &mut Excised,
-    ) -> Result<(Excised, Vec<BlobHash>)> {
+    ) -> Result<Excised> {
         // Removing an input supersedes partial rewrites of its records.
         self.spans.retain(|input, _| !self.whole.contains(input));
         self.kept.retain(|input| !self.whole.contains(input));
@@ -519,6 +520,14 @@ impl Plan {
                     })
                     .optional()?;
                 let Some(place) = place else { continue };
+                blob_cleanup::require_no_delta_base(
+                    t.archive,
+                    &BlobHash(
+                        hash.as_slice()
+                            .try_into()
+                            .map_err(|_| StoreError::Invalid("invalid blob hash".into()))?,
+                    ),
+                )?;
                 t.archive
                     .execute("DELETE FROM blob WHERE hash = ?1", [hash])?;
                 done.blobs_deleted += 1;
@@ -572,6 +581,13 @@ impl Plan {
             refused.publication = Some(publication);
         }
         if !req.dry_run {
+            for hash in &delete_files {
+                t.archive.execute(
+                    "INSERT INTO pending_blob_excision(hash,excision_id) VALUES (?1,?2)
+                     ON CONFLICT(hash) DO UPDATE SET excision_id=excluded.excision_id",
+                    params![&hash.0[..], req.id],
+                )?;
+            }
             t.archive.execute(
                 "UPDATE excision SET refused_json = ?2, message_ids_json = ?3 WHERE id = ?1",
                 params![
@@ -584,7 +600,7 @@ impl Plan {
         if !req.dry_run {
             recovery::acknowledge(t.archive, t.index)?;
         }
-        Ok((done.clone(), delete_files))
+        Ok(done.clone())
     }
 
     /// Text scope: overwrite every stored occurrence, remove the index

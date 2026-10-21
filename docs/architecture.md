@@ -466,6 +466,16 @@ This local queue covers newly recorded interrupted operations; it cannot infer
 missing hashes from older excisions or detect an independently restored old
 embeddings file after cleanup was cleared. It is not published as a Sinex unit.
 
+Local file cleanup records the operation's exact deletion hashes in
+`pending_blob_excision` before committing. Replay uses only the primary blob
+store and bounded groups of 500 keys; a failed delete or queue commit leaves
+recoverable intent and stops the writer. Missing local files permit retry.
+Before deletion, current catalog, extent and delta-base references refuse the
+operation. Current replacement batches and their source references are selected
+by the same disk-backed owner-order logic used for batch retirement. Referenced
+delta bases require a rewrite before excision can commit. The queue does not
+infer deletions from historical manifests or scan arbitrary orphan files.
+
 Excision records retain exact unit identities and content-addressed replacement
 batches or tombstones. Restore validates and folds all confirmed replacement
 metadata before opening payloads, then replaces the selected owner rows in one

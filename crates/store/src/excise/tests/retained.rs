@@ -356,3 +356,36 @@ fn matching_json_keys_refuse_before_removing_any_value() {
         );
     }
 }
+
+#[test]
+fn a_retained_delta_base_refuses_text_excision_without_changing_canonical_bytes() {
+    let w = World::new();
+    w.seed("base", 1, &[b"synthetic secret"]);
+    let base = BlobHash::of(b"synthetic secret");
+    let child = BlobHash::of(b"kept delta bytes");
+    let a = open_write(&w.archive.archive_db(), cache::SETUP).unwrap();
+    a.execute("INSERT INTO blob(hash,size,stored_size,place,encoding,state,base) VALUES (?1,16,0,'file','delta','present',?2)", params![&child.0[..],&base.0[..]]).unwrap();
+    let error = w.excise("secret", false).unwrap_err();
+    assert!(
+        matches!(error, StoreError::ExcisionBlobReferenced(h) if h == base),
+        "{error}"
+    );
+    assert_eq!(w.bytes("base", 1), b"synthetic secret");
+    assert_eq!(
+        a.query_row("SELECT count(*) FROM excision", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        a.query_row("SELECT count(*) FROM pending_blob_excision", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        a.query_row("SELECT base FROM blob WHERE hash=?1", [&child.0[..]], |r| r
+            .get::<_, Vec<u8>>(0))
+            .unwrap(),
+        base.0
+    );
+}
