@@ -177,6 +177,15 @@ Drive title outranks the separate `file_name` fallback from a loose import,
 regardless of arrival order. Unknown fields remain accounted and raw bytes
 retained.
 
+OpenAI-compatible chat files use the same reader for a bare message array or
+an object containing `messages`. The complete wrapper is checked before its
+ID, title and model initialize the parser, so fields after the array apply to
+earlier messages too. State keeps that session identity/model, the previous
+message ID and the raw message ordinal. Unknown/refused records still occupy
+their original ordinal; tool replies keep their harness meaning. Each emitted
+message cites its original JSON span. Header metadata and one message/output
+remain the memory bound, with the same retained-byte retry rules.
+
 The existing live-before-bulk and size ordering applies to work already planned.
 Preceding ordinary work drains through the parse pool and commits before the
 serial array driver runs with the pool inactive. A live append arriving during

@@ -1,10 +1,16 @@
 use super::*;
-use crate::parse::run_document;
 use serde_json::json;
 
 fn parse(file: &str, doc: Json) -> crate::parse::Step {
-    let parser = OpenAiChat { file: file.into() };
-    run_document(&parser, &serde_json::to_vec(&doc).unwrap()).unwrap()
+    let parser = OpenAiChat {
+        file: file.into(),
+        state: ChatState::default(),
+    };
+    crate::array::fixture::parse(
+        &mut Parse::Array(Box::new(parser)),
+        &serde_json::to_vec(&doc).unwrap(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -70,4 +76,71 @@ fn recognizes_chat_arrays_and_objects() {
     assert!(recognize(Path::new("/x/a.json"), br#"{"messages": ["#));
     assert!(!recognize(Path::new("/x/a.json"), br#"[{"uuid": "x""#));
     assert!(!recognize(Path::new("/x/a.txt"), br#"[{"role": "user""#));
+}
+
+#[test]
+fn refused_and_empty_messages_keep_raw_ordinals_without_breaking_parent_links() {
+    let step = parse(
+        "p",
+        json!([
+            {"role":"user","content":"question"},
+            {"role":"future_role","content":"uninterpreted"},
+            {"role":"assistant","content":""},
+            {"role":"assistant","content":"answer"}
+        ]),
+    );
+    assert_eq!(step.output.messages.len(), 2);
+    assert_eq!(step.output.messages[1].message.id.native().as_str(), "p#3");
+    assert_eq!(
+        step.output.messages[1].message.parent.as_ref(),
+        Some(&step.output.messages[0].message.id)
+    );
+    assert_eq!(step.accounting.framed, 5);
+    assert_eq!(
+        step.accounting
+            .refused
+            .get("future_role: unknown role future_role"),
+        Some(&1)
+    );
+    assert_eq!(
+        step.accounting
+            .unknown
+            .get("assistant: a message with no content"),
+        Some(&1)
+    );
+}
+
+#[test]
+fn invalid_wrappers_refuse_the_input_without_publishing_child_messages() {
+    for (file, doc, reason) in [
+        ("p", json!({"messages":false}), "no messages array"),
+        (
+            "",
+            json!({"id":"","messages":[{"role":"user","content":"not published"}]}),
+            "unusable session name",
+        ),
+        ("p", json!(true), "not an array or object"),
+    ] {
+        let step = parse(file, doc);
+        assert!(step.output.sessions.is_empty());
+        assert!(step.output.messages.is_empty());
+        assert_eq!(step.accounting.framed, 1);
+        assert_eq!(
+            step.accounting.refused.get(&format!("chat: {reason}")),
+            Some(&1)
+        );
+    }
+}
+
+#[test]
+fn an_empty_wrapper_id_still_uses_a_nonempty_file_name() {
+    let step = parse(
+        "file",
+        json!({"id":"","messages":[{"role":"user","content":"kept"}]}),
+    );
+    assert_eq!(
+        step.output.messages[0].message.id.native().as_str(),
+        "file#0"
+    );
+    assert!(step.accounting.refused.is_empty());
 }

@@ -449,7 +449,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     // origin that recognizes the same file is tried first.
     OriginSpec {
         name: crate::openai_chat::ORIGIN,
-        parser_version: 2,
+        parser_version: 3,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,

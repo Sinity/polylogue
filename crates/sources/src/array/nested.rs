@@ -7,6 +7,25 @@ use serde::de::{Error as _, MapAccess};
 pub fn scan_nested(
     reader: impl Read,
     path: &[&str],
+    item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
+) -> Result<(Json, ScanStats), ScanError> {
+    scan_metadata(reader, path, false, item)
+}
+
+/// Accepts either a bare record array or the named array in a wrapper object.
+/// A bare array returns `[]` as metadata; a wrapper retains its other fields.
+pub fn scan_array_or_nested(
+    reader: impl Read,
+    path: &[&str],
+    item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
+) -> Result<(Json, ScanStats), ScanError> {
+    scan_metadata(reader, path, true, item)
+}
+
+fn scan_metadata(
+    reader: impl Read,
+    path: &[&str],
+    root_array: bool,
     mut item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<(Json, ScanStats), ScanError> {
     let tap = Rc::new(RefCell::new(Tap::default()));
@@ -17,6 +36,7 @@ pub fn scan_nested(
     let mut de = serde_json::Deserializer::from_reader(input);
     let result = Nested {
         path,
+        root_array,
         tap: &tap,
         item: &mut item,
     }
@@ -28,6 +48,7 @@ pub fn scan_nested(
 
 struct Nested<'a, F> {
     path: &'a [&'a str],
+    root_array: bool,
     tap: &'a Rc<RefCell<Tap>>,
     item: &'a mut F,
 }
@@ -55,6 +76,7 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> fo
                 selected = true;
                 map.next_value_seed(Nested {
                     path: &self.path[1..],
+                    root_array: false,
                     tap: self.tap,
                     item: self.item,
                 })?
@@ -66,7 +88,7 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> fo
         Ok(Json::Object(value))
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Json, A::Error> {
-        if self.path.is_empty() {
+        if self.path.is_empty() || self.root_array {
             ArraySeed {
                 tap: self.tap,
                 item: self.item,

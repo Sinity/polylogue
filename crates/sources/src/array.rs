@@ -1,4 +1,4 @@
-//! Serde framing of export array elements, preserving their original lexemes.
+//! Serde framing of export array elements, preserving their exact original bytes.
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde_json::value::RawValue;
@@ -58,7 +58,7 @@ pub struct ScanStats {
 }
 
 mod nested;
-pub use nested::scan_nested;
+pub use nested::{scan_array_or_nested, scan_nested};
 
 /// Calls `item` once per complete element. Only the current raw element is
 /// buffered. A callback error stops decoding; the outer document is valid only
