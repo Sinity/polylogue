@@ -433,10 +433,9 @@ impl Ctx<'_, '_> {
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, position))?;
             self.upsert_source(pk, &new, true)?;
             self.insert_blocks(pk, session_pk, m, bodies)?;
-            self.tx.execute(
-                "UPDATE message SET present=?2 WHERE pk=?1",
-                params![pk, i64::from(new.current)],
-            )?;
+            self.tx
+                .prepare_cached("UPDATE message SET present=?2 WHERE pk=?1")?
+                .execute(params![pk, i64::from(new.current)])?;
             return Ok(true);
         };
 
@@ -515,8 +514,11 @@ impl Ctx<'_, '_> {
     }
 
     fn upsert_source(&self, pk: i64, v: &Version, preferred: bool) -> Result<()> {
-        let old:Option<Vec<u8>>=self.tx.query_row("SELECT version_hash FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND source_snapshot=?4 AND session_pk=?5",params![pk,v.input_pk,v.chain,v.snapshot,v.session_pk],|r|r.get(0)).optional()?.flatten();
-        self.tx.execute(
+        let old: Option<Vec<u8>> = self.tx
+            .prepare_cached("SELECT version_hash FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND source_snapshot=?4 AND session_pk=?5")?
+            .query_row(params![pk, v.input_pk, v.chain, v.snapshot, v.session_pk], |r| r.get(0))
+            .optional()?.flatten();
+        self.tx.prepare_cached(
             "INSERT INTO message_source(message_pk, input_pk, chain, source_snapshot, source_start, source_end, session_pk,
                  preferred, complete, version_hash, current, source_order, route_rank, main, parser_version)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?14, ?7, ?8, ?9, ?13, ?10, ?11, ?12, ?15)
@@ -524,8 +526,8 @@ impl Ctx<'_, '_> {
                  source_start=excluded.source_start, source_end=excluded.source_end, session_pk=excluded.session_pk, preferred=excluded.preferred,
                  complete=excluded.complete, version_hash=excluded.version_hash, current=excluded.current,
                  source_order=excluded.source_order, route_rank=excluded.route_rank, main=excluded.main,
-                 parser_version=excluded.parser_version",
-            params![pk, v.input_pk, v.chain, v.snapshot, v.start, v.end, i64::from(preferred), i64::from(v.complete), v.hash, v.order, v.rank, i64::from(v.main), i64::from(v.current),v.session_pk,self.parser_version],
+                 parser_version=excluded.parser_version")?
+            .execute(params![pk, v.input_pk, v.chain, v.snapshot, v.start, v.end, i64::from(preferred), i64::from(v.complete), v.hash, v.order, v.rank, i64::from(v.main), i64::from(v.current),v.session_pk,self.parser_version],
         )?;
         if let Some(old) = old.filter(|old| old != &v.hash) {
             self.tx.execute("DELETE FROM message_version WHERE hash=?1 AND NOT EXISTS (SELECT 1 FROM message_source WHERE version_hash=?1)",[old])?;

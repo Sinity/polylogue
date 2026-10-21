@@ -16,11 +16,8 @@ pub(crate) fn retain(
     bulk: bool,
 ) -> Result<()> {
     if tx
-        .query_row(
-            "SELECT 1 FROM message_version WHERE hash = ?1",
-            [hash],
-            |_| Ok(()),
-        )
+        .prepare_cached("SELECT 1 FROM message_version WHERE hash = ?1")?
+        .query_row([hash], |_| Ok(()))
         .optional()?
         .is_some()
     {
@@ -28,17 +25,15 @@ pub(crate) fn retain(
     }
     let mut attrs = message.clone();
     attrs.blocks.clear();
-    tx.execute(
-        "INSERT INTO message_version(hash, attrs) VALUES (?1, ?2)",
-        params![hash, pack_json(&attrs)?],
-    )?;
+    tx.prepare_cached("INSERT INTO message_version(hash, attrs) VALUES (?1, ?2)")?
+        .execute(params![hash, pack_json(&attrs)?])?;
     for (idx, (block, body)) in message.blocks.iter().zip(bodies).enumerate() {
         let text_id = block_text(block)
             .map(|text| crate::text_rows::intern(tx, text, 0, Some(packed), bulk))
             .transpose()?;
-        tx.execute(
-            "INSERT INTO version_block(version_hash, idx, body, text_id, blob_hash) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![hash, idx as i64, body, text_id,match block {Block::Image(a)|Block::File(a)=>a.blob.map(|h|h.0.to_vec()),_=>None}],
+        tx.prepare_cached(
+            "INSERT INTO version_block(version_hash, idx, body, text_id, blob_hash) VALUES (?1, ?2, ?3, ?4, ?5)")?
+            .execute(params![hash, idx as i64, body, text_id,match block {Block::Image(a)|Block::File(a)=>a.blob.map(|h|h.0.to_vec()),_=>None}],
         )?;
     }
     Ok(())
