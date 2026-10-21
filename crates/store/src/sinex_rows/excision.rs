@@ -66,15 +66,16 @@ impl Capture {
             .collect::<rusqlite::Result<_>>()?;
         let changed: BTreeSet<_> = units.iter().cloned().collect();
         let mut retired = BTreeSet::new();
-        for previous in publications(tx)? {
-            for replacement in previous.replacements {
+        visit_publications(tx, |_, previous| {
+            for replacement in &previous.replacements {
                 if changed.contains(&replacement.unit)
-                    && let Some(batch) = replacement.batch
+                    && let Some(batch) = &replacement.batch
                 {
-                    retired.insert(batch);
+                    retired.insert(batch.clone());
                 }
             }
-        }
+            Ok(())
+        })?;
         let local = store.primary_only();
         let mut replacements = Vec::new();
         for unit in units {
@@ -106,11 +107,12 @@ impl Capture {
             });
         }
         let mut selected = std::collections::BTreeMap::new();
-        for previous in publications(tx)? {
-            for replacement in previous.replacements {
-                selected.insert(replacement.unit.clone(), replacement);
+        visit_publications(tx, |_, previous| {
+            for replacement in &previous.replacements {
+                selected.insert(replacement.unit.clone(), replacement.clone());
             }
-        }
+            Ok(())
+        })?;
         for replacement in &replacements {
             selected.insert(replacement.unit.clone(), replacement.clone());
         }
@@ -133,23 +135,28 @@ impl Capture {
     }
 }
 
-pub(super) fn publications(conn: &Connection) -> Result<Vec<ExcisionPublication>> {
-    let mut stmt = conn.prepare("SELECT refused_json FROM excision ORDER BY commit_seq, id")?;
-    let mut out = Vec::new();
-    for row in stmt.query_map([], |r| r.get::<_, String>(0))? {
-        let value: serde_json::Value = serde_json::from_str(&row?)?;
+/// Decode and check one historical manifest at a time, in archive order.
+pub(super) fn visit_publications(
+    conn: &Connection,
+    mut visit: impl FnMut(&Unit, &ExcisionPublication) -> Result<()>,
+) -> Result<()> {
+    let mut stmt =
+        conn.prepare("SELECT commit_seq,id,refused_json FROM excision ORDER BY commit_seq,id")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(2)?)?;
         if let Some(publication) = value.get("publication") {
             let publication: ExcisionPublication = serde_json::from_value(publication.clone())?;
-            if publication.version != 1 {
-                return Err(StoreError::Invalid(
-                    "unsupported excision publication version".into(),
-                ));
-            }
             publication.validate()?;
-            out.push(publication);
+            let unit = Unit {
+                commit_seq: row.get(0)?,
+                kind: "excision".into(),
+                key: row.get(1)?,
+            };
+            visit(&unit, &publication)?;
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 fn triggers() -> Vec<(&'static str, &'static str, String)> {

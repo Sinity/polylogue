@@ -286,9 +286,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     // A second excision may retire the first replacement without making fresh
     // restore replay either unavailable before-image.
     let published = polylogue_store::sinex_rows::Published::open(&a).unwrap();
-    let erase1 = published
-        .units(0)
-        .unwrap()
+    let erase1 = inventory_units(&published)
         .into_iter()
         .find(|u| u.key == "erase1")
         .unwrap();
@@ -352,7 +350,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
             .unwrap();
     }
     let published = super::ArchiveRows::open(&a).unwrap();
-    let units = published.units(0).unwrap();
+    let units = inventory_units(&published);
     let last = units.last().unwrap();
     assert_eq!(last.key, "erase4");
     let manifest = published.publication(last).unwrap().unwrap();
@@ -369,7 +367,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
         .unit_frame(
             &published,
             &id,
-            units.len(),
+            units.len() as u64,
             last,
             Some(&manifest),
             &mut counters,
@@ -432,4 +430,11 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     assert_eq!(values(&incomplete), values(&source_archive));
     assert_eq!(values(&incomplete)[1].2, "unrelated exact text");
     assert_eq!(sinex.publish(&a).await.unwrap().units, 0);
+}
+
+fn inventory_units(published: &super::ArchiveRows) -> Vec<polylogue_store::sinex_rows::Unit> {
+    let inventory = published.inventory().unwrap();
+    (1..=inventory.len())
+        .map(|position| inventory.unit(position).unwrap())
+        .collect()
 }

@@ -11,12 +11,12 @@ fn publishing_reads_one_sqlite_view_until_the_pass_ends() {
     let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
     conn.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('one','one','note','before','operator','test',1,1)",[]).unwrap();
     let published = Published::open(dir.path()).unwrap();
-    let before = published.units(0).unwrap();
+    let before = units(&published.conn, 0).unwrap();
     assert_eq!(before.len(), 1);
     conn.execute_batch("BEGIN; UPDATE note SET value='after' WHERE id='one';
         INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('two','two','note','second','operator','test',1,2); COMMIT;").unwrap();
     assert_eq!(
-        published.units(0).unwrap(),
+        units(&published.conn, 0).unwrap(),
         before,
         "a pass must not splice a later source commit"
     );
@@ -31,7 +31,7 @@ fn publishing_reads_one_sqlite_view_until_the_pass_ends() {
     .unwrap();
     assert_eq!(row["row"]["value"], "before");
     let next = Published::open(dir.path()).unwrap();
-    assert_eq!(next.units(0).unwrap().len(), 2);
+    assert_eq!(units(&next.conn, 0).unwrap().len(), 2);
 }
 
 #[test]
