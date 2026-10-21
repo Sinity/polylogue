@@ -51,11 +51,17 @@ fn policy_hash(row: &rusqlite::Row<'_>) -> rusqlite::Result<blake3::Hash> {
 
 /// The caller includes receipts and revision in the index transaction.
 pub(crate) fn acknowledge(archive: &Connection, index: &Connection) -> Result<()> {
-    index.execute("DELETE FROM excision_applied", [])?;
+    remember_policies(archive, index)?;
+    set(index, &current(archive)?)
+}
+
+/// Snapshot only stable policy hashes in an existing receipt table.
+pub(crate) fn remember_policies(archive: &Connection, receipts: &Connection) -> Result<()> {
+    receipts.execute("DELETE FROM excision_applied", [])?;
     let mut select = archive
         .prepare("SELECT scope,refused_json,message_ids_json,id FROM excision ORDER BY id")?;
     let mut insert =
-        index.prepare("INSERT INTO excision_applied(id_hash,policy_hash) VALUES (?1,?2)")?;
+        receipts.prepare("INSERT INTO excision_applied(id_hash,policy_hash) VALUES (?1,?2)")?;
     let mut rows = select.query([])?;
     while let Some(row) = rows.next()? {
         insert.execute(params![
@@ -65,7 +71,32 @@ pub(crate) fn acknowledge(archive: &Connection, index: &Connection) -> Result<()
             policy_hash(row)?.as_bytes().as_slice()
         ])?;
     }
-    set(index, &current(archive)?)
+    Ok(())
+}
+
+pub(crate) fn preserves_policies(archive: &Connection, receipts: &Connection) -> Result<bool> {
+    let count: i64 =
+        receipts.query_row("SELECT count(*) FROM excision_applied", [], |r| r.get(0))?;
+    let mut matched = 0i64;
+    let mut policies = archive
+        .prepare("SELECT scope,refused_json,message_ids_json,id FROM excision ORDER BY id")?;
+    let mut receipt =
+        receipts.prepare("SELECT policy_hash FROM excision_applied WHERE id_hash=?1")?;
+    let mut rows = policies.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(3)?;
+        let id_hash = blake3::hash(id.as_bytes());
+        let expected: Option<Vec<u8>> = receipt
+            .query_row([id_hash.as_bytes().as_slice()], |r| r.get(0))
+            .optional()?;
+        if let Some(expected) = expected {
+            if policy_hash(row)?.as_bytes().as_slice() != expected {
+                return Ok(false);
+            }
+            matched += 1;
+        }
+    }
+    Ok(matched == count)
 }
 
 pub(crate) fn needs_rebuild(archive: &Connection, index: &Connection) -> Result<bool> {
@@ -81,28 +112,7 @@ pub(crate) fn needs_rebuild(archive: &Connection, index: &Connection) -> Result<
         |r| r.get(0),
     )?;
     if has_receipts {
-        let count: i64 =
-            index.query_row("SELECT count(*) FROM excision_applied", [], |r| r.get(0))?;
-        let mut matched = 0i64;
-        let mut policies = archive
-            .prepare("SELECT scope,refused_json,message_ids_json,id FROM excision ORDER BY id")?;
-        let mut receipt =
-            index.prepare("SELECT policy_hash FROM excision_applied WHERE id_hash=?1")?;
-        let mut rows = policies.query([])?;
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(3)?;
-            let id_hash = blake3::hash(id.as_bytes());
-            let expected: Option<Vec<u8>> = receipt
-                .query_row([id_hash.as_bytes().as_slice()], |r| r.get(0))
-                .optional()?;
-            if let Some(expected) = expected {
-                if policy_hash(row)?.as_bytes().as_slice() != expected {
-                    return Err(conflict());
-                }
-                matched += 1;
-            }
-        }
-        if matched != count {
+        if !preserves_policies(archive, index)? {
             return Err(conflict());
         }
     } else if applied.version != 0 {

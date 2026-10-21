@@ -89,6 +89,7 @@ pub(super) fn install<R: Read>(
         ))
     };
     if !repeated {
+        crate::excise::recovery::remember_policies(&tx, &units.catalog.db)?;
         tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
         // All deletions precede inserts: shared revision bases are restored in
         // this transaction. A later read/refusal rolls all deletions back.
@@ -118,6 +119,9 @@ pub(super) fn install<R: Read>(
         && crate::excise::recovery::fingerprint(&tx)? == before
     {
         crate::excise::recovery::set(&tx, &revision)?;
+    }
+    if !repeated && !crate::excise::recovery::preserves_policies(&tx, &units.catalog.db)? {
+        return Err(invalid("restored view changes an existing excision rule"));
     }
     tx.commit()?;
     Ok(inserted)
