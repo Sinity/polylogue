@@ -92,7 +92,7 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, scope: &Scope) -> Result<u64>
                              WHERE w.kind = 'withdrawal' AND wt.ref = 'note:' || hn.root))"
     );
     let n: i64 = reader
-        .conn()
+        .conn()?
         .query_row(&sql, rusqlite::params_from_iter(params), |r| r.get(0))?;
     Ok(n as u64)
 }

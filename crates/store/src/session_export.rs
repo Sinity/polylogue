@@ -29,14 +29,14 @@ impl Reader<'_> {
     /// The session's events in display order, payloads as written.
     pub fn events(&self, id: &SessionId) -> Result<Vec<Event>> {
         let pk: Option<i64> = self
-            .conn()
+            .conn()?
             .prepare_cached("SELECT pk FROM session WHERE id = ?1")?
             .query_row([id.to_string()], |r| r.get(0))
             .optional()?;
         let Some(pk) = pk else {
             return Ok(Vec::new());
         };
-        let mut stmt = self.conn().prepare_cached(
+        let mut stmt = self.conn()?.prepare_cached(
             "SELECT e.kind, e.at, m.id, e.source_start, e.source_end, e.data
              FROM current_event e LEFT JOIN current_message m ON m.pk = e.after_message_pk
              -- Events at the same position (each file's own byte 0, from
@@ -74,7 +74,7 @@ impl Reader<'_> {
     /// by their content: the order inputs arrived in never changes the view
     /// (law 4).
     pub fn links(&self, id: &SessionId) -> Result<Vec<Link>> {
-        let mut stmt = self.conn().prepare_cached(
+        let mut stmt = self.conn()?.prepare_cached(
             "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence
              FROM current_link WHERE parent_id = ?1 OR child_id = ?1
              ORDER BY parent_id, child_id, kind, how",

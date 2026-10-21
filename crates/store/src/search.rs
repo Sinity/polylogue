@@ -88,7 +88,7 @@ impl Reader<'_> {
                  ORDER BY bm25({table}), m.at DESC LIMIT 1"
             );
             let hit: Option<(Vec<u8>, String, String)> = self
-                .conn()
+                .conn()?
                 .prepare_cached(&sql)?
                 .query_row(params![fts, pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                 .optional()?;

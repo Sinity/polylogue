@@ -55,7 +55,10 @@ fn a_partially_committed_excision_stops_writes_until_restart() {
             assert!(later.is_err());
             let pool = w.reads();
             if point == "excision.between_commits" {
-                assert!(matches!(pool.reader(), Err(StoreError::ExcisionPending)));
+                assert!(matches!(
+                    pool.reader().unwrap().status(),
+                    Err(StoreError::ExcisionPending)
+                ));
             } else {
                 let r = pool.reader().unwrap();
                 assert!(

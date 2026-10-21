@@ -120,7 +120,7 @@ pub(crate) fn needs_rebuild(archive: &Connection, index: &Connection) -> Result<
 }
 
 pub(crate) fn check_snapshot(conn: &Connection) -> Result<()> {
-    // This statement pins both snapshots before the Reader is admitted.
+    // This statement pins both snapshots before the first database read.
     let (applied_version, applied_id, current_version, current_id) = conn
         .prepare_cached(
             "SELECT
