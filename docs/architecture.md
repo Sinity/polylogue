@@ -7,7 +7,7 @@ also contain intended behavior that is not implemented or qualified yet.
 
 `polylogue-sources` interprets provider formats. An origin declaration owns
 recognition, paths, framing, parser version and provider capabilities. Opening
-an input selects line or document parsing; callers do not maintain a second
+an input selects line, array or document parsing; callers do not maintain a second
 framing flag. Parsers produce model values, record ranges and accounting. The
 shared `Records` sink owns disposition and wire-field counts. Line parsing
 supplies an independent framed total; document parsers submit the items they
@@ -163,17 +163,35 @@ global oldest-first ordering and first-owner message deduplication through this
 same object; Claude preserves physical array order. Scratch disappears when the
 operation ends and is rebuilt from retained bytes on retry.
 
-The existing live-before-bulk and size ordering applies across parser kinds.
+AI Studio uses the same scratch and commit path for `chunkedPrompt.chunks`.
+A Serde object visitor retains the surrounding fields with an empty chunks
+array, including metadata appearing after the chunks. After the full input
+validates, the parser emits prompt settings and the system message, then one
+chunk at a time. Its state is the model name, previous message ID, chunk ordinal
+and whether a start time was found. Chunk messages cite exact original chunk
+spans; the system message and settings cite the enclosing prompt. Duplicate
+fields on the selected array path refuse the input before publication, rather
+than combining two ambiguous chunk populations. The Drive listing remains a
+whole-document parser. Unknown fields remain accounted and raw bytes retained.
+
+The existing live-before-bulk and size ordering applies to work already planned.
 Preceding ordinary work drains through the parse pool and commits before the
-serial array driver runs with the pool inactive. That driver decodes one
-conversation and waits for its writer commit before decoding the next. Message order is a separate logical ordinal; message and
-event locations cite the complete original conversation span. Repeated event
-facts retain their latest logical source order, including across replay. Memory therefore
-scales with the largest conversation and its parser output, rather than the
-whole export; a single large conversation still needs that much memory. Parser
-progress becomes complete only after every conversation commits. An interrupted
-retry starts from the retained array, resets accounting, and idempotently
-replays committed conversations.
+serial array driver runs with the pool inactive. A live append arriving during
+that synchronous driver waits until a subsequent discovery pass; this is not
+preemption or a latency bound. A channel-controlled arrival test covers that
+case separately from preplanned priority.
+
+The driver waits for each item's writer commit before decoding the next.
+Message order is a separate logical ordinal. Repeated event facts retain their
+latest logical source order, including across replay. Memory scales with the
+largest conversation or chunk, its parser output and retained prompt metadata;
+a large individual item or non-chunk metadata still needs that much memory.
+Temporary disk scales with the export. Parser progress becomes complete only
+after every item commits. An interrupted retry rescans the retained input,
+resets accounting and idempotently replays committed items; it does not resume
+from a durable mid-array scanner cursor. Parsers receive a first-message-owner
+callback for export deduplication; the engine supplies the temporary SQLite
+lookup, while provider interpretation stays in sources.
 
 ## Application and transports
 

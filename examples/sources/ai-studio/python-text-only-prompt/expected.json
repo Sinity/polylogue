@@ -17,13 +17,17 @@
       {
         "data": null,
         "kind": "run_settings",
+        "range": [
+          0,
+          578
+        ],
         "session": "ai-studio:text_only_prompt"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 152,
         "message": {
           "at": "2025-02-01T08:00:00Z",
           "blocks": [
@@ -37,10 +41,10 @@
           "role": "user",
           "session": "ai-studio:text_only_prompt"
         },
-        "offset": 0
+        "offset": 39
       },
       {
-        "end": 2,
+        "end": 321,
         "message": {
           "at": "2025-02-01T08:00:05Z",
           "blocks": [
@@ -62,10 +66,10 @@
             "reasoning": null
           }
         },
-        "offset": 1
+        "offset": 157
       },
       {
-        "end": 3,
+        "end": 424,
         "message": {
           "at": "2025-02-01T08:00:20Z",
           "blocks": [
@@ -80,10 +84,10 @@
           "role": "user",
           "session": "ai-studio:text_only_prompt"
         },
-        "offset": 2
+        "offset": 326
       },
       {
-        "end": 4,
+        "end": 569,
         "message": {
           "at": "2025-02-01T08:00:30Z",
           "blocks": [
@@ -105,10 +109,14 @@
             "reasoning": null
           }
         },
-        "offset": 3
+        "offset": 429
       }
     ],
     "sessions": [
+      {
+        "id": "ai-studio:text_only_prompt",
+        "kind": "main"
+      },
       {
         "id": "ai-studio:text_only_prompt",
         "kind": "main",

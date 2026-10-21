@@ -17,13 +17,17 @@
       {
         "data": null,
         "kind": "run_settings",
+        "range": [
+          0,
+          791
+        ],
         "session": "ai-studio:code_execution_prompt"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 144,
         "message": {
           "at": "2025-02-02T09:00:00Z",
           "blocks": [
@@ -37,10 +41,10 @@
           "role": "user",
           "session": "ai-studio:code_execution_prompt"
         },
-        "offset": 0
+        "offset": 39
       },
       {
-        "end": 2,
+        "end": 311,
         "message": {
           "at": "2025-02-02T09:00:05Z",
           "blocks": [
@@ -54,10 +58,10 @@
           "role": "assistant",
           "session": "ai-studio:code_execution_prompt"
         },
-        "offset": 1
+        "offset": 149
       },
       {
-        "end": 3,
+        "end": 468,
         "message": {
           "at": "2025-02-02T09:00:10Z",
           "blocks": [
@@ -78,10 +82,10 @@
           "role": "assistant",
           "session": "ai-studio:code_execution_prompt"
         },
-        "offset": 2
+        "offset": 316
       },
       {
-        "end": 4,
+        "end": 628,
         "message": {
           "at": "2025-02-02T09:00:20Z",
           "blocks": [
@@ -103,10 +107,10 @@
           "role": "assistant",
           "session": "ai-studio:code_execution_prompt"
         },
-        "offset": 3
+        "offset": 473
       },
       {
-        "end": 5,
+        "end": 782,
         "message": {
           "at": "2025-02-02T09:00:45Z",
           "blocks": [
@@ -128,10 +132,14 @@
             "reasoning": null
           }
         },
-        "offset": 4
+        "offset": 633
       }
     ],
     "sessions": [
+      {
+        "id": "ai-studio:code_execution_prompt",
+        "kind": "main"
+      },
       {
         "id": "ai-studio:code_execution_prompt",
         "kind": "main",

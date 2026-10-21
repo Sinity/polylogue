@@ -81,7 +81,7 @@ impl crate::array::ArrayParser for Export {
         header.create_time?.as_f64()
     }
     fn item(
-        &self,
+        &mut self,
         value: &Json,
         sink: &mut Sink<'_>,
         owners: &mut dyn crate::array::Owners,

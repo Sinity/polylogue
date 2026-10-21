@@ -19,13 +19,17 @@
       {
         "data": null,
         "kind": "run_settings",
+        "range": [
+          0,
+          1177
+        ],
         "session": "ai-studio:branching_session"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 165,
         "message": {
           "at": "2025-02-01T13:00:02Z",
           "blocks": [
@@ -39,10 +43,10 @@
           "role": "user",
           "session": "ai-studio:branching_session"
         },
-        "offset": 0
+        "offset": 39
       },
       {
-        "end": 2,
+        "end": 463,
         "message": {
           "at": "2025-02-01T13:00:08Z",
           "blocks": [
@@ -56,10 +60,10 @@
           "role": "assistant",
           "session": "ai-studio:branching_session"
         },
-        "offset": 1
+        "offset": 170
       },
       {
-        "end": 3,
+        "end": 840,
         "message": {
           "at": "2025-02-01T13:00:12Z",
           "blocks": [
@@ -73,10 +77,10 @@
           "role": "assistant",
           "session": "ai-studio:branching_session"
         },
-        "offset": 2
+        "offset": 468
       },
       {
-        "end": 4,
+        "end": 1168,
         "message": {
           "at": "2025-02-01T13:00:30Z",
           "blocks": [
@@ -96,10 +100,14 @@
           "session": "ai-studio:branching_session",
           "stop_reason": "OTHER"
         },
-        "offset": 3
+        "offset": 961
       }
     ],
     "sessions": [
+      {
+        "id": "ai-studio:branching_session",
+        "kind": "main"
+      },
       {
         "id": "ai-studio:branching_session",
         "kind": "main",

@@ -1,7 +1,7 @@
 //! Small parser fixtures use in-memory ordering; engine tests exercise disk spill.
 use polylogue_sources::{Parse, Step};
 
-pub fn parse(parser: &Parse, bytes: &[u8]) -> Result<Step, String> {
+pub fn parse(parser: &mut Parse, bytes: &[u8]) -> Result<Step, String> {
     let Parse::Array(array) = parser else {
         return parser
             .step(None, bytes, 0)
@@ -9,8 +9,8 @@ pub fn parse(parser: &Parse, bytes: &[u8]) -> Result<Step, String> {
             .map_err(|e| e.to_string());
     };
     let mut items = Vec::new();
-    if let Err(error) = polylogue_sources::array::scan(bytes, |range, raw| {
-        items.push((range, raw.to_owned()));
+    if let Err(error) = array.scan(&mut &bytes[..], &mut |range, key, raw| {
+        items.push((range, key, raw.to_owned()));
         Ok(())
     }) {
         let polylogue_sources::array::ScanError::Malformed(error) = error else {
@@ -21,20 +21,26 @@ pub fn parse(parser: &Parse, bytes: &[u8]) -> Result<Step, String> {
             bytes.len() as u64,
         ));
     }
-    items.sort_by(
-        |a, b| match (array.order_key(&a.1), array.order_key(&b.1)) {
-            (Some(a), Some(b)) => a.total_cmp(&b),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        },
-    );
+    items.sort_by(|a, b| match (a.1, b.1) {
+        (Some(a), Some(b)) => a.total_cmp(&b),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        _ => std::cmp::Ordering::Equal,
+    });
     let mut owners = polylogue_sources::chatgpt::Owners::default();
     let mut output = polylogue_sources::Output::default();
     let mut accounting = polylogue_model::Accounting::default();
-    for (range, raw) in items {
+    let mut steps: Vec<_> = array.begin(bytes.len() as u64)?.into_iter().collect();
+    for (range, _, raw) in items {
         let value = serde_json::from_str(raw.get()).map_err(|e| e.to_string())?;
-        let mut step = polylogue_sources::array::parse_item(&**array, &value, range, &mut owners)?;
+        steps.push(polylogue_sources::array::parse_item(
+            &mut **array,
+            &value,
+            range,
+            &mut owners,
+        )?);
+    }
+    for mut step in steps {
         accounting.merge(&step.accounting);
         macro_rules! append { ($($field:ident),*) => { $(output.$field.append(&mut step.output.$field);)* } }
         append!(

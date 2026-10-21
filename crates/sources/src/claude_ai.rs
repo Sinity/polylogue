@@ -63,7 +63,7 @@ impl crate::array::ArrayParser for Export {
         None
     }
     fn item(
-        &self,
+        &mut self,
         value: &Json,
         sink: &mut Sink<'_>,
         _: &mut dyn crate::array::Owners,
