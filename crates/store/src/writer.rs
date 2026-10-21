@@ -190,8 +190,7 @@ impl Writer {
         } else {
             Vec::new()
         };
-        let archive_conn =
-            open_write(&archive.archive_db(), crate::archive::cache::ARCHIVE_WRITER)?;
+        let archive_conn = crate::archive::open_archive_writer(archive)?;
         if crate::excise::recovery::current(&archive_conn)?
             != crate::excise::recovery::current(&index)?
         {

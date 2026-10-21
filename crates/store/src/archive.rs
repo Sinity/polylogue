@@ -268,6 +268,14 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
     Ok(conn)
 }
 
+/// The canonical writer also captures changed unit keys in temporary tables.
+pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
+    let conn = open_write(&archive.archive_db(), cache::ARCHIVE_WRITER)?;
+    conn.pragma_update(None, "temp_store", "file")?;
+    conn.pragma_update(Some("temp"), "cache_size", -1024)?;
+    Ok(conn)
+}
+
 /// A read-only connection.
 pub fn open_read(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(

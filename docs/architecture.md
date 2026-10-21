@@ -421,8 +421,10 @@ with a 1 MiB page cache. The adapter discards each Have reply after at most
 500 keys and visits missing units by position. Historical manifests are checked
 one at a time before payloads open. Temporary disk scales with the catalog and
 largest row batch; one manifest, row and its blob-reference list remain memory
-bounds. Excision streams changed units from its temporary table and uses
-`sinex_rows/excision/retirement.rs` to select historical batches on disk.
+bounds. The canonical archive writer uses file-backed temporary tables with
+a 1 MiB temporary page-cache target. Excision streams changed unit keys from
+that table and uses `sinex_rows/excision/retirement.rs` to select historical
+batches on disk.
 A batch remains protected while any current replacement references it, including
 an unaffected unit. Manifest-owner order selects the latest replacement; source
 scan order does not matter. The new manifest's replacement and retirement lists
