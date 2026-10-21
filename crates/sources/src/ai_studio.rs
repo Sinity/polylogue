@@ -11,9 +11,9 @@
 //! the same message. `parts` split a model chunk into thoughts and answer
 //! text; joined, they equal the chunk's `text`.
 
-use crate::array::{ArrayParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
+use crate::export::{ExportParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{InlineBlob, MessageRow, Output, Parse};
 use crate::{Disposition, Records};
@@ -57,11 +57,11 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 
 pub fn open(path: &Path) -> Option<Parse> {
     if is_listing(path) {
-        return Some(Parse::Array(Box::new(Listing::default())));
+        return Some(Parse::Export(Box::new(Listing::default())));
     }
     let native = native_of(path)?;
     let title = title_of(path);
-    Some(Parse::Array(Box::new(AiStudio {
+    Some(Parse::Export(Box::new(AiStudio {
         native,
         title,
         state: PromptState::default(),
@@ -174,7 +174,7 @@ const CHUNK_FIELDS: Fields = &[
     ),
 ];
 
-impl ArrayParser for AiStudio {
+impl ExportParser for AiStudio {
     fn scan(
         &mut self,
         reader: &mut dyn std::io::Read,
@@ -182,14 +182,18 @@ impl ArrayParser for AiStudio {
     ) -> Result<ScanStats, ScanError> {
         self.state = PromptState::default();
         let (metadata, stats) =
-            crate::array::scan_nested(reader, &["chunkedPrompt", "chunks"], |range, raw| {
-                item(range, None, raw)
+            crate::export::scan_nested(reader, &["chunkedPrompt", "chunks"], |range, raw| {
+                item(range, Vec::new(), None, raw)
             })?;
         self.state.metadata = Some(metadata);
         Ok(stats)
     }
 
-    fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
+    fn begin(
+        &mut self,
+        length: u64,
+        _first: Option<&Json>,
+    ) -> Result<Option<crate::parse::Step>, String> {
         let doc = self
             .state
             .metadata
@@ -636,18 +640,23 @@ const LISTING_FIELDS: Fields = &[
     ("size", Rule::Excluded("each stored revision has its size")),
 ];
 
-impl ArrayParser for Listing {
+impl ExportParser for Listing {
     fn scan(
         &mut self,
         reader: &mut dyn std::io::Read,
         item: &mut ItemSink<'_>,
     ) -> Result<ScanStats, ScanError> {
-        let (metadata, stats) =
-            crate::array::scan_nested(reader, &["files"], |range, raw| item(range, None, raw))?;
+        let (metadata, stats) = crate::export::scan_nested(reader, &["files"], |range, raw| {
+            item(range, Vec::new(), None, raw)
+        })?;
         self.files_array = metadata.get("files").is_some_and(Json::is_array);
         Ok(stats)
     }
-    fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
+    fn begin(
+        &mut self,
+        length: u64,
+        _first: Option<&Json>,
+    ) -> Result<Option<crate::parse::Step>, String> {
         if self.files_array {
             return Ok(None);
         }

@@ -4,8 +4,8 @@
 //! the export holds them. Sessions retain document order; their messages
 //! and events cite the exact exported-session record in the new input.
 
-use crate::array::{ArrayParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::document::Sink;
+use crate::export::{ExportParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::parse::{MessageRow, Output, Parse, Step};
 use crate::{Disposition, Records};
 use polylogue_model::export::{Document, FORMAT, SessionExport};
@@ -22,7 +22,7 @@ pub fn recognize(_path: &Path, head: &[u8]) -> bool {
 }
 
 pub fn open(_path: &Path) -> Option<Parse> {
-    Some(Parse::Array(Box::new(Export::default())))
+    Some(Parse::Export(Box::new(Export::default())))
 }
 
 #[derive(Default)]
@@ -31,7 +31,7 @@ pub struct Export {
     refusal: Option<String>,
 }
 
-impl ArrayParser for Export {
+impl ExportParser for Export {
     fn scan(
         &mut self,
         reader: &mut dyn std::io::Read,
@@ -41,14 +41,14 @@ impl ArrayParser for Export {
         self.refusal = None;
         let mut invalid_session = None;
         let (metadata, stats) =
-            crate::array::scan_nested_unique(reader, &["sessions"], |range, raw| {
+            crate::export::scan_nested_unique(reader, &["sessions"], |range, raw| {
                 // Validate every typed session before any of them may be published.
                 if invalid_session.is_none()
                     && let Err(error) = serde_json::from_str::<SessionExport>(raw.get())
                 {
                     invalid_session = Some(error.to_string());
                 }
-                item(range, None, raw)
+                item(range, Vec::new(), None, raw)
             })?;
         self.refusal = Document::from_json(&metadata.to_string())
             .err()
@@ -58,7 +58,11 @@ impl ArrayParser for Export {
         Ok(stats)
     }
 
-    fn begin(&mut self, length: u64) -> Result<Option<Step>, String> {
+    fn begin(
+        &mut self,
+        length: u64,
+        _first: Option<&polylogue_model::Json>,
+    ) -> Result<Option<Step>, String> {
         let Some(reason) = self.refusal.take() else {
             return Ok(None);
         };

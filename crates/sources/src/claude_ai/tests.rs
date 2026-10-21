@@ -15,8 +15,8 @@ fn m(uuid: &str, sender: &str, parent: &str, at: &str, content: Json) -> Json {
 }
 
 fn run(convs: Vec<Json>) -> crate::parse::Step {
-    crate::array::fixture::parse(
-        &mut Parse::Array(Box::new(Export)),
+    crate::export::fixture::parse(
+        &mut Parse::Export(Box::new(Export)),
         &serde_json::to_vec(&convs).unwrap(),
     )
     .unwrap()

@@ -1,4 +1,4 @@
-//! Serde framing of export array elements, preserving their exact original bytes.
+//! Serde framing of export records, preserving their exact original bytes.
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde_json::value::RawValue;
@@ -31,8 +31,14 @@ impl<R: Read> Read for Tapped<R> {
             let at = tap.position;
             tap.position += 1;
             tap.last = Some((at, out[0]));
-            if let Some((_, bytes)) = &mut tap.captured {
-                bytes.push(out[0]);
+            if let Some((start, bytes)) = &mut tap.captured {
+                // Map capture starts before its colon and whitespace; array
+                // capture already contains the value's first byte.
+                if bytes.is_empty() && (out[0].is_ascii_whitespace() || out[0] == b':') {
+                    *start = at + 1;
+                } else {
+                    bytes.push(out[0]);
+                }
             }
         }
         Ok(n)
@@ -41,9 +47,9 @@ impl<R: Read> Read for Tapped<R> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScanError {
-    #[error("malformed export array: {0}")]
+    #[error("malformed export: {0}")]
     Malformed(serde_json::Error),
-    #[error("reading export array: {0}")]
+    #[error("reading export: {0}")]
     Input(serde_json::Error),
     #[error("export callback: {0}")]
     Callback(String),
@@ -57,6 +63,8 @@ pub struct ScanStats {
     pub peak_element_bytes: usize,
 }
 
+mod keyed;
+pub use keyed::scan_map;
 mod nested;
 pub use nested::{scan_array_or_nested, scan_nested, scan_nested_unique};
 
@@ -175,24 +183,51 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed
     }
 }
 
-/// An export item parser. Ordering is separate from the physical record span.
-pub type ItemSink<'a> = dyn FnMut(Range<u64>, Option<f64>, &RawValue) -> Result<(), String> + 'a;
+/// Numeric export times keep the previous total-float order; unknowns follow
+/// known values. Formats with integer or compound keys supply their own bytes.
+pub fn number_order(value: Option<f64>) -> Vec<u8> {
+    let Some(value) = value else {
+        return vec![1];
+    };
+    let bits = value.to_bits();
+    let bits = if bits >> 63 != 0 {
+        !bits
+    } else {
+        bits ^ (1 << 63)
+    };
+    let mut key = vec![0];
+    key.extend(bits.to_be_bytes());
+    key
+}
 
-pub trait ArrayParser: Send {
+/// An export item parser. Ordering is separate from the physical record span.
+/// Order keys compare lexicographically. A source key replaces a prior value
+/// only for formats whose object entries have last-value semantics.
+pub type ItemSink<'a> =
+    dyn FnMut(Range<u64>, Vec<u8>, Option<&str>, &RawValue) -> Result<(), String> + 'a;
+
+pub trait ExportParser: Send {
     fn scan(
         &mut self,
         reader: &mut dyn Read,
         item: &mut ItemSink<'_>,
     ) -> Result<ScanStats, ScanError> {
-        scan(reader, |range, raw| item(range, self.order_key(raw), raw))
+        scan(reader, |range, raw| {
+            item(range, self.order_key(raw), None, raw)
+        })
     }
-    /// File-level output after the complete source validates, before its items.
-    fn begin(&mut self, _length: u64) -> Result<Option<crate::parse::Step>, String> {
+    /// File-level output after validation and ordering, before its items. `first`
+    /// is the selected first record after any keyed replacements.
+    fn begin(
+        &mut self,
+        _length: u64,
+        _first: Option<&polylogue_model::Json>,
+    ) -> Result<Option<crate::parse::Step>, String> {
         Ok(None)
     }
     /// Physical record order unless the format defines another ordering.
-    fn order_key(&self, _raw: &RawValue) -> Option<f64> {
-        None
+    fn order_key(&self, _raw: &RawValue) -> Vec<u8> {
+        Vec::new()
     }
     fn item(
         &mut self,
@@ -212,7 +247,7 @@ pub trait Owners {
 }
 
 pub fn parse_item(
-    parser: &mut dyn ArrayParser,
+    parser: &mut dyn ExportParser,
     value: &polylogue_model::Json,
     range: Range<u64>,
     owners: &mut dyn Owners,
@@ -256,7 +291,7 @@ pub fn refused(error: String, length: u64) -> crate::parse::Step {
 }
 
 #[cfg(test)]
-#[path = "array/fixture.rs"]
+#[path = "export/fixture.rs"]
 pub(crate) mod fixture;
 
 #[cfg(test)]

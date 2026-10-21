@@ -7,7 +7,7 @@ also contain intended behavior that is not implemented or qualified yet.
 
 `polylogue-sources` interprets source formats. An origin declaration owns
 recognition, paths, framing, parser version and tool capabilities. Opening
-an input selects line, array or document parsing; callers do not maintain a second
+an input selects line, export or document parsing; callers do not maintain a second
 framing flag. Parsers produce model values, record ranges and accounting. The
 shared `Records` sink owns disposition and wire-field counts. Line parsing
 supplies an independent framed total; document parsers submit the items they
@@ -209,12 +209,21 @@ session ID and previous message ID after reading header facts; tool calls and
 results stay within their turn. Notices and errors remain events anchored to
 the preceding message, with their own original record spans. Watched revisions
 are retained before parsing, and retries and rebuilds use those bytes after the
-provider file disappears. Physical array order is the default; ChatGPT alone
-overrides it with its recorded conversation ordering key.
+source file disappears. Physical order is the default; ChatGPT uses its recorded conversation time.
+
+OpenRouter uses `sources/export/keyed.rs` for its named message map and
+`store/export_items.rs` for disk ordering. Records sort by optional integer
+milliseconds, optional message ID and object key; unknown times sort first.
+Repeated object keys replace the staged value, its position and its source
+range. The selected first record names the room after those replacements,
+so an overwritten old value cannot supply its identity. The complete wrapper
+validates before header or message output; metadata after messages still applies.
+Only ordering fields decode during the scan; message bodies remain raw until
+their turn. Room metadata and one message/output remain memory bounds.
 
 The existing live-before-bulk and size ordering applies to work already planned.
 Preceding ordinary work drains through the parse pool and commits before the
-serial array driver runs with the pool inactive. A live append arriving during
+serial export driver runs with the pool inactive. A live append arriving during
 that synchronous driver waits until a subsequent discovery pass; this is not
 preemption or a latency bound.
 
@@ -223,7 +232,7 @@ physical order and authored identities. Every session is checked against the
 typed export schema during the scan; an invalid later session refuses the whole
 document before any prefix is published. Header format and version, including
 headers after sessions, apply before publication. Its typed wrapper rejects
-duplicate enclosing fields; value-based provider wrappers retain their existing
+duplicate enclosing fields; value-based source wrappers retain their existing
 rules. Messages and events cite the original exported-session span, replacing
 ranges that belonged to the export's former input. Memory still includes one
 whole exported session and its output, rather than all sessions in the file.
@@ -236,9 +245,9 @@ a large individual item or non-chunk metadata still needs that much memory.
 Temporary disk scales with the export. Parser progress becomes complete only
 after every item commits. An interrupted retry rescans the retained input,
 resets accounting and idempotently replays committed items; it does not resume
-from a durable mid-array scanner cursor. Parsers receive a first-message-owner
+from a durable mid-export scanner cursor. Parsers receive a first-message-owner
 callback for export deduplication; the engine supplies the temporary SQLite
-lookup, while provider interpretation stays in sources.
+lookup, while source interpretation stays in sources.
 
 ## Application and transports
 

@@ -7,9 +7,9 @@
 //! (architecture 5.5). The session is the object's `id` when it has one,
 //! else the file name.
 
-use crate::array::{ArrayParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of};
+use crate::export::{ExportParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse};
 use crate::{Disposition, Records};
@@ -34,7 +34,7 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 pub fn open(path: &Path) -> Option<Parse> {
     let name = path.file_name()?.to_str()?.rsplit("!/").next()?;
     let stem = name.strip_suffix(".json").unwrap_or(name).to_owned();
-    Some(Parse::Array(Box::new(OpenAiChat {
+    Some(Parse::Export(Box::new(OpenAiChat {
         file: stem,
         state: ChatState::default(),
     })))
@@ -76,7 +76,7 @@ const MESSAGE_FIELDS: Fields = &[
     ("function_call", Rule::Read),
 ];
 
-impl ArrayParser for OpenAiChat {
+impl ExportParser for OpenAiChat {
     fn scan(
         &mut self,
         reader: &mut dyn std::io::Read,
@@ -84,13 +84,17 @@ impl ArrayParser for OpenAiChat {
     ) -> Result<ScanStats, ScanError> {
         self.state = ChatState::default();
         let (metadata, stats) =
-            crate::array::scan_array_or_nested(reader, &["messages"], |range, raw| {
-                item(range, None, raw)
+            crate::export::scan_array_or_nested(reader, &["messages"], |range, raw| {
+                item(range, Vec::new(), None, raw)
             })?;
         self.state.metadata = Some(metadata);
         Ok(stats)
     }
-    fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
+    fn begin(
+        &mut self,
+        length: u64,
+        _first: Option<&Json>,
+    ) -> Result<Option<crate::parse::Step>, String> {
         let doc = self
             .state
             .metadata

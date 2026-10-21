@@ -266,3 +266,104 @@ fn typed_wrapper_headers_refuse_duplicates_without_changing_value_wrapper_rules(
     let input = br#"{"version":1,"items":[{}]}"#;
     assert!(scan_nested_unique(input.as_slice(), &["items"], |_, _| Ok(())).is_ok());
 }
+
+#[test]
+fn number_keys_keep_total_float_order_and_unknowns_last() {
+    let mut values = vec![
+        None,
+        Some(-0.0),
+        Some(0.0),
+        Some(-1.0),
+        Some(f64::INFINITY),
+        Some(f64::NEG_INFINITY),
+    ];
+    values.extend(
+        (0..200).map(|n| Some(f64::from_bits((n as u64).wrapping_mul(0x9e3779b97f4a7c15)))),
+    );
+    for a in &values {
+        for b in &values {
+            let expected = match (a, b) {
+                (Some(a), Some(b)) => a.total_cmp(b),
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                _ => std::cmp::Ordering::Equal,
+            };
+            assert_eq!(number_order(*a).cmp(&number_order(*b)), expected);
+        }
+    }
+}
+
+#[test]
+fn keyed_maps_keep_exact_spans_across_short_reads_and_ignore_large_separators() {
+    struct Short<'a> {
+        bytes: &'a [u8],
+        chunk: usize,
+    }
+    impl Read for Short<'_> {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let count = out.len().min(self.chunk).min(self.bytes.len());
+            out[..count].copy_from_slice(&self.bytes[..count]);
+            self.bytes = &self.bytes[count..];
+            Ok(count)
+        }
+    }
+    let text = [
+        r#"{"before":1,"messages":{"a\u0000":"#,
+        &" ".repeat(256 * 1024),
+        r#"{"text":"é}}]"},"z":null,"z":false},"after":2}"#,
+    ]
+    .concat();
+    for chunk in [1, 2, 7, 64, 4096] {
+        let mut records = Vec::new();
+        let (metadata, stats) = scan_map(
+            Short {
+                bytes: text.as_bytes(),
+                chunk,
+            },
+            "messages",
+            |range, key, raw| {
+                assert_eq!(
+                    &text.as_bytes()[range.start as usize..range.end as usize],
+                    raw.get().as_bytes()
+                );
+                records.push((
+                    key.to_owned(),
+                    serde_json::from_str::<serde_json::Value>(raw.get()).unwrap(),
+                ));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            records,
+            vec![
+                ("a\0".into(), serde_json::json!({"text":"é}}]"})),
+                ("z".into(), serde_json::Value::Null),
+                ("z".into(), false.into())
+            ]
+        );
+        assert_eq!(
+            metadata,
+            serde_json::json!({"before":1,"messages":{},"after":2})
+        );
+        assert_eq!(stats.elements, 3);
+        assert!(stats.peak_element_bytes < 100, "{stats:?}");
+    }
+}
+
+#[test]
+fn keyed_maps_check_the_complete_wrapper_and_preserve_callback_failures() {
+    for text in [
+        r#"{"messages":{"a":1}} false"#,
+        r#"{"messages":{"a":1},"messages":{"b":2}}"#,
+        r#"{"messages":{"a":1,}"#,
+    ] {
+        assert!(matches!(
+            scan_map(text.as_bytes(), "messages", |_, _, _| Ok(())),
+            Err(ScanError::Malformed(_))
+        ));
+    }
+    assert!(
+        matches!(scan_map(br#"{"messages":{"a":1}}"#.as_slice(),"messages",|_,_,_|Err("stop".into())),Err(ScanError::Callback(value)) if value=="stop")
+    );
+}

@@ -929,12 +929,12 @@ impl Engine {
         plans.sort_by_key(|p| (p.priority == Priority::Bulk, std::cmp::Reverse(p.size)));
         let mut ordinary = Vec::new();
         for mut plan in plans {
-            if let Some(polylogue_sources::parse::Parse::Array(mut parser)) =
+            if let Some(polylogue_sources::parse::Parse::Export(mut parser)) =
                 (plan.origin.open)(&plan.path)
             {
                 self.execute_pool(std::mem::take(&mut ordinary), pass)?;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    self.execute_array(&mut plan, &mut *parser, pass)
+                    self.execute_export(&mut plan, &mut *parser, pass)
                 }));
                 match result {
                     Ok(Ok(())) => {}

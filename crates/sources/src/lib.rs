@@ -10,13 +10,13 @@
 extern crate self as polylogue_sources;
 
 pub mod ai_studio;
-pub mod array;
 pub mod browser_capture;
 pub mod chatgpt;
 pub mod claude_ai;
 pub mod claude_code;
 pub mod codex;
 pub mod document;
+pub mod export;
 pub mod fields;
 pub mod frame;
 pub mod gemini_app;

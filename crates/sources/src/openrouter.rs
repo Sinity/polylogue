@@ -2,14 +2,14 @@
 //! models in the room (`characters`) and its messages keyed by ID, each
 //! naming the character that wrote it and the message it answers.
 //!
-//! The export has no conversation ID. Message IDs are unique and the room's
-//! first message never changes as the chat grows, so the session is named
-//! by its earliest message: exporting the same room again unites with it.
+//! The export has no conversation ID. Its first message in declared order
+//! names the session. Matching message IDs unite repeated room exports.
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
+use crate::export::{ExportParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
-use crate::parse::{DocumentParser, InlineBlob, MessageRow, Output, Parse};
+use crate::parse::{InlineBlob, MessageRow, Output, Parse, Step};
 use crate::{Disposition, Records};
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, PromptKind, Role,
@@ -29,10 +29,15 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 }
 
 pub fn open(_path: &Path) -> Option<Parse> {
-    Some(Parse::Document(Box::new(OpenRouter)))
+    Some(Parse::Export(Box::new(OpenRouter::default())))
 }
 
-pub struct OpenRouter;
+#[derive(Default)]
+pub struct OpenRouter {
+    metadata: Option<Json>,
+    session: Option<polylogue_model::SessionId>,
+    characters: Json,
+}
 
 const DOCUMENT_FIELDS: Fields = &[
     (
@@ -104,64 +109,91 @@ const MESSAGE_FIELDS: Fields = &[
     ("metadata.reasoning", Rule::Read),
 ];
 
-impl DocumentParser for OpenRouter {
-    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let mut sink = Sink::new(out, records);
-        let doc = match serde_json::from_slice::<Json>(bytes) {
-            Ok(v) if v.is_object() => v,
-            Ok(_) => {
-                return sink
-                    .records
-                    .record("room", &Disposition::refused("not an object"));
-            }
-            Err(e) => {
-                return sink.records.record(
-                    "room",
-                    &Disposition::refused(format!("malformed JSON: {e}")),
-                );
-            }
+impl ExportParser for OpenRouter {
+    fn scan(
+        &mut self,
+        reader: &mut dyn std::io::Read,
+        item: &mut ItemSink<'_>,
+    ) -> Result<ScanStats, ScanError> {
+        *self = Self::default();
+        let (metadata, stats) = crate::export::scan_map(reader, "messages", |range, key, raw| {
+            item(range, message_order(raw, key), Some(key), raw)
+        })?;
+        self.metadata = Some(metadata);
+        Ok(stats)
+    }
+
+    fn begin(&mut self, length: u64, first: Option<&Json>) -> Result<Option<Step>, String> {
+        let doc = self.metadata.take().ok_or("room metadata not scanned")?;
+        let mut output = Output::default();
+        let mut records = Records::default();
+        self.start(&doc, first, &mut Sink::new(&mut output, &mut records));
+        for event in &mut output.events {
+            event.range = Some((0, length));
+        }
+        Ok(Some(Step {
+            output,
+            accounting: records.finish().map_err(|e| e.to_string())?,
+            start: 0,
+            consumed: length,
+            snapshot: None,
+        }))
+    }
+
+    fn item(&mut self, m: &Json, sink: &mut Sink<'_>, _: &mut dyn Owners) -> Result<(), String> {
+        let Some(sid) = &self.session else {
+            return Ok(());
         };
-        sink.records.fields("room", &doc, DOCUMENT_FIELDS);
-        let empty = serde_json::Map::new();
-        let messages = doc
-            .get("messages")
-            .and_then(Json::as_object)
-            .unwrap_or(&empty);
-        let mut ordered: Vec<&Json> = messages.values().collect();
-        ordered.sort_by_key(|m| {
-            (
-                m.get("createdAt").and_then(time_of).map(|t| t.unix_ms()),
-                str_of(m, "id").map(str::to_owned),
-            )
-        });
-        let Some(first) = ordered.first().and_then(|m| str_of(m, "id")) else {
+        let kind = str_of(m, "type").unwrap_or("?").to_owned();
+        sink.records.fields(&kind, m, MESSAGE_FIELDS);
+        match message(sid, m, &self.characters, sink) {
+            Ok(message) => {
+                let offset = sink.position();
+                sink.out.messages.push(MessageRow {
+                    offset,
+                    end: offset + 1,
+                    message,
+                });
+                sink.records.record(&kind, &Disposition::Materialized);
+            }
+            Err(disposition) => sink.records.record(&kind, &disposition),
+        }
+        Ok(())
+    }
+}
+
+impl OpenRouter {
+    fn start(&mut self, doc: &Json, first: Option<&Json>, sink: &mut Sink<'_>) {
+        sink.records.fields("room", doc, DOCUMENT_FIELDS);
+        let Some(first_id) = first.and_then(|m| str_of(m, "id")) else {
             return sink
                 .records
                 .record("room", &Disposition::unknown("a room with no messages"));
         };
-        let Some(sid) = session_id(ORIGIN, first) else {
+        let Some(sid) = session_id(ORIGIN, first_id) else {
             return sink
                 .records
                 .record("room", &Disposition::refused("unusable message ID"));
         };
         let mut session = Session::new(sid.clone(), SessionKind::Main);
-        if let Some(title) = str_of(&doc, "title") {
+        if let Some(title) = str_of(doc, "title") {
             session.offer_title(title, TitleSource::Generated);
         }
-        if let Some(at) = ordered[0].get("createdAt").and_then(time_of) {
+        if let Some(at) = first.and_then(|m| m.get("createdAt")).and_then(time_of) {
             session.offer_start(at);
         }
+        self.session = Some(sid.clone());
         sink.out.sessions.push(session);
         sink.records.record("room", &Disposition::Materialized);
 
-        let characters = doc.get("characters").cloned().unwrap_or(Json::Null);
+        self.characters = doc.get("characters").cloned().unwrap_or(Json::Null);
         sink.out.events.push(Event {
             session: sid.clone(),
             kind: "room_models".into(),
             at: None,
             after: None,
             range: None,
-            data: characters.clone(),
+            data: self.characters.clone(),
         });
         let artifacts: serde_json::Map<String, Json> = [
             "artifacts",
@@ -187,24 +219,51 @@ impl DocumentParser for OpenRouter {
                 data: Json::Object(artifacts),
             });
         }
+    }
+}
 
-        for m in ordered {
-            let kind = str_of(m, "type").unwrap_or("?").to_owned();
-            sink.records.fields(&kind, m, MESSAGE_FIELDS);
-            match message(&sid, m, &characters, &mut sink) {
-                Ok(message) => {
-                    let offset = sink.position();
-                    sink.out.messages.push(MessageRow {
-                        offset,
-                        end: offset + 1,
-                        message,
-                    });
-                    sink.records.record(&kind, &Disposition::Materialized);
-                }
-                Err(d) => sink.records.record(&kind, &d),
+// Match (optional integer milliseconds, optional message ID, object key).
+// The final key resolves equal message headers independently of Cargo features.
+fn message_order(raw: &serde_json::value::RawValue, key: &str) -> Vec<u8> {
+    // Borrow unrelated fields, including the body. A map retains last-value
+    // semantics for duplicate header fields, like the full message decoder.
+    let fields: std::collections::BTreeMap<String, &serde_json::value::RawValue> =
+        serde_json::from_str(raw.get()).unwrap_or_default();
+    let at = fields
+        .get("createdAt")
+        .and_then(|raw| serde_json::from_str::<Json>(raw.get()).ok())
+        .as_ref()
+        .and_then(time_of);
+    let id = fields
+        .get("id")
+        .and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
+        .filter(|id| !id.is_empty());
+    room_order(at, id.as_deref(), key)
+}
+
+fn room_order(at: Option<polylogue_model::Timestamp>, id: Option<&str>, key: &str) -> Vec<u8> {
+    let mut order = Vec::new();
+    if let Some(time) = at {
+        order.push(1);
+        order.extend(((time.unix_ms() as u64) ^ (1 << 63)).to_be_bytes());
+    } else {
+        order.push(0);
+    }
+    if let Some(id) = id {
+        order.push(1);
+        for byte in id.bytes() {
+            if byte == 0 {
+                order.extend([0, 255]);
+            } else {
+                order.push(byte);
             }
         }
+        order.extend([0, 0]);
+    } else {
+        order.push(0);
     }
+    order.extend(key.as_bytes());
+    order
 }
 
 fn message(

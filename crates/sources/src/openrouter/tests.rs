@@ -1,5 +1,7 @@
 use super::*;
-use crate::parse::run_document;
+fn parse(bytes: &[u8]) -> crate::Step {
+    crate::export::fixture::parse(&mut open(Path::new("room.json")).unwrap(), bytes).unwrap()
+}
 use serde_json::json;
 
 fn room(messages: Json) -> Vec<u8> {
@@ -33,7 +35,7 @@ fn a_room_becomes_one_session_named_by_its_first_message() {
                       "isGenerating": false, "isRetrying": false, "isEdited": false,
                       "isCollapsed": false, "content": "How do I pin nixpkgs?"}
     }));
-    let step = run_document(&OpenRouter, &bytes).unwrap();
+    let step = parse(&bytes);
     let s = &step.output.sessions[0];
     assert_eq!(s.id.native().as_str(), "msg-1-aaa");
     assert_eq!(s.title.as_ref().unwrap().text, "Nix help");
@@ -67,4 +69,133 @@ fn recognizes_room_exports_by_name_and_first_key() {
         Path::new("/a/chat.json"),
         br#"{"version": "orpg"#
     ));
+}
+
+#[test]
+fn integer_time_id_and_object_key_order_matches_optional_tuple_comparison() {
+    let times = [
+        None,
+        Some(-9_999_999),
+        Some(-1),
+        Some(0),
+        Some(1),
+        Some(
+            polylogue_model::Timestamp::parse_rfc3339("9000-01-01T00:00:00Z")
+                .unwrap()
+                .unix_ms(),
+        ),
+    ];
+    let ids = [
+        None,
+        Some("a"),
+        Some("a\0"),
+        Some("a\0z"),
+        Some("z"),
+        Some("é"),
+    ];
+    let mut cases = Vec::new();
+    for time in times {
+        for id in ids {
+            for key in ["a", "a\0", "é"] {
+                cases.push((time, id, key));
+            }
+        }
+    }
+    for a in &cases {
+        for b in &cases {
+            let encode = |(time, id, key): &(Option<i64>, Option<&str>, &str)| {
+                room_order(
+                    time.map(|ms| {
+                        polylogue_model::Timestamp::from_unix_ms(ms)
+                            .expect("test time is representable")
+                    }),
+                    *id,
+                    key,
+                )
+            };
+            assert_eq!(encode(a).cmp(&encode(b)), a.cmp(b), "{a:?} / {b:?}");
+        }
+    }
+}
+
+#[test]
+fn ordering_reads_last_header_values_without_interpreting_the_message_body() {
+    let raw=serde_json::value::RawValue::from_string(r#"{"id":"old","createdAt":"2026-01-02T00:00:00Z","id":"new","createdAt":"1969-12-31T23:59:59.999Z","content":{"nested":[1,2,3]}}"#.into()).unwrap();
+    assert_eq!(
+        message_order(&raw, "key"),
+        room_order(
+            polylogue_model::Timestamp::from_unix_ms(-1),
+            Some("new"),
+            "key"
+        )
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn many_room_entries_scan_with_one_message_buffer() {
+    use std::io::Read;
+    struct Room {
+        part: std::io::Cursor<Vec<u8>>,
+        next: usize,
+    }
+    impl Read for Room {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            loop {
+                let count = self.part.read(out)?;
+                if count > 0 {
+                    return Ok(count);
+                }
+                let bytes = match self.next {
+                    0 => br#"{"version":"example","messages":{"#.to_vec(),
+                    1..=12_000 => format!(
+                        "{}\"{}\":{{\"id\":\"{}\",\"type\":\"user\",\"content\":\"{}\"}}",
+                        if self.next == 1 { "" } else { "," },
+                        self.next,
+                        self.next,
+                        "x".repeat(2048)
+                    )
+                    .into_bytes(),
+                    12_001 => b"}}".to_vec(),
+                    _ => return Ok(0),
+                };
+                self.next += 1;
+                self.part = std::io::Cursor::new(bytes);
+            }
+        }
+    }
+    fn peak() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("VmHWM:")
+                    .map(|v| v.split_whitespace().next().unwrap().parse().unwrap())
+            })
+            .unwrap()
+    }
+    let before = peak();
+    let mut parser = OpenRouter::default();
+    let mut count = 0;
+    let stats = parser
+        .scan(
+            &mut Room {
+                part: std::io::Cursor::new(vec![]),
+                next: 0,
+            },
+            &mut |_, _, _, _| {
+                count += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(count, 12_000);
+    assert_eq!(stats.elements, 12_000);
+    assert!(stats.peak_element_bytes < 4500, "{stats:?}");
+    let growth = peak().saturating_sub(before);
+    eprintln!(
+        "12,000 room entries: scan high-water growth {growth}KiB, record buffer {}bytes",
+        stats.peak_element_bytes
+    );
+    assert!(growth < 8 * 1024, "room scan grew by {growth}KiB");
 }
