@@ -57,8 +57,15 @@ facts; complete population coverage does not clear omitted metadata. Historical
 chains replay through the same parser and writer, with chain and snapshot
 range ordering preserving the latest projection.
 
-An event's message anchor participates in its identity. Active-branch
-selection chooses each input's newest marker by revision, snapshot and record
+An event's message anchor participates in its identity. The event table keeps
+its shared facts; `event_source` owns each observation's input, revision,
+snapshot, parser version, order and byte range. Current reads select a source
+by stable input ID, then its newest revision/snapshot. They do not keep the
+first arrival's coordinates. Source retirement promotes another observation,
+and excision consults the retained observation rows. Repeated identical records
+within one observation scope keep their latest order/range; this is not an
+occurrence list. A parser replacement resets the order for that scope.
+Active-branch selection chooses each input's newest marker by revision, snapshot and record
 order. Across inputs, known event time takes precedence and content identity
 resolves ties. Database row IDs do not describe observation order.
 

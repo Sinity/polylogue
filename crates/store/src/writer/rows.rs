@@ -886,25 +886,29 @@ impl Ctx<'_, '_> {
             .unwrap_or(0);
         self.tx
             .prepare_cached(
-                "INSERT OR IGNORE INTO event(id, session_pk, seq, after_message_pk, kind, at,
-                     input_pk, parser_version, source_chain, source_start, source_end, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT OR IGNORE INTO event(id,session_pk,after_message_pk,kind,at,data)
+             VALUES (?1,?2,?3,?4,?5,?6)",
             )?
             .execute(params![
                 id,
                 session_pk,
-                seq,
                 after.map(|a| a.0),
                 e.kind,
                 ms(e.at),
-                self.input_pk,
-                self.parser_version,
-                e.range.map(|_| self.chain),
-                e.range.map(|r| r.0 as i64),
-                e.range.map(|r| r.1 as i64),
-                data,
+                data
             ])?;
-        self.tx.execute("INSERT INTO event_source(event_id,input_pk,chain,source_snapshot,current,source_order) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(event_id,input_pk,chain,source_snapshot) DO UPDATE SET current=excluded.current, source_order=MAX(event_source.source_order,excluded.source_order)", params![id,self.input_pk,self.chain,self.snapshot.map_or(-1,|snapshot|snapshot.start as i64), i64::from(self.snapshot_current(session_pk)?), order.map_or(seq, |order| order as i64)])?;
+        self.tx.prepare_cached(
+            "INSERT INTO event_source(event_id,input_pk,chain,source_snapshot,current,parser_version,source_order,source_start,source_end)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+             ON CONFLICT(event_id,input_pk,chain,source_snapshot) DO UPDATE SET
+               current=excluded.current,
+               source_start=CASE WHEN event_source.parser_version<>excluded.parser_version OR excluded.source_order>=event_source.source_order THEN excluded.source_start ELSE event_source.source_start END,
+               source_end=CASE WHEN event_source.parser_version<>excluded.parser_version OR excluded.source_order>=event_source.source_order THEN excluded.source_end ELSE event_source.source_end END,
+               source_order=CASE WHEN event_source.parser_version<>excluded.parser_version OR excluded.source_order>=event_source.source_order THEN excluded.source_order ELSE event_source.source_order END,
+               parser_version=excluded.parser_version"
+        )?.execute(params![id,self.input_pk,self.chain,self.snapshot.map_or(-1,|snapshot|snapshot.start as i64),
+            i64::from(self.snapshot_current(session_pk)?),self.parser_version,order.map_or(seq,|order|order as i64),
+            e.range.map(|range|range.0 as i64),e.range.map(|range|range.1 as i64)])?;
         Ok(())
     }
 

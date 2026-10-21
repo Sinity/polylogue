@@ -891,3 +891,5 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
 mod snapshots;
 
 mod array_order;
+
+mod event_sources;

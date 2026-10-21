@@ -333,7 +333,7 @@ impl Plan {
                      SELECT input_pk FROM parsed WHERE session_pk = ?1
                      UNION SELECT s.input_pk FROM message_source s JOIN message m ON m.pk = s.message_pk
                            WHERE m.session_pk = ?1
-                     UNION SELECT input_pk FROM event WHERE session_pk = ?1)",
+                     UNION SELECT es.input_pk FROM event_source es JOIN event e ON e.id=es.event_id WHERE e.session_pk = ?1)",
             )?
             .query_map([pk], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
@@ -355,9 +355,10 @@ impl Plan {
                     "SELECT s.chain, s.source_start, s.source_end FROM message_source s
                      JOIN message m ON m.pk = s.message_pk
                      WHERE m.session_pk = ?2 AND s.input_pk = ?1 AND s.source_end > s.source_start
-                     UNION SELECT source_chain, source_start, source_end FROM event
-                     WHERE session_pk = ?2 AND input_pk = ?1 AND source_chain IS NOT NULL
-                           AND source_end > source_start",
+                     UNION SELECT es.chain,es.source_start,es.source_end FROM event_source es
+                     JOIN event e ON e.id=es.event_id
+                     WHERE e.session_pk = ?2 AND es.input_pk = ?1
+                           AND es.source_end > es.source_start",
                 )?
                 .query_map(params![ipk, pk], |r| {
                     Ok(Span {
