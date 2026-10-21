@@ -1,0 +1,99 @@
+use super::*;
+use serde_json::{Value, json};
+
+fn rewritten(bytes: &[u8], ranges: &[Range]) -> Vec<u8> {
+    let planned = plan(bytes, ranges).unwrap();
+    let mut out = bytes.to_vec();
+    for &(a, b) in &planned.ranges {
+        for byte in &mut out[a..b] {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+    }
+    assert_eq!(out.len(), bytes.len());
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte == b'\n' || !planned.ranges.iter().any(|&(a, b)| a <= index && index < b) {
+            assert_eq!(out[index], byte);
+        }
+    }
+    out
+}
+
+#[test]
+fn every_subset_of_array_members_preserves_all_other_values_and_syntax() {
+    for count in 0..=7 {
+        let values: Vec<Value> = (0..count).map(|n| json!({"number":n})).collect();
+        let bytes =
+            serde_json::to_vec_pretty(&json!({"records":values,"untouched":"still here"})).unwrap();
+        for mask in 0..1usize << count {
+            let mut ranges = Vec::new();
+            for (index, _) in values.iter().enumerate() {
+                if mask & (1 << index) == 0 {
+                    continue;
+                }
+                // Locate the object by its scalar, then find its surrounding
+                // braces; test values have exactly one field and no braces in text.
+                let key = format!("\"number\": {index}");
+                let at = std::str::from_utf8(&bytes).unwrap().find(&key).unwrap();
+                let start = bytes[..at].iter().rposition(|&b| b == b'{').unwrap();
+                let end = at + bytes[at..].iter().position(|&b| b == b'}').unwrap() + 1;
+                ranges.push((start, end));
+            }
+            let got: Value = serde_json::from_slice(&rewritten(&bytes, &ranges)).unwrap();
+            let expected: Vec<_> = values
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) == 0)
+                .map(|(_, v)| v.clone())
+                .collect();
+            assert_eq!(
+                got,
+                json!({"records":expected,"untouched":"still here"}),
+                "count={count}, mask={mask}"
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_arrays_and_jsonl_keep_exact_unaffected_bytes() {
+    let bytes =
+        br#"{"before":"keep","nested":[[{"drop":1},{"keep":2}],{"keep":3}],"after":"keep"}"#;
+    let needle = br#"{"drop":1}"#;
+    let a = bytes
+        .windows(needle.len())
+        .position(|v| v == needle)
+        .unwrap();
+    let got: Value = serde_json::from_slice(&rewritten(bytes, &[(a, a + needle.len())])).unwrap();
+    assert_eq!(
+        got,
+        json!({"before":"keep","nested":[[{"keep":2}],{"keep":3}],"after":"keep"})
+    );
+    let bytes = b"  {\"a\":1} \n {\"b\":2}\n";
+    let result = rewritten(bytes, &[(0, 12)]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&result).unwrap(),
+        json!({"b":2})
+    );
+}
+
+#[test]
+fn partial_scalars_object_members_and_bad_ranges_are_refused() {
+    for (bytes, needle) in [
+        (br#"[{"text":"1234"}]"#.as_slice(), b"23".as_slice()),
+        (
+            br#"{"keep":1,"drop":{"x":2}}"#.as_slice(),
+            br#"{"x":2}"#.as_slice(),
+        ),
+    ] {
+        let at = bytes
+            .windows(needle.len())
+            .position(|v| v == needle)
+            .unwrap();
+        assert!(plan(bytes, &[(at, at + needle.len())]).is_err());
+    }
+    assert!(plan(b"[1]", &[(0, 10)]).is_err());
+    assert!(plan(b"[1] trailing", &[]).is_err());
+    assert!(plan(b"{", &[]).is_err());
+}

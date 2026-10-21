@@ -34,6 +34,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 mod authored;
 mod index_rows;
+mod record_ranges;
 mod stored_bytes;
 mod stored_text;
 mod text_matches;
@@ -384,6 +385,9 @@ impl Plan {
         req: &ExciseRequest,
         done: &mut Excised,
     ) -> Result<(Excised, Vec<BlobHash>)> {
+        // Removing an input supersedes partial rewrites of its records.
+        self.spans.retain(|input, _| !self.whole.contains(input));
+        self.kept.retain(|input| !self.whole.contains(input));
         let mut text_matches = self
             .text
             .as_ref()
@@ -449,7 +453,15 @@ impl Plan {
             remove_input(t, input, req, &mut refused, done, &mut removed_texts)?;
         }
         for (input, spans) in &self.spans {
-            overwrite(t, input, spans, req, &mut refused, &mut delete_files)?;
+            overwrite(
+                t,
+                input,
+                spans,
+                req,
+                &mut refused,
+                &mut delete_files,
+                &self.sessions,
+            )?;
         }
         if !self.kept.is_empty() {
             let mut still = BTreeSet::new();
