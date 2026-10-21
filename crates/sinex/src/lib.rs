@@ -20,7 +20,7 @@ use serde::Deserialize;
 use sinex_model::event_types::polylogue::PolylogueRows;
 use sinex_model::{Class, InputRef, MaterialId, RecordLocation};
 use sinex_protocol::{Acknowledgment, Have, Ingress, MaterialFrame, ProducerEvent, Subjects};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -328,74 +328,80 @@ impl Sinex {
         let id = archive
             .archive_id()
             .map_err(|e| Error::Invalid(format!("the archive has no identity: {e}")))?;
-        let units = archive.units(0)?;
-        let frames: Vec<_> = (1..=units.len())
-            .map(|position| format!("rows:{id}:{position}"))
-            .collect();
-        let known = self.have(&frames).await?;
-        for ack in known.values() {
-            checked(ack.clone())?;
-        }
-        let mut missing: Vec<_> = (0..units.len())
-            .filter(|i| !known.contains_key(&frames[*i]))
-            .collect();
-        // Publish the suffix boundary first. A stopped pass then has an explicit
-        // gap, never a complete-looking prefix with retired intermediate bytes.
-        if let Some(last) = missing.pop() {
-            missing.insert(0, last);
-        }
-        // Freeze/validate the complete mapping before placing replacement bytes.
-        // Only current replacements need payloads: older ones may be retired.
-        let mut current = BTreeMap::new();
-        let mut publications = BTreeMap::new();
-        for unit in &units {
-            if let Some(publication) = archive.publication(unit)? {
-                for replacement in &publication.replacements {
-                    current.insert(replacement.unit.clone(), replacement.clone());
+        let mut inventory = archive.inventory()?;
+        let mut after = 0;
+        while after < inventory.len() {
+            let end = (after + 500).min(inventory.len());
+            let frames: Vec<_> = ((after + 1)..=end)
+                .map(|position| format!("rows:{id}:{position}"))
+                .collect();
+            let known = self.have(&frames).await?;
+            let mut held = Vec::with_capacity(frames.len());
+            for (offset, frame) in frames.iter().enumerate() {
+                if let Some(ack) = known.get(frame) {
+                    checked(ack.clone())?;
+                    held.push(after + offset as u64 + 1);
                 }
-                publications.insert(unit.clone(), publication);
             }
+            inventory.mark_held(&held)?;
+            after = end;
         }
         let mut done = Published {
-            held: known.len() as u64,
-            physical_retirement: if publications.is_empty() {
-                PhysicalRetirement::NotRequested
-            } else {
+            held: inventory.held(),
+            physical_retirement: if inventory.has_excision() {
                 PhysicalRetirement::Unverified
+            } else {
+                PhysicalRetirement::NotRequested
             },
             ..Published::default()
         };
-        if !missing.is_empty() {
-            for replacement in current.values() {
-                let Some(name) = &replacement.batch else {
-                    continue;
-                };
-                let mut bytes = archive.replacement(name)?;
-                if bytes.metadata()?.len() != replacement.bytes {
-                    return Err(Error::Invalid(
-                        "replacement length differs from its manifest".into(),
-                    ));
+        if let Some(last) = inventory.last_missing()? {
+            // Complete replacement selection was checked before opening payloads.
+            let mut cursor = None;
+            while let Some(replacement) = inventory.next_replacement(cursor.as_ref())? {
+                if let Some(name) = &replacement.batch {
+                    let mut bytes = archive.replacement(name)?;
+                    if bytes.metadata()?.len() != replacement.bytes {
+                        return Err(Error::Invalid(
+                            "replacement length differs from its manifest".into(),
+                        ));
+                    }
+                    let hashes: Vec<_> = replacement
+                        .blobs
+                        .iter()
+                        .map(|name| parse_hash(name).map(|h| h.0))
+                        .collect::<Result<_>>()?;
+                    self.place_blobs(&archive, &id, &hashes, &mut done).await?;
+                    self.place_batch(&id, &mut bytes).await?;
                 }
-                let hashes: Vec<_> = replacement
-                    .blobs
-                    .iter()
-                    .map(|name| parse_hash(name).map(|h| h.0))
-                    .collect::<Result<_>>()?;
-                self.place_blobs(&archive, &id, &hashes, &mut done).await?;
-                self.place_batch(&id, &mut bytes).await?;
+                cursor = Some(replacement.unit);
+            }
+            // Publish the suffix boundary first, then fill every earlier gap.
+            let unit = inventory.unit(last)?;
+            let publication = archive.publication(&unit)?;
+            self.publish_unit(&archive, &id, last, &unit, publication.as_ref(), &mut done)
+                .await?;
+            inventory.mark_held(&[last])?;
+            let mut cursor = 0;
+            while let Some((position, unit)) = inventory.next_missing(cursor)? {
+                let publication = archive.publication(&unit)?;
+                self.publish_unit(
+                    &archive,
+                    &id,
+                    position,
+                    &unit,
+                    publication.as_ref(),
+                    &mut done,
+                )
+                .await?;
+                inventory.mark_held(&[position])?;
+                cursor = position;
             }
         }
-        for index in missing {
-            let unit = &units[index];
-            self.publish_unit(
-                &archive,
-                &id,
-                index + 1,
-                unit,
-                publications.get(unit),
-                &mut done,
-            )
-            .await?;
+        if done.held + done.units != inventory.len() {
+            return Err(Error::Invalid(
+                "publication did not account for every unit".into(),
+            ));
         }
         Ok(done)
     }
@@ -404,7 +410,7 @@ impl Sinex {
         &mut self,
         archive: &ArchiveRows,
         id: &str,
-        position: usize,
+        position: u64,
         unit: &Unit,
         publication: Option<&sinex_rows::ExcisionPublication>,
         done: &mut Published,
@@ -422,7 +428,7 @@ impl Sinex {
         &mut self,
         archive: &ArchiveRows,
         id: &str,
-        position: usize,
+        position: u64,
         unit: &Unit,
         publication: Option<&sinex_rows::ExcisionPublication>,
         done: &mut Published,
@@ -432,7 +438,7 @@ impl Sinex {
         let (material, batch_hash) = self.place_batch(id, &mut batch.file).await?;
         let event = PolylogueRows {
             archive: id.to_owned(),
-            position: position as u64,
+            position,
             // Sinex names this field `local_seq` until its own rename.
             local_seq: unit.commit_seq,
             unit: unit.kind.clone(),
@@ -462,7 +468,9 @@ impl Sinex {
                     }),
                     ordinal: 0,
                     parents: vec![],
-                    reading_order: position as i64,
+                    reading_order: i64::try_from(position).map_err(|_| {
+                        Error::Invalid("publication position exceeds the wire order range".into())
+                    })?,
                     class: Class::Open,
                 }],
             },

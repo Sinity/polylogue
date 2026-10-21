@@ -35,7 +35,8 @@ pub struct Unit {
 }
 
 /// Units strictly after `after`, in write order.
-pub fn units(archive: &Connection, after: i64) -> crate::Result<Vec<Unit>> {
+#[cfg(test)]
+fn units(archive: &Connection, after: i64) -> crate::Result<Vec<Unit>> {
     let legacy: bool = archive.query_row(
         "SELECT EXISTS(SELECT 1 FROM excision WHERE json_type(refused_json, '$.publication') IS NULL)",
         [], |r| r.get(0),
@@ -60,15 +61,16 @@ pub fn units(archive: &Connection, after: i64) -> crate::Result<Vec<Unit>> {
         })
     })?;
     let mut units: Vec<Unit> = rows.collect::<rusqlite::Result<_>>()?;
-    for publication in excision::publications(archive)? {
+    excision::visit_publications(archive, |_, publication| {
         units.extend(
             publication
                 .replacements
-                .into_iter()
-                .map(|r| r.unit)
+                .iter()
+                .map(|r| r.unit.clone())
                 .filter(|u| u.commit_seq > after),
         );
-    }
+        Ok(())
+    })?;
     units.sort();
     units.dedup();
     Ok(units)
@@ -76,6 +78,8 @@ pub fn units(archive: &Connection, after: i64) -> crate::Result<Vec<Unit>> {
 
 mod batch;
 pub use batch::{Batch, read};
+mod inventory;
+pub use inventory::Inventory;
 
 /// Inserts rows, reusing identical rows already present. A conflicting row
 /// refuses rather than silently retaining different content.
@@ -209,6 +213,8 @@ pub struct Published {
 impl Published {
     pub fn open(root: &std::path::Path) -> crate::Result<Self> {
         let conn = crate::archive::open_read(&root.join("archive.db"))?;
+        // Manifest ordering may sort large values; spill it to temporary files.
+        conn.pragma_update(None, "temp_store", "FILE")?;
         // One publication pass keeps the same view across its table queries.
         conn.execute_batch("BEGIN")?;
         Ok(Self {
@@ -226,8 +232,8 @@ impl Published {
             })?)
     }
 
-    pub fn units(&self, after: i64) -> crate::Result<Vec<Unit>> {
-        units(&self.conn, after)
+    pub fn inventory(&self) -> crate::Result<Inventory<'_>> {
+        Inventory::new(self)
     }
 
     pub fn read(&self, unit: &Unit) -> crate::Result<Batch> {

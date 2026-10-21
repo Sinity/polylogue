@@ -345,8 +345,13 @@ A publication pass keeps one SQLite read transaction across its inventory,
 replacement and row queries. Later source commits appear in the next pass;
 holding this view can retain WAL pages until the pass ends. Physical blob
 retirement can still make referenced files unavailable, which verified reads
-refuse. Staging disk scales with the largest row batch. The publisher's unit,
-acknowledgment and replacement catalogs still grow in memory with the archive.
+refuse. `sinex_rows/inventory.rs` keeps ordered unit identities, current
+replacement descriptors and acknowledged positions in operation-scoped SQLite
+with a 1 MiB page cache. The adapter discards each Have reply after at most
+500 keys and visits missing units by position. Historical manifests are checked
+one at a time before payloads open. Temporary disk scales with the catalog and
+largest row batch; one manifest, row and its blob-reference list remain memory
+bounds. Excision's write-side changed/retired sets still grow with the operation.
 
 Excision records retain exact unit identities and content-addressed replacement
 batches or tombstones. Restore validates and folds all confirmed replacement
