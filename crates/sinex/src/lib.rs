@@ -532,16 +532,15 @@ impl Sinex {
             let sinex_protocol::Confirmed::Event(event) = confirmed else {
                 continue;
             };
-            let payload = event.payload.ok_or_else(|| {
+            let mut payload = event.payload.ok_or_else(|| {
                 Error::Invalid(format!("{} arrived without its payload", event.id))
             })?;
-            let unit: PolylogueRows = serde_json::from_value(payload.clone())?;
+            let excision = payload
+                .as_object_mut()
+                .and_then(|object| object.remove("excision"));
+            let unit: PolylogueRows = serde_json::from_value(payload)?;
             if unit.archive == archive {
-                let excision = payload
-                    .get("excision")
-                    .cloned()
-                    .map(serde_json::from_value)
-                    .transpose()?;
+                let excision = excision.map(serde_json::from_value).transpose()?;
                 catalog.push(
                     unit.position,
                     &RestoreUnit {
