@@ -189,10 +189,6 @@ impl ArrayParser for AiStudio {
         Ok(stats)
     }
 
-    fn order_key(&self, _: &serde_json::value::RawValue) -> Option<f64> {
-        None
-    }
-
     fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
         let doc = self
             .state
@@ -650,9 +646,6 @@ impl ArrayParser for Listing {
             crate::array::scan_nested(reader, &["files"], |range, raw| item(range, None, raw))?;
         self.files_array = metadata.get("files").is_some_and(Json::is_array);
         Ok(stats)
-    }
-    fn order_key(&self, _: &serde_json::value::RawValue) -> Option<f64> {
-        None
     }
     fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
         if self.files_array {

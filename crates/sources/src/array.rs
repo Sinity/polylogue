@@ -190,7 +190,10 @@ pub trait ArrayParser: Send {
     fn begin(&mut self, _length: u64) -> Result<Option<crate::parse::Step>, String> {
         Ok(None)
     }
-    fn order_key(&self, raw: &RawValue) -> Option<f64>;
+    /// Physical record order unless the format defines another ordering.
+    fn order_key(&self, _raw: &RawValue) -> Option<f64> {
+        None
+    }
     fn item(
         &mut self,
         value: &polylogue_model::Json,

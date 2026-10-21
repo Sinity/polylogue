@@ -19,13 +19,17 @@
           "project_hash": "origin-matrix-project"
         },
         "kind": "project",
+        "range": [
+          0,
+          608
+        ],
         "session": "gemini-cli:origin-matrix-gemini-cli"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 397,
         "message": {
           "at": "2026-08-01T10:00:01Z",
           "blocks": [],
@@ -34,10 +38,10 @@
           "role": "user",
           "session": "gemini-cli:origin-matrix-gemini-cli"
         },
-        "offset": 0
+        "offset": 254
       },
       {
-        "end": 2,
+        "end": 601,
         "message": {
           "at": "2026-08-01T10:00:02Z",
           "blocks": [
@@ -52,7 +56,7 @@
           "role": "assistant",
           "session": "gemini-cli:origin-matrix-gemini-cli"
         },
-        "offset": 1
+        "offset": 403
       }
     ],
     "sessions": [

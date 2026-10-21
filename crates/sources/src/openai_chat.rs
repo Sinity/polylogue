@@ -90,9 +90,6 @@ impl ArrayParser for OpenAiChat {
         self.state.metadata = Some(metadata);
         Ok(stats)
     }
-    fn order_key(&self, _: &serde_json::value::RawValue) -> Option<f64> {
-        None
-    }
     fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
         let doc = self
             .state

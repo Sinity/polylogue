@@ -6,10 +6,11 @@
 //! events. A tool call carries its result in the same turn, so call and
 //! result sit together in the assistant message.
 
+use crate::array::{ArrayParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
 use crate::fields::{Fields, Rule};
-use crate::parse::{DocumentParser, MessageRow, Output, Parse};
+use crate::parse::{MessageRow, Output, Parse};
 use crate::{Disposition, Records};
 use polylogue_model::{
     Block, ErrorReason, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource,
@@ -39,10 +40,20 @@ pub fn resume(native: &str) -> Option<Vec<String>> {
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
-    in_chats_dir(path).then(|| Parse::Document(Box::new(GeminiCli)))
+    in_chats_dir(path).then(|| Parse::Array(Box::new(GeminiCli::default())))
 }
 
-pub struct GeminiCli;
+#[derive(Default)]
+pub struct GeminiCli {
+    state: SessionState,
+}
+
+#[derive(Default)]
+struct SessionState {
+    metadata: Option<Json>,
+    session: Option<polylogue_model::SessionId>,
+    previous: Option<polylogue_model::MessageId>,
+}
 
 const MESSAGE_FIELDS: Fields = &[
     ("id", Rule::Read),
@@ -84,34 +95,118 @@ const MESSAGE_FIELDS: Fields = &[
     ),
 ];
 
-impl DocumentParser for GeminiCli {
-    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let mut sink = Sink::new(out, records);
-        let doc = match serde_json::from_slice::<Json>(bytes) {
-            Ok(v) if v.is_object() => v,
-            Ok(_) => {
-                return sink
-                    .records
-                    .record("session", &Disposition::refused("not an object"));
+impl ArrayParser for GeminiCli {
+    fn scan(
+        &mut self,
+        reader: &mut dyn std::io::Read,
+        item: &mut ItemSink<'_>,
+    ) -> Result<ScanStats, ScanError> {
+        self.state = SessionState::default();
+        let (metadata, stats) =
+            crate::array::scan_nested(reader, &["messages"], |range, raw| item(range, None, raw))?;
+        self.state.metadata = Some(metadata);
+        Ok(stats)
+    }
+    fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
+        let doc = self
+            .state
+            .metadata
+            .take()
+            .ok_or("session metadata not scanned")?;
+        let mut output = Output::default();
+        let mut records = Records::default();
+        self.start_session(&doc, &mut Sink::new(&mut output, &mut records));
+        for event in &mut output.events {
+            event.range = Some((0, length));
+        }
+        Ok(Some(crate::parse::Step {
+            output,
+            accounting: records.finish().map_err(|e| e.to_string())?,
+            start: 0,
+            consumed: length,
+            snapshot: None,
+        }))
+    }
+    fn item(&mut self, m: &Json, sink: &mut Sink<'_>, _: &mut dyn Owners) -> Result<(), String> {
+        let Some(sid) = self.state.session.clone() else {
+            return Ok(());
+        };
+        let kind = str_of(m, "type").unwrap_or("?").to_owned();
+        sink.records.fields(&kind, m, MESSAGE_FIELDS);
+        let role = match kind.as_str() {
+            "user" => Role::User,
+            "gemini" => Role::Assistant,
+            "info" | "error" => {
+                sink.out.events.push(Event {
+                    session: sid.clone(),
+                    kind: if kind == "error" {
+                        "api_error"
+                    } else {
+                        "notice"
+                    }
+                    .into(),
+                    at: m.get("timestamp").and_then(time_of),
+                    after: self.state.previous.clone(),
+                    range: None,
+                    data: m.get("content").cloned().unwrap_or(Json::Null),
+                });
+                sink.records.record(&kind, &Disposition::Materialized);
+                return Ok(());
             }
-            Err(e) => {
-                return sink.records.record(
-                    "session",
-                    &Disposition::refused(format!("malformed JSON: {e}")),
-                );
+            other => {
+                sink.records
+                    .record(other, &Disposition::unknown(format!("type {other}")));
+                return Ok(());
             }
         };
-        let Some(sid) = str_of(&doc, "sessionId").and_then(|s| session_id(ORIGIN, s)) else {
+        let Some(id) = str_of(m, "id").and_then(|i| message_id(ORIGIN, i)) else {
+            sink.records.record(&kind, &Disposition::refused("no id"));
+            return Ok(());
+        };
+        let message = Message {
+            id: id.clone(),
+            session: sid.clone(),
+            parent: self.state.previous.replace(id),
+            role,
+            at: m.get("timestamp").and_then(time_of),
+            model: string_of(m, "model"),
+            prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
+            blocks: blocks(m),
+            usage: usage(m.get("tokens")),
+            stop_reason: None,
+            reported_cost_usd: None,
+            duration_ms: None,
+            production: Default::default(),
+        };
+        let offset = sink.position();
+        sink.out.messages.push(MessageRow {
+            offset,
+            end: offset + 1,
+            message,
+        });
+        sink.records.record(&kind, &Disposition::Materialized);
+        Ok(())
+    }
+}
+
+impl GeminiCli {
+    fn start_session(&mut self, doc: &Json, sink: &mut Sink<'_>) {
+        if !doc.is_object() {
+            return sink
+                .records
+                .record("session", &Disposition::refused("not an object"));
+        }
+        let Some(sid) = str_of(doc, "sessionId").and_then(|s| session_id(ORIGIN, s)) else {
             return sink
                 .records
                 .record("session", &Disposition::refused("no sessionId"));
         };
-        let kind = match str_of(&doc, "kind") {
+        let kind = match str_of(doc, "kind") {
             Some("subagent") => SessionKind::Subagent,
             _ => SessionKind::Main,
         };
         let mut session = Session::new(sid.clone(), kind);
-        if let Some(summary) = str_of(&doc, "summary") {
+        if let Some(summary) = str_of(doc, "summary") {
             session.offer_title(summary, TitleSource::Summary);
         }
         if let Some(at) = doc.get("startTime").and_then(time_of) {
@@ -128,7 +223,7 @@ impl DocumentParser for GeminiCli {
         }
         sink.out.sessions.push(session);
         sink.records.record("session", &Disposition::Materialized);
-        if let Some(hash) = str_of(&doc, "projectHash") {
+        if let Some(hash) = str_of(doc, "projectHash") {
             sink.out.events.push(Event {
                 session: sid.clone(),
                 kind: "project".into(),
@@ -139,68 +234,7 @@ impl DocumentParser for GeminiCli {
             });
         }
 
-        let mut previous = None;
-        for m in doc
-            .get("messages")
-            .and_then(Json::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let kind = str_of(m, "type").unwrap_or("?").to_owned();
-            sink.records.fields(&kind, m, MESSAGE_FIELDS);
-            let role = match kind.as_str() {
-                "user" => Role::User,
-                "gemini" => Role::Assistant,
-                "info" | "error" => {
-                    sink.out.events.push(Event {
-                        session: sid.clone(),
-                        kind: if kind == "error" {
-                            "api_error"
-                        } else {
-                            "notice"
-                        }
-                        .into(),
-                        at: m.get("timestamp").and_then(time_of),
-                        after: previous.clone(),
-                        range: None,
-                        data: m.get("content").cloned().unwrap_or(Json::Null),
-                    });
-                    sink.records.record(&kind, &Disposition::Materialized);
-                    continue;
-                }
-                other => {
-                    sink.records
-                        .record(other, &Disposition::unknown(format!("type {other}")));
-                    continue;
-                }
-            };
-            let Some(id) = str_of(m, "id").and_then(|i| message_id(ORIGIN, i)) else {
-                sink.records.record(&kind, &Disposition::refused("no id"));
-                continue;
-            };
-            let message = Message {
-                id: id.clone(),
-                session: sid.clone(),
-                parent: previous.replace(id),
-                role,
-                at: m.get("timestamp").and_then(time_of),
-                model: string_of(m, "model"),
-                prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
-                blocks: blocks(m),
-                usage: usage(m.get("tokens")),
-                stop_reason: None,
-                reported_cost_usd: None,
-                duration_ms: None,
-                production: Default::default(),
-            };
-            let offset = sink.position();
-            sink.out.messages.push(MessageRow {
-                offset,
-                end: offset + 1,
-                message,
-            });
-            sink.records.record(&kind, &Disposition::Materialized);
-        }
+        self.state.session = Some(sid);
     }
 }
 

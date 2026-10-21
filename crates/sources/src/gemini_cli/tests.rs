@@ -1,5 +1,4 @@
 use super::*;
-use crate::parse::run_document;
 use serde_json::json;
 
 fn session(messages: Vec<Json>) -> Vec<u8> {
@@ -28,7 +27,9 @@ fn a_turn_with_a_tool_call_and_its_result() {
         json!({"id": "i1", "timestamp": "2026-03-14T18:02:00Z", "type": "info",
                "content": "Request cancelled."}),
     ]);
-    let step = run_document(&GeminiCli, &bytes).unwrap();
+    let step =
+        crate::array::fixture::parse(&mut Parse::Array(Box::new(GeminiCli::default())), &bytes)
+            .unwrap();
     let msgs: Vec<&Message> = step.output.messages.iter().map(|r| &r.message).collect();
     assert_eq!(msgs[0].text(), "list files");
     assert_eq!(msgs[1].parent.as_ref().unwrap().native().as_str(), "u1");
