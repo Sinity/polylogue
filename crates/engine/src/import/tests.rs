@@ -263,3 +263,5 @@ fn replayed_import_does_not_replace_the_native_winner() {
     assert_eq!(w.texts("s1"), ["native winner"]);
     assert_eq!(w.count("SELECT route_rank AS n FROM message"), 0);
 }
+
+mod documents;

@@ -5,8 +5,8 @@ also contain intended behavior that is not implemented or qualified yet.
 
 ## Inputs and stored records
 
-`polylogue-sources` interprets provider formats. An origin declaration owns
-recognition, paths, framing, parser version and provider capabilities. Opening
+`polylogue-sources` interprets source formats. An origin declaration owns
+recognition, paths, framing, parser version and tool capabilities. Opening
 an input selects line, array or document parsing; callers do not maintain a second
 framing flag. Parsers produce model values, record ranges and accounting. The
 shared `Records` sink owns disposition and wire-field counts. Line parsing
@@ -154,7 +154,10 @@ retaining duplicate part blobs. One input is imported at a time. Acquisition
 uses the blob store's default 4 MiB frames and a 64-byte recognition prefix;
 parser buffers scale with the configured chunk and the largest incomplete
 record carried between jobs. Other document-framed origins still read and
-parse a whole document. Reimporting a retained input retries missing or outdated parser
+parse a whole document. Its messages cite that retained document's full byte
+range; the writer takes their reading order from the emitted sequence. A
+logical message ordinal is never a byte offset. Framed captures cite the
+corresponding payload's absolute range. Reimporting a retained input retries missing or outdated parser
 progress without adding another revision or copy of its bytes. Restart replay
 selects the same sequential reader for a chain retained as one complete file
 blob, and obtains route precedence from its durable revision class.

@@ -141,6 +141,14 @@ pub fn run_document<D: DocumentParser + ?Sized>(
     let mut output = Output::default();
     let mut sink = Records::default();
     parser.document(bytes, &mut output, &mut sink);
+    // Document parsers emit messages in logical order, not at byte offsets.
+    for row in &mut output.messages {
+        row.offset = 0;
+        row.end = bytes.len() as u64;
+    }
+    for event in &mut output.events {
+        event.range.get_or_insert((0, bytes.len() as u64));
+    }
     let accounting = sink.finish()?;
     Ok(Step {
         output,
@@ -296,6 +304,9 @@ fn mark_snapshot(step: &mut Step, start: u64, end: u64, complete: bool) {
     for row in &mut step.output.messages {
         row.offset = start;
         row.end = end;
+    }
+    for event in &mut step.output.events {
+        event.range = Some((start, end));
     }
     step.snapshot = Some(polylogue_model::Snapshot {
         start,
