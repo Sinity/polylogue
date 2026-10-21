@@ -370,7 +370,7 @@ fn run(
                         }
                         out.parsed_upto = job.start + step.consumed;
                         let mut p = ParseStep {
-                            order_from: None,
+                            order_from: parser.is_document().then_some(0),
                             reset: job.start + step.start == 0,
                             snapshot: step.snapshot,
                             output: step.output,

@@ -19,13 +19,17 @@
           "uuid": "origin-matrix-project"
         },
         "kind": "design_project",
+        "range": [
+          0,
+          392
+        ],
         "session": "claude-design:origin-matrix-claude-design"
       }
     ],
     "links": [],
     "messages": [
       {
-        "end": 1,
+        "end": 392,
         "message": {
           "at": "2026-08-01T10:00:01Z",
           "blocks": [

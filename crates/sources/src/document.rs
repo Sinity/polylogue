@@ -6,7 +6,7 @@ use crate::parse::Output;
 use polylogue_model::{Json, MessageId, NativeId, Origin, SessionId, Timestamp};
 
 /// What a document or conversation parser writes into. `next` supplies
-/// logical message positions. Array and snapshot drivers replace these
+/// logical message positions. Framing drivers replace these
 /// temporary positions with the enclosing record's actual byte range and
 /// carry logical order separately to the writer.
 pub struct Sink<'a> {

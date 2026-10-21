@@ -31,12 +31,20 @@
           "update_time": 1784169740.0
         },
         "kind": "conversation_settings",
+        "range": [
+          0,
+          10215
+        ],
         "session": "chatgpt:chatgpt-fixture-conversation"
       },
       {
         "after": "chatgpt:answer-active-message",
         "data": null,
         "kind": "active_leaf",
+        "range": [
+          0,
+          10215
+        ],
         "session": "chatgpt:chatgpt-fixture-conversation"
       },
       {
@@ -59,6 +67,10 @@
           "schema_version": 1
         },
         "kind": "browser_capture",
+        "range": [
+          0,
+          10215
+        ],
         "session": "chatgpt:chatgpt-fixture-conversation"
       }
     ],

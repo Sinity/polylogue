@@ -179,7 +179,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "claude-code-side",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Live,
         root: crate::claude_code::side::SIDE_ROOT,
@@ -306,7 +306,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::browser_capture::ORIGIN,
-        parser_version: 5,
+        parser_version: 6,
         support: Support::Parsed,
         route: Route::Spool,
         root: Root::STATE,
@@ -376,7 +376,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "claude-design",
-        parser_version: 2,
+        parser_version: 3,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,
@@ -404,7 +404,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::gemini_app::ORIGIN,
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,
@@ -419,7 +419,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     reserved!("grok", Import, []),
     OriginSpec {
         name: crate::otel_genai::ORIGIN,
-        parser_version: 2,
+        parser_version: 3,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,
@@ -433,7 +433,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::openrouter::ORIGIN,
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,

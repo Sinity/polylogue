@@ -120,3 +120,42 @@ fn snapshots_verify_complete_payloads_and_wait_on_incomplete_suffixes() {
         Err(ParseError::Snapshot(_))
     ));
 }
+
+struct DocumentEvent;
+impl DocumentParser for DocumentEvent {
+    fn document(&self, _: &[u8], out: &mut Output, records: &mut Records) {
+        out.events.push(polylogue_model::Event {
+            session: polylogue_model::SessionId::parse("example:session").unwrap(),
+            kind: "metadata".into(),
+            at: None,
+            after: None,
+            range: None,
+            data: serde_json::json!({"kept":true}),
+        });
+        records.record("metadata", &Disposition::Materialized);
+    }
+}
+
+#[test]
+fn snapshot_event_ranges_name_the_payload_in_whole_and_incremental_reads() {
+    use polylogue_model::snapshot_log::{Header, MAGIC};
+    let body = br#"{"kept":true}"#;
+    let mut bytes = MAGIC.to_vec();
+    let mut expected = Vec::new();
+    for _ in 0..2 {
+        bytes.extend(Header::of(body).encode());
+        let start = bytes.len() as u64;
+        bytes.extend(body);
+        expected.push((start, bytes.len() as u64));
+    }
+    let parser = Parse::Snapshots(Box::new(DocumentEvent));
+    let (steps, _) = parser.steps(None, &bytes, 0).unwrap();
+    assert_eq!(steps.len(), 2);
+    for (step, &range) in steps.iter().zip(&expected) {
+        assert_eq!(step.output.events[0].range, Some(range));
+        assert_eq!(&bytes[range.0 as usize..range.1 as usize], body);
+    }
+    let start = steps[0].consumed as usize;
+    let (later, _) = parser.steps(None, &bytes[start..], start as u64).unwrap();
+    assert_eq!(later[0].output.events, steps[1].output.events);
+}
