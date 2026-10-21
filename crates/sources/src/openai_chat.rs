@@ -7,10 +7,11 @@
 //! (architecture 5.5). The session is the object's `id` when it has one,
 //! else the file name.
 
+use crate::array::{ArrayParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of};
 use crate::fields::{Fields, Rule};
-use crate::parse::{DocumentParser, MessageRow, Output, Parse};
+use crate::parse::{MessageRow, Output, Parse};
 use crate::{Disposition, Records};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Json, Message, PromptKind, Role, Session, SessionKind,
@@ -33,11 +34,24 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 pub fn open(path: &Path) -> Option<Parse> {
     let name = path.file_name()?.to_str()?.rsplit("!/").next()?;
     let stem = name.strip_suffix(".json").unwrap_or(name).to_owned();
-    Some(Parse::Document(Box::new(OpenAiChat { file: stem })))
+    Some(Parse::Array(Box::new(OpenAiChat {
+        file: stem,
+        state: ChatState::default(),
+    })))
 }
 
 pub struct OpenAiChat {
     file: String,
+    state: ChatState,
+}
+
+#[derive(Default)]
+struct ChatState {
+    metadata: Option<Json>,
+    session: Option<polylogue_model::SessionId>,
+    model: Option<String>,
+    previous: Option<polylogue_model::MessageId>,
+    position: usize,
 }
 
 const DOCUMENT_FIELDS: Fields = &[
@@ -62,22 +76,113 @@ const MESSAGE_FIELDS: Fields = &[
     ("function_call", Rule::Read),
 ];
 
-impl DocumentParser for OpenAiChat {
-    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let mut sink = Sink::new(out, records);
-        let doc = match serde_json::from_slice::<Json>(bytes) {
-            Ok(v) => v,
-            Err(e) => {
-                return sink.records.record(
-                    "chat",
-                    &Disposition::refused(format!("malformed JSON: {e}")),
+impl ArrayParser for OpenAiChat {
+    fn scan(
+        &mut self,
+        reader: &mut dyn std::io::Read,
+        item: &mut ItemSink<'_>,
+    ) -> Result<ScanStats, ScanError> {
+        self.state = ChatState::default();
+        let (metadata, stats) =
+            crate::array::scan_array_or_nested(reader, &["messages"], |range, raw| {
+                item(range, None, raw)
+            })?;
+        self.state.metadata = Some(metadata);
+        Ok(stats)
+    }
+    fn order_key(&self, _: &serde_json::value::RawValue) -> Option<f64> {
+        None
+    }
+    fn begin(&mut self, length: u64) -> Result<Option<crate::parse::Step>, String> {
+        let doc = self
+            .state
+            .metadata
+            .take()
+            .ok_or("chat metadata not scanned")?;
+        let mut output = Output::default();
+        let mut records = Records::default();
+        self.start_session(&doc, &mut Sink::new(&mut output, &mut records));
+        Ok(Some(crate::parse::Step {
+            output,
+            accounting: records.finish().map_err(|e| e.to_string())?,
+            start: 0,
+            consumed: length,
+            snapshot: None,
+        }))
+    }
+    fn item(&mut self, m: &Json, sink: &mut Sink<'_>, _: &mut dyn Owners) -> Result<(), String> {
+        let Some(sid) = self.state.session.clone() else {
+            return Ok(());
+        };
+        let native = sid.native().as_str();
+        let i = self.state.position;
+        self.state.position += 1;
+        let kind = str_of(m, "role").unwrap_or("?").to_owned();
+        sink.records.fields(&kind, m, MESSAGE_FIELDS);
+        let Some(id) = message_id(ORIGIN, &format!("{native}#{i}")) else {
+            sink.records
+                .record(&kind, &Disposition::refused("unusable message ID"));
+            return Ok(());
+        };
+        let role = match kind.as_str() {
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            "system" | "developer" => Role::System,
+            // A tool's answer reaches the model in the user's turn.
+            "tool" | "function" => Role::User,
+            other => {
+                sink.records.record(
+                    &kind,
+                    &Disposition::refused(format!("unknown role {other}")),
                 );
+                return Ok(());
             }
         };
-        let (messages, header) = match &doc {
-            Json::Array(items) => (items.as_slice(), None),
+        let blocks = blocks(m, role);
+        if blocks.is_empty() {
+            sink.records
+                .record(&kind, &Disposition::unknown("a message with no content"));
+            return Ok(());
+        }
+        let harness = matches!(kind.as_str(), "tool" | "function");
+        let message = Message {
+            id: id.clone(),
+            session: sid.clone(),
+            parent: self.state.previous.replace(id),
+            role,
+            at: None,
+            model: (role == Role::Assistant)
+                .then(|| self.state.model.clone())
+                .flatten(),
+            prompt_kind: (role == Role::User).then_some(if harness {
+                PromptKind::Harness
+            } else {
+                PromptKind::Prose
+            }),
+            blocks,
+            usage: Usage::default(),
+            stop_reason: None,
+            reported_cost_usd: None,
+            duration_ms: None,
+            production: Default::default(),
+        };
+        let offset = sink.position();
+        sink.out.messages.push(MessageRow {
+            offset,
+            end: offset + 1,
+            message,
+        });
+        sink.records.record(&kind, &Disposition::Materialized);
+        Ok(())
+    }
+}
+
+impl OpenAiChat {
+    fn start_session(&mut self, doc: &Json, sink: &mut Sink<'_>) {
+        let header = match doc {
+            Json::Array(_) => None,
             Json::Object(_) => match doc.get("messages").and_then(Json::as_array) {
-                Some(items) => (items.as_slice(), Some(&doc)),
+                Some(_) => Some(doc),
                 None => {
                     return sink
                         .records
@@ -108,65 +213,8 @@ impl DocumentParser for OpenAiChat {
         }
         sink.out.sessions.push(session);
         sink.records.record("chat", &Disposition::Materialized);
-        let model = header.and_then(|h| string_of(h, "model"));
-
-        let mut previous = None;
-        for (i, m) in messages.iter().enumerate() {
-            let kind = str_of(m, "role").unwrap_or("?").to_owned();
-            sink.records.fields(&kind, m, MESSAGE_FIELDS);
-            let Some(id) = message_id(ORIGIN, &format!("{native}#{i}")) else {
-                sink.records
-                    .record(&kind, &Disposition::refused("unusable message ID"));
-                continue;
-            };
-            let role = match kind.as_str() {
-                "user" => Role::User,
-                "assistant" => Role::Assistant,
-                "system" | "developer" => Role::System,
-                // A tool's answer reaches the model in the user's turn.
-                "tool" | "function" => Role::User,
-                other => {
-                    sink.records.record(
-                        &kind,
-                        &Disposition::refused(format!("unknown role {other}")),
-                    );
-                    continue;
-                }
-            };
-            let blocks = blocks(m, role);
-            if blocks.is_empty() {
-                sink.records
-                    .record(&kind, &Disposition::unknown("a message with no content"));
-                continue;
-            }
-            let harness = matches!(kind.as_str(), "tool" | "function");
-            let message = Message {
-                id: id.clone(),
-                session: sid.clone(),
-                parent: previous.replace(id),
-                role,
-                at: None,
-                model: (role == Role::Assistant).then(|| model.clone()).flatten(),
-                prompt_kind: (role == Role::User).then_some(if harness {
-                    PromptKind::Harness
-                } else {
-                    PromptKind::Prose
-                }),
-                blocks,
-                usage: Usage::default(),
-                stop_reason: None,
-                reported_cost_usd: None,
-                duration_ms: None,
-                production: Default::default(),
-            };
-            let offset = sink.position();
-            sink.out.messages.push(MessageRow {
-                offset,
-                end: offset + 1,
-                message,
-            });
-            sink.records.record(&kind, &Disposition::Materialized);
-        }
+        self.state.session = Some(sid);
+        self.state.model = header.and_then(|h| string_of(h, "model"));
     }
 }
 

@@ -202,3 +202,53 @@ fn nested_scan_validates_suffix_refuses_duplicate_paths_and_bounds_element_buffe
     }
     assert_eq!(peaks[0], peaks[1]);
 }
+
+#[test]
+fn optional_wrapper_frames_only_the_root_or_named_message_array() {
+    for input in [
+        r#" [ {"role":"user","content":"hi"}, {"role":"assistant","content":"hello"} ] "#,
+        r#"{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}],"model":"after","other":[1,2]}"#,
+    ] {
+        for fragment in 1..=17 {
+            let mut messages = Vec::new();
+            let (metadata, stats) = scan_array_or_nested(
+                Fragmented {
+                    bytes: input.as_bytes(),
+                    fragment,
+                },
+                &["messages"],
+                |range, raw| {
+                    assert_eq!(
+                        &input.as_bytes()[range.start as usize..range.end as usize],
+                        raw.get().as_bytes()
+                    );
+                    messages
+                        .push(serde_json::from_str::<polylogue_model::Json>(raw.get()).unwrap());
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(stats.elements, 2);
+            assert_eq!(messages[1]["content"], "hello");
+            if metadata.is_object() {
+                assert_eq!(metadata["messages"], serde_json::json!([]));
+                assert_eq!(metadata["other"], serde_json::json!([1, 2]));
+            } else {
+                assert_eq!(metadata, serde_json::json!([]));
+            }
+        }
+    }
+    // AI Studio's object-only selection does not opt into bare-array records.
+    let mut framed = 0;
+    let (_, stats) = scan_nested(
+        b"[{},{}]".as_slice(),
+        &["chunkedPrompt", "chunks"],
+        |_, _| {
+            framed += 1;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(framed, 0);
+    assert_eq!(stats.elements, 0);
+}
