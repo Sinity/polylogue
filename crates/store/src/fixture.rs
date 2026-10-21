@@ -143,7 +143,7 @@ impl Fixture {
         )?;
         let id = crate::text_rows::intern(&tx, body, bit, None, false)?;
         tx.commit()?;
-        crate::text_rows::index_pending(&self.index, i64::MAX)?;
+        crate::text_rows::index_pending(&self.index)?;
         Ok(id)
     }
 

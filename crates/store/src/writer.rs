@@ -31,7 +31,7 @@ mod rows;
 pub(crate) use rows::promote_current;
 mod search;
 
-use crate::encoding::{block_text, pack_block, pack_event, unpack_block, unpack_text};
+use crate::encoding::{block_text, pack_block, pack_event, unpack_block};
 use batch::message_hash;
 pub use batch::{Batch, InFlight, InputKey, Observation, ParseStep, WriteReport};
 use bytes::*;
@@ -493,7 +493,7 @@ impl Inner {
             }
             // Whatever a flush reports written is also searchable.
             if !flushes.is_empty()
-                && let Err(e) = crate::text_rows::index_pending(&self.index, i64::MAX)
+                && let Err(e) = crate::text_rows::index_pending(&self.index)
             {
                 self.report
                     .errors
@@ -536,55 +536,8 @@ impl Inner {
     /// indexes are written once instead of rewritten through the build.
     fn build_deferred(&mut self) -> Result<()> {
         use crate::timing::{Stage, add};
-        const CHUNK: i64 = 100_000;
         let started = std::time::Instant::now();
-        for (bit, table) in [(1i64, "text_fts"), (2, "output_fts")] {
-            let mut after = 0i64;
-            loop {
-                let tx = self.index.transaction()?;
-                let rows: Vec<(i64, Vec<u8>)> = tx
-                    .prepare_cached(
-                        "SELECT id, body FROM text WHERE id > ?1 AND indexed & ?2 ORDER BY id LIMIT ?3",
-                    )?
-                    .query_map(params![after, bit, CHUNK], |r| Ok((r.get(0)?, r.get(1)?)))?
-                    .collect::<rusqlite::Result<_>>()?;
-                let Some(&(last, _)) = rows.last() else {
-                    break;
-                };
-                // Unpacking and folding run on every core; FTS5 inserts
-                // them in id order on this thread.
-                let folded: Vec<(i64, String)> = std::thread::scope(|s| {
-                    let parts: Vec<_> = rows
-                        .chunks(rows.len().div_ceil(8).max(1))
-                        .map(|part| {
-                            s.spawn(move || {
-                                part.iter()
-                                    .map(|(id, packed)| {
-                                        unpack_text(packed)
-                                            .map(|b| (*id, polylogue_model::text::fold(&b)))
-                                    })
-                                    .collect::<Result<Vec<_>>>()
-                            })
-                        })
-                        .collect();
-                    parts
-                        .into_iter()
-                        .map(|h| h.join().expect("fold thread"))
-                        .collect::<Result<Vec<Vec<_>>>>()
-                        .map(|v| v.into_iter().flatten().collect())
-                })?;
-                {
-                    let mut ins = tx.prepare_cached(&format!(
-                        "INSERT INTO {table}(rowid, body) VALUES (?1, ?2)"
-                    ))?;
-                    for (id, body) in &folded {
-                        ins.execute(params![id, body])?;
-                    }
-                }
-                tx.commit()?;
-                after = last;
-            }
-        }
+        crate::text_rows::index_marked(&self.index)?;
         add(Stage::SearchIndex, started.elapsed());
         let started = std::time::Instant::now();
         self.index.execute(

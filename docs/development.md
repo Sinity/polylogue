@@ -40,6 +40,13 @@ started inside a queued job keeps that job occupied after the command exits.
 `/dev/shm` and remove it afterwards. Tests write fsync'd archives, and on the
 btrfs work disk those syncs dominated test time.
 
+Full-text indexing decodes one stored body at a time. First-build indexing
+streams marked rows; live indexing retains up to 2,000 pending IDs, then
+fetches their bodies individually. Transactions stop after 2,000 entries or
+16 MiB of decoded text, whichever comes first. One large text may exceed that
+byte limit; it is still decoded whole. These limits bound batches, not total
+process memory or the time needed to drain all pending work.
+
 The dev profile builds dependencies at `opt-level = 2` and workspace crates
 at `opt-level = 1`. Tests spend most of their CPU in SQLite, JSON and the
 credential masker. Measured on 926 tests at load average 25-70: suite CPU fell

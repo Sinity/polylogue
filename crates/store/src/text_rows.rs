@@ -51,45 +51,112 @@ pub(crate) fn intern(
     Ok(id)
 }
 
-/// Writes waiting search entries, at most `limit` per transaction, until
-/// none wait; returns how many it wrote.
-pub(crate) fn index_pending(conn: &Connection, limit: i64) -> Result<u64> {
+// Limit transaction work independently of compressed row sizes. A single
+// oversized text is still decoded whole and ends its transaction.
+const SEARCH_ROWS: i64 = 2_000;
+const SEARCH_BYTES: usize = 16 * 1024 * 1024;
+
+/// Writes the first build's marked texts in ID order. Only the FTS table
+/// changes while its source cursor is open.
+pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
+    for bit in [1, 2] {
+        let mut after = 0;
+        loop {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+            let mut bytes = 0;
+            let mut last = after;
+            {
+                let mut select = tx.prepare_cached(
+                    "SELECT id, body FROM text WHERE id > ?1 AND indexed & ?2 ORDER BY id LIMIT ?3",
+                )?;
+                let mut rows = select.query(params![after, bit, SEARCH_ROWS])?;
+                while let Some(row) = rows.next()? {
+                    last = row.get(0)?;
+                    let packed: Vec<u8> = row.get(1)?;
+                    bytes += write_entry(&tx, last, bit, &packed)?;
+                    if bytes >= SEARCH_BYTES {
+                        break;
+                    }
+                }
+            }
+            tx.commit()?;
+            if last == after {
+                break;
+            }
+            after = last;
+        }
+    }
+    Ok(())
+}
+
+/// Drains committed search work in bounded transactions.
+pub(crate) fn index_pending(conn: &Connection) -> Result<u64> {
     let mut written = 0;
     loop {
-        // Immediate: it writes, and a deferred transaction that has read
-        // cannot wait for the writer's lock to upgrade.
-        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-        let rows: Vec<(i64, i64, Vec<u8>)> = tx
-            .prepare_cached(
-                "SELECT p.text_id, p.fts_table, t.body FROM search_pending p JOIN text t ON t.id = p.text_id
-                 ORDER BY p.text_id, p.fts_table LIMIT ?1",
-            )?
-            .query_map([limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        if rows.is_empty() {
-            // Entries whose text was removed meanwhile (excision) are dropped.
-            tx.execute(
-                "DELETE FROM search_pending WHERE text_id NOT IN (SELECT id FROM text)",
-                [],
-            )?;
-            tx.commit()?;
+        let count = pending_batch(conn, SEARCH_BYTES)?;
+        written += count;
+        if count == 0 {
             return Ok(written);
         }
-        for (id, bit, packed) in &rows {
-            let folded = polylogue_model::text::fold(&unpack_text(packed)?);
-            let sql = if *bit == 1 {
-                "INSERT INTO text_fts(rowid, body) VALUES (?1, ?2)"
-            } else {
-                "INSERT INTO output_fts(rowid, body) VALUES (?1, ?2)"
-            };
-            tx.prepare_cached(sql)?.execute(params![id, folded])?;
-            tx.prepare_cached("DELETE FROM search_pending WHERE text_id = ?1 AND fts_table = ?2")?
-                .execute(params![id, bit])?;
-        }
-        written += rows.len() as u64;
-        tx.commit()?;
     }
 }
+
+fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
+    // Immediate: a deferred reader cannot wait to upgrade its writer lock.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    // Finish the queue cursor before removing its entries. Bodies are fetched
+    // individually, so the row-count limit does not multiply retained text.
+    let ids: Vec<(i64, i64)> = tx
+        .prepare_cached(
+            "SELECT p.text_id, p.fts_table FROM search_pending p JOIN text t ON t.id = p.text_id
+             ORDER BY p.text_id, p.fts_table LIMIT ?1",
+        )?
+        .query_map([SEARCH_ROWS], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    if ids.is_empty() {
+        tx.execute(
+            "DELETE FROM search_pending WHERE text_id NOT IN (SELECT id FROM text)",
+            [],
+        )?;
+    }
+    let mut written = 0;
+    let mut bytes = 0;
+    for (id, bit) in ids {
+        {
+            let mut select = tx.prepare_cached("SELECT body FROM text WHERE id = ?1")?;
+            let mut rows = select.query([id])?;
+            let row = rows.next()?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let packed: Vec<u8> = row.get(0)?;
+            bytes += write_entry(&tx, id, bit, &packed)?;
+        }
+        tx.prepare_cached("DELETE FROM search_pending WHERE text_id = ?1 AND fts_table = ?2")?
+            .execute(params![id, bit])?;
+        written += 1;
+        if bytes >= byte_limit {
+            break;
+        }
+    }
+    tx.commit()?;
+    Ok(written)
+}
+
+fn write_entry(conn: &Connection, id: i64, bit: i64, packed: &[u8]) -> Result<usize> {
+    let text = unpack_text(packed)?;
+    let bytes = text.len();
+    let folded = if text.is_ascii() {
+        text
+    } else {
+        polylogue_model::text::fold(&text)
+    };
+    let sql = if bit == 1 {
+        "INSERT INTO text_fts(rowid, body) VALUES (?1, ?2)"
+    } else {
+        "INSERT INTO output_fts(rowid, body) VALUES (?1, ?2)"
+    };
+    conn.prepare_cached(sql)?.execute(params![id, folded])?;
+    Ok(bytes)
+}
+
 /// Historical versions keep their text row, but only current blocks contribute
 /// documents to full-text ranking or embedding candidates.
 pub(crate) fn unindex_unused(i: &Connection, id: i64, bulk: bool) -> Result<()> {
