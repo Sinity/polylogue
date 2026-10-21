@@ -28,7 +28,7 @@ impl<'a> Inventory<'a> {
             PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
             CREATE TABLE unit(seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,
                 PRIMARY KEY(seq,kind,key)) WITHOUT ROWID;
-            CREATE TABLE replacement(seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,data TEXT NOT NULL,
+            CREATE TABLE replacement(seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,data TEXT NOT NULL,owner_seq INTEGER NOT NULL,owner_key TEXT NOT NULL,
                 PRIMARY KEY(seq,kind,key)) WITHOUT ROWID;
             CREATE TABLE position(position INTEGER PRIMARY KEY,seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL);
             CREATE TABLE held(position INTEGER PRIMARY KEY);
@@ -37,8 +37,10 @@ impl<'a> Inventory<'a> {
         {
             let mut insert = db.prepare("INSERT OR IGNORE INTO unit VALUES (?1,?2,?3)")?;
             let mut current = db.prepare(
-                "INSERT INTO replacement VALUES (?1,?2,?3,?4)
-                ON CONFLICT(seq,kind,key) DO UPDATE SET data=excluded.data",
+                "INSERT INTO replacement VALUES (?1,?2,?3,?4,?5,?6)
+                ON CONFLICT(seq,kind,key) DO UPDATE SET data=excluded.data,
+                    owner_seq=excluded.owner_seq,owner_key=excluded.owner_key
+                WHERE (excluded.owner_seq,excluded.owner_key)>(replacement.owner_seq,replacement.owner_key)",
             )?;
             // Leave ordering to the on-disk primary key, not an in-memory source sort.
             let mut source_units = source.conn.prepare(
@@ -75,7 +77,9 @@ impl<'a> Inventory<'a> {
                         unit.commit_seq,
                         unit.kind,
                         unit.key,
-                        serde_json::to_string(replacement)?
+                        serde_json::to_string(replacement)?,
+                        owner.commit_seq,
+                        owner.key
                     ])?;
                 }
                 Ok(())

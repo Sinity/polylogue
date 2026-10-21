@@ -81,18 +81,18 @@ fn deleted_identities_and_latest_replacements_are_selected_before_payload_access
     let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
     publication(
         &conn,
-        "erase1",
-        2,
-        vec![replacement(1, "note", "gone", true)],
-    );
-    publication(
-        &conn,
         "erase2",
         3,
         vec![
             replacement(1, "note", "gone", false),
             replacement(2, "excision", "erase1", true),
         ],
+    );
+    publication(
+        &conn,
+        "erase1",
+        2,
+        vec![replacement(1, "note", "gone", true)],
     );
     let published = Published::open(dir.path()).unwrap();
     let inventory = published.inventory().unwrap();
