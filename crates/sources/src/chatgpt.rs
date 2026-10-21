@@ -85,10 +85,12 @@ impl crate::export::ExportParser for Export {
     }
     fn item(
         &mut self,
-        value: &Json,
+        bytes: &[u8],
         sink: &mut Sink<'_>,
-        owners: &mut dyn crate::export::Owners,
+        owners: &mut dyn crate::export::ExportState,
     ) -> Result<(), String> {
+        let value: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let value = &value;
         conversation_with_owners(value, sink, owners)
     }
 }
@@ -137,43 +139,17 @@ const MESSAGE_FIELDS: Fields = &[
     ("channel", Rule::Kept("reasoning-model output channel")),
 ];
 
-/// Which session each message ID first appeared in, across one document.
-/// A message is stored once, in the session where it originated
-/// (architecture 5.4): a conversation branched into a new chat repeats the
-/// earlier messages under their IDs, and those stay with the original.
-#[derive(Default)]
-pub struct Owners {
-    first: HashMap<String, polylogue_model::SessionId>,
-}
-
-impl crate::export::Owners for Owners {
-    fn claim(
-        &mut self,
-        native: &str,
-        session: &polylogue_model::SessionId,
-    ) -> Result<Option<polylogue_model::SessionId>, String> {
-        use std::collections::hash_map::Entry;
-        Ok(match self.first.entry(native.to_owned()) {
-            Entry::Occupied(entry) => Some(entry.get().clone()),
-            Entry::Vacant(entry) => {
-                entry.insert(session.clone());
-                None
-            }
-        })
-    }
-}
-
 /// One conversation object: its session, messages and events. Shared by
 /// the export and by browser captures of the same conversation, so both
 /// routes produce the same IDs and unite (architecture 5.5).
-pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut Owners) {
+pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut crate::export::MemoryState) {
     conversation_with_owners(conv, sink, owners).expect("in-memory message ownership");
 }
 
 fn conversation_with_owners(
     conv: &Json,
     sink: &mut Sink<'_>,
-    owners: &mut dyn crate::export::Owners,
+    owners: &mut dyn crate::export::ExportState,
 ) -> Result<(), String> {
     let Some(obj) = conv.as_object() else {
         sink.records

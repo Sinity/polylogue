@@ -61,10 +61,12 @@ pub struct Export;
 impl crate::export::ExportParser for Export {
     fn item(
         &mut self,
-        value: &Json,
+        bytes: &[u8],
         sink: &mut Sink<'_>,
-        _: &mut dyn crate::export::Owners,
+        _: &mut dyn crate::export::ExportState,
     ) -> Result<(), String> {
+        let value: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let value = &value;
         conversation(value, sink);
         Ok(())
     }

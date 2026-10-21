@@ -404,7 +404,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::gemini_app::ORIGIN,
-        parser_version: 2,
+        parser_version: 3,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,

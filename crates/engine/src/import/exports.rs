@@ -1,7 +1,7 @@
 //! A complete retained export, framed and externally ordered before publication.
 use super::*;
-use polylogue_model::{Accounting, Json, Output};
-use polylogue_sources::export::{self, ExportParser, Owners};
+use polylogue_model::{Accounting, Output};
+use polylogue_sources::export::{self, ExportParser, ExportState};
 use polylogue_store::{Batch, ParseStep, Piece, export_items::ExportItems};
 
 struct Counted<F, R> {
@@ -48,10 +48,10 @@ impl export::ItemSink for ItemWriter<'_> {
         range: std::ops::Range<u64>,
         key: Vec<u8>,
         source_key: Option<&str>,
-        raw: &serde_json::value::RawValue,
+        raw: &[u8],
     ) -> Result<(), String> {
         self.0
-            .push(range, key, source_key, raw.get().as_bytes())
+            .push(range, key, source_key, raw)
             .map_err(|e| e.to_string())
     }
     fn begin(&mut self) -> Result<(), String> {
@@ -65,8 +65,8 @@ impl export::ItemSink for ItemWriter<'_> {
     }
 }
 
-struct OwnerLookup<'a>(&'a mut ExportItems);
-impl Owners for OwnerLookup<'_> {
+struct StateLookup<'a>(&'a mut ExportItems);
+impl ExportState for StateLookup<'_> {
     fn claim(
         &mut self,
         native: &str,
@@ -74,6 +74,21 @@ impl Owners for OwnerLookup<'_> {
     ) -> Result<Option<polylogue_model::SessionId>, String> {
         self.0
             .claim_owner(native, session)
+            .map_err(|e| e.to_string())
+    }
+    fn last_message(
+        &mut self,
+        session: &polylogue_model::SessionId,
+    ) -> Result<Option<polylogue_model::MessageId>, String> {
+        self.0.last_message(session).map_err(|e| e.to_string())
+    }
+    fn set_last_message(
+        &mut self,
+        session: &polylogue_model::SessionId,
+        message: &polylogue_model::MessageId,
+    ) -> Result<(), String> {
+        self.0
+            .set_last_message(session, message)
             .map_err(|e| e.to_string())
     }
 }
@@ -106,20 +121,23 @@ impl Engine {
             plan.parse_pos = plan.size;
             return Ok(());
         }
-        let mut next = next_value(&mut scratch)?;
+        let mut next = next_record(&mut scratch)?;
         let mut order_from = 0;
         let mut first = true;
         if let Some(step) = parser
-            .begin(plan.size, next.as_ref().map(|(_, value)| value))
+            .begin(
+                plan.size,
+                next.as_ref().map(|record| record.bytes.as_slice()),
+            )
             .map_err(std::io::Error::other)?
         {
             order_from = (step.output.messages.len() as u64).max(1);
             self.write_export_step(plan, step.output, step.accounting, 0, true, false, pass)?;
             first = false;
         }
-        while let Some((range, value)) = next {
+        while let Some(ExportRecord { range, bytes }) = next {
             polylogue_store::fault::check("parse", &plan.path.to_string_lossy())?;
-            let step = export::parse_item(parser, &value, range, &mut OwnerLookup(&mut scratch))
+            let step = export::parse_item(parser, &bytes, range, &mut StateLookup(&mut scratch))
                 .map_err(std::io::Error::other)?;
             let count = step.output.messages.len() as u64;
             // Flush is a commit acknowledgement. A second conversation is not
@@ -135,7 +153,7 @@ impl Engine {
             )?;
             first = false;
             order_from += count.max(1);
-            next = next_value(&mut scratch)?;
+            next = next_record(&mut scratch)?;
         }
         self.write_export_step(
             plan,
@@ -253,15 +271,22 @@ impl Engine {
     }
 }
 
-fn next_value(
-    scratch: &mut ExportItems,
-) -> Result<Option<(std::ops::Range<u64>, Json)>, EngineError> {
+struct ExportRecord {
+    range: std::ops::Range<u64>,
+    bytes: Vec<u8>,
+}
+
+fn next_record(scratch: &mut ExportItems) -> Result<Option<ExportRecord>, EngineError> {
     scratch
         .next_item()?
-        .map(|item| {
-            let value = serde_json::from_reader(item.reader)
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-            Ok((item.range, value))
+        .map(|mut item| {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            item.reader.read_to_end(&mut bytes)?;
+            Ok(ExportRecord {
+                range: item.range,
+                bytes,
+            })
         })
         .transpose()
 }

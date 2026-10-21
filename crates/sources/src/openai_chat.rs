@@ -9,7 +9,7 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of};
-use crate::export::{ExportParser, ItemSink, Owners, ScanError, ScanStats};
+use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse};
 use crate::{Disposition, Records};
@@ -85,7 +85,7 @@ impl ExportParser for OpenAiChat {
         self.state = ChatState::default();
         let (metadata, stats) =
             crate::export::scan_array_or_nested(reader, &["messages"], |range, raw| {
-                item.push(range, Vec::new(), None, raw)
+                item.push(range, Vec::new(), None, raw.get().as_bytes())
             })?;
         self.state.metadata = Some(metadata);
         Ok(stats)
@@ -93,7 +93,7 @@ impl ExportParser for OpenAiChat {
     fn begin(
         &mut self,
         length: u64,
-        _first: Option<&Json>,
+        _first: Option<&[u8]>,
     ) -> Result<Option<crate::parse::Step>, String> {
         let doc = self
             .state
@@ -111,7 +111,14 @@ impl ExportParser for OpenAiChat {
             snapshot: None,
         }))
     }
-    fn item(&mut self, m: &Json, sink: &mut Sink<'_>, _: &mut dyn Owners) -> Result<(), String> {
+    fn item(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut Sink<'_>,
+        _: &mut dyn ExportState,
+    ) -> Result<(), String> {
+        let m: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let m = &m;
         let Some(sid) = self.state.session.clone() else {
             return Ok(());
         };

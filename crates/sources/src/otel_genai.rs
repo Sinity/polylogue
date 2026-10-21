@@ -11,7 +11,7 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
-use crate::export::{ExportParser, Owners};
+use crate::export::{ExportParser, ExportState};
 use crate::parse::{MessageRow, Parse, Step};
 use crate::{Disposition, Records};
 use polylogue_model::{
@@ -85,7 +85,7 @@ impl ExportParser for OtelGenAi {
         self.refused_lines = refused;
         Ok(stats)
     }
-    fn begin(&mut self, length: u64, _: Option<&Json>) -> Result<Option<Step>, String> {
+    fn begin(&mut self, length: u64, _: Option<&[u8]>) -> Result<Option<Step>, String> {
         if self.refused_lines == 0 {
             return Ok(None);
         }
@@ -103,10 +103,12 @@ impl ExportParser for OtelGenAi {
     }
     fn item(
         &mut self,
-        value: &Json,
+        bytes: &[u8],
         sink: &mut Sink<'_>,
-        owners: &mut dyn Owners,
+        owners: &mut dyn ExportState,
     ) -> Result<(), String> {
+        let value: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let value = &value;
         let span = span(value);
         let op = span
             .attrs
@@ -207,7 +209,7 @@ fn model_span(
     span: &Span,
     conversation: &str,
     sid: &polylogue_model::SessionId,
-    owners: &mut dyn Owners,
+    owners: &mut dyn ExportState,
     sink: &mut Sink<'_>,
 ) -> Result<(), String> {
     let inputs = messages_attr(span, "gen_ai.input.messages");

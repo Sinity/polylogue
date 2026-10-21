@@ -829,3 +829,5 @@ fn rebuilding_multiple_inputs_without_provider_files_preserves_order_and_title()
 mod excision_exports;
 
 mod otel_exports;
+
+mod gemini_takeout;

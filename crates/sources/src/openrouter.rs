@@ -7,7 +7,7 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
-use crate::export::{ExportParser, ItemSink, Owners, ScanError, ScanStats};
+use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{InlineBlob, MessageRow, Output, Parse, Step};
 use crate::{Disposition, Records};
@@ -117,17 +117,30 @@ impl ExportParser for OpenRouter {
     ) -> Result<ScanStats, ScanError> {
         *self = Self::default();
         let (metadata, stats) = crate::export::scan_map(reader, "messages", |range, key, raw| {
-            item.push(range, message_order(raw, key), Some(key), raw)
+            item.push(
+                range,
+                message_order(raw, key),
+                Some(key),
+                raw.get().as_bytes(),
+            )
         })?;
         self.metadata = Some(metadata);
         Ok(stats)
     }
 
-    fn begin(&mut self, length: u64, first: Option<&Json>) -> Result<Option<Step>, String> {
+    fn begin(&mut self, length: u64, first: Option<&[u8]>) -> Result<Option<Step>, String> {
         let doc = self.metadata.take().ok_or("room metadata not scanned")?;
         let mut output = Output::default();
         let mut records = Records::default();
-        self.start(&doc, first, &mut Sink::new(&mut output, &mut records));
+        let first = first
+            .map(serde_json::from_slice::<Json>)
+            .transpose()
+            .map_err(|e| e.to_string())?;
+        self.start(
+            &doc,
+            first.as_ref(),
+            &mut Sink::new(&mut output, &mut records),
+        );
         for event in &mut output.events {
             event.range = Some((0, length));
         }
@@ -140,7 +153,14 @@ impl ExportParser for OpenRouter {
         }))
     }
 
-    fn item(&mut self, m: &Json, sink: &mut Sink<'_>, _: &mut dyn Owners) -> Result<(), String> {
+    fn item(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut Sink<'_>,
+        _: &mut dyn ExportState,
+    ) -> Result<(), String> {
+        let m: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let m = &m;
         let Some(sid) = &self.session else {
             return Ok(());
         };
