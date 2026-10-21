@@ -112,12 +112,12 @@ const MESSAGE_FIELDS: Fields = &[
 impl ExportParser for OpenRouter {
     fn scan(
         &mut self,
-        reader: &mut dyn std::io::Read,
-        item: &mut ItemSink<'_>,
+        reader: &mut dyn crate::export::Input,
+        item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         *self = Self::default();
         let (metadata, stats) = crate::export::scan_map(reader, "messages", |range, key, raw| {
-            item(range, message_order(raw, key), Some(key), raw)
+            item.push(range, message_order(raw, key), Some(key), raw)
         })?;
         self.metadata = Some(metadata);
         Ok(stats)

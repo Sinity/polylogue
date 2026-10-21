@@ -79,13 +79,13 @@ const MESSAGE_FIELDS: Fields = &[
 impl ExportParser for OpenAiChat {
     fn scan(
         &mut self,
-        reader: &mut dyn std::io::Read,
-        item: &mut ItemSink<'_>,
+        reader: &mut dyn crate::export::Input,
+        item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         self.state = ChatState::default();
         let (metadata, stats) =
             crate::export::scan_array_or_nested(reader, &["messages"], |range, raw| {
-                item(range, Vec::new(), None, raw)
+                item.push(range, Vec::new(), None, raw)
             })?;
         self.state.metadata = Some(metadata);
         Ok(stats)

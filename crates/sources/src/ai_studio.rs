@@ -177,13 +177,13 @@ const CHUNK_FIELDS: Fields = &[
 impl ExportParser for AiStudio {
     fn scan(
         &mut self,
-        reader: &mut dyn std::io::Read,
-        item: &mut ItemSink<'_>,
+        reader: &mut dyn crate::export::Input,
+        item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         self.state = PromptState::default();
         let (metadata, stats) =
             crate::export::scan_nested(reader, &["chunkedPrompt", "chunks"], |range, raw| {
-                item(range, Vec::new(), None, raw)
+                item.push(range, Vec::new(), None, raw)
             })?;
         self.state.metadata = Some(metadata);
         Ok(stats)
@@ -643,11 +643,11 @@ const LISTING_FIELDS: Fields = &[
 impl ExportParser for Listing {
     fn scan(
         &mut self,
-        reader: &mut dyn std::io::Read,
-        item: &mut ItemSink<'_>,
+        reader: &mut dyn crate::export::Input,
+        item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         let (metadata, stats) = crate::export::scan_nested(reader, &["files"], |range, raw| {
-            item(range, Vec::new(), None, raw)
+            item.push(range, Vec::new(), None, raw)
         })?;
         self.files_array = metadata.get("files").is_some_and(Json::is_array);
         Ok(stats)

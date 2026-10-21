@@ -232,6 +232,24 @@ validates before header or message output; metadata after messages still applies
 Only ordering fields decode during the scan; message bodies remain raw until
 their turn. Room metadata and one message/output remain memory bounds.
 
+OpenTelemetry GenAI exports use that retained export path, with repeated
+`resourceSpans/scopeSpans/spans` arrays visited by Serde. One span and its decoded
+attributes/output are held at a time. The private SQLite table sorts exact
+optional unsigned nanoseconds, span IDs and physical ties; its ownership table
+keeps first-seen conversation metadata and message positions. Each event and
+message cites its original span rather than an invented wrapper or the whole
+file.
+
+A whole JSON document validates before publication. If its syntax is invalid,
+the scanner rewinds the same retained view and accounts independent JSONL lines.
+Each staged group uses a SQLite savepoint and a compressed-file checkpoint;
+a malformed line discards its entire prefix before later lines are scanned.
+Input and callback errors abort instead of falling back. The private index uses
+a disk rollback journal with durability disabled; journal mode OFF cannot roll
+back staged rows. Rewinding reopens retained bytes, never the provider file.
+Temporary disk grows with staged spans and ownership; one unusually large span
+still needs its own memory. This synchronous scan is not a reusable parse turn.
+
 The existing live-before-bulk and size ordering applies to work already planned.
 Preceding ordinary work drains through the parse pool and commits before the
 serial export driver runs with the pool inactive. A live append arriving during

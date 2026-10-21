@@ -51,17 +51,23 @@ fn recognizes_only_its_own_format() {
 fn steps(bytes: &[u8]) -> Vec<Step> {
     struct NoOwners;
     impl Owners for NoOwners {
-        fn claim(&mut self, _: &str, _: &SessionId) -> Result<SessionId, String> {
+        fn claim(&mut self, _: &str, _: &SessionId) -> Result<Option<SessionId>, String> {
             panic!("Polylogue export must preserve its authored message ownership")
         }
     }
     let mut parser = Export::default();
     let mut items = Vec::new();
     parser
-        .scan(&mut &bytes[..], &mut |range, _, _, raw| {
-            items.push((range, raw.get().to_owned()));
-            Ok(())
-        })
+        .scan(
+            &mut std::io::Cursor::new(bytes),
+            &mut |range: std::ops::Range<u64>,
+                  _: Vec<u8>,
+                  _: Option<&str>,
+                  raw: &serde_json::value::RawValue| {
+                items.push((range, raw.get().to_owned()));
+                Ok(())
+            },
+        )
         .unwrap();
     let mut steps = Vec::new();
     if let Some(step) = parser.begin(bytes.len() as u64, None).unwrap() {
@@ -147,14 +153,20 @@ fn many_sessions_scan_individually_and_version_after_them_still_applies() {
     let mut parser = Export::default();
     let mut count = 0;
     let stats = parser
-        .scan(&mut bytes.as_bytes(), &mut |range, _, _, raw| {
-            count += 1;
-            assert_eq!(
-                &bytes.as_bytes()[range.start as usize..range.end as usize],
-                raw.get().as_bytes()
-            );
-            Ok(())
-        })
+        .scan(
+            &mut std::io::Cursor::new(bytes.as_bytes()),
+            &mut |range: std::ops::Range<u64>,
+                  _: Vec<u8>,
+                  _: Option<&str>,
+                  raw: &serde_json::value::RawValue| {
+                count += 1;
+                assert_eq!(
+                    &bytes.as_bytes()[range.start as usize..range.end as usize],
+                    raw.get().as_bytes()
+                );
+                Ok(())
+            },
+        )
         .unwrap();
     assert_eq!(count, 100);
     assert_eq!(stats.elements, 100);

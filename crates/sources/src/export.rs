@@ -63,6 +63,8 @@ pub struct ScanStats {
     pub peak_element_bytes: usize,
 }
 
+mod path;
+pub use path::scan_path;
 mod keyed;
 pub use keyed::scan_map;
 mod nested;
@@ -200,20 +202,68 @@ pub fn number_order(value: Option<f64>) -> Vec<u8> {
     key
 }
 
-/// An export item parser. Ordering is separate from the physical record span.
-/// Order keys compare lexicographically. A source key replaces a prior value
-/// only for formats whose object entries have last-value semantics.
-pub type ItemSink<'a> =
-    dyn FnMut(Range<u64>, Vec<u8>, Option<&str>, &RawValue) -> Result<(), String> + 'a;
+/// Stages original record bytes and their physical spans. Order keys compare
+/// lexicographically. Reusing a source key replaces a prior value only for
+/// formats whose object entries have last-value semantics.
+pub trait ItemSink {
+    fn push(
+        &mut self,
+        range: Range<u64>,
+        order: Vec<u8>,
+        source_key: Option<&str>,
+        raw: &RawValue,
+    ) -> Result<(), String>;
+    fn begin(&mut self) -> Result<(), String> {
+        Err("this export sink cannot begin a scan group".into())
+    }
+    fn commit(&mut self) -> Result<(), String> {
+        Err("this export sink cannot commit a scan group".into())
+    }
+    fn rollback(&mut self) -> Result<(), String> {
+        Err("this export sink cannot roll back a scan group".into())
+    }
+}
+
+impl<F> ItemSink for F
+where
+    F: FnMut(Range<u64>, Vec<u8>, Option<&str>, &RawValue) -> Result<(), String>,
+{
+    fn push(
+        &mut self,
+        range: Range<u64>,
+        order: Vec<u8>,
+        source_key: Option<&str>,
+        raw: &RawValue,
+    ) -> Result<(), String> {
+        self(range, order, source_key, raw)
+    }
+}
+
+/// A stable retained view that can reopen from its beginning. Rewinding does
+/// not re-observe the provider's file or change which bytes are interpreted.
+pub trait Input: std::io::BufRead {
+    fn rewind(&mut self) -> io::Result<()>;
+}
+impl<T: AsRef<[u8]>> Input for std::io::Cursor<T> {
+    fn rewind(&mut self) -> io::Result<()> {
+        self.set_position(0);
+        Ok(())
+    }
+}
+impl<R: Read + std::io::Seek> Input for BufReader<R> {
+    fn rewind(&mut self) -> io::Result<()> {
+        std::io::Seek::rewind(self)
+    }
+}
 
 pub trait ExportParser: Send {
     fn scan(
         &mut self,
-        reader: &mut dyn Read,
-        item: &mut ItemSink<'_>,
+        reader: &mut dyn Input,
+        item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         scan(reader, |range, raw| {
-            item(range, self.order_key(raw), None, raw)
+            item.push(range, self.order_key(raw), None, raw)
         })
     }
     /// File-level output after validation and ordering, before its items. `first`
@@ -237,13 +287,14 @@ pub trait ExportParser: Send {
     ) -> Result<(), String>;
 }
 
-/// Message ownership across the conversations in one export operation.
+/// First ownership claims within one export operation. A new key returns None;
+/// an existing key returns its first owner, including when it is the same session.
 pub trait Owners {
     fn claim(
         &mut self,
         native: &str,
         session: &polylogue_model::SessionId,
-    ) -> Result<polylogue_model::SessionId, String>;
+    ) -> Result<Option<polylogue_model::SessionId>, String>;
 }
 
 pub fn parse_item(

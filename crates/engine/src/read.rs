@@ -64,14 +64,6 @@ impl Imported {
         })
     }
 
-    /// The unopened sequential view for a complete retained array parse.
-    pub fn stream(&mut self) -> io::Result<&mut hashed_blobs::PlainReader> {
-        if self.start != 0 || !self.pending.is_empty() {
-            return Err(io::Error::other("array reader was already consumed"));
-        }
-        Ok(&mut self.reader)
-    }
-
     pub fn read_range(&mut self, start: u64, end: u64) -> io::Result<Vec<u8>> {
         if start != self.start || end < start {
             return Err(io::Error::other(

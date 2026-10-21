@@ -877,12 +877,19 @@ impl Engine {
             })?
             .route_rank;
         let source = match bytes.single_file_blob() {
-            Some(hash) => pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::open(
-                &self.blobs,
-                hash,
-                stored,
-            )?))),
-            None => pool::Bytes::Stored(Arc::new(bytes)),
+            Some(hash)
+                if !matches!(
+                    (origin.open)(path),
+                    Some(polylogue_sources::Parse::Export(_))
+                ) =>
+            {
+                pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::open(
+                    &self.blobs,
+                    hash,
+                    stored,
+                )?)))
+            }
+            _ => pool::Bytes::Stored(Arc::new(bytes)),
         };
         Ok(Some(Plan {
             path: path.to_path_buf(),

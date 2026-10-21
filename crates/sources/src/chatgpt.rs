@@ -151,12 +151,15 @@ impl crate::export::Owners for Owners {
         &mut self,
         native: &str,
         session: &polylogue_model::SessionId,
-    ) -> Result<polylogue_model::SessionId, String> {
-        Ok(self
-            .first
-            .entry(native.to_owned())
-            .or_insert_with(|| session.clone())
-            .clone())
+    ) -> Result<Option<polylogue_model::SessionId>, String> {
+        use std::collections::hash_map::Entry;
+        Ok(match self.first.entry(native.to_owned()) {
+            Entry::Occupied(entry) => Some(entry.get().clone()),
+            Entry::Vacant(entry) => {
+                entry.insert(session.clone());
+                None
+            }
+        })
     }
 }
 
@@ -276,7 +279,7 @@ fn conversation_with_owners(
     for (_, _, message) in rows {
         let native = message.id.native().as_str().to_owned();
         match owners.claim(&native, &sid)? {
-            owner if owner != sid => {
+            Some(owner) if owner != sid => {
                 branch = Some((owner, message));
             }
             _ => {

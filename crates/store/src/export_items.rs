@@ -12,6 +12,7 @@ pub struct ExportItems {
     payload: File,
     ordinal: i64,
     cursor: Option<(Vec<u8>, i64)>,
+    scan_group: Option<(i64, u64)>,
 }
 
 pub struct Item {
@@ -23,7 +24,7 @@ impl ExportItems {
     pub fn new() -> Result<Self> {
         let index = tempfile::NamedTempFile::new()?;
         let db = Connection::open(index.path())?;
-        db.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-1024;
+        db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=OFF; PRAGMA cache_size=-1024;
             PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
             CREATE TABLE item(ordinal INTEGER PRIMARY KEY, source_key TEXT UNIQUE, sort BLOB NOT NULL,
                 start INTEGER NOT NULL, end INTEGER NOT NULL, compressed_start INTEGER NOT NULL, compressed_end INTEGER NOT NULL);
@@ -35,6 +36,7 @@ impl ExportItems {
             payload: tempfile::tempfile()?,
             ordinal: 0,
             cursor: None,
+            scan_group: None,
         })
     }
 
@@ -72,6 +74,11 @@ impl ExportItems {
     }
 
     pub fn next_item(&mut self) -> Result<Option<Item>> {
+        if self.scan_group.is_some() {
+            return Err(StoreError::Invalid(
+                "export scan group is unfinished".into(),
+            ));
+        }
         let (sort, ordinal) = self.cursor.clone().unwrap_or((vec![], -1));
         let row = self
             .db
@@ -106,17 +113,55 @@ impl ExportItems {
         }))
     }
 
-    pub fn claim_message(&mut self, message: &str, session: &SessionId) -> Result<SessionId> {
-        self.db.execute(
+    /// One scan group can be accepted or discarded before ordered reading.
+    pub fn begin_scan(&mut self) -> Result<()> {
+        if self.scan_group.is_some() || self.cursor.is_some() {
+            return Err(StoreError::Invalid(
+                "an export scan group is already active or items are being read".into(),
+            ));
+        }
+        let at = self.payload.stream_position()?;
+        self.db.execute_batch("SAVEPOINT scan_group")?;
+        self.scan_group = Some((self.ordinal, at));
+        Ok(())
+    }
+    pub fn commit_scan(&mut self) -> Result<()> {
+        if self.scan_group.is_none() {
+            return Err(StoreError::Invalid("no export scan group".into()));
+        }
+        self.db.execute_batch("RELEASE scan_group")?;
+        self.scan_group = None;
+        Ok(())
+    }
+    pub fn rollback_scan(&mut self) -> Result<()> {
+        let (ordinal, at) = self
+            .scan_group
+            .ok_or_else(|| StoreError::Invalid("no export scan group".into()))?;
+        self.db
+            .execute_batch("ROLLBACK TO scan_group; RELEASE scan_group")?;
+        self.payload.set_len(at)?;
+        self.payload.seek(SeekFrom::Start(at))?;
+        self.ordinal = ordinal;
+        self.scan_group = None;
+        Ok(())
+    }
+
+    pub fn claim_owner(&mut self, message: &str, session: &SessionId) -> Result<Option<SessionId>> {
+        let inserted = self.db.execute(
             "INSERT OR IGNORE INTO owner VALUES (?1,?2)",
             params![message, session.to_string()],
         )?;
+        if inserted == 1 {
+            return Ok(None);
+        }
         let owner: String = self.db.query_row(
             "SELECT session FROM owner WHERE message=?1",
             [message],
             |r| r.get(0),
         )?;
-        SessionId::parse(&owner).map_err(|e| StoreError::Invalid(e.to_string()))
+        SessionId::parse(&owner)
+            .map(Some)
+            .map_err(|e| StoreError::Invalid(e.to_string()))
     }
 }
 
