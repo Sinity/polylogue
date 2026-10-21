@@ -288,6 +288,8 @@ fn main() {
             home
         }
     };
+    let io_before = fs::read_to_string("/proc/self/io").ok();
+    let started = Instant::now();
     let root = dir.join("archive");
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
     let mut config = Config::from_env();
@@ -301,33 +303,31 @@ fn main() {
     }
     let workers = config.workers;
     let mut engine = Engine::new(config, archive.clone()).unwrap();
-    let started = Instant::now();
+    let setup_seconds = started.elapsed().as_secs_f64();
+    let ingest_started = Instant::now();
     let pass = engine.converge().unwrap();
-    let secs = started.elapsed().as_secs_f64();
     drop(engine);
-    // Bytes this process made the kernel read and write, for write
-    // amplification (bytes written against bytes kept).
-    let io = fs::read_to_string("/proc/self/io").unwrap_or_default();
-    let io_field = |name: &str| {
-        io.lines()
-            .find_map(|l| l.strip_prefix(name))
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(0)
-    };
-    let (read_bytes, write_bytes) = (io_field("read_bytes:"), io_field("write_bytes:"));
-    // Bytes handed to write calls, whatever the filesystem: the measure of
-    // write amplification that does not depend on the disk (tmpfs archives
-    // never reach `write_bytes`).
-    let wchar = io_field("wchar:");
-    // Peak resident memory of the whole run. Memory must stay bounded by
-    // the parse pool's bytes in flight and the writer's cache, not grow
-    // with the corpus; `--max-rss-mb` fails the run when it does not.
-    let peak_rss_mb = fs::read_to_string("/proc/self/status")
-        .unwrap_or_default()
-        .lines()
-        .find_map(|l| l.strip_prefix("VmHWM:"))
-        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
-        .map_or(0, |kb| kb / 1024);
+    let ingest_seconds = ingest_started.elapsed().as_secs_f64();
+    let secs = started.elapsed().as_secs_f64();
+    // Setup, ingestion and writer shutdown; corpus generation is outside.
+
+    let io = fs::read_to_string("/proc/self/io").ok();
+    let read_bytes = counter_delta(
+        io_count(io_before.as_deref(), "read_bytes:"),
+        io_count(io.as_deref(), "read_bytes:"),
+    );
+    let write_bytes = counter_delta(
+        io_count(io_before.as_deref(), "write_bytes:"),
+        io_count(io.as_deref(), "write_bytes:"),
+    );
+    // Write-call bytes include tmpfs work as well as physical disk writes.
+    let wchar = counter_delta(
+        io_count(io_before.as_deref(), "wchar:"),
+        io_count(io.as_deref(), "wchar:"),
+    );
+    let status = fs::read_to_string("/proc/self/status").ok();
+    // Peak memory covers the process, including setup and generation.
+    let peak_rss_mb = peak_memory_mb(status.as_deref());
     let index = dir_size(&archive.index_db()) + dir_size(&root.join("index.db-wal"));
     let stored = dir_size(&archive.archive_db()) + dir_size(&archive.blobs_dir());
     println!(
@@ -337,16 +337,21 @@ fn main() {
             "inputs": pass.inputs_changed,
             "input_mb": input as f64 / 1e6,
             "seconds": secs,
+            "setup_seconds": setup_seconds,
+            "ingest_seconds": ingest_seconds,
             "mb_per_s": input as f64 / 1e6 / secs,
             "messages_written": pass.messages_written,
+            "bytes_read": pass.bytes_read,
+            "bytes_stored": pass.bytes_stored,
+            "unreadable_root_count": pass.unreadable_roots.len(),
             "index_mb": index as f64 / 1e6,
             "index_over_input": index as f64 / input.max(1) as f64,
             "stored_mb": stored as f64 / 1e6,
-            "disk_read_mb": read_bytes as f64 / 1e6,
-            "disk_written_mb": write_bytes as f64 / 1e6,
-            "written_over_kept": write_bytes as f64 / (index + stored).max(1) as f64,
-            "written_mb": wchar as f64 / 1e6,
-            "written_over_input": wchar as f64 / input.max(1) as f64,
+            "disk_read_mb": read_bytes.map(|n|n as f64 / 1e6),
+            "disk_written_mb": write_bytes.map(|n|n as f64 / 1e6),
+            "written_over_kept": write_bytes.map(|n|n as f64 / (index + stored).max(1) as f64),
+            "written_mb": wchar.map(|n|n as f64 / 1e6),
+            "written_over_input": wchar.map(|n|n as f64 / input.max(1) as f64),
             "exports_mb": dir_size(&archive.exports_dir()) as f64 / 1e6,
             "peak_rss_mb": peak_rss_mb,
             // Seconds per stage; pool stages are thread-seconds.
@@ -358,10 +363,48 @@ fn main() {
             "first_errors": pass.errors.iter().take(5).collect::<Vec<_>>(),
         })
     );
+    assert!(
+        pass.errors.is_empty(),
+        "ingestion errors: {:?}",
+        pass.errors.iter().take(5).collect::<Vec<_>>()
+    );
+    assert!(
+        pass.unreadable_roots.is_empty(),
+        "source roots are unreadable: {:?}",
+        pass.unreadable_roots.iter().take(5).collect::<Vec<_>>()
+    );
     if let Some(max) = arg("--max-rss-mb").map(|m| m.parse::<u64>().expect("--max-rss-mb MB")) {
+        let peak_rss_mb = peak_rss_mb.expect("peak memory measurement is unavailable");
         assert!(
             peak_rss_mb <= max,
             "peak resident memory {peak_rss_mb} MB exceeds {max} MB"
         );
     }
 }
+
+fn io_count(contents: Option<&str>, field: &str) -> Option<u64> {
+    contents?
+        .lines()
+        .find_map(|line| line.strip_prefix(field))?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn peak_memory_mb(contents: Option<&str>) -> Option<u64> {
+    let value = contents?
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))?
+        .trim()
+        .strip_suffix("kB")?
+        .trim();
+    value.parse::<u64>().ok().map(|kb| kb / 1024)
+}
+
+fn counter_delta(before: Option<u64>, after: Option<u64>) -> Option<u64> {
+    after?.checked_sub(before?)
+}
+
+#[cfg(test)]
+#[path = "first_build/tests.rs"]
+mod tests;
