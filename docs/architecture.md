@@ -356,7 +356,10 @@ bounds. Excision streams changed units from its temporary table and uses
 A batch remains protected while any current replacement references it, including
 an unaffected unit. Manifest-owner order selects the latest replacement; source
 scan order does not matter. The new manifest's replacement and retirement lists
-still grow with that operation.
+still grow with that operation. `sinex_rows/excision/digest.rs` writes their
+sorted digest encoding directly into BLAKE3 through a fixed buffer, without
+building another JSON tree or a serialized manifest buffer. Existing digest
+bytes are unchanged.
 
 Excision records retain exact unit identities and content-addressed replacement
 batches or tombstones. Restore validates and folds all confirmed replacement

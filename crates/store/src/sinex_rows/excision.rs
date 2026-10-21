@@ -5,6 +5,7 @@ use super::{Unit, read};
 use crate::{Result, StoreError};
 use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
+mod digest;
 mod retirement;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,12 +186,7 @@ fn triggers() -> Vec<(&'static str, &'static str, String)> {
 
 impl ExcisionPublication {
     pub(super) fn computed_digest(&self) -> Result<String> {
-        let mut value = serde_json::json!({"version": self.version, "replacements": self.replacements, "retired_batches": self.retired_batches});
-        value.sort_all_objects();
-        Ok(format!(
-            "blake3:{}",
-            blake3::hash(&serde_json::to_vec(&value)?)
-        ))
+        digest::compute(self)
     }
 
     pub fn validate(&self) -> Result<()> {
