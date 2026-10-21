@@ -5,7 +5,7 @@ use super::{Unit, read};
 use crate::{Result, StoreError};
 use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+mod retirement;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Replacement {
@@ -52,33 +52,20 @@ impl Capture {
         tx: &Transaction<'_>,
         store: &hashed_blobs::Store,
     ) -> Result<ExcisionPublication> {
-        let units: Vec<Unit> = tx
-            .prepare(
-                "SELECT commit_seq, kind, key FROM excision_units ORDER BY commit_seq, kind, key",
-            )?
-            .query_map([], |r| {
-                Ok(Unit {
-                    commit_seq: r.get(0)?,
-                    kind: r.get(1)?,
-                    key: r.get(2)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        let changed: BTreeSet<_> = units.iter().cloned().collect();
-        let mut retired = BTreeSet::new();
-        visit_publications(tx, |_, previous| {
-            for replacement in &previous.replacements {
-                if changed.contains(&replacement.unit)
-                    && let Some(batch) = &replacement.batch
-                {
-                    retired.insert(batch.clone());
-                }
-            }
-            Ok(())
+        let mut statement = tx.prepare(
+            "SELECT commit_seq,kind,key FROM excision_units ORDER BY commit_seq,kind,key",
+        )?;
+        let units = statement.query_map([], |r| {
+            Ok(Unit {
+                commit_seq: r.get(0)?,
+                kind: r.get(1)?,
+                key: r.get(2)?,
+            })
         })?;
         let local = store.primary_only();
         let mut replacements = Vec::new();
         for unit in units {
+            let unit = unit?;
             let mut batch = read(tx, &unit)?;
             let hash = if batch.rows == 0 {
                 None
@@ -106,19 +93,8 @@ impl Capture {
                     .collect(),
             });
         }
-        let mut selected = std::collections::BTreeMap::new();
-        visit_publications(tx, |_, previous| {
-            for replacement in &previous.replacements {
-                selected.insert(replacement.unit.clone(), replacement.clone());
-            }
-            Ok(())
-        })?;
-        for replacement in &replacements {
-            selected.insert(replacement.unit.clone(), replacement.clone());
-        }
-        for selected in selected.values().filter_map(|r| r.batch.as_ref()) {
-            retired.remove(selected);
-        }
+        drop(statement);
+        let retired = retirement::batches(tx, &replacements)?;
         for (table, event, _) in triggers() {
             let name = event.replace(' ', "_");
             tx.execute_batch(&format!("DROP TRIGGER excision_{table}_{name};"))?;
@@ -127,7 +103,7 @@ impl Capture {
         let mut publication = ExcisionPublication {
             version: 1,
             replacements,
-            retired_batches: retired.into_iter().collect(),
+            retired_batches: retired,
             digest: String::new(),
         };
         publication.digest = publication.computed_digest()?;
@@ -135,13 +111,13 @@ impl Capture {
     }
 }
 
-/// Decode and check one historical manifest at a time, in archive order.
+/// Decode and check one historical manifest at a time. Callers use its owner's
+/// identity to choose the latest replacement, independent of scan order.
 pub(super) fn visit_publications(
     conn: &Connection,
     mut visit: impl FnMut(&Unit, &ExcisionPublication) -> Result<()>,
 ) -> Result<()> {
-    let mut stmt =
-        conn.prepare("SELECT commit_seq,id,refused_json FROM excision ORDER BY commit_seq,id")?;
+    let mut stmt = conn.prepare("SELECT commit_seq,id,refused_json FROM excision")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(2)?)?;

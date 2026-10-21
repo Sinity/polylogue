@@ -213,7 +213,7 @@ pub struct Published {
 impl Published {
     pub fn open(root: &std::path::Path) -> crate::Result<Self> {
         let conn = crate::archive::open_read(&root.join("archive.db"))?;
-        // Manifest ordering may sort large values; spill it to temporary files.
+        // Large row-query sorts may spill beyond the connection cache.
         conn.pragma_update(None, "temp_store", "FILE")?;
         // One publication pass keeps the same view across its table queries.
         conn.execute_batch("BEGIN")?;
