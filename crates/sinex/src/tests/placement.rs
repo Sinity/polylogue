@@ -101,6 +101,46 @@ async fn blob_placement_checks_each_ack_batch_before_requesting_more() {
         .await
         .unwrap();
     assert_eq!(queried.load(Ordering::SeqCst), hashes.len());
+    let names: Vec<_> = hashes
+        .iter()
+        .map(|hash| format!("blake3:{}", sinex_rows::hex(hash)))
+        .collect();
+    let mut invalid = names.clone();
+    invalid.push("not-a-content-address".into());
+    queried.store(0, Ordering::SeqCst);
+    let error = sinex
+        .place_named_blobs(&rows, "synthetic", &invalid, &mut done)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Invalid(_)), "{error}");
+    assert_eq!(
+        queried.load(Ordering::SeqCst),
+        0,
+        "all names must validate before the first request"
+    );
+    refused.store(true, Ordering::SeqCst);
+    let error = sinex
+        .place_named_blobs(&rows, "synthetic", &names, &mut done)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Refused { .. }), "{error}");
+    assert_eq!(queried.load(Ordering::SeqCst), 500);
+    refused.store(false, Ordering::SeqCst);
+    queried.store(0, Ordering::SeqCst);
+    sinex
+        .place_named_blobs(&rows, "synthetic", &names, &mut done)
+        .await
+        .unwrap();
+    assert_eq!(queried.load(Ordering::SeqCst), names.len());
+    assert_eq!(
+        done.blobs, 0,
+        "held named references must not open missing local bodies"
+    );
+    sinex
+        .place_named_blobs(&rows, "synthetic", &[], &mut done)
+        .await
+        .unwrap();
+    assert_eq!(queried.load(Ordering::SeqCst), names.len());
     worker.abort();
     assert!(worker.await.unwrap_err().is_cancelled());
 }

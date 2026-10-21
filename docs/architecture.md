@@ -428,7 +428,9 @@ retirement can still make referenced files unavailable, which verified reads
 refuse. `sinex_rows/inventory.rs` keeps ordered unit identities, current
 replacement descriptors and acknowledged positions in operation-scoped SQLite
 with a 1 MiB page cache. The adapter discards each Have reply after at most
-500 keys and visits missing units by position. Historical manifests are checked
+500 keys and visits missing units by position. Named replacement blob references
+are validated before placement and converted to binary hashes in groups of 500,
+using the same acknowledgment path. Historical manifests are checked
 one at a time before payloads open. Temporary disk scales with the catalog and
 largest row batch; one manifest, row and its blob-reference list remain memory
 bounds. The canonical archive writer uses file-backed temporary tables with
