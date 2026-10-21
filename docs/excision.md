@@ -19,3 +19,11 @@ Removing a session from a retained JSON export erases its complete records and t
 This path requires complete, independently decodable JSON pieces. Citations that cut through scalar values, object-member removals, gaps or split records, and bytes shared with an input outside the rewrite return `unsupported_excision`. Removal also refuses overlaps with surviving sessions' message or event citations. A refusal leaves stored bytes, indexed records and authored notes unchanged.
 
 Session-record planning currently reads one complete blob at a time. The streaming text-scan memory description above does not apply to this path. Interrupted cross-database commits and physical retirement remain separate qualification work.
+
+## Interrupted commits
+
+The archive tracks a numbered, uniquely tagged excision revision in its metadata; SQLite triggers change it whenever an excision row changes. The index acknowledges that revision in its own transaction. Each new reader checks both revisions inside its existing snapshot and returns `ExcisionPending` on mismatch. Already admitted reads keep their consistent earlier view. A commit-phase failure stops the writer and returns `ExcisionInterrupted`; it cannot accept more writes until reopening reconciles the committed state. A failed check releases its connection rather than returning an unusable one to the pool.
+
+On reopening the archive, an index behind the archive's excision revision is retained as `index.db.excision-<id>` and rebuilt from canonical bytes under the standing excision rules. An older archive revision, or different tags at the same revision, refuses recovery for reconciliation. Successful restore installation uses the same preparation. Reinstalling identical excision rows preserves the revision, so an unrelated restore update keeps a correct index. This local archive-format migration makes older writers refuse the archive.
+
+Recovery preserves authored data, retained inputs and embedding data. Stale index copies can contain removed text; their physical retirement, interrupted embedding cleanup and orphan-file cleanup remain separate work. This mechanism qualifies derived-index validity, not completion of every physical deletion.

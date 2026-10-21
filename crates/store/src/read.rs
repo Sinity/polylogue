@@ -203,6 +203,7 @@ impl ReadPool {
             None => connect()?,
         };
         conn.execute_batch("BEGIN")?;
+        crate::excise::recovery::check_snapshot(&conn)?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
         if state.closed {
             return Err(StoreError::ReadPoolClosed);

@@ -80,6 +80,14 @@ pub(super) fn install<R: Read>(
         )
         .optional()?;
     let repeated = held.as_deref() == Some(&fingerprint);
+    let excision_before = if repeated {
+        None
+    } else {
+        Some((
+            crate::excise::recovery::current(&tx)?,
+            crate::excise::recovery::fingerprint(&tx)?,
+        ))
+    };
     if !repeated {
         tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
         // All deletions precede inserts: shared revision bases are restored in
@@ -106,6 +114,11 @@ pub(super) fn install<R: Read>(
         }
     }
     tx.execute("INSERT INTO meta(key,value) VALUES ('sinex_restored_view',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&fingerprint])?;
+    if let Some((revision, before)) = excision_before
+        && crate::excise::recovery::fingerprint(&tx)? == before
+    {
+        crate::excise::recovery::set(&tx, &revision)?;
+    }
     tx.commit()?;
     Ok(inserted)
 }

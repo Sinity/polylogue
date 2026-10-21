@@ -28,3 +28,19 @@ fn finds_written_and_json_escaped_forms() {
 }
 
 mod retained;
+
+#[test]
+fn malformed_removed_message_ids_are_not_an_empty_refusal_set() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::schema::create_archive(&conn).unwrap();
+    conn.execute("INSERT INTO excision(id,scope,message_ids_json,created_at,commit_seq) VALUES ('removed','session:claude-code:gone','invalid',1,1)",[]).unwrap();
+    assert!(Refused::load(&conn).is_err());
+    conn.execute(
+        "UPDATE excision SET message_ids_json='[]' WHERE id='removed'",
+        [],
+    )
+    .unwrap();
+    let refused = Refused::load(&conn).unwrap();
+    assert!(refused.sessions.contains("claude-code:gone"));
+    assert!(refused.messages.is_empty());
+}

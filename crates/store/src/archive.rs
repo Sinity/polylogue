@@ -119,14 +119,26 @@ impl Archive {
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('archive_id', ?1)",
             [uuid::Uuid::now_v7().to_string()],
         )?;
-        set_aside_old_index(&archive)?;
-        let i = open_write(&archive.index_db(), cache::SETUP)?;
-        schema::ensure_index(&i)?;
+        archive.prepare_index()?;
         let e = open_write(&archive.embeddings_db(), cache::SETUP)?;
         if schema::version(&e)? == 0 {
             schema::create_embeddings(&e)?;
         }
         Ok((archive, ArchiveLock { _file: file }))
+    }
+
+    /// The caller holds the archive lock. A newly created index has no old
+    /// content; future parses use the archive's standing excision rules.
+    pub(crate) fn prepare_index(&self) -> Result<()> {
+        set_aside_old_index(self)?;
+        let index = open_write(&self.index_db(), cache::SETUP)?;
+        let fresh = schema::version(&index)? == 0;
+        schema::ensure_index(&index)?;
+        if fresh {
+            let archive = open_read(&self.archive_db())?;
+            crate::excise::recovery::acknowledge(&archive, &index)?;
+        }
+        Ok(())
     }
 }
 
@@ -142,8 +154,19 @@ fn set_aside_old_index(archive: &Archive) -> Result<()> {
     let conn = open_read(&path)?;
     let found = schema::version(&conn)?;
     let unsynced = found == schema::INDEX_VERSION && schema::unsynced(&conn)?;
+    let excision_stale = if found == schema::INDEX_VERSION && !unsynced {
+        let archive_conn = open_read(&archive.archive_db())?;
+        crate::excise::recovery::needs_rebuild(
+            &crate::excise::recovery::current(&conn)?,
+            &crate::excise::recovery::current(&archive_conn)?,
+        )?
+    } else {
+        false
+    };
     drop(conn);
-    let suffix_for = if unsynced {
+    let suffix_for = if excision_stale {
+        format!("excision-{}", uuid::Uuid::now_v7())
+    } else if unsynced {
         "unsynced".to_owned()
     } else if found == 0 || found == schema::INDEX_VERSION {
         return Ok(());

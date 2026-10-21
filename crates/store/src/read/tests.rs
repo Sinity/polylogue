@@ -231,3 +231,5 @@ fn nested_readers_keep_distinct_consistent_snapshots_when_connections_are_reused
     assert_eq!(reused.status().unwrap().sessions, 1);
     assert_eq!(first.status().unwrap().sessions, 0);
 }
+
+mod excision;

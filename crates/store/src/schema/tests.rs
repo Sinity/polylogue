@@ -37,3 +37,35 @@ fn index_schema_changes_require_a_version_and_digest_update() {
         "bump INDEX_VERSION and record its schema digest when index.sql changes"
     );
 }
+
+#[test]
+fn excision_revision_migration_preserves_rows_and_runs_once() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    create_archive(&conn).unwrap();
+    conn.execute("INSERT INTO excision(id,scope,reason,created_at,commit_seq) VALUES ('old','session:claude-code:gone','retained reason',1,7)",[]).unwrap();
+    migrate_archive(&mut conn).unwrap();
+    assert_eq!(version(&conn).unwrap(), 2);
+    let before = crate::excise::recovery::current(&conn).unwrap();
+    assert!(before.version > 0);
+    migrate_archive(&mut conn).unwrap();
+    assert_eq!(crate::excise::recovery::current(&conn).unwrap(), before);
+    assert_eq!(
+        conn.query_row("SELECT reason FROM excision WHERE id='old'", [], |r| r
+            .get::<_, String>(
+            0
+        ))
+        .unwrap(),
+        "retained reason"
+    );
+    conn.execute("UPDATE excision SET reason='changed' WHERE id='old'", [])
+        .unwrap();
+    let changed = crate::excise::recovery::current(&conn).unwrap();
+    assert_ne!(changed, before);
+    conn.execute("DELETE FROM excision WHERE id='old'", [])
+        .unwrap();
+    assert_ne!(crate::excise::recovery::current(&conn).unwrap(), changed);
+    let mut empty = Connection::open_in_memory().unwrap();
+    create_archive(&empty).unwrap();
+    migrate_archive(&mut empty).unwrap();
+    assert_eq!(crate::excise::recovery::current(&empty).unwrap().version, 0);
+}
