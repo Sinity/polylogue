@@ -40,6 +40,7 @@ use rows::*;
 use search::*;
 
 enum Msg {
+    Parsers(Vec<(String, u32)>, SyncSender<Result<()>>),
     Stop,
     Batch(Box<Batch>),
     Flush(SyncSender<WriteReport>),
@@ -223,6 +224,23 @@ impl Writer {
         })
     }
 
+    /// Select format versions before their parse jobs start emitting rows.
+    pub fn require_parsers(&self, versions: &[(&str, u32)]) -> Result<()> {
+        let (reply, wait) = sync_channel(1);
+        self.tx
+            .as_ref()
+            .ok_or(StoreError::WriterGone)?
+            .send(Msg::Parsers(
+                versions
+                    .iter()
+                    .map(|(format, version)| ((*format).to_owned(), *version))
+                    .collect(),
+                reply,
+            ))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Queues one batch. Blocks while the writer is busy and its queue is
     /// full, which is what holds the parse pool back.
     pub fn send(&self, batch: Batch) -> Result<()> {
@@ -357,6 +375,7 @@ impl Inner {
         let mut users = Vec::new();
         let mut excisions = Vec::new();
         let mut derives = Vec::new();
+        let mut parsers = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut stopping = false;
             let mut group = Vec::new();
@@ -364,6 +383,10 @@ impl Inner {
             let mut bytes = 0;
             let mut push =
                 |m: Msg, group: &mut Vec<Box<Batch>>, rows: &mut usize, bytes: &mut u64| match m {
+                    Msg::Parsers(versions, reply) => {
+                        parsers.push((versions, reply));
+                        false
+                    }
                     Msg::Stop => {
                         stopping = true;
                         false
@@ -418,6 +441,17 @@ impl Inner {
             // Later queue replies also observe release of the parsed batches'
             // memory reservations, not only their committed database rows.
             drop(group);
+            for (versions, reply) in parsers.drain(..) {
+                let result = (|| {
+                    let tx = self.index.transaction()?;
+                    for (format, version) in versions {
+                        rows::require_parser(&tx, &format, version)?;
+                    }
+                    tx.commit()?;
+                    Ok(())
+                })();
+                let _ = reply.send(result);
+            }
             for (request, reply) in users.drain(..) {
                 let _ = reply.send(self.write_user(&request));
             }

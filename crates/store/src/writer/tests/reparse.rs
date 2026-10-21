@@ -333,3 +333,5 @@ fn a_failed_completion_rolls_back_retirement_and_can_retry() {
     apply(&w, completion(2));
     assert!(texts(&w, "s").is_empty());
 }
+
+mod multiple_inputs;

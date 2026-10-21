@@ -630,7 +630,8 @@ impl Reader<'_> {
             |sql: &str| -> Result<u64> { Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64) };
         let mut parse_states = BTreeMap::new();
         let mut stmt =
-            c.prepare_cached("SELECT status, COUNT(*) FROM parse_state GROUP BY status")?;
+            c.prepare_cached("SELECT CASE WHEN p.parser_version<COALESCE(r.version,p.parser_version) OR p.parser_version>p.retired_version THEN 'reparsing' ELSE p.status END AS state,COUNT(*)
+                FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk LEFT JOIN required_parser r ON r.format=i.format GROUP BY state")?;
         for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
             let (s, n) = row?;
             parse_states.insert(s, n as u64);
