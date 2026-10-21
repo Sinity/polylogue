@@ -390,7 +390,11 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     let deadline = Instant::now();
     loop {
         match sinex.restore(&latest, &id).await {
-            Err(crate::Error::Invalid(message)) if message.contains("but not unit") => break,
+            Err(crate::Error::Store(polylogue_store::StoreError::Invalid(message)))
+                if message.contains("but not unit") =>
+            {
+                break;
+            }
             Ok(_) => {}
             other => panic!("unexpected incomplete restore: {other:?}"),
         }
@@ -404,7 +408,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     );
     assert!(matches!(
         sinex.restore(&incomplete, &id).await,
-        Err(crate::Error::Invalid(_))
+        Err(crate::Error::Store(polylogue_store::StoreError::Invalid(_)))
     ));
     let retried = sinex.publish(&a).await.unwrap();
     assert_eq!(
@@ -416,7 +420,8 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     loop {
         match sinex.restore(&incomplete, &id).await {
             Ok(result) if result.units == units.len() as u64 => break,
-            Err(crate::Error::Invalid(message)) if message.contains("but not unit") => {}
+            Err(crate::Error::Store(polylogue_store::StoreError::Invalid(message)))
+                if message.contains("but not unit") => {}
             other => panic!("unexpected retry restore: {other:?}"),
         }
         assert!(deadline.elapsed() < Duration::from_secs(20));
