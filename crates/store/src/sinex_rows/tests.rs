@@ -715,3 +715,5 @@ fn selected_units(selection: &Selection) -> Vec<RestoreUnit> {
         .unwrap();
     units
 }
+
+mod blob_placement;

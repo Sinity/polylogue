@@ -9,6 +9,9 @@ use polylogue_model::BlobHash;
 use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt;
 
+mod copy;
+pub(crate) use copy::{copy_plain, copy_verified};
+
 pub const INLINE_LIMIT: usize = 128 * 1024;
 
 /// zstd level for stored bytes: about 300 MB/s per core.
