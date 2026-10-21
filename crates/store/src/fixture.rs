@@ -313,19 +313,12 @@ impl Fixture {
     pub fn event(&mut self, session_pk: i64, kind: &str, at: Option<i64>) -> Result<()> {
         self.seq += 1;
         let data = crate::encoding::pack_json(&serde_json::json!({}))?;
+        let id = format!("e{}", self.seq);
         self.index.execute(
-            "INSERT INTO event(id, session_pk, seq, kind, at, input_pk, parser_version, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
-            params![
-                format!("e{}", self.seq),
-                session_pk,
-                self.seq,
-                kind,
-                at,
-                self.input_pk,
-                data
-            ],
+            "INSERT INTO event(id,session_pk,kind,at,data) VALUES (?1,?2,?3,?4,?5)",
+            params![id, session_pk, kind, at, data],
         )?;
+        self.index.execute("INSERT INTO event_source(event_id,input_pk,chain,source_snapshot,current,parser_version,source_order) VALUES (?1,?2,1,-1,1,1,?3)",params![id,self.input_pk,self.seq])?;
         Ok(())
     }
 

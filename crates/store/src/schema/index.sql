@@ -348,23 +348,15 @@ CREATE INDEX link_parent ON link(parent_id, kind);             -- lineage down; 
 
 CREATE TABLE event (
   pk                INTEGER PRIMARY KEY,
-  id                TEXT NOT NULL UNIQUE,   -- computed by the parser from the raw record (model.md, Identity)
-  session_pk        INTEGER NOT NULL REFERENCES session(pk),  -- every event names its session; a hook line naming a
-                                            --   session with no row yet creates a stub session row (session.stub)
-  seq               INTEGER NOT NULL,       -- display position (shares numbering with message.seq); not a key
-  after_message_pk  INTEGER REFERENCES message(pk),  -- the message it follows; export `after_message`
-  kind              TEXT NOT NULL,          -- open set; each provider's kinds are listed in sources/
-                                            -- (compaction, rate_limit, hook_run, ...), plus marker_not_applied
+  id                TEXT NOT NULL UNIQUE,   -- intrinsic event identity, independent of its sources
+  session_pk        INTEGER NOT NULL REFERENCES session(pk),
+  after_message_pk  INTEGER REFERENCES message(pk),
+  kind              TEXT NOT NULL,
   at                INTEGER,
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  parser_version    INTEGER NOT NULL,       -- with input_pk: which parse produced it (convergence.md, rebuilding a session)
-  source_chain      INTEGER,                -- revision chain of the byte range (as message.source_chain)
-  source_start      INTEGER,
-  source_end        INTEGER,
-  data              BLOB NOT NULL           -- the provider's payload as given, zstd-compressed JSON; export `data`
+  data              BLOB NOT NULL           -- zstd-compressed provider payload
 ) STRICT;
-CREATE INDEX event_session ON event(session_pk, seq);
-CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;   -- foreign-key check
+CREATE INDEX event_session ON event(session_pk);
+CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
 CREATE INDEX event_kind    ON event(kind, at);
 
 -- Tasks and attempts a harness records (model.md, Run).
@@ -654,8 +646,13 @@ CREATE TABLE snapshot_session (
   PRIMARY KEY(snapshot_pk, session_pk)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX snapshot_session_session ON snapshot_session(session_pk);
+-- One selected record for each event/input/revision/snapshot observation.
+-- Repeated records in that scope keep the latest source order and its range.
 CREATE TABLE event_source (
+  parser_version INTEGER NOT NULL,
   source_order INTEGER NOT NULL,
+  source_start INTEGER,
+  source_end INTEGER,
   event_id TEXT NOT NULL REFERENCES event(id) ON DELETE CASCADE,
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,
@@ -673,9 +670,20 @@ CREATE TABLE link_source (
   PRIMARY KEY(link_pk, input_pk, chain, source_snapshot)
 ) STRICT, WITHOUT ROWID;
 CREATE VIEW current_message AS SELECT * FROM message WHERE present = 1;
-CREATE VIEW current_event AS SELECT * FROM event e WHERE (NOT EXISTS
-  (SELECT 1 FROM event_source s WHERE s.event_id = e.id) AND COALESCE((SELECT excised FROM input_ref WHERE pk=e.input_pk),0)=0) OR EXISTS
-  (SELECT 1 FROM event_source s WHERE s.event_id = e.id AND s.current = 1);
+-- Resolve a source per event through its primary key. Within one input the
+-- newest revision/snapshot wins; stable input ID resolves different inputs.
+CREATE VIEW current_event AS
+SELECT e.pk,e.id,e.session_pk,s.source_order AS seq,e.after_message_pk,e.kind,e.at,
+       s.input_pk,s.parser_version,
+       CASE WHEN s.source_start IS NOT NULL THEN s.chain END AS source_chain,
+       s.source_start,s.source_end,e.data
+FROM event e JOIN event_source s ON s.event_id=e.id
+AND (s.input_pk,s.chain,s.source_snapshot) = (
+  SELECT n.input_pk,n.chain,n.source_snapshot
+  FROM event_source n JOIN input_ref r ON r.pk=n.input_pk
+  WHERE n.event_id=e.id AND n.current=1 AND r.excised=0
+  ORDER BY r.id,n.chain DESC,n.source_snapshot DESC,n.source_order DESC LIMIT 1
+);
 CREATE VIEW current_link AS SELECT * FROM link l WHERE (NOT EXISTS
   (SELECT 1 FROM link_source s WHERE s.link_pk = l.pk) AND COALESCE((SELECT excised FROM input_ref WHERE pk=l.input_pk),0)=0) OR EXISTS
   (SELECT 1 FROM link_source s WHERE s.link_pk = l.pk AND s.current = 1);

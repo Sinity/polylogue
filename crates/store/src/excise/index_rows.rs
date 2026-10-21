@@ -52,7 +52,7 @@ pub(super) fn clear_for_reparse(
     let mut by_input = i.prepare(
         "SELECT DISTINCT s.pk, s.id FROM session s WHERE s.pk IN (
              SELECT p.session_pk FROM parsed p JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1
-             UNION SELECT e.session_pk FROM event e JOIN input_ref r ON r.pk = e.input_pk WHERE r.id = ?1
+             UNION SELECT e.session_pk FROM event e JOIN event_source es ON es.event_id=e.id JOIN input_ref r ON r.pk = es.input_pk WHERE r.id = ?1
              UNION SELECT m.session_pk FROM message_source ms JOIN message m ON m.pk = ms.message_pk
                    JOIN input_ref r ON r.pk = ms.input_pk WHERE r.id = ?1)",
     )?;
@@ -70,7 +70,7 @@ pub(super) fn clear_for_reparse(
         "SELECT pk, id FROM input_ref WHERE pk IN (
              SELECT input_pk FROM parsed WHERE session_pk = ?1
              UNION SELECT input_pk FROM session_record WHERE session_pk = ?1
-             UNION SELECT input_pk FROM event WHERE session_pk = ?1
+             UNION SELECT es.input_pk FROM event_source es JOIN event e ON e.id=es.event_id WHERE e.session_pk = ?1
              UNION SELECT ms.input_pk FROM message_source ms JOIN message m ON m.pk = ms.message_pk
                    WHERE m.session_pk = ?1
              UNION SELECT p.input_pk FROM process p JOIN process_session ps ON ps.process_pk = p.pk

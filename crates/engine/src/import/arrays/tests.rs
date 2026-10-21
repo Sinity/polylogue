@@ -444,11 +444,19 @@ fn watched_ai_studio_prompt_revisions_are_retained_before_chunk_parsing() {
     };
     let (mut e, _lock) = engine(&w, 8);
     for text in ["first revision", "edited second revision"] {
-        fs::write(&path, prompt(text)).unwrap();
+        let bytes = prompt(text);
+        fs::write(&path, &bytes).unwrap();
         let pass = e.converge().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         assert_eq!(texts(&w, "ai-studio:drive-id"), [text]);
         assert!(pass.bytes_stored > 0);
+        let settings = e
+            .reads
+            .reader()
+            .unwrap()
+            .events(&polylogue_model::SessionId::parse("ai-studio:drive-id").unwrap())
+            .unwrap();
+        assert_eq!(settings[0].range, Some((0, bytes.len() as u64)));
     }
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 2);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 2);
