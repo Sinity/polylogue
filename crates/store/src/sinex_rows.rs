@@ -465,7 +465,7 @@ impl Restoring {
     }
 
     /// Installs a complete selected view atomically. Payload lookup happens only
-    /// after `select`, so intentionally retired before-images are never required.
+    /// after `Catalog::finish`, so intentionally retired before-images are never required.
     /// A same-archive update must include every local excision's exact manifest;
     /// an older confirmed view cannot overwrite unpublished local removals.
     pub fn install<R: std::io::Read>(
