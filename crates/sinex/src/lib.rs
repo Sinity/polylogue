@@ -278,16 +278,13 @@ impl Sinex {
                 checked(ack.clone())?;
                 continue;
             }
-            let bytes = archive.blob(hash)?;
+            let length = archive.copy_blob_to(hash, &self.store)?;
             let expected = hashed_blobs::Hash(*hash);
-            if self.store.put(&bytes[..], 3)? != expected {
-                return Err(Error::Invalid("input blob changed during placement".into()));
-            }
             self.material(
                 frame,
                 None,
                 &expected,
-                bytes.len() as u64,
+                length,
                 format!("blob:{}", expected.hex()),
                 serde_json::json!({"archive":id}),
             )

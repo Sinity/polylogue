@@ -3,7 +3,7 @@ use super::{ExcisionPublication, RestoreUnit, invalid, revision_key};
 use crate::Result;
 use rusqlite::Connection;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, Write};
+use std::io::{BufRead, BufReader, Read, Seek};
 
 pub(super) fn install<R: Read>(
     unit: &RestoreUnit,
@@ -33,29 +33,15 @@ pub(super) fn install<R: Read>(
 
 struct Rows(File);
 impl Rows {
-    fn verified(unit: &RestoreUnit, name: &str, mut reader: impl Read) -> Result<Self> {
+    fn verified(unit: &RestoreUnit, name: &str, reader: impl Read) -> Result<Self> {
         let hash = super::super::excision::batch_hash(name)?;
         let mut file = tempfile::tempfile()?;
-        let mut actual = blake3::Hasher::new();
-        let mut length = 0;
-        let mut buffer = [0; 64 * 1024];
-        loop {
-            let n = match reader.read(&mut buffer) {
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                result => result?,
-            };
-            if n == 0 {
-                break;
-            }
-            actual.update(&buffer[..n]);
-            file.write_all(&buffer[..n])?;
-            length += n as u64;
-        }
-        if actual.finalize().as_bytes() != &hash.0 || unit.bytes.is_some_and(|n| n != length) {
-            return Err(invalid(
-                "selected unit payload failed its hash/length check",
-            ));
-        }
+        crate::blobs::copy_verified(
+            reader,
+            &mut file,
+            polylogue_model::BlobHash(hash.0),
+            unit.bytes,
+        )?;
         Ok(Self(file))
     }
 

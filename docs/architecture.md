@@ -323,6 +323,18 @@ largest descriptor, JSON row and decoded values, plus SQLite and blob-reader
 buffers and frame metadata; it does not hold every unit or batch row at once.
 A very large individual row or excision manifest still needs that much memory.
 
+Source-blob publication and excision share `blobs/copy.rs` for decoding and
+whole-content verification. Inline bodies use SQLite incremental BLOB reads;
+file bodies use the existing sequential plain reader. Publication keeps the
+verified bytes in one anonymous temporary file before placing them through the
+checked blob writer. Corrupt source bytes reach no destination blob, and a
+corrupt existing destination refuses placement while preserving the source.
+Memory holds copy and codec buffers plus frame metadata. Staging disk grows
+with one source blob, alongside the destination writer's temporary encoded
+file. This path handles plain catalog entries; encoded and sealed
+publication need their own readers. Row-batch publication still builds complete
+batches in memory.
+
 Excision records retain exact unit identities and content-addressed replacement
 batches or tombstones. Restore validates and folds all confirmed replacement
 metadata before opening payloads, then replaces the selected owner rows in one
