@@ -8,7 +8,7 @@ pub(crate) struct Revision {
     pub id: String,
 }
 impl Revision {
-    fn decode(version: String, id: String) -> Result<Self> {
+    pub(super) fn decode(version: String, id: String) -> Result<Self> {
         let version = version
             .parse()
             .map_err(|_| StoreError::Invalid("invalid excision revision metadata".into()))?;
@@ -145,6 +145,21 @@ pub(crate) fn check_snapshot(conn: &Connection) -> Result<()> {
     let applied = Revision::decode(applied_version, applied_id)?;
     let current = Revision::decode(current_version, current_id)?;
     if applied != current {
+        return Err(StoreError::ExcisionPending);
+    }
+    // The statement above pins both databases. Older read-only archives may
+    // predate the cleanup table; the daemon migrates before serving writes.
+    let has_cleanup: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM a.sqlite_master WHERE type='table' AND name='pending_vector_excision')",
+        [], |r| r.get(0),
+    )?;
+    if has_cleanup
+        && conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM a.pending_vector_excision)",
+            [],
+            |r| r.get::<_, bool>(0),
+        )?
+    {
         return Err(StoreError::ExcisionPending);
     }
     Ok(())

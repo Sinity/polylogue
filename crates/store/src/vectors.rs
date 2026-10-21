@@ -42,18 +42,35 @@ pub struct KeyStatus {
 pub struct Vectors {
     conn: Connection,
     writable: bool,
+    revision: crate::excise::recovery::Revision,
 }
 
 impl Vectors {
-    pub(crate) fn for_reader(archive: &Archive, cache_kib: i64, writable: bool) -> Result<Self> {
+    pub(crate) fn for_reader(
+        archive: &Archive,
+        cache_kib: i64,
+        writable: bool,
+        revision: crate::excise::recovery::Revision,
+    ) -> Result<Self> {
         let conn = if writable {
             open_write(&archive.embeddings_db(), crate::archive::cache::SETUP)?
         } else {
             open_read(&archive.embeddings_db())?
         };
-        conn.pragma_update(None, "cache_size", -cache_kib)?;
+        let metadata_kib = if writable { cache_kib / 2 } else { 0 };
+        conn.pragma_update(None, "cache_size", -(cache_kib - metadata_kib))?;
         conn.pragma_update(None, "mmap_size", 0)?;
-        Ok(Self { conn, writable })
+        if writable {
+            let uri = format!("file:{}?mode=ro", archive.archive_db().display());
+            conn.execute("ATTACH DATABASE ?1 AS canonical", [uri])?;
+            conn.pragma_update(Some("canonical"), "cache_size", -metadata_kib)?;
+            conn.pragma_update(Some("canonical"), "mmap_size", 0)?;
+        }
+        Ok(Self {
+            conn,
+            writable,
+            revision,
+        })
     }
 
     pub(crate) fn writable(&self) -> bool {
@@ -78,7 +95,10 @@ impl Vectors {
 
     /// Stores vectors in one transaction.
     pub fn put(&mut self, key: &str, vectors: &[Vector]) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        crate::excise::vector_cleanup::check_writer(&tx, &self.revision)?;
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT INTO embedded(text_hash, model, chunk, dims, vector, embedded_at)
@@ -106,12 +126,18 @@ impl Vectors {
 
     /// A text the provider permanently rejected, with its error as given.
     pub fn fail(&self, key: &str, text_hash: &[u8], error: &str) -> Result<()> {
-        self.conn.execute(
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        crate::excise::vector_cleanup::check_writer(&tx, &self.revision)?;
+        tx.execute(
             "INSERT INTO embed_failure(text_hash, model, error, failed_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(text_hash, model) DO UPDATE SET error = excluded.error,
                  failed_at = excluded.failed_at",
             params![text_hash, key, error, now_ms()],
         )?;
+        tx.commit()?;
         Ok(())
     }
 

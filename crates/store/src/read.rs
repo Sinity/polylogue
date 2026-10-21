@@ -321,6 +321,7 @@ impl Reader<'_> {
                 &self.pool.archive,
                 self.pool.cache_kib,
                 writable,
+                crate::excise::recovery::current(self.conn()?)?,
             )?);
         }
         Ok(std::cell::RefMut::map(vectors, |v| {

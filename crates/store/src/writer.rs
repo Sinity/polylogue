@@ -573,6 +573,7 @@ impl Inner {
         let local_store = store.primary_only();
         let embeddings = if self.embeddings_db.exists() {
             let e = open_write(&self.embeddings_db, crate::archive::cache::SETUP)?;
+            e.pragma_update(None, "synchronous", "full")?;
             e.execute_batch("BEGIN IMMEDIATE")?;
             Some(e)
         } else {
@@ -621,7 +622,11 @@ impl Inner {
                 e.execute_batch("COMMIT")?;
             }
             Ok(())
-        })();
+        })()
+        .and_then(|()| {
+            crate::fault::check("excision.after_vector_commit", &request.id)?;
+            crate::excise::vector_cleanup::clear(&self.archive, &request.id)
+        });
         if let Err(error) = committed {
             return Err(StoreError::ExcisionInterrupted(Box::new(error)));
         }

@@ -106,7 +106,17 @@ fn vector_write_upgrade_keeps_its_cache_share_and_retains_read_results() {
         .conn
         .pragma_query_value(None, "mmap_size", |r| r.get(0))
         .unwrap();
-    assert_eq!(cache, -1024);
+    assert_eq!(cache, -512);
+    let metadata_cache: i64 = vectors
+        .conn
+        .pragma_query_value(Some("canonical"), "cache_size", |r| r.get(0))
+        .unwrap();
+    let metadata_mmap: i64 = vectors
+        .conn
+        .pragma_query_value(Some("canonical"), "mmap_size", |r| r.get(0))
+        .unwrap();
+    assert_eq!(metadata_cache, -512);
+    assert_eq!(metadata_mmap, 0);
     assert_eq!(mmap, 0);
     vectors
         .put(
@@ -123,4 +133,37 @@ fn vector_write_upgrade_keeps_its_cache_share_and_retains_read_results() {
         reader.vectors().unwrap().status().unwrap().keys[0].vectors,
         1
     );
+}
+
+#[test]
+fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    let pool = crate::ReadPool::with_budget(&archive, 1, 3 * 1024).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut vectors = reader.vectors_writer().unwrap();
+    let main: i64 = vectors
+        .conn
+        .pragma_query_value(None, "cache_size", |r| r.get(0))
+        .unwrap();
+    let canonical: i64 = vectors
+        .conn
+        .pragma_query_value(Some("canonical"), "cache_size", |r| r.get(0))
+        .unwrap();
+    assert_eq!(main, -1);
+    assert_eq!(canonical, 0);
+    vectors
+        .put(
+            "synthetic",
+            &[Vector {
+                text_hash: vec![1; 32],
+                chunk: 0,
+                values: vec![1.0],
+            }],
+        )
+        .unwrap();
+    vectors
+        .fail("synthetic", &[2; 32], "synthetic failure")
+        .unwrap();
+    assert_eq!(vectors.done("synthetic").unwrap().len(), 2);
 }
