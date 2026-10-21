@@ -9,7 +9,17 @@ pub fn scan_nested(
     path: &[&str],
     item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<(Json, ScanStats), ScanError> {
-    scan_metadata(reader, path, false, item)
+    scan_metadata(reader, path, false, false, item)
+}
+
+/// A named array whose enclosing objects must have unique field names.
+/// Use this for typed wrappers; record schemas remain the caller's concern.
+pub fn scan_nested_unique(
+    reader: impl Read,
+    path: &[&str],
+    item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
+) -> Result<(Json, ScanStats), ScanError> {
+    scan_metadata(reader, path, false, true, item)
 }
 
 /// Accepts either a bare record array or the named array in a wrapper object.
@@ -19,13 +29,14 @@ pub fn scan_array_or_nested(
     path: &[&str],
     item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<(Json, ScanStats), ScanError> {
-    scan_metadata(reader, path, true, item)
+    scan_metadata(reader, path, true, false, item)
 }
 
 fn scan_metadata(
     reader: impl Read,
     path: &[&str],
     root_array: bool,
+    unique_fields: bool,
     mut item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<(Json, ScanStats), ScanError> {
     let tap = Rc::new(RefCell::new(Tap::default()));
@@ -37,6 +48,7 @@ fn scan_metadata(
     let result = Nested {
         path,
         root_array,
+        unique_fields,
         tap: &tap,
         item: &mut item,
     }
@@ -49,6 +61,7 @@ fn scan_metadata(
 struct Nested<'a, F> {
     path: &'a [&'a str],
     root_array: bool,
+    unique_fields: bool,
     tap: &'a Rc<RefCell<Tap>>,
     item: &'a mut F,
 }
@@ -69,6 +82,9 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> fo
         let mut value = serde_json::Map::new();
         let mut selected = false;
         while let Some(key) = map.next_key::<String>()? {
+            if self.unique_fields && value.contains_key(&key) {
+                return Err(A::Error::custom("duplicate export metadata field"));
+            }
             let child = if self.path.first() == Some(&key.as_str()) {
                 if selected {
                     return Err(A::Error::custom("duplicate streamed-array field"));
@@ -77,6 +93,7 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> fo
                 map.next_value_seed(Nested {
                     path: &self.path[1..],
                     root_array: false,
+                    unique_fields: self.unique_fields,
                     tap: self.tap,
                     item: self.item,
                 })?

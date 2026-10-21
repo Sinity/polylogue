@@ -1,5 +1,5 @@
 use super::*;
-use crate::parse::run_document;
+use crate::parse::Step;
 use polylogue_model::export::SessionExport;
 use polylogue_model::*;
 
@@ -48,27 +48,116 @@ fn recognizes_only_its_own_format() {
     assert!(!recognize(Path::new("x.json"), br#"[{"uuid": "1"}]"#));
 }
 
+fn steps(bytes: &[u8]) -> Vec<Step> {
+    struct NoOwners;
+    impl Owners for NoOwners {
+        fn claim(&mut self, _: &str, _: &SessionId) -> Result<SessionId, String> {
+            panic!("Polylogue export must preserve its authored message ownership")
+        }
+    }
+    let mut parser = Export::default();
+    let mut items = Vec::new();
+    parser
+        .scan(&mut &bytes[..], &mut |range, _, raw| {
+            items.push((range, raw.get().to_owned()));
+            Ok(())
+        })
+        .unwrap();
+    let mut steps = Vec::new();
+    if let Some(step) = parser.begin(bytes.len() as u64).unwrap() {
+        steps.push(step);
+    }
+    for (range, raw) in items {
+        steps.push(
+            crate::array::parse_item(
+                &mut parser,
+                &serde_json::from_str(&raw).unwrap(),
+                range,
+                &mut NoOwners,
+            )
+            .unwrap(),
+        );
+    }
+    steps
+}
+
 #[test]
-fn reads_back_the_same_ids_in_document_order() {
-    let text = doc().to_json().unwrap();
-    let step = run_document(&Export, text.as_bytes()).unwrap();
-    let ids: Vec<String> = step
-        .output
-        .messages
-        .iter()
-        .map(|m| m.message.id.to_string())
-        .collect();
-    assert_eq!(ids, ["claude-code:m1", "claude-code:m2"]);
-    assert!(step.output.messages[0].offset < step.output.messages[1].offset);
-    assert_eq!(step.output.sessions[0].id.to_string(), "claude-code:s1");
-    assert_eq!(step.output.events[0].range, None);
+fn reads_back_the_same_ids_with_exact_export_session_spans() {
+    let doc = doc();
+    let text = doc.to_json().unwrap();
+    let steps = steps(text.as_bytes());
+    let step = &steps[0];
+    assert_eq!(step.output.sessions, [doc.sessions[0].session.clone()]);
+    assert_eq!(
+        step.output
+            .messages
+            .iter()
+            .map(|m| m.message.clone())
+            .collect::<Vec<_>>(),
+        doc.sessions[0].messages
+    );
+    let start = step.output.messages[0].offset as usize;
+    let end = step.output.messages[0].end as usize;
+    assert_eq!(
+        serde_json::from_slice::<SessionExport>(&text.as_bytes()[start..end]).unwrap(),
+        doc.sessions[0]
+    );
+    assert_eq!(step.output.messages[1].offset, start as u64);
+    assert_eq!(
+        step.output.events[0].range,
+        Some((start as u64, end as u64))
+    );
+    assert_eq!(step.output.events[0].data, doc.sessions[0].events[0].data);
     assert_eq!(step.accounting.framed, 1);
 }
 
 #[test]
-fn refuses_a_newer_version_as_a_record() {
-    let text = r#"{"format":"polylogue-export","version":99,"sessions":[]}"#;
-    let step = run_document(&Export, text.as_bytes()).unwrap();
-    assert!(step.output.sessions.is_empty());
-    assert_eq!(step.accounting.framed, 1);
+fn refuses_newer_headers_and_late_invalid_sessions_without_publishing_a_prefix() {
+    let good = serde_json::to_string(&doc().sessions[0]).unwrap();
+    for text in [
+        format!("{{\"format\":\"polylogue-export\",\"sessions\":[{good}],\"version\":99}}"),
+        format!(
+            "{{\"format\":\"polylogue-export\",\"sessions\":[{good},{{\"session\":false}}],\"version\":1}}"
+        ),
+    ] {
+        let steps = steps(text.as_bytes());
+        assert!(
+            steps
+                .iter()
+                .all(|s| s.output.sessions.is_empty() && s.output.messages.is_empty())
+        );
+        assert_eq!(steps.iter().map(|s| s.accounting.framed).sum::<u64>(), 1);
+        assert_eq!(
+            steps
+                .iter()
+                .map(|s| s.accounting.refused.values().sum::<u64>())
+                .sum::<u64>(),
+            1
+        );
+    }
+}
+
+#[test]
+fn many_sessions_scan_individually_and_version_after_them_still_applies() {
+    let one = serde_json::to_string(&doc().sessions[0]).unwrap();
+    let bytes = format!(
+        "{{\"format\":\"polylogue-export\",\"sessions\":[{}],\"version\":1}}",
+        vec![one.as_str(); 100].join(",")
+    );
+    let mut parser = Export::default();
+    let mut count = 0;
+    let stats = parser
+        .scan(&mut bytes.as_bytes(), &mut |range, _, raw| {
+            count += 1;
+            assert_eq!(
+                &bytes.as_bytes()[range.start as usize..range.end as usize],
+                raw.get().as_bytes()
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count, 100);
+    assert_eq!(stats.elements, 100);
+    assert!(stats.peak_element_bytes < one.len() * 3);
+    assert!(parser.begin(bytes.len() as u64).unwrap().is_none());
 }

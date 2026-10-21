@@ -207,6 +207,16 @@ serial array driver runs with the pool inactive. A live append arriving during
 that synchronous driver waits until a subsequent discovery pass; this is not
 preemption or a latency bound.
 
+Polylogue's own export uses the same reader for `sessions`, keeping their
+physical order and authored identities. Every session is checked against the
+typed export schema during the scan; an invalid later session refuses the whole
+document before any prefix is published. Header format and version, including
+headers after sessions, apply before publication. Its typed wrapper rejects
+duplicate enclosing fields; value-based provider wrappers retain their existing
+rules. Messages and events cite the original exported-session span, replacing
+ranges that belonged to the export's former input. Memory still includes one
+whole exported session and its output, rather than all sessions in the file.
+
 The driver waits for each item's writer commit before decoding the next.
 Message order is a separate logical ordinal. Repeated event facts retain their
 latest logical source order, including across replay. Memory scales with the

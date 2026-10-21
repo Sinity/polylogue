@@ -252,3 +252,17 @@ fn optional_wrapper_frames_only_the_root_or_named_message_array() {
     assert_eq!(framed, 0);
     assert_eq!(stats.elements, 0);
 }
+
+#[test]
+fn typed_wrapper_headers_refuse_duplicates_without_changing_value_wrapper_rules() {
+    let input = br#"{"version":99,"items":[{}],"version":1}"#;
+    assert!(matches!(
+        scan_nested_unique(input.as_slice(), &["items"], |_, _| Ok(())),
+        Err(ScanError::Malformed(_))
+    ));
+    let (metadata, stats) = scan_nested(input.as_slice(), &["items"], |_, _| Ok(())).unwrap();
+    assert_eq!(metadata["version"], 1);
+    assert_eq!(stats.elements, 1);
+    let input = br#"{"version":1,"items":[{}]}"#;
+    assert!(scan_nested_unique(input.as_slice(), &["items"], |_, _| Ok(())).is_ok());
+}
