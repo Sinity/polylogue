@@ -225,6 +225,22 @@ impl Selection {
         Ok(self.catalog.find(unit)?.map(|(unit, _)| unit))
     }
 
+    pub(super) fn each_unit(&self, mut visit: impl FnMut(&Unit) -> Result<()>) -> Result<()> {
+        let mut statement = self
+            .catalog
+            .db
+            .prepare("SELECT seq,kind,key FROM selected ORDER BY seq,kind,key")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            visit(&Unit {
+                commit_seq: row.get(0)?,
+                kind: row.get(1)?,
+                key: row.get(2)?,
+            })?;
+        }
+        Ok(())
+    }
+
     pub(in crate::sinex_rows) fn each(
         &self,
         mut visit: impl FnMut(&RestoreUnit) -> Result<()>,
@@ -252,10 +268,13 @@ impl Serialize for Selection {
             .map_err(S::Error::custom)?;
         let mut rows = statement.query([]).map_err(S::Error::custom)?;
         while let Some(row) = rows.next().map_err(S::Error::custom)? {
-            let unit: RestoreUnit =
-                serde_json::from_str(&row.get::<_, String>(0).map_err(S::Error::custom)?)
-                    .map_err(S::Error::custom)?;
-            sequence.serialize_element(&unit)?;
+            // Catalog writes use RestoreUnit's canonical codec. Borrow those
+            // bytes so hashing the checkpoint does not decode large lists again.
+            let data = row.get_ref(0).map_err(S::Error::custom)?;
+            let data = data.as_str().map_err(S::Error::custom)?;
+            let unit: &serde_json::value::RawValue =
+                serde_json::from_str(data).map_err(S::Error::custom)?;
+            sequence.serialize_element(unit)?;
         }
         sequence.end()
     }
