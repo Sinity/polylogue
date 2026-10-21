@@ -55,6 +55,9 @@ impl Ctx<'_, '_> {
         let mut candidates = sessions.query(params![self.input_pk, self.chain])?;
         while let Some(row) = candidates.next()? {
             let session_pk: i64 = row.get(0)?;
+            if !affected.add("candidate", session_pk)? {
+                continue;
+            }
             if self.session_ready(session_pk)? {
                 affected.add("session", session_pk)?;
                 let mut scopes = self.tx.prepare(&format!(
@@ -234,11 +237,12 @@ impl Affected {
         Ok(Self { db, _file: file })
     }
 
-    fn add(&self, kind: &str, id: i64) -> Result<()> {
-        self.db
+    fn add(&self, kind: &str, id: i64) -> Result<bool> {
+        Ok(self
+            .db
             .prepare_cached("INSERT OR IGNORE INTO item VALUES(?1,?2)")?
-            .execute(params![kind, id])?;
-        Ok(())
+            .execute(params![kind, id])?
+            != 0)
     }
 
     fn each(&self, kind: &str, mut visit: impl FnMut(i64) -> Result<()>) -> Result<()> {
@@ -260,3 +264,6 @@ const CONTRIBUTIONS:&str="SELECT session_pk,input_pk,chain,parser_version FROM p
     UNION ALL SELECT e.session_pk,s.input_pk,s.chain,s.parser_version FROM event_source s JOIN event e ON e.id=s.event_id
     UNION ALL SELECT c.session_pk,s.input_pk,s.chain,s.parser_version FROM snapshot s JOIN snapshot_session c ON c.snapshot_pk=s.pk
     UNION ALL SELECT t.pk,s.input_pk,s.chain,s.parser_version FROM link_source s JOIN link l ON l.pk=s.link_pk JOIN session t ON t.id=l.parent_id OR t.id=l.child_id";
+
+#[cfg(test)]
+mod tests;
