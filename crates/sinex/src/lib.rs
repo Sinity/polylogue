@@ -296,6 +296,27 @@ impl Sinex {
         Ok(())
     }
 
+    async fn place_named_blobs(
+        &mut self,
+        archive: &ArchiveRows,
+        id: &str,
+        names: &[String],
+        done: &mut Published,
+    ) -> Result<()> {
+        // Preserve validation-before-placement even for an invalid late name.
+        for name in names {
+            parse_hash(name)?;
+        }
+        for names in names.chunks(500) {
+            let hashes: Vec<_> = names
+                .iter()
+                .map(|name| parse_hash(name).map(|h| h.0))
+                .collect::<Result<_>>()?;
+            self.place_blobs(archive, id, &hashes, done).await?;
+        }
+        Ok(())
+    }
+
     async fn place_batch(
         &mut self,
         id: &str,
@@ -368,12 +389,8 @@ impl Sinex {
                             "replacement length differs from its manifest".into(),
                         ));
                     }
-                    let hashes: Vec<_> = replacement
-                        .blobs
-                        .iter()
-                        .map(|name| parse_hash(name).map(|h| h.0))
-                        .collect::<Result<_>>()?;
-                    self.place_blobs(&archive, &id, &hashes, &mut done).await?;
+                    self.place_named_blobs(&archive, &id, &replacement.blobs, &mut done)
+                        .await?;
                     self.place_batch(&id, &mut bytes).await?;
                 }
                 cursor = Some(replacement.unit);
