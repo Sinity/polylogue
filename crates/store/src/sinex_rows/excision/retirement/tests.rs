@@ -1,5 +1,7 @@
 use super::*;
+use crate::archive::{cache, open_write};
 use crate::sinex_rows::{ExcisionPublication, Unit};
+use crate::{Archive, StoreError};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn replacement(key: &str, batch: Option<u8>) -> Replacement {
@@ -171,4 +173,91 @@ fn unrelated_history_keys_stay_on_disk_during_retirement() {
     let growth = peak().saturating_sub(before);
     eprintln!("6,000 historical 4KiB keys: retirement high-water growth {growth}KiB");
     assert!(growth < 16 * 1024, "retirement grew by {growth}KiB");
+}
+
+#[test]
+fn current_batch_and_source_holds_follow_latest_owner_including_tombstones() {
+    let db = source();
+    let mut old = replacement("changed", Some(1));
+    old.blobs = vec![hash(8)];
+    let mut new = replacement("changed", Some(2));
+    new.blobs = vec![hash(9)];
+    history(&db, 4, "later", vec![new]);
+    history(&db, 2, "earlier", vec![old]);
+    history(&db, 2, "old", vec![replacement("gone", Some(3))]);
+    history(&db, 3, "new", vec![replacement("gone", None)]);
+    let current = CurrentBatches::new(&db).unwrap();
+    for n in [2, 9] {
+        assert!(
+            current
+                .contains(&polylogue_model::BlobHash([n; 32]))
+                .unwrap()
+        );
+    }
+    for n in [1, 3, 8] {
+        assert!(
+            !current
+                .contains(&polylogue_model::BlobHash([n; 32]))
+                .unwrap()
+        );
+    }
+}
+
+#[test]
+fn catalog_and_current_replacement_references_refuse_cleanup_and_keep_intent() {
+    for kind in ["catalog", "batch", "source"] {
+        let dir = tempfile::tempdir().unwrap();
+        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+        let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
+        let bytes = b"synthetic retained payload";
+        let hash = store.put(bytes.as_slice(), 1).unwrap();
+        let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+        if kind == "catalog" {
+            conn.execute("INSERT INTO blob(hash,size,stored_size,place,encoding,state) VALUES (?1,?2,?3,'file','plain','present')", params![&hash.0[..],bytes.len() as i64,store.stored_size(&hash).unwrap() as i64]).unwrap();
+        } else {
+            let mut publication = ExcisionPublication {
+                version: 1,
+                replacements: vec![Replacement {
+                    unit: Unit {
+                        commit_seq: 1,
+                        kind: "note".into(),
+                        key: "kept".into(),
+                    },
+                    batch: Some(format!(
+                        "blake3:{}",
+                        if kind == "batch" {
+                            hash.hex()
+                        } else {
+                            "01".repeat(32)
+                        }
+                    )),
+                    bytes: bytes.len() as u64,
+                    rows: 1,
+                    blobs: if kind == "source" {
+                        vec![format!("blake3:{}", hash.hex())]
+                    } else {
+                        vec![]
+                    },
+                }],
+                retired_batches: vec![],
+                digest: String::new(),
+            };
+            publication.digest = publication.computed_digest().unwrap();
+            conn.execute("INSERT INTO excision(id,scope,refused_json,created_at,commit_seq) VALUES ('held','session:claude-code:removed',?1,1,2)", [serde_json::json!({"publication": publication}).to_string()]).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO pending_blob_excision VALUES (?1,'pending')",
+            [&hash.0[..]],
+        )
+        .unwrap();
+        assert!(
+            matches!(crate::excise::blob_cleanup::recover(&archive, &conn), Err(StoreError::ExcisionBlobReferenced(h)) if h.0 == hash.0),
+            "{kind}"
+        );
+        assert!(store.contains(&hash), "{kind}");
+        assert!(
+            crate::excise::blob_cleanup::pending(&conn).unwrap(),
+            "{kind}"
+        );
+    }
 }

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 mod decode;
 mod digest;
 mod retirement;
+pub(crate) use retirement::CurrentBatches;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Replacement {

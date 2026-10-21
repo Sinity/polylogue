@@ -103,3 +103,40 @@ fn excision_capture_spills_large_unit_keys_and_rollback_keeps_the_archive() {
         0
     );
 }
+
+#[test]
+fn conflicting_history_refuses_before_blob_only_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
+    let hash = store
+        .put(b"synthetic unresolved history".as_slice(), 1)
+        .unwrap();
+    let canonical = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    canonical.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('removed','session:claude-code:first',1,1)",[]).unwrap();
+    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    crate::excise::recovery::acknowledge(&canonical, &index).unwrap();
+    canonical
+        .execute(
+            "UPDATE excision SET scope='session:claude-code:other' WHERE id='removed'",
+            [],
+        )
+        .unwrap();
+    canonical
+        .execute(
+            "INSERT INTO pending_blob_excision VALUES (?1,'pending')",
+            [&hash.0[..]],
+        )
+        .unwrap();
+    assert!(!crate::excise::vector_cleanup::pending(&canonical).unwrap());
+    drop(index);
+    drop(canonical);
+    drop(lock);
+    assert!(matches!(
+        Archive::open_or_create(dir.path()),
+        Err(StoreError::ExcisionConflict { .. })
+    ));
+    assert!(store.contains(&hash));
+    let canonical = open_read(&archive.archive_db()).unwrap();
+    assert!(crate::excise::blob_cleanup::pending(&canonical).unwrap());
+}

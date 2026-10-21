@@ -124,12 +124,16 @@ impl Archive {
             schema::create_embeddings(&e)?;
         }
         drop(e);
-        if crate::excise::vector_cleanup::pending(&a)? && archive.index_db().exists() {
+        if (crate::excise::vector_cleanup::pending(&a)?
+            || crate::excise::blob_cleanup::pending(&a)?)
+            && archive.index_db().exists()
+        {
             // Reconcile competing removal histories before deleting paid data.
             let index = open_read(&archive.index_db())?;
             validate_index_excision(&archive, &index)?;
         }
         crate::excise::vector_cleanup::recover(&archive, &mut a)?;
+        crate::excise::blob_cleanup::recover(&archive, &a)?;
         archive.prepare_index()?;
         Ok((archive, ArchiveLock { _file: file }))
     }

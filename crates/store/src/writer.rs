@@ -194,6 +194,8 @@ impl Writer {
         let archive_conn = crate::archive::open_archive_writer(archive)?;
         if crate::excise::recovery::current(&archive_conn)?
             != crate::excise::recovery::current(&index)?
+            || crate::excise::vector_cleanup::pending(&archive_conn)?
+            || crate::excise::blob_cleanup::pending(&archive_conn)?
         {
             return Err(StoreError::ExcisionPending);
         }
@@ -205,7 +207,7 @@ impl Writer {
             unsynced: empty,
             deferred_indexes,
             search: Search::start(archive.index_db(), !empty)?,
-            embeddings_db: archive.embeddings_db(),
+            location: archive.clone(),
             refused,
         };
         // Senders block once a few batches wait. The writer is the slowest
@@ -364,7 +366,7 @@ struct Inner {
     /// The search thread ([`search_thread`]): woken after each commit, and
     /// allowed to write once the index is out of a first build.
     search: Search,
-    embeddings_db: std::path::PathBuf,
+    location: Archive,
     /// Sessions and messages excised: their rows are never written again.
     refused: crate::excise::Refused,
 }
@@ -570,9 +572,8 @@ impl Inner {
         if !request.dry_run {
             self.settle()?;
         }
-        let local_store = store.primary_only();
-        let embeddings = if self.embeddings_db.exists() {
-            let e = open_write(&self.embeddings_db, crate::archive::cache::SETUP)?;
+        let embeddings = if self.location.embeddings_db().exists() {
+            let e = open_write(&self.location.embeddings_db(), crate::archive::cache::SETUP)?;
             e.pragma_update(None, "synchronous", "full")?;
             e.execute_batch("BEGIN IMMEDIATE")?;
             Some(e)
@@ -593,7 +594,7 @@ impl Inner {
             seq,
             counter,
         };
-        let (done, files) = match crate::excise::apply(&txs, request) {
+        let done = match crate::excise::apply(&txs, request) {
             Ok(r) => r,
             Err(e) => {
                 if let Some(e) = &embeddings {
@@ -625,22 +626,14 @@ impl Inner {
         })()
         .and_then(|()| {
             crate::fault::check("excision.after_vector_commit", &request.id)?;
-            crate::excise::vector_cleanup::clear(&self.archive, &request.id)
+            crate::excise::vector_cleanup::clear(&self.archive, &request.id)?;
+            crate::excise::blob_cleanup::recover(&self.location, &self.archive)
         });
         if let Err(error) = committed {
             return Err(StoreError::ExcisionInterrupted(Box::new(error)));
         }
         self.refused.sessions.extend(done.sessions.iter().cloned());
         self.refused.messages.extend(refused.messages);
-        for hash in files {
-            match local_store.delete(&hashed_blobs::Hash(hash.0)) {
-                Ok(()) | Err(hashed_blobs::Error::Missing(_)) => {}
-                Err(e) => self
-                    .report
-                    .errors
-                    .push(format!("excision: delete local blob {hash}: {e}")),
-            }
-        }
         Ok(done)
     }
 
