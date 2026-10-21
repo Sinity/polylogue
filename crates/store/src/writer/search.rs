@@ -78,12 +78,9 @@ pub(super) fn search_thread(
             }
         }
         if let Some(c) = &conn
-            && let Err(e) = crate::text_rows::index_pending(c, SEARCH_BATCH)
+            && let Err(e) = crate::text_rows::index_pending(c)
         {
             eprintln!("polylogue: search thread: {e}");
         }
     }
 }
-
-/// Search entries written per transaction by the search thread.
-pub(super) const SEARCH_BATCH: i64 = 2_000;
