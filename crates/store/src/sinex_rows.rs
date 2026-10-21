@@ -375,6 +375,9 @@ pub fn hex(bytes: &[u8]) -> String {
 }
 
 pub fn unhex(s: &str) -> crate::Result<Vec<u8>> {
+    if !s.is_ascii() {
+        return Err(crate::StoreError::Invalid("non-ASCII hex".into()));
+    }
     if !s.len().is_multiple_of(2) {
         return Err(crate::StoreError::Invalid(format!("odd-length hex {s}")));
     }

@@ -36,6 +36,25 @@ fn a_unit_round_trips_and_restoring_it_twice_changes_nothing() {
 }
 
 #[test]
+fn malformed_blob_hex_returns_an_error_instead_of_panicking() {
+    for value in ["€x", "a€", "g0", "0"] {
+        let b = archive();
+        let line = serde_json::to_vec(&json!({
+            "table": "note",
+            "row": {"id": "n1", "body": {"hex": value}}
+        }))
+        .unwrap();
+        assert!(apply(&b, &line).is_err(), "accepted {value:?}");
+        assert_eq!(
+            b.query_row("SELECT COUNT(*) FROM note", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    assert_eq!(unhex("00fFaA").unwrap(), [0, 255, 170]);
+}
+
+#[test]
 fn a_row_for_an_unknown_table_is_refused() {
     let b = archive();
     let line = br#"{"table":"sqlite_master","row":{"name":"x"}}"#;
