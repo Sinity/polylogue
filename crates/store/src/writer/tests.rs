@@ -898,3 +898,5 @@ mod event_sources;
 mod parser_versions;
 
 mod reparse;
+
+mod metadata;
