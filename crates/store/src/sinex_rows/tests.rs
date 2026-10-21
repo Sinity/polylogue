@@ -27,8 +27,8 @@ fn a_unit_round_trips_and_restoring_it_twice_changes_nothing() {
     let batch = read(&a, &unit).unwrap();
     assert_eq!(batch.rows, 2);
     let b = archive();
-    assert_eq!(apply(&b, &batch.lines).unwrap(), 2);
-    assert_eq!(apply(&b, &batch.lines).unwrap(), 0);
+    assert_eq!(apply(&b, &batch.contents()).unwrap(), 2);
+    assert_eq!(apply(&b, &batch.contents()).unwrap(), 0);
     let body: Vec<u8> = b
         .query_row("SELECT body FROM note WHERE id = 'n1'", [], |r| r.get(0))
         .unwrap();
@@ -92,7 +92,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         },
     )
     .unwrap();
-    apply(&restored, &first.lines).unwrap();
+    apply(&restored, &first.contents()).unwrap();
     drop(source);
     let writer = crate::Writer::start(&archive).unwrap();
     writer
@@ -120,7 +120,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
             let batch = publisher.read(unit).unwrap();
             RestoreUnit {
                 unit: unit.clone(),
-                batch: Some(format!("blake3:{}", blake3::hash(&batch.lines))),
+                batch: Some(format!("blake3:{}", blake3::hash(&batch.contents()))),
                 bytes: None,
                 rows: batch.rows,
                 blobs: vec![],
@@ -135,9 +135,9 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         .map(|unit| {
             unit.batch.as_ref().map(|name| {
                 if unit.unit.kind == "note" {
-                    publisher.replacement(name).unwrap()
+                    file_bytes(publisher.replacement(name).unwrap())
                 } else {
-                    publisher.read(&unit.unit).unwrap().lines
+                    publisher.read(&unit.unit).unwrap().contents()
                 }
             })
         })
@@ -294,7 +294,7 @@ fn excising_first_or_middle_units_keeps_other_unit_positions_stable() {
         crate::schema::create_archive(&restored).unwrap();
         restored.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         for unit in &before {
-            apply(&restored, &read(&source, unit).unwrap().lines).unwrap();
+            apply(&restored, &read(&source, unit).unwrap().contents()).unwrap();
         }
         let writer = crate::Writer::start(&archive).unwrap();
         writer
@@ -329,7 +329,7 @@ fn excising_first_or_middle_units_keeps_other_unit_positions_stable() {
                     batch: if batch.rows == 0 {
                         None
                     } else {
-                        Some(format!("blake3:{}", blake3::hash(&batch.lines)))
+                        Some(format!("blake3:{}", blake3::hash(&batch.contents())))
                     },
                     bytes: None,
                     rows: batch.rows,
@@ -342,7 +342,7 @@ fn excising_first_or_middle_units_keeps_other_unit_positions_stable() {
         restore::install(&mut restored, &selected, None, |u| {
             Ok(u.batch
                 .as_ref()
-                .map(|_| std::io::Cursor::new(read(&source, &u.unit).unwrap().lines)))
+                .map(|_| std::io::Cursor::new(read(&source, &u.unit).unwrap().contents())))
         })
         .unwrap();
         let remaining: Vec<String> = restored
@@ -452,7 +452,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     let batch = read(&source, &unit).unwrap();
     let selected = select(&[RestoreUnit {
         unit,
-        batch: Some(format!("blake3:{}", blake3::hash(&batch.lines))),
+        batch: Some(format!("blake3:{}", blake3::hash(&batch.contents()))),
         bytes: None,
         rows: batch.rows,
         blobs: vec![],
@@ -462,7 +462,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     let called = std::cell::Cell::new(false);
     let error = restore::install(&mut target, &selected, Some("source-archive"), |_| {
         called.set(true);
-        Ok(Some(std::io::Cursor::new(batch.lines.clone())))
+        Ok(Some(std::io::Cursor::new(batch.contents())))
     })
     .unwrap_err();
     assert!(error.to_string().contains("nonempty different archive"));
@@ -498,7 +498,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     crate::schema::create_archive(&empty).unwrap();
     assert_eq!(
         restore::install(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
-            std::io::Cursor::new(batch.lines.clone())
+            std::io::Cursor::new(batch.contents())
         )))
         .unwrap(),
         1
@@ -506,7 +506,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     empty.execute("INSERT INTO client_request(id,content_hash,created_at) VALUES ('local-request',x'0304',2)",[]).unwrap();
     assert_eq!(
         restore::install(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
-            std::io::Cursor::new(batch.lines.clone())
+            std::io::Cursor::new(batch.contents())
         )))
         .unwrap(),
         0
@@ -541,7 +541,7 @@ fn pending_batch_placement_and_retirement_never_use_an_external_read_root() {
         key: "note1".into(),
     };
     let expected = read(&conn, &unit).unwrap();
-    let hash = remote.put(expected.lines.as_slice(), 3).unwrap();
+    let hash = remote.put(expected.contents().as_slice(), 3).unwrap();
     conn.execute(
         "UPDATE note SET value='before secret after' WHERE id='note1'",
         [],
@@ -590,7 +590,7 @@ fn pending_batch_placement_and_retirement_never_use_an_external_read_root() {
     );
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut remote.read(&hash).unwrap(), &mut bytes).unwrap();
-    assert_eq!(bytes, expected.lines);
+    assert_eq!(bytes, expected.contents());
 }
 
 fn stale_catalog_cannot_restore_local_excised_text(add_remote_unit: bool) {
@@ -618,13 +618,13 @@ fn stale_catalog_cannot_restore_local_excised_text(add_remote_unit: bool) {
     let original = read(&conn, &unit).unwrap();
     let mut catalog = vec![RestoreUnit {
         unit,
-        batch: Some(format!("blake3:{}", blake3::hash(&original.lines))),
+        batch: Some(format!("blake3:{}", blake3::hash(&original.contents()))),
         bytes: None,
         rows: original.rows,
         blobs: vec![],
         excision: None,
     }];
-    let mut bodies = vec![original.lines];
+    let mut bodies = vec![original.contents()];
     if add_remote_unit {
         let remote = Connection::open_in_memory().unwrap();
         crate::schema::create_archive(&remote).unwrap();
@@ -637,13 +637,13 @@ fn stale_catalog_cannot_restore_local_excised_text(add_remote_unit: bool) {
         let batch = read(&remote, &unit).unwrap();
         catalog.push(RestoreUnit {
             unit,
-            batch: Some(format!("blake3:{}", blake3::hash(&batch.lines))),
+            batch: Some(format!("blake3:{}", blake3::hash(&batch.contents()))),
             bytes: None,
             rows: batch.rows,
             blobs: vec![],
             excision: None,
         });
-        bodies.push(batch.lines);
+        bodies.push(batch.contents());
     }
     let writer = crate::Writer::start(&archive).unwrap();
     writer
@@ -717,3 +717,12 @@ fn selected_units(selection: &Selection) -> Vec<RestoreUnit> {
 }
 
 mod blob_placement;
+
+mod batch_streams;
+
+fn file_bytes(mut file: std::fs::File) -> Vec<u8> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+    bytes
+}

@@ -117,11 +117,13 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
         kind: "note".into(),
         key: "note1".into(),
     };
-    let old_batch = polylogue_store::sinex_rows::Published::open(&a)
+    let mut old_batch = polylogue_store::sinex_rows::Published::open(&a)
         .unwrap()
         .read(&note_unit)
         .unwrap();
-    let old_hash = hashed_blobs::Hash(*blake3::hash(&old_batch.lines).as_bytes());
+    let mut old_digest = blake3::Hasher::new();
+    std::io::copy(&mut old_batch.file, &mut old_digest).unwrap();
+    let old_hash = hashed_blobs::Hash(*old_digest.finalize().as_bytes());
 
     // 2. A Sinex: PostgreSQL with its schema, NATS, sinexd.
     let pg = devkit::pg::Server::start(&devkit::pg::ClusterOptions {
@@ -358,7 +360,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     for replacement in &manifest.replacements {
         if let Some(hash) = &replacement.batch {
             sinex
-                .place_batch(&id, &published.replacement(hash).unwrap())
+                .place_batch(&id, &mut published.replacement(hash).unwrap())
                 .await
                 .unwrap();
         }

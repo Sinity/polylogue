@@ -332,8 +332,21 @@ corrupt existing destination refuses placement while preserving the source.
 Memory holds copy and codec buffers plus frame metadata. Staging disk grows
 with one source blob, alongside the destination writer's temporary encoded
 file. This path handles plain catalog entries; encoded and sealed
-publication need their own readers. Row-batch publication still builds complete
-batches in memory.
+publication need their own readers.
+
+`sinex_rows/batch.rs` writes row batches to buffered anonymous JSONL files.
+It holds one row's decoded columns at a time and preserves their SQL values.
+The typed row envelope and sorted column names give the same bytes with or
+without transport features. Stored replacement batches retain their original
+bytes and hashes. Placement returns the material ID and hash from one write,
+so constructing a row event does not compress the same batch twice.
+
+A publication pass keeps one SQLite read transaction across its inventory,
+replacement and row queries. Later source commits appear in the next pass;
+holding this view can retain WAL pages until the pass ends. Physical blob
+retirement can still make referenced files unavailable, which verified reads
+refuse. Staging disk scales with the largest row batch. The publisher's unit,
+acknowledgment and replacement catalogs still grow in memory with the archive.
 
 Excision records retain exact unit identities and content-addressed replacement
 batches or tombstones. Restore validates and folds all confirmed replacement
