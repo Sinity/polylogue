@@ -120,7 +120,10 @@ these readers together. Each Reader gets an equal share, split between the
 main index, attached archive and optional embeddings caches (rounded down to
 KiB); all three have mmap disabled. A lifetime-bound vector guard retains at
 most one auxiliary connection per Reader, including embedding builds. Upgrading
-that connection closes the old one before opening another. The engine leaves
+that connection closes the old one before opening another. Writable vector
+connections attach a read-only archive for fresh excision checks; its cache
+and the vectors cache share that same auxiliary allocation, with mmap disabled.
+The engine leaves
 its optional embeddings share unused. Workers must be positive and the budget
 must provide at least 1 KiB per database per slot. This is SQLite's suggested
 page-cache target, not a hard process memory limit: query work space,
@@ -444,6 +447,22 @@ still grow with that operation. `sinex_rows/excision/digest.rs` writes their
 sorted digest encoding directly into BLAKE3 through a fixed buffer, without
 building another JSON tree or a serialized manifest buffer. Existing digest
 bytes are unchanged.
+
+Excision records exact removed text hashes in `archive.db`'s
+`pending_vector_excision` table before committing. Embeddings and recorded
+provider failures are deleted by those hashes, then committed with full sync
+before the pending rows are cleared. Startup repeats pending deletions before
+preparing the index. A failure after either commit can therefore retry the
+same cleanup without discarding unrelated purchased vectors. Fresh reads refuse
+while cleanup remains pending, even when archive and index revisions agree.
+
+Every vector insert or provider-failure write takes the embeddings write lock,
+then checks the current archive excision revision against its admitted reader.
+Excision takes that lock first too. A held provider request spanning an excision
+must obtain a fresh reader before writing. Dry runs preserve the revision.
+This local queue covers newly recorded interrupted operations; it cannot infer
+missing hashes from older excisions or detect an independently restored old
+embeddings file after cleanup was cleared. It is not published as a Sinex unit.
 
 Excision records retain exact unit identities and content-addressed replacement
 batches or tombstones. Restore validates and folds all confirmed replacement

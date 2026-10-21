@@ -148,3 +148,69 @@ fn older_or_conflicting_excision_authority_is_not_rebuilt_away() {
         ));
     }
 }
+
+#[test]
+fn an_embedding_build_cannot_write_across_an_excision_but_a_fresh_build_can() {
+    use polylogue_store::vectors::Vector;
+    let w = ClaudeHome::new();
+    w.append(
+        "victim.jsonl",
+        &user("v1", "victim", "removed synthetic text"),
+    );
+    let (mut e, _lock) = w.engine(64 << 20);
+    assert!(e.converge().unwrap().errors.is_empty());
+    let pool = w.reads();
+    let reader = pool.reader().unwrap();
+    let text = reader.prose_texts(0, 10, None).unwrap().remove(0);
+    let mut held = reader.vectors_writer().unwrap();
+    let vector = Vector {
+        text_hash: text.hash.clone(),
+        chunk: 0,
+        values: vec![1.0],
+    };
+    held.put("synthetic", std::slice::from_ref(&vector))
+        .unwrap();
+    let request = |dry_run| ExciseRequest {
+        id: "remove-vectors".into(),
+        scope: ExciseScope::Session(SessionId::parse("claude-code:victim").unwrap()),
+        reason: None,
+        dry_run,
+    };
+    e.excise(request(true)).unwrap();
+    held.put("synthetic", std::slice::from_ref(&vector))
+        .unwrap();
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM a.pending_vector_excision"),
+        0
+    );
+    e.excise(request(false)).unwrap();
+    assert!(matches!(
+        held.put("synthetic", &[vector]),
+        Err(polylogue_store::StoreError::ExcisionPending)
+    ));
+    assert!(matches!(
+        held.fail("synthetic", &text.hash, "late failure"),
+        Err(polylogue_store::StoreError::ExcisionPending)
+    ));
+    let fresh = pool.reader().unwrap();
+    let mut vectors = fresh.vectors_writer().unwrap();
+    assert!(vectors.done("synthetic").unwrap().is_empty());
+    vectors
+        .put(
+            "synthetic",
+            &[Vector {
+                text_hash: vec![7; 32],
+                chunk: 0,
+                values: vec![1.0],
+            }],
+        )
+        .unwrap();
+    vectors
+        .fail("synthetic", &[8; 32], "fresh failure")
+        .unwrap();
+    assert_eq!(vectors.done("synthetic").unwrap().len(), 2);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM a.pending_vector_excision"),
+        0
+    );
+}

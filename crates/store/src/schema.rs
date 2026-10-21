@@ -17,8 +17,10 @@ pub const INDEX_VERSION: u32 = 25;
 
 /// Migrations for `archive.db`, applied in order after the base schema.
 /// Each is additive; an archive at a higher number than this list is refused.
-pub const ARCHIVE_MIGRATIONS: &[&str] =
-    &[include_str!("schema/migrations/002-excision-revision.sql")];
+pub const ARCHIVE_MIGRATIONS: &[&str] = &[
+    include_str!("schema/migrations/002-excision-revision.sql"),
+    include_str!("schema/migrations/003-vector-excision.sql"),
+];
 
 /// The `user_version` of a database: 0 for an empty file.
 pub fn version(conn: &Connection) -> Result<u32> {

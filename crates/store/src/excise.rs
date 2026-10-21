@@ -38,6 +38,7 @@ pub(crate) mod recovery;
 mod stored_bytes;
 mod stored_text;
 mod text_matches;
+pub(crate) mod vector_cleanup;
 
 use index_rows::*;
 use stored_bytes::*;
@@ -526,6 +527,16 @@ impl Plan {
                 {
                     delete_files.push(BlobHash(arr));
                 }
+            }
+        }
+
+        if !req.dry_run {
+            for hash in &removed_texts {
+                t.archive.execute(
+                    "INSERT INTO pending_vector_excision(text_hash,excision_id) VALUES (?1,?2)
+                     ON CONFLICT(text_hash) DO UPDATE SET excision_id=excluded.excision_id",
+                    params![hash, req.id],
+                )?;
             }
         }
 
