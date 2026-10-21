@@ -452,7 +452,9 @@ Excision records exact removed text hashes in `archive.db`'s
 `pending_vector_excision` table before committing. Embeddings and recorded
 provider failures are deleted by those hashes, then committed with full sync
 before the pending rows are cleared. Startup repeats pending deletions before
-preparing the index. A failure after either commit can therefore retry the
+preparing the index. It validates existing index removal rules before cleanup;
+conflicting archive history refuses before deleting purchased vectors.
+A failure after either commit can therefore retry the
 same cleanup without discarding unrelated purchased vectors. Fresh reads refuse
 while cleanup remains pending, even when archive and index revisions agree.
 
