@@ -106,6 +106,14 @@ These counters do not measure the same work, and thread-seconds cannot be added
 to obtain wall time. Load is sampled throughout the outer command, including
 lock waits; reports show peaks, unknown readings and the largest sampling gap.
 Passing load checks screens measured contention, not timing reliability.
+The runner refuses ingestion errors, unreadable roots, missing required counters and an initial
+build with no message writes. Incremental measurements can report zero new
+messages. Missing child I/O or peak-memory readings remain unknown; a requested
+memory limit requires an available peak measurement. First-build wall time
+includes setup and writer shutdown, with setup and ingestion reported
+separately. I/O deltas exclude corpus generation; peak memory covers the whole
+child process. Logical bytes read and newly stored are reported separately from
+physical I/O. Older records used a narrower ingestion interval.
 
 The full-corpus estimate explicitly assumes linear time per input byte and is
 uncalibrated. Missing times or scale leave it unknown. `bench validate` compares

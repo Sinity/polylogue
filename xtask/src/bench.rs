@@ -320,7 +320,12 @@ fn first_build_binary() -> Result<PathBuf, String> {
 
 /// Runs `first_build` under the real-data lock (`flock -o`: the lock is not
 /// inherited by anything the run starts) and returns its JSON line.
-fn first_build(binary: &Path, home: &Path, out: &Path) -> Result<Value, String> {
+fn first_build(
+    binary: &Path,
+    home: &Path,
+    out: &Path,
+    messages_required: bool,
+) -> Result<Value, String> {
     // AgentCTL admits the outer benchmark job; the lock excludes other
     // benchmarks over real data without queueing nested work.
     let output = Command::new("flock")
@@ -339,11 +344,47 @@ fn first_build(binary: &Path, home: &Path, out: &Path) -> Result<Value, String> 
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    String::from_utf8_lossy(&output.stdout)
+    first_build_result(&String::from_utf8_lossy(&output.stdout), messages_required)
+}
+
+fn first_build_result(stdout: &str, messages_required: bool) -> Result<Value, String> {
+    let result = stdout
         .lines()
         .rev()
-        .find_map(|l| serde_json::from_str::<Value>(l).ok())
-        .ok_or_else(|| "first_build printed no result".into())
+        .find_map(|line| serde_json::from_str::<Value>(line).ok())
+        .ok_or_else(|| "first_build printed no result".to_owned())?;
+    let errors = result["errors"]
+        .as_u64()
+        .ok_or("first_build omitted its ingestion error count")?;
+    if errors != 0 {
+        return Err(format!(
+            "first_build reported {errors} ingestion errors: {}",
+            result["first_errors"]
+        ));
+    }
+    let unreadable = result["unreadable_root_count"]
+        .as_u64()
+        .ok_or("first_build omitted its unreadable-root count")?;
+    if unreadable != 0 {
+        return Err(format!(
+            "first_build could not read {unreadable} source roots"
+        ));
+    }
+    for field in ["input_mb", "seconds"] {
+        if !result[field]
+            .as_f64()
+            .is_some_and(|n| n.is_finite() && n > 0.0)
+        {
+            return Err(format!("first_build has no positive {field} measurement"));
+        }
+    }
+    let messages = result["messages_written"]
+        .as_u64()
+        .ok_or("first_build omitted its message write count")?;
+    if messages_required && messages == 0 {
+        return Err("first_build wrote no messages".into());
+    }
+    Ok(result)
 }
 
 fn stages_of(result: &Value) -> BTreeMap<String, f64> {
@@ -413,7 +454,7 @@ fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
     }
     let binary = first_build_binary()?;
     let load = LoadMonitor::start()?;
-    let result = first_build(&binary, &sample_home, &out)?;
+    let result = first_build(&binary, &sample_home, &out, true)?;
     let load = load.finish()?;
     let mut metrics = result.clone();
     let estimate = (target == Target::Sample).then(|| {
@@ -450,7 +491,7 @@ fn run(target: Target, storage: &str, incremental: bool) -> Result<(), String> {
             .grow(&sample_home)
             .map_err(|e| format!("append: {e}"))?;
         let load = LoadMonitor::start()?;
-        let result = first_build(&binary, &sample_home, &out)?;
+        let result = first_build(&binary, &sample_home, &out, false)?;
         let load = load.finish()?;
         let seconds = result["seconds"]
             .as_f64()
