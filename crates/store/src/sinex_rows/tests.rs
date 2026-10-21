@@ -136,6 +136,20 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         .unwrap(),
         0
     );
+    let fingerprint: String = restored
+        .query_row(
+            "SELECT value FROM meta WHERE key='sinex_restored_view'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        fingerprint,
+        blake3::hash(&serde_json::to_vec(&(None::<&str>, &selected)).unwrap())
+            .to_hex()
+            .to_string(),
+        "restore checkpoints keep their existing serialized identity"
+    );
     let mut fresh = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&fresh).unwrap();
     restore::install(&mut fresh, &selected, None, |u| {
