@@ -13,7 +13,7 @@
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
-use crate::export::{ExportParser, ItemSink, Owners, ScanError, ScanStats};
+use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{InlineBlob, MessageRow, Output, Parse};
 use crate::{Disposition, Records};
@@ -183,7 +183,7 @@ impl ExportParser for AiStudio {
         self.state = PromptState::default();
         let (metadata, stats) =
             crate::export::scan_nested(reader, &["chunkedPrompt", "chunks"], |range, raw| {
-                item.push(range, Vec::new(), None, raw)
+                item.push(range, Vec::new(), None, raw.get().as_bytes())
             })?;
         self.state.metadata = Some(metadata);
         Ok(stats)
@@ -192,7 +192,7 @@ impl ExportParser for AiStudio {
     fn begin(
         &mut self,
         length: u64,
-        _first: Option<&Json>,
+        _first: Option<&[u8]>,
     ) -> Result<Option<crate::parse::Step>, String> {
         let doc = self
             .state
@@ -247,10 +247,12 @@ impl ExportParser for AiStudio {
 
     fn item(
         &mut self,
-        chunk: &Json,
+        bytes: &[u8],
         sink: &mut Sink<'_>,
-        _: &mut dyn Owners,
+        _: &mut dyn ExportState,
     ) -> Result<(), String> {
+        let chunk: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let chunk = &chunk;
         let sid = session_id(ORIGIN, &self.native).ok_or("unusable file name")?;
         let i = self.state.position;
         self.state.position += 1;
@@ -647,7 +649,7 @@ impl ExportParser for Listing {
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         let (metadata, stats) = crate::export::scan_nested(reader, &["files"], |range, raw| {
-            item.push(range, Vec::new(), None, raw)
+            item.push(range, Vec::new(), None, raw.get().as_bytes())
         })?;
         self.files_array = metadata.get("files").is_some_and(Json::is_array);
         Ok(stats)
@@ -655,7 +657,7 @@ impl ExportParser for Listing {
     fn begin(
         &mut self,
         length: u64,
-        _first: Option<&Json>,
+        _first: Option<&[u8]>,
     ) -> Result<Option<crate::parse::Step>, String> {
         if self.files_array {
             return Ok(None);
@@ -670,7 +672,14 @@ impl ExportParser for Listing {
             snapshot: None,
         }))
     }
-    fn item(&mut self, f: &Json, sink: &mut Sink<'_>, _: &mut dyn Owners) -> Result<(), String> {
+    fn item(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut Sink<'_>,
+        _: &mut dyn ExportState,
+    ) -> Result<(), String> {
+        let f: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let f = &f;
         sink.records.fields("file", f, LISTING_FIELDS);
         let Some(sid) = str_of(f, "id").and_then(|id| session_id(ORIGIN, id)) else {
             sink.records.record("file", &Disposition::refused("no id"));

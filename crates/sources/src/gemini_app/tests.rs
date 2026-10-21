@@ -1,5 +1,4 @@
 use super::*;
-use crate::parse::run_document;
 
 fn cell(body: &str, app: Option<&str>) -> String {
     let caption = match app {
@@ -33,7 +32,11 @@ fn prompts_group_into_their_conversation_oldest_first() {
             None
         ),
     );
-    let step = run_document(&GeminiApp, html.as_bytes()).unwrap();
+    let step = crate::export::fixture::parse(
+        &mut open(Path::new("MyActivity.html")).unwrap(),
+        html.as_bytes(),
+    )
+    .unwrap();
     let msgs: Vec<&Message> = step.output.messages.iter().map(|r| &r.message).collect();
     assert_eq!(msgs.len(), 4);
     assert_eq!(msgs[0].text(), "first question");
@@ -68,4 +71,60 @@ fn times_parse_and_unknown_zones_stay_unknown() {
         Path::new("/t.zip!/Takeout/My Activity/Gemini Apps/MyActivity.html"),
         b"<html>"
     ));
+}
+
+#[test]
+fn malformed_civil_dates_stay_unknown_without_panics() {
+    for text in [
+        "Feb 31, 2026, 12:00:00 AM UTC",
+        "Jan 0, 2026, 12:00:00 AM UTC",
+        "Jan 1, 9223372036854775807, 12:00:00 AM UTC",
+        "Jan 1, -9223372036854775808, 12:00:00 AM UTC",
+        "Jan 1, 2026, 9223372036854775807:00:00 PM UTC",
+        "Jan 1, 2026, 0:00:00 AM UTC",
+        "Jan 1, 2026, 12:60:00 AM UTC",
+    ] {
+        assert!(
+            matches!(std::panic::catch_unwind(|| parse_time(text)), Ok(None)),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn unknown_and_equal_times_keep_stable_order_and_conversation_links() {
+    let html = format!(
+        "<html>{}{}{}{}</html>",
+        cell(
+            "Prompted&nbsp;known first<br>Jan 1, 2026, 12:00:00 AM UTC<br>reply",
+            Some("a")
+        ),
+        cell(
+            "Prompted&nbsp;unknown<br>uncertain zone<br>reply",
+            Some("unknown")
+        ),
+        cell(
+            "Prompted&nbsp;known second<br>Jan 1, 2026, 12:00:00 AM UTC<br>reply",
+            Some("b")
+        ),
+        format_args!("{CELL}\">no body</div>")
+    );
+    let step = crate::export::fixture::parse(
+        &mut open(Path::new("MyActivity.html")).unwrap(),
+        html.as_bytes(),
+    )
+    .unwrap();
+    let prompts = step
+        .output
+        .messages
+        .iter()
+        .filter(|r| r.message.role == Role::User)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        prompts.iter().map(|r| r.message.text()).collect::<Vec<_>>(),
+        ["unknown", "known first", "known second"]
+    );
+    assert!(prompts[0].message.at.is_none());
+    assert_eq!(step.accounting.framed, 4);
+    assert_eq!(step.accounting.refused.values().sum::<u64>(), 1);
 }

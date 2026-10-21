@@ -27,7 +27,12 @@ fn document(
             }
         };
         let key = order_key(&value);
-        sink.push(range.start + offset..range.end + offset, key, None, raw)
+        sink.push(
+            range.start + offset..range.end + offset,
+            key,
+            None,
+            raw.get().as_bytes(),
+        )
     });
     if let Some(error) = invalid {
         Err(ScanError::Malformed(error))

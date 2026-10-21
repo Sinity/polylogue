@@ -171,9 +171,9 @@ fn array_delivery_waits_for_the_previous_conversations_commit() {
         }
         fn item(
             &mut self,
-            _: &polylogue_model::Json,
+            _: &[u8],
             _: &mut polylogue_sources::document::Sink<'_>,
-            _: &mut dyn Owners,
+            _: &mut dyn ExportState,
         ) -> Result<(), String> {
             self.0.send(()).unwrap();
             Ok(())
@@ -352,9 +352,9 @@ fn a_live_append_during_bulk_array_processing_is_served_by_the_next_pass() {
         }
         fn item(
             &mut self,
-            value: &polylogue_model::Json,
+            value: &[u8],
             sink: &mut polylogue_sources::document::Sink<'_>,
-            owners: &mut dyn Owners,
+            owners: &mut dyn ExportState,
         ) -> Result<(), String> {
             if self.entered.send(()).is_ok() {
                 self.resume.recv().unwrap();

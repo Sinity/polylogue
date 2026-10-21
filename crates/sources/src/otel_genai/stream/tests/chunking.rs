@@ -12,9 +12,10 @@ impl ItemSink for Records {
         range: Range<u64>,
         key: Vec<u8>,
         _: Option<&str>,
-        raw: &serde_json::value::RawValue,
+        raw: &[u8],
     ) -> Result<(), String> {
-        self.items.push((range, key, raw.get().to_owned()));
+        self.items
+            .push((range, key, String::from_utf8(raw.to_vec()).unwrap()));
         Ok(())
     }
     fn begin(&mut self) -> Result<(), String> {

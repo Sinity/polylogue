@@ -1,6 +1,6 @@
 //! Private, operation-scoped external ordering and ownership for export items.
 use crate::{Result, StoreError};
-use polylogue_model::SessionId;
+use polylogue_model::{MessageId, SessionId};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -29,7 +29,8 @@ impl ExportItems {
             CREATE TABLE item(ordinal INTEGER PRIMARY KEY, source_key TEXT UNIQUE, sort BLOB NOT NULL,
                 start INTEGER NOT NULL, end INTEGER NOT NULL, compressed_start INTEGER NOT NULL, compressed_end INTEGER NOT NULL);
             CREATE INDEX item_order ON item(sort,ordinal);
-            CREATE TABLE owner(message TEXT PRIMARY KEY,session TEXT NOT NULL) WITHOUT ROWID; BEGIN;")?;
+            CREATE TABLE owner(message TEXT PRIMARY KEY,session TEXT NOT NULL) WITHOUT ROWID;
+            CREATE TABLE previous(session TEXT PRIMARY KEY,message TEXT NOT NULL) WITHOUT ROWID; BEGIN;")?;
         Ok(Self {
             db,
             _index: index,
@@ -162,6 +163,23 @@ impl ExportItems {
         SessionId::parse(&owner)
             .map(Some)
             .map_err(|e| StoreError::Invalid(e.to_string()))
+    }
+    pub fn last_message(&self, session: &SessionId) -> Result<Option<MessageId>> {
+        let message: Option<String> = self
+            .db
+            .query_row(
+                "SELECT message FROM previous WHERE session=?1",
+                [session.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        message
+            .map(|id| MessageId::parse(&id).map_err(|e| StoreError::Invalid(e.to_string())))
+            .transpose()
+    }
+    pub fn set_last_message(&mut self, session: &SessionId, message: &MessageId) -> Result<()> {
+        self.db.execute("INSERT INTO previous VALUES (?1,?2) ON CONFLICT(session) DO UPDATE SET message=excluded.message", params![session.to_string(),message.to_string()])?;
+        Ok(())
     }
 }
 

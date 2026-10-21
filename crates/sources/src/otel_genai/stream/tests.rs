@@ -42,7 +42,7 @@ impl ItemSink for Counter {
         _: std::ops::Range<u64>,
         _: Vec<u8>,
         _: Option<&str>,
-        _: &serde_json::value::RawValue,
+        _: &[u8],
     ) -> Result<(), String> {
         self.accepted += 1;
         if self.fail_at == Some(self.accepted) {

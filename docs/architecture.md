@@ -250,6 +250,18 @@ back staged rows. Rewinding reopens retained bytes, never the provider file.
 Temporary disk grows with staged spans and ownership; one unusually large span
 still needs its own memory. This synchronous scan is not a reusable parse turn.
 
+Gemini Takeout uses the same staging and writer path for original HTML activity
+cells. Its known `outer-cell` delimiter frames one cell plus a fixed read buffer;
+large headers are discarded while retaining only a possible delimiter suffix.
+This is the existing Takeout shape, not a general HTML parser. Integer timestamp
+keys retain chronological order and physical ties, with unknown dates first.
+The private SQLite state holds each conversation's previous message, so links
+survive interleaved activities without a whole-export map in memory. JSON
+origins decode their original staged bytes as JSON; HTML records are never
+wrapped in invented JSON source bytes. First-record metadata uses that same
+byte boundary. The small in-memory state adapter lives with the shared export
+code and serves individual captures and parser fixtures.
+
 The existing live-before-bulk and size ordering applies to work already planned.
 Preceding ordinary work drains through the parse pool and commits before the
 serial export driver runs with the pool inactive. A live append arriving during

@@ -50,9 +50,22 @@ fn recognizes_only_its_own_format() {
 
 fn steps(bytes: &[u8]) -> Vec<Step> {
     struct NoOwners;
-    impl Owners for NoOwners {
+    impl ExportState for NoOwners {
         fn claim(&mut self, _: &str, _: &SessionId) -> Result<Option<SessionId>, String> {
             panic!("Polylogue export must preserve its authored message ownership")
+        }
+        fn last_message(
+            &mut self,
+            _: &SessionId,
+        ) -> Result<Option<polylogue_model::MessageId>, String> {
+            panic!("Polylogue export must preserve its authored parent links")
+        }
+        fn set_last_message(
+            &mut self,
+            _: &SessionId,
+            _: &polylogue_model::MessageId,
+        ) -> Result<(), String> {
+            panic!("Polylogue export must preserve its authored parent links")
         }
     }
     let mut parser = Export::default();
@@ -60,11 +73,8 @@ fn steps(bytes: &[u8]) -> Vec<Step> {
     parser
         .scan(
             &mut std::io::Cursor::new(bytes),
-            &mut |range: std::ops::Range<u64>,
-                  _: Vec<u8>,
-                  _: Option<&str>,
-                  raw: &serde_json::value::RawValue| {
-                items.push((range, raw.get().to_owned()));
+            &mut |range: std::ops::Range<u64>, _: Vec<u8>, _: Option<&str>, raw: &[u8]| {
+                items.push((range, String::from_utf8(raw.to_vec()).unwrap()));
                 Ok(())
             },
         )
@@ -75,13 +85,7 @@ fn steps(bytes: &[u8]) -> Vec<Step> {
     }
     for (range, raw) in items {
         steps.push(
-            crate::export::parse_item(
-                &mut parser,
-                &serde_json::from_str(&raw).unwrap(),
-                range,
-                &mut NoOwners,
-            )
-            .unwrap(),
+            crate::export::parse_item(&mut parser, raw.as_bytes(), range, &mut NoOwners).unwrap(),
         );
     }
     steps
@@ -155,14 +159,11 @@ fn many_sessions_scan_individually_and_version_after_them_still_applies() {
     let stats = parser
         .scan(
             &mut std::io::Cursor::new(bytes.as_bytes()),
-            &mut |range: std::ops::Range<u64>,
-                  _: Vec<u8>,
-                  _: Option<&str>,
-                  raw: &serde_json::value::RawValue| {
+            &mut |range: std::ops::Range<u64>, _: Vec<u8>, _: Option<&str>, raw: &[u8]| {
                 count += 1;
                 assert_eq!(
                     &bytes.as_bytes()[range.start as usize..range.end as usize],
-                    raw.get().as_bytes()
+                    raw
                 );
                 Ok(())
             },

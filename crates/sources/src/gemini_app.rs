@@ -9,9 +9,10 @@
 //! Takeout repeats; a cell with no conversation link is a session of its
 //! own. Responses are HTML in the export and are kept as text.
 
+use crate::Disposition;
 use crate::document::{Sink, message_id, session_id};
-use crate::parse::{DocumentParser, MessageRow, Output, Parse};
-use crate::{Disposition, Records};
+use crate::export::{ExportParser, ExportState};
+use crate::parse::{MessageRow, Parse};
 use polylogue_model::{
     Attachment, AttachmentDirection, Block, Event, Json, Message, PromptKind, Role, Session,
     SessionKind, Timestamp, Usage,
@@ -27,7 +28,7 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 }
 
 pub fn open(_path: &Path) -> Option<Parse> {
-    Some(Parse::Document(Box::new(GeminiApp)))
+    Some(Parse::Export(Box::new(GeminiApp)))
 }
 
 pub struct GeminiApp;
@@ -47,111 +48,121 @@ struct Entry {
     conversation: Option<String>,
 }
 
-impl DocumentParser for GeminiApp {
-    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let mut sink = Sink::new(out, records);
-        let html = String::from_utf8_lossy(bytes);
-        let mut entries = Vec::new();
-        for cell in html.split(CELL).skip(1) {
-            match entry(cell) {
-                Some(e) => entries.push(e),
-                None => sink
-                    .records
-                    .record("activity", &Disposition::refused("no content cell")),
+mod stream;
+
+impl ExportParser for GeminiApp {
+    fn scan(
+        &mut self,
+        reader: &mut dyn crate::export::Input,
+        items: &mut dyn crate::export::ItemSink,
+    ) -> Result<crate::export::ScanStats, crate::export::ScanError> {
+        stream::scan(reader, |range, bytes| {
+            let cell = String::from_utf8_lossy(bytes);
+            let at = entry(&cell).and_then(|e| e.at).map(|t| t.unix_ms());
+            let mut order = vec![u8::from(at.is_some())];
+            if let Some(at) = at {
+                order.extend(((at as u64) ^ (1 << 63)).to_be_bytes());
             }
+            items.push(range, order, None, bytes)
+        })
+    }
+    fn item(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut Sink<'_>,
+        state: &mut dyn ExportState,
+    ) -> Result<(), String> {
+        let cell = String::from_utf8_lossy(bytes);
+        let Some(e) = entry(&cell) else {
+            sink.records
+                .record("activity", &Disposition::refused("no content cell"));
+            return Ok(());
+        };
+        let stamp =
+            e.at.map(|t| t.unix_ms().to_string())
+                .unwrap_or_else(|| e.at_text.clone());
+        let native = e
+            .conversation
+            .clone()
+            .unwrap_or_else(|| format!("entry-{stamp}"));
+        let Some(sid) = session_id(ORIGIN, &native) else {
+            sink.records
+                .record(&e.verb, &Disposition::refused("unusable conversation ID"));
+            return Ok(());
+        };
+        if state.claim(&native, &sid)?.is_none() {
+            let mut s = Session::new(sid.clone(), SessionKind::Main);
+            if let Some(at) = e.at {
+                s.offer_start(at);
+            }
+            sink.out.sessions.push(s);
         }
-        // The export lists newest first; a conversation reads oldest first.
-        entries.sort_by_key(|e| e.at.map(|t| t.unix_ms()));
-        let mut made = std::collections::HashSet::new();
-        let mut last: std::collections::HashMap<String, polylogue_model::MessageId> =
-            Default::default();
-        for e in entries {
-            let stamp =
-                e.at.map(|t| t.unix_ms().to_string())
-                    .unwrap_or_else(|| e.at_text.clone());
-            let native = e
-                .conversation
-                .clone()
-                .unwrap_or_else(|| format!("entry-{stamp}"));
-            let Some(sid) = session_id(ORIGIN, &native) else {
-                sink.records
-                    .record(&e.verb, &Disposition::refused("unusable conversation ID"));
-                continue;
-            };
-            if made.insert(native.clone()) {
-                let mut s = Session::new(sid.clone(), SessionKind::Main);
-                if let Some(at) = e.at {
-                    s.offer_start(at);
-                }
-                sink.out.sessions.push(s);
-            }
-            if e.verb != "Prompted" {
-                sink.out.events.push(Event {
-                    session: sid,
-                    kind: "activity".into(),
-                    at: e.at,
-                    after: last.get(&native).cloned(),
-                    range: None,
-                    data: serde_json::json!({
-                        "verb": e.verb, "text": e.prompt, "notes": e.notes, "detail": e.response
-                    }),
-                });
-                sink.records.record(&e.verb, &Disposition::Materialized);
-                continue;
-            }
-            let (Some(user_id), Some(reply_id)) = (
-                message_id(ORIGIN, &format!("{native}#{stamp}-prompt")),
-                message_id(ORIGIN, &format!("{native}#{stamp}-response")),
-            ) else {
-                sink.records
-                    .record(&e.verb, &Disposition::refused("unusable message ID"));
-                continue;
-            };
-            let mut prompt_blocks = vec![Block::Text { text: e.prompt }];
-            prompt_blocks.extend(e.files.iter().map(|f| {
-                Block::File(Attachment {
-                    name: Some(f.clone()),
-                    direction: AttachmentDirection::Input,
-                    ..Attachment::default()
-                })
-            }));
-            let user = message(user_id.clone(), &sid, Role::User, e.at, prompt_blocks);
-            let mut user = user;
-            user.parent = last.get(&native).cloned();
-            let mut reply_blocks = Vec::new();
-            if !e.response.is_empty() {
-                reply_blocks.push(Block::Text {
-                    text: e.response.clone(),
-                });
-            }
-            for note in &e.notes {
-                reply_blocks.push(Block::Other {
-                    type_name: "note".into(),
-                    data: Json::String(note.clone()),
-                });
-            }
-            for row in [
-                Some(user),
-                (!reply_blocks.is_empty()).then(|| {
-                    let mut m =
-                        message(reply_id.clone(), &sid, Role::Assistant, e.at, reply_blocks);
-                    m.parent = Some(user_id.clone());
-                    m
+        if e.verb != "Prompted" {
+            sink.out.events.push(Event {
+                session: sid.clone(),
+                kind: "activity".into(),
+                at: e.at,
+                after: state.last_message(&sid)?,
+                range: None,
+                data: serde_json::json!({
+                    "verb": e.verb, "text": e.prompt, "notes": e.notes, "detail": e.response
                 }),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                let offset = sink.position();
-                sink.out.messages.push(MessageRow {
-                    offset,
-                    end: offset + 1,
-                    message: row,
-                });
-            }
-            last.insert(native, reply_id);
-            sink.records.record("Prompted", &Disposition::Materialized);
+            });
+            sink.records.record(&e.verb, &Disposition::Materialized);
+            return Ok(());
         }
+        let (Some(user_id), Some(reply_id)) = (
+            message_id(ORIGIN, &format!("{native}#{stamp}-prompt")),
+            message_id(ORIGIN, &format!("{native}#{stamp}-response")),
+        ) else {
+            sink.records
+                .record(&e.verb, &Disposition::refused("unusable message ID"));
+            return Ok(());
+        };
+        let mut prompt_blocks = vec![Block::Text { text: e.prompt }];
+        prompt_blocks.extend(e.files.iter().map(|f| {
+            Block::File(Attachment {
+                name: Some(f.clone()),
+                direction: AttachmentDirection::Input,
+                ..Attachment::default()
+            })
+        }));
+        let user = message(user_id.clone(), &sid, Role::User, e.at, prompt_blocks);
+        let mut user = user;
+        user.parent = state.last_message(&sid)?;
+        let mut reply_blocks = Vec::new();
+        if !e.response.is_empty() {
+            reply_blocks.push(Block::Text {
+                text: e.response.clone(),
+            });
+        }
+        for note in &e.notes {
+            reply_blocks.push(Block::Other {
+                type_name: "note".into(),
+                data: Json::String(note.clone()),
+            });
+        }
+        for row in [
+            Some(user),
+            (!reply_blocks.is_empty()).then(|| {
+                let mut m = message(reply_id.clone(), &sid, Role::Assistant, e.at, reply_blocks);
+                m.parent = Some(user_id.clone());
+                m
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let offset = sink.position();
+            sink.out.messages.push(MessageRow {
+                offset,
+                end: offset + 1,
+                message: row,
+            });
+        }
+        state.set_last_message(&sid, &reply_id)?;
+        sink.records.record("Prompted", &Disposition::Materialized);
+        Ok(())
     }
 }
 
@@ -356,6 +367,9 @@ fn parse_time(s: &str) -> Option<Timestamp> {
     let year: i64 = it.next()?.trim_end_matches(',').parse().ok()?;
     let mut hms = it.next()?.split(':').map(|x| x.parse::<i64>());
     let (mut h, m, sec) = (hms.next()?.ok()?, hms.next()?.ok()?, hms.next()?.ok()?);
+    if !(1..=12).contains(&h) || !(0..60).contains(&m) || !(0..60).contains(&sec) {
+        return None;
+    }
     match it.next()? {
         "AM" if h == 12 => h = 0,
         "PM" if h != 12 => h += 12,
@@ -377,19 +391,9 @@ fn parse_time(s: &str) -> Option<Timestamp> {
     if it.next().is_some() {
         return None;
     }
-    // Days from the civil date (Howard Hinnant's algorithm).
-    let (y, mo) = if month <= 2 {
-        (year - 1, month + 9)
-    } else {
-        (year, month - 3)
-    };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * mo + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    let secs = days * 86_400 + h * 3600 + m * 60 + sec - offset_h * 3600;
-    Timestamp::from_unix_ms(secs * 1000)
+    Timestamp::parse_rfc3339(&format!(
+        "{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{sec:02}{offset_h:+03}:00"
+    ))
 }
 
 #[cfg(test)]

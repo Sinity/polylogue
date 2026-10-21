@@ -64,3 +64,25 @@ fn rejected_scan_groups_restore_prior_values_ranges_and_order() {
     }
     assert!(items.next_item().unwrap().is_none());
 }
+
+#[test]
+fn previous_messages_are_independent_for_interleaved_conversations() {
+    let mut items = ExportItems::new().unwrap();
+    let first = SessionId::parse("gemini-app:first").unwrap();
+    let second = SessionId::parse("gemini-app:second").unwrap();
+    let a = MessageId::parse("gemini-app:first#1-response").unwrap();
+    let b = MessageId::parse("gemini-app:second#2-response").unwrap();
+    let c = MessageId::parse("gemini-app:first#3-response").unwrap();
+    assert_eq!(items.last_message(&first).unwrap(), None);
+    items.set_last_message(&first, &a).unwrap();
+    assert_eq!(items.last_message(&second).unwrap(), None);
+    items.set_last_message(&second, &b).unwrap();
+    assert_eq!(items.last_message(&first).unwrap(), Some(a));
+    items.set_last_message(&first, &c).unwrap();
+    assert_eq!(items.last_message(&second).unwrap(), Some(b));
+    assert_eq!(items.last_message(&first).unwrap(), Some(c));
+    assert_eq!(
+        ExportItems::new().unwrap().last_message(&first).unwrap(),
+        None
+    );
+}

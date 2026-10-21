@@ -1,4 +1,4 @@
-//! Serde framing of export records, preserving their exact original bytes.
+//! Export records and conversation state, with Serde framing for JSON arrays.
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde_json::value::RawValue;
@@ -63,6 +63,8 @@ pub struct ScanStats {
     pub peak_element_bytes: usize,
 }
 
+mod state;
+pub use state::MemoryState;
 mod path;
 pub use path::scan_path;
 mod keyed;
@@ -211,7 +213,7 @@ pub trait ItemSink {
         range: Range<u64>,
         order: Vec<u8>,
         source_key: Option<&str>,
-        raw: &RawValue,
+        raw: &[u8],
     ) -> Result<(), String>;
     fn begin(&mut self) -> Result<(), String> {
         Err("this export sink cannot begin a scan group".into())
@@ -226,14 +228,14 @@ pub trait ItemSink {
 
 impl<F> ItemSink for F
 where
-    F: FnMut(Range<u64>, Vec<u8>, Option<&str>, &RawValue) -> Result<(), String>,
+    F: FnMut(Range<u64>, Vec<u8>, Option<&str>, &[u8]) -> Result<(), String>,
 {
     fn push(
         &mut self,
         range: Range<u64>,
         order: Vec<u8>,
         source_key: Option<&str>,
-        raw: &RawValue,
+        raw: &[u8],
     ) -> Result<(), String> {
         self(range, order, source_key, raw)
     }
@@ -256,6 +258,8 @@ impl<R: Read + std::io::Seek> Input for BufReader<R> {
     }
 }
 
+/// Frames original records, then interprets each in staged order. The default
+/// scanner reads JSON array elements; other origins supply their own framing.
 pub trait ExportParser: Send {
     fn scan(
         &mut self,
@@ -263,7 +267,7 @@ pub trait ExportParser: Send {
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         scan(reader, |range, raw| {
-            item.push(range, self.order_key(raw), None, raw)
+            item.push(range, self.order_key(raw), None, raw.get().as_bytes())
         })
     }
     /// File-level output after validation and ordering, before its items. `first`
@@ -271,7 +275,7 @@ pub trait ExportParser: Send {
     fn begin(
         &mut self,
         _length: u64,
-        _first: Option<&polylogue_model::Json>,
+        _first: Option<&[u8]>,
     ) -> Result<Option<crate::parse::Step>, String> {
         Ok(None)
     }
@@ -281,32 +285,42 @@ pub trait ExportParser: Send {
     }
     fn item(
         &mut self,
-        value: &polylogue_model::Json,
+        bytes: &[u8],
         sink: &mut crate::document::Sink<'_>,
-        owners: &mut dyn Owners,
+        owners: &mut dyn ExportState,
     ) -> Result<(), String>;
 }
 
-/// First ownership claims within one export operation. A new key returns None;
-/// an existing key returns its first owner, including when it is the same session.
-pub trait Owners {
+/// Conversation state within one export operation. A new ownership key returns
+/// None; an existing key returns its first owner. Previous-message links are
+/// stored separately so chronological records can interleave conversations.
+pub trait ExportState {
     fn claim(
         &mut self,
         native: &str,
         session: &polylogue_model::SessionId,
     ) -> Result<Option<polylogue_model::SessionId>, String>;
+    fn last_message(
+        &mut self,
+        session: &polylogue_model::SessionId,
+    ) -> Result<Option<polylogue_model::MessageId>, String>;
+    fn set_last_message(
+        &mut self,
+        session: &polylogue_model::SessionId,
+        message: &polylogue_model::MessageId,
+    ) -> Result<(), String>;
 }
 
 pub fn parse_item(
     parser: &mut dyn ExportParser,
-    value: &polylogue_model::Json,
+    bytes: &[u8],
     range: Range<u64>,
-    owners: &mut dyn Owners,
+    owners: &mut dyn ExportState,
 ) -> Result<crate::parse::Step, String> {
     let mut output = crate::parse::Output::default();
     let mut records = crate::Records::default();
     parser.item(
-        value,
+        bytes,
         &mut crate::document::Sink::new(&mut output, &mut records),
         owners,
     )?;

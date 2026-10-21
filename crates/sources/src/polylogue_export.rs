@@ -5,7 +5,7 @@
 //! and events cite the exact exported-session record in the new input.
 
 use crate::document::Sink;
-use crate::export::{ExportParser, ItemSink, Owners, ScanError, ScanStats};
+use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::parse::{MessageRow, Output, Parse, Step};
 use crate::{Disposition, Records};
 use polylogue_model::export::{Document, FORMAT, SessionExport};
@@ -48,7 +48,7 @@ impl ExportParser for Export {
                 {
                     invalid_session = Some(error.to_string());
                 }
-                item.push(range, Vec::new(), None, raw)
+                item.push(range, Vec::new(), None, raw.get().as_bytes())
             })?;
         self.refusal = Document::from_json(&metadata.to_string())
             .err()
@@ -58,11 +58,7 @@ impl ExportParser for Export {
         Ok(stats)
     }
 
-    fn begin(
-        &mut self,
-        length: u64,
-        _first: Option<&polylogue_model::Json>,
-    ) -> Result<Option<Step>, String> {
+    fn begin(&mut self, length: u64, _first: Option<&[u8]>) -> Result<Option<Step>, String> {
         let Some(reason) = self.refusal.take() else {
             return Ok(None);
         };
@@ -79,10 +75,13 @@ impl ExportParser for Export {
 
     fn item(
         &mut self,
-        value: &polylogue_model::Json,
+        bytes: &[u8],
         sink: &mut Sink<'_>,
-        _: &mut dyn Owners,
+        _: &mut dyn ExportState,
     ) -> Result<(), String> {
+        let value: polylogue_model::Json =
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let value = &value;
         if !self.valid {
             return Ok(());
         }

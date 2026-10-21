@@ -193,10 +193,7 @@ fn many_room_entries_scan_with_one_message_buffer() {
                 part: std::io::Cursor::new(vec![]),
                 next: 0,
             }),
-            &mut |_: std::ops::Range<u64>,
-                  _: Vec<u8>,
-                  _: Option<&str>,
-                  _: &serde_json::value::RawValue| {
+            &mut |_: std::ops::Range<u64>, _: Vec<u8>, _: Option<&str>, _: &[u8]| {
                 count += 1;
                 Ok(())
             },
