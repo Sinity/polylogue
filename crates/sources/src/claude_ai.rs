@@ -59,9 +59,6 @@ fn in_design_dir(path: &Path) -> bool {
 pub struct Export;
 
 impl crate::array::ArrayParser for Export {
-    fn order_key(&self, _: &serde_json::value::RawValue) -> Option<f64> {
-        None
-    }
     fn item(
         &mut self,
         value: &Json,

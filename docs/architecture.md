@@ -193,12 +193,19 @@ their original ordinal; tool replies keep their harness meaning. Each emitted
 message cites its original JSON span. Header metadata and one message/output
 remain the memory bound, with the same retained-byte retry rules.
 
+Gemini CLI rewrites use that named `messages` reader too. The parser retains
+session ID and previous message ID after reading header facts; tool calls and
+results stay within their turn. Notices and errors remain events anchored to
+the preceding message, with their own original record spans. Watched revisions
+are retained before parsing, and retries and rebuilds use those bytes after the
+provider file disappears. Physical array order is the default; ChatGPT alone
+overrides it with its recorded conversation ordering key.
+
 The existing live-before-bulk and size ordering applies to work already planned.
 Preceding ordinary work drains through the parse pool and commits before the
 serial array driver runs with the pool inactive. A live append arriving during
 that synchronous driver waits until a subsequent discovery pass; this is not
-preemption or a latency bound. A channel-controlled arrival test covers that
-case separately from preplanned priority.
+preemption or a latency bound.
 
 The driver waits for each item's writer commit before decoding the next.
 Message order is a separate logical ordinal. Repeated event facts retain their

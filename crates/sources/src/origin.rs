@@ -235,7 +235,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "gemini-cli",
-        parser_version: 2,
+        parser_version: 3,
         support: Support::Parsed,
         route: Route::Live,
         root: Root::HOME,
