@@ -78,21 +78,25 @@ impl Capture {
         let local = store.primary_only();
         let mut replacements = Vec::new();
         for unit in units {
-            let batch = read(tx, &unit)?;
+            let mut batch = read(tx, &unit)?;
             let hash = if batch.rows == 0 {
                 None
             } else {
                 Some(format!(
                     "blake3:{}",
                     local
-                        .put(batch.lines.as_slice(), crate::blobs::LEVEL)?
+                        .put_plain_checked::<StoreError>(
+                            &mut batch.file,
+                            crate::blobs::LEVEL,
+                            || Ok(())
+                        )?
                         .hex()
                 ))
             };
             replacements.push(Replacement {
                 unit,
                 batch: hash,
-                bytes: batch.lines.len() as u64,
+                bytes: batch.bytes,
                 rows: batch.rows,
                 blobs: batch
                     .blobs

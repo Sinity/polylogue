@@ -294,21 +294,30 @@ impl Sinex {
         Ok(())
     }
 
-    async fn place_batch(&mut self, id: &str, bytes: &[u8]) -> Result<MaterialId> {
-        let hash = self.store.put(bytes, 3)?;
+    async fn place_batch(
+        &mut self,
+        id: &str,
+        bytes: &mut std::fs::File,
+    ) -> Result<(MaterialId, hashed_blobs::Hash)> {
+        use std::io::Seek;
+        bytes.rewind()?;
+        let length = bytes.metadata()?.len();
+        let hash = self.store.put_plain_checked::<Error>(bytes, 3, || Ok(()))?;
         // A material acknowledgment is keyed by frame, not by incoming bytes.
         // Include the content address so an unknown outcome can be retried safely.
         let frame = format!("batch:{id}:{}", hash.hex());
         let known = self.have(std::slice::from_ref(&frame)).await?;
-        self.material(
-            frame.clone(),
-            known.get(&frame),
-            &hash,
-            bytes.len() as u64,
-            frame,
-            serde_json::json!({"archive":id,"media_type":"application/jsonl"}),
-        )
-        .await
+        let material = self
+            .material(
+                frame.clone(),
+                known.get(&frame),
+                &hash,
+                length,
+                frame,
+                serde_json::json!({"archive":id,"media_type":"application/jsonl"}),
+            )
+            .await?;
+        Ok((material, hash))
     }
 
     /// Publishes every unit of the archive at `root` that Sinex does not hold
@@ -361,8 +370,8 @@ impl Sinex {
                 let Some(name) = &replacement.batch else {
                     continue;
                 };
-                let bytes = archive.replacement(name)?;
-                if bytes.len() as u64 != replacement.bytes {
+                let mut bytes = archive.replacement(name)?;
+                if bytes.metadata()?.len() != replacement.bytes {
                     return Err(Error::Invalid(
                         "replacement length differs from its manifest".into(),
                     ));
@@ -373,7 +382,7 @@ impl Sinex {
                     .map(|name| parse_hash(name).map(|h| h.0))
                     .collect::<Result<_>>()?;
                 self.place_blobs(&archive, &id, &hashes, &mut done).await?;
-                self.place_batch(&id, &bytes).await?;
+                self.place_batch(&id, &mut bytes).await?;
             }
         }
         for index in missing {
@@ -418,10 +427,9 @@ impl Sinex {
         publication: Option<&sinex_rows::ExcisionPublication>,
         done: &mut Published,
     ) -> Result<(Ingress, u64)> {
-        let batch = archive.read(unit)?;
+        let mut batch = archive.read(unit)?;
         self.place_blobs(archive, id, &batch.blobs, done).await?;
-        let batch_hash = self.store.put(&batch.lines[..], 3)?;
-        let material = self.place_batch(id, &batch.lines).await?;
+        let (material, batch_hash) = self.place_batch(id, &mut batch.file).await?;
         let event = PolylogueRows {
             archive: id.to_owned(),
             position: position as u64,

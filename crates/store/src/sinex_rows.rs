@@ -18,9 +18,12 @@ mod restore;
 use restore::select;
 pub use restore::{Catalog, RestoreUnit, Selection};
 
-use rusqlite::types::{Value as Sql, ValueRef};
+use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, params_from_iter};
-use serde_json::{Map, Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
+use std::io::Seek;
 
 /// One unit of rows, before its rows are read.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -71,205 +74,8 @@ pub fn units(archive: &Connection, after: i64) -> crate::Result<Vec<Unit>> {
     Ok(units)
 }
 
-/// A unit's rows as JSON lines, and the input blobs they cite.
-pub struct Batch {
-    pub lines: Vec<u8>,
-    pub rows: u64,
-    pub blobs: Vec<[u8; 32]>,
-}
-
-/// Reads a unit's rows. Each query names its table, so a row is restored
-/// into the table it came from.
-pub fn read(archive: &Connection, unit: &Unit) -> rusqlite::Result<Batch> {
-    let mut out = Batch {
-        lines: Vec::new(),
-        rows: 0,
-        blobs: Vec::new(),
-    };
-    let key = [Sql::Text(unit.key.clone())];
-    match unit.kind.as_str() {
-        "revision" => {
-            let (input, number) = unit.key.rsplit_once('/').unwrap_or((&unit.key, "0"));
-            let number: i64 = number.parse().unwrap_or(0);
-            let args = [Sql::Text(input.to_owned()), Sql::Integer(number)];
-            let exists: bool = archive.query_row(
-                "SELECT EXISTS(SELECT 1 FROM revision WHERE input = ?1 AND number = ?2)",
-                params_from_iter(args.iter()),
-                |r| r.get(0),
-            )?;
-            if !exists {
-                return Ok(out);
-            }
-
-            add(
-                archive,
-                &mut out,
-                "input",
-                "SELECT * FROM input WHERE id = ?1",
-                &args[..1],
-            )?;
-            add(
-                archive,
-                &mut out,
-                "revision",
-                "SELECT * FROM revision WHERE input = ?1 AND number = ?2",
-                &args,
-            )?;
-            // The extents this revision added to its chain: the ones from the
-            // end of the chain's previous revision to its own end.
-            let extents = "SELECT e.* FROM extent e JOIN revision r
-                             ON r.input = e.input AND r.number = ?2 AND e.chain = r.chain
-                           WHERE e.input = ?1 AND e.offset < r.length
-                             AND e.offset >= COALESCE((SELECT MAX(p.length) FROM revision p
-                                 WHERE p.input = r.input AND p.chain = r.chain AND p.number < r.number), 0)";
-            // In Sinex every blob is a plain file in its content store, so
-            // the restored row says so: no inline bytes, no delta base.
-            let blobs_of_extents = format!(
-                "SELECT b.hash, b.size, b.size AS stored_size, 'file' AS place,
-                        'plain' AS encoding, NULL AS base, 'present' AS state, NULL AS data
-                 FROM blob b WHERE b.hash IN (SELECT blob FROM ({extents}))"
-            );
-            add(archive, &mut out, "blob", &blobs_of_extents, &args)?;
-            add(archive, &mut out, "extent", extents, &args)?;
-            add(
-                archive,
-                &mut out,
-                "machine",
-                "SELECT m.* FROM machine m WHERE m.id IN
-                   (SELECT machine FROM observation WHERE input = ?1 AND revision = ?2)",
-                &args,
-            )?;
-            add(
-                archive,
-                &mut out,
-                "observation",
-                "SELECT * FROM observation WHERE input = ?1 AND revision = ?2",
-                &args,
-            )?;
-        }
-        "note" => {
-            add(
-                archive,
-                &mut out,
-                "note",
-                "SELECT * FROM note WHERE id = ?1",
-                &key,
-            )?;
-            add(
-                archive,
-                &mut out,
-                "note_target",
-                "SELECT * FROM note_target WHERE note_id = ?1",
-                &key,
-            )?;
-            add(
-                archive,
-                &mut out,
-                "note_relation",
-                "SELECT * FROM note_relation WHERE note_id = ?1",
-                &key,
-            )?;
-        }
-        "excision" => {
-            // Deleted revision units still name an input. Keep that descriptor
-            // with the excision rather than reopening a retired original batch.
-            add(archive,&mut out,"input",
-                "SELECT * FROM input WHERE id IN (
-                    SELECT input FROM observation WHERE class='excised' AND excision=?1
-                    UNION SELECT i.id FROM input i,excision x,json_each(x.refused_json,'$.publication.replacements') j
-                    WHERE x.id=?1 AND json_extract(j.value,'$.unit.kind')='revision'
-                      AND substr(json_extract(j.value,'$.unit.key'),1,length(i.id)+1)=i.id||'/'
-                      AND instr(substr(json_extract(j.value,'$.unit.key'),length(i.id)+2),'/')=0)",&key)?;
-            add(
-                archive,
-                &mut out,
-                "machine",
-                "SELECT * FROM machine WHERE id IN (SELECT machine FROM observation WHERE class='excised' AND excision=?1)",
-                &key,
-            )?;
-            add(
-                archive,
-                &mut out,
-                "excision",
-                "SELECT * FROM excision WHERE id = ?1",
-                &key,
-            )?;
-            add(
-                archive,
-                &mut out,
-                "observation",
-                "SELECT * FROM observation WHERE class = 'excised' AND excision = ?1 ORDER BY rowid",
-                &key,
-            )?;
-        }
-        "setting" => add(
-            archive,
-            &mut out,
-            "setting",
-            "SELECT * FROM setting WHERE id = ?1",
-            &key,
-        )?,
-        _ => {
-            add(
-                archive,
-                &mut out,
-                "delivery",
-                "SELECT * FROM delivery WHERE id = ?1",
-                &key,
-            )?;
-            add(
-                archive,
-                &mut out,
-                "delivery_event",
-                "SELECT * FROM delivery_event WHERE delivery = ?1",
-                &key,
-            )?;
-        }
-    }
-    Ok(out)
-}
-
-fn add(
-    archive: &Connection,
-    out: &mut Batch,
-    table: &str,
-    sql: &str,
-    args: &[Sql],
-) -> rusqlite::Result<()> {
-    let mut stmt = archive.prepare(sql)?;
-    let names: Vec<String> = stmt
-        .column_names()
-        .iter()
-        .map(|s| (*s).to_owned())
-        .collect();
-    let mut rows = stmt.query(params_from_iter(args.iter()))?;
-    while let Some(r) = rows.next()? {
-        let mut row = Map::new();
-        for (i, name) in names.iter().enumerate() {
-            let value = match r.get_ref(i)? {
-                ValueRef::Null => Value::Null,
-                ValueRef::Integer(n) => json!(n),
-                ValueRef::Real(x) => json!(x),
-                ValueRef::Text(t) => Value::String(String::from_utf8_lossy(t).into_owned()),
-                ValueRef::Blob(b) => {
-                    if table == "blob"
-                        && name == "hash"
-                        && let Ok(h) = <[u8; 32]>::try_from(b)
-                    {
-                        out.blobs.push(h);
-                    }
-                    json!({ "hex": hex(b) })
-                }
-            };
-            row.insert(name.clone(), value);
-        }
-        let line = json!({ "table": table, "row": row });
-        serde_json::to_writer(&mut out.lines, &line).expect("JSON serializes");
-        out.lines.push(b'\n');
-        out.rows += 1;
-    }
-    Ok(())
-}
+mod batch;
+pub use batch::{Batch, read};
 
 /// Inserts rows, reusing identical rows already present. A conflicting row
 /// refuses rather than silently retaining different content.
@@ -394,7 +200,7 @@ pub fn unhex(s: &str) -> crate::Result<Vec<u8>> {
         .collect()
 }
 
-/// `archive.db` opened for publishing its rows.
+/// One read snapshot of `archive.db` for a publication pass.
 pub struct Published {
     conn: Connection,
     blobs: hashed_blobs::Store,
@@ -402,8 +208,11 @@ pub struct Published {
 
 impl Published {
     pub fn open(root: &std::path::Path) -> crate::Result<Self> {
+        let conn = crate::archive::open_read(&root.join("archive.db"))?;
+        // One publication pass keeps the same view across its table queries.
+        conn.execute_batch("BEGIN")?;
         Ok(Self {
-            conn: crate::archive::open_read(&root.join("archive.db"))?,
+            conn,
             blobs: hashed_blobs::Store::open(root.to_path_buf(), vec![], 0o600)?,
         })
     }
@@ -422,7 +231,7 @@ impl Published {
     }
 
     pub fn read(&self, unit: &Unit) -> crate::Result<Batch> {
-        Ok(read(&self.conn, unit)?)
+        read(&self.conn, unit)
     }
 
     pub fn publication(&self, unit: &Unit) -> crate::Result<Option<ExcisionPublication>> {
@@ -430,17 +239,13 @@ impl Published {
     }
 
     /// A frozen replacement batch, checked by its content address.
-    pub fn replacement(&self, name: &str) -> crate::Result<Vec<u8>> {
-        use std::io::Read;
+    pub fn replacement(&self, name: &str) -> crate::Result<std::fs::File> {
         let hash = excision::batch_hash(name)?;
-        let mut bytes = Vec::new();
-        self.blobs.read(&hash)?.read_to_end(&mut bytes)?;
-        if blake3::hash(&bytes).as_bytes() != &hash.0 {
-            return Err(crate::StoreError::Invalid(
-                "replacement batch hash mismatch".into(),
-            ));
-        }
-        Ok(bytes)
+        let reader = self.blobs.read_plain(&hash, None, || Ok(()))?;
+        let mut file = tempfile::tempfile()?;
+        crate::blobs::copy_verified(reader, &mut file, polylogue_model::BlobHash(hash.0), None)?;
+        file.rewind()?;
+        Ok(file)
     }
 
     /// Verify a source blob in private scratch, then place it in the target store.
