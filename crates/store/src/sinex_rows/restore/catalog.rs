@@ -22,6 +22,7 @@ impl Catalog {
             CREATE TABLE selected(seq INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
                 data TEXT NOT NULL, tombstone INTEGER NOT NULL,
                 PRIMARY KEY(seq,kind,key)) WITHOUT ROWID;
+            CREATE TABLE excision_applied(id_hash BLOB PRIMARY KEY,policy_hash BLOB NOT NULL) WITHOUT ROWID;
             CREATE TABLE allowed(kind TEXT NOT NULL, id TEXT NOT NULL,
                 PRIMARY KEY(kind,id)) WITHOUT ROWID;
             BEGIN;",

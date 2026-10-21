@@ -449,6 +449,11 @@ metadata before opening payloads, then replaces the selected owner rows in one
 transaction. A nonempty target belonging to a different archive refuses before
 payload reads or changes. Same-archive updates must include every local excision's
 exact metadata; stale confirmed views refuse before reopening removed content.
+Before replacing target rows, restore snapshots hashes of its existing removal
+rules into the private catalog. It compares the final rules before committing,
+so an incompatible view rolls back policy rows, other selected rows, the local
+revision and the restore checkpoint. The hash definition is shared with index
+recovery; mutable explanations and local progress do not alter the rule.
 Pending batches remain in this archive's primary blob
 root, and local file cleanup never follows external read roots. Cataloged source
 blobs survive pending-batch retirement. Original provider files are untouched. Native Sinex material
