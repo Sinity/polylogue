@@ -5,6 +5,7 @@ use super::{Unit, read};
 use crate::{Result, StoreError};
 use rusqlite::{Connection, Transaction};
 use serde::{Deserialize, Serialize};
+mod decode;
 mod digest;
 mod retirement;
 
@@ -121,10 +122,7 @@ pub(super) fn visit_publications(
     let mut stmt = conn.prepare("SELECT commit_seq,id,refused_json FROM excision")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
-        let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(2)?)?;
-        if let Some(publication) = value.get("publication") {
-            let publication: ExcisionPublication = serde_json::from_value(publication.clone())?;
-            publication.validate()?;
+        if let Some(publication) = decode::publication(&row.get::<_, String>(2)?)? {
             let unit = Unit {
                 commit_seq: row.get(0)?,
                 kind: "excision".into(),
@@ -276,12 +274,7 @@ pub(super) fn publication(conn: &Connection, unit: &Unit) -> Result<Option<Excis
         [&unit.key],
         |r| r.get(0),
     )?;
-    let mut value: serde_json::Value = serde_json::from_str(&json)?;
-    let raw = value
-        .get_mut("publication")
-        .ok_or_else(|| StoreError::Invalid("legacy excision has no replacement manifest".into()))?
-        .take();
-    let publication: ExcisionPublication = serde_json::from_value(raw)?;
-    publication.validate()?;
+    let publication = decode::publication(&json)?
+        .ok_or_else(|| StoreError::Invalid("legacy excision has no replacement manifest".into()))?;
     Ok(Some(publication))
 }
