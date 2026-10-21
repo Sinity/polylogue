@@ -13,11 +13,12 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
 /// Bumped whenever `INDEX` changes; a different stored version means the
 /// index is rebuilt into a new file.
-pub const INDEX_VERSION: u32 = 23;
+pub const INDEX_VERSION: u32 = 24;
 
 /// Migrations for `archive.db`, applied in order after the base schema.
 /// Each is additive; an archive at a higher number than this list is refused.
-pub const ARCHIVE_MIGRATIONS: &[&str] = &[];
+pub const ARCHIVE_MIGRATIONS: &[&str] =
+    &[include_str!("schema/migrations/002-excision-revision.sql")];
 
 /// The `user_version` of a database: 0 for an empty file.
 pub fn version(conn: &Connection) -> Result<u32> {

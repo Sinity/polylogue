@@ -694,3 +694,10 @@ AND (s.input_pk,s.chain,s.source_snapshot) = (
 CREATE VIEW current_link AS SELECT * FROM link l WHERE (NOT EXISTS
   (SELECT 1 FROM link_source s WHERE s.link_pk = l.pk) AND COALESCE((SELECT excised FROM input_ref WHERE pk=l.input_pk),0)=0) OR EXISTS
   (SELECT 1 FROM link_source s WHERE s.link_pk = l.pk AND s.current = 1);
+
+-- Applied removal rules survive as receipts until an index rebuild verifies
+-- their inclusion in the archive. No removed content is retained here.
+CREATE TABLE excision_applied (
+  id_hash BLOB PRIMARY KEY CHECK(length(id_hash)=32),
+  policy_hash BLOB NOT NULL CHECK(length(policy_hash)=32)
+) STRICT, WITHOUT ROWID;

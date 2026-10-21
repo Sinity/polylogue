@@ -64,9 +64,12 @@ fn excising_a_session_from_a_shared_export_blanks_its_texts_and_notes() {
             .unwrap();
         drop(writer);
 
+        let before_revision = revision(&fresh);
         assert_bad_ranges_refuse(&mut e2, &fresh, &doc.to_json().unwrap());
+        assert_eq!(revision(&fresh), before_revision);
         let dry = excise(&mut e2, "session:claude-code:s2", true);
         assert!(dry.dry_run);
+        assert_eq!(revision(&fresh), before_revision);
         assert!(stored(&fresh.root, "walrus-9931"));
         assert_eq!(fresh.count("SELECT count(*) AS n FROM a.note"), 2);
         assert_eq!(
@@ -77,6 +80,7 @@ fn excising_a_session_from_a_shared_export_blanks_its_texts_and_notes() {
             ]
         );
         let done = excise(&mut e2, "session:claude-code:s2", false);
+        assert_ne!(revision(&fresh), before_revision);
         assert!(done.inputs_removed.is_empty(), "{done:?}");
         assert!(done.inputs_kept.is_empty(), "{done:?}");
         assert_eq!(done.texts_left, 0, "{done:?}");
@@ -162,4 +166,18 @@ fn assert_bad_ranges_refuse(e: &mut Engine, w: &ClaudeHome, raw: &str) {
             )
             .unwrap();
     }
+}
+
+fn revision(w: &ClaudeHome) -> String {
+    w.reads()
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT value FROM a.meta WHERE key='excision_revision'",
+            &[],
+        )
+        .unwrap()[0]["value"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }

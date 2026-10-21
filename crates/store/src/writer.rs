@@ -192,6 +192,11 @@ impl Writer {
         };
         let archive_conn =
             open_write(&archive.archive_db(), crate::archive::cache::ARCHIVE_WRITER)?;
+        if crate::excise::recovery::current(&archive_conn)?
+            != crate::excise::recovery::current(&index)?
+        {
+            return Err(StoreError::ExcisionPending);
+        }
         let refused = crate::excise::Refused::load(&archive_conn)?;
         let mut inner = Inner {
             archive: archive_conn,
@@ -418,7 +423,12 @@ impl Inner {
                 let _ = reply.send(self.write_user(&request));
             }
             for (request, store, reply) in excisions.drain(..) {
-                let _ = reply.send(self.write_excision(&request, &store));
+                let result = self.write_excision(&request, &store);
+                let interrupted = matches!(&result, Err(StoreError::ExcisionInterrupted(_)));
+                let _ = reply.send(result);
+                if interrupted {
+                    return;
+                }
             }
             if !derives.is_empty() {
                 // A first build's indexes exist before anything is derived
@@ -565,6 +575,15 @@ impl Inner {
         request: &crate::excise::ExciseRequest,
         store: &hashed_blobs::Store,
     ) -> Result<crate::excise::Excised> {
+        if crate::excise::recovery::current(&self.archive)?
+            != crate::excise::recovery::current(&self.index)?
+        {
+            return Err(StoreError::ExcisionPending);
+        }
+        // Persist removal receipts with WAL semantics even during a first build.
+        if !request.dry_run {
+            self.settle()?;
+        }
         let local_store = store.primary_only();
         let embeddings = if self.embeddings_db.exists() {
             let e = open_write(&self.embeddings_db, crate::archive::cache::SETUP)?;
@@ -604,11 +623,24 @@ impl Inner {
             }
             return Ok(done);
         }
-        atx.commit()?;
-        itx.commit()?;
-        if let Some(e) = &embeddings {
-            e.execute_batch("COMMIT")?;
+        let refused = crate::excise::Refused::load(&atx)?;
+        // Once COMMIT is attempted its outcome may require reconciliation.
+        // Stop this writer on error; later requests must not acknowledge old rows.
+        let committed: Result<()> = (|| {
+            atx.commit()?;
+            crate::fault::check("excision.between_commits", &request.id)?;
+            itx.commit()?;
+            crate::fault::check("excision.after_index_commit", &request.id)?;
+            if let Some(e) = &embeddings {
+                e.execute_batch("COMMIT")?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = committed {
+            return Err(StoreError::ExcisionInterrupted(Box::new(error)));
         }
+        self.refused.sessions.extend(done.sessions.iter().cloned());
+        self.refused.messages.extend(refused.messages);
         for hash in files {
             match local_store.delete(&hashed_blobs::Hash(hash.0)) {
                 Ok(()) | Err(hashed_blobs::Error::Missing(_)) => {}
@@ -618,10 +650,6 @@ impl Inner {
                     .push(format!("excision: delete local blob {hash}: {e}")),
             }
         }
-        self.refused.sessions.extend(done.sessions.iter().cloned());
-        self.refused
-            .messages
-            .extend(crate::excise::Refused::load(&self.archive)?.messages);
         Ok(done)
     }
 

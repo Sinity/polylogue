@@ -119,3 +119,5 @@ fn law_45_a_failed_read_is_never_empty() {
     let ok = r.query("SELECT count(*) AS n FROM session", &[]).unwrap();
     assert_eq!(ok[0]["n"], 8);
 }
+
+mod excision;

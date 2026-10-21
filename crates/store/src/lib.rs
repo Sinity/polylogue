@@ -72,6 +72,16 @@ pub enum StoreError {
     ReadPoolClosed,
     #[error("read pool is full while this thread holds a reader; reuse or release it")]
     ReadPoolNested,
+    #[error(
+        "the index has not applied the archive's latest excision; reopen the archive to rebuild it"
+    )]
+    ExcisionPending,
+    #[error("excision commit did not complete cleanly; reopen the archive before writing: {0}")]
+    ExcisionInterrupted(#[source] Box<StoreError>),
+    #[error(
+        "archive excision history conflicts with the index (archive revision {archive}, index revision {index}); preserve both for reconciliation"
+    )]
+    ExcisionConflict { archive: u64, index: u64 },
     #[error("request {0} was already used for different content")]
     Conflict(String),
     #[error("{0} not found")]

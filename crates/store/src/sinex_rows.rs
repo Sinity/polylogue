@@ -281,11 +281,13 @@ impl Published {
 /// `archive.db` opened for restoring rows into it.
 pub struct Restoring {
     conn: Connection,
+    archive: crate::Archive,
 }
 
 impl Restoring {
     pub fn open(archive: &crate::Archive) -> crate::Result<Self> {
         Ok(Self {
+            archive: archive.clone(),
             conn: crate::archive::open_write(
                 &archive.archive_db(),
                 crate::archive::cache::ARCHIVE_WRITER,
@@ -297,13 +299,17 @@ impl Restoring {
     /// after `Catalog::finish`, so intentionally retired before-images are never required.
     /// A same-archive update must include every local excision's exact manifest;
     /// an older confirmed view cannot overwrite unpublished local removals.
+    /// Changed excisions prepare a fresh derived index; readers tied to a retired
+    /// index refuse until they reopen a connection to the current file.
     pub fn install<R: std::io::Read>(
         &mut self,
         archive_id: &str,
         units: &Selection,
         fetch: impl FnMut(&RestoreUnit) -> crate::Result<Option<R>>,
     ) -> crate::Result<u64> {
-        restore::install(&mut self.conn, units, Some(archive_id), fetch)
+        let inserted = restore::install(&mut self.conn, units, Some(archive_id), fetch)?;
+        self.archive.prepare_index()?;
+        Ok(inserted)
     }
 }
 

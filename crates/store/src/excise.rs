@@ -8,9 +8,8 @@
 //!   this session is removed whole; in an input it shares with other
 //!   sessions, the byte ranges of its records are overwritten with spaces
 //!   of the same length (line breaks kept), so every other record keeps its
-//!   offsets. A shared whole document (an export) has no record ranges: the
-//!   session's own texts are blanked where they stand as complete JSON
-//!   string values, quotes kept, so the document still parses. Notes about
+//!   offsets. Shared JSON records also remove the necessary array separators;
+//!   unsupported record boundaries refuse before committing. Notes about
 //!   the session go, and briefs that delivered its texts are redacted. The
 //!   writer refuses the session's and its messages' rows from then on, and
 //!   the loop stops collecting a removed input's paths.
@@ -35,6 +34,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 mod authored;
 mod index_rows;
 mod record_ranges;
+pub(crate) mod recovery;
 mod stored_bytes;
 mod stored_text;
 mod text_matches;
@@ -159,7 +159,7 @@ impl Refused {
             if let Some(s) = scope.strip_prefix("session:") {
                 out.sessions.insert(s.to_owned());
             }
-            let ids: Vec<String> = serde_json::from_str(&ids).unwrap_or_default();
+            let ids: Vec<String> = serde_json::from_str(&ids)?;
             out.messages.extend(ids);
         }
         Ok(out)
@@ -569,6 +569,9 @@ impl Plan {
                     serde_json::to_string(&self.message_ids)?,
                 ],
             )?;
+        }
+        if !req.dry_run {
+            recovery::acknowledge(t.archive, t.index)?;
         }
         Ok((done.clone(), delete_files))
     }
