@@ -384,8 +384,9 @@ SQLite file. It checks exact repeats, conflicting positions, gaps and unit order
 before opening payloads. The same scratch database holds excision's input and
 machine membership sets. Its page-cache target is 1 MiB with mmap disabled;
 this is not a hard process memory cap. The catalog is discarded after the
-operation, and checkpoint serialization preserves the previous ordered JSON
-representation.
+operation. Row deletion reads indexed unit identities directly; checkpoint
+serialization borrows canonical descriptor JSON from SQLite, preserving the
+previous ordered bytes without decoding source-reference lists again.
 
 The selected catalog enumerates distinct current source-blob references on disk.
 Restore verifies each once before installing rows; later restores verify them

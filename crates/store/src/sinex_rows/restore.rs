@@ -93,7 +93,7 @@ pub(super) fn install<R: Read>(
         tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
         // All deletions precede inserts: shared revision bases are restored in
         // this transaction. A later read/refusal rolls all deletions back.
-        units.each(|unit| remove(&tx, &unit.unit))?;
+        units.each_unit(|unit| remove(&tx, unit))?;
     }
     let mut inserted = 0;
     units.each(|unit| {

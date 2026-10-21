@@ -249,3 +249,49 @@ fn a_tombstone_requires_none_of_its_old_source_blobs() {
         .source_blobs(|_| panic!("empty view requested bytes"))
         .unwrap();
 }
+
+#[test]
+fn nested_manifest_checkpoint_keeps_exact_bytes_and_unit_identity() {
+    let mut first = unit(1, "input:é\0\"/1");
+    first.unit.kind = "revision".into();
+    first.blobs = (0..512)
+        .map(|n: u64| format!("blake3:{}", blake3::hash(&n.to_le_bytes())))
+        .collect();
+    let mut excision = unit(2, "remove:\"\n\0");
+    excision.unit.kind = "excision".into();
+    let mut publication = ExcisionPublication {
+        version: 1,
+        replacements: vec![Replacement {
+            unit: first.unit.clone(),
+            batch: first.batch.clone(),
+            bytes: 10,
+            rows: 1,
+            blobs: first.blobs.clone(),
+        }],
+        retired_batches: vec![format!("blake3:{}", blake3::hash(b"old"))],
+        digest: String::new(),
+    };
+    publication.digest = publication.computed_digest().unwrap();
+    excision.excision = Some(publication);
+    let mut catalog = Catalog::new().unwrap();
+    catalog.push(1, &first).unwrap();
+    catalog.push(2, &excision).unwrap();
+    let selected = catalog.finish().unwrap();
+    first.bytes = Some(10);
+    let expected = vec![first, excision];
+    assert_eq!(
+        serde_json::to_vec(&(Some("archive:é\n"), &selected)).unwrap(),
+        serde_json::to_vec(&(Some("archive:é\n"), &expected)).unwrap()
+    );
+    let mut identities = Vec::new();
+    selected
+        .each_unit(|unit| {
+            identities.push(unit.clone());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        identities,
+        expected.iter().map(|u| u.unit.clone()).collect::<Vec<_>>()
+    );
+}
