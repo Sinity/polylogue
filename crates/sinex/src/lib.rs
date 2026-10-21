@@ -488,7 +488,7 @@ impl Sinex {
             })
             .await
             .map_err(|e| Error::Unreachable(e.to_string()))?;
-        let mut units: Vec<(PolylogueRows, Option<sinex_rows::ExcisionPublication>)> = Vec::new();
+        let mut catalog = sinex_rows::Catalog::new()?;
         // Read up to the last unit on the stream now; later ones arrive with
         // the next pass.
         let last = match stream
@@ -529,43 +529,28 @@ impl Sinex {
                     .cloned()
                     .map(serde_json::from_value)
                     .transpose()?;
-                units.push((unit, excision));
-            }
-        }
-        units.sort_by_key(|(u, _)| u.position);
-        for pair in units.windows(2) {
-            if pair[0].0.position == pair[1].0.position && pair[0] != pair[1] {
-                return Err(Error::Invalid(
-                    "confirmed units disagree at the same position".into(),
-                ));
-            }
-        }
-        units.dedup_by(|a, b| a.0.position == b.0.position);
-        let mut catalog = Vec::new();
-        let mut done = Restored::default();
-        for (index, (unit, excision)) in units.iter().enumerate() {
-            if unit.position != index as u64 + 1 {
-                return Err(Error::Invalid(format!(
-                    "Sinex holds unit {} but not unit {}",
+                catalog.push(
                     unit.position,
-                    index + 1
-                )));
+                    &RestoreUnit {
+                        unit: Unit {
+                            commit_seq: unit.local_seq,
+                            kind: unit.unit,
+                            key: unit.key,
+                        },
+                        batch: Some(unit.batch),
+                        bytes: None,
+                        rows: unit.rows,
+                        blobs: unit.blobs,
+                        excision,
+                    },
+                )?;
             }
-            done.commit_seq = done.commit_seq.max(unit.local_seq);
-            catalog.push(RestoreUnit {
-                unit: Unit {
-                    commit_seq: unit.local_seq,
-                    kind: unit.unit.clone(),
-                    key: unit.key.clone(),
-                },
-                batch: Some(unit.batch.clone()),
-                bytes: None,
-                rows: unit.rows,
-                blobs: unit.blobs.clone(),
-                excision: excision.clone(),
-            });
         }
-        let selected = sinex_rows::select(&catalog)?;
+        let selected = catalog.finish()?;
+        let mut done = Restored {
+            commit_seq: selected.commit_seq(),
+            ..Restored::default()
+        };
         let reader = hashed_blobs::Reader::new(self.store_root.clone(), vec![]);
         done.rows = restoring.install(archive, &selected, |unit| {
             // Required current input bytes are checked too; an unretired missing
@@ -588,11 +573,9 @@ impl Sinex {
                     polylogue_store::StoreError::Invalid("invalid batch hash length".into())
                 })?,
             );
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut reader.read(&hash)?, &mut bytes)?;
-            Ok(Some(bytes))
+            Ok(Some(reader.read_plain(&hash, unit.bytes, || Ok(()))?))
         })?;
-        done.units = selected.len() as u64;
+        done.units = selected.len();
         Ok(done)
     }
 }

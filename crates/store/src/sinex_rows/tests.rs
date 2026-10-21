@@ -129,7 +129,8 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         })
         .collect();
     let selected = select(&originals).unwrap();
-    let payloads: Vec<_> = selected
+    let current = selected_units(&selected);
+    let payloads: Vec<_> = current
         .iter()
         .map(|unit| {
             unit.batch.as_ref().map(|name| {
@@ -143,15 +144,17 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         .collect();
     assert!(
         restore::install(&mut restored, &selected, None, |u| Ok(payloads
-            [selected.iter().position(|x| x == u).unwrap()]
-        .clone()))
+            [current.iter().position(|x| x == u).unwrap()]
+        .clone()
+        .map(std::io::Cursor::new)))
         .unwrap()
             > 0
     );
     assert_eq!(
         restore::install(&mut restored, &selected, None, |u| Ok(payloads
-            [selected.iter().position(|x| x == u).unwrap()]
-        .clone()))
+            [current.iter().position(|x| x == u).unwrap()]
+        .clone()
+        .map(std::io::Cursor::new)))
         .unwrap(),
         0
     );
@@ -164,7 +167,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         .unwrap();
     assert_eq!(
         fingerprint,
-        blake3::hash(&serde_json::to_vec(&(None::<&str>, &selected)).unwrap())
+        blake3::hash(&serde_json::to_vec(&(None::<&str>, &current)).unwrap())
             .to_hex()
             .to_string(),
         "restore checkpoints keep their existing serialized identity"
@@ -172,7 +175,9 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     let mut fresh = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&fresh).unwrap();
     restore::install(&mut fresh, &selected, None, |u| {
-        Ok(payloads[selected.iter().position(|x| x == u).unwrap()].clone())
+        Ok(payloads[current.iter().position(|x| x == u).unwrap()]
+            .clone()
+            .map(std::io::Cursor::new))
     })
     .unwrap();
     let mut missing = payloads.clone();
@@ -181,8 +186,9 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     crate::schema::create_archive(&empty).unwrap();
     assert!(
         restore::install(&mut empty, &selected, None, |u| Ok(missing
-            [selected.iter().position(|x| x == u).unwrap()]
-        .clone()))
+            [current.iter().position(|x| x == u).unwrap()]
+        .clone()
+        .map(std::io::Cursor::new)))
         .is_err()
     );
     assert_eq!(
@@ -195,8 +201,9 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     corrupt[0].as_mut().unwrap().push(b' ');
     assert!(
         restore::install(&mut empty, &selected, None, |u| Ok(corrupt
-            [selected.iter().position(|x| x == u).unwrap()]
-        .clone()))
+            [current.iter().position(|x| x == u).unwrap()]
+        .clone()
+        .map(std::io::Cursor::new)))
         .is_err()
     );
     let note = |conn: &Connection| {
@@ -228,21 +235,26 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         select(&altered).is_err(),
         "a valid digest cannot authorize an absent unit"
     );
-    let mut wrong_owner = selected[0].clone();
+    let mut wrong_owner = current[0].clone();
     wrong_owner.unit.key = "other-note".into();
     let wrong_owner = select(&[wrong_owner]).unwrap();
     assert!(
         restore::install(&mut empty, &wrong_owner, None, |u| Ok(payloads
-            [wrong_owner.iter().position(|x| x == u).unwrap()]
-        .clone()))
+            [selected_units(&wrong_owner)
+                .iter()
+                .position(|x| x == u)
+                .unwrap()]
+        .clone()
+        .map(std::io::Cursor::new)))
         .is_err()
     );
     let mut corrupt_repeat = payloads.clone();
     corrupt_repeat[0].as_mut().unwrap().push(b' ');
     assert!(
         restore::install(&mut restored, &selected, None, |u| Ok(corrupt_repeat
-            [selected.iter().position(|x| x == u).unwrap()]
-        .clone()))
+            [current.iter().position(|x| x == u).unwrap()]
+        .clone()
+        .map(std::io::Cursor::new)))
         .is_err()
     );
     assert_eq!(note(&restored), note(&source));
@@ -330,7 +342,7 @@ fn excising_first_or_middle_units_keeps_other_unit_positions_stable() {
         restore::install(&mut restored, &selected, None, |u| {
             Ok(u.batch
                 .as_ref()
-                .map(|_| read(&source, &u.unit).unwrap().lines))
+                .map(|_| std::io::Cursor::new(read(&source, &u.unit).unwrap().lines)))
         })
         .unwrap();
         let remaining: Vec<String> = restored
@@ -450,7 +462,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     let called = std::cell::Cell::new(false);
     let error = restore::install(&mut target, &selected, Some("source-archive"), |_| {
         called.set(true);
-        Ok(Some(batch.lines.clone()))
+        Ok(Some(std::io::Cursor::new(batch.lines.clone())))
     })
     .unwrap_err();
     assert!(error.to_string().contains("nonempty different archive"));
@@ -486,7 +498,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     crate::schema::create_archive(&empty).unwrap();
     assert_eq!(
         restore::install(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
-            batch.lines.clone()
+            std::io::Cursor::new(batch.lines.clone())
         )))
         .unwrap(),
         1
@@ -494,7 +506,7 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     empty.execute("INSERT INTO client_request(id,content_hash,created_at) VALUES ('local-request',x'0304',2)",[]).unwrap();
     assert_eq!(
         restore::install(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
-            batch.lines.clone()
+            std::io::Cursor::new(batch.lines.clone())
         )))
         .unwrap(),
         0
@@ -666,9 +678,9 @@ fn stale_catalog_cannot_restore_local_excised_text(add_remote_unit: bool) {
     let called = std::cell::Cell::new(false);
     let result = restoring.install(&id, &selected, |unit| {
         called.set(true);
-        Ok(Some(
+        Ok(Some(std::io::Cursor::new(
             bodies[catalog.iter().position(|u| u.unit == unit.unit).unwrap()].clone(),
-        ))
+        )))
     });
     let after: String = conn
         .query_row("SELECT value FROM note WHERE id='note1'", [], |r| r.get(0))
@@ -689,4 +701,17 @@ fn stale_catalog_refuses_an_originating_archives_unpublished_excision() {
 #[test]
 fn stale_catalog_with_unrelated_remote_addition_cannot_reopen_local_excised_text() {
     stale_catalog_cannot_restore_local_excised_text(true);
+}
+
+mod streams;
+
+fn selected_units(selection: &Selection) -> Vec<RestoreUnit> {
+    let mut units = Vec::new();
+    selection
+        .each(|unit| {
+            units.push(unit.clone());
+            Ok(())
+        })
+        .unwrap();
+    units
 }
