@@ -125,6 +125,17 @@ fn older_or_conflicting_excision_authority_is_not_rebuilt_away() {
             _ => {}
         }
         drop(index);
+        let embeddings = rusqlite::Connection::open(Archive::at(&w.root).embeddings_db()).unwrap();
+        embeddings.execute("INSERT INTO embedded(text_hash,model,chunk,dims,vector,embedded_at) VALUES (?1,'unresolved-history',0,1,?2,1)", rusqlite::params![vec![7u8; 32], 1.0f32.to_le_bytes().as_slice()]).unwrap();
+        drop(embeddings);
+        let canonical = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
+        canonical
+            .execute(
+                "INSERT INTO pending_vector_excision VALUES (?1,'unresolved-history')",
+                [vec![7u8; 32]],
+            )
+            .unwrap();
+        drop(canonical);
         let result = Archive::open_or_create(&w.root);
         assert!(
             matches!(
@@ -132,6 +143,18 @@ fn older_or_conflicting_excision_authority_is_not_rebuilt_away() {
                 Err(polylogue_store::StoreError::ExcisionConflict { .. })
             ),
             "fork={conflicting}, rebuild={rebuild}: {result:?}"
+        );
+        let embeddings = rusqlite::Connection::open(Archive::at(&w.root).embeddings_db()).unwrap();
+        assert_eq!(
+            embeddings
+                .query_row(
+                    "SELECT count(*) FROM embedded WHERE model='unresolved-history'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1,
+            "authority conflict must refuse before any purchased-vector cleanup"
         );
         assert!(Archive::at(&w.root).index_db().exists());
         assert!(!fs::read_dir(&w.root).unwrap().any(|entry| {

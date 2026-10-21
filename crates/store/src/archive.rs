@@ -124,6 +124,11 @@ impl Archive {
             schema::create_embeddings(&e)?;
         }
         drop(e);
+        if crate::excise::vector_cleanup::pending(&a)? && archive.index_db().exists() {
+            // Reconcile competing removal histories before deleting paid data.
+            let index = open_read(&archive.index_db())?;
+            validate_index_excision(&archive, &index)?;
+        }
         crate::excise::vector_cleanup::recover(&archive, &mut a)?;
         archive.prepare_index()?;
         Ok((archive, ArchiveLock { _file: file }))
@@ -164,12 +169,7 @@ fn set_aside_old_index(archive: &Archive) -> Result<()> {
     )?;
     // Check known removal rules before every retirement path, including an
     // ordinary schema upgrade and an interrupted first build.
-    let excision_stale = if has_meta {
-        let archive_conn = open_read(&archive.archive_db())?;
-        crate::excise::recovery::needs_rebuild(&archive_conn, &conn)?
-    } else {
-        false
-    };
+    let excision_stale = validate_index_excision(archive, &conn)?;
     let unsynced = has_meta && schema::unsynced(&conn)?;
     drop(conn);
     let suffix_for = if excision_stale {
@@ -192,6 +192,20 @@ fn set_aside_old_index(archive: &Archive) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Preserve known removal rules before either cleanup or index retirement.
+fn validate_index_excision(archive: &Archive, index: &Connection) -> Result<bool> {
+    let has_meta: bool = index.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_meta {
+        return Ok(false);
+    }
+    let canonical = open_read(&archive.archive_db())?;
+    crate::excise::recovery::needs_rebuild(&canonical, index)
 }
 
 /// Turns copy-on-write off for a new, empty directory on btrfs, so files
