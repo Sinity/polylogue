@@ -105,10 +105,16 @@ fn killing_the_test_parent_stops_its_real_daemon() {
         .unwrap();
     assert!(running.status.success(), "{running:?}");
     assert_eq!(json(&running)["pid"].as_u64(), Some(daemon_pid));
+    assert!(matches!(
+        polylogue_store::Archive::open_or_create(&dir.path().join("archive")),
+        Err(polylogue_store::StoreError::Locked { .. })
+    ));
+    let exit = polylogue_testkit::ProcessExit::watch(daemon_pid.try_into().unwrap()).unwrap();
     owner.0.kill().unwrap();
     assert_eq!(owner.0.wait().unwrap().signal(), Some(9));
-    // Both processes inherited this pipe. EOF requires the daemon to exit too;
-    // nextest owns the hung-test deadline if the kernel guard regresses.
+    // Stderr can close before other descriptors during process teardown.
+    // Wait for process exit before checking that the archive lock is released.
+    exit.wait().unwrap();
     let mut remaining = String::new();
     stderr.read_to_string(&mut remaining).unwrap();
     let (_archive, _lock) = polylogue_store::Archive::open_or_create(&dir.path().join("archive"))
