@@ -333,6 +333,11 @@ this is not a hard process memory cap. The catalog is discarded after the
 operation, and checkpoint serialization preserves the previous ordered JSON
 representation.
 
+The selected catalog enumerates distinct current source-blob references on disk.
+Restore verifies each once before installing rows; later restores verify them
+again. Retired references are excluded only by the selected replacements.
+Row batches retain their per-unit identity, row-count and integrity checks.
+
 Selected row batches use the blob store's sequential plain reader. Restore
 copies one batch to an anonymous temporary file while checking its content hash
 and length, then validates and applies one JSON row at a time. A bad later row,

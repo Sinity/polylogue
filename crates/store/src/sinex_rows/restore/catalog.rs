@@ -203,6 +203,22 @@ impl Selection {
         self.commit_seq
     }
 
+    /// Visit each required source blob once, after all replacements. Row-batch
+    /// hashes stay with their units because their contents must match that unit.
+    /// Deduplication uses this operation's disk catalog, not a durable cache.
+    pub fn source_blobs(&self, mut visit: impl FnMut(&str) -> Result<()>) -> Result<()> {
+        let mut statement = self.catalog.db.prepare(
+            "SELECT DISTINCT b.value FROM selected s, json_each(s.data,'$.blobs') b
+             ORDER BY b.value",
+        )?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let hash: String = row.get(0)?;
+            visit(&hash)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn find(&self, unit: &Unit) -> Result<Option<RestoreUnit>> {
         Ok(self.catalog.find(unit)?.map(|(unit, _)| unit))
     }
