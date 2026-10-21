@@ -88,7 +88,7 @@ impl Reader<'_> {
             params.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
             sql.push_str(&format!(" LIMIT ?{}", params.len()));
         }
-        let conn = self.conn();
+        let conn = self.conn()?;
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
             Ok(RawNote {
@@ -114,7 +114,7 @@ impl Reader<'_> {
 
     /// One note by ID, whatever its revision state.
     pub fn note(&self, id: &str) -> Result<Option<Note>> {
-        let conn = self.conn();
+        let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT id, root, kind, key, value, author, created_at, valid_until, source
              FROM a.note WHERE id = ?1 AND kind != 'withdrawal'",
@@ -141,7 +141,7 @@ impl Reader<'_> {
     /// The archive's write counter: the change feed's position.
     pub fn archive_seq(&self) -> Result<i64> {
         Ok(self
-            .conn()
+            .conn()?
             .query_row(
                 "SELECT coalesce(CAST(value AS INTEGER), 0) FROM a.meta WHERE key = 'write_counter'",
                 [],
@@ -157,7 +157,7 @@ impl Reader<'_> {
         else {
             return Ok(None);
         };
-        let conn = self.conn();
+        let conn = self.conn()?;
         let targets = conn
             .prepare_cached("SELECT ref FROM a.note_target WHERE note_id = ?1 ORDER BY ref")?
             .query_map([&raw.id], |r| r.get::<_, String>(0))?

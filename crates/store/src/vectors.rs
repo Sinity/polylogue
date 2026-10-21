@@ -219,7 +219,7 @@ impl Reader<'_> {
         let mut out = Vec::new();
         let rows: Vec<(i64, Vec<u8>, Vec<u8>)> = match sessions {
             None => self
-                .conn()
+                .conn()?
                 .prepare_cached(
                     "SELECT t.id, t.hash, t.body FROM text t WHERE t.indexed & 1 AND t.id > ?1
                      AND EXISTS (SELECT 1 FROM block b JOIN current_message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
@@ -231,7 +231,7 @@ impl Reader<'_> {
                 .collect::<rusqlite::Result<_>>()?,
             Some(ids) => {
                 let list = serde_json::to_string(ids)?;
-                self.conn()
+                self.conn()?
                     .prepare_cached(
                         "SELECT t.id, t.hash, t.body FROM text t WHERE t.indexed & 1 AND t.id > ?1
                          AND t.id IN (SELECT b.text_id FROM block b JOIN current_message m ON m.pk=b.message_pk JOIN session s ON s.pk = b.session_pk
@@ -257,7 +257,7 @@ impl Reader<'_> {
     /// `text.id` for each hash the index holds, in the given order.
     pub fn text_ids(&self, hashes: &[Vec<u8>]) -> Result<Vec<Option<i64>>> {
         let mut stmt = self
-            .conn()
+            .conn()?
             .prepare_cached("SELECT id FROM text WHERE hash = ?1")?;
         hashes
             .iter()

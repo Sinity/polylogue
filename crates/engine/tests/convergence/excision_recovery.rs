@@ -143,7 +143,7 @@ fn older_or_conflicting_excision_authority_is_not_rebuilt_away() {
         }));
         let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
         assert!(matches!(
-            pool.reader(),
+            pool.reader().unwrap().status(),
             Err(polylogue_store::StoreError::ExcisionPending)
         ));
     }

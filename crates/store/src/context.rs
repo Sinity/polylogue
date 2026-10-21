@@ -94,7 +94,7 @@ impl Reader<'_> {
         limit: u64,
     ) -> Result<Vec<NearbySession>> {
         let mut out: Vec<NearbySession> = Vec::new();
-        let conn = self.conn();
+        let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT s.id, s.kind, coalesce(s.title, s.derived_title), s.started_at, s.last_activity_at,
                     (SELECT count(*) FROM current_message m WHERE m.session_pk = s.pk), s.cwd
@@ -122,7 +122,7 @@ impl Reader<'_> {
 
     /// The repositories recorded for sessions in these directories.
     pub fn repos_under(&self, dirs: &[String]) -> Result<Vec<String>> {
-        let conn = self.conn();
+        let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT DISTINCT repo FROM session
               WHERE repo IS NOT NULL
@@ -143,7 +143,7 @@ impl Reader<'_> {
     /// Prompts people typed in a session, oldest first (harness text and
     /// slash commands left out).
     pub fn prompts(&self, session: &str) -> Result<Vec<Prompt>> {
-        let conn = self.conn();
+        let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT m.id, m.at, t.body
                FROM session s
@@ -184,7 +184,7 @@ impl Reader<'_> {
     /// What a session left open; `None` for an unknown session.
     pub fn open_items(&self, session: &str) -> Result<Option<OpenItems>> {
         use rusqlite::OptionalExtension;
-        let conn = self.conn();
+        let conn = self.conn()?;
         let row = conn
             .prepare_cached(
                 "SELECT s.live_open_tool_pk IS NOT NULL, s.live_todo, s.live_waiting_on,
@@ -228,7 +228,7 @@ impl Reader<'_> {
             return Ok(None);
         };
         let body: Vec<u8> =
-            self.conn()
+            self.conn()?
                 .query_row("SELECT body FROM a.delivery WHERE id = ?1", [id], |r| {
                     r.get(0)
                 })?;
@@ -237,7 +237,7 @@ impl Reader<'_> {
     }
 
     fn deliveries(&self, filter: &str, arg: &str) -> Result<Vec<DeliveryRow>> {
-        let conn = self.conn();
+        let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(&format!(
             "SELECT d.id, d.event, d.sender, d.recipient_id, d.at, d.bytes, d.commit_seq,
                     (SELECT group_concat(e.what, ',') FROM
@@ -269,7 +269,7 @@ impl Reader<'_> {
     pub fn setting(&self, key: &str, machine: &str) -> Result<Option<String>> {
         use rusqlite::OptionalExtension;
         Ok(self
-            .conn()
+            .conn()?
             .query_row(
                 "SELECT value FROM a.setting
                   WHERE key = ?1 AND machine IN (?2, '*')

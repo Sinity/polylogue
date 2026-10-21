@@ -165,7 +165,7 @@ pub fn blocks(times: &[i64], anchors: &[(i64, i64)], len: i64) -> Vec<(WindowSou
 /// the tools that have a subscription quota and the limits each has
 /// whether or not a reading named them.
 pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> Result<Quota> {
-    let conn = reader.conn();
+    let conn = reader.conn()?;
     let mut obs: Vec<Observation> = vec![];
     let mut plans: Vec<(String, String)> = vec![];
     let mut credits: Vec<(String, Credits)> = vec![];
@@ -278,7 +278,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
 }
 
 fn response_times(reader: &Reader<'_>, tool: &str, since: i64, until: i64) -> Result<Vec<i64>> {
-    let mut stmt = reader.conn().prepare_cached(
+    let mut stmt = reader.conn()?.prepare_cached(
         "SELECT m.at FROM current_message m JOIN session s ON s.pk = m.session_pk
          WHERE s.origin = ?1 AND m.role = 'assistant' AND m.at >= ?2 AND m.at < ?3
          ORDER BY m.at",

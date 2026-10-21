@@ -176,7 +176,7 @@ fn failed_transaction_completion_discards_the_connection_and_releases_its_slot()
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
     let reader = pool.reader().unwrap();
-    reader.conn().execute_batch("ROLLBACK").unwrap();
+    reader.conn().unwrap().execute_batch("ROLLBACK").unwrap();
     drop(reader);
     assert_eq!(pool.state.lock().unwrap().live, 0);
     pool.reader().unwrap().status().unwrap();
@@ -193,12 +193,14 @@ fn main_and_attached_cache_targets_reserve_the_optional_vectors_share() {
         for schema in ["main", "a"] {
             let cache: i64 = reader
                 .conn()
+                .unwrap()
                 .pragma_query_value(Some(schema), "cache_size", |r| r.get(0))
                 .unwrap();
             assert!(cache < 0);
             total += (-cache) as u64 * 1024;
             let mmap: i64 = reader
                 .conn()
+                .unwrap()
                 .pragma_query_value(Some(schema), "mmap_size", |r| r.get(0))
                 .unwrap();
             assert_eq!(mmap, 0);

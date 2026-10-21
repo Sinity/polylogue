@@ -25,7 +25,7 @@ pub struct Outcomes {
 
 pub fn outcomes(reader: &Reader<'_>, scope: &Scope) -> Result<Outcomes> {
     let (cond, params) = scope.condition();
-    Ok(reader.conn().query_row(
+    Ok(reader.conn()?.query_row(
         &format!(
             "SELECT sum(t.outcome = 'ok'), sum(t.outcome = 'error'),
                     sum(t.outcome = 'unknown' AND t.outcome_reason = 'no_result'),
@@ -142,7 +142,7 @@ pub fn first_failure(reader: &Reader<'_>, scope: &Scope, turns: bool) -> Result<
     );
     let mut obs = vec![];
     let mut unmeasured = 0;
-    let mut stmt = reader.conn().prepare(&sql)?;
+    let mut stmt = reader.conn()?.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
         Ok((
             r.get::<_, Option<i64>>(0)?,
@@ -290,7 +290,7 @@ pub fn daily(reader: &Reader<'_>, scope: &Scope, metric: &str, day: &LogicalDay)
     };
     let mut by_day: BTreeMap<jiff::civil::Date, f64> = BTreeMap::new();
     let mut sessions: BTreeMap<jiff::civil::Date, std::collections::HashSet<i64>> = BTreeMap::new();
-    let mut stmt = reader.conn().prepare(&format!(
+    let mut stmt = reader.conn()?.prepare(&format!(
         "SELECT m.at, {expr}, m.session_pk FROM {from} WHERE m.at IS NOT NULL AND {cond}"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
@@ -387,7 +387,7 @@ pub struct Process {
 /// from timestamps. Calls are named by action and command or tool.
 pub fn process(reader: &Reader<'_>, scope: &Scope, top: usize) -> Result<Process> {
     let (cond, params) = scope.condition();
-    let mut stmt = reader.conn().prepare(&format!(
+    let mut stmt = reader.conn()?.prepare(&format!(
         "SELECT s.id, t.action, coalesce(t.command_norm, t.tool), t.outcome, t.at
          FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
          JOIN current_message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk
@@ -475,7 +475,7 @@ pub struct Rhythm {
 
 pub fn rhythm(reader: &Reader<'_>, scope: &Scope, day: &LogicalDay) -> Result<Rhythm> {
     let (cond, params) = scope.condition();
-    let mut stmt = reader.conn().prepare(&format!(
+    let mut stmt = reader.conn()?.prepare(&format!(
         "SELECT m.at FROM current_message m WHERE m.at IS NOT NULL AND m.written_by = 'human'
            AND m.prompt_kind = 'prose' AND {cond}"
     ))?;
@@ -546,7 +546,7 @@ pub fn failing_commands(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Failin
          FROM ranked WHERE rn = 1 AND outcome = 'error'
          ORDER BY at DESC NULLS LAST, repository, command"
     );
-    let mut stmt = reader.conn().prepare(&sql)?;
+    let mut stmt = reader.conn()?.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
         Ok(FailingCommand {
             repository: r.get(0)?,
@@ -590,7 +590,7 @@ pub fn unanswered_end(reader: &Reader<'_>, scope: &Scope, now: i64) -> Result<Su
     );
     let mut obs = vec![];
     let mut unmeasured = 0;
-    let mut stmt = reader.conn().prepare(&sql)?;
+    let mut stmt = reader.conn()?.prepare(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
         Ok((
             r.get::<_, Option<i64>>(0)?,
@@ -651,7 +651,7 @@ pub struct Drift {
 /// Every unrecognized item, newest first; items kept as counts by design
 /// come after the rest.
 pub fn drift(reader: &Reader<'_>) -> Result<Vec<Drift>> {
-    let mut stmt = reader.conn().prepare(
+    let mut stmt = reader.conn()?.prepare(
         "SELECT format, what, sum(count), count(DISTINCT input_pk), min(first_at), max(last_at),
                 max(counted_only)
          FROM unrecognized GROUP BY format, what

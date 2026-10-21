@@ -38,15 +38,24 @@ struct PoolState {
 
 /// One consistent read: a read transaction on `index.db` with `archive.db`
 /// attached as `a`. Acquire, use and drop it on the same thread. Returned to
-/// the pool when dropped.
+/// the pool when dropped. The first database access pins and validates both
+/// snapshots; reserving an unused slot holds no read lock.
 pub struct Reader<'a> {
     pool: &'a ReadPool,
     conn: Option<Connection>,
+    snapshot: std::cell::Cell<SnapshotState>,
     owner: ThreadId,
     // ThreadId ownership detects self-exhaustion only if live readers stay
     // on their checkout thread. The marker makes that invariant enforceable.
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
     vectors: std::cell::RefCell<Option<crate::vectors::Vectors>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SnapshotState {
+    Deferred,
+    Ready,
+    Refused,
 }
 
 /// What the loop knows about a path from its last look, for comparing
@@ -194,6 +203,7 @@ impl ReadPool {
         let mut reader = Reader {
             pool: self,
             conn: None,
+            snapshot: std::cell::Cell::new(SnapshotState::Deferred),
             owner,
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
@@ -203,7 +213,6 @@ impl ReadPool {
             None => connect()?,
         };
         conn.execute_batch("BEGIN")?;
-        crate::excise::recovery::check_snapshot(&conn)?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
         if state.closed {
             return Err(StoreError::ReadPoolClosed);
@@ -231,10 +240,9 @@ fn pool_poisoned() -> StoreError {
 impl Drop for Reader<'_> {
     fn drop(&mut self) {
         self.vectors.get_mut().take();
-        let conn = self
-            .conn
-            .take()
-            .filter(|conn| conn.execute_batch("COMMIT").is_ok());
+        let conn = self.conn.take().filter(|conn| {
+            self.snapshot.get() != SnapshotState::Refused && conn.execute_batch("COMMIT").is_ok()
+        });
         let mut state = self
             .pool
             .state
@@ -300,6 +308,7 @@ impl Reader<'_> {
         &self,
         writable: bool,
     ) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {
+        self.conn()?;
         let mut vectors = self.vectors.try_borrow_mut().map_err(|_| {
             StoreError::Invalid("this reader already has an embeddings database guard".into())
         })?;
@@ -319,15 +328,29 @@ impl Reader<'_> {
         }))
     }
 
-    pub(crate) fn conn(&self) -> &Connection {
-        self.conn
+    pub(crate) fn conn(&self) -> Result<&Connection> {
+        let conn = self
+            .conn
             .as_ref()
-            .expect("reader holds a connection until dropped")
+            .expect("reader holds a connection until dropped");
+        match self.snapshot.get() {
+            SnapshotState::Ready => {}
+            SnapshotState::Refused => return Err(StoreError::ExcisionPending),
+            SnapshotState::Deferred => {
+                // Merely reserving a slot must not pin the first-build index
+                // and block its transition from an in-memory journal to WAL.
+                // Validate both databases before the first actual read.
+                self.snapshot.set(SnapshotState::Refused);
+                crate::excise::recovery::check_snapshot(conn)?;
+                self.snapshot.set(SnapshotState::Ready);
+            }
+        }
+        Ok(conn)
     }
 
     pub fn session(&self, id: &SessionId) -> Result<Option<Session>> {
         Ok(self
-            .conn()
+            .conn()?
             .prepare_cached(&format!(
                 "SELECT {} FROM session WHERE id = ?1",
                 crate::session_row::COLUMNS
@@ -384,7 +407,7 @@ impl Reader<'_> {
 
     fn session_pk(&self, id: &SessionId) -> Result<Option<i64>> {
         Ok(self
-            .conn()
+            .conn()?
             .prepare_cached("SELECT pk FROM session WHERE id = ?1")?
             .query_row([id.to_string()], |r| r.get(0))
             .optional()?)
@@ -393,7 +416,7 @@ impl Reader<'_> {
     /// A session's own message keys and IDs in reading order.
     fn own_keys(&self, session_pk: i64) -> Result<Vec<(i64, String)>> {
         Ok(self
-            .conn()
+            .conn()?
             .prepare_cached(
                 "SELECT pk, id FROM current_message WHERE session_pk = ?1 ORDER BY order_input_id, seq",
             )?
@@ -427,7 +450,7 @@ impl Reader<'_> {
             return Ok(());
         }
         let links: Vec<(String, String, Option<String>)> = self
-            .conn()
+            .conn()?
             .prepare_cached(
                 "SELECT parent_id, how, branch_point FROM current_link
                  WHERE child_id = ?1 AND kind = 'continuation' AND how IN ('fork', 'resume')
@@ -454,7 +477,7 @@ impl Reader<'_> {
                 }
                 own.into_iter().map(|(m, _)| m).collect()
             } else {
-                self.conn()
+                self.conn()?
                     .prepare_cached(
                         "SELECT DISTINCT m.pk, m.order_input_id, m.seq FROM current_message m
                          JOIN message_source s ON s.message_pk = m.pk
@@ -485,7 +508,7 @@ impl Reader<'_> {
     ) -> Result<Vec<Message>> {
         let mut blocks: HashMap<i64, Vec<Block>> = HashMap::new();
         {
-            let mut stmt = self.conn().prepare_cached(
+            let mut stmt = self.conn()?.prepare_cached(
                 "SELECT b.message_pk, b.body, t.body FROM block b
                  JOIN current_message cm ON cm.pk = b.message_pk
                  LEFT JOIN text t ON t.id = b.text_id
@@ -507,7 +530,7 @@ impl Reader<'_> {
                 blocks.entry(pk).or_default().push(block);
             }
         }
-        let mut stmt = self.conn().prepare_cached(
+        let mut stmt = self.conn()?.prepare_cached(
             "SELECT pk, id, role, prompt_kind, model, at, parent_id, input_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens, service_tier, stop_reason,
                     duration_ms, attrs_json, cache_write_1h_tokens, speed
@@ -602,7 +625,7 @@ impl Reader<'_> {
     }
 
     pub fn status(&self) -> Result<Status> {
-        let c = self.conn();
+        let c = self.conn()?;
         let count =
             |sql: &str| -> Result<u64> { Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64) };
         let mut parse_states = BTreeMap::new();
@@ -646,13 +669,13 @@ impl Reader<'_> {
         chain: i64,
         length: u64,
     ) -> Result<crate::blobs::StoredChain> {
-        crate::blobs::StoredChain::load(self.conn(), "a.", input, chain, length)
+        crate::blobs::StoredChain::load(self.conn()?, "a.", input, chain, length)
     }
 
     /// Source file facts come from provider observations; an excision event
     /// records archive housekeeping, never a fresh observation of the file.
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
-        let mut stmt = self.conn().prepare_cached(
+        let mut stmt = self.conn()?.prepare_cached(
             "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
                     o.ctime_ns,
                     (SELECT chain FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
@@ -705,7 +728,7 @@ impl Reader<'_> {
                 waiting: false,
             });
         }
-        let mut stmt = self.conn().prepare_cached(
+        let mut stmt = self.conn()?.prepare_cached(
             "SELECT p.parsed_upto, p.parser_version, p.status, p.detail FROM parse_state p
              JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1 AND p.chain = ?2",
         )?;
@@ -734,7 +757,7 @@ impl Reader<'_> {
     /// The latest retained revision and any committed parse progress.
     /// Every retained physical chain, with rebuildable parser progress.
     pub fn retained_chains(&self, id: &str) -> Result<Vec<(i64, RetainedInput)>> {
-        let mut stmt=self.conn().prepare_cached("SELECT r.chain,max(r.length),COALESCE(p.parsed_upto,0),p.parser_version,COALESCE(p.status='waiting',0),max(r.produced='imported') FROM a.revision r LEFT JOIN input_ref i ON i.id=r.input LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=r.chain WHERE r.input=?1 GROUP BY r.chain ORDER BY r.chain")?;
+        let mut stmt=self.conn()?.prepare_cached("SELECT r.chain,max(r.length),COALESCE(p.parsed_upto,0),p.parser_version,COALESCE(p.status='waiting',0),max(r.produced='imported') FROM a.revision r LEFT JOIN input_ref i ON i.id=r.input LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=r.chain WHERE r.input=?1 GROUP BY r.chain ORDER BY r.chain")?;
         Ok(stmt
             .query_map([id], |r| {
                 Ok((
@@ -754,7 +777,7 @@ impl Reader<'_> {
 
     pub fn retained_input(&self, id: &str) -> Result<Option<RetainedInput>> {
         let row = self
-            .conn()
+            .conn()?
             .prepare_cached(
                 "SELECT r.length, COALESCE(p.parsed_upto, 0), p.parser_version, r.produced, COALESCE(p.status = 'waiting', 0), r.chain
              FROM a.revision r
@@ -801,7 +824,7 @@ impl Reader<'_> {
     /// statements of one compiled query.
     pub fn query(&self, sql: &str, params: &[SqlValue]) -> Result<Vec<serde_json::Value>> {
         crate::fault::check("read.query", sql)?;
-        let mut stmt = self.conn().prepare_cached(sql)?;
+        let mut stmt = self.conn()?.prepare_cached(sql)?;
         let names: Vec<String> = stmt
             .column_names()
             .iter()
@@ -850,7 +873,7 @@ pub struct MessageVersion {
 
 impl Reader<'_> {
     pub fn message_versions(&self, id: &polylogue_model::MessageId) -> Result<Vec<MessageVersion>> {
-        let mut stmt = self.conn().prepare("SELECT r.id,s.chain,s.source_snapshot,s.source_start,s.source_end,s.current,s.version_hash FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref r ON r.pk=s.input_pk JOIN session placement ON placement.pk=s.session_pk WHERE m.id=?1 ORDER BY r.id,s.chain,s.source_snapshot,s.source_start,placement.id")?;
+        let mut stmt = self.conn()?.prepare("SELECT r.id,s.chain,s.source_snapshot,s.source_start,s.source_end,s.current,s.version_hash FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref r ON r.pk=s.input_pk JOIN session placement ON placement.pk=s.session_pk WHERE m.id=?1 ORDER BY r.id,s.chain,s.source_snapshot,s.source_start,placement.id")?;
         let rows = stmt.query_map([id.to_string()], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -872,7 +895,7 @@ impl Reader<'_> {
                 start: start as u64,
                 end: end as u64,
                 current: current != 0,
-                message: crate::versions::load(self.conn(), &hash)?,
+                message: crate::versions::load(self.conn()?, &hash)?,
             });
         }
         Ok(versions)
