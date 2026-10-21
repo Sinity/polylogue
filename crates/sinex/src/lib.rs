@@ -564,15 +564,16 @@ impl Sinex {
             ..Restored::default()
         };
         let reader = hashed_blobs::Reader::new(self.store_root.clone(), vec![]);
+        // A complete selected view determines required bytes. Shared source
+        // blobs need one verification in this restore; no result survives it.
+        selected.source_blobs(|name| {
+            let hash = parse_hash(name)
+                .map_err(|e| polylogue_store::StoreError::Invalid(e.to_string()))?;
+            let mut plain = reader.read_plain(&hash, None, || Ok(()))?;
+            std::io::copy(&mut plain, &mut std::io::sink())?;
+            Ok(())
+        })?;
         done.rows = restoring.install(archive, &selected, |unit| {
-            // Required current input bytes are checked too; an unretired missing
-            // source blob is corruption, even if the row batch itself survives.
-            for name in &unit.blobs {
-                let hash = parse_hash(name)
-                    .map_err(|e| polylogue_store::StoreError::Invalid(e.to_string()))?;
-                let mut plain = reader.read_plain(&hash, None, || Ok(()))?;
-                std::io::copy(&mut plain, &mut std::io::sink())?;
-            }
             let Some(name) = &unit.batch else {
                 return Ok(None);
             };

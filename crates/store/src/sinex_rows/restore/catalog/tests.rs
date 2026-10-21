@@ -159,3 +159,93 @@ fn equal_sequence_keys_keep_rust_string_order_including_unicode_and_zero_bytes()
         serde_json::to_vec(&originals).unwrap()
     );
 }
+
+#[test]
+fn source_blobs_are_distinct_and_follow_only_the_final_replacements() {
+    let hash = |byte: &str| format!("blake3:{}", byte.repeat(32));
+    let old = hash("02");
+    let shared = hash("03");
+    let added = hash("04");
+    let mut first = unit(1, "one");
+    first.blobs = vec![old.clone(), shared.clone(), shared.clone()];
+    let mut second = unit(2, "two");
+    second.blobs = vec![shared.clone()];
+    let mut excision = unit(3, "removal");
+    excision.unit.kind = "excision".into();
+    let mut publication = ExcisionPublication {
+        version: 1,
+        replacements: vec![Replacement {
+            unit: first.unit.clone(),
+            batch: first.batch.clone(),
+            bytes: 1,
+            rows: 1,
+            blobs: vec![shared.clone(), added.clone()],
+        }],
+        retired_batches: vec![],
+        digest: String::new(),
+    };
+    publication.digest = publication.computed_digest().unwrap();
+    excision.excision = Some(publication);
+    let mut catalog = Catalog::new().unwrap();
+    for (index, row) in [first, second, excision].iter().enumerate() {
+        catalog.push(index as u64 + 1, row).unwrap();
+    }
+    let selection = catalog.finish().unwrap();
+    // The catalog does not remember a verification result, even on reuse.
+    for _ in 0..2 {
+        let mut seen = Vec::new();
+        selection
+            .source_blobs(|name| {
+                seen.push(name.to_owned());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(seen, [shared.clone(), added.clone()]);
+        assert!(!seen.contains(&old));
+    }
+    let mut visited = 0;
+    let error = selection
+        .source_blobs(|_| {
+            visited += 1;
+            Err(invalid("source bytes unavailable"))
+        })
+        .unwrap_err();
+    assert_eq!(visited, 1);
+    assert!(error.to_string().contains("source bytes unavailable"));
+}
+
+#[test]
+fn a_tombstone_requires_none_of_its_old_source_blobs() {
+    let mut first = unit(1, "one");
+    first.blobs = vec![format!("blake3:{}", "03".repeat(32))];
+    let mut excision = unit(2, "removal");
+    excision.unit.kind = "excision".into();
+    let mut publication = ExcisionPublication {
+        version: 1,
+        replacements: vec![Replacement {
+            unit: first.unit.clone(),
+            batch: None,
+            bytes: 0,
+            rows: 0,
+            blobs: vec![],
+        }],
+        retired_batches: vec![],
+        digest: String::new(),
+    };
+    publication.digest = publication.computed_digest().unwrap();
+    excision.excision = Some(publication);
+    let mut catalog = Catalog::new().unwrap();
+    catalog.push(1, &first).unwrap();
+    catalog.push(2, &excision).unwrap();
+    catalog
+        .finish()
+        .unwrap()
+        .source_blobs(|_| panic!("retired source was requested"))
+        .unwrap();
+    Catalog::new()
+        .unwrap()
+        .finish()
+        .unwrap()
+        .source_blobs(|_| panic!("empty view requested bytes"))
+        .unwrap();
+}
