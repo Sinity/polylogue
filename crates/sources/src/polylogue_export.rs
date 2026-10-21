@@ -1,13 +1,14 @@
 //! Polylogue's own export format read back (architecture 7, Export and
 //! import): importing an export into a fresh archive gives the same
 //! sessions and IDs. Sessions, messages, events and links are written as
-//! the export holds them; only positions are new, taken from the
-//! document's order, which is the order the export was read in.
+//! the export holds them. Sessions retain document order; their messages
+//! and events cite the exact exported-session record in the new input.
 
+use crate::array::{ArrayParser, ItemSink, Owners, ScanError, ScanStats};
 use crate::document::Sink;
-use crate::parse::{DocumentParser, MessageRow, Output, Parse};
+use crate::parse::{MessageRow, Output, Parse, Step};
 use crate::{Disposition, Records};
-use polylogue_model::export::{Document, FORMAT};
+use polylogue_model::export::{Document, FORMAT, SessionExport};
 use std::path::Path;
 
 pub const ORIGIN: &str = "polylogue-export";
@@ -21,49 +22,85 @@ pub fn recognize(_path: &Path, head: &[u8]) -> bool {
 }
 
 pub fn open(_path: &Path) -> Option<Parse> {
-    Some(Parse::Document(Box::new(Export)))
+    Some(Parse::Array(Box::new(Export::default())))
 }
 
-pub struct Export;
+#[derive(Default)]
+pub struct Export {
+    valid: bool,
+    refusal: Option<String>,
+}
 
-impl DocumentParser for Export {
-    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
-        let mut sink = Sink::new(out, records);
-        let text = match std::str::from_utf8(bytes) {
-            Ok(t) => t,
-            Err(e) => {
-                sink.records
-                    .record("export", &Disposition::refused(format!("not UTF-8: {e}")));
-                return;
-            }
+impl ArrayParser for Export {
+    fn scan(
+        &mut self,
+        reader: &mut dyn std::io::Read,
+        item: &mut ItemSink<'_>,
+    ) -> Result<ScanStats, ScanError> {
+        self.valid = false;
+        self.refusal = None;
+        let mut invalid_session = None;
+        let (metadata, stats) =
+            crate::array::scan_nested_unique(reader, &["sessions"], |range, raw| {
+                // Validate every typed session before any of them may be published.
+                if invalid_session.is_none()
+                    && let Err(error) = serde_json::from_str::<SessionExport>(raw.get())
+                {
+                    invalid_session = Some(error.to_string());
+                }
+                item(range, None, raw)
+            })?;
+        self.refusal = Document::from_json(&metadata.to_string())
+            .err()
+            .map(|e| e.to_string())
+            .or(invalid_session);
+        self.valid = self.refusal.is_none();
+        Ok(stats)
+    }
+
+    fn begin(&mut self, length: u64) -> Result<Option<Step>, String> {
+        let Some(reason) = self.refusal.take() else {
+            return Ok(None);
         };
-        let doc = match Document::from_json(text) {
-            Ok(d) => d,
-            Err(e) => {
-                sink.records
-                    .record("export", &Disposition::refused(e.to_string()));
-                return;
-            }
-        };
-        for s in doc.sessions {
-            sink.out.sessions.push(s.session);
-            for message in s.messages {
-                let at = sink.position();
-                sink.out.messages.push(MessageRow {
-                    offset: at,
-                    end: at,
-                    message,
-                });
-            }
-            for mut event in s.events {
-                // Its byte range named the original input; here the event
-                // is placed after the message it follows.
-                event.range = None;
-                sink.out.events.push(event);
-            }
-            sink.out.links.extend(s.links);
-            sink.records.record("session", &Disposition::Materialized);
+        let mut records = Records::default();
+        records.record("export", &Disposition::refused(reason));
+        Ok(Some(Step {
+            output: Output::default(),
+            accounting: records.finish().map_err(|e| e.to_string())?,
+            start: 0,
+            consumed: length,
+            snapshot: None,
+        }))
+    }
+
+    fn item(
+        &mut self,
+        value: &polylogue_model::Json,
+        sink: &mut Sink<'_>,
+        _: &mut dyn Owners,
+    ) -> Result<(), String> {
+        if !self.valid {
+            return Ok(());
         }
+        let session: SessionExport =
+            serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        sink.out.sessions.push(session.session);
+        for message in session.messages {
+            let at = sink.position();
+            sink.out.messages.push(MessageRow {
+                offset: at,
+                end: at,
+                message,
+            });
+        }
+        for mut event in session.events {
+            // An imported event cites this export record, not its former input.
+            event.range = None;
+            sink.out.events.push(event);
+        }
+        sink.out.links.extend(session.links);
+        sink.records.record("session", &Disposition::Materialized);
+        Ok(())
     }
 }
 

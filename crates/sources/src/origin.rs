@@ -334,7 +334,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::polylogue_export::ORIGIN,
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Import,
         root: Root::HOME,

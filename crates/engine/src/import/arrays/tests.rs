@@ -417,3 +417,5 @@ fn a_live_append_during_bulk_array_processing_is_served_by_the_next_pass() {
 mod ai_studio;
 mod gemini_cli;
 mod openai_chat;
+
+mod polylogue_export;

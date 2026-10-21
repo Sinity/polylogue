@@ -58,7 +58,7 @@ pub struct ScanStats {
 }
 
 mod nested;
-pub use nested::{scan_array_or_nested, scan_nested};
+pub use nested::{scan_array_or_nested, scan_nested, scan_nested_unique};
 
 /// Calls `item` once per complete element. Only the current raw element is
 /// buffered. A callback error stops decoding; the outer document is valid only
@@ -186,7 +186,7 @@ pub trait ArrayParser: Send {
     ) -> Result<ScanStats, ScanError> {
         scan(reader, |range, raw| item(range, self.order_key(raw), raw))
     }
-    /// Prompt-level output after the complete source validates, before its items.
+    /// File-level output after the complete source validates, before its items.
     fn begin(&mut self, _length: u64) -> Result<Option<crate::parse::Step>, String> {
         Ok(None)
     }
