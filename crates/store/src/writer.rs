@@ -573,6 +573,7 @@ impl Inner {
         {
             return Err(StoreError::ExcisionPending);
         }
+        crate::archive::retired::validate(&self.location, &self.archive)?;
         // Persist removal receipts with WAL semantics even during a first build.
         if !request.dry_run {
             self.settle()?;
@@ -659,6 +660,7 @@ impl Inner {
         })()
         .and_then(|()| {
             crate::fault::check("excision.after_vector_commit", &request.id)?;
+            crate::archive::retired::remove(&self.location, &self.archive)?;
             crate::excise::vector_cleanup::clear(&self.archive, &request.id)?;
             crate::excise::blob_cleanup::recover(&self.location, &self.archive)
         });

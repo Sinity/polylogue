@@ -28,7 +28,7 @@ fn an_index_left_unsynced_is_set_aside_and_rebuilt() {
         .unwrap();
     drop(lock);
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
-    assert!(root.join("index.db.unsynced").exists());
+    assert!(!root.join("index.db.unsynced").exists());
     assert!(!schema::unsynced(&open_read(&archive.index_db()).unwrap()).unwrap());
 }
 
@@ -106,39 +106,44 @@ fn excision_capture_spills_large_unit_keys_and_rollback_keeps_the_archive() {
 
 #[test]
 fn conflicting_history_refuses_before_blob_only_cleanup() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
-    let hash = store
-        .put(b"synthetic unresolved history".as_slice(), 1)
-        .unwrap();
-    let canonical = open_write(&archive.archive_db(), cache::SETUP).unwrap();
-    canonical.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('removed','session:claude-code:first',1,1)",[]).unwrap();
-    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    crate::excise::recovery::acknowledge(&canonical, &index).unwrap();
-    canonical
-        .execute(
-            "UPDATE excision SET scope='session:claude-code:other' WHERE id='removed'",
-            [],
-        )
-        .unwrap();
-    canonical
-        .execute(
-            "INSERT INTO pending_blob_excision VALUES (?1,'pending')",
-            [&hash.0[..]],
-        )
-        .unwrap();
-    assert!(!crate::excise::vector_cleanup::pending(&canonical).unwrap());
-    drop(index);
-    drop(canonical);
-    drop(lock);
-    assert!(matches!(
-        Archive::open_or_create(dir.path()),
-        Err(StoreError::ExcisionConflict { .. })
-    ));
-    assert!(store.contains(&hash));
-    let canonical = open_read(&archive.archive_db()).unwrap();
-    assert!(crate::excise::blob_cleanup::pending(&canonical).unwrap());
+    for retired in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+        let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
+        let hash = store
+            .put(b"synthetic unresolved history".as_slice(), 1)
+            .unwrap();
+        let canonical = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+        canonical.execute("INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('removed','session:claude-code:first',1,1)",[]).unwrap();
+        let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+        crate::excise::recovery::acknowledge(&canonical, &index).unwrap();
+        canonical
+            .execute(
+                "UPDATE excision SET scope='session:claude-code:other' WHERE id='removed'",
+                [],
+            )
+            .unwrap();
+        canonical
+            .execute(
+                "INSERT INTO pending_blob_excision VALUES (?1,'pending')",
+                [&hash.0[..]],
+            )
+            .unwrap();
+        assert!(!crate::excise::vector_cleanup::pending(&canonical).unwrap());
+        drop(index);
+        if retired {
+            fs::rename(archive.index_db(), archive.root.join("index.db.v26")).unwrap();
+        }
+        drop(canonical);
+        drop(lock);
+        assert!(matches!(
+            Archive::open_or_create(dir.path()),
+            Err(StoreError::ExcisionConflict { .. })
+        ));
+        assert!(store.contains(&hash));
+        let canonical = open_read(&archive.archive_db()).unwrap();
+        assert!(crate::excise::blob_cleanup::pending(&canonical).unwrap());
+    }
 }
 
 #[test]
@@ -172,16 +177,7 @@ fn previous_row_format_is_retired_before_a_new_index_is_opened() {
             .unwrap(),
         0
     );
-    let old = open_read(&dir.path().join("index.db.v26")).unwrap();
-    assert_eq!(
-        old.query_row(
-            "SELECT value FROM meta WHERE key='old-format-marker'",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "retained"
-    );
+    assert!(!dir.path().join("index.db.v26").exists());
     let canonical = open_read(&archive.archive_db()).unwrap();
     assert_eq!(
         canonical
