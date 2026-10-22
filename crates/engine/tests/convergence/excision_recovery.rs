@@ -316,3 +316,56 @@ fn excision_removes_retired_index_payloads_but_preview_preserves_them() {
         "provider files remain outside excision"
     );
 }
+
+#[test]
+fn unreadable_stored_text_refuses_excision_and_a_repaired_fixture_can_retry() {
+    let w = ClaudeHome::new();
+    w.append(
+        "victim.jsonl",
+        &user("v1", "victim", "synthetic removed body"),
+    );
+    w.append("kept.jsonl", &user("k1", "kept", "keep this exact body"));
+    let (mut e, _lock) = w.engine(64 << 20);
+    assert!(e.converge().unwrap().errors.is_empty());
+    let kept = w.export("claude-code:kept");
+    let revisions = w.count("SELECT count(*) AS n FROM a.revision");
+    let db = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+    let (text_id, body): (i64, Vec<u8>) = db.query_row(
+        "SELECT t.id,t.body FROM text t JOIN block b ON b.text_id=t.id JOIN session s ON s.pk=b.session_pk WHERE s.id='claude-code:victim'",
+        [], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).unwrap();
+    db.execute("UPDATE text SET body=x'626164' WHERE id=?1", [text_id])
+        .unwrap();
+    let request = ExciseRequest {
+        id: "unreadable-text".into(),
+        scope: ExciseScope::Session(SessionId::parse("claude-code:victim").unwrap()),
+        reason: None,
+        dry_run: false,
+    };
+    let error = e.excise(request.clone()).unwrap_err();
+    assert!(matches!(
+        error,
+        polylogue_engine::EngineError::Store(polylogue_store::StoreError::Io(_))
+    ));
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), revisions);
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM session WHERE id='claude-code:victim'"),
+        1
+    );
+    assert_eq!(w.export("claude-code:kept"), kept);
+    assert_eq!(
+        db.query_row("SELECT body FROM text WHERE id=?1", [text_id], |r| r
+            .get::<_, Vec<u8>>(0))
+            .unwrap(),
+        b"bad"
+    );
+    db.execute(
+        "UPDATE text SET body=?1 WHERE id=?2",
+        rusqlite::params![body, text_id],
+    )
+    .unwrap();
+    e.excise(request).unwrap();
+    assert!(messages_of(&w.root, "claude-code:victim").is_empty());
+    assert_eq!(w.export("claude-code:kept"), kept);
+}
