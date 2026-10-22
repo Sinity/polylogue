@@ -38,7 +38,9 @@ impl Parser for ClassifiedLines {
     ) -> Disposition {
         let kind = self.kind(value);
         carry.push((record.offset, kind.clone()));
-        records.fields(&kind, value, &[("kind", crate::fields::Rule::Read)]);
+        static FIELDS: crate::fields::Fields =
+            crate::fields::Fields::new(&[("kind", crate::fields::Rule::Read)]);
+        records.fields(&kind, value, &FIELDS);
         match kind.as_str() {
             "message" => Disposition::Materialized,
             "metadata" => Disposition::unknown("not interpreted"),

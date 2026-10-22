@@ -72,7 +72,7 @@ impl crate::export::ExportParser for Export {
     }
 }
 
-const MESSAGE_FIELDS: Fields = &[
+static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("uuid", Rule::Read),
     ("text", Rule::Read),
     ("content", Rule::Read),
@@ -108,7 +108,7 @@ const MESSAGE_FIELDS: Fields = &[
     ("stop_reason", Rule::Read),
     ("input_mode", Rule::Kept("how the prompt was entered")),
     ("compaction_summary", Rule::Read),
-];
+]);
 
 /// One claude.ai conversation object, shared with browser captures.
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
@@ -162,7 +162,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     let mut rows: Vec<(Option<i64>, i64, usize, Message)> = Vec::new();
     for (i, m) in messages.iter().enumerate() {
         let kind = str_of(m, "sender").unwrap_or("?").to_owned();
-        sink.records.fields(&kind, m, MESSAGE_FIELDS);
+        sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         match message(&sid, native, i, m, model.as_deref()) {
             Ok(msg) => {
                 // The summary claude.ai wrote when it compacted the

@@ -425,7 +425,7 @@ impl ClaudeCode {
         records: &mut Records,
     ) -> Disposition {
         let kind = self.kind(v);
-        records.fields(&kind, v, fields::MESSAGE_FIELDS);
+        records.fields(&kind, v, &fields::MESSAGE_FIELDS);
         let Some(session) = self.session(carry, v, out).map(|s| s.id.clone()) else {
             return Disposition::refused("session ID is empty");
         };

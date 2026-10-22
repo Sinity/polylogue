@@ -55,7 +55,7 @@ struct SessionState {
     previous: Option<polylogue_model::MessageId>,
 }
 
-const MESSAGE_FIELDS: Fields = &[
+static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("id", Rule::Read),
     ("timestamp", Rule::Read),
     ("type", Rule::Read),
@@ -93,7 +93,7 @@ const MESSAGE_FIELDS: Fields = &[
         "toolCalls[].renderOutputAsMarkdown",
         Rule::Excluded("display setting"),
     ),
-];
+]);
 
 impl ExportParser for GeminiCli {
     fn scan(
@@ -144,7 +144,7 @@ impl ExportParser for GeminiCli {
             return Ok(());
         };
         let kind = str_of(m, "type").unwrap_or("?").to_owned();
-        sink.records.fields(&kind, m, MESSAGE_FIELDS);
+        sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         let role = match kind.as_str() {
             "user" => Role::User,
             "gemini" => Role::Assistant,

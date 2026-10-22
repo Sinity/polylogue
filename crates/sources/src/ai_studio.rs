@@ -106,7 +106,7 @@ struct PromptState {
     started: bool,
 }
 
-const DOCUMENT_FIELDS: Fields = &[
+static DOCUMENT_FIELDS: Fields = Fields::new(&[
     ("runSettings", Rule::Read),
     ("systemInstruction", Rule::Read),
     ("chunkedPrompt", Rule::Read),
@@ -116,9 +116,9 @@ const DOCUMENT_FIELDS: Fields = &[
         Rule::Kept("the unsent draft in the input box"),
     ),
     ("citations", Rule::Kept("sources the replies cited")),
-];
+]);
 
-const CHUNK_FIELDS: Fields = &[
+static CHUNK_FIELDS: Fields = Fields::new(&[
     ("role", Rule::Read),
     ("author", Rule::Read),
     ("id", Rule::Read),
@@ -172,7 +172,7 @@ const CHUNK_FIELDS: Fields = &[
         "branchChildren",
         Rule::Kept("other prompts branched from here"),
     ),
-];
+]);
 
 impl ExportParser for AiStudio {
     fn scan(
@@ -207,7 +207,7 @@ impl ExportParser for AiStudio {
                 .record("prompt", &Disposition::refused("not an object"));
         } else {
             let sid = session_id(ORIGIN, &self.native).ok_or("unusable file name")?;
-            sink.records.fields("prompt", &doc, DOCUMENT_FIELDS);
+            sink.records.fields("prompt", &doc, &DOCUMENT_FIELDS);
             let mut session = Session::new(sid.clone(), SessionKind::Main);
             if let Some(title) = &self.title {
                 session.offer_title(title, TitleSource::FileName);
@@ -257,7 +257,7 @@ impl ExportParser for AiStudio {
         let i = self.state.position;
         self.state.position += 1;
         let kind = chunk_role(chunk).unwrap_or("?").to_owned();
-        sink.records.fields(&kind, chunk, CHUNK_FIELDS);
+        sink.records.fields(&kind, chunk, &CHUNK_FIELDS);
         if !self.state.started
             && let Some(at) = chunk.get("createTime").and_then(time_of)
         {
@@ -623,7 +623,7 @@ pub struct Listing {
     files_array: bool,
 }
 
-const LISTING_FIELDS: Fields = &[
+static LISTING_FIELDS: Fields = Fields::new(&[
     ("id", Rule::Read),
     ("name", Rule::Read),
     ("createdTime", Rule::Read),
@@ -640,7 +640,7 @@ const LISTING_FIELDS: Fields = &[
         Rule::Excluded("the collector's own bookkeeping"),
     ),
     ("size", Rule::Excluded("each stored revision has its size")),
-];
+]);
 
 impl ExportParser for Listing {
     fn scan(
@@ -680,7 +680,7 @@ impl ExportParser for Listing {
     ) -> Result<(), String> {
         let f: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         let f = &f;
-        sink.records.fields("file", f, LISTING_FIELDS);
+        sink.records.fields("file", f, &LISTING_FIELDS);
         let Some(sid) = str_of(f, "id").and_then(|id| session_id(ORIGIN, id)) else {
             sink.records.record("file", &Disposition::refused("no id"));
             return Ok(());

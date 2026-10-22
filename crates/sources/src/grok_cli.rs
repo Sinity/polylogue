@@ -89,7 +89,7 @@ pub struct Carry {
     announced: bool,
 }
 
-const FIELDS: Fields = &[
+static FIELDS: Fields = Fields::new(&[
     ("type", Rule::Read),
     ("content", Rule::Read),
     ("id", Rule::Read),
@@ -113,7 +113,7 @@ const FIELDS: Fields = &[
         Rule::Excluded("the CLI's count of typed prompts"),
     ),
     ("kind", Rule::Read),
-];
+]);
 
 /// What a Grok CLI tool does, by its name.
 fn action(tool: &str) -> ToolAction {
@@ -155,7 +155,7 @@ impl Parser for GrokCli {
         records: &mut Records,
     ) -> Disposition {
         let kind = self.kind(value);
-        records.fields(&kind, value, FIELDS);
+        records.fields(&kind, value, &FIELDS);
         let Some(sid) = session_id(ORIGIN, &self.place.session) else {
             return Disposition::refused("unusable session directory name");
         };

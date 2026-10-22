@@ -4,7 +4,7 @@
 
 use crate::fields::{Fields, Rule::*};
 
-pub const MESSAGE_FIELDS: Fields = &[
+pub static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("type", Read),
     ("uuid", Read),
     ("parentUuid", Read),
@@ -274,4 +274,4 @@ pub const MESSAGE_FIELDS: Fields = &[
         "message.content[].citations",
         Excluded("not read yet; stays in the stored bytes"),
     ),
-];
+]);

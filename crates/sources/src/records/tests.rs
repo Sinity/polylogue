@@ -2,6 +2,9 @@ use super::*;
 use crate::fields::Rule;
 use serde_json::json;
 
+static KNOWN: Fields = Fields::new(&[("known", Rule::Read)]);
+static EMPTY: Fields = Fields::new(&[]);
+
 #[test]
 fn line_and_document_records_keep_the_same_classifications_and_field_counts() {
     let mut lines = Records::lines(4);
@@ -14,9 +17,9 @@ fn line_and_document_records_keep_the_same_classifications_and_field_counts() {
         records.fields(
             "message",
             &json!({"known":1,"extra":2,"nested":{"extra":3}}),
-            &[("known", Rule::Read)],
+            &KNOWN,
         );
-        records.fields("message", &json!({"extra":4}), &[]);
+        records.fields("message", &json!({"extra":4}), &EMPTY);
     }
     let lines = lines.finish().unwrap();
     assert_eq!(lines, document.finish().unwrap());
@@ -54,16 +57,13 @@ fn field_checks_do_not_frame_records_or_change_declared_exclusions() {
         "excluded": 3,
         "items": [{"known": 1, "extra": 2}, {"known": 2, "extra": 3}],
     });
-    records.fields(
-        "event",
-        &value,
-        &[
-            ("read", Rule::Read),
-            ("kept", Rule::Kept("retained as event data")),
-            ("excluded", Rule::Excluded("not interpreted")),
-            ("items[].known", Rule::Read),
-        ],
-    );
+    static FIELDS: Fields = Fields::new(&[
+        ("read", Rule::Read),
+        ("kept", Rule::Kept("retained as event data")),
+        ("excluded", Rule::Excluded("not interpreted")),
+        ("items[].known", Rule::Read),
+    ]);
+    records.fields("event", &value, &FIELDS);
     let counts = records.finish().unwrap();
     assert_eq!(counts.framed, 0);
     assert!(counts.materialized.is_empty());
