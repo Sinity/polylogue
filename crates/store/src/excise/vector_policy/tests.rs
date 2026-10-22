@@ -251,6 +251,33 @@ fn deletion_and_receipt_roll_back_together() {
 }
 
 #[test]
+fn a_malformed_policy_suffix_refuses_before_deleting_its_valid_prefix() {
+    let w = World::new();
+    w.buy(1);
+    w.buy(2);
+    w.record("remove", &[1, 2]);
+    for suffix in ["\"bad hash\"", "null", "\"00\""] {
+        let json = format!("[\"{}\",{suffix}]", "01".repeat(32));
+        w.canonical()
+            .execute(
+                "UPDATE vector_deletion_policy SET hashes_json=?1 WHERE excision_id='remove'",
+                [json],
+            )
+            .unwrap();
+        assert!(w.recover().is_err());
+        assert_eq!(w.count(1), 1);
+        assert_eq!(w.count(2), 1);
+        assert_eq!(
+            w.vectors()
+                .query_row("SELECT count(*) FROM vector_policy_receipt", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
 fn a_receipt_edit_invalidates_an_empty_policy_watermark_too() {
     let w = World::new();
     w.buy(1);

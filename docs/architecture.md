@@ -608,8 +608,11 @@ all receipts and applies missing known policies before vector access. Matching
 receipts skip deletion, preserving vectors bought later for the same text.
 Changed or missing canonical policies and conflicting archive identities refuse
 reconciliation. A scalar policy-revision stamp admits ordinary vector snapshots;
-receipt edits invalidate that stamp. Reads pin the canonical and embeddings
-snapshots together, and writes retain the embeddings-first lock order.
+receipt edits invalidate that stamp. Recovery validates each complete canonical
+hash array before deletion, then visits its hashes individually. A comparison
+writer checks serde's canonical encoding against the retained bytes without
+building another whole array. Reads pin the canonical and embeddings snapshots
+together, and writes retain the embeddings-first lock order.
 
 A missing policy row means legacy unknown coverage, exposed as
 `VectorStatus.legacy_excisions`; it never means an empty deletion set. Historical
