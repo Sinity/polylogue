@@ -276,10 +276,10 @@ pub(super) fn remove_input(
         .execute("DELETE FROM revision WHERE input = ?1", [input])?;
     let mut texts = Vec::new();
     if let Some(pk) = input_pk(t.index, input)? {
-        let media:Vec<Vec<u8>>=t.index.prepare("SELECT DISTINCT v.blob_hash FROM version_block v JOIN message_source s ON s.version_hash=v.version_hash WHERE s.input_pk=?1 AND v.blob_hash IS NOT NULL")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let media:Vec<Vec<u8>>=t.index.prepare("SELECT DISTINCT v.blob_hash FROM version_block v JOIN message_version mv ON mv.pk=v.version_pk JOIN message_source s ON s.version_hash=mv.hash WHERE s.input_pk=?1 AND v.blob_hash IS NOT NULL")?.query_map([pk],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
         refused.blobs.extend(media.iter().map(|hash| hex(hash)));
 
-        texts=t.index.prepare("SELECT DISTINCT v.text_id FROM version_block v JOIN message_source s ON s.version_hash=v.version_hash WHERE s.input_pk=?1 AND v.text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<_>>()?;
+        texts=t.index.prepare("SELECT DISTINCT v.text_id FROM version_block v JOIN message_version mv ON mv.pk=v.version_pk JOIN message_source s ON s.version_hash=mv.hash WHERE s.input_pk=?1 AND v.text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<_>>()?;
         let messages: Vec<i64> = t
             .index
             .prepare("SELECT DISTINCT message_pk FROM message_source WHERE input_pk=?1")?

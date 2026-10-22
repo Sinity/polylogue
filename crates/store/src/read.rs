@@ -919,7 +919,7 @@ impl Reader<'_> {
                 start: start as u64,
                 end: end as u64,
                 current: current != 0,
-                message: crate::versions::load(self.conn()?, &hash)?,
+                message: crate::versions::load(self.conn()?, &hash)?.1,
             });
         }
         Ok(versions)

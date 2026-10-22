@@ -434,11 +434,11 @@ impl Ctx<'_, '_> {
         let Some((pk, (order_input, order_seq, order_id), preferred, (cur_session, cur_kind))) =
             cur
         else {
-            crate::versions::retain(self.tx, prepared, m, self.packed, self.bulk)?;
+            let version_pk = crate::versions::retain(self.tx, prepared, m, self.packed, self.bulk)?;
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, position))?;
             // A new message primary key cannot have a previous source to retire.
             self.set_source(pk, &new, true)?;
-            self.insert_blocks(pk, session_pk, m, &prepared.hash)?;
+            self.insert_blocks(pk, session_pk, m, version_pk)?;
             self.tx
                 .prepare_cached("UPDATE message SET present=?2 WHERE pk=?1")?
                 .execute(params![pk, i64::from(new.current)])?;
@@ -462,7 +462,7 @@ impl Ctx<'_, '_> {
         }) {
             return Ok(false);
         }
-        crate::versions::retain(self.tx, prepared, m, self.packed, self.bulk)?;
+        let version_pk = crate::versions::retain(self.tx, prepared, m, self.packed, self.bulk)?;
         if !new.current {
             self.upsert_source(pk, &new, false)?;
             return Ok(false);
@@ -514,7 +514,7 @@ impl Ctx<'_, '_> {
         self.tx
             .execute("UPDATE message SET present = 1 WHERE pk = ?1", [pk])?;
         if !unchanged {
-            self.insert_blocks(pk, session_pk, m, &prepared.hash)?;
+            self.insert_blocks(pk, session_pk, m, version_pk)?;
         }
         Ok(true)
     }
@@ -734,12 +734,12 @@ impl Ctx<'_, '_> {
         message_pk: i64,
         session_pk: i64,
         m: &Message,
-        hash: &[u8],
+        version_pk: i64,
     ) -> Result<()> {
         let mut statement = self.tx.prepare_cached(
-            "SELECT idx, body, text_id FROM version_block WHERE version_hash=?1 ORDER BY idx",
+            "SELECT idx, body, text_id FROM version_block WHERE version_pk=?1 ORDER BY idx",
         )?;
-        let mut rows = statement.query([hash])?;
+        let mut rows = statement.query([version_pk])?;
         for (idx, block) in m.blocks.iter().enumerate() {
             let row = rows
                 .next()?

@@ -624,16 +624,17 @@ CREATE INDEX message_source_current ON message_source(input_pk,session_pk,curren
 CREATE INDEX message_source_snapshot ON message_source(input_pk,chain,source_snapshot);
 CREATE INDEX message_source_version ON message_source(version_hash);
 CREATE TABLE message_version (
-  hash BLOB PRIMARY KEY,
+  pk INTEGER PRIMARY KEY,
+  hash BLOB NOT NULL UNIQUE,
   attrs BLOB NOT NULL
-) STRICT, WITHOUT ROWID;
+) STRICT;
 CREATE TABLE version_block (
-  version_hash BLOB NOT NULL REFERENCES message_version(hash) ON DELETE CASCADE,
+  version_pk INTEGER NOT NULL REFERENCES message_version(pk) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
   body BLOB NOT NULL,
   text_id INTEGER REFERENCES text(id),
   blob_hash BLOB,
-  PRIMARY KEY (version_hash, idx)
+  PRIMARY KEY (version_pk, idx)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX version_block_text ON version_block(text_id) WHERE text_id IS NOT NULL;
 CREATE INDEX version_block_blob ON version_block(blob_hash) WHERE blob_hash IS NOT NULL;
