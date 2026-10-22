@@ -58,11 +58,14 @@ impl ParseStep {
         if self.prepared.released {
             return;
         }
+        let Ok(mut packer) = crate::encoding::RowPacker::new() else {
+            return;
+        };
         let Ok(messages) = self
             .output
             .messages
             .iter()
-            .map(|r| PreparedMessage::new(&r.message))
+            .map(|r| packer.pack_message(&r.message))
             .collect::<Result<Vec<_>>>()
         else {
             return;
@@ -71,22 +74,20 @@ impl ParseStep {
             .output
             .events
             .iter()
-            .map(pack_event)
+            .map(|event| packer.pack_event(event))
             .collect::<Result<Vec<_>>>()
         else {
             return;
         };
         let mut texts = HashMap::new();
-        let mut packer = crate::encoding::TextPacker::new().ok();
         for row in &self.output.messages {
             for block in &row.message.blocks {
                 let Some(text) = block_text(block) else {
                     continue;
                 };
                 let hash = *blake3::hash(text.as_bytes()).as_bytes();
-                if let (std::collections::hash_map::Entry::Vacant(slot), Some(p)) =
-                    (texts.entry(hash), packer.as_mut())
-                    && let Ok(bytes) = p.pack(text)
+                if let std::collections::hash_map::Entry::Vacant(slot) = texts.entry(hash)
+                    && let Ok(bytes) = packer.pack_text(text)
                 {
                     slot.insert(bytes);
                 }
