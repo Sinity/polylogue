@@ -39,6 +39,40 @@ pub(crate) struct PreparedMessage {
 
 impl PreparedMessage {
     pub(crate) fn new(message: &Message) -> Result<Self> {
+        RowPacker::new()?.pack_message(message)
+    }
+}
+
+pub(crate) fn unpack_json<T: DeserializeOwned>(packed: &[u8]) -> Result<T> {
+    Ok(serde_json::from_slice(&unpack_bytes(packed)?)?)
+}
+
+/// One independent compression frame per row, with one encoder per batch.
+pub(crate) struct RowPacker(zstd::bulk::Compressor<'static>);
+
+impl RowPacker {
+    pub(crate) fn new() -> std::io::Result<Self> {
+        zstd::bulk::Compressor::new(LEVEL).map(Self)
+    }
+
+    pub(crate) fn pack_text(&mut self, text: &str) -> std::io::Result<Vec<u8>> {
+        self.0.compress(text.as_bytes())
+    }
+
+    fn pack_json(&mut self, value: &impl Serialize) -> Result<Vec<u8>> {
+        Ok(self.0.compress(&serde_json::to_vec(value)?)?)
+    }
+
+    fn pack_block(&mut self, block: &Block) -> Result<Vec<u8>> {
+        Ok(self.0.compress(&block_bytes(block)?)?)
+    }
+
+    pub(crate) fn pack_event(&mut self, event: &Event) -> Result<(String, Vec<u8>)> {
+        let (id, data) = event_bytes(event)?;
+        Ok((id, self.0.compress(&data)?))
+    }
+
+    pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
         let hash = *blake3::hash(&serde_json::to_vec(message)?).as_bytes();
         let attrs = Message {
             id: message.id.clone(),
@@ -55,38 +89,26 @@ impl PreparedMessage {
             duration_ms: message.duration_ms,
             production: message.production.clone(),
         };
-        Ok(Self {
+        Ok(PreparedMessage {
             id: message.id.clone(),
             hash,
-            attrs: pack_json(&attrs)?,
+            attrs: self.pack_json(&attrs)?,
             blocks: message
                 .blocks
                 .iter()
-                .map(pack_block)
+                .map(|block| self.pack_block(block))
                 .collect::<Result<_>>()?,
         })
     }
 }
 
-pub(crate) fn unpack_json<T: DeserializeOwned>(packed: &[u8]) -> Result<T> {
-    Ok(serde_json::from_slice(&unpack_bytes(packed)?)?)
-}
-
-/// Reuses the compressor across a parse batch's texts.
-pub(crate) struct TextPacker(zstd::bulk::Compressor<'static>);
-
-impl TextPacker {
-    pub(crate) fn new() -> std::io::Result<Self> {
-        zstd::bulk::Compressor::new(LEVEL).map(Self)
-    }
-
-    pub(crate) fn pack(&mut self, text: &str) -> std::io::Result<Vec<u8>> {
-        self.0.compress(text.as_bytes())
-    }
-}
-
-/// A block as the `block.body` column stores it.
+/// One-shot block encoding for compatibility checks.
+#[cfg(test)]
 pub(crate) fn pack_block(block: &Block) -> Result<Vec<u8>> {
+    Ok(pack_bytes(&block_bytes(block)?)?)
+}
+
+fn block_bytes(block: &Block) -> Result<Vec<u8>> {
     let body = match block {
         Block::Text { .. } => Block::Text {
             text: String::new(),
@@ -114,15 +136,20 @@ pub(crate) fn pack_block(block: &Block) -> Result<Vec<u8>> {
             attachments: attachments.clone(),
         },
         // These values are stored whole, so serialization can borrow them.
-        _ => return pack_json(block),
+        _ => return Ok(serde_json::to_vec(block)?),
     };
-    pack_json(&body)
+    Ok(serde_json::to_vec(&body)?)
 }
 
 /// An event's id includes its message anchor: identical state recorded at
 /// different messages is distinct. Physical ranges do not change the fact's
 /// identity when another route supplies it.
 pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
+    let (id, data) = event_bytes(e)?;
+    Ok((id, pack_bytes(&data)?))
+}
+
+fn event_bytes(e: &Event) -> Result<(String, Vec<u8>)> {
     let data = serde_json::to_vec(&e.data)?;
     let mut h = blake3::Hasher::new();
     h.update(e.session.to_string().as_bytes());
@@ -140,7 +167,7 @@ pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
         h.update(b"\0after\0");
         h.update(after.to_string().as_bytes());
     }
-    Ok((h.finalize().to_hex().to_string(), pack_bytes(&data)?))
+    Ok((h.finalize().to_hex().to_string(), data))
 }
 
 /// Reads a block back from `block.body`.

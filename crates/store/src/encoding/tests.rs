@@ -25,12 +25,53 @@ fn event_identity_distinguishes_message_anchors_and_ignores_physical_ranges() {
 
 #[test]
 fn text_rows_read_older_compression_levels_and_reuse_a_packer() {
-    let mut packer = TextPacker::new().unwrap();
+    let mut packer = RowPacker::new().unwrap();
     for text in ["", "Łódź café 🦀", "a repeated body", "a repeated body"] {
         let old = zstd::bulk::compress(text.as_bytes(), 3).unwrap();
         assert_eq!(unpack_text(&old).unwrap(), text);
         assert_eq!(unpack_text(&pack_text(text).unwrap()).unwrap(), text);
-        assert_eq!(unpack_text(&packer.pack(text).unwrap()).unwrap(), text);
+        assert_eq!(unpack_text(&packer.pack_text(text).unwrap()).unwrap(), text);
+    }
+}
+
+#[test]
+fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
+    let mut packer = RowPacker::new().unwrap();
+    for size in [0, 64 * 1024, 3, 1024 * 1024, 1] {
+        let text = "λ".repeat(size);
+        let value = json!({"text":text,"nested":[null,false,42],"unknown":{"empty":[]}});
+        assert_eq!(packer.pack_text(&text).unwrap(), pack_text(&text).unwrap());
+        assert_eq!(
+            packer.pack_json(&value).unwrap(),
+            pack_json(&value).unwrap()
+        );
+        let event = Event {
+            session: polylogue_model::SessionId::parse("claude-code:session").unwrap(),
+            kind: "synthetic".into(),
+            at: None,
+            after: None,
+            range: None,
+            data: value.clone(),
+        };
+        assert_eq!(
+            packer.pack_event(&event).unwrap(),
+            pack_event(&event).unwrap()
+        );
+        let message: Message = serde_json::from_value(json!({
+            "id":"claude-code:message", "session":"claude-code:session", "role":"assistant",
+            "blocks":[{"type":"tool_call","input":value}], "usage":{}
+        }))
+        .unwrap();
+        let prepared = packer.pack_message(&message).unwrap();
+        assert_eq!(prepared, PreparedMessage::new(&message).unwrap());
+        assert_eq!(prepared.blocks[0], pack_block(&message.blocks[0]).unwrap());
+        assert_eq!(
+            prepared.hash,
+            *blake3::hash(&serde_json::to_vec(&message).unwrap()).as_bytes()
+        );
+        let mut metadata = message;
+        metadata.blocks.clear();
+        assert_eq!(prepared.attrs, pack_json(&metadata).unwrap());
     }
 }
 
