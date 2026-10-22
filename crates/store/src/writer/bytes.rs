@@ -151,12 +151,16 @@ pub(super) fn insert_blob(tx: &Transaction<'_>, piece: &Piece) -> Result<()> {
 }
 
 /// New IDs sort by insertion within one transaction's shared sequence.
+/// A UUID distinguishes independent archives with equal local counters.
 /// Restored IDs remain opaque; migrations order those facts by their rowid.
 pub(crate) fn observation_id(tx: &Connection, seq: i64, input: &str) -> Result<String> {
     let ordinal: i64 = tx
         .prepare_cached("SELECT COALESCE(MAX(rowid),0)+1 FROM observation")?
         .query_row([], |r| r.get(0))?;
-    Ok(format!("{seq:016x}-{ordinal:016x}-{input}"))
+    Ok(format!(
+        "{seq:016x}-{ordinal:016x}-{}-{input}",
+        uuid::Uuid::now_v7()
+    ))
 }
 
 pub(super) fn insert_observation(
