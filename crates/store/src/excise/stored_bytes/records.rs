@@ -61,14 +61,11 @@ pub(super) fn preflight(
                         .try_into()
                         .map_err(|_| refuse("invalid source blob hash".into()))?;
                     let bytes = super::plain_blob::PlainBlob::load(t, input, BlobHash(hash_bytes))?;
-                    let ranges = erasures.requested(&hash)?;
-                    let checked = bytes.plan(&ranges).map_err(|error| match error {
+                    bytes.plan(erasures, &hash).map_err(|error| match error {
                         super::super::record_ranges::Error::Records(detail) => refuse(detail),
                         super::super::record_ranges::Error::Io(error) => StoreError::Io(error),
-                    })?;
-                    let counts = (checked.documents, checked.erased_documents);
-                    erasures.checked(&hash, &checked)?;
-                    counts
+                        super::super::record_ranges::Error::Store(error) => error,
+                    })?
                 }
             };
             documents += piece_documents;
@@ -89,7 +86,7 @@ pub(super) fn preflight(
     if erasures.has_unchecked()? {
         return Err(refuse("source citation has no retained piece".into()));
     }
-    erasures.visit(|hash, ranges| {
+    erasures.visit(|hash| {
         let mut uses = t
             .archive
             .prepare("SELECT input,chain,offset,length,blob_offset FROM extent WHERE blob=?1")?;
@@ -105,13 +102,13 @@ pub(super) fn preflight(
                     "source bytes are also held by a source outside this rewrite".into(),
                 ));
             }
-            for &(start, end) in ranges {
+            erasures.visit_ranges(hash, |start,end| {
                 let start = start as i64;
                 let end = end as i64;
                 let a = start.max(blob_offset) - blob_offset + offset;
                 let b = end.min(blob_offset + length) - blob_offset + offset;
                 if a >= b {
-                    continue;
+                    return Ok(());
                 }
                 let overlaps:bool=t.index.query_row("SELECT EXISTS(
                     SELECT 1 FROM message_source s JOIN input_ref r ON r.pk=s.input_pk
@@ -125,7 +122,8 @@ pub(super) fn preflight(
                         "source removal overlaps a surviving session record".into(),
                     ));
                 }
-            }
+                Ok(())
+            })?;
         }
         Ok(())
     })

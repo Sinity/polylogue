@@ -1,6 +1,14 @@
-use super::super::record_ranges::Erasure;
+use super::super::record_ranges::Error;
 use crate::Result;
 use rusqlite::{Connection, OptionalExtension, params};
+
+mod cursor;
+
+impl From<rusqlite::Error> for Error {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Store(error.into())
+    }
+}
 
 /// Private computation for one shared-input rewrite. All pieces are checked
 /// before any replacement is installed; the archive owns durable recovery.
@@ -16,6 +24,7 @@ impl Erasures {
              PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
              CREATE TABLE requested(hash BLOB, start INTEGER, end INTEGER,
                  PRIMARY KEY(hash,start,end)) WITHOUT ROWID;
+             CREATE TABLE normalized(hash BLOB,start INTEGER,end INTEGER,PRIMARY KEY(hash,start)) WITHOUT ROWID;
              CREATE TABLE checked(hash BLOB PRIMARY KEY, documents INTEGER,
                  erased INTEGER, changed INTEGER) WITHOUT ROWID;
              CREATE TABLE ranges(hash BLOB, start INTEGER, end INTEGER,
@@ -32,10 +41,6 @@ impl Erasures {
         Ok(())
     }
 
-    pub fn requested(&self, hash: &[u8]) -> Result<Vec<(usize, usize)>> {
-        self.read_ranges("requested", hash)
-    }
-
     pub fn counts(&self, hash: &[u8]) -> Result<Option<(usize, usize)>> {
         Ok(self
             .conn
@@ -47,24 +52,6 @@ impl Erasures {
             .optional()?)
     }
 
-    pub fn checked(&self, hash: &[u8], plan: &Erasure) -> Result<()> {
-        let changed = !plan.ranges.is_empty();
-        self.conn
-            .prepare_cached("INSERT INTO checked VALUES(?1,?2,?3,?4)")?
-            .execute(params![
-                hash,
-                plan.documents as i64,
-                plan.erased_documents as i64,
-                changed
-            ])?;
-        for &(start, end) in &plan.ranges {
-            self.conn
-                .prepare_cached("INSERT OR IGNORE INTO ranges VALUES(?1,?2,?3)")?
-                .execute(params![hash, start as i64, end as i64])?;
-        }
-        Ok(())
-    }
-
     pub fn has_unchecked(&self) -> Result<bool> {
         Ok(self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM requested r WHERE NOT EXISTS
@@ -74,28 +61,60 @@ impl Erasures {
         )?)
     }
 
-    /// Visit the completed plans in hash order, loading one blob's ranges.
-    pub fn visit(&self, mut f: impl FnMut(&[u8], &[(usize, usize)]) -> Result<()>) -> Result<()> {
+    pub fn plan_blob(
+        &self,
+        hash: &[u8],
+        file: &std::fs::File,
+    ) -> std::result::Result<(usize, usize), Error> {
+        let mut cursor = cursor::Cursor::new(self, hash, file)?;
+        let result = super::super::record_ranges::plan_file(file, &mut cursor);
+        if let Some(error) = cursor.error.take() {
+            return Err(error);
+        }
+        let counts = result?;
+        cursor.finish()?;
+        crate::fault::check("excision_ranges.complete", "").map_err(Error::Store)?;
+        self.conn.execute(
+            "INSERT INTO checked SELECT ?1,?2,?3,EXISTS(SELECT 1 FROM ranges WHERE hash=?1)",
+            params![hash, counts.0 as i64, counts.1 as i64],
+        )?;
+        Ok(counts)
+    }
+
+    /// Only complete plans may supply replacement ranges.
+    pub fn visit_ranges(
+        &self,
+        hash: &[u8],
+        mut f: impl FnMut(usize, usize) -> Result<()>,
+    ) -> Result<()> {
+        if self.counts(hash)?.is_none() {
+            return Err(crate::StoreError::Invalid(
+                "source blob erasure plan is incomplete".into(),
+            ));
+        }
+        let mut stmt = self.conn.prepare_cached("SELECT r.start,r.end FROM ranges r JOIN checked c ON c.hash=r.hash WHERE r.hash=?1 ORDER BY r.start,r.end")?;
+        let mut rows = stmt.query([hash])?;
+        while let Some(row) = rows.next()? {
+            f(
+                row.get::<_, i64>(0)? as usize,
+                row.get::<_, i64>(1)? as usize,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn visit(&self, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
         let mut stmt = self
             .conn
             .prepare_cached("SELECT hash FROM checked WHERE changed ORDER BY hash")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            let hash: Vec<u8> = row.get(0)?;
-            f(&hash, &self.read_ranges("ranges", &hash)?)?;
+            f(row
+                .get_ref(0)?
+                .as_blob()
+                .map_err(|e| crate::StoreError::Invalid(e.to_string()))?)?;
         }
         Ok(())
-    }
-
-    fn read_ranges(&self, table: &str, hash: &[u8]) -> Result<Vec<(usize, usize)>> {
-        let mut stmt = self.conn.prepare_cached(&format!(
-            "SELECT start,end FROM {table} WHERE hash=?1 ORDER BY start,end"
-        ))?;
-        Ok(stmt
-            .query_map([hash], |r| {
-                Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)? as usize))
-            })?
-            .collect::<rusqlite::Result<_>>()?)
     }
 }
 

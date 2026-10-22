@@ -497,6 +497,16 @@ independent units and the parents that could contain legacy embedded copies.
 The Engine loads refused locations through the typed store reader. Malformed
 location records stop collection rather than becoming an empty refusal list.
 
+Record excision keeps requested, normalized and completed byte ranges in its
+existing private `Erasures` database. The shared JSON visitor advances through
+one normalized interval and its endpoint flags; one pending output range merges
+whitespace-only gaps using bounded file reads. Complete EOF and all endpoints
+must validate before counts mark the plan usable. Failures leave unpublished
+ranges inaccessible, and retries clear that blob's partial state. Ownership
+checks and physical replacement stream the completed ranges. Memory still
+includes one decoded JSON record, final observation JSON and the separate
+whole-document text-blanking range list.
+
 Restore orders confirmations and folds later replacements in an operation-scoped
 SQLite file. It checks exact repeats, conflicting positions, gaps and unit order
 before opening payloads. The same scratch database holds excision's input and
