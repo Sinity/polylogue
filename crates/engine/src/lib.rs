@@ -464,6 +464,7 @@ impl Engine {
         let out = self.archive.exports_dir().join(origin.name).join(name);
         if let Err(e) = self.exporter.export(db, &out) {
             pass.errors.push(format!("export {}: {e}", db.display()));
+            return None;
         }
         out.is_file().then_some(out)
     }
