@@ -96,7 +96,7 @@ impl crate::export::ExportParser for Export {
 }
 
 /// A mapping node's own fields.
-const NODE_FIELDS: Fields = &[
+static NODE_FIELDS: Fields = Fields::new(&[
     ("id", Rule::Read),
     ("message", Rule::Read),
     ("parent", Rule::Read),
@@ -104,13 +104,13 @@ const NODE_FIELDS: Fields = &[
         "children",
         Rule::Excluded("the parent links carry the same tree"),
     ),
-];
+]);
 
 /// A message's fields. `metadata` holds dozens of provider keys (search
 /// results, citations, task state); it is kept whole in the stored export
 /// and read where it says something about the message (model, finish,
 /// attachments, hidden prompts).
-const MESSAGE_FIELDS: Fields = &[
+static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("id", Rule::Read),
     ("author", Rule::Read),
     ("author.role", Rule::Read),
@@ -137,7 +137,7 @@ const MESSAGE_FIELDS: Fields = &[
     ),
     ("recipient", Rule::Read),
     ("channel", Rule::Kept("reasoning-model output channel")),
-];
+]);
 
 /// One conversation object: its session, messages and events. Shared by
 /// the export and by browser captures of the same conversation, so both
@@ -215,7 +215,7 @@ fn conversation_with_owners(
     let mut nodes: Vec<(&String, &Json)> = mapping.iter().collect();
     nodes.sort_by_key(|(id, _)| places.get(id.as_str()).copied());
     for (index, (node_id, node)) in nodes.into_iter().enumerate() {
-        sink.records.fields("node", node, NODE_FIELDS);
+        sink.records.fields("node", node, &NODE_FIELDS);
         let Some(msg) = node.get("message").filter(|m| !m.is_null()) else {
             continue; // The root and other empty nodes hold no record.
         };
@@ -224,7 +224,7 @@ fn conversation_with_owners(
             .and_then(Json::as_str)
             .unwrap_or("?")
             .to_owned();
-        sink.records.fields(&kind, msg, MESSAGE_FIELDS);
+        sink.records.fields(&kind, msg, &MESSAGE_FIELDS);
         match message(&sid, node_id, msg, &tree, default_model.as_deref()) {
             Ok(m) => {
                 let time = msg

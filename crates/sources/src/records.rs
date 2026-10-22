@@ -34,7 +34,7 @@ impl Records {
     }
 
     /// Record fields neither read nor excluded by this format's declaration.
-    pub fn fields(&mut self, kind: &str, value: &Json, declared: Fields) {
+    pub fn fields(&mut self, kind: &str, value: &Json, declared: &Fields) {
         for path in unaccounted(value, declared) {
             self.accounting.unread(kind, &path);
         }

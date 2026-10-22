@@ -48,7 +48,7 @@ pub fn open(path: &Path) -> Option<Parse> {
         .then(|| Parse::Snapshots(Box::new(Capture)))
 }
 
-const CAPTURE_FIELDS: Fields = &[
+static CAPTURE_FIELDS: Fields = Fields::new(&[
     (KIND_KEY, Rule::Read),
     ("schema_version", Rule::Read),
     (
@@ -63,11 +63,11 @@ const CAPTURE_FIELDS: Fields = &[
     ("provider_meta", Rule::Read),
     ("raw_provider_payload", Rule::Read),
     ("session", Rule::Read),
-];
+]);
 
 /// Fields of the extension's normalized turns. Only read when the page
 /// exposed no provider JSON.
-const TURN_FIELDS: Fields = &[
+static TURN_FIELDS: Fields = Fields::new(&[
     ("provider_turn_id", Rule::Read),
     ("role", Rule::Read),
     ("text", Rule::Read),
@@ -85,7 +85,7 @@ const TURN_FIELDS: Fields = &[
         "identity_observation",
         Rule::Kept("how the adapter matched the turn to the page; no reader yet"),
     ),
-];
+]);
 
 /// The origin a capture's `session.provider` names: the provider's export
 /// origin, so a capture and an export of one conversation unite.
@@ -128,7 +128,7 @@ impl DocumentParser for Capture {
                 );
             }
         };
-        sink.records.fields("capture", &capture, CAPTURE_FIELDS);
+        sink.records.fields("capture", &capture, &CAPTURE_FIELDS);
         // `source` names the capturing program (`browser-extension`); the
         // provider whose conversation it is sits in the session.
         let Some(provider) = capture
@@ -229,7 +229,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
     list.sort_by_key(|t| t.get("ordinal").and_then(Json::as_i64).unwrap_or(i64::MAX));
     for (i, turn) in list.into_iter().enumerate() {
         let role_name = str_of(turn, "role").unwrap_or("?").to_owned();
-        sink.records.fields("turn", turn, TURN_FIELDS);
+        sink.records.fields("turn", turn, &TURN_FIELDS);
         let (role, prompt_kind, direction) = match role_name.as_str() {
             "user" | "human" => (
                 Role::User,

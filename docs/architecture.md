@@ -9,8 +9,11 @@ also contain intended behavior that is not implemented or qualified yet.
 recognition, paths, framing, parser version and tool capabilities. Opening
 an input selects line, export or document parsing; callers do not maintain a second
 framing flag. Parsers produce model values, record ranges and accounting. The
-shared `Records` sink owns disposition and wire-field counts. Line parsing
-supplies an independent framed total; document parsers submit the items they
+shared `Records` sink owns disposition and wire-field counts. Each static
+`Fields` declaration builds a lookup of declared paths and their parents once,
+shared across parsing threads. Traversal preserves literal dotted keys and
+array occurrences; it does not rescan every declaration for each wire field.
+Line parsing supplies an independent framed total; document parsers submit the items they
 discover. Finishing either path checks the same accounting invariant.
 
 Each message-source occurrence records its parser version. Within the same

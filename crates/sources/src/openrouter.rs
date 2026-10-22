@@ -39,7 +39,7 @@ pub struct OpenRouter {
     characters: Json,
 }
 
-const DOCUMENT_FIELDS: Fields = &[
+static DOCUMENT_FIELDS: Fields = Fields::new(&[
     (
         "version",
         Rule::Excluded("the export format's version string"),
@@ -60,9 +60,9 @@ const DOCUMENT_FIELDS: Fields = &[
         "artifactFileContents",
         Rule::Kept("artifact panes, kept as an event"),
     ),
-];
+]);
 
-const MESSAGE_FIELDS: Fields = &[
+static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("id", Rule::Read),
     ("type", Rule::Read),
     ("content", Rule::Read),
@@ -107,7 +107,7 @@ const MESSAGE_FIELDS: Fields = &[
         Rule::Kept("plugins enabled for the reply"),
     ),
     ("metadata.reasoning", Rule::Read),
-];
+]);
 
 impl ExportParser for OpenRouter {
     fn scan(
@@ -165,7 +165,7 @@ impl ExportParser for OpenRouter {
             return Ok(());
         };
         let kind = str_of(m, "type").unwrap_or("?").to_owned();
-        sink.records.fields(&kind, m, MESSAGE_FIELDS);
+        sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         match message(sid, m, &self.characters, sink) {
             Ok(message) => {
                 let offset = sink.position();
@@ -184,7 +184,7 @@ impl ExportParser for OpenRouter {
 
 impl OpenRouter {
     fn start(&mut self, doc: &Json, first: Option<&Json>, sink: &mut Sink<'_>) {
-        sink.records.fields("room", doc, DOCUMENT_FIELDS);
+        sink.records.fields("room", doc, &DOCUMENT_FIELDS);
         let Some(first_id) = first.and_then(|m| str_of(m, "id")) else {
             return sink
                 .records

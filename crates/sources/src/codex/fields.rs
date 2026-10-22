@@ -9,19 +9,19 @@ const PASSTHROUGH: (&str, crate::fields::Rule) = (
     Excluded("opaque metadata the harness hands back to the API"),
 );
 
-pub fn for_item(ty: &str) -> Fields {
+pub fn for_item(ty: &str) -> &'static Fields {
     match ty {
-        "message" => MESSAGE,
-        "reasoning" => REASONING,
-        "function_call" | "custom_tool_call" | "local_shell_call" | "tool_search_call" => CALL,
-        "function_call_output" | "custom_tool_call_output" | "tool_search_output" => OUTPUT,
-        "web_search_call" => WEB_SEARCH,
-        "agent_message" => AGENT_MESSAGE,
-        _ => &[("type", Read)],
+        "message" => &MESSAGE,
+        "reasoning" => &REASONING,
+        "function_call" | "custom_tool_call" | "local_shell_call" | "tool_search_call" => &CALL,
+        "function_call_output" | "custom_tool_call_output" | "tool_search_output" => &OUTPUT,
+        "web_search_call" => &WEB_SEARCH,
+        "agent_message" => &AGENT_MESSAGE,
+        _ => &TYPE_ONLY,
     }
 }
 
-const MESSAGE: Fields = &[
+static MESSAGE: Fields = Fields::new(&[
     ("type", Read),
     ("id", Read),
     ("timestamp", Read),
@@ -57,9 +57,9 @@ const MESSAGE: Fields = &[
         Excluded("the turn's end is its task_complete record"),
     ),
     PASSTHROUGH,
-];
+]);
 
-const REASONING: Fields = &[
+static REASONING: Fields = Fields::new(&[
     ("type", Read),
     ("id", Read),
     ("timestamp", Read),
@@ -71,9 +71,9 @@ const REASONING: Fields = &[
     ("content[].text", Read),
     ("encrypted_content", Read),
     PASSTHROUGH,
-];
+]);
 
-const CALL: Fields = &[
+static CALL: Fields = Fields::new(&[
     ("type", Read),
     ("id", Read),
     ("timestamp", Read),
@@ -92,9 +92,9 @@ const CALL: Fields = &[
         Excluded("the call's outcome is read from its output"),
     ),
     PASSTHROUGH,
-];
+]);
 
-const OUTPUT: Fields = &[
+static OUTPUT: Fields = Fields::new(&[
     ("type", Read),
     ("id", Read),
     ("call_id", Read),
@@ -111,17 +111,17 @@ const OUTPUT: Fields = &[
         Excluded("the outcome is read from the output text"),
     ),
     PASSTHROUGH,
-];
+]);
 
-const WEB_SEARCH: Fields = &[
+static WEB_SEARCH: Fields = Fields::new(&[
     ("type", Read),
     ("id", Read),
     ("status", Read),
     ("action", Read),
     PASSTHROUGH,
-];
+]);
 
-const AGENT_MESSAGE: Fields = &[
+static AGENT_MESSAGE: Fields = Fields::new(&[
     ("type", Read),
     ("id", Read),
     ("author", Read),
@@ -134,4 +134,6 @@ const AGENT_MESSAGE: Fields = &[
         Excluded("a message between agents only the API can read"),
     ),
     PASSTHROUGH,
-];
+]);
+
+static TYPE_ONLY: Fields = Fields::new(&[("type", Read)]);

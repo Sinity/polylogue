@@ -54,14 +54,14 @@ struct ChatState {
     position: usize,
 }
 
-const DOCUMENT_FIELDS: Fields = &[
+static DOCUMENT_FIELDS: Fields = Fields::new(&[
     ("messages", Rule::Read),
     ("id", Rule::Read),
     ("model", Rule::Read),
     ("title", Rule::Read),
-];
+]);
 
-const MESSAGE_FIELDS: Fields = &[
+static MESSAGE_FIELDS: Fields = Fields::new(&[
     ("role", Rule::Read),
     ("content", Rule::Read),
     (
@@ -74,7 +74,7 @@ const MESSAGE_FIELDS: Fields = &[
     ("reasoning_content", Rule::Read),
     ("refusal", Rule::Read),
     ("function_call", Rule::Read),
-];
+]);
 
 impl ExportParser for OpenAiChat {
     fn scan(
@@ -126,7 +126,7 @@ impl ExportParser for OpenAiChat {
         let i = self.state.position;
         self.state.position += 1;
         let kind = str_of(m, "role").unwrap_or("?").to_owned();
-        sink.records.fields(&kind, m, MESSAGE_FIELDS);
+        sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         let Some(id) = message_id(ORIGIN, &format!("{native}#{i}")) else {
             sink.records
                 .record(&kind, &Disposition::refused("unusable message ID"));
@@ -204,7 +204,7 @@ impl OpenAiChat {
             }
         };
         if let Some(h) = header {
-            sink.records.fields("chat", h, DOCUMENT_FIELDS);
+            sink.records.fields("chat", h, &DOCUMENT_FIELDS);
         }
         let native = header
             .and_then(|h| str_of(h, "id"))

@@ -51,7 +51,7 @@ pub struct HookSpool;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Carry {}
 
-const FIELDS: Fields = &[
+static FIELDS: Fields = Fields::new(&[
     ("event_id", Rule::Read),
     ("event_type", Rule::Read),
     ("event", Rule::Read),
@@ -68,7 +68,7 @@ const FIELDS: Fields = &[
         "payload",
         Rule::Kept("the hook's input, kept whole as the event's data"),
     ),
-];
+]);
 
 /// `PreToolUse` → `hook_pre_tool_use`.
 fn event_kind(event_type: &str) -> String {
@@ -107,7 +107,7 @@ impl Parser for HookSpool {
         records: &mut Records,
     ) -> Disposition {
         let kind = self.kind(value);
-        records.fields(&kind, value, FIELDS);
+        records.fields(&kind, value, &FIELDS);
         let Some(event_type) = str_of(value, "event_type").or_else(|| str_of(value, "event"))
         else {
             return Disposition::refused("no event_type");

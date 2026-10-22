@@ -1,7 +1,7 @@
 use super::*;
 use serde_json::json;
 
-const FIELDS: Fields = &[
+static FIELDS: Fields = Fields::new(&[
     ("type", Rule::Read),
     ("message", Rule::Read),
     ("message.content", Rule::Read),
@@ -9,7 +9,7 @@ const FIELDS: Fields = &[
     ("message.content[].type", Rule::Read),
     ("message.usage", Rule::Read),
     ("slug", Rule::Excluded("display label only")),
-];
+]);
 
 #[test]
 fn lists_fields_nobody_declared() {
@@ -23,7 +23,7 @@ fn lists_fields_nobody_declared() {
             "stop_reason": null
         }
     });
-    let mut got = unaccounted(&record, FIELDS);
+    let mut got = unaccounted(&record, &FIELDS);
     got.sort();
     assert_eq!(
         got,
@@ -34,3 +34,5 @@ fn lists_fields_nobody_declared() {
         ]
     );
 }
+
+mod equivalence;
