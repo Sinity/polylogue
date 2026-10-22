@@ -11,9 +11,9 @@ pub const ARCHIVE: &str = include_str!("schema/archive.sql");
 pub const INDEX: &str = include_str!("schema/index.sql");
 pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
-/// Bumped whenever `INDEX` changes; a different stored version means the
+/// Bumped when the index schema or row format changes; a different version means the
 /// index is rebuilt into a new file.
-pub const INDEX_VERSION: u32 = 26;
+pub const INDEX_VERSION: u32 = 27;
 
 /// Migrations for `archive.db`, applied in order after the base schema.
 /// Each is additive; an archive at a higher number than this list is refused.

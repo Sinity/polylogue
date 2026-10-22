@@ -200,13 +200,22 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
                 prepared.hash,
                 *blake3::hash(&serde_json::to_vec(&message).unwrap()).as_bytes()
             );
-            assert_eq!(prepared.attrs, crate::encoding::pack_json(&attrs).unwrap());
             assert_eq!(
-                prepared.blocks,
+                crate::encoding::unpack_json::<Message>(&prepared.attrs).unwrap(),
+                attrs
+            );
+            assert_eq!(
+                prepared
+                    .blocks
+                    .iter()
+                    .map(|b| crate::encoding::unpack_block(b))
+                    .collect::<Result<Vec<_>>>()
+                    .unwrap(),
                 message
                     .blocks
                     .iter()
                     .map(pack_block)
+                    .map(|b| crate::encoding::unpack_block(&b.unwrap()))
                     .collect::<Result<Vec<_>>>()
                     .unwrap()
             );

@@ -41,10 +41,9 @@ fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
         let text = "λ".repeat(size);
         let value = json!({"text":text,"nested":[null,false,42],"unknown":{"empty":[]}});
         assert_eq!(packer.pack_text(&text).unwrap(), pack_text(&text).unwrap());
-        assert_eq!(
-            packer.pack_json(&value).unwrap(),
-            pack_json(&value).unwrap()
-        );
+        let packed = packer.pack_json(&value).unwrap();
+        assert!(packed.len() <= pack_json(&value).unwrap().len());
+        assert_eq!(unpack_json::<serde_json::Value>(&packed).unwrap(), value);
         let event = Event {
             session: polylogue_model::SessionId::parse("claude-code:session").unwrap(),
             kind: "synthetic".into(),
@@ -53,9 +52,13 @@ fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
             range: None,
             data: value.clone(),
         };
+        let (id, packed) = packer.pack_event(&event).unwrap();
+        let (old_id, old_packed) = pack_event(&event).unwrap();
+        assert_eq!(id, old_id);
+        assert!(packed.len() <= old_packed.len());
         assert_eq!(
-            packer.pack_event(&event).unwrap(),
-            pack_event(&event).unwrap()
+            unpack_json::<serde_json::Value>(&packed).unwrap(),
+            event.data
         );
         let message: Message = serde_json::from_value(json!({
             "id":"claude-code:message", "session":"claude-code:session", "role":"assistant",
@@ -64,14 +67,17 @@ fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
         .unwrap();
         let prepared = packer.pack_message(&message).unwrap();
         assert_eq!(prepared, PreparedMessage::new(&message).unwrap());
-        assert_eq!(prepared.blocks[0], pack_block(&message.blocks[0]).unwrap());
+        assert_eq!(
+            unpack_block(&prepared.blocks[0]).unwrap(),
+            unpack_block(&pack_block(&message.blocks[0]).unwrap()).unwrap()
+        );
         assert_eq!(
             prepared.hash,
             *blake3::hash(&serde_json::to_vec(&message).unwrap()).as_bytes()
         );
         let mut metadata = message;
         metadata.blocks.clear();
-        assert_eq!(prepared.attrs, pack_json(&metadata).unwrap());
+        assert_eq!(unpack_json::<Message>(&prepared.attrs).unwrap(), metadata);
     }
 }
 
@@ -113,7 +119,7 @@ fn damaged_compression_and_json_are_distinct_failures() {
 }
 
 #[test]
-fn prepared_rows_match_previous_codec_for_every_block_kind() {
+fn prepared_rows_preserve_values_for_every_block_kind() {
     let blocks = vec![
         json!({"type":"text","text":"Łódź prose"}),
         json!({"type":"text","text":""}),
@@ -137,7 +143,10 @@ fn prepared_rows_match_previous_codec_for_every_block_kind() {
     let prepared = PreparedMessage::new(&message).unwrap();
     let mut old_metadata = message.clone();
     old_metadata.blocks.clear();
-    assert_eq!(prepared.attrs, pack_json(&old_metadata).unwrap());
+    assert_eq!(
+        unpack_json::<Message>(&prepared.attrs).unwrap(),
+        old_metadata
+    );
     assert_eq!(
         prepared.hash,
         *blake3::hash(&serde_json::to_vec(&message).unwrap()).as_bytes()
@@ -154,6 +163,76 @@ fn prepared_rows_match_previous_codec_for_every_block_kind() {
             } => text.clear(),
             _ => {}
         }
-        assert_eq!(*packed, pack_json(&old_body).unwrap());
+        assert_eq!(unpack_block(packed).unwrap(), old_body);
+    }
+}
+
+#[test]
+fn dictionary_rows_and_plain_canonical_frames_remain_distinct() {
+    let message: Message = serde_json::from_value(json!({
+        "id":"codex:sample-42", "session":"codex:sample-session",
+        "parent":"codex:sample-parent", "role":"assistant", "model":"synthetic-model",
+        "prompt_kind":"model", "blocks":[], "usage":{}, "stop_reason":"end_turn"
+    }))
+    .unwrap();
+    let dictionary = zstd::zstd_safe::get_dict_id_from_dict(ROW_DICTIONARY).unwrap();
+    let prepared = PreparedMessage::new(&message).unwrap();
+    assert_eq!(
+        zstd::zstd_safe::get_dict_id_from_frame(&prepared.attrs),
+        Some(dictionary)
+    );
+    assert_eq!(unpack_json::<Message>(&prepared.attrs).unwrap(), message);
+    for plain in [
+        pack_json(&message).unwrap(),
+        pack_text("canonical text").unwrap(),
+    ] {
+        assert!(zstd::zstd_safe::get_dict_id_from_frame(&plain).is_none());
+        assert_eq!(
+            unpack_bytes(&plain).unwrap(),
+            zstd::stream::decode_all(&plain[..]).unwrap()
+        );
+    }
+    let bytes = serde_json::to_vec(&message).unwrap();
+    for level in [1, 3] {
+        let legacy = zstd::stream::encode_all(&bytes[..], level).unwrap();
+        assert_eq!(unpack_json::<Message>(&legacy).unwrap(), message);
+    }
+}
+
+#[test]
+fn unknown_dictionary_and_truncated_dictionary_frames_refuse() {
+    // The formatted dictionary begins with its magic and little-endian ID.
+    let mut other = ROW_DICTIONARY.to_vec();
+    let id = u32::from_le_bytes(other[4..8].try_into().unwrap());
+    other[4..8].copy_from_slice(&(id + 1).to_le_bytes());
+    let bytes = br#"{"type":"text","text":""}"#;
+    let packed = zstd::bulk::Compressor::with_dictionary(LEVEL, &other)
+        .unwrap()
+        .compress(bytes)
+        .unwrap();
+    assert_ne!(
+        zstd::zstd_safe::get_dict_id_from_frame(&packed),
+        zstd::zstd_safe::get_dict_id_from_dict(ROW_DICTIONARY)
+    );
+    assert!(matches!(
+        unpack_json::<serde_json::Value>(&packed),
+        Err(StoreError::Io(_))
+    ));
+    let packed = RowPacker::new().unwrap().pack_row(bytes).unwrap();
+    assert!(zstd::zstd_safe::get_dict_id_from_frame(&packed).is_some());
+    assert!(unpack_bytes(&packed[..packed.len() - 1]).is_err());
+}
+
+#[test]
+fn unrelated_row_values_never_grow_relative_to_plain_encoding() {
+    let mut packer = RowPacker::new().unwrap();
+    for size in [0_usize, 1, 1024, 64 * 1024] {
+        let values = (0..size)
+            .map(|n| blake3::hash(&n.to_le_bytes()).to_hex().to_string())
+            .collect::<Vec<_>>();
+        let value = json!({"unfamiliar":[null, false, values],"integer":u64::MAX});
+        let packed = packer.pack_json(&value).unwrap();
+        assert!(packed.len() <= pack_json(&value).unwrap().len());
+        assert_eq!(unpack_json::<serde_json::Value>(&packed).unwrap(), value);
     }
 }
