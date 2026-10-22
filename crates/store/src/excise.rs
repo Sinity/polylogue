@@ -34,6 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod authored;
 pub(crate) mod blob_cleanup;
 mod index_rows;
+mod notes;
 mod record_ranges;
 pub(crate) mod recovery;
 mod refused;
@@ -493,7 +494,7 @@ impl Plan {
         }
         if !self.sessions.is_empty() {
             let ids: Vec<String> = self.sessions.iter().map(|(_, id)| id.clone()).collect();
-            done.notes_removed = remove_notes(t.archive, &ids, &self.message_ids, req.dry_run)?;
+            done.notes_removed = notes::remove(t.archive, &ids, &self.message_ids, req.dry_run)?;
             done.deliveries_redacted = redact_deliveries(
                 t.archive,
                 &ids,

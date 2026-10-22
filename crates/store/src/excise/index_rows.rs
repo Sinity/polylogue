@@ -1,9 +1,8 @@
 //! Excision in `index.db`, `archive.db` and `embeddings.db`: a session's
-//! rows from every table, a text from the search indexes, and the notes,
+//! rows from every table, a text from the search indexes, and the
 //! deliveries and inputs that held it.
 
 use super::*;
-use std::collections::HashSet;
 
 /// Text scope in `index.db`: rather than overwriting the columns that may
 /// hold the text, every row parsed from records that held it goes, and the
@@ -155,60 +154,6 @@ pub(super) fn clear_for_reparse(
         }
     }
     Ok(inputs.into_iter().map(|(_, id)| id).collect())
-}
-
-/// Notes about the removed sessions: targets naming a session or one of its
-/// messages go, and a note left with no target goes with its relations.
-pub(super) fn remove_notes(
-    a: &Transaction<'_>,
-    sessions: &[String],
-    messages: &[String],
-    dry_run: bool,
-) -> Result<u64> {
-    let refs: HashSet<String> = sessions
-        .iter()
-        .map(|s| format!("session:{s}"))
-        .chain(messages.iter().map(|m| format!("message:{m}")))
-        .collect();
-    // Tool calls are named `tool:<session>#<call>`.
-    let tools: Vec<String> = sessions.iter().map(|s| format!("tool:{s}#")).collect();
-    let about = |r: &str| refs.contains(r) || tools.iter().any(|p| r.starts_with(p.as_str()));
-    let mut by_note: BTreeMap<String, (u64, Vec<String>)> = BTreeMap::new();
-    let mut stmt = a.prepare("SELECT note_id, ref FROM note_target")?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-    for row in rows {
-        let (note, r) = row?;
-        let e = by_note.entry(note).or_default();
-        e.0 += 1;
-        if about(&r) {
-            e.1.push(r);
-        }
-    }
-    drop(stmt);
-    let mut removed = 0;
-    for (note, (all, hit)) in by_note {
-        if hit.is_empty() {
-            continue;
-        }
-        let whole = hit.len() as u64 == all;
-        if whole {
-            removed += 1;
-        }
-        if dry_run {
-            continue;
-        }
-        for r in &hit {
-            a.execute(
-                "DELETE FROM note_target WHERE note_id = ?1 AND ref = ?2",
-                params![note, r],
-            )?;
-        }
-        if whole {
-            a.execute("DELETE FROM note_relation WHERE note_id = ?1", [&note])?;
-            a.execute("DELETE FROM note WHERE id = ?1", [&note])?;
-        }
-    }
-    Ok(removed)
 }
 
 /// Delivered briefs that named a removed session: the session's own texts

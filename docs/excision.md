@@ -39,6 +39,13 @@ physical byte requests are deduplicated separately. Whole-input removal clears
 its partial citations before reporting or rewriting. Scratch failures abort the
 operation, and the private text set uses one operation transaction.
 
+Matching authored-note targets are selected into a private SQLite table before
+canonical note edits begin. Only matched reference pairs are staged. Notes
+whose targets all match are removed with their outgoing relations; partial
+notes retain unrelated targets and their exact hashes and anchors. Session,
+message and tool references are matched literally, and staging or lookup
+failures abort the operation.
+
 The largest individual JSON record, one blob's range list, selected
 session/message-ID lists and canonical JSON reports can still exceed memory.
 Shared-document text blanking scans the same verified scratch with a literal
