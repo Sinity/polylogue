@@ -158,11 +158,11 @@ pub(super) fn clear_for_reparse(
 
 /// Delivered briefs that named a removed session: the session's own texts
 /// in them are blanked, and the content hash follows the new text.
-/// `messages` is the plan's sorted list of exact IDs.
+/// Exact message selection remains available after the index rows are gone.
 pub(super) fn redact_deliveries(
     a: &Transaction<'_>,
     sessions: &[String],
-    messages: &[String],
+    messages: &SelectedMessages,
     texts: &SessionTexts,
     dry_run: bool,
 ) -> Result<u64> {
@@ -187,14 +187,20 @@ pub(super) fn redact_deliveries(
         };
         after = Some(id.clone());
         let refs: Vec<String> = serde_json::from_str(&refs)?;
-        let referenced = refs.iter().any(|reference| {
-            sessions
+        let mut referenced = false;
+        for reference in &refs {
+            if sessions
                 .iter()
                 .any(|s| reference == s || reference.strip_prefix("session:") == Some(s.as_str()))
-                || reference
-                    .strip_prefix("message:")
-                    .is_some_and(|id| messages.binary_search_by(|m| m.as_str().cmp(id)).is_ok())
-        });
+                || (match reference.strip_prefix("message:") {
+                    Some(id) => messages.contains(id)?,
+                    None => false,
+                })
+            {
+                referenced = true;
+                break;
+            }
+        }
         if !referenced {
             continue;
         }

@@ -570,8 +570,13 @@ catalogs. Unknown fields and incoming whitespace do not change the typed digest.
 Temporary disk scales with the catalog and largest row batch. The canonical
 manifest JSON value, one replacement and its blob-reference list remain memory
 bounds; newly created and public manifests still own their lists. The canonical archive writer uses file-backed temporary tables with
-a 1 MiB temporary page-cache target. Excision streams changed unit keys from
-that table and uses `sinex_rows/excision/retirement.rs` to select historical
+a 1 MiB temporary page-cache target. Excision freezes selected message IDs in an unnamed SQLite database before
+deleting index rows. Its nonunique ID index supports exact membership and sorted
+canonical serialization while preserving duplicate counts. Notes and deliveries
+use that same selection; matched note targets keep their separate disk owner.
+The public result's session lists and the final canonical JSON string remain
+operation-sized values. Excision streams changed unit keys from
+the canonical writer's temporary table and uses `sinex_rows/excision/retirement.rs` to select historical
 batches on disk.
 A batch remains protected while any current replacement references it, including
 an unaffected unit. Manifest-owner order selects the latest replacement; source

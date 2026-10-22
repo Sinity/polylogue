@@ -25,7 +25,8 @@ fn delivery_redaction_uses_exact_references_and_preserves_preview_and_hashes() {
     texts.insert("long private phrase extended").unwrap();
     texts.insert("long private phrase").unwrap();
     let ids = vec!["claude-code:gone".into()];
-    let messages = vec!["opaque:id:with:colons".into()];
+    let mut messages = SelectedMessages::default();
+    messages.insert("opaque:id:with:colons").unwrap();
     let tx = a.transaction().unwrap();
     assert_eq!(
         redact_deliveries(&tx, &ids, &messages, &texts, true).unwrap(),
@@ -81,7 +82,14 @@ fn unrelated_unreadable_delivery_is_not_decoded() {
     texts.insert("long private phrase").unwrap();
     let tx = a.transaction().unwrap();
     assert_eq!(
-        redact_deliveries(&tx, &["claude-code:gone".into()], &[], &texts, false).unwrap(),
+        redact_deliveries(
+            &tx,
+            &["claude-code:gone".into()],
+            &SelectedMessages::default(),
+            &texts,
+            false
+        )
+        .unwrap(),
         0
     );
     tx.execute(
@@ -89,5 +97,14 @@ fn unrelated_unreadable_delivery_is_not_decoded() {
         [],
     )
     .unwrap();
-    assert!(redact_deliveries(&tx, &["claude-code:gone".into()], &[], &texts, false).is_err());
+    assert!(
+        redact_deliveries(
+            &tx,
+            &["claude-code:gone".into()],
+            &SelectedMessages::default(),
+            &texts,
+            false
+        )
+        .is_err()
+    );
 }

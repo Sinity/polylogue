@@ -2,11 +2,11 @@
 use super::*;
 use rusqlite::Connection;
 
-/// `messages` is the plan's sorted list of exact IDs.
+/// Message membership comes from the selection frozen before index deletion.
 pub(super) fn remove(
     archive: &Transaction<'_>,
     sessions: &[String],
-    messages: &[String],
+    messages: &SelectedMessages,
     dry_run: bool,
 ) -> Result<u64> {
     let mut targets = Targets::default();
@@ -15,7 +15,7 @@ pub(super) fn remove(
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let reference: String = row.get(1)?;
-            if about(&reference, sessions, messages) {
+            if about(&reference, sessions, messages)? {
                 targets.insert(&row.get::<_, String>(0)?, &reference)?;
             }
         }
@@ -44,19 +44,19 @@ pub(super) fn remove(
     Ok(removed)
 }
 
-fn about(reference: &str, sessions: &[String], messages: &[String]) -> bool {
-    reference
-        .strip_prefix("session:")
-        .is_some_and(|id| sessions.iter().any(|s| s == id))
-        || reference
-            .strip_prefix("message:")
-            .is_some_and(|id| messages.binary_search_by(|m| m.as_str().cmp(id)).is_ok())
-        || reference.strip_prefix("tool:").is_some_and(|rest| {
-            sessions.iter().any(|session| {
-                rest.strip_prefix(session.as_str())
-                    .is_some_and(|suffix| suffix.starts_with('#'))
-            })
+fn about(reference: &str, sessions: &[String], messages: &SelectedMessages) -> Result<bool> {
+    if let Some(id) = reference.strip_prefix("session:") {
+        return Ok(sessions.iter().any(|s| s == id));
+    }
+    if let Some(id) = reference.strip_prefix("message:") {
+        return messages.contains(id);
+    }
+    Ok(reference.strip_prefix("tool:").is_some_and(|rest| {
+        sessions.iter().any(|session| {
+            rest.strip_prefix(session.as_str())
+                .is_some_and(|suffix| suffix.starts_with('#'))
         })
+    }))
 }
 
 #[derive(Default)]

@@ -34,6 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod authored;
 pub(crate) mod blob_cleanup;
 mod index_rows;
+mod messages;
 mod notes;
 mod record_ranges;
 pub(crate) mod recovery;
@@ -49,6 +50,7 @@ pub(crate) mod vector_cleanup;
 pub(crate) mod vector_policy;
 
 use index_rows::*;
+use messages::SelectedMessages;
 use session_texts::SessionTexts;
 use spans::Spans;
 use stored_bytes::*;
@@ -289,7 +291,7 @@ struct Plan {
     /// Shared inputs whose records have no byte ranges.
     kept: BTreeSet<String>,
     /// Message IDs of the removed sessions, for the writer's refusal.
-    message_ids: Vec<String>,
+    message_ids: SelectedMessages,
     /// Texts only the removed sessions hold (bodies and titles), for
     /// blanking shared whole documents and delivered briefs.
     own_texts: SessionTexts,
@@ -303,7 +305,7 @@ impl Plan {
             .index
             .prepare("SELECT id FROM message WHERE session_pk=?1")?;
         for id in messages.query_map([pk], |r| r.get::<_, String>(0))? {
-            self.message_ids.push(id?);
+            self.message_ids.insert(&id?)?;
         }
         // Every input the session's rows came from.
         let mut inputs = t.index.prepare(
@@ -387,7 +389,6 @@ impl Plan {
         done: &mut Excised,
     ) -> Result<Excised> {
         self.collect_texts(t)?;
-        self.message_ids.sort_unstable();
         // Removing an input supersedes partial rewrites of its records.
         self.spans.remove_whole(&self.whole)?;
         self.kept.retain(|input| !self.whole.contains(input));
@@ -438,7 +439,7 @@ impl Plan {
                 .collect::<std::result::Result<_, _>>()
                 .map_err(|error| StoreError::Invalid(error.to_string()))?,
         );
-        done.messages = self.message_ids.len() as u64;
+        done.messages = self.message_ids.count()?;
         done.inputs_removed = self.whole.iter().cloned().collect();
         done.inputs_kept = self.kept.iter().cloned().collect();
         self.spans.visit_inputs(|input, count| {
@@ -493,11 +494,11 @@ impl Plan {
             done.inputs_kept = still.into_iter().collect();
         }
         if !self.sessions.is_empty() {
-            let ids: Vec<String> = self.sessions.iter().map(|(_, id)| id.clone()).collect();
-            done.notes_removed = notes::remove(t.archive, &ids, &self.message_ids, req.dry_run)?;
+            done.notes_removed =
+                notes::remove(t.archive, &done.sessions, &self.message_ids, req.dry_run)?;
             done.deliveries_redacted = redact_deliveries(
                 t.archive,
-                &ids,
+                &done.sessions,
                 &self.message_ids,
                 &self.own_texts,
                 req.dry_run,
