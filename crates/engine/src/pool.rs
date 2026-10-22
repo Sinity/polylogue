@@ -286,7 +286,7 @@ fn flush<'s>(
 }
 
 fn run(
-    job: Job,
+    mut job: Job,
     blobs: &mut hashed_blobs::Batch<'_>,
     store: &hashed_blobs::Store,
 ) -> (Option<Batch>, Done) {
@@ -296,7 +296,7 @@ fn run(
         start: job.start,
         end: job.end,
         parsed_upto: job.start,
-        carry: job.carry.clone(),
+        carry: job.carry.take(),
         tail: Vec::new(),
         stored: 0,
         error: None,
@@ -345,7 +345,7 @@ fn run(
                 polylogue_store::fault::check("parse", &job.path.to_string_lossy())
                     .map_err(|e| e.to_string())?;
                 time(Stage::Parse, || {
-                    parser.steps(job.carry.as_ref(), &bytes, job.start)
+                    parser.steps(out.carry.as_ref(), &bytes, job.start)
                 })
                 .map_err(|e| e.to_string())
             }))
