@@ -667,8 +667,7 @@ impl Inner {
         if let Err(error) = committed {
             return Err(StoreError::ExcisionInterrupted(Box::new(error)));
         }
-        self.refused.sessions.extend(done.sessions.iter().cloned());
-        self.refused.messages.extend(refused.messages);
+        self.refused = refused;
         Ok(done)
     }
 

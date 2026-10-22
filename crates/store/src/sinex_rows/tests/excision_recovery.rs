@@ -3,6 +3,8 @@ use crate::archive::{Archive, cache, open_write};
 use crate::excise::recovery;
 use std::io::Cursor;
 
+mod sessions;
+
 fn descriptor(
     conn: &Connection,
     unit: Unit,

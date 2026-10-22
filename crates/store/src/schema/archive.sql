@@ -207,7 +207,7 @@ CREATE TABLE excision (
   scope         TEXT NOT NULL,           -- 'input:<id>', 'session:<id>', 'text:<blake3>', 'note:<id>'
   reason        TEXT,
   created_at    INTEGER NOT NULL,
-  refused_json  TEXT NOT NULL DEFAULT '[]',  -- hashes and places only, never content: the (machine, path,
+  refused_json  TEXT NOT NULL DEFAULT '[]',  -- removed IDs, hashes and locations, never content: the (machine, path,
                                          --   device, inode) locations and the BLAKE3 of every revision and
                                          --   blob the excision removed; collect and store refuse them
   usage_json    TEXT NOT NULL DEFAULT '[]',  -- session scope: usage as numbers only, per (provider account,
