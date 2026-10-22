@@ -19,7 +19,9 @@ fn selected_notes_are_removed_or_trimmed_without_losing_surviving_anchors() {
     let session = "claude-code:gone";
     let opaque = "codex:opaque:\0#";
     let sessions = [session.into(), opaque.into()];
-    let messages = ["message:raw".into(), "opaque:id".into()];
+    let mut messages = SelectedMessages::default();
+    messages.insert("message:raw").unwrap();
+    messages.insert("opaque:id").unwrap();
     let tx = conn.transaction().unwrap();
     for n in 0..10_000 {
         note(&tx, &format!("unrelated-{n}"), &["message:other"]);
@@ -123,15 +125,21 @@ fn matching_targets_are_disk_backed_and_callback_or_lookup_errors_propagate() {
 #[test]
 fn a_late_staging_read_error_rolls_back_note_and_target_deletions() {
     use crate::fault::{self, Action};
-    for (point, skip) in [("excision_targets.insert", 0), ("excision_targets.read", 1)] {
+    for (point, skip) in [
+        ("excision_targets.insert", 0),
+        ("excision_targets.read", 1),
+        ("excision_messages.contains", 1),
+    ] {
         fault::clear();
         let mut conn = Connection::open_in_memory().unwrap();
         crate::schema::create_archive(&conn).unwrap();
         note(&conn, "one", &["message:gone"]);
         note(&conn, "two", &["message:gone"]);
+        let mut messages = SelectedMessages::default();
+        messages.insert("gone").unwrap();
         let tx = conn.transaction().unwrap();
         fault::arm(point, "", Action::Fail, skip, 1);
-        let error = remove(&tx, &[], &["gone".into()], false).unwrap_err();
+        let error = remove(&tx, &[], &messages, false).unwrap_err();
         assert!(error.to_string().contains(point), "{error}");
         tx.rollback().unwrap();
         assert_eq!(
@@ -152,7 +160,7 @@ fn a_late_staging_read_error_rolls_back_note_and_target_deletions() {
             2
         );
         let tx = conn.transaction().unwrap();
-        assert_eq!(remove(&tx, &[], &["gone".into()], false).unwrap(), 2);
+        assert_eq!(remove(&tx, &[], &messages, false).unwrap(), 2);
     }
     fault::clear();
 }
