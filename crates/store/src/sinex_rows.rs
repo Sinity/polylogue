@@ -70,14 +70,12 @@ fn units(archive: &Connection, after: i64) -> crate::Result<Vec<Unit>> {
     })?;
     let mut units: Vec<Unit> = rows.collect::<rusqlite::Result<_>>()?;
     excision::visit_publications(archive, |_, publication| {
-        units.extend(
-            publication
-                .replacements
-                .iter()
-                .map(|r| r.unit.clone())
-                .filter(|u| u.commit_seq > after),
-        );
-        Ok(())
+        publication.each_replacement(|replacement| {
+            if replacement.unit.commit_seq > after {
+                units.push(replacement.unit.clone());
+            }
+            Ok(())
+        })
     })?;
     units.sort();
     units.dedup();

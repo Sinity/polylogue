@@ -563,10 +563,13 @@ replacement descriptors and acknowledged positions in operation-scoped SQLite
 with a 1 MiB page cache. The adapter discards each Have reply after at most
 500 keys and visits missing units by position. Named replacement blob references
 are validated before placement and converted to binary hashes in groups of 500,
-using the same acknowledgment path. Historical manifests are checked
-one at a time before payloads open. Temporary disk scales with the catalog and
-largest row batch; one manifest, row and its blob-reference list remain memory
-bounds. The canonical archive writer uses file-backed temporary tables with
+using the same acknowledgment path. Historical manifests borrow their arrays
+from the canonical SQLite value, validate the complete manifest and its existing
+digest, then feed one replacement at a time into the inventory and retirement
+catalogs. Unknown fields and incoming whitespace do not change the typed digest.
+Temporary disk scales with the catalog and largest row batch. The canonical
+manifest JSON value, one replacement and its blob-reference list remain memory
+bounds; newly created and public manifests still own their lists. The canonical archive writer uses file-backed temporary tables with
 a 1 MiB temporary page-cache target. Excision streams changed unit keys from
 that table and uses `sinex_rows/excision/retirement.rs` to select historical
 batches on disk.

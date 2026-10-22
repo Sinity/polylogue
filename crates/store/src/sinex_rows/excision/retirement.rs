@@ -49,7 +49,7 @@ impl CurrentBatches {
                  WHERE (excluded.owner_seq,excluded.owner_key)>(current.owner_seq,current.owner_key)",
             )?;
             visit_publications(source, |owner, publication| {
-                for replacement in &publication.replacements {
+                publication.each_replacement(|replacement| {
                     let unit = &replacement.unit;
                     insert.execute(params![
                         unit.commit_seq,
@@ -60,9 +60,8 @@ impl CurrentBatches {
                         replacement.batch,
                         serde_json::to_string(&replacement.blobs)?
                     ])?;
-                    visit(&db, replacement)?;
-                }
-                Ok(())
+                    visit(&db, replacement)
+                })
             })?;
         }
         Ok(Self { db })
