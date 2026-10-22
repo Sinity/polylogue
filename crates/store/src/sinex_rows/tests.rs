@@ -427,20 +427,24 @@ fn retiring_a_pending_batch_preserves_identical_cataloged_file_or_inline_bytes()
             retired_batches: vec![format!("blake3:{}", hash.hex())],
             digest: String::new(),
         };
-        assert_eq!(
-            retired_local(&conn, &manifest).unwrap().len(),
-            1,
-            "an uncataloged superseded batch may retire"
-        );
+        let mut count = 0;
+        visit_retired_local_batches(&conn, &manifest, |_| {
+            count += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 1, "an uncataloged superseded batch may retire");
         conn.execute("INSERT INTO blob(hash,size,stored_size,place,encoding,state,data) VALUES (?1,?2,?2,?3,'plain','present',?4)",rusqlite::params![&hash.0[..],bytes.len() as i64,place,if place=="inline" {Some(bytes.as_slice())}else{None}]).unwrap();
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM extent", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
             0
         );
-        for candidate in retired_local(&conn, &manifest).unwrap() {
-            store.delete(&hashed_blobs::Hash(candidate.0)).unwrap();
-        }
+        visit_retired_local_batches(&conn, &manifest, |candidate| {
+            store.delete(&hashed_blobs::Hash(candidate.0))?;
+            Ok(())
+        })
+        .unwrap();
         let mut actual = Vec::new();
         std::io::Read::read_to_end(&mut store.read(&hash).unwrap(), &mut actual).unwrap();
         assert_eq!(actual, bytes);

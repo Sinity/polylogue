@@ -268,11 +268,11 @@ pub(super) fn batch_hash(name: &str) -> Result<hashed_blobs::Hash> {
     )?))
 }
 
-pub(crate) fn retired_local(
+pub(crate) fn visit_retired_local_batches(
     conn: &Connection,
     publication: &ExcisionPublication,
-) -> Result<Vec<polylogue_model::BlobHash>> {
-    let mut out = Vec::new();
+    mut visit: impl FnMut(polylogue_model::BlobHash) -> Result<()>,
+) -> Result<()> {
     for batch in &publication.retired_batches {
         let hash = batch_hash(batch)?;
         // The catalog owns source bytes, including attachments and delta bases
@@ -283,10 +283,10 @@ pub(crate) fn retired_local(
             |r| r.get(0),
         )?;
         if !retained {
-            out.push(polylogue_model::BlobHash(hash.0));
+            visit(polylogue_model::BlobHash(hash.0))?;
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 pub(super) fn publication(conn: &Connection, unit: &Unit) -> Result<Option<ExcisionPublication>> {
