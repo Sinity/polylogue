@@ -42,6 +42,7 @@ mod refused;
 pub use refused::Refused;
 pub(crate) use refused::RefusedIds;
 mod session_texts;
+mod sessions;
 mod spans;
 mod stored_bytes;
 mod stored_text;
@@ -52,6 +53,7 @@ pub(crate) mod vector_policy;
 use index_rows::*;
 use messages::SelectedMessages;
 use session_texts::SessionTexts;
+use sessions::SelectedSessions;
 use spans::Spans;
 use stored_bytes::*;
 pub use stored_bytes::{index_columns_containing, stored_blobs_containing};
@@ -242,7 +244,7 @@ pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<Excised> {
         dry_run: req.dry_run,
         ..Excised::default()
     };
-    let mut plan = Plan::default();
+    let mut plan = Plan::new(t.index)?;
     match &req.scope {
         Scope::Session(id) => {
             let pk = session_pk(t.index, &id.to_string())?
@@ -280,10 +282,9 @@ pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<Excised> {
     plan.apply(t, req, &mut done)
 }
 
-#[derive(Default)]
-struct Plan {
+struct Plan<'a> {
     /// Sessions to remove: pk and id.
-    sessions: Vec<(i64, String)>,
+    sessions: SelectedSessions<'a>,
     /// Inputs to remove whole.
     whole: BTreeSet<String>,
     /// Inputs shared with other sessions: the spans to overwrite.
@@ -298,9 +299,21 @@ struct Plan {
     text: Option<String>,
 }
 
-impl Plan {
+impl<'a> Plan<'a> {
+    fn new(index: &'a rusqlite::Connection) -> Result<Self> {
+        Ok(Self {
+            sessions: SelectedSessions::new(index)?,
+            whole: BTreeSet::new(),
+            spans: Spans::default(),
+            kept: BTreeSet::new(),
+            message_ids: SelectedMessages::default(),
+            own_texts: SessionTexts::default(),
+            text: None,
+        })
+    }
+
     fn session(&mut self, t: &Transactions<'_, '_>, pk: i64, id: &str) -> Result<()> {
-        self.sessions.push((pk, id.to_owned()));
+        self.sessions.insert(pk, id)?;
         let mut messages = t
             .index
             .prepare("SELECT id FROM message WHERE session_pk=?1")?;
@@ -355,28 +368,26 @@ impl Plan {
     /// Ownership is relative to the complete removal set, not one session
     /// at a time: another selected session is not a surviving owner.
     fn collect_texts(&mut self, t: &Transactions<'_, '_>) -> Result<()> {
-        if self.sessions.is_empty() {
+        if self.sessions.is_empty()? {
             return Ok(());
         }
-        let selected: Vec<i64> = self.sessions.iter().map(|(pk, _)| *pk).collect();
-        let selected = serde_json::to_string(&selected)?;
         let mut bodies = t.index.prepare(
             "SELECT t.body FROM text t WHERE t.id IN
-               (SELECT text_id FROM block WHERE session_pk IN (SELECT value FROM json_each(?1)))
+               (SELECT text_id FROM block WHERE session_pk IN (SELECT session_pk FROM temp.excision_sessions))
              AND NOT EXISTS
                (SELECT 1 FROM block o WHERE o.text_id=t.id
-                  AND o.session_pk NOT IN (SELECT value FROM json_each(?1)))",
+                  AND o.session_pk NOT IN (SELECT session_pk FROM temp.excision_sessions))",
         )?;
-        for body in bodies.query_map([&selected], |r| r.get::<_, Vec<u8>>(0))? {
+        for body in bodies.query_map([], |r| r.get::<_, Vec<u8>>(0))? {
             self.own_texts.insert(&unpack_text(&body?)?)?;
         }
         let mut titles = t.index.prepare(
-            "SELECT title FROM session s WHERE pk IN (SELECT value FROM json_each(?1))
+            "SELECT title FROM session s WHERE pk IN (SELECT session_pk FROM temp.excision_sessions)
                AND title IS NOT NULL AND NOT EXISTS
                (SELECT 1 FROM session o WHERE o.title=s.title
-                  AND o.pk NOT IN (SELECT value FROM json_each(?1)))",
+                  AND o.pk NOT IN (SELECT session_pk FROM temp.excision_sessions))",
         )?;
-        for title in titles.query_map([&selected], |r| r.get::<_, String>(0))? {
+        for title in titles.query_map([], |r| r.get::<_, String>(0))? {
             self.own_texts.insert(&title?)?;
         }
         Ok(())
@@ -431,7 +442,7 @@ impl Plan {
             )?;
         }
 
-        done.sessions = self.sessions.iter().map(|(_, id)| id.clone()).collect();
+        done.sessions = self.sessions.ids()?;
         refused.sessions = Some(
             done.sessions
                 .iter()
@@ -449,30 +460,22 @@ impl Plan {
 
         // Session rows, before the inputs, so a blob a removed block named
         // can be checked against what remains.
-        for (pk, id) in &self.sessions {
+        self.sessions.visit(|pk, id| {
             delete_session(
                 t,
-                *pk,
+                pk,
                 id,
                 req.dry_run,
                 &mut removed_texts,
                 &mut session_blobs,
-            )?;
-        }
+            )
+        })?;
 
         for input in &self.whole {
             remove_input(t, input, req, &mut refused, done, &mut removed_texts)?;
         }
         self.spans.visit_inputs(|input, _| {
-            overwrite(
-                t,
-                input,
-                &self.spans,
-                req,
-                &mut refused,
-                &mut delete_files,
-                &self.sessions,
-            )
+            overwrite(t, input, &self.spans, req, &mut refused, &mut delete_files)
         })?;
         if !self.kept.is_empty() {
             let mut still = BTreeSet::new();
@@ -493,7 +496,7 @@ impl Plan {
             }
             done.inputs_kept = still.into_iter().collect();
         }
-        if !self.sessions.is_empty() {
+        if !self.sessions.is_empty()? {
             done.notes_removed =
                 notes::remove(t.archive, &done.sessions, &self.message_ids, req.dry_run)?;
             done.deliveries_redacted = redact_deliveries(
@@ -627,6 +630,7 @@ impl Plan {
         if !req.dry_run {
             recovery::acknowledge(t.archive, t.index)?;
         }
+        self.sessions.finish()?;
         Ok(done.clone())
     }
 

@@ -6,7 +6,6 @@ pub(super) fn preflight(
     input: &str,
     spans: &Spans,
     erasures: &super::erasures::Erasures,
-    sessions: &[(i64, String)],
 ) -> Result<()> {
     let format: String =
         t.archive
@@ -18,7 +17,6 @@ pub(super) fn preflight(
         format: format.clone(),
         detail,
     };
-    let excluded = serde_json::to_string(&sessions.iter().map(|(pk, _)| *pk).collect::<Vec<_>>())?;
     spans.visit_chains(input, |chain| {
         let length: Option<i64> = t.archive.query_row(
             "SELECT MAX(length) FROM revision WHERE input=?1 AND chain=?2",
@@ -75,7 +73,7 @@ pub(super) fn preflight(
         if position != length {
             return Err(refuse("retained source pieces have a gap".into()));
         }
-        let surviving:bool=t.index.query_row("SELECT EXISTS(SELECT 1 FROM parsed p JOIN input_ref r ON r.pk=p.input_pk WHERE r.id=?1 AND p.chain=?2 AND p.session_pk NOT IN(SELECT value FROM json_each(?3)))",params![input,chain,excluded],|r|r.get(0))?;
+        let surviving:bool=t.index.query_row("SELECT EXISTS(SELECT 1 FROM parsed p JOIN input_ref r ON r.pk=p.input_pk WHERE r.id=?1 AND p.chain=?2 AND p.session_pk NOT IN(SELECT session_pk FROM temp.excision_sessions))",params![input,chain],|r|r.get(0))?;
         if documents > 0 && erased == documents && surviving {
             return Err(refuse(
                 "removing every document would also remove surviving session facts".into(),
@@ -113,10 +111,10 @@ pub(super) fn preflight(
                 let overlaps:bool=t.index.query_row("SELECT EXISTS(
                     SELECT 1 FROM message_source s JOIN input_ref r ON r.pk=s.input_pk
                     WHERE r.id=?1 AND s.chain=?2 AND s.source_start<?4 AND s.source_end>?3
-                      AND s.session_pk NOT IN(SELECT value FROM json_each(?5))
+                      AND s.session_pk NOT IN(SELECT session_pk FROM temp.excision_sessions)
                     UNION ALL SELECT 1 FROM event_source s JOIN input_ref r ON r.pk=s.input_pk JOIN event e ON e.id=s.event_id
                     WHERE r.id=?1 AND s.chain=?2 AND s.source_start<?4 AND s.source_end>?3
-                      AND e.session_pk NOT IN(SELECT value FROM json_each(?5)))",params![input,chain,a,b,excluded],|r|r.get(0))?;
+                      AND e.session_pk NOT IN(SELECT session_pk FROM temp.excision_sessions))",params![input,chain,a,b],|r|r.get(0))?;
                 if overlaps {
                     return Err(refuse(
                         "source removal overlaps a surviving session record".into(),

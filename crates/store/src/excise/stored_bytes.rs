@@ -157,7 +157,6 @@ pub(super) fn overwrite(
     req: &ExciseRequest,
     refused: &mut RefusedJson,
     delete_files: &mut Vec<BlobHash>,
-    sessions: &[(i64, String)],
 ) -> Result<()> {
     let erasures = erasures::Erasures::new()?;
     let mut ext = t.archive.prepare(
@@ -181,7 +180,7 @@ pub(super) fn overwrite(
         }
         Ok(())
     })?;
-    records::preflight(t, input, spans, &erasures, sessions)?;
+    records::preflight(t, input, spans, &erasures)?;
     if req.dry_run {
         return Ok(());
     }
