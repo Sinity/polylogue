@@ -243,11 +243,6 @@ impl Ctx<'_, '_> {
             packed: self.packed,
             bulk: self.bulk,
         };
-        let bodies = message
-            .blocks
-            .iter()
-            .map(pack_block)
-            .collect::<Result<Vec<_>>>()?;
         self.tx.execute(
             "UPDATE message_source SET preferred=0 WHERE message_pk=?1",
             [pk],
@@ -261,7 +256,7 @@ impl Ctx<'_, '_> {
             &version,
             (version.input_pk, version.order),
         )?;
-        ctx.insert_blocks(pk, session_pk, &message, &bodies)?;
+        ctx.insert_blocks(pk, session_pk, &message, &version.hash)?;
         self.tx
             .execute("UPDATE message SET present=1 WHERE pk=?1", [pk])?;
         self.tx.execute(
