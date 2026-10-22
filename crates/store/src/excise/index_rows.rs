@@ -91,7 +91,7 @@ pub(super) fn remove_input(
     req: &ExciseRequest,
     refused: &mut RefusedJson,
     done: &mut Excised,
-    removed_texts: &mut BTreeSet<Vec<u8>>,
+    hashes: &RemovalHashes<'_>,
 ) -> Result<()> {
     let locations: Vec<Location> = t
         .archive
@@ -166,7 +166,7 @@ pub(super) fn remove_input(
         let orphan:Option<(Vec<u8>,i64)>=t.index.query_row("SELECT hash,indexed FROM text WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM block WHERE text_id=?1) AND NOT EXISTS(SELECT 1 FROM version_block WHERE text_id=?1)",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         if let Some((hash, indexed)) = orphan {
             crate::text_rows::remove(t.index, id, indexed)?;
-            removed_texts.insert(hash);
+            hashes.text(&hash)?;
         }
     }
     Ok(())
@@ -213,26 +213,22 @@ pub(super) fn delete_session(
     pk: i64,
     id: &str,
     dry_run: bool,
-    removed_texts: &mut BTreeSet<Vec<u8>>,
-    blobs: &mut BTreeSet<Vec<u8>>,
+    hashes: &RemovalHashes<'_>,
 ) -> Result<()> {
     let i = t.index;
     if dry_run {
-        let mut hashes = i.prepare(
+        let mut selected = i.prepare(
             "SELECT DISTINCT t.hash FROM block b JOIN text t ON t.id = b.text_id
              WHERE b.session_pk = ?1 AND NOT EXISTS
                (SELECT 1 FROM block o WHERE o.text_id = b.text_id AND o.session_pk <> ?1)",
         )?;
-        for hash in hashes.query_map([pk], |r| r.get::<_, Vec<u8>>(0))? {
-            removed_texts.insert(hash?);
+        for hash in selected.query_map([pk], |r| r.get::<_, Vec<u8>>(0))? {
+            hashes.text(&hash?)?;
         }
         return Ok(());
     }
     crate::session_row::remove_with_references(i, pk, id, t.counter, |references| {
-        references.visit_blobs(|hash| {
-            blobs.insert(hash.to_vec());
-            Ok(())
-        })?;
+        references.visit_blobs(|hash| hashes.blob_candidate(hash))?;
         i.execute(
             "INSERT INTO removed_session(session_id, changed) VALUES (?1, ?2)
          ON CONFLICT(session_id) DO UPDATE SET changed = excluded.changed",
@@ -251,7 +247,7 @@ pub(super) fn delete_session(
                 .optional()?;
             if let Some((hash, indexed)) = row {
                 crate::text_rows::remove(i, tid, indexed)?;
-                removed_texts.insert(hash);
+                hashes.text(&hash)?;
             }
             Ok(())
         })

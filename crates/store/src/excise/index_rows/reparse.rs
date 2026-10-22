@@ -15,8 +15,7 @@ pub(in crate::excise) fn clear_for_reparse(
     text: &str,
     holding: &BTreeSet<String>,
     dry_run: bool,
-    removed_texts: &mut BTreeSet<Vec<u8>>,
-    blobs: &mut BTreeSet<Vec<u8>>,
+    hashes: &RemovalHashes<'_>,
 ) -> Result<Vec<String>> {
     let i = t.index;
     i.execute_batch(
@@ -32,7 +31,7 @@ pub(in crate::excise) fn clear_for_reparse(
         let hash: Vec<u8> = row.get(1)?;
         let body: Vec<u8> = row.get(2)?;
         if unpack_text(&body)?.contains(text) {
-            removed_texts.insert(hash);
+            hashes.text(&hash)?;
             i.prepare_cached("INSERT INTO temp.excision_reparse_text VALUES (?1)")?
                 .execute([row.get::<_, i64>(0)?])?;
         }
@@ -96,10 +95,7 @@ pub(in crate::excise) fn clear_for_reparse(
                     .execute([text])?;
                 Ok(())
             })?;
-            references.visit_blobs(|hash| {
-                blobs.insert(hash.to_vec());
-                Ok(())
-            })
+            references.visit_blobs(|hash| hashes.blob_candidate(hash))
         })?;
         crate::fault::check("excision_reparse.after_session", "")?;
     }
