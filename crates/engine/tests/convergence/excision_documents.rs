@@ -40,7 +40,7 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
         assert_eq!(done.inputs_kept.len(), 1);
         assert!(done.texts_left >= 1, "the short 'ok' value remains");
         assert!(done.inputs_overwritten.values().sum::<u64>() > 0);
-        assert_eq!(w.texts("kept"), [kept.clone()]);
+        assert_eq!(w.texts("kept"), std::slice::from_ref(&kept));
         let canonical = rusqlite::Connection::open(archive.archive_db()).unwrap();
         let hash: Vec<u8> = canonical
             .query_row("SELECT DISTINCT blob FROM extent", [], |r| r.get(0))
