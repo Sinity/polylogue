@@ -14,7 +14,10 @@ fn invalid(reason: &str) -> ExportError {
 }
 
 impl Catalog {
-    pub fn load(out: &Path) -> Result<Self, ExportError> {
+    pub fn load(
+        out: &Path,
+        checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
+    ) -> Result<Self, ExportError> {
         let file = tempfile::NamedTempFile::new()?;
         let conn = Connection::open(file.path()).map_err(|e| ExportError::Sqlite(out.into(), e))?;
         let mut catalog = Self {
@@ -51,6 +54,7 @@ impl Catalog {
                         ExportError::Sqlite(_, e) => sql_err(e),
                         e => e,
                     })?;
+                    checkpoint()?;
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

@@ -1,4 +1,5 @@
 use super::*;
+use polylogue_store::tool_databases::Captures;
 use polylogue_store::tool_databases::Exporter;
 
 #[test]
@@ -150,4 +151,62 @@ fn engine_never_collects_a_failed_database_export() {
             .unwrap()
             .contains("failed")
     );
+}
+
+#[test]
+fn capture_worker_errors_and_panics_release_the_attempt_for_retry() {
+    for point in [
+        "tool_export.after_row",
+        "tool_export.after_append",
+        "tool_export.after_complete",
+    ] {
+        for action in [Action::Fail, Action::Panic] {
+            fault::clear();
+            let dir = tempfile::tempdir().unwrap();
+            let db = dir.path().join("state.sqlite");
+            let out = dir.path().join("state.jsonl");
+            rusqlite::Connection::open(&db)
+                .unwrap()
+                .execute_batch(
+                    "CREATE TABLE t(id INTEGER PRIMARY KEY,n TEXT);
+                INSERT INTO t VALUES(1,'kept')",
+                )
+                .unwrap();
+            let mut captures = Captures::default();
+            fault::arm(point, "", action, 0, 1);
+            let mut turn = captures.turn(vec![(db.clone(), out.clone())], 1).unwrap();
+            let mut errors = Vec::new();
+            loop {
+                errors.extend(turn.errors);
+                if !turn.pending {
+                    break;
+                }
+                turn = captures.turn(Vec::new(), 1).unwrap();
+            }
+            fault::clear();
+            assert_eq!(errors.len(), 1, "{point}/{action:?}");
+            assert!(captures.paths().next().is_none());
+            let mut turn = captures.turn(vec![(db, out.clone())], 1).unwrap();
+            loop {
+                assert!(
+                    turn.errors.is_empty(),
+                    "{point}/{action:?}: {:?}",
+                    turn.errors
+                );
+                if !turn.pending {
+                    break;
+                }
+                turn = captures.turn(Vec::new(), 1).unwrap();
+            }
+            assert_eq!(captures.paths().next(), Some(out.as_path()));
+            assert_eq!(
+                fs::read_to_string(&out)
+                    .unwrap()
+                    .lines()
+                    .filter(|line| line.contains("kept"))
+                    .count(),
+                1
+            );
+        }
+    }
 }

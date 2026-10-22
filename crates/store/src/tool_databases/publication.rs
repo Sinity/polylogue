@@ -30,7 +30,10 @@ fn invalid(reason: &str) -> ExportError {
 impl Publication {
     /// Validate before truncating: an altered committed prefix is never repaired
     /// by deleting bytes. A legacy export is validated by the catalog loader.
-    pub fn open(out: &Path) -> Result<Self, ExportError> {
+    pub fn open(
+        out: &Path,
+        progress: &mut dyn FnMut() -> Result<(), ExportError>,
+    ) -> Result<Self, ExportError> {
         let mark = match fs::read(checkpoint(out)) {
             Ok(bytes) => {
                 Some(serde_json::from_slice::<Completed>(&bytes).map_err(std::io::Error::from)?)
@@ -67,6 +70,7 @@ impl Publication {
             }
             hash.update(&buf[..n]);
             remaining -= n as u64;
+            progress()?;
         }
         if mark
             .as_ref()
@@ -156,7 +160,7 @@ impl Publication {
             Err(e) => {
                 // Re-read the marker, which might already name the new prefix.
                 // On any recovery error the Engine refuses this export.
-                *self = Self::open(out)?;
+                *self = Self::open(out, &mut || Ok(()))?;
                 Err(e)
             }
         }

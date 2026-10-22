@@ -40,8 +40,10 @@ const BUSY_EXPORT: Duration = Duration::from_secs(3600);
 
 mod catalog;
 mod publication;
+mod turns;
 use catalog::Catalog;
 use publication::Publication;
+pub use turns::{CaptureTurn, Captures};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
@@ -98,6 +100,15 @@ impl Exporter {
     /// Exports `db` into `out` when due. Returns `None` when nothing was
     /// due.
     pub fn export(&mut self, db: &Path, out: &Path) -> Result<Option<Exported>, ExportError> {
+        self.export_with(db, out, &mut || Ok(()))
+    }
+
+    fn export_with(
+        &mut self,
+        db: &Path,
+        out: &Path,
+        checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
+    ) -> Result<Option<Exported>, ExportError> {
         if let Some(dir) = out.parent() {
             fs::create_dir_all(dir)?;
         }
@@ -106,8 +117,8 @@ impl Exporter {
             st.catalog = None;
             st.publication = None;
             st.exported = None;
-            let mut publication = Publication::open(out)?;
-            let catalog = Catalog::load(out)?;
+            let mut publication = Publication::open(out, checkpoint)?;
+            let catalog = Catalog::load(out, checkpoint)?;
             publication.establish(out)?;
             st.publication = Some(publication);
             st.catalog = Some(catalog);
@@ -121,7 +132,7 @@ impl Exporter {
         if !(changed && (first || quiet || overdue)) {
             return Ok(None);
         }
-        let done = match write_export(db, out, st) {
+        let done = match write_export(db, out, st, checkpoint) {
             Ok(done) => done,
             Err(e) => {
                 // Publication may have completed before a local cache failure.
@@ -218,7 +229,12 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
     Ok(out)
 }
 
-fn write_export(db: &Path, out: &Path, st: &mut DbState) -> Result<Exported, ExportError> {
+fn write_export(
+    db: &Path,
+    out: &Path,
+    st: &mut DbState,
+    checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
+) -> Result<Exported, ExportError> {
     let sql_err = |e| ExportError::Sqlite(db.to_path_buf(), e);
     let conn = Connection::open_with_flags(
         db,
@@ -297,6 +313,7 @@ fn write_export(db: &Path, out: &Path, st: &mut DbState) -> Result<Exported, Exp
                     .map_err(std::io::Error::other)?;
                 done.rows += 1;
             }
+            checkpoint()?;
         }
     }
     // All tables were scanned successfully. This also finds dropped tables.
@@ -315,6 +332,7 @@ fn write_export(db: &Path, out: &Path, st: &mut DbState) -> Result<Exported, Exp
             w.write_all(b"\n")?;
             crate::fault::check("tool_export.after_gone", &table).map_err(std::io::Error::other)?;
             done.gone += 1;
+            checkpoint()?;
         }
     }
     transaction
