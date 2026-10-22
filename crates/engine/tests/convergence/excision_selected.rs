@@ -2,6 +2,49 @@ use super::*;
 use polylogue_store::{Delivery, UserRequest, UserWrite};
 
 #[test]
+fn whole_input_removal_refuses_new_messages_of_its_session_after_restart() {
+    for restart in [false, true] {
+        let w = ClaudeHome::new();
+        w.append("original.jsonl", &user("old", "removed", "original body"));
+        let (mut engine, mut lock) = w.engine(64 << 20);
+        assert!(engine.converge().unwrap().errors.is_empty());
+        let input = w
+            .reads()
+            .reader()
+            .unwrap()
+            .known_inputs(&engine.config.machine)
+            .unwrap()
+            .into_iter()
+            .find(|input| Path::new(&input.path) == w.file("original.jsonl"))
+            .unwrap()
+            .input_id;
+        for dry in [true, false] {
+            let done = excise(&mut engine, &format!("input:{input}"), dry);
+            assert_eq!(done.sessions, ["claude-code:removed"]);
+            assert_eq!(w.texts("removed").len(), usize::from(dry));
+        }
+        if restart {
+            drop(engine);
+            drop(lock);
+            (engine, lock) = w.engine(64 << 20);
+        }
+        w.append(
+            "other.jsonl",
+            &user("new", "removed", "new body from another input"),
+        );
+        w.append(
+            "unrelated.jsonl",
+            &user("independent", "unrelated", "admitted independent body"),
+        );
+        assert!(engine.converge().unwrap().errors.is_empty());
+        assert!(w.texts("removed").is_empty(), "restart={restart}");
+        assert_eq!(w.texts("unrelated"), ["admitted independent body"]);
+        drop(engine);
+        drop(lock);
+    }
+}
+
+#[test]
 fn large_shared_blob_remains_readable_after_two_separate_session_excisions() {
     let w = ClaudeHome::new();
     let mut expected = Vec::new();

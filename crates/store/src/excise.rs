@@ -29,13 +29,15 @@ use crate::{Result, StoreError};
 use polylogue_model::{BlobHash, SessionId};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 mod authored;
 pub(crate) mod blob_cleanup;
 mod index_rows;
 mod record_ranges;
 pub(crate) mod recovery;
+mod refused;
+pub use refused::Refused;
 mod session_texts;
 mod stored_bytes;
 mod stored_text;
@@ -146,35 +148,6 @@ pub struct Excised {
     pub on_disk: Vec<String>,
 }
 
-/// The writer's record of what must not come back.
-#[derive(Debug, Clone, Default)]
-pub struct Refused {
-    pub sessions: HashSet<String>,
-    pub messages: HashSet<String>,
-}
-
-impl Refused {
-    /// Loaded from `archive.db` when the writer starts.
-    pub fn load(archive: &rusqlite::Connection) -> Result<Self> {
-        let mut out = Self::default();
-        let mut stmt = archive.prepare("SELECT scope, message_ids_json FROM excision")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        for row in rows {
-            let (scope, ids) = row?;
-            if let Some(s) = scope.strip_prefix("session:") {
-                out.sessions.insert(s.to_owned());
-            }
-            let ids: Vec<String> = serde_json::from_str(&ids)?;
-            out.messages.extend(ids);
-        }
-        Ok(out)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty() && self.messages.is_empty()
-    }
-}
-
 impl crate::Reader<'_> {
     /// Paths (`(machine, path)`) the loop must never collect again, from every
     /// excision's refused locations. Invalid records refuse the read.
@@ -185,7 +158,7 @@ impl crate::Reader<'_> {
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {
-            let refused: RefusedJson = serde_json::from_str(&row?)?;
+            let refused = RefusedJson::decode(&row?)?;
             out.extend(refused.locations.into_iter().map(|l| (l.machine, l.path)));
         }
         Ok(out)
@@ -194,6 +167,14 @@ impl crate::Reader<'_> {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct RefusedJson {
+    /// Exact session selection, including input-scoped removals. Older
+    /// records may lack this list; their IDs cannot be inferred from messages.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "refused::session_selection"
+    )]
+    sessions: Option<Vec<SessionId>>,
     #[serde(default)]
     locations: Vec<Location>,
     /// BLAKE3 (hex) of every revision and blob the excision removed.
@@ -203,6 +184,20 @@ struct RefusedJson {
     blobs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     publication: Option<crate::sinex_rows::ExcisionPublication>,
+}
+
+impl RefusedJson {
+    fn decode(value: &str) -> Result<Self> {
+        if refused::legacy_empty(value) {
+            return Ok(Self::default());
+        }
+        if !value.trim_start().starts_with('{') {
+            return Err(StoreError::Invalid(
+                "invalid excision refusal payload".into(),
+            ));
+        }
+        Ok(serde_json::from_str(value)?)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -443,6 +438,13 @@ impl Plan {
         }
 
         done.sessions = self.sessions.iter().map(|(_, id)| id.clone()).collect();
+        refused.sessions = Some(
+            done.sessions
+                .iter()
+                .map(|id| SessionId::parse(id))
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|error| StoreError::Invalid(error.to_string()))?,
+        );
         done.messages = self.message_ids.len() as u64;
         done.inputs_removed = self.whole.iter().cloned().collect();
         done.inputs_kept = self.kept.iter().cloned().collect();

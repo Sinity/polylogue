@@ -87,9 +87,11 @@ fn malformed_excision_locations_refuse_collection_after_index_rebuild() {
             .unwrap();
         drop(canonical);
         delete_index(&w.root);
-        let (mut engine, _lock) = w.engine(64 << 20);
+        let (archive, _lock) = Archive::open_or_create(&w.root).unwrap();
         assert!(
-            engine.converge().is_err(),
+            Engine::new(w.config(64 << 20), archive)
+                .and_then(|mut engine| engine.converge())
+                .is_err(),
             "invalid removal metadata must not become an empty path list: {malformed}"
         );
         assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 0);

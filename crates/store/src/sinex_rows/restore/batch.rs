@@ -2,6 +2,7 @@
 use super::{ExcisionPublication, RestoreUnit, invalid, revision_key};
 use crate::Result;
 use rusqlite::Connection;
+use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek};
 
@@ -119,6 +120,14 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
                         .as_str()
                         .ok_or_else(|| invalid("excision has no metadata"))?,
                 )?;
+                if let Some(sessions) = refused.get("sessions") {
+                    Vec::<polylogue_model::SessionId>::deserialize(sessions)?;
+                } else if row["scope"]
+                    .as_str()
+                    .is_some_and(|scope| scope.starts_with("input:"))
+                {
+                    return Err(invalid("input excision has no retained session selection"));
+                }
                 if let Some(replacements) = refused["publication"]["replacements"].as_array() {
                     for r in replacements {
                         if r["unit"]["kind"] == "revision" {

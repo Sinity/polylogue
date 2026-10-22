@@ -3,6 +3,7 @@
 //! deliveries and inputs that held it.
 
 use super::*;
+use std::collections::HashSet;
 
 /// Text scope in `index.db`: rather than overwriting the columns that may
 /// hold the text, every row parsed from records that held it goes, and the

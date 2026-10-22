@@ -39,6 +39,15 @@ supported JSON spellings and complete-string boundaries. The frozen blob-ID
 list and matches for one blob still remain in memory; each pattern scans the
 blob, so this does not bound multi-pattern work.
 
+Every new excision records its exact removed session IDs in the canonical
+refusal payload, including input-scoped removals. The writer loads that same
+policy after commit, restart and Sinex restore. Legacy session-scoped labels
+still supply their session ID. Older input-scoped records without the list do
+not contain enough information to reconstruct it from opaque message IDs;
+collection and restore refuse those policies until their selections are
+recovered. An explicitly stored empty selection remains valid. Legacy
+session-scoped labels and empty-array defaults keep their known exclusions.
+
 Removing a session from a retained JSON export erases its complete records and the necessary array separators. Other bytes, line breaks and offsets stay unchanged, so an index rebuilt from the retained export can still read the surviving sessions. Preview performs the same boundary and overlap checks as execution.
 
 This path requires complete, independently decodable JSON pieces. Citations that cut through scalar values, object-member removals, gaps or split records, and bytes shared with an input outside the rewrite return `unsupported_excision`. Removal also refuses overlaps with surviving sessions' message or event citations. A refusal leaves stored bytes, indexed records and authored notes unchanged.
