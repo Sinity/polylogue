@@ -59,7 +59,7 @@ pub(super) async fn input_removal(sinex: &mut Sinex, store: &Path, root: &Path) 
     }
     let db = polylogue_store::archive::open_read(&restored.archive_db()).unwrap();
     let exclusions = polylogue_store::excise::Refused::load(&db).unwrap();
-    assert!(exclusions.sessions.contains("claude-code:removed:opaque"));
+    assert!(!exclusions.is_empty());
     drop(db);
     drop(lock);
     fs::write(

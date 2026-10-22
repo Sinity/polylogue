@@ -48,11 +48,19 @@ collection and restore refuse those policies until their selections are
 recovered. An explicitly stored empty selection remains valid. Legacy
 session-scoped labels and empty-array defaults keep their known exclusions.
 
+The writer reconstructs exclusion membership in a private SQLite file with a
+1 MiB page cache and mmap disabled, streaming individual IDs from canonical
+rows. Only matching IDs from the current write group enter its in-memory
+filter. Background-task and snapshot references use the same lookup as
+messages, events and links. Construction errors discard the replacement;
+lookup errors report a failed write without admitting unfiltered rows. A
+single canonical SQLite value and an individual ID remain memory limits.
+
 Removing a session from a retained JSON export erases its complete records and the necessary array separators. Other bytes, line breaks and offsets stay unchanged, so an index rebuilt from the retained export can still read the surviving sessions. Preview performs the same boundary and overlap checks as execution.
 
 This path requires complete, independently decodable JSON pieces. Citations that cut through scalar values, object-member removals, gaps or split records, and bytes shared with an input outside the rewrite return `unsupported_excision`. Removal also refuses overlaps with surviving sessions' message or event citations. A refusal leaves stored bytes, indexed records and authored notes unchanged.
 
-Session-record planning currently reads one complete blob at a time. The streaming text-scan memory description above does not apply to this path. Interrupted cross-database commits and physical retirement remain separate qualification work.
+Session-record planning retains one top-level JSON record and one blob’s range list while streaming the verified scratch file. Interrupted cross-database commits and physical retirement remain separate qualification work.
 
 ## Interrupted commits
 

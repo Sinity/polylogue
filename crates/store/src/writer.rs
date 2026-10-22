@@ -674,12 +674,25 @@ impl Inner {
     /// Writes a group in one transaction per database. If it fails, each
     /// batch is retried alone, so one bad batch costs only itself.
     fn write_group(&mut self, group: &[Box<Batch>]) {
-        if !self.refused.is_empty() && group.iter().any(|b| touches(b, &self.refused)) {
-            let filtered: Vec<Box<Batch>> = group
-                .iter()
-                .map(|b| Box::new(without_refused(b, &self.refused)))
-                .collect();
-            return self.write_group_inner(&filtered);
+        if !self.refused.is_empty() {
+            let refused = match matching(group, &self.refused) {
+                Ok(refused) => refused,
+                Err(error) => {
+                    for b in group {
+                        self.report
+                            .errors
+                            .push(format!("input {}: {error}", b.input.id));
+                    }
+                    return;
+                }
+            };
+            if !refused.is_empty() {
+                let filtered: Vec<Box<Batch>> = group
+                    .iter()
+                    .map(|b| Box::new(without_refused(b, &refused)))
+                    .collect();
+                return self.write_group_inner(&filtered);
+            }
         }
         self.write_group_inner(group);
     }
