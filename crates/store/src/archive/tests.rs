@@ -140,3 +140,54 @@ fn conflicting_history_refuses_before_blob_only_cleanup() {
     let canonical = open_read(&archive.archive_db()).unwrap();
     assert!(crate::excise::blob_cleanup::pending(&canonical).unwrap());
 }
+
+#[test]
+fn previous_row_format_is_retired_before_a_new_index_is_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    index.pragma_update(None, "user_version", 26).unwrap();
+    index
+        .execute(
+            "INSERT INTO meta VALUES ('old-format-marker', 'retained')",
+            [],
+        )
+        .unwrap();
+    drop(index);
+    let canonical = open_archive_writer(&archive).unwrap();
+    let value = "canonical note value independent of row dictionary";
+    canonical.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('note','note','note',?1,'operator','synthetic',1,1)", [&value]).unwrap();
+    drop(canonical);
+    drop(lock);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let index = open_read(&archive.index_db()).unwrap();
+    assert_eq!(schema::version(&index).unwrap(), schema::INDEX_VERSION);
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM meta WHERE key='old-format-marker'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    let old = open_read(&dir.path().join("index.db.v26")).unwrap();
+    assert_eq!(
+        old.query_row(
+            "SELECT value FROM meta WHERE key='old-format-marker'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "retained"
+    );
+    let canonical = open_read(&archive.archive_db()).unwrap();
+    assert_eq!(
+        canonical
+            .query_row("SELECT value FROM note WHERE id='note'", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        value
+    );
+}

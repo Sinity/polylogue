@@ -3,16 +3,32 @@
 use crate::{Result, StoreError};
 use polylogue_model::{Block, Event, Message, MessageId, Timestamp};
 use serde::{Serialize, de::DeserializeOwned};
+use std::io::Read;
+use std::sync::LazyLock;
 
 // Fast row-body compression; the format remains readable across compression levels.
 const LEVEL: i32 = 1;
+
+// Immutable for this derived-index generation. Canonical rows use pack_bytes
+// below; only RowPacker may introduce dictionary frames.
+const ROW_DICTIONARY: &[u8] = include_bytes!("encoding/rows.dict");
+static ROW_ENCODER: LazyLock<zstd::dict::EncoderDictionary<'static>> =
+    LazyLock::new(|| zstd::dict::EncoderDictionary::copy(ROW_DICTIONARY, LEVEL));
+static ROW_DECODER: LazyLock<zstd::dict::DecoderDictionary<'static>> =
+    LazyLock::new(|| zstd::dict::DecoderDictionary::copy(ROW_DICTIONARY));
 
 pub(crate) fn pack_bytes(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
     zstd::bulk::compress(bytes, LEVEL)
 }
 
 pub(crate) fn unpack_bytes(packed: &[u8]) -> std::io::Result<Vec<u8>> {
-    zstd::stream::decode_all(packed)
+    if zstd::zstd_safe::get_dict_id_from_frame(packed).is_none() {
+        return zstd::stream::decode_all(packed);
+    }
+    let mut decoder = zstd::stream::read::Decoder::with_prepared_dictionary(packed, &ROW_DECODER)?;
+    let mut bytes = Vec::new();
+    decoder.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 pub(crate) fn pack_text(text: &str) -> std::io::Result<Vec<u8>> {
@@ -47,29 +63,45 @@ pub(crate) fn unpack_json<T: DeserializeOwned>(packed: &[u8]) -> Result<T> {
     Ok(serde_json::from_slice(&unpack_bytes(packed)?)?)
 }
 
-/// One independent compression frame per row, with one encoder per batch.
-pub(crate) struct RowPacker(zstd::bulk::Compressor<'static>);
+/// One independent frame per row; both encoders are reused for the batch.
+pub(crate) struct RowPacker {
+    plain: zstd::bulk::Compressor<'static>,
+    rows: zstd::bulk::Compressor<'static>,
+}
 
 impl RowPacker {
     pub(crate) fn new() -> std::io::Result<Self> {
-        zstd::bulk::Compressor::new(LEVEL).map(Self)
+        Ok(Self {
+            plain: zstd::bulk::Compressor::new(LEVEL)?,
+            rows: zstd::bulk::Compressor::with_prepared_dictionary(&ROW_ENCODER)?,
+        })
     }
 
     pub(crate) fn pack_text(&mut self, text: &str) -> std::io::Result<Vec<u8>> {
-        self.0.compress(text.as_bytes())
+        self.plain.compress(text.as_bytes())
+    }
+
+    fn pack_row(&mut self, bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+        let plain = self.plain.compress(bytes)?;
+        let dictionary = self.rows.compress(bytes)?;
+        Ok(if dictionary.len() < plain.len() {
+            dictionary
+        } else {
+            plain
+        })
     }
 
     fn pack_json(&mut self, value: &impl Serialize) -> Result<Vec<u8>> {
-        Ok(self.0.compress(&serde_json::to_vec(value)?)?)
+        Ok(self.pack_row(&serde_json::to_vec(value)?)?)
     }
 
     fn pack_block(&mut self, block: &Block) -> Result<Vec<u8>> {
-        Ok(self.0.compress(&block_bytes(block)?)?)
+        Ok(self.pack_row(&block_bytes(block)?)?)
     }
 
     pub(crate) fn pack_event(&mut self, event: &Event) -> Result<(String, Vec<u8>)> {
         let (id, data) = event_bytes(event)?;
-        Ok((id, self.0.compress(&data)?))
+        Ok((id, self.pack_row(&data)?))
     }
 
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {

@@ -154,7 +154,7 @@ socket paths can then change the test behavior.
 
 The `fast` operation uses the normal development queue for formatting,
 boundaries and strict Clippy. The `focused` operation requires a selection
-and uses the same queue. Full checks and corpus benchmarks use the bulk
+and uses the same queue. Full checks use the bulk
 queue, so they do not consume every slot for short development checks. A new target or dependency
 profile may still need compilation; the stage times show that separately.
 
@@ -186,3 +186,18 @@ Run `agentctl job start polylogue compile -- -p <crate>` for a compiler check
 in the normal development queue. Update `Cargo.lock` when adding a dependency
 before invoking this locked operation. Full tests and package qualification
 remain separate bulk jobs.
+
+## Derived-row dictionary
+
+`crates/store/src/encoding/rows.dict` is generated only from the typed neutral
+examples in `crates/store/examples/row_dictionary/samples.rs`. Check its
+reproducibility with the locked dependency versions:
+
+```sh
+agentctl job start polylogue exec --workspace <worktree> -- nix develop --command cargo run --locked --quiet -p polylogue-store --example row_dictionary -- --check crates/store/src/encoding/rows.dict
+```
+
+To regenerate, omit `--check`. Review the examples and asset together, bump
+`INDEX_VERSION` and update the format digests in `schema/tests.rs`. A dictionary
+belongs to one disposable index generation; original inputs and canonical
+archive records never depend on it.

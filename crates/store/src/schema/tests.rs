@@ -24,17 +24,21 @@ fn a_newer_archive_is_refused() {
 }
 
 #[test]
-fn index_schema_changes_require_a_version_and_digest_update() {
+fn index_format_changes_require_a_version_and_digest_update() {
     assert_eq!(
         (
             INDEX_VERSION,
-            blake3::hash(INDEX.as_bytes()).to_hex().to_string()
+            blake3::hash(INDEX.as_bytes()).to_hex().to_string(),
+            blake3::hash(include_bytes!("../encoding/rows.dict"))
+                .to_hex()
+                .to_string()
         ),
         (
-            26,
-            "bf42b10fb7f3f3758fb0843e3db62a9593846d6cf02962ba6808ef65502cb4c1".to_owned()
+            27,
+            "bf42b10fb7f3f3758fb0843e3db62a9593846d6cf02962ba6808ef65502cb4c1".to_owned(),
+            "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
         ),
-        "bump INDEX_VERSION and record its schema digest when index.sql changes"
+        "bump INDEX_VERSION and record the format digests when index.sql or the row dictionary changes"
     );
 }
 

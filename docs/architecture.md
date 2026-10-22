@@ -170,7 +170,14 @@ Missing, cyclic or incorrectly ordered declarations fail before any rows change.
 catalog digest and its published label in their version. Changing prices does
 not invalidate unrelated derivations. The work graph and its orphan cleanup
 live under `derive/work.rs`. Provider-reported costs remain recorded facts.
-The index schema version and SQL digest are pinned together in a test.
+Derived message, block and event rows use an embedded 8 KiB Zstandard dictionary
+trained from neutral model examples. Each row keeps the shorter of plain and
+dictionary compression; text and canonical archive records remain dictionary-free.
+Each frame carries its dictionary ID. Reads accept the existing plain frames
+and the current dictionary, and refuse other dictionaries. The index format
+version, SQL digest and dictionary digest are pinned together in a test;
+changing the dictionary requires a new index generation and rebuild from the
+canonical archive.
 
 `polylogue-query` binds the query language and compiles parameterized SQL.
 `daemon/query.rs` executes it through a store reader, computes the final answer
