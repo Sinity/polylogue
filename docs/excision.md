@@ -14,6 +14,14 @@ A scan keeps one verified copy of each unique plain blob in an unlinked, mode-06
 
 ## Sessions in shared exports
 
+Session bodies and titles are deduplicated in a private SQLite text set with a
+1 MiB cache and mmap disabled. Cleanup visits texts in lexical order and keeps
+byte-based blanking thresholds and per-document match counts. Delivered briefs
+are selected by exact session/message references and loaded one at a time;
+an unreadable referenced body refuses preview and execution. This bounds the
+decoded text collection, while a single retained blob, record-range catalogs
+and message-ID lists can still exceed memory.
+
 Removing a session from a retained JSON export erases its complete records and the necessary array separators. Other bytes, line breaks and offsets stay unchanged, so an index rebuilt from the retained export can still read the surviving sessions. Preview performs the same boundary and overlap checks as execution.
 
 This path requires complete, independently decodable JSON pieces. Citations that cut through scalar values, object-member removals, gaps or split records, and bytes shared with an input outside the rewrite return `unsupported_excision`. Removal also refuses overlaps with surviving sessions' message or event citations. A refusal leaves stored bytes, indexed records and authored notes unchanged.

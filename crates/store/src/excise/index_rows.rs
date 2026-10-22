@@ -212,28 +212,55 @@ pub(super) fn remove_notes(
 
 /// Delivered briefs that named a removed session: the session's own texts
 /// in them are blanked, and the content hash follows the new text.
+/// `messages` is the plan's sorted list of exact IDs.
 pub(super) fn redact_deliveries(
     a: &Transaction<'_>,
     sessions: &[String],
-    texts: &BTreeSet<String>,
+    messages: &[String],
+    texts: &SessionTexts,
     dry_run: bool,
 ) -> Result<u64> {
-    let rows: Vec<(String, Vec<u8>, String)> = a
-        .prepare("SELECT id, body, refs_json FROM delivery")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+    let mut after: Option<String> = None;
     let mut n = 0;
-    for (id, body, refs) in rows {
-        if !sessions.iter().any(|s| refs.contains(s.as_str())) {
-            continue;
-        }
-        let Ok(text) = unpack_text(&body) else {
-            continue;
+    loop {
+        let row = |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?));
+        let next = match &after {
+            Some(after) => a
+                .prepare_cached(
+                    "SELECT id,refs_json FROM delivery WHERE id>?1 ORDER BY id LIMIT 1",
+                )?
+                .query_row([after], row)
+                .optional()?,
+            None => a
+                .prepare_cached("SELECT id,refs_json FROM delivery ORDER BY id LIMIT 1")?
+                .query_row([], row)
+                .optional()?,
         };
-        let mut new = text.clone();
-        for s in texts.iter().filter(|s| s.len() >= MIN_BLANKED) {
-            new = new.replace(s.as_str(), &blank(s.as_bytes()));
+        let Some((id, refs)) = next else {
+            break;
+        };
+        after = Some(id.clone());
+        let refs: Vec<String> = serde_json::from_str(&refs)?;
+        let referenced = refs.iter().any(|reference| {
+            sessions
+                .iter()
+                .any(|s| reference == s || reference.strip_prefix("session:") == Some(s.as_str()))
+                || reference
+                    .strip_prefix("message:")
+                    .is_some_and(|id| messages.binary_search_by(|m| m.as_str().cmp(id)).is_ok())
+        });
+        if !referenced {
+            continue;
         }
+        let body: Vec<u8> = a
+            .prepare_cached("SELECT body FROM delivery WHERE id=?1")?
+            .query_row([&id], |r| r.get(0))?;
+        let text = unpack_text(&body)?;
+        let mut new = text.clone();
+        texts.visit(MIN_BLANKED, |s| {
+            new = new.replace(s, &blank(s.as_bytes()));
+            Ok(())
+        })?;
         if new == text {
             continue;
         }
