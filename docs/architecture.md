@@ -46,6 +46,16 @@ observation. They create no empty extent or conversation. The same path handles
 truncation to empty and later growth; pending file facts are work even when
 there are no bytes to parse.
 
+A writer flush reports rejected input IDs separately from diagnostic text.
+Later queued batches for those inputs cannot advance across a failed batch;
+unrelated inputs still commit. After plans finish, the Engine reloads the
+rejected paths’ committed observations and archive/index checkpoints, discarding
+their uncommitted parser state. Unchanged inputs can retry on the next pass.
+Parser failures retain their separate source/parser-change retry rule. On growth,
+a missing in-memory tail is read from the retained range before append
+classification; a changed prefix starts a new chain. The comparison uses the
+committed byte length even when its source observation described a larger file.
+
 Tool SQLite databases are read through one source transaction, including WAL
 contents. A disposable disk-backed comparison catalog keeps exact table/key
 pairs and complete row hashes, with a 1 MiB SQLite cache and mmap disabled.

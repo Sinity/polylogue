@@ -674,20 +674,42 @@ impl Reader<'_> {
         crate::blobs::StoredChain::load(self.conn()?, "a.", input, chain, length)
     }
 
+    /// Read only extents intersecting a retained range, including its integrity checks.
+    pub fn stored_range(
+        &self,
+        input: &str,
+        chain: i64,
+        start: u64,
+        end: u64,
+        store: &hashed_blobs::Store,
+    ) -> Result<Vec<u8>> {
+        crate::blobs::StoredChain::load_range(self.conn()?, "a.", input, chain, start, end)?
+            .read_range(store, start, end)
+    }
+
     /// Source file facts come from provider observations; an excision event
     /// records archive housekeeping, never a fresh observation of the file.
     pub fn known_inputs(&self, machine: &str) -> Result<Vec<KnownInput>> {
+        self.known_inputs_at(machine, None)
+    }
+
+    /// Committed state of one source path after a rejected write.
+    pub fn known_input_at(&self, machine: &str, path: &str) -> Result<Option<KnownInput>> {
+        Ok(self.known_inputs_at(machine, Some(path))?.pop())
+    }
+
+    fn known_inputs_at(&self, machine: &str, path: Option<&str>) -> Result<Vec<KnownInput>> {
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
                     o.ctime_ns,
                     (SELECT chain FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
                     (SELECT length FROM a.revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1)
              FROM a.observation o JOIN a.input i ON i.id = o.input
-             WHERE o.machine = ?1 AND o.rowid = (
+             WHERE o.machine = ?1 AND (?2 IS NULL OR o.path = ?2) AND o.rowid = (
                  SELECT MAX(rowid) FROM a.observation x WHERE x.machine = o.machine AND x.path = o.path
                  AND x.class <> 'excised')",
         )?;
-        let rows = stmt.query_map([machine], |r| {
+        let rows = stmt.query_map(params![machine, path], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,

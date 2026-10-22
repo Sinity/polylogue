@@ -67,6 +67,7 @@ impl Engine {
                 report.unrecognized.push(path.clone());
             }
         }
+        self.restore_failed_writes()?;
         report.pass.sessions_derived = self.writer.derive()?;
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
@@ -134,7 +135,7 @@ impl Engine {
                 parse: Vec::new(),
                 release: Default::default(),
             })?;
-            let written = self.writer.flush()?;
+            let written = self.flush_writes()?;
             if !written.errors.is_empty() {
                 report.pass.errors.extend(written.errors);
                 return Ok(None);

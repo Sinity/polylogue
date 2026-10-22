@@ -133,3 +133,35 @@ fn sequential_chain_reader_obeys_inline_and_file_extent_boundaries() {
     missing.extents[1].offset = 4;
     assert!(missing.reader(store).read_to_end(&mut Vec::new()).is_err());
 }
+
+#[test]
+fn a_retained_range_decodes_only_intersecting_extents_and_refuses_requested_gaps() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::schema::create_archive(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO input(id,format) VALUES ('input','claude-code')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input',1,'first',1,6,1)", []).unwrap();
+    for (offset, bytes, corrupt) in [(0, b"abc", true), (3, b"def", false)] {
+        let hash = BlobHash::of(bytes);
+        let data = if corrupt {
+            vec![0]
+        } else {
+            zstd::bulk::compress(bytes, 3).unwrap()
+        };
+        conn.execute("INSERT INTO blob(hash,size,stored_size,place,encoding,state,data) VALUES (?1,3,?2,'inline','plain','present',?3)", rusqlite::params![hash.0.as_slice(), data.len() as i64, data]).unwrap();
+        conn.execute("INSERT INTO extent(input,chain,offset,length,blob,blob_offset) VALUES ('input',1,?1,3,?2,0)", rusqlite::params![offset,hash.0.as_slice()]).unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
+    let tail = StoredChain::load_range(&conn, "", "input", 1, 3, 6).unwrap();
+    assert_eq!(tail.extents.len(), 1);
+    assert_eq!(tail.read_range(&store, 3, 6).unwrap(), b"def");
+    assert!(StoredChain::load_range(&conn, "", "input", 1, 2, 6).is_err());
+    conn.execute("DELETE FROM extent WHERE offset=3", [])
+        .unwrap();
+    let missing = StoredChain::load_range(&conn, "", "input", 1, 3, 6).unwrap();
+    assert!(missing.read_range(&store, 3, 6).is_err());
+}

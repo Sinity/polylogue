@@ -907,3 +907,5 @@ mod publication_order;
 
 mod excluded;
 mod text_projection;
+
+mod failed_inputs;
