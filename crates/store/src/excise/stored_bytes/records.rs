@@ -4,7 +4,7 @@ use super::*;
 pub(super) fn preflight(
     t: &Transactions<'_, '_>,
     input: &str,
-    spans: &[Span],
+    spans: &Spans,
     erasures: &super::erasures::Erasures,
     sessions: &[(i64, String)],
 ) -> Result<()> {
@@ -19,8 +19,7 @@ pub(super) fn preflight(
         detail,
     };
     let excluded = serde_json::to_string(&sessions.iter().map(|(pk, _)| *pk).collect::<Vec<_>>())?;
-    let chains: BTreeSet<i64> = spans.iter().map(|s| s.chain).collect();
-    for &chain in &chains {
+    spans.visit_chains(input, |chain| {
         let length: Option<i64> = t.archive.query_row(
             "SELECT MAX(length) FROM revision WHERE input=?1 AND chain=?2",
             params![input, chain],
@@ -28,11 +27,7 @@ pub(super) fn preflight(
         )?;
         let length =
             length.ok_or_else(|| refuse("source chain has no retained revision".into()))?;
-        if spans
-            .iter()
-            .filter(|s| s.chain == chain)
-            .any(|s| s.start < 0 || s.end > length || s.end <= s.start)
-        {
+        if spans.invalid_bounds(input, chain, length)? {
             return Err(refuse(
                 "source citation is outside its retained chain".into(),
             ));
@@ -89,7 +84,8 @@ pub(super) fn preflight(
                 "removing every document would also remove surviving session facts".into(),
             ));
         }
-    }
+        Ok(())
+    })?;
     if erasures.has_unchecked()? {
         return Err(refuse("source citation has no retained piece".into()));
     }
@@ -104,7 +100,7 @@ pub(super) fn preflight(
             let offset: i64 = row.get(2)?;
             let length: i64 = row.get(3)?;
             let blob_offset: i64 = row.get(4)?;
-            if source != input || !chains.contains(&chain) {
+            if source != input || !spans.has_chain(input, chain)? {
                 return Err(refuse(
                     "source bytes are also held by a source outside this rewrite".into(),
                 ));

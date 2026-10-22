@@ -19,7 +19,7 @@ impl SessionTexts {
                 "PRAGMA cache_size=-1024; PRAGMA mmap_size=0;
                 PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
                 CREATE TABLE texts(value TEXT PRIMARY KEY) WITHOUT ROWID;
-                CREATE TABLE found(value TEXT PRIMARY KEY) WITHOUT ROWID;",
+                CREATE TABLE found(value TEXT PRIMARY KEY) WITHOUT ROWID; BEGIN;",
             )?;
             self.0 = Some(State { conn, _file: file });
         }

@@ -40,6 +40,7 @@ mod refused;
 pub use refused::Refused;
 pub(crate) use refused::RefusedIds;
 mod session_texts;
+mod spans;
 mod stored_bytes;
 mod stored_text;
 mod text_matches;
@@ -48,6 +49,7 @@ pub(crate) mod vector_policy;
 
 use index_rows::*;
 use session_texts::SessionTexts;
+use spans::Spans;
 use stored_bytes::*;
 pub use stored_bytes::{index_columns_containing, stored_blobs_containing};
 
@@ -256,17 +258,14 @@ pub fn apply(t: &Transactions<'_, '_>, req: &ExciseRequest) -> Result<Excised> {
             }
             plan.whole.insert(input.clone());
             if let Some(pk) = pk {
-                let sessions: Vec<(i64, String)> = t
-                    .index
-                    .prepare(
-                        "SELECT s.pk, s.id FROM session s WHERE s.pk IN
-                             (SELECT session_pk FROM parsed WHERE input_pk = ?1)
-                         AND NOT EXISTS (SELECT 1 FROM parsed p WHERE p.session_pk = s.pk
-                                         AND p.input_pk <> ?1)",
-                    )?
-                    .query_map([pk], |r| Ok((r.get(0)?, r.get(1)?)))?
-                    .collect::<rusqlite::Result<_>>()?;
-                for (spk, sid) in sessions {
+                let mut statement = t.index.prepare(
+                    "SELECT s.pk,s.id FROM session s WHERE s.pk IN
+                        (SELECT session_pk FROM parsed WHERE input_pk=?1)
+                     AND NOT EXISTS (SELECT 1 FROM parsed p WHERE p.session_pk=s.pk AND p.input_pk<>?1)")?;
+                let sessions = statement
+                    .query_map([pk], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+                for row in sessions {
+                    let (spk, sid) = row?;
                     plan.session(t, spk, &sid)?;
                 }
             }
@@ -285,7 +284,7 @@ struct Plan {
     /// Inputs to remove whole.
     whole: BTreeSet<String>,
     /// Inputs shared with other sessions: the spans to overwrite.
-    spans: BTreeMap<String, Vec<Span>>,
+    spans: Spans,
     /// Shared inputs whose records have no byte ranges.
     kept: BTreeSet<String>,
     /// Message IDs of the removed sessions, for the writer's refusal.
@@ -299,25 +298,22 @@ struct Plan {
 impl Plan {
     fn session(&mut self, t: &Transactions<'_, '_>, pk: i64, id: &str) -> Result<()> {
         self.sessions.push((pk, id.to_owned()));
-        let ids: Vec<String> = t
+        let mut messages = t
             .index
-            .prepare("SELECT id FROM message WHERE session_pk = ?1")?
-            .query_map([pk], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        self.message_ids.extend(ids);
+            .prepare("SELECT id FROM message WHERE session_pk=?1")?;
+        for id in messages.query_map([pk], |r| r.get::<_, String>(0))? {
+            self.message_ids.push(id?);
+        }
         // Every input the session's rows came from.
-        let inputs: Vec<(i64, String)> = t
-            .index
-            .prepare(
-                "SELECT pk, id FROM input_ref WHERE pk IN (
-                     SELECT input_pk FROM parsed WHERE session_pk = ?1
-                     UNION SELECT s.input_pk FROM message_source s JOIN message m ON m.pk = s.message_pk
-                           WHERE m.session_pk = ?1
-                     UNION SELECT es.input_pk FROM event_source es JOIN event e ON e.id=es.event_id WHERE e.session_pk = ?1)",
-            )?
-            .query_map([pk], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (ipk, iid) in inputs {
+        let mut inputs = t.index.prepare(
+            "SELECT pk,id FROM input_ref WHERE pk IN (
+                SELECT input_pk FROM parsed WHERE session_pk=?1
+                UNION SELECT s.input_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE m.session_pk=?1
+                UNION SELECT es.input_pk FROM event_source es JOIN event e ON e.id=es.event_id WHERE e.session_pk=?1)")?;
+        let inputs =
+            inputs.query_map([pk], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for row in inputs {
+            let (ipk, iid) = row?;
             let shared: bool = t.index.query_row(
                 "SELECT EXISTS (SELECT 1 FROM parsed WHERE input_pk = ?1 AND session_pk <> ?2)
                      OR EXISTS (SELECT 1 FROM message_source s JOIN message m ON m.pk = s.message_pk
@@ -329,30 +325,25 @@ impl Plan {
                 self.whole.insert(iid);
                 continue;
             }
-            let mut spans: Vec<Span> = t
-                .index
-                .prepare(
-                    "SELECT s.chain, s.source_start, s.source_end FROM message_source s
-                     JOIN message m ON m.pk = s.message_pk
-                     WHERE m.session_pk = ?2 AND s.input_pk = ?1 AND s.source_end > s.source_start
-                     UNION SELECT es.chain,es.source_start,es.source_end FROM event_source es
-                     JOIN event e ON e.id=es.event_id
-                     WHERE e.session_pk = ?2 AND es.input_pk = ?1
-                           AND es.source_end > es.source_start",
-                )?
-                .query_map(params![ipk, pk], |r| {
-                    Ok(Span {
-                        chain: r.get(0)?,
-                        start: r.get(1)?,
-                        end: r.get(2)?,
-                    })
-                })?
-                .collect::<rusqlite::Result<_>>()?;
-            if spans.is_empty() {
+            let mut statement = t.index.prepare(
+                "SELECT s.chain,s.source_start,s.source_end FROM message_source s JOIN message m ON m.pk=s.message_pk
+                 WHERE m.session_pk=?2 AND s.input_pk=?1 AND s.source_end>s.source_start
+                 UNION SELECT es.chain,es.source_start,es.source_end FROM event_source es JOIN event e ON e.id=es.event_id
+                 WHERE e.session_pk=?2 AND es.input_pk=?1 AND es.source_end>es.source_start")?;
+            let spans = statement.query_map(params![ipk, pk], |r| {
+                Ok(Span {
+                    chain: r.get(0)?,
+                    start: r.get(1)?,
+                    end: r.get(2)?,
+                })
+            })?;
+            let mut found = false;
+            for span in spans {
+                self.spans.insert(&iid, span?)?;
+                found = true;
+            }
+            if !found {
                 self.kept.insert(iid);
-            } else {
-                spans.sort();
-                self.spans.entry(iid).or_default().extend(spans);
             }
         }
         Ok(())
@@ -397,7 +388,7 @@ impl Plan {
         self.collect_texts(t)?;
         self.message_ids.sort_unstable();
         // Removing an input supersedes partial rewrites of its records.
-        self.spans.retain(|input, _| !self.whole.contains(input));
+        self.spans.remove_whole(&self.whole)?;
         self.kept.retain(|input| !self.whole.contains(input));
         let mut text_matches = self
             .text
@@ -449,10 +440,10 @@ impl Plan {
         done.messages = self.message_ids.len() as u64;
         done.inputs_removed = self.whole.iter().cloned().collect();
         done.inputs_kept = self.kept.iter().cloned().collect();
-        for (input, spans) in &self.spans {
-            done.inputs_overwritten
-                .insert(input.clone(), spans.len() as u64);
-        }
+        self.spans.visit_inputs(|input, count| {
+            done.inputs_overwritten.insert(input.to_owned(), count);
+            Ok(())
+        })?;
 
         // Session rows, before the inputs, so a blob a removed block named
         // can be checked against what remains.
@@ -470,17 +461,17 @@ impl Plan {
         for input in &self.whole {
             remove_input(t, input, req, &mut refused, done, &mut removed_texts)?;
         }
-        for (input, spans) in &self.spans {
+        self.spans.visit_inputs(|input, _| {
             overwrite(
                 t,
                 input,
-                spans,
+                &self.spans,
                 req,
                 &mut refused,
                 &mut delete_files,
                 &self.sessions,
-            )?;
-        }
+            )
+        })?;
         if !self.kept.is_empty() {
             let mut still = BTreeSet::new();
             for input in &self.kept {
