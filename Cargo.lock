@@ -2636,6 +2636,7 @@ dependencies = [
  "blake3",
  "hashed-blobs",
  "jiff",
+ "memchr",
  "polylogue-model",
  "rusqlite",
  "serde",

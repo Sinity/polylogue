@@ -10,6 +10,7 @@ use polylogue_testkit::{
 use std::fs;
 use std::path::Path;
 
+mod excision_documents;
 mod excision_selected;
 mod tool_captures;
 
