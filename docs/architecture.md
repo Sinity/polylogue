@@ -46,6 +46,18 @@ observation. They create no empty extent or conversation. The same path handles
 truncation to empty and later growth; pending file facts are work even when
 there are no bytes to parse.
 
+Tool SQLite databases are read through one source transaction, including WAL
+contents. A disposable disk-backed comparison catalog keeps exact table/key
+pairs and complete row hashes, with a 1 MiB SQLite cache and mmap disabled.
+Changed rows and removals, including dropped tables, are staged in a temporary
+file. Only a successful complete scan appends this batch to the retained JSONL
+export. The bytes are synced before `atomicwrites` replaces its adjacent
+`.completed` length/hash checkpoint. Before collection, restart recovery checks
+the completed prefix and removes only an unpublished suffix. Altered completed
+bytes and malformed legacy exports refuse collection while preserving evidence.
+The Engine skips an export call that fails, even if its output file exists.
+The source scan is still synchronous; reusable capture turns remain planned.
+
 Hook settings and reader credentials are replaced using
 `atomicwrites`, which owns temporary-file cleanup, file synchronization,
 rename and directory synchronization. Each caller still owns its path and

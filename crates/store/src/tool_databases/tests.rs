@@ -49,7 +49,10 @@ fn exports_new_changed_and_gone_rows_only() {
     assert_eq!(l.len(), 6);
     assert_eq!(l[4]["r"]["title"], "renamed");
     let kh = format!("{:016x}", row_key("threads", &json!(["b"])));
-    assert_eq!(l[5], json!({"t": "threads", "kh": kh, "gone": true}));
+    assert_eq!(
+        l[5],
+        json!({"t": "threads", "k":["b"], "kh": kh, "gone": true})
+    );
 }
 
 #[test]
@@ -74,5 +77,186 @@ fn a_restart_rebuilds_what_was_exported_from_the_file() {
             .filter(|v| v.get("schema").is_some())
             .count(),
         1
+    );
+}
+
+#[test]
+fn dropped_tables_publish_exact_removals_and_can_reappear() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    let source = Connection::open(&db).unwrap();
+    source
+        .execute_batch(
+            "CREATE TABLE t(a TEXT,b INTEGER,PRIMARY KEY(a,b)) WITHOUT ROWID;
+        INSERT INTO t VALUES('a',1),('a',2);",
+        )
+        .unwrap();
+    Exporter::default().export(&db, &out).unwrap();
+    source.execute_batch("DROP TABLE t").unwrap();
+    let gone = Exporter::default().export(&db, &out).unwrap().unwrap();
+    assert_eq!(gone, Exported { rows: 0, gone: 2 });
+    assert!(
+        lines(&out)
+            .iter()
+            .any(|v| v["gone"] == true && v["k"] == json!(["a", 1]))
+    );
+    source
+        .execute_batch(
+            "CREATE TABLE t(a TEXT,b INTEGER,PRIMARY KEY(a,b)) WITHOUT ROWID;
+        INSERT INTO t VALUES('a',1);",
+        )
+        .unwrap();
+    assert_eq!(
+        Exporter::default().export(&db, &out).unwrap().unwrap(),
+        Exported { rows: 1, gone: 0 }
+    );
+}
+
+#[test]
+fn malformed_legacy_exports_are_preserved_and_refused() {
+    for suffix in ["broken\n", "{\"t\":\"t\"}\n", "{\"schema\":{}}"] {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("old.jsonl");
+        fs::write(&out, suffix).unwrap();
+        assert!(
+            Exporter::default()
+                .export(&dir.path().join("missing.sqlite"), &out)
+                .is_err()
+        );
+        assert_eq!(fs::read_to_string(&out).unwrap(), suffix);
+        assert!(!publication::checkpoint(&out).exists());
+    }
+}
+
+#[test]
+fn changed_completed_bytes_are_not_truncated_or_silently_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE TABLE t(id); INSERT INTO t VALUES(1)")
+        .unwrap();
+    let mut exporter = Exporter::default();
+    exporter.export(&db, &out).unwrap();
+    let mut corrupt = fs::read(&out).unwrap();
+    corrupt[0] = b'!';
+    corrupt.extend_from_slice(b"unpublished tail");
+    fs::write(&out, &corrupt).unwrap();
+    assert!(exporter.export(&db, &out).is_err());
+    assert_eq!(fs::read(&out).unwrap(), corrupt);
+}
+
+#[test]
+fn valid_legacy_rows_and_hash_only_removals_replay_without_repeating_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    let source = Connection::open(&db).unwrap();
+    source
+        .execute_batch(
+            "CREATE TABLE t(id INTEGER PRIMARY KEY,n TEXT); INSERT INTO t VALUES(1,'a'),(2,'b')",
+        )
+        .unwrap();
+    Exporter::default().export(&db, &out).unwrap();
+    let mut legacy = lines(&out);
+    legacy.push(json!({"t":"t","kh":format!("{:016x}",row_key("t",&json!([2]))),"gone":true}));
+    let bytes = legacy.iter().map(|v| format!("{v}\n")).collect::<String>();
+    fs::write(&out, &bytes).unwrap();
+    fs::remove_file(publication::checkpoint(&out)).unwrap();
+    source.execute("DELETE FROM t WHERE id=2", []).unwrap();
+    assert_eq!(
+        Exporter::default().export(&db, &out).unwrap().unwrap(),
+        Exported::default()
+    );
+    assert_eq!(fs::read_to_string(&out).unwrap(), bytes);
+}
+
+#[test]
+fn duplicate_nullable_primary_keys_refuse_the_whole_capture() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE t(id TEXT PRIMARY KEY,n TEXT);
+        INSERT INTO t VALUES(NULL,'a'),(NULL,'b')",
+        )
+        .unwrap();
+    assert!(Exporter::default().export(&db, &out).is_err());
+    assert_eq!(fs::read(&out).unwrap(), b"");
+}
+
+#[test]
+fn sqlite_values_are_exact_or_the_capture_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    let source = Connection::open(&db).unwrap();
+    source
+        .execute_batch(
+            "CREATE TABLE t(rowid TEXT, big INTEGER, n, b BLOB, f REAL);
+        INSERT INTO t VALUES('shadowed',9223372036854775807,NULL,x'00ff',1.25);
+        INSERT INTO t VALUES('shadowed',-9223372036854775808,NULL,x'',-1.25);",
+        )
+        .unwrap();
+    Exporter::default().export(&db, &out).unwrap();
+    let captured = lines(&out);
+    assert_eq!(captured[1]["k"], json!([1]));
+    assert_eq!(captured[2]["k"], json!([2]));
+    assert_eq!(captured[1]["r"]["big"], i64::MAX);
+    assert_eq!(captured[2]["r"]["big"], i64::MIN);
+    assert_eq!(captured[1]["r"]["n"], Value::Null);
+    assert_eq!(captured[1]["r"]["f"], 1.25);
+    assert_eq!(captured[1]["r"]["b"], json!({"base64":"AP8="}));
+    let before = fs::read(&out).unwrap();
+    for statement in [
+        "UPDATE t SET rowid=CAST(x'ff' AS TEXT)",
+        "UPDATE t SET rowid='valid',f=1e999",
+    ] {
+        source.execute_batch(statement).unwrap();
+        assert!(Exporter::default().export(&db, &out).is_err());
+        assert_eq!(fs::read(&out).unwrap(), before);
+    }
+}
+
+#[test]
+fn a_large_row_population_replays_and_compares_without_repeating_unchanged_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("state.sqlite");
+    let out = dir.path().join("state.jsonl");
+    let source = Connection::open(&db).unwrap();
+    source
+        .execute_batch(
+            "CREATE TABLE t(id INTEGER PRIMARY KEY,n TEXT);
+        WITH RECURSIVE ids(n) AS(VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<20000)
+        INSERT INTO t SELECT n,printf('%0128d',n) FROM ids;",
+        )
+        .unwrap();
+    assert_eq!(
+        Exporter::default().export(&db, &out).unwrap().unwrap().rows,
+        20000
+    );
+    let length = fs::metadata(&out).unwrap().len();
+    assert_eq!(
+        Exporter::default().export(&db, &out).unwrap().unwrap(),
+        Exported::default()
+    );
+    assert_eq!(fs::metadata(&out).unwrap().len(), length);
+    source
+        .execute_batch(
+            "UPDATE t SET n='changed' WHERE id%1000=0;
+        DELETE FROM t WHERE id%1000=1",
+        )
+        .unwrap();
+    assert_eq!(
+        Exporter::default().export(&db, &out).unwrap().unwrap(),
+        Exported { rows: 20, gone: 20 }
+    );
+    assert_eq!(
+        Exporter::default().export(&db, &out).unwrap().unwrap(),
+        Exported::default()
     );
 }

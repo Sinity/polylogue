@@ -19,20 +19,18 @@
 //! the origin's parser reads the lines. A row the tool deletes stays in
 //! the export. Values keep their SQLite types; blobs are base64.
 //!
-//! A database is exported when it has gone quiet (its files unchanged
-//! across one pass) and differs from the last export, and at least hourly
-//! while it keeps changing. Every row exported is kept in memory as two
-//! 64-bit digests (its table and key, its content), not as strings: a
-//! thread-history database has millions of rows. After a restart they are
-//! rebuilt from the export file the next time the database changes.
+//! Exports wait for quiet files, with an hourly capture during continuous
+//! writes. Comparison state is a disposable disk-backed SQLite catalog.
+//! Changed rows are staged privately, then a synced completed-prefix marker
+//! publishes the batch. Recovery removes only bytes beyond that marker.
 
 use crate::FileFacts;
 use base64::Engine as _;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value, json};
-use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
+use std::collections::HashMap;
+use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -40,12 +38,19 @@ use std::time::{Duration, Instant};
 /// While a database keeps changing, it is still exported this often.
 const BUSY_EXPORT: Duration = Duration::from_secs(3600);
 
+mod catalog;
+mod publication;
+use catalog::Catalog;
+use publication::Publication;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("{0}: {1}")]
     Sqlite(PathBuf, rusqlite::Error),
+    #[error("{0}")]
+    Invalid(String),
 }
 
 /// The database file and its WAL: either changing is a change.
@@ -73,11 +78,8 @@ struct DbState {
     last_seen: Option<DbFacts>,
     exported: Option<DbFacts>,
     exported_at: Option<Instant>,
-    /// By key digest ([`row_key`]): the table's digest and the row's
-    /// content digest, as in the export; `None` until loaded from the
-    /// export file.
-    rows: Option<RowDigests>,
-    schema: Option<u64>,
+    catalog: Option<Catalog>,
+    publication: Option<Publication>,
 }
 
 #[derive(Default)]
@@ -96,8 +98,21 @@ impl Exporter {
     /// Exports `db` into `out` when due. Returns `None` when nothing was
     /// due.
     pub fn export(&mut self, db: &Path, out: &Path) -> Result<Option<Exported>, ExportError> {
-        let now = DbFacts::of(db);
+        if let Some(dir) = out.parent() {
+            fs::create_dir_all(dir)?;
+        }
         let st = self.dbs.entry(db.to_path_buf()).or_default();
+        if st.publication.as_ref().is_none_or(|p| !p.current(out)) {
+            st.catalog = None;
+            st.publication = None;
+            st.exported = None;
+            let mut publication = Publication::open(out)?;
+            let catalog = Catalog::load(out)?;
+            publication.establish(out)?;
+            st.publication = Some(publication);
+            st.catalog = Some(catalog);
+        }
+        let now = DbFacts::of(db);
         let quiet = st.last_seen == Some(now);
         st.last_seen = Some(now);
         let changed = st.exported != Some(now);
@@ -106,60 +121,20 @@ impl Exporter {
         if !(changed && (first || quiet || overdue)) {
             return Ok(None);
         }
-        if st.rows.is_none() {
-            let (rows, schema) = load(out)?;
-            st.rows = Some(rows);
-            st.schema = schema;
-        }
-        let done = write_export(db, out, st)?;
+        let done = match write_export(db, out, st) {
+            Ok(done) => done,
+            Err(e) => {
+                // Publication may have completed before a local cache failure.
+                // Rebuild both from the verified public prefix next time.
+                st.catalog = None;
+                st.publication = None;
+                return Err(e);
+            }
+        };
         st.exported = Some(now);
         st.exported_at = Some(Instant::now());
         Ok(Some(done))
     }
-}
-
-/// By key digest: the table's digest and the row's content digest.
-type RowDigests = HashMap<u64, (u64, u64)>;
-
-/// The row digests and schema digest an export file holds.
-fn load(out: &Path) -> Result<(RowDigests, Option<u64>), ExportError> {
-    let mut rows = HashMap::new();
-    let mut schema = None;
-    let file = match fs::File::open(out) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((rows, schema)),
-        Err(e) => return Err(e.into()),
-    };
-    for line in BufReader::new(file).lines() {
-        let Ok(v) = serde_json::from_str::<Value>(&line?) else {
-            continue;
-        };
-        if let Some(s) = v.get("schema") {
-            schema = Some(digest(&s.to_string()));
-            continue;
-        }
-        let Some(t) = v.get("t").and_then(Value::as_str) else {
-            continue;
-        };
-        let key = match (v.get("kh").and_then(Value::as_str), v.get("k")) {
-            (Some(kh), _) => match u64::from_str_radix(kh, 16) {
-                Ok(kh) => kh,
-                Err(_) => continue,
-            },
-            (None, Some(k)) => row_key(t, k),
-            (None, None) => continue,
-        };
-        if v.get("gone").is_some() {
-            rows.remove(&key);
-        } else if let Some(h) = v
-            .get("h")
-            .and_then(Value::as_str)
-            .and_then(|h| u64::from_str_radix(h, 16).ok())
-        {
-            rows.insert(key, (digest(t), h));
-        }
-    }
-    Ok((rows, schema))
 }
 
 /// The digest naming a row: its table and its key.
@@ -172,18 +147,28 @@ fn digest(s: &str) -> u64 {
     u64::from_le_bytes(h.as_bytes()[..8].try_into().expect("8 bytes"))
 }
 
-fn value(v: ValueRef<'_>) -> Value {
-    match v {
+fn value(v: ValueRef<'_>) -> Result<Value, ExportError> {
+    Ok(match v {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(i) => i.into(),
-        ValueRef::Real(f) => {
-            serde_json::Number::from_f64(f).map_or_else(|| f.to_string().into(), Value::Number)
-        }
-        ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned().into(),
+        ValueRef::Real(f) => serde_json::Number::from_f64(f)
+            .map(Value::Number)
+            .ok_or_else(|| {
+                ExportError::Invalid(
+                    "non-finite SQLite REAL cannot be represented in a logical export".into(),
+                )
+            })?,
+        ValueRef::Text(t) => std::str::from_utf8(t)
+            .map_err(|_| {
+                ExportError::Invalid(
+                    "non-UTF-8 SQLite TEXT cannot be represented in a logical export".into(),
+                )
+            })?
+            .into(),
         ValueRef::Blob(b) => {
             json!({ "base64": base64::engine::general_purpose::STANDARD.encode(b) })
         }
-    }
+    })
 }
 
 struct Table {
@@ -246,17 +231,20 @@ fn write_export(db: &Path, out: &Path, st: &mut DbState) -> Result<Exported, Exp
     // included, without blocking the tool's writer.
     conn.execute_batch("BEGIN").map_err(sql_err)?;
     let tables = tables(&conn).map_err(sql_err)?;
-    if let Some(dir) = out.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let mut w = BufWriter::new(OpenOptions::new().create(true).append(true).open(out)?);
+    let catalog = st.catalog.as_mut().expect("loaded catalog");
+    let transaction = catalog.conn.transaction().map_err(sql_err)?;
+    transaction
+        .execute("UPDATE row_state SET seen=0", [])
+        .map_err(sql_err)?;
+    let mut staged = tempfile::tempfile()?;
+    let mut w = BufWriter::new(&mut staged);
     let schema: Map<String, Value> = tables
         .iter()
         .map(|t| (t.name.clone(), Value::String(t.sql.clone())))
         .collect();
     let schema = Value::Object(schema);
     let schema_digest = digest(&schema.to_string());
-    if st.schema != Some(schema_digest) {
+    if catalog.schema != Some(schema_digest) {
         let at_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as i64);
@@ -267,64 +255,81 @@ fn write_export(db: &Path, out: &Path, st: &mut DbState) -> Result<Exported, Exp
         )
         .map_err(std::io::Error::from)?;
         w.write_all(b"\n")?;
-        st.schema = Some(schema_digest);
     }
-    let rows = st.rows.get_or_insert_with(HashMap::new);
     let mut done = Exported::default();
     for t in &tables {
         let quoted = t.name.replace('"', "\"\"");
         let select = if t.key.is_empty() {
-            format!("SELECT rowid, * FROM \"{quoted}\"")
+            let rowid = ["rowid", "_rowid_", "oid"]
+                .into_iter()
+                .find(|name| !t.columns.iter().any(|c| c.eq_ignore_ascii_case(name)))
+                .ok_or_else(|| {
+                    ExportError::Invalid(format!("table {} shadows all SQLite rowid names", t.name))
+                })?;
+            format!("SELECT {rowid}, * FROM \"{quoted}\"")
         } else {
             format!("SELECT NULL, * FROM \"{quoted}\"")
         };
         let mut stmt = conn.prepare(&select).map_err(sql_err)?;
-        let table = digest(&t.name);
-        let mut seen: HashSet<u64> = HashSet::new();
         let mut q = stmt.query([]).map_err(sql_err)?;
         while let Some(r) = q.next().map_err(sql_err)? {
             let mut row = Map::new();
             for (i, c) in t.columns.iter().enumerate() {
-                row.insert(c.clone(), value(r.get_ref(i + 1).map_err(sql_err)?));
+                row.insert(c.clone(), value(r.get_ref(i + 1).map_err(sql_err)?)?);
             }
             let k = if t.key.is_empty() {
-                json!([value(r.get_ref(0).map_err(sql_err)?)])
+                json!([value(r.get_ref(0).map_err(sql_err)?)?])
             } else {
                 Value::Array(t.key.iter().map(|&i| row[&t.columns[i]].clone()).collect())
             };
             let row = Value::Object(row);
-            let h = digest(&row.to_string());
-            let key = row_key(&t.name, &k);
-            if rows.get(&key).map(|&(_, h)| h) != Some(h) {
+            let encoded = row.to_string();
+            let hash = blake3::hash(encoded.as_bytes());
+            let h = digest(&encoded);
+            if catalog::changed(&transaction, &t.name, &k, &hash).map_err(sql_err)? {
                 serde_json::to_writer(
                     &mut w,
                     &json!({ "t": t.name, "k": k, "r": row, "h": format!("{h:016x}") }),
                 )
                 .map_err(std::io::Error::from)?;
                 w.write_all(b"\n")?;
-                rows.insert(key, (table, h));
+                crate::fault::check("tool_export.after_row", &t.name)
+                    .map_err(std::io::Error::other)?;
                 done.rows += 1;
             }
-            seen.insert(key);
         }
-        let gone: Vec<u64> = rows
-            .iter()
-            .filter(|(k, (tt, _))| *tt == table && !seen.contains(*k))
-            .map(|(k, _)| *k)
-            .collect();
-        for key in gone {
-            serde_json::to_writer(
-                &mut w,
-                &json!({ "t": t.name, "kh": format!("{key:016x}"), "gone": true }),
-            )
-            .map_err(std::io::Error::from)?;
+    }
+    // All tables were scanned successfully. This also finds dropped tables.
+    {
+        let mut query = transaction
+            .prepare("SELECT t,k,kh FROM row_state WHERE seen=0 ORDER BY t,k")
+            .map_err(sql_err)?;
+        let mut gone = query.query([]).map_err(sql_err)?;
+        while let Some(row) = gone.next().map_err(sql_err)? {
+            let table: String = row.get(0).map_err(sql_err)?;
+            let key: String = row.get(1).map_err(sql_err)?;
+            let kh: String = row.get(2).map_err(sql_err)?;
+            let key: Value = serde_json::from_str(&key).map_err(std::io::Error::from)?;
+            serde_json::to_writer(&mut w, &json!({"t":table,"k":key,"kh":kh,"gone":true}))
+                .map_err(std::io::Error::from)?;
             w.write_all(b"\n")?;
-            rows.remove(&key);
+            crate::fault::check("tool_export.after_gone", &table).map_err(std::io::Error::other)?;
             done.gone += 1;
         }
     }
+    transaction
+        .execute("DELETE FROM row_state WHERE seen=0", [])
+        .map_err(sql_err)?;
     w.flush()?;
+    drop(w);
     conn.execute_batch("COMMIT").map_err(sql_err)?;
+    st.publication
+        .as_mut()
+        .expect("verified publication")
+        .append(out, &mut staged)?;
+    crate::fault::check("tool_export.after_complete", "").map_err(std::io::Error::other)?;
+    transaction.commit().map_err(sql_err)?;
+    catalog.schema = Some(schema_digest);
     Ok(done)
 }
 
