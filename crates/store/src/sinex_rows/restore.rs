@@ -36,6 +36,7 @@ pub(super) fn install<R: Read>(
     identity: Option<&str>,
     mut fetch: impl FnMut(&RestoreUnit) -> Result<Option<R>>,
 ) -> Result<u64> {
+    units.begin_install()?;
     // Hash all descriptors, including tombstones. A repeat cannot reapply stale
     // row bodies, and the checkpoint commits with the corresponding rows.
     let mut fingerprint = blake3::Hasher::new();

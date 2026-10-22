@@ -103,6 +103,14 @@ impl<'a> Revision<'a> {
                     return Err(invalid("restored source blob is not a plain present file"));
                 }
                 let hash = blob_hash(&row["hash"])?;
+                let verified: bool = self.scratch.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM verified_source WHERE hash=?1 AND bytes=?2)",
+                    params![hash, row["size"].as_i64().expect("checked size")],
+                    |r| r.get(0),
+                )?;
+                if !verified {
+                    return Err(invalid("source catalog size differs from verified bytes"));
+                }
                 let fits: bool = self.scratch.query_row(
                     "SELECT EXISTS(SELECT 1 FROM blob_range WHERE hash=?1 AND needed<=?2)",
                     params![hash, row["size"].as_i64().expect("checked size")],

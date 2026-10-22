@@ -191,13 +191,13 @@ fn source_blobs_are_distinct_and_follow_only_the_final_replacements() {
         catalog.push(index as u64 + 1, row).unwrap();
     }
     let selection = catalog.finish().unwrap();
-    // The catalog does not remember a verification result, even on reuse.
+    // Every verification pass repeats the complete selected source set.
     for _ in 0..2 {
         let mut seen = Vec::new();
         selection
-            .source_blobs(|name| {
+            .verify_source_blobs(|name| {
                 seen.push(name.to_owned());
-                Ok(())
+                Ok(1)
             })
             .unwrap();
         assert_eq!(seen, [shared.clone(), added.clone()]);
@@ -205,7 +205,7 @@ fn source_blobs_are_distinct_and_follow_only_the_final_replacements() {
     }
     let mut visited = 0;
     let error = selection
-        .source_blobs(|_| {
+        .verify_source_blobs(|_| {
             visited += 1;
             Err(invalid("source bytes unavailable"))
         })
@@ -240,13 +240,13 @@ fn a_tombstone_requires_none_of_its_old_source_blobs() {
     catalog
         .finish()
         .unwrap()
-        .source_blobs(|_| panic!("retired source was requested"))
+        .verify_source_blobs(|_| panic!("retired source was requested"))
         .unwrap();
     Catalog::new()
         .unwrap()
         .finish()
         .unwrap()
-        .source_blobs(|_| panic!("empty view requested bytes"))
+        .verify_source_blobs(|_| panic!("empty view requested bytes"))
         .unwrap();
 }
 
@@ -294,4 +294,66 @@ fn nested_manifest_checkpoint_keeps_exact_bytes_and_unit_identity() {
         identities,
         expected.iter().map(|u| u.unit.clone()).collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn partial_source_verification_invalidates_an_earlier_complete_pass() {
+    let mut row = unit(1, "note1");
+    row.blobs = vec![
+        format!("blake3:{}", "01".repeat(32)),
+        format!("blake3:{}", "02".repeat(32)),
+    ];
+    let mut catalog = Catalog::new().unwrap();
+    catalog.push(1, &row).unwrap();
+    let selected = catalog.finish().unwrap();
+    selected.verify_source_blobs(|_| Ok(3)).unwrap();
+    let mut count = 0;
+    assert!(
+        selected
+            .verify_source_blobs(|_| {
+                count += 1;
+                if count == 2 {
+                    Err(invalid("late source failure"))
+                } else {
+                    Ok(3)
+                }
+            })
+            .is_err()
+    );
+    assert_eq!(count, 2);
+    assert!(selected.begin_install().is_err());
+    let mut count = 0;
+    selected
+        .verify_source_blobs(|_| {
+            count += 1;
+            Ok(3)
+        })
+        .unwrap();
+    assert_eq!(count, 2);
+    selected.begin_install().unwrap();
+    assert!(selected.begin_install().is_err());
+    assert!(selected.verify_source_blobs(|_| Ok(u64::MAX)).is_err());
+    assert!(selected.begin_install().is_err());
+}
+
+#[test]
+fn source_verification_deduplicates_canonical_hashes() {
+    let mut row = unit(1, "note1");
+    let hash = blake3::hash(b"synthetic source").to_hex().to_string();
+    row.blobs = vec![
+        format!("blake3:{hash}"),
+        format!("blake3:{}", hash.to_uppercase()),
+    ];
+    let mut catalog = Catalog::new().unwrap();
+    catalog.push(1, &row).unwrap();
+    let selected = catalog.finish().unwrap();
+    let mut calls = 0;
+    selected
+        .verify_source_blobs(|_| {
+            calls += 1;
+            Ok(16)
+        })
+        .unwrap();
+    assert_eq!(calls, 1);
+    selected.begin_install().unwrap();
 }
