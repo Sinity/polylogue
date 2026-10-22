@@ -162,6 +162,7 @@ const TABLES: &[&str] = &[
     "note_target",
     "note_relation",
     "excision",
+    "vector_deletion_policy",
     "setting",
     "delivery",
     "delivery_event",
@@ -315,9 +316,22 @@ impl Restoring {
         units: &Selection,
         fetch: impl FnMut(&RestoreUnit) -> crate::Result<Option<R>>,
     ) -> crate::Result<u64> {
-        let inserted = restore::install(&mut self.conn, units, Some(archive_id), fetch)?;
-        self.archive.prepare_index()?;
-        Ok(inserted)
+        // Canonical policies must survive power loss before vector deletion.
+        let previous: i64 = self
+            .conn
+            .pragma_query_value(None, "synchronous", |r| r.get(0))?;
+        self.conn
+            .pragma_update(None, "synchronous", previous.max(2))?;
+        let result = (|| {
+            let inserted = restore::install(&mut self.conn, units, Some(archive_id), fetch)?;
+            self.archive.reconcile_vectors(&mut self.conn)?;
+            self.archive.prepare_index()?;
+            Ok(inserted)
+        })();
+        self.conn
+            .pragma_update(None, "synchronous", previous)
+            .map_err(|e| crate::StoreError::ExcisionInterrupted(Box::new(e.into())))?;
+        result
     }
 }
 

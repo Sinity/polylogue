@@ -83,9 +83,7 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
         .unwrap();
     let mut restored = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&restored).unwrap();
-    restored
-        .execute_batch(include_str!("../schema/migrations/005-append-facts.sql"))
-        .unwrap();
+    crate::schema::migrate_archive(&mut restored).unwrap();
     let first = read(
         &source,
         &Unit {
@@ -178,7 +176,10 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     let mut fresh = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&fresh).unwrap();
     fresh
-        .execute_batch(include_str!("../schema/migrations/005-append-facts.sql"))
+        .execute_batch(concat!(
+            include_str!("../schema/migrations/005-append-facts.sql"),
+            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
+        ))
         .unwrap();
     restore::install(&mut fresh, &selected, None, |u| {
         Ok(payloads[current.iter().position(|x| x == u).unwrap()]
@@ -191,7 +192,10 @@ fn excision_unit_updates_a_previously_restored_note_without_changing_its_identit
     let mut empty = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&empty).unwrap();
     empty
-        .execute_batch(include_str!("../schema/migrations/005-append-facts.sql"))
+        .execute_batch(concat!(
+            include_str!("../schema/migrations/005-append-facts.sql"),
+            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
+        ))
         .unwrap();
     assert!(
         restore::install(&mut empty, &selected, None, |u| Ok(missing
@@ -302,7 +306,10 @@ fn excising_first_or_middle_units_keeps_other_unit_positions_stable() {
         let mut restored = Connection::open_in_memory().unwrap();
         crate::schema::create_archive(&restored).unwrap();
         restored
-            .execute_batch(include_str!("../schema/migrations/005-append-facts.sql"))
+            .execute_batch(concat!(
+                include_str!("../schema/migrations/005-append-facts.sql"),
+                include_str!("../schema/migrations/006-vector-deletion-policy.sql")
+            ))
             .unwrap();
         restored.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         for unit in &before {
@@ -409,8 +416,11 @@ fn retiring_a_pending_batch_preserves_identical_cataloged_file_or_inline_bytes()
         let hash = store.put(bytes.as_slice(), 3).unwrap();
         let conn = Connection::open_in_memory().unwrap();
         crate::schema::create_archive(&conn).unwrap();
-        conn.execute_batch(include_str!("../schema/migrations/005-append-facts.sql"))
-            .unwrap();
+        conn.execute_batch(concat!(
+            include_str!("../schema/migrations/005-append-facts.sql"),
+            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
+        ))
+        .unwrap();
         let manifest = ExcisionPublication {
             version: 1,
             replacements: vec![],
@@ -442,7 +452,10 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     let mut target = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&target).unwrap();
     target
-        .execute_batch(include_str!("../schema/migrations/005-append-facts.sql"))
+        .execute_batch(concat!(
+            include_str!("../schema/migrations/005-append-facts.sql"),
+            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
+        ))
         .unwrap();
     target
         .execute(
@@ -461,7 +474,10 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     let source = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&source).unwrap();
     source
-        .execute_batch(include_str!("../schema/migrations/005-append-facts.sql"))
+        .execute_batch(concat!(
+            include_str!("../schema/migrations/005-append-facts.sql"),
+            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
+        ))
         .unwrap();
     source.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('note1','note1','note','source body','operator','test',1,1)",[]).unwrap();
     let unit = Unit {
@@ -517,7 +533,10 @@ fn restore_refuses_a_different_nonempty_archive_before_fetch_or_identity_change(
     let mut empty = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&empty).unwrap();
     empty
-        .execute_batch(include_str!("../schema/migrations/005-append-facts.sql"))
+        .execute_batch(concat!(
+            include_str!("../schema/migrations/005-append-facts.sql"),
+            include_str!("../schema/migrations/006-vector-deletion-policy.sql")
+        ))
         .unwrap();
     assert_eq!(
         restore::install(&mut empty, &selected, Some("source-archive"), |_| Ok(Some(
@@ -652,7 +671,10 @@ fn stale_catalog_cannot_restore_local_excised_text(add_remote_unit: bool) {
         let remote = Connection::open_in_memory().unwrap();
         crate::schema::create_archive(&remote).unwrap();
         remote
-            .execute_batch(include_str!("../schema/migrations/005-append-facts.sql"))
+            .execute_batch(concat!(
+                include_str!("../schema/migrations/005-append-facts.sql"),
+                include_str!("../schema/migrations/006-vector-deletion-policy.sql")
+            ))
             .unwrap();
         remote.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('remote-note','remote-note','note','unrelated remote addition','operator','test',2,2)",[]).unwrap();
         let unit = Unit {
@@ -760,3 +782,5 @@ mod revision_ownership;
 mod delivery_updates;
 
 mod append_facts;
+
+mod vector_policies;

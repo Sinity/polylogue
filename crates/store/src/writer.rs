@@ -621,6 +621,12 @@ impl Inner {
             seq,
             counter,
         };
+        // A restored embeddings file may lack older receipts even though the
+        // canonical/index revisions agree. Establish the prior policy prefix
+        // before acknowledging this operation's newer watermark.
+        if let Some(e) = &embeddings {
+            crate::excise::vector_policy::reconcile(e, &atx)?;
+        }
         let done = match crate::excise::apply(&txs, request) {
             Ok(r) => r,
             Err(e) => {

@@ -44,7 +44,7 @@ fn excision_revision_migration_preserves_rows_and_runs_once() {
     create_archive(&conn).unwrap();
     conn.execute("INSERT INTO excision(id,scope,reason,created_at,commit_seq) VALUES ('old','session:claude-code:gone','retained reason',1,7)",[]).unwrap();
     migrate_archive(&mut conn).unwrap();
-    assert_eq!(version(&conn).unwrap(), 5);
+    assert_eq!(version(&conn).unwrap(), 6);
     let before = crate::excise::recovery::current(&conn).unwrap();
     assert!(before.version > 0);
     migrate_archive(&mut conn).unwrap();
@@ -138,5 +138,51 @@ fn append_fact_migration_assigns_only_positions_after_all_existing_units() {
             .get::<_, i64>(0))
             .unwrap(),
         81
+    );
+}
+
+#[test]
+fn embeddings_migration_preserves_paid_rows_and_refuses_newer_files() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    create_embeddings(&conn).unwrap();
+    conn.execute("INSERT INTO embedded(text_hash,model,dims,vector,embedded_at) VALUES (zeroblob(32),'synthetic',1,x'0000803f',1)",[]).unwrap();
+    conn.execute(
+        "INSERT INTO embed_failure VALUES (zeroblob(32),'synthetic','failure',1)",
+        [],
+    )
+    .unwrap();
+    migrate_embeddings(&mut conn).unwrap();
+    migrate_embeddings(&mut conn).unwrap();
+    assert_eq!(version(&conn).unwrap(), 2);
+    for table in ["embedded", "embed_failure"] {
+        assert_eq!(
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    set_version(&conn, 99).unwrap();
+    assert!(matches!(
+        migrate_embeddings(&mut conn),
+        Err(StoreError::TooNew { found: 99, .. })
+    ));
+}
+
+#[test]
+fn archive_policy_migration_keeps_legacy_unknown_without_inventing_hashes() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    create_archive(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO excision(id,scope,created_at,commit_seq) VALUES ('legacy','text:unknown',1,1)",
+        [],
+    )
+    .unwrap();
+    migrate_archive(&mut conn).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM vector_deletion_policy", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
     );
 }

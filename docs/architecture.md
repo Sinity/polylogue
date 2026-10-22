@@ -508,9 +508,28 @@ Every vector insert or provider-failure write takes the embeddings write lock,
 then checks the current archive excision revision against its admitted reader.
 Excision takes that lock first too. A held provider request spanning an excision
 must obtain a fresh reader before writing. Dry runs preserve the revision.
-This local queue covers newly recorded interrupted operations; it cannot infer
-missing hashes from older excisions or detect an independently restored old
-embeddings file after cleanup was cleared. It is not published as a Sinex unit.
+Each new excision owns one immutable `vector_deletion_policy` row: a format
+version and canonical sorted unique text hashes, including a known-empty array.
+Its excision batch publishes the row; older restores reject the unknown table.
+The local pending queue remains crash-recovery state and is not published.
+
+`embeddings.db` stores an archive-bound receipt for each applied exact policy.
+Deleting vectors and provider failures and recording the receipt commit together
+with FULL synchronization. Canonical restore commits policies with FULL
+synchronization before destructive reconciliation. Opening an archive or restoring canonical rows checks
+all receipts and applies missing known policies before vector access. Matching
+receipts skip deletion, preserving vectors bought later for the same text.
+Changed or missing canonical policies and conflicting archive identities refuse
+reconciliation. A scalar policy-revision stamp admits ordinary vector snapshots;
+receipt edits invalidate that stamp. Reads pin the canonical and embeddings
+snapshots together, and writes retain the embeddings-first lock order.
+
+A missing policy row means legacy unknown coverage, exposed as
+`VectorStatus.legacy_excisions`; it never means an empty deletion set. Historical
+hashes are not inferred, so independently restored vectors from those legacy
+excisions cannot be reconciled retrospectively. One policy row remains the
+largest individual descriptor bound. Additive embeddings migrations preserve
+purchased vectors and reject newer unsupported schemas.
 
 Local file cleanup records the operation's exact deletion hashes in
 `pending_blob_excision` before committing. Replay uses only the primary blob

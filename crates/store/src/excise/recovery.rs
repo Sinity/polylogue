@@ -39,12 +39,16 @@ pub(crate) fn set(conn: &Connection, revision: &Revision) -> Result<()> {
 
 // A revision counter detects stale snapshots. These receipts additionally
 // prevent a newer fork from silently dropping an already applied removal.
-fn policy_hash(row: &rusqlite::Row<'_>) -> rusqlite::Result<blake3::Hash> {
+fn policy_hash(conn: &Connection, row: &rusqlite::Row<'_>) -> Result<blake3::Hash> {
     let mut hash = blake3::Hasher::new();
     for i in 0..3 {
-        let value = row.get_ref(i)?.as_str()?;
+        let value: String = row.get(i)?;
         hash.update(&(value.len() as u64).to_be_bytes());
         hash.update(value.as_bytes());
+    }
+    if let Some(policy) = super::vector_policy::policy(conn, &row.get::<_, String>(3)?)? {
+        hash.update(b"vector_deletion_policy");
+        hash.update(policy.as_bytes());
     }
     Ok(hash.finalize())
 }
@@ -68,7 +72,7 @@ pub(crate) fn remember_policies(archive: &Connection, receipts: &Connection) -> 
             blake3::hash(row.get::<_, String>(3)?.as_bytes())
                 .as_bytes()
                 .as_slice(),
-            policy_hash(row)?.as_bytes().as_slice()
+            policy_hash(archive, row)?.as_bytes().as_slice()
         ])?;
     }
     Ok(())
@@ -90,7 +94,7 @@ pub(crate) fn preserves_policies(archive: &Connection, receipts: &Connection) ->
             .query_row([id_hash.as_bytes().as_slice()], |r| r.get(0))
             .optional()?;
         if let Some(expected) = expected {
-            if policy_hash(row)?.as_bytes().as_slice() != expected {
+            if policy_hash(archive, row)?.as_bytes().as_slice() != expected {
                 return Ok(false);
             }
             matched += 1;
@@ -203,6 +207,7 @@ pub(crate) fn fingerprint(conn: &Connection) -> Result<blake3::Hash> {
             }
         }
     }
+    hash.update(super::vector_policy::fingerprint(conn)?.as_bytes());
     Ok(hash.finalize())
 }
 

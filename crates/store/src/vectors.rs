@@ -26,6 +26,8 @@ pub struct Vector {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct VectorStatus {
     pub keys: Vec<KeyStatus>,
+    /// Excisions predating exact deletion policies. Their unknown hashes are preserved.
+    pub legacy_excisions: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -57,14 +59,30 @@ impl Vectors {
         } else {
             open_read(&archive.embeddings_db())?
         };
+        let found = crate::schema::version(&conn)?;
+        if found > 2 {
+            return Err(StoreError::TooNew {
+                found,
+                supported: 2,
+            });
+        }
         let metadata_kib = if writable { cache_kib / 2 } else { 0 };
         conn.pragma_update(None, "cache_size", -(cache_kib - metadata_kib))?;
         conn.pragma_update(None, "mmap_size", 0)?;
-        if writable {
+        {
             let uri = format!("file:{}?mode=ro", archive.archive_db().display());
             conn.execute("ATTACH DATABASE ?1 AS canonical", [uri])?;
             conn.pragma_update(Some("canonical"), "cache_size", -metadata_kib)?;
             conn.pragma_update(Some("canonical"), "mmap_size", 0)?;
+        }
+        if !writable {
+            conn.execute_batch("BEGIN")?;
+        }
+        let has_pending: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM canonical.sqlite_master WHERE type='table' AND name='pending_vector_excision')",[],|r|r.get(0))?;
+        if has_pending {
+            crate::excise::vector_cleanup::check_writer(&conn, &revision)?;
+        } else {
+            crate::excise::vector_policy::check(&conn)?;
         }
         Ok(Self {
             conn,
@@ -77,9 +95,25 @@ impl Vectors {
         self.writable
     }
 
+    // Writable handles end each read snapshot before their next put/fail.
+    // Read-only handles retain the snapshot established during admission.
+    fn read_snapshot(&self) -> Result<Option<rusqlite::Transaction<'_>>> {
+        let snapshot = if self.writable {
+            Some(rusqlite::Transaction::new_unchecked(
+                &self.conn,
+                rusqlite::TransactionBehavior::Deferred,
+            )?)
+        } else {
+            None
+        };
+        crate::excise::vector_policy::check(&self.conn)?;
+        Ok(snapshot)
+    }
+
     /// Text hashes that already have a vector or a permanent failure for
     /// `key`: the build skips them.
     pub fn done(&self, key: &str) -> Result<HashSet<Vec<u8>>> {
+        let _snapshot = self.read_snapshot()?;
         let mut out = HashSet::new();
         for sql in [
             "SELECT DISTINCT text_hash FROM embedded WHERE model = ?1",
@@ -144,6 +178,7 @@ impl Vectors {
     /// The `k` texts nearest to `query` (a unit vector) under `key`, best
     /// first, as `(text hash, cosine similarity)`.
     pub fn nearest(&self, key: &str, query: &[f32], k: usize) -> Result<Vec<(Vec<u8>, f32)>> {
+        let _snapshot = self.read_snapshot()?;
         let mut best: HashMap<Vec<u8>, f32> = HashMap::new();
         let mut stmt = self
             .conn
@@ -189,6 +224,7 @@ impl Vectors {
     }
 
     pub fn status(&self) -> Result<VectorStatus> {
+        let _snapshot = self.read_snapshot()?;
         let mut stmt = self.conn.prepare(
             "SELECT model, max(dims), count(DISTINCT text_hash), count(*),
                  (SELECT count(*) FROM embed_failure f WHERE f.model = e.model)
@@ -205,7 +241,17 @@ impl Vectors {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
-        Ok(VectorStatus { keys })
+        let has_policy:bool=self.conn.query_row("SELECT EXISTS(SELECT 1 FROM canonical.sqlite_master WHERE type='table' AND name='vector_deletion_policy')",[],|r|r.get(0))?;
+        let sql = if has_policy {
+            "SELECT count(*) FROM canonical.excision x WHERE NOT EXISTS(SELECT 1 FROM canonical.vector_deletion_policy p WHERE p.excision_id=x.id)"
+        } else {
+            "SELECT count(*) FROM canonical.excision"
+        };
+        let legacy_excisions = self.conn.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64;
+        Ok(VectorStatus {
+            keys,
+            legacy_excisions,
+        })
     }
 }
 

@@ -242,6 +242,17 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
                     && row["commit_seq"] == unit.unit.commit_seq
             }
             "excision" => match table {
+                "vector_deletion_policy" => {
+                    crate::excise::vector_policy::digest(
+                        row["version"]
+                            .as_i64()
+                            .ok_or_else(|| invalid("policy version missing"))?,
+                        row["hashes_json"]
+                            .as_str()
+                            .ok_or_else(|| invalid("policy hashes missing"))?,
+                    )?;
+                    row["excision_id"] == unit.unit.key
+                }
                 "excision" => {
                     owning += 1;
                     let refused: serde_json::Value = serde_json::from_str(
