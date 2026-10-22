@@ -88,12 +88,12 @@ The spec's query examples run against it in
 `crates/polylogue/src/daemon/query/tests/spec_examples.rs`; examples waiting on unbuilt
 features are listed there with the reason.
 
-The Sinex rebuild proof (`crates/sinex/tests/proof.rs`) runs a real `sinexd`,
+The Sinex rebuild proof (`crates/sinex/src/tests.rs`) runs a real `sinexd`,
 so it is ignored by default. Build `sinexd` and `sinex-schema` in a Sinex
 checkout, then run it from Sinex's dev shell, which has PostgreSQL with
 TimescaleDB and `nats-server`:
 `SINEXD=<sinex>/target/debug/sinexd SINEX_SCHEMA=<sinex>/target/debug/sinex-schema
-nix develop <sinex> --command cargo nextest run -p polylogue-sinex --run-ignored all`.
+nix develop <sinex> --command cargo nextest run -p polylogue-sinex --run-ignored only -E 'test(excision_restores_current_units_after_retired_payloads_and_unknown_ack)'`.
 
 The pre-push hook is `.githooks/pre-push`; enable it with
 `git config core.hooksPath .githooks`. It checks formatting and crate

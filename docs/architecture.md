@@ -382,7 +382,9 @@ have separate acceptance criteria. Neither mode provides daemonless CLI
 access. Shared blob storage, credential masking and development tooling live in
 `polylogue-sinex-common`; projects pin immutable releases.
 
-The optional Sinex publisher stops at an async suspension point, including
+The optional Sinex publisher constructs each async pass on its owning thread,
+so its canonical SQLite snapshot can span awaits without being shared across
+threads. The publisher stops at an async suspension point, including
 its periodic wait. Shutdown joins its thread before releasing the archive
 lock. A pending publish is interrupted rather than reported successful:
 frames lacking a committed acknowledgment have an unknown remote outcome.
@@ -554,9 +556,15 @@ revision and the restore checkpoint. The hash definition is shared with index
 recovery; mutable explanations and local progress do not alter the rule.
 Pending batches remain in this archive's primary blob
 root, and local file cleanup never follows external read roots. Cataloged source
-blobs survive pending-batch retirement. Original provider files are untouched. Native Sinex material
-retirement remains a separate operation; publishing a logical replacement does
-not prove physical removal. Publication handles non-prefix acknowledgments;
+blobs survive pending-batch retirement. Original provider files are untouched. After all row frames are acknowledged,
+the publisher requests Sinex retirement using the latest confirmed archive,
+excision owner and manifest digest. It repeats this request even when every row
+frame was already held. Sinex resolves original and historical replacement batches
+and preserves descriptor events/commit-log entries while retiring eligible material
+references. Current selections and shared aliases retain their backing. Results
+distinguish completed cleanup, retained shared files, pending unlinks and older
+servers without the retirement operation; the daemon logs outcome changes.
+Logical publication alone does not prove physical removal. Publication handles non-prefix acknowledgments;
 an interrupted pending suffix has an explicit gap and restore refuses it until
 the missing units arrive. Legacy excisions lacking replacement metadata refuse
 primary publication and restore rather than reconstructing deleted identities by guesswork.

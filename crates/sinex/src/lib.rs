@@ -19,7 +19,10 @@ use polylogue_store::sinex_rows::{self, Published as ArchiveRows, RestoreUnit, R
 use serde::Deserialize;
 use sinex_model::event_types::polylogue::PolylogueRows;
 use sinex_model::{Class, InputRef, MaterialId, RecordLocation};
-use sinex_protocol::{Acknowledgment, Have, Ingress, MaterialFrame, ProducerEvent, Subjects};
+use sinex_protocol::{
+    Acknowledgment, Have, Ingress, MaterialFrame, ProducerEvent, RetireBatches, Retirement,
+    Subjects,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -110,8 +113,31 @@ impl Config {
 pub enum PhysicalRetirement {
     #[default]
     NotRequested,
-    /// Excision mappings exist, but no native retirement receipt was obtained.
-    Unverified,
+    Completed,
+    /// Superseded bytes still serve unrelated references.
+    Shared {
+        files: u64,
+    },
+    Pending {
+        files: u64,
+        shared: u64,
+    },
+    /// The server has no row-batch retirement request handler.
+    Unsupported,
+}
+
+impl std::fmt::Display for PhysicalRetirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRequested => f.write_str("not requested"),
+            Self::Completed => f.write_str("completed"),
+            Self::Shared { files } => write!(f, "retained {files} shared files"),
+            Self::Pending { files, shared } => {
+                write!(f, "{files} files pending, {shared} shared files retained")
+            }
+            Self::Unsupported => f.write_str("unsupported by this server"),
+        }
+    }
 }
 
 /// What one publish pass did.
@@ -371,11 +397,6 @@ impl Sinex {
         }
         let mut done = Published {
             held: inventory.held(),
-            physical_retirement: if inventory.has_excision() {
-                PhysicalRetirement::Unverified
-            } else {
-                PhysicalRetirement::NotRequested
-            },
             ..Published::default()
         };
         if let Some(last) = inventory.last_missing()? {
@@ -422,7 +443,58 @@ impl Sinex {
                 "publication did not account for every unit".into(),
             ));
         }
+        if let Some(owner) = inventory.latest_excision()? {
+            let publication = archive
+                .publication(&owner)?
+                .ok_or_else(|| Error::Invalid("excision has no publication proof".into()))?;
+            let request = RetireBatches {
+                archive: id.clone(),
+                owner: sinex_model::event_types::polylogue::ArchiveUnit {
+                    commit_seq: owner.commit_seq,
+                    kind: owner.kind,
+                    key: owner.key,
+                },
+                digest: publication.digest,
+            };
+            done.physical_retirement = self.retire(&request).await?;
+        }
         Ok(done)
+    }
+
+    async fn retire(&self, proof: &RetireBatches) -> Result<PhysicalRetirement> {
+        let response = self
+            .client
+            .request(
+                self.subjects.retire(&self.producer),
+                serde_json::to_vec(proof)?.into(),
+            )
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) if error.kind() == async_nats::RequestErrorKind::NoResponders => {
+                return Ok(PhysicalRetirement::Unsupported);
+            }
+            Err(error) => return Err(Error::Unreachable(format!("row-batch retirement: {error}"))),
+        };
+        let result: Retirement = serde_json::from_slice(&response.payload)?;
+        if let Some(reason) = result.refusal {
+            return Err(Error::Refused {
+                frame: "row-batch retirement".into(),
+                reason,
+            });
+        }
+        Ok(if result.pending_files > 0 {
+            PhysicalRetirement::Pending {
+                files: result.pending_files,
+                shared: result.retained_files,
+            }
+        } else if result.retained_files > 0 {
+            PhysicalRetirement::Shared {
+                files: result.retained_files,
+            }
+        } else {
+            PhysicalRetirement::Completed
+        })
     }
 
     async fn publish_unit(
