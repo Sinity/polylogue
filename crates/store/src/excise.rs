@@ -308,19 +308,13 @@ impl Plan {
             .collect::<rusqlite::Result<_>>()?;
         self.message_ids.extend(ids);
         // Its own texts: those no other session's block holds.
-        let bodies: Vec<Vec<u8>> = t
-            .index
-            .prepare(
-                "SELECT DISTINCT t.body FROM block b JOIN text t ON t.id = b.text_id
+        let mut bodies = t.index.prepare(
+            "SELECT DISTINCT t.body FROM block b JOIN text t ON t.id = b.text_id
                  WHERE b.session_pk = ?1 AND NOT EXISTS
                    (SELECT 1 FROM block o WHERE o.text_id = b.text_id AND o.session_pk <> ?1)",
-            )?
-            .query_map([pk], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        for body in bodies {
-            if let Ok(s) = unpack_text(&body) {
-                self.own_texts.insert(s);
-            }
+        )?;
+        for body in bodies.query_map([pk], |r| r.get::<_, Vec<u8>>(0))? {
+            self.own_texts.insert(unpack_text(&body?)?);
         }
         let title: Option<String> = t
             .index
