@@ -279,3 +279,80 @@ fn a_restore_policy_conflict_rolls_back_rows_revision_and_checkpoint() {
             .is_ok()
     );
 }
+
+#[test]
+fn an_unresolved_retired_index_refuses_restore_before_target_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (source, _source_lock) = Archive::open_or_create(&dir.path().join("source")).unwrap();
+    let conn = open_write(&source.archive_db(), cache::SETUP).unwrap();
+    conn.execute("INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('new','new','note','incoming value','operator','synthetic',1,1)", []).unwrap();
+    let id = Published::open(&source.root).unwrap().archive_id().unwrap();
+    let (unit, bytes) = descriptor(
+        &conn,
+        Unit {
+            commit_seq: 1,
+            kind: "note".into(),
+            key: "new".into(),
+        },
+        None,
+    );
+    let selected = select(&[unit]).unwrap();
+    let (target, _target_lock) = Archive::open_or_create(&dir.path().join("target")).unwrap();
+    let mut restoring = Restoring::open(&target).unwrap();
+    let canonical = crate::archive::open_read(&target.archive_db()).unwrap();
+    let before: String = canonical
+        .query_row("SELECT value FROM meta WHERE key='archive_id'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let index = open_write(&target.index_db(), cache::SETUP).unwrap();
+    let old = target.root.join("index.db.v26");
+    index
+        .execute("VACUUM INTO ?1", [old.to_str().unwrap()])
+        .unwrap();
+    drop(index);
+    let old_index = open_write(&old, cache::SETUP).unwrap();
+    recovery::set(
+        &old_index,
+        &recovery::Revision {
+            version: 1,
+            id: "unresolved".into(),
+        },
+    )
+    .unwrap();
+    drop(old_index);
+    let mut fetched = false;
+    let error = restoring
+        .install(&id, &selected, |_| {
+            fetched = true;
+            Ok(Some(Cursor::new(bytes.clone())))
+        })
+        .unwrap_err();
+    assert!(matches!(error, crate::StoreError::ExcisionConflict { .. }));
+    assert!(!fetched);
+    assert!(old.exists());
+    assert_eq!(
+        canonical
+            .query_row("SELECT count(*) FROM note", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        canonical
+            .query_row("SELECT value FROM meta WHERE key='archive_id'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        canonical
+            .query_row(
+                "SELECT count(*) FROM meta WHERE key='sinex_restored_view'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+}

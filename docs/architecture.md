@@ -141,6 +141,14 @@ a checkout that would wait while that thread already holds a slot refuses with
 pool wakes every waiter, refuses checkouts still opening, releases idle
 connections and lets already admitted transactions finish.
 
+`archive/retired.rs` validates and disposes of obsolete local derived indexes.
+Startup checks every recognized copy's applied removal rules before cleanup;
+rebuilds discard their old cache after creating the replacement. Successful
+excision also clears retired caches, while previews preserve them. Checkpointing
+puts WAL state into the main file before sidecar removal; directory syncs and
+ordinary startup handle interrupted unlink. Conflicts and unrecognized contents
+remain explicit errors. Original inputs and paid embeddings are separate owners.
+
 Within store, `encoding.rs` owns packed row bodies and block-text separation;
 `text_rows.rs` owns text deduplication, pending search entries and removal.
 Fixtures use the same text-storage path as ingestion.

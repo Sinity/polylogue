@@ -316,6 +316,7 @@ impl Restoring {
         units: &Selection,
         fetch: impl FnMut(&RestoreUnit) -> crate::Result<Option<R>>,
     ) -> crate::Result<u64> {
+        self.archive.validate_excision_indexes(&self.conn)?;
         // Canonical policies must survive power loss before vector deletion.
         let previous: i64 = self
             .conn

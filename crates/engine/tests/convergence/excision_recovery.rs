@@ -82,12 +82,12 @@ fn an_archive_committed_excision_recovers_when_the_index_commit_was_lost() {
     );
     assert_eq!(w.export("claude-code:kept"), expected);
     assert!(
-        fs::read_dir(&w.root).unwrap().any(|entry| entry
+        !fs::read_dir(&w.root).unwrap().any(|entry| entry
             .unwrap()
             .file_name()
             .to_string_lossy()
             .starts_with("index.db.excision-")),
-        "keep the stale derived index as recovery evidence"
+        "obsolete derived indexes must not retain removed messages"
     );
 }
 
@@ -274,5 +274,45 @@ fn an_embedding_build_cannot_write_across_an_excision_but_a_fresh_build_can() {
     assert_eq!(
         w.count("SELECT count(*) AS n FROM a.pending_vector_excision"),
         0
+    );
+}
+
+#[test]
+fn excision_removes_retired_index_payloads_but_preview_preserves_them() {
+    let w = ClaudeHome::new();
+    w.append(
+        "victim.jsonl",
+        &user("v1", "victim", "synthetic removed body"),
+    );
+    w.append("kept.jsonl", &user("k1", "kept", "keep this exact body"));
+    let (mut e, _lock) = w.engine(64 << 20);
+    assert!(e.converge().unwrap().errors.is_empty());
+    let kept = w.export("claude-code:kept");
+    let old = w.root.join("index.db.v26");
+    let current = rusqlite::Connection::open(Archive::at(&w.root).index_db()).unwrap();
+    current
+        .execute("VACUUM INTO ?1", [old.to_str().unwrap()])
+        .unwrap();
+    drop(current);
+    let before = fs::read(&old).unwrap();
+    let mut request = ExciseRequest {
+        id: "retire-old-cache".into(),
+        scope: ExciseScope::Session(SessionId::parse("claude-code:victim").unwrap()),
+        reason: None,
+        dry_run: true,
+    };
+    e.excise(request.clone()).unwrap();
+    assert_eq!(fs::read(&old).unwrap(), before);
+    assert_eq!(messages_of(&w.root, "claude-code:victim").len(), 1);
+    request.dry_run = false;
+    e.excise(request).unwrap();
+    assert!(!old.exists());
+    assert!(!w.root.join("index.db.v26-wal").exists());
+    assert!(!w.root.join("index.db.v26-shm").exists());
+    assert!(messages_of(&w.root, "claude-code:victim").is_empty());
+    assert_eq!(w.export("claude-code:kept"), kept);
+    assert!(
+        w.file("victim.jsonl").exists(),
+        "provider files remain outside excision"
     );
 }
