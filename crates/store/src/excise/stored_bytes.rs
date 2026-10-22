@@ -19,6 +19,7 @@ pub fn stored_blobs_containing(archive: &crate::Archive, needle: &str) -> Result
 /// written or as JSON escapes it; compressed values are read unpacked,
 /// and the search vocabularies are checked for its words. How a text
 /// excision is checked afterwards: the answer must be empty.
+/// Recognized compressed frames use the row codec; unreadable frames are errors.
 pub fn index_columns_containing(archive: &crate::Archive, needle: &str) -> Result<Vec<String>> {
     let conn = crate::archive::open_read(&archive.index_db())?;
     let needles = needles(needle);
@@ -42,9 +43,12 @@ pub fn index_columns_containing(archive: &crate::Archive, needle: &str) -> Resul
             while let Some(row) = rows.next()? {
                 let bytes = match row.get_ref(0)? {
                     rusqlite::types::ValueRef::Text(t) => t.to_vec(),
-                    rusqlite::types::ValueRef::Blob(b) => {
-                        zstd::stream::decode_all(b).unwrap_or_else(|_| b.to_vec())
+                    rusqlite::types::ValueRef::Blob(b)
+                        if b.starts_with(&zstd::zstd_safe::MAGICNUMBER.to_le_bytes()) =>
+                    {
+                        crate::encoding::unpack_bytes(b)?
                     }
+                    rusqlite::types::ValueRef::Blob(b) => b.to_vec(),
                     _ => continue,
                 };
                 if !find_all(&bytes, &needles).is_empty() {
@@ -319,3 +323,6 @@ pub(super) fn record_piece(t: &Transactions<'_, '_>, piece: &Piece) -> Result<()
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
