@@ -436,7 +436,8 @@ impl Ctx<'_, '_> {
         else {
             crate::versions::retain(self.tx, prepared, m, self.packed, self.bulk)?;
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, position))?;
-            self.upsert_source(pk, &new, true)?;
+            // A new message primary key cannot have a previous source to retire.
+            self.set_source(pk, &new, true)?;
             self.insert_blocks(pk, session_pk, m, &prepared.hash)?;
             self.tx
                 .prepare_cached("UPDATE message SET present=?2 WHERE pk=?1")?
@@ -518,11 +519,7 @@ impl Ctx<'_, '_> {
         Ok(true)
     }
 
-    fn upsert_source(&self, pk: i64, v: &Version, preferred: bool) -> Result<()> {
-        let old: Option<Vec<u8>> = self.tx
-            .prepare_cached("SELECT version_hash FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND source_snapshot=?4 AND session_pk=?5")?
-            .query_row(params![pk, v.input_pk, v.chain, v.snapshot, v.session_pk], |r| r.get(0))
-            .optional()?.flatten();
+    fn set_source(&self, pk: i64, v: &Version, preferred: bool) -> Result<()> {
         self.tx.prepare_cached(
             "INSERT INTO message_source(message_pk, input_pk, chain, source_snapshot, source_start, source_end, session_pk,
                  preferred, complete, version_hash, current, source_order, route_rank, main, parser_version)
@@ -534,6 +531,15 @@ impl Ctx<'_, '_> {
                  parser_version=excluded.parser_version")?
             .execute(params![pk, v.input_pk, v.chain, v.snapshot, v.start, v.end, i64::from(preferred), i64::from(v.complete), v.hash, v.order, v.rank, i64::from(v.main), i64::from(v.current),v.session_pk,self.parser_version],
         )?;
+        Ok(())
+    }
+
+    fn upsert_source(&self, pk: i64, v: &Version, preferred: bool) -> Result<()> {
+        let old: Option<Vec<u8>> = self.tx
+            .prepare_cached("SELECT version_hash FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND source_snapshot=?4 AND session_pk=?5")?
+            .query_row(params![pk, v.input_pk, v.chain, v.snapshot, v.session_pk], |r| r.get(0))
+            .optional()?.flatten();
+        self.set_source(pk, v, preferred)?;
         if let Some(old) = old.filter(|old| old != &v.hash) {
             self.tx.execute("DELETE FROM message_version WHERE hash=?1 AND NOT EXISTS (SELECT 1 FROM message_source WHERE version_hash=?1)",[old])?;
         }
