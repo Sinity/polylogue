@@ -144,6 +144,13 @@ connections and lets already admitted transactions finish.
 Within store, `encoding.rs` owns packed row bodies and block-text separation;
 `text_rows.rs` owns text deduplication, pending search entries and removal.
 Fixtures use the same text-storage path as ingestion.
+The parse pool prepares each message's canonical hash, compressed metadata and
+block bodies together. The writer borrows that record. Preparation releases
+structured parsed payloads only after all message and event rows are packed;
+repeating preparation preserves those original bytes. Excision filtering keeps
+whole prepared messages aligned by identity. A mismatch refuses the batch
+instead of recomputing from released values. Unprepared inputs retain the normal
+packing path on the writer.
 
 Message ordering uses the existing opaque input ID and the record's wire offset.
 The index keeps that ID in `message.order_input_id` beside its local input

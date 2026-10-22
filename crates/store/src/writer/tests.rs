@@ -95,10 +95,7 @@ fn batch(input: &str, rank: u8, start: u64, rows: Vec<MessageRow>, sessions: &[&
             parsed_upto: start + 100,
             parser_version: 1,
             at_end: true,
-            hashes: vec![],
-            packed: Default::default(),
-            bodies: vec![],
-            events: vec![],
+            prepared: Default::default(),
         }],
         release: InFlight::default(),
     }

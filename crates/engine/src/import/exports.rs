@@ -235,21 +235,15 @@ impl Engine {
         for blob in std::mem::take(&mut output.blobs) {
             blobs.push(Piece::prepare(&self.blobs, &blob.bytes)?);
         }
-        let mut parse = ParseStep {
+        let mut parse = ParseStep::new(
             output,
             accounting,
-            snapshot: None,
-            start: 0,
-            parsed_upto: if done { plan.size } else { 0 },
-            parser_version: plan.origin.parser_version,
-            at_end: done,
-            order_from: Some(order_from),
-            reset,
-            hashes: Vec::new(),
-            packed: Default::default(),
-            bodies: Vec::new(),
-            events: Vec::new(),
-        };
+            0..if done { plan.size } else { 0 },
+            plan.origin.parser_version,
+            done,
+        );
+        parse.order_from = Some(order_from);
+        parse.reset = reset;
         parse.prepare();
         self.writer.send(Batch {
             input: plan.input.clone(),

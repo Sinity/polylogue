@@ -33,7 +33,7 @@ pub struct ParseStep {
     pub order_from: Option<u64>,
     /// Replaces accounting from an earlier parse of this chain.
     pub reset: bool,
-    pub output: Output,
+    pub(crate) output: Output,
     pub snapshot: Option<polylogue_model::Snapshot>,
     pub accounting: Accounting,
     /// Where the step's bytes start in the chain. 0 means the chain was
@@ -46,93 +46,37 @@ pub struct ParseStep {
     /// Retiring an older interpretation also needs this: consuming all stored
     /// bytes can mean only that the currently captured prefix was parsed.
     pub at_end: bool,
-    /// BLAKE3 of each message's canonical JSON, in `output.messages` order,
-    /// computed on the parse pool ([`ParseStep::hash_messages`]). Empty
-    /// means the writer computes them.
-    pub hashes: Vec<[u8; 32]>,
-    /// Block texts compressed for the `text` table, by BLAKE3 of the text,
-    /// prepared on the parse pool. A text missing here is compressed by the
-    /// writer.
-    pub packed: HashMap<[u8; 32], Vec<u8>>,
-    /// Each message's blocks as stored (compressed JSON without their
-    /// text), in `output.messages` and block order.
-    pub bodies: Vec<Vec<Vec<u8>>>,
-    /// Each event's id and compressed payload, in `output.events` order.
-    pub events: Vec<(String, Vec<u8>)>,
+    /// Packed message, text and event rows produced together on the parse pool.
+    /// Default leaves the complete parsed values available for writer fallback.
+    pub(crate) prepared: PreparedRows,
 }
+
+mod prepared;
+pub(crate) use prepared::PreparedRows;
 
 impl ParseStep {
-    /// Does the per-message work that needs no database off the writer
-    /// thread: version hashes and compressed block texts.
-    pub fn prepare(&mut self) {
-        self.hashes = self
-            .output
-            .messages
-            .iter()
-            .map(|r| message_hash(&r.message))
-            .collect();
-        let mut packer = crate::encoding::TextPacker::new().ok();
-        for row in &self.output.messages {
-            for block in &row.message.blocks {
-                let Some(text) = block_text(block) else {
-                    continue;
-                };
-                let hash = *blake3::hash(text.as_bytes()).as_bytes();
-                if let (std::collections::hash_map::Entry::Vacant(slot), Some(p)) =
-                    (self.packed.entry(hash), packer.as_mut())
-                    && let Ok(bytes) = p.pack(text)
-                {
-                    slot.insert(bytes);
-                }
-            }
-        }
-        let prepared: Result<Vec<Vec<Vec<u8>>>> = self
-            .output
-            .messages
-            .iter()
-            .map(|r| r.message.blocks.iter().map(pack_block).collect())
-            .collect();
-        self.bodies = prepared.unwrap_or_default();
-        let events: Result<Vec<(String, Vec<u8>)>> =
-            self.output.events.iter().map(pack_event).collect();
-        self.events = events.unwrap_or_default();
-        self.release_packed();
-    }
-
-    /// Drops the parsed copies of what the packed bodies already hold, so a
-    /// batch waiting for the writer keeps its bulky JSON once, compressed.
-    /// The writer reads only text (for the search index), IDs, outcomes,
-    /// commands, paths and attachment facts from parsed blocks.
-    fn release_packed(&mut self) {
-        let packed_all = self.bodies.len() == self.output.messages.len()
-            && self
-                .bodies
-                .iter()
-                .zip(&self.output.messages)
-                .all(|(b, r)| b.len() == r.message.blocks.len());
-        if packed_all {
-            for row in &mut self.output.messages {
-                for block in &mut row.message.blocks {
-                    match block {
-                        Block::ToolCall { input, .. } => *input = Json::Null,
-                        Block::ToolResult { data, .. } => *data = None,
-                        Block::Other { data, .. } => *data = Json::Null,
-                        _ => {}
-                    }
-                }
-            }
-        }
-        if self.events.len() == self.output.events.len() {
-            for e in &mut self.output.events {
-                e.data = Json::Null;
-            }
+    /// An unprepared parse over this byte range. A range beginning at zero
+    /// replaces accounting; logical exports may set `reset` independently.
+    pub fn new(
+        output: Output,
+        accounting: Accounting,
+        range: std::ops::Range<u64>,
+        parser_version: u32,
+        at_end: bool,
+    ) -> Self {
+        Self {
+            order_from: None,
+            reset: range.start == 0,
+            snapshot: None,
+            output,
+            accounting,
+            start: range.start,
+            parsed_upto: range.end,
+            parser_version,
+            at_end,
+            prepared: PreparedRows::default(),
         }
     }
-}
-
-pub(super) fn message_hash(m: &Message) -> [u8; 32] {
-    let json = serde_json::to_vec(m).unwrap_or_default();
-    *blake3::hash(&json).as_bytes()
 }
 
 /// What the writer stores for one input in one step. `piece` holds the new

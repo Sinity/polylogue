@@ -1,7 +1,7 @@
 //! Normalized historical message bodies, sharing the current text store.
 use crate::Result;
 use crate::encoding::{
-    block_text, pack_json, restore_text, unpack_block, unpack_json, unpack_text,
+    PreparedMessage, block_text, restore_text, unpack_block, unpack_json, unpack_text,
 };
 use polylogue_model::{Block, Message};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -9,12 +9,12 @@ use std::collections::HashMap;
 
 pub(crate) fn retain(
     tx: &Transaction<'_>,
-    hash: &[u8],
+    prepared: &PreparedMessage,
     message: &Message,
-    bodies: &[Vec<u8>],
     packed: &HashMap<[u8; 32], Vec<u8>>,
     bulk: bool,
 ) -> Result<()> {
+    let hash = &prepared.hash[..];
     if tx
         .prepare_cached("SELECT 1 FROM message_version WHERE hash = ?1")?
         .query_row([hash], |_| Ok(()))
@@ -23,11 +23,9 @@ pub(crate) fn retain(
     {
         return Ok(());
     }
-    let mut attrs = message.clone();
-    attrs.blocks.clear();
     tx.prepare_cached("INSERT INTO message_version(hash, attrs) VALUES (?1, ?2)")?
-        .execute(params![hash, pack_json(&attrs)?])?;
-    for (idx, (block, body)) in message.blocks.iter().zip(bodies).enumerate() {
+        .execute(params![hash, prepared.attrs])?;
+    for (idx, (block, body)) in message.blocks.iter().zip(&prepared.blocks).enumerate() {
         let text_id = block_text(block)
             .map(|text| crate::text_rows::intern(tx, text, 0, Some(packed), bulk))
             .transpose()?;
