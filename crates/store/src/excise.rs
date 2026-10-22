@@ -33,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod authored;
 pub(crate) mod blob_cleanup;
+mod hashes;
 mod index_rows;
 mod messages;
 mod notes;
@@ -50,6 +51,7 @@ mod text_matches;
 pub(crate) mod vector_cleanup;
 pub(crate) mod vector_policy;
 
+use hashes::RemovalHashes;
 use index_rows::*;
 use messages::SelectedMessages;
 use session_texts::SessionTexts;
@@ -415,9 +417,7 @@ impl<'a> Plan<'a> {
         };
         let mut refused = RefusedJson::default();
         let mut delete_files = Vec::new();
-        let mut removed_texts: BTreeSet<Vec<u8>> = BTreeSet::new();
-        // Blobs the removed blocks named (inline images, large outputs).
-        let mut session_blobs = BTreeSet::new();
+        let hashes = RemovalHashes::new(t.index)?;
         if !req.dry_run {
             // First, so the `excised` observations can name it; what it
             // refused is filled in at the end.
@@ -437,8 +437,7 @@ impl<'a> Plan<'a> {
                 done,
                 &mut refused,
                 &mut delete_files,
-                &mut removed_texts,
-                &mut session_blobs,
+                &hashes,
             )?;
         }
 
@@ -460,19 +459,11 @@ impl<'a> Plan<'a> {
 
         // Session rows, before the inputs, so a blob a removed block named
         // can be checked against what remains.
-        self.sessions.visit(|pk, id| {
-            delete_session(
-                t,
-                pk,
-                id,
-                req.dry_run,
-                &mut removed_texts,
-                &mut session_blobs,
-            )
-        })?;
+        self.sessions
+            .visit(|pk, id| delete_session(t, pk, id, req.dry_run, &hashes))?;
 
         for input in &self.whole {
-            remove_input(t, input, req, &mut refused, done, &mut removed_texts)?;
+            remove_input(t, input, req, &mut refused, done, &hashes)?;
         }
         self.spans.visit_inputs(|input, _| {
             overwrite(t, input, &self.spans, req, &mut refused, &mut delete_files)
@@ -509,15 +500,15 @@ impl<'a> Plan<'a> {
         }
         // Blobs nothing refers to any more: the removed inputs' and the
         // removed blocks' (inline images, large outputs).
-        let mut candidates: BTreeSet<Vec<u8>> = session_blobs;
-        candidates.extend(
-            refused
-                .blobs
-                .iter()
-                .filter_map(|h| BlobHash::parse(h).ok().map(|b| b.0.to_vec())),
-        );
+        for hash in refused
+            .blobs
+            .iter()
+            .filter_map(|hash| BlobHash::parse(hash).ok())
+        {
+            hashes.blob_candidate(&hash.0)?;
+        }
         if !req.dry_run {
-            for hash in &candidates {
+            hashes.visit_blob_candidates(|hash| {
                 let used: bool = t.archive.query_row(
                     "SELECT EXISTS (SELECT 1 FROM extent WHERE blob = ?1)",
                     [hash],
@@ -528,7 +519,7 @@ impl<'a> Plan<'a> {
                     |r| r.get(0),
                 )?;
                 if used {
-                    continue;
+                    return Ok(());
                 }
                 let place: Option<String> = t
                     .archive
@@ -536,12 +527,11 @@ impl<'a> Plan<'a> {
                         r.get(0)
                     })
                     .optional()?;
-                let Some(place) = place else { continue };
+                let Some(place) = place else { return Ok(()) };
                 blob_cleanup::require_no_delta_base(
                     t.archive,
                     &BlobHash(
-                        hash.as_slice()
-                            .try_into()
+                        hash.try_into()
                             .map_err(|_| StoreError::Invalid("invalid blob hash".into()))?,
                     ),
                 )?;
@@ -549,34 +539,32 @@ impl<'a> Plan<'a> {
                     .execute("DELETE FROM blob WHERE hash = ?1", [hash])?;
                 done.blobs_deleted += 1;
                 if place == "file"
-                    && let Ok(arr) = <[u8; 32]>::try_from(hash.as_slice())
+                    && let Ok(arr) = <[u8; 32]>::try_from(hash)
                 {
                     delete_files.push(BlobHash(arr));
                 }
-            }
+                Ok(())
+            })?;
         }
 
         if !req.dry_run {
-            let hashes: Vec<String> = removed_texts
-                .iter()
-                .map(|h| crate::sinex_rows::hex(h))
-                .collect();
             t.archive.execute(
                 "INSERT INTO vector_deletion_policy VALUES (?1,1,?2)",
-                params![req.id, serde_json::to_string(&hashes)?],
+                params![req.id, hashes.text_policy_json()?],
             )?;
-            for hash in &removed_texts {
+            hashes.visit_texts(|hash| {
                 t.archive.execute(
                     "INSERT INTO pending_vector_excision(text_hash,excision_id) VALUES (?1,?2)
                      ON CONFLICT(text_hash) DO UPDATE SET excision_id=excluded.excision_id",
                     params![hash, req.id],
                 )?;
-            }
+                Ok(())
+            })?;
         }
 
         // Embeddings of texts no row holds any more.
         if let Some(e) = t.embeddings {
-            for hash in &removed_texts {
+            hashes.visit_texts(|hash| {
                 done.embeddings_deleted += if req.dry_run {
                     e.query_row(
                         "SELECT count(*) FROM embedded WHERE text_hash = ?1",
@@ -588,14 +576,15 @@ impl<'a> Plan<'a> {
                     e.execute("DELETE FROM embed_failure WHERE text_hash = ?1", [hash])?;
                     n
                 };
-            }
+                Ok(())
+            })?;
         }
         if !req.dry_run
             && let Some(e) = t.embeddings
         {
             vector_policy::acknowledge(e, t.archive, &req.id)?;
         }
-        done.texts = removed_texts.len() as u64;
+        done.texts = hashes.text_count()?;
 
         refused.locations.sort();
         refused.locations.dedup();
@@ -630,6 +619,7 @@ impl<'a> Plan<'a> {
         if !req.dry_run {
             recovery::acknowledge(t.archive, t.index)?;
         }
+        hashes.finish()?;
         self.sessions.finish()?;
         Ok(done.clone())
     }
@@ -646,8 +636,7 @@ impl<'a> Plan<'a> {
         done: &mut Excised,
         refused: &mut RefusedJson,
         _delete_files: &mut Vec<BlobHash>,
-        removed_texts: &mut BTreeSet<Vec<u8>>,
-        session_blobs: &mut BTreeSet<Vec<u8>>,
+        hashes: &RemovalHashes<'_>,
     ) -> Result<()> {
         let reparse = matches.inputs();
         done.inputs_overwritten = matches.counts();
@@ -657,8 +646,7 @@ impl<'a> Plan<'a> {
         authored::redact(t.archive, text, req.dry_run, done)?;
         // The rows parsed from the text go; the caller parses their inputs
         // again from the overwritten stored bytes.
-        done.inputs_reparsed =
-            clear_for_reparse(t, text, &reparse, req.dry_run, removed_texts, session_blobs)?;
+        done.inputs_reparsed = clear_for_reparse(t, text, &reparse, req.dry_run, hashes)?;
         // Files on disk that held it: Polylogue never edits them; the
         // operator scrubs them.
         let mut on_disk = BTreeSet::new();

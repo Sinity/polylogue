@@ -609,7 +609,13 @@ cleanup and copy promotion through the existing writer context, then lets the
 caller process references after promotion and version pruning. The TEMP table
 definitions live with the index connection because dropping them would lock
 callers' active TEMP cursors; all staging rows are cleared before success and
-roll back on failure. Ordinary reparse skips reference capture. Excision streams changed unit keys from
+roll back on failure. Ordinary reparse skips reference capture. Excision-wide removed-text hashes and
+candidate blob hashes have separate unique TEMP tables on that same index
+transaction. Ordered text visitation writes vector policy JSON directly and
+supplies pending exclusions and embedding removal. Blob candidates still require
+extent, current-block and retained-version ownership checks plus the delta-base
+check before deletion. Success clears accumulated rows; rollback discards failed
+work. Final policy JSON remains a single owned value. Excision streams changed unit keys from
 the canonical writer's temporary table and uses `sinex_rows/excision/retirement.rs` to select historical
 batches on disk.
 A batch remains protected while any current replacement references it, including

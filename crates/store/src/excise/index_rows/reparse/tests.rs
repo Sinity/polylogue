@@ -51,15 +51,8 @@ fn text_reparse_freezes_all_input_routes_in_pk_order_before_deletion() {
             seq: 1,
             counter: 1,
         };
-        let inputs = clear_for_reparse(
-            &t,
-            "not present",
-            &holding,
-            dry_run,
-            &mut BTreeSet::new(),
-            &mut BTreeSet::new(),
-        )
-        .unwrap();
+        let hashes = RemovalHashes::new(&it).unwrap();
+        let inputs = clear_for_reparse(&t, "not present", &holding, dry_run, &hashes).unwrap();
         assert_eq!(inputs, expected);
         let sessions: i64 = it
             .query_row("SELECT count(*) FROM session", [], |r| r.get(0))
@@ -95,6 +88,7 @@ fn text_reparse_freezes_all_input_routes_in_pk_order_before_deletion() {
                 "source:4993"
             );
         }
+        hashes.finish().unwrap();
         it.commit().unwrap();
         at.rollback().unwrap();
     }
@@ -128,18 +122,11 @@ fn text_reparse_preserves_text_owned_only_by_a_retained_version() {
         seq: 1,
         counter: 1,
     };
-    let mut hashes = BTreeSet::new();
-    let inputs = clear_for_reparse(
-        &t,
-        "synthetic marker",
-        &BTreeSet::new(),
-        false,
-        &mut hashes,
-        &mut BTreeSet::new(),
-    )
-    .unwrap();
+    let hashes = RemovalHashes::new(&it).unwrap();
+    let inputs =
+        clear_for_reparse(&t, "synthetic marker", &BTreeSet::new(), false, &hashes).unwrap();
     assert!(inputs.is_empty());
-    assert_eq!(hashes.len(), 1);
+    assert_eq!(hashes.text_count().unwrap(), 1);
     let n: i64 = it
         .query_row("SELECT count(*) FROM text WHERE id=?1", [tid], |r| r.get(0))
         .unwrap();
