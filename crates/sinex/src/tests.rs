@@ -149,7 +149,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
         )
         .unwrap();
     }
-    let _daemon = Daemon(
+    let daemon = Daemon(
         Command::new(&sinexd)
             .arg("run")
             .args(["--database", &url])
@@ -245,7 +245,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     assert_eq!(changed.units, 1);
     assert_eq!(
         changed.physical_retirement,
-        crate::PhysicalRetirement::Unverified
+        crate::PhysicalRetirement::Completed
     );
     let (restored_archive, _restored_lock) = Archive::open_or_create(&b).unwrap();
     let deadline = Instant::now();
@@ -258,7 +258,11 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let physical = hashed_blobs::Store::open(store.clone(), vec![], 0o600).unwrap();
-    physical.delete(&old_hash).unwrap();
+    assert!(!physical.contains(&old_hash));
+    assert_eq!(
+        sinex.publish(&a).await.unwrap().physical_retirement,
+        crate::PhysicalRetirement::Completed
+    );
     let fresh_path = dir.path().join("after-retirement");
     let (fresh, _fresh_lock) = Archive::open_or_create(&fresh_path).unwrap();
     let restored = sinex.restore(&fresh, &id).await.unwrap();
@@ -328,7 +332,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
         published.replacement(&replacement).is_err(),
         "later excision removes the old local pending batch too"
     );
-    physical.delete(&replacement_hash).unwrap();
+    assert!(!physical.contains(&replacement_hash));
     let (latest, _latest_lock) =
         Archive::open_or_create(&dir.path().join("after-second-retirement")).unwrap();
     sinex.restore(&latest, &id).await.unwrap();
@@ -519,7 +523,7 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
         assert!(deadline.elapsed() < Duration::from_secs(20));
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    physical.delete(&event_hash).unwrap();
+    assert!(!physical.contains(&event_hash));
     let (event_fresh, _event_lock) =
         Archive::open_or_create(&dir.path().join("after-event-retirement")).unwrap();
     sinex.restore(&event_fresh, &id).await.unwrap();
@@ -527,6 +531,32 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     assert!(!event_values(&event_fresh).3.contains("event-private-token"));
     assert_eq!(sinex.restore(&event_fresh, &id).await.unwrap().rows, 0);
     legacy::parent_retirement(&mut sinex, &store, dir.path()).await;
+    // Rebuild the stream from durable descriptors after all before-images go.
+    drop(daemon);
+    js.delete_stream("PROOF_CONFIRMED").await.unwrap();
+    pg.sql("sinex", "DELETE FROM core.consumer_positions WHERE consumer='publisher'; DELETE FROM core.published").unwrap();
+    let published = Command::new(&sinexd)
+        .arg("publish")
+        .args([
+            "--database",
+            &url,
+            "--nats",
+            nats.url(),
+            "--subjects",
+            "proof",
+        ])
+        .status()
+        .unwrap();
+    assert!(published.success());
+    let (rebuilt, _rebuilt_lock) =
+        Archive::open_or_create(&dir.path().join("after-stream-reconstruction")).unwrap();
+    let restored = sinex.restore(&rebuilt, &id).await.unwrap();
+    assert_eq!(restored.units, expected_units + 1);
+    assert_eq!(values(&rebuilt), values(&source_archive));
+    assert_eq!(event_values(&rebuilt), event_values(&source_archive));
+    assert!(!physical.contains(&old_hash));
+    assert!(!physical.contains(&replacement_hash));
+    assert!(!physical.contains(&event_hash));
 }
 
 fn inventory_units(published: &super::ArchiveRows) -> Vec<polylogue_store::sinex_rows::Unit> {

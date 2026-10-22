@@ -110,6 +110,11 @@ impl<'a> Inventory<'a> {
     pub fn held(&self) -> u64 {
         self.held
     }
+    /// The latest owner proves the complete confirmed excision history.
+    pub fn latest_excision(&self) -> Result<Option<Unit>> {
+        Ok(self.db.query_row("SELECT seq,kind,key FROM position WHERE kind='excision' ORDER BY seq DESC,key DESC LIMIT 1", [], row_unit).optional()?)
+    }
+
     pub fn has_excision(&self) -> bool {
         self.has_excision
     }

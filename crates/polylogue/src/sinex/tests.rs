@@ -38,7 +38,7 @@ fn pending() -> (Publisher, Receiver<()>, Arc<AtomicBool>, Arc<AtomicBool>) {
     let completed = Arc::new(AtomicBool::new(false));
     let held = Arc::clone(&dropped);
     let success = Arc::clone(&completed);
-    let publisher = Publisher::spawn(runtime(), async move {
+    let publisher = Publisher::spawn(runtime(), move || async move {
         let _held = Dropped(held);
         started.send(()).unwrap();
         std::future::pending::<()>().await;
@@ -62,7 +62,7 @@ fn stopping_the_publisher_wakes_its_periodic_wait() {
     let (started, wait) = sync_channel(1);
     let dropped = Arc::new(AtomicBool::new(false));
     let held = Arc::clone(&dropped);
-    let publisher = Publisher::spawn(runtime(), async move {
+    let publisher = Publisher::spawn(runtime(), move || async move {
         let _held = Dropped(held);
         let sleep = tokio::time::sleep(PUBLISH_EVERY);
         started.send(()).unwrap();
@@ -90,7 +90,7 @@ fn a_later_startup_error_drops_the_started_publisher() {
 #[test]
 fn a_publisher_panic_is_reported_when_joined() {
     let (started, wait) = sync_channel(1);
-    let publisher = Publisher::spawn(runtime(), async move {
+    let publisher = Publisher::spawn(runtime(), move || async move {
         started.send(()).unwrap();
         panic!("synthetic publisher failure");
     })
@@ -102,4 +102,21 @@ fn a_publisher_panic_is_reported_when_joined() {
             .to_string()
             .contains("publisher panicked")
     );
+}
+
+#[test]
+fn a_thread_local_snapshot_can_span_the_pending_pass() {
+    let (started, wait) = sync_channel(1);
+    let dropped = Arc::new(AtomicBool::new(false));
+    let held = Arc::clone(&dropped);
+    let publisher = Publisher::spawn(runtime(), move || async move {
+        let local = std::rc::Rc::new(Dropped(held));
+        started.send(()).unwrap();
+        std::future::pending::<()>().await;
+        drop(local);
+    })
+    .unwrap();
+    wait.recv_timeout(Duration::from_secs(5)).unwrap();
+    stop(publisher).unwrap();
+    assert!(dropped.load(Ordering::SeqCst));
 }

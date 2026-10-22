@@ -144,3 +144,128 @@ async fn blob_placement_checks_each_ack_batch_before_requesting_more() {
     worker.abort();
     assert!(worker.await.unwrap_err().is_cancelled());
 }
+
+#[tokio::test]
+async fn retirement_retries_when_all_publication_frames_are_held_and_reports_each_outcome() {
+    let dir = tempfile::tempdir().unwrap();
+    let nats = devkit::nats::Server::start().unwrap();
+    let config = Config {
+        mode: Mode::Primary,
+        nats: nats.url().into(),
+        subjects: "retirement".into(),
+        producer: "polylogue".into(),
+        store: dir.path().join("store"),
+        archive: None,
+    };
+    let mut sinex = Sinex::connect(&config).await.unwrap();
+    let root = dir.path().join("archive");
+    let (archive, _lock) = Archive::open_or_create(&root).unwrap();
+    let writer = polylogue_store::Writer::start(&archive).unwrap();
+    writer
+        .excise(
+            polylogue_store::excise::ExciseRequest {
+                id: "erase".into(),
+                scope: polylogue_store::excise::Scope::Text("synthetic-absent".into()),
+                reason: None,
+                dry_run: false,
+            },
+            Arc::new(hashed_blobs::Store::open(root.clone(), vec![], 0o600).unwrap()),
+        )
+        .unwrap();
+    drop(writer);
+    let rows = ArchiveRows::open(&root).unwrap();
+    let inventory = rows.inventory().unwrap();
+    let owner = inventory.latest_excision().unwrap().unwrap();
+    let publication = rows.publication(&owner).unwrap().unwrap();
+    let proof = RetireBatches {
+        archive: rows.archive_id().unwrap(),
+        owner: sinex_model::event_types::polylogue::ArchiveUnit {
+            commit_seq: owner.commit_seq,
+            kind: owner.kind,
+            key: owner.key,
+        },
+        digest: publication.digest,
+    };
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), sinex.retire(&proof))
+            .await
+            .unwrap()
+            .unwrap(),
+        PhysicalRetirement::Unsupported
+    );
+    let mut have = sinex
+        .client
+        .subscribe(sinex.subjects.have(&sinex.producer))
+        .await
+        .unwrap();
+    let mut retire = sinex
+        .client
+        .subscribe(sinex.subjects.retire(&sinex.producer))
+        .await
+        .unwrap();
+    sinex.client.flush().await.unwrap();
+    let worker = tokio::spawn({
+        let client = sinex.client.clone();
+        async move {
+            for answer in [
+                Retirement {
+                    pending_files: 1,
+                    ..Default::default()
+                },
+                Retirement {
+                    retained_files: 2,
+                    ..Default::default()
+                },
+                Retirement::default(),
+            ] {
+                let message = have.next().await.unwrap();
+                let request: Have = serde_json::from_slice(&message.payload).unwrap();
+                let acks: Vec<_> = request
+                    .frames
+                    .into_iter()
+                    .map(|frame| Acknowledgment {
+                        frame,
+                        material: None,
+                        admitted: vec![],
+                        outcome: serde_json::json!({}),
+                        refusal: None,
+                        commit_seq: Some(1),
+                    })
+                    .collect();
+                client
+                    .publish(
+                        message.reply.unwrap(),
+                        serde_json::to_vec(&acks).unwrap().into(),
+                    )
+                    .await
+                    .unwrap();
+                let message = retire.next().await.unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<RetireBatches>(&message.payload).unwrap(),
+                    proof
+                );
+                client
+                    .publish(
+                        message.reply.unwrap(),
+                        serde_json::to_vec(&answer).unwrap().into(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+    for expected in [
+        PhysicalRetirement::Pending {
+            files: 1,
+            shared: 0,
+        },
+        PhysicalRetirement::Shared { files: 2 },
+        PhysicalRetirement::Completed,
+    ] {
+        let published = sinex.publish(&root).await.unwrap();
+        assert_eq!(published.units, 0);
+        assert_eq!(published.held, 1);
+        assert_eq!(published.physical_retirement, expected);
+    }
+    worker.await.unwrap();
+}

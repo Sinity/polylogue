@@ -135,10 +135,11 @@ pub(super) async fn parent_retirement(sinex: &mut Sinex, store: &Path, root: &Pa
         assert!(deadline.elapsed() < Duration::from_secs(20));
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    hashed_blobs::Store::open(store.to_path_buf(), vec![], 0o600)
-        .unwrap()
-        .delete(&old_hash)
-        .unwrap();
+    assert!(
+        !hashed_blobs::Store::open(store.to_path_buf(), vec![], 0o600)
+            .unwrap()
+            .contains(&old_hash)
+    );
     let (fresh, _lock) = Archive::open_or_create(&root.join("legacy-after-retirement")).unwrap();
     assert_eq!(sinex.restore(&fresh, &id).await.unwrap().units, 3);
     let restored = polylogue_store::archive::open_read(&fresh.archive_db()).unwrap();

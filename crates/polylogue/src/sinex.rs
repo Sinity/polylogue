@@ -25,10 +25,13 @@ pub struct Publisher {
 }
 
 impl Publisher {
-    fn spawn(
-        runtime: tokio::runtime::Runtime,
-        work: impl std::future::Future<Output = ()> + Send + 'static,
-    ) -> std::io::Result<Self> {
+    fn spawn<F, Work>(runtime: tokio::runtime::Runtime, work: F) -> std::io::Result<Self>
+    where
+        F: FnOnce() -> Work + Send + 'static,
+        Work: std::future::Future<Output = ()> + 'static,
+    {
+        // Construct the pass on its owning thread: its canonical SQLite
+        // snapshot may be borrowed across awaits without being Sync.
         let (stop, stopped) = oneshot::channel();
         let thread = std::thread::Builder::new()
             .name("polylogue-sinex".into())
@@ -39,7 +42,7 @@ impl Publisher {
                         _ = stopped => eprintln!(
                             "polylogue: Sinex publisher stopped; unacknowledged frames will be checked on restart"
                         ),
-                        _ = work => {},
+                        _ = work() => {},
                     }
                 });
             })?;
@@ -91,8 +94,7 @@ pub fn start(
         .enable_all()
         .build()?;
     let empty = polylogue_store::sinex_rows::Published::open(&archive.root)
-        .and_then(|p| p.units(0))
-        .map(|u| u.is_empty())
+        .and_then(|p| p.inventory().map(|u| u.is_empty()))
         .unwrap_or(false);
     if empty && let Some(id) = &sinex.archive {
         let restored = runtime.block_on(async {
@@ -108,8 +110,9 @@ pub fn start(
         }
     }
     let root = archive.root.clone();
-    Publisher::spawn(runtime, async move {
+    Publisher::spawn(runtime, move || async move {
         let mut connected: Option<Sinex> = None;
+        let mut retirement = None;
         loop {
             if connected.is_none() {
                 match Sinex::connect(&sinex).await {
@@ -117,11 +120,25 @@ pub fn start(
                     Err(e) => eprintln!("polylogue: Sinex: {e}"),
                 }
             }
-            if let Some(s) = connected.as_mut()
-                && let Err(e) = s.publish(&root).await
-            {
-                eprintln!("polylogue: publishing to Sinex: {e}");
-                connected = None;
+            if let Some(s) = connected.as_mut() {
+                match s.publish(&root).await {
+                    Ok(done) => {
+                        if retirement != Some(done.physical_retirement)
+                            && done.physical_retirement
+                                != polylogue_sinex::PhysicalRetirement::NotRequested
+                        {
+                            eprintln!(
+                                "polylogue: Sinex row-batch retirement: {}",
+                                done.physical_retirement
+                            );
+                        }
+                        retirement = Some(done.physical_retirement);
+                    }
+                    Err(e) => {
+                        eprintln!("polylogue: publishing to Sinex: {e}");
+                        connected = None;
+                    }
+                }
             }
             tokio::time::sleep(PUBLISH_EVERY).await;
         }
