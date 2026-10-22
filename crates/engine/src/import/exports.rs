@@ -200,7 +200,7 @@ impl Engine {
             parse: Vec::new(),
             release: Default::default(),
         })?;
-        let written = self.writer.flush()?;
+        let written = self.flush_writes()?;
         if !written.errors.is_empty() {
             return Err(std::io::Error::other(written.errors.join("; ")).into());
         }
@@ -256,7 +256,7 @@ impl Engine {
             parse: vec![parse],
             release: Default::default(),
         })?;
-        let written = self.writer.flush()?;
+        let written = self.flush_writes()?;
         pass.messages_written += written.messages;
         if !written.errors.is_empty() {
             return Err(std::io::Error::other(written.errors.join("; ")).into());

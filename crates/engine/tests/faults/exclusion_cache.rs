@@ -81,3 +81,33 @@ fn failed_lookup_writes_nothing_and_restart_rebuilds_the_lookup() {
     assert_eq!(w.texts("retained"), ["admitted after retry"]);
     fault::clear();
 }
+
+#[test]
+fn failed_lookup_retries_in_the_same_engine_from_committed_progress() {
+    fault::clear();
+    let w = ClaudeHome::new();
+    w.append("original.jsonl", &user("a1", "removed", "removed body"));
+    let (mut engine, _lock) = w.engine(64 << 20);
+    assert!(engine.converge().unwrap().errors.is_empty());
+    engine.excise(remove("removed")).unwrap();
+    w.append(
+        "mixed.jsonl",
+        &(user("a2", "removed", "must remain excluded")
+            + &user("b1", "retained", "admitted after retry")),
+    );
+    fault::arm("exclusion_cache.lookup", "messages", Action::Fail, 0, 1);
+    let failed = engine.converge().unwrap();
+    assert!(
+        failed
+            .errors
+            .iter()
+            .any(|error| error.contains("exclusion_cache.lookup")),
+        "{failed:?}"
+    );
+    assert!(w.texts("removed").is_empty());
+    assert!(w.texts("retained").is_empty());
+    assert!(engine.converge().unwrap().errors.is_empty());
+    assert!(w.texts("removed").is_empty());
+    assert_eq!(w.texts("retained"), ["admitted after retry"]);
+    fault::clear();
+}

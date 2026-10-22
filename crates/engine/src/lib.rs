@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod import;
+mod writes;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -350,6 +351,8 @@ pub struct Engine {
     reads: ReadPool,
     blobs: Arc<hashed_blobs::Store>,
     inputs: HashMap<PathBuf, InputState>,
+    /// Rejected writes awaiting checkpoint reload after their plans settle.
+    failed_writes: HashSet<String>,
     loaded: bool,
     exporter: Captures,
     /// Paths on this machine an excision removed: never collected again.
@@ -399,6 +402,7 @@ impl Engine {
             reads,
             blobs,
             inputs: HashMap::new(),
+            failed_writes: HashSet::new(),
             loaded: false,
             exporter: Captures::default(),
             refused: HashSet::new(),
@@ -604,6 +608,7 @@ impl Engine {
     fn converge_work(&mut self, discover: bool) -> Result<Pass, EngineError> {
         let started = Instant::now();
         self.load()?;
+        self.restore_failed_writes()?;
         let (found, unreadable, errors) = if discover {
             let drive_error = self.sync_drive();
             let lookup_error = self.refresh_lookups().err();
@@ -752,10 +757,11 @@ impl Engine {
         }
         pass.inputs_changed = plans.len() as u64;
         if plans.is_empty() {
-            let report = self.writer.flush()?;
+            let report = self.flush_writes()?;
             pass.errors.extend(report.errors);
         }
         self.execute(plans, &mut pass)?;
+        self.restore_failed_writes()?;
         pass.sessions_derived = self.writer.derive()?;
         pass.seconds = started.elapsed().as_secs_f64();
         Ok(pass)
@@ -774,11 +780,28 @@ impl Engine {
             // Stored only in part (a stop in the middle of a large file).
             change = Change::Appended { from: st.stored };
         }
-        if let Change::Appended { from } = change
-            && let Some(tail) = &st.tail
-            && !read::tail_intact(path, from, tail)?
-        {
-            change = Change::Rewritten;
+        if let Change::Appended { from } = &mut change {
+            // The source observation may describe a larger file than the
+            // committed prefix after an interrupted acquisition.
+            *from = st.stored;
+            if st.tail.is_none() && *from > 0 {
+                let reader = self.reads.reader()?;
+                let retained = reader.retained_input(&st.input_id)?.ok_or_else(|| {
+                    polylogue_store::StoreError::Invalid("append has no retained prefix".into())
+                })?;
+                st.tail = Some(reader.stored_range(
+                    &st.input_id,
+                    retained.chain,
+                    from.saturating_sub(read::TAIL as u64),
+                    *from,
+                    &self.blobs,
+                )?);
+            }
+            if let Some(tail) = &st.tail
+                && !read::tail_intact(path, *from, tail)?
+            {
+                change = Change::Rewritten;
+            }
         }
         let version_changed = parsed && st.parser_version != Some(st.origin.parser_version);
         let (piece_pos, parse_pos, carry, priority) = match &change {
@@ -1018,7 +1041,8 @@ impl Engine {
                 ordinary.push(plan);
             }
         }
-        self.execute_pool(ordinary, pass)
+        self.execute_pool(ordinary, pass)?;
+        self.restore_failed_writes()
     }
 
     fn execute_pool(&mut self, plans: Vec<Plan>, pass: &mut Pass) -> Result<(), EngineError> {
@@ -1071,7 +1095,7 @@ impl Engine {
             }
         }
         drop(pool);
-        let report: WriteReport = self.writer.flush()?;
+        let report: WriteReport = self.flush_writes()?;
         pass.messages_written += report.messages;
         pass.errors.extend(report.errors);
         Ok(())

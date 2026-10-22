@@ -215,22 +215,37 @@ impl StoredChain {
         chain: i64,
         length: u64,
     ) -> Result<Self> {
+        Self::load_range(archive, schema, input, chain, 0, length)
+    }
+
+    pub(crate) fn load_range(
+        archive: &rusqlite::Connection,
+        schema: &str,
+        input: &str,
+        chain: i64,
+        start: u64,
+        length: u64,
+    ) -> Result<Self> {
         let mut stmt = archive.prepare_cached(&format!(
             "SELECT e.offset, e.length, e.blob, e.blob_offset, b.place, b.data, b.size
              FROM {schema}extent e JOIN {schema}blob b ON b.hash = e.blob
-             WHERE e.input = ?1 AND e.chain = ?2 AND e.offset < ?3 ORDER BY e.offset"
+             WHERE e.input = ?1 AND e.chain = ?2 AND e.offset < ?3
+                   AND e.offset + e.length > ?4 ORDER BY e.offset"
         ))?;
-        let rows = stmt.query_map(rusqlite::params![input, chain, length as i64], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, Vec<u8>>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<Vec<u8>>>(5)?,
-                r.get::<_, i64>(6)?,
-            ))
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params![input, chain, length as i64, start as i64],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Vec<u8>>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, Option<Vec<u8>>>(5)?,
+                    r.get::<_, i64>(6)?,
+                ))
+            },
+        )?;
         let mut extents = Vec::new();
         for row in rows {
             let (offset, len, blob, blob_offset, place, data, size) = row?;

@@ -431,6 +431,7 @@ impl Inner {
                     }
                 }
             }
+            group.retain(|b| !self.report.failed_inputs.contains(&b.input.id));
             if !group.is_empty() {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&group));
                 // Derived rows follow every commit; a first build derives
@@ -679,6 +680,7 @@ impl Inner {
                 Ok(refused) => refused,
                 Err(error) => {
                     for b in group {
+                        self.report.failed_inputs.insert(b.input.id.clone());
                         self.report
                             .errors
                             .push(format!("input {}: {error}", b.input.id));
@@ -705,7 +707,11 @@ impl Inner {
             return;
         }
         for b in group {
+            if self.report.failed_inputs.contains(&b.input.id) {
+                continue;
+            }
             if let Err(e) = self.write(std::iter::once(&**b)) {
+                self.report.failed_inputs.insert(b.input.id.clone());
                 self.report
                     .errors
                     .push(format!("input {}: {e}", b.input.id));
@@ -732,6 +738,7 @@ impl Inner {
 
     fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
         for b in batches.clone() {
+            crate::fault::check("write.input", &b.input.id)?;
             for p in &b.parse {
                 p.accounting.check()?;
             }
