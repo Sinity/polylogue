@@ -249,15 +249,14 @@ fn tune(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Page-cache budgets of the write connections, in MiB. Together with the
-/// parse pool's bytes in flight they are the daemon's memory: the operator
-/// allows a few GB, and a first build stays within about 2.5 GB.
+/// Page-cache targets of write connections, in MiB. Process memory also includes
+/// parsed values, queued batches, SQLite temporary work and allocator overhead.
 pub mod cache {
     /// The writer's `index.db` connection. It holds the indexes probed on
     /// every insert (text hashes, message IDs) and the search segments it
     /// merges; at 256 MB a first build read back from disk more than twice
     /// its input.
-    pub const INDEX_WRITER: i64 = 1536;
+    pub const INDEX_WRITER: i64 = 768;
     /// The search thread's `index.db` connection (writer.rs, `Search`).
     pub const SEARCH: i64 = 64;
     /// The writer's `archive.db` connection: inputs, revisions, extents.
