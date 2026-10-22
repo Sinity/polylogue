@@ -9,8 +9,8 @@ publish.workspace = true
 [dependencies]
 polylogue-store.workspace = true
 hashed-blobs.workspace = true
-sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "529ff45145809ab83cc1db7f7f8cf4273248b87a" }
-sinex-model = { git = "https://github.com/Sinity/sinex", rev = "529ff45145809ab83cc1db7f7f8cf4273248b87a" }
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "6dd654669a7419981543e983ac87bb81cb5c4bd6" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "6dd654669a7419981543e983ac87bb81cb5c4bd6" }
 async-nats = "0.47"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 futures-util = "0.3"
