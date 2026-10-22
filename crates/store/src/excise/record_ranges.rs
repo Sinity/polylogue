@@ -3,12 +3,17 @@ use serde::de::{DeserializeSeed, Error as _, IgnoredAny, MapAccess, SeqAccess, V
 use serde_json::value::RawValue;
 
 type Range = (usize, usize);
+mod file;
+pub(super) use file::{Error, plan_file};
+
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct Erasure {
     pub ranges: Vec<Range>,
     pub documents: usize,
     pub erased_documents: usize,
 }
 
+#[cfg(test)]
 pub(super) fn plan(bytes: &[u8], requested: &[Range]) -> Result<Erasure, String> {
     let mut ranges = Vec::new();
     for &(start, end) in requested {
@@ -33,6 +38,7 @@ pub(super) fn plan(bytes: &[u8], requested: &[Range]) -> Result<Erasure, String>
     }
     let mut plan = Plan {
         bytes,
+        base: 0,
         seen: vec![(false, false); merged.len()],
         requested: merged,
         output: Vec::new(),
@@ -64,6 +70,7 @@ pub(super) fn plan(bytes: &[u8], requested: &[Range]) -> Result<Erasure, String>
 
 struct Plan<'a> {
     bytes: &'a [u8],
+    base: usize,
     requested: Vec<Range>,
     seen: Vec<(bool, bool)>,
     output: Vec<Range>,
@@ -77,7 +84,7 @@ impl Plan<'_> {
         if end > self.bytes.len() {
             return Err("JSON value is outside this source".into());
         }
-        Ok((start, end))
+        Ok((self.base + start, self.base + end))
     }
     fn first(&self, range: Range) -> usize {
         self.requested.partition_point(|r| r.1 <= range.0)
@@ -101,7 +108,8 @@ impl Plan<'_> {
     fn push(&mut self, range: Range) {
         if let Some(last) = self.output.last_mut()
             && last.1 <= range.0
-            && self.bytes[last.1..range.0]
+            && last.1 >= self.base
+            && self.bytes[last.1 - self.base..range.0 - self.base]
                 .iter()
                 .all(u8::is_ascii_whitespace)
         {
@@ -111,7 +119,7 @@ impl Plan<'_> {
         self.output.push(range);
     }
     fn comma(&self, start: usize, end: usize) -> Result<usize, String> {
-        self.bytes[start..end]
+        self.bytes[start - self.base..end - self.base]
             .iter()
             .position(|&b| b == b',')
             .map(|at| start + at)

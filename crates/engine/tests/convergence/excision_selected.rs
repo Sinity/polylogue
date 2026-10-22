@@ -2,6 +2,49 @@ use super::*;
 use polylogue_store::{Delivery, UserRequest, UserWrite};
 
 #[test]
+fn large_shared_blob_remains_readable_after_two_separate_session_excisions() {
+    let w = ClaudeHome::new();
+    let mut expected = Vec::new();
+    for n in 0..160 {
+        for session in ["first", "second", "kept"] {
+            let text = format!(
+                "{session} unique content {n} {}",
+                "synthetic filler ".repeat(8)
+            );
+            w.append(
+                "large.jsonl",
+                &user(&format!("{session}-{n}"), session, &text),
+            );
+            if session == "kept" {
+                expected.push(text);
+            }
+        }
+    }
+    let (mut engine, lock) = w.engine(64 << 20);
+    assert!(engine.converge().unwrap().errors.is_empty());
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.extent"), 1);
+    assert!(w.count("SELECT size AS n FROM a.blob") >= polylogue_store::blobs::INLINE_LIMIT as i64);
+    for session in ["first", "second"] {
+        for dry in [true, false] {
+            let done = excise(&mut engine, &format!("session:claude-code:{session}"), dry);
+            assert_eq!(done.messages, 160);
+            assert_eq!(w.texts("kept"), expected);
+            assert_eq!(w.texts(session).len(), if dry { 160 } else { 0 });
+        }
+        assert!(!stored(&w.root, &format!("{session} unique content")));
+    }
+    drop(engine);
+    drop(lock);
+    fs::remove_file(w.file("large.jsonl")).unwrap();
+    delete_index(&w.root);
+    let (mut restored, _lock) = w.engine(64 << 20);
+    assert!(restored.converge().unwrap().errors.is_empty());
+    assert_eq!(w.texts("kept"), expected);
+    assert!(w.texts("first").is_empty());
+    assert!(w.texts("second").is_empty());
+}
+
+#[test]
 fn session_excision_checks_all_append_pieces_before_rewriting_and_rebuilding() {
     let w = ClaudeHome::new();
     let (mut engine, lock) = w.engine(64 << 20);
