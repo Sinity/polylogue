@@ -4,6 +4,7 @@ use crate::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::ser::{Error, SerializeSeq};
 use serde::{Serialize, Serializer};
+use std::cell::Cell;
 
 pub struct Catalog {
     pub(super) db: Connection,
@@ -23,6 +24,7 @@ impl Catalog {
                 data TEXT NOT NULL, tombstone INTEGER NOT NULL,
                 PRIMARY KEY(seq,kind,key)) WITHOUT ROWID;
             CREATE TABLE excision_applied(id_hash BLOB PRIMARY KEY,policy_hash BLOB NOT NULL) WITHOUT ROWID;
+            CREATE TABLE verified_source(hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL CHECK(bytes>=0)) WITHOUT ROWID;
             CREATE TABLE blob_range(hash TEXT PRIMARY KEY, needed INTEGER NOT NULL) WITHOUT ROWID;
             CREATE TABLE allowed(kind TEXT NOT NULL, id TEXT NOT NULL,
                 PRIMARY KEY(kind,id)) WITHOUT ROWID;
@@ -145,6 +147,7 @@ impl Catalog {
             catalog: self,
             len: count as u64,
             commit_seq: previous.map_or(0, |u| u.commit_seq),
+            sources_verified: Cell::new(false),
         };
         selection.each(|current| {
             let authorized: bool = selection.catalog.db.query_row(
@@ -193,6 +196,7 @@ pub struct Selection {
     pub(super) catalog: Catalog,
     len: u64,
     commit_seq: i64,
+    sources_verified: Cell<bool>,
 }
 impl Selection {
     pub fn len(&self) -> u64 {
@@ -205,18 +209,55 @@ impl Selection {
         self.commit_seq
     }
 
-    /// Visit each required source blob once, after all replacements. Row-batch
-    /// hashes stay with their units because their contents must match that unit.
-    /// Deduplication uses this operation's disk catalog, not a durable cache.
-    pub fn source_blobs(&self, mut visit: impl FnMut(&str) -> Result<()>) -> Result<()> {
-        let mut statement = self.catalog.db.prepare(
-            "SELECT DISTINCT b.value FROM selected s, json_each(s.data,'$.blobs') b
-             ORDER BY b.value",
+    /// Ask the caller to read each selected source through EOF, check its hash
+    /// and return its byte count. Completion permits one install attempt;
+    /// a new pass always repeats the reads and invalidates any earlier result.
+    pub fn verify_source_blobs(&self, mut visit: impl FnMut(&str) -> Result<u64>) -> Result<()> {
+        // Completion, not rollback of disposable scratch rows, authorizes use.
+        self.sources_verified.set(false);
+        let tx = self.catalog.db.unchecked_transaction()?;
+        tx.execute("DELETE FROM verified_source", [])?;
+        {
+            let mut statement = tx.prepare(
+                "SELECT DISTINCT b.value FROM selected s, json_each(s.data,'$.blobs') b ORDER BY b.value",
+            )?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let name: String = row.get(0)?;
+                let hash = super::super::excision::batch_hash(&name)?;
+                let key = crate::sinex_rows::hex(&hash.0);
+                let seen: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM verified_source WHERE hash=?1)",
+                    [&key],
+                    |r| r.get(0),
+                )?;
+                if seen {
+                    continue;
+                }
+                let bytes = i64::try_from(visit(&name)?)
+                    .map_err(|_| invalid("verified source length exceeds the supported range"))?;
+                tx.execute(
+                    "INSERT INTO verified_source VALUES (?1,?2)",
+                    rusqlite::params![key, bytes],
+                )?;
+            }
+        }
+        tx.commit()?;
+        self.sources_verified.set(true);
+        Ok(())
+    }
+
+    pub(super) fn begin_install(&self) -> Result<()> {
+        let verified = self.sources_verified.replace(false);
+        let required: bool = self.catalog.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM selected s,json_each(s.data,'$.blobs'))",
+            [],
+            |r| r.get(0),
         )?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
-            let hash: String = row.get(0)?;
-            visit(&hash)?;
+        if required && !verified {
+            return Err(invalid(
+                "selected source bytes require completed verification before each install",
+            ));
         }
         Ok(())
     }

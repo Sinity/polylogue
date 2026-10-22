@@ -44,7 +44,7 @@ fn rows() -> Vec<Value> {
         .collect()
 }
 
-fn install(rows: &[Value], blobs: Vec<String>, target: &mut Connection) -> crate::Result<u64> {
+fn selection(rows: &[Value], blobs: Vec<String>) -> crate::Result<(Selection, Vec<u8>)> {
     let mut bytes = Vec::new();
     for row in rows {
         serde_json::to_writer(&mut bytes, row).unwrap();
@@ -62,7 +62,22 @@ fn install(rows: &[Value], blobs: Vec<String>, target: &mut Connection) -> crate
         blobs,
         excision: None,
     };
-    let selected = select(&[unit])?;
+    Ok((select(&[unit])?, bytes))
+}
+
+fn install(rows: &[Value], blobs: Vec<String>, target: &mut Connection) -> crate::Result<u64> {
+    let (selected, bytes) = selection(rows, blobs)?;
+    selected.verify_source_blobs(|name| {
+        if name == format!("blake3:{}", blake3::hash(b"abc")) {
+            Ok(3)
+        } else if name == format!("blake3:{}", blake3::hash(b"other")) {
+            Ok(5)
+        } else {
+            Err(crate::StoreError::Invalid(
+                "unknown synthetic source".into(),
+            ))
+        }
+    })?;
     restore::install(target, &selected, None, |_| {
         Ok(Some(Cursor::new(bytes.clone())))
     })
@@ -258,4 +273,97 @@ fn extent_slices_must_fit_their_supplied_blob() {
         rows.iter_mut().find(|v| v["table"] == "extent").unwrap()["row"][field] = value;
         refuses(&rows, names());
     }
+}
+
+#[test]
+fn verified_source_bytes_must_match_the_catalog_size() {
+    let mut rows = rows();
+    for value in &mut rows {
+        if value["table"] == "blob" {
+            value["row"]["size"] = json!(100);
+            value["row"]["stored_size"] = json!(100);
+        }
+        if value["table"] == "revision" {
+            value["row"]["length"] = json!(10);
+        }
+        if value["table"] == "extent" {
+            value["row"]["blob_offset"] = json!(50);
+            value["row"]["length"] = json!(10);
+        }
+    }
+    let (selected, bytes) = selection(&rows, names()).unwrap();
+    selected
+        .verify_source_blobs(|name| {
+            assert_eq!(name, format!("blake3:{}", blake3::hash(b"abc")));
+            // This is the entire verified source, despite the catalog's size100.
+            assert_eq!(b"abc".len(), 3);
+            Ok(3)
+        })
+        .unwrap();
+    let mut target = target();
+    assert!(
+        restore::install(&mut target, &selected, None, |_| Ok(Some(Cursor::new(
+            bytes.clone()
+        ))))
+        .is_err(),
+        "installed a slice beyond the verified source"
+    );
+    assert_eq!(
+        target
+            .query_row("SELECT COUNT(*) FROM revision", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn each_install_requires_fresh_completed_source_verification() {
+    let (selected, bytes) = selection(&rows(), names()).unwrap();
+    let checkpoint = serde_json::to_vec(&selected).unwrap();
+    let mut target = target();
+    assert!(
+        restore::install::<Cursor<Vec<u8>>>(&mut target, &selected, None, |_| panic!(
+            "unverified payload opened"
+        ))
+        .is_err()
+    );
+    selected.verify_source_blobs(|_| Ok(3)).unwrap();
+    assert!(
+        restore::install(&mut target, &selected, None, |_| Ok(Some(Cursor::new(
+            bytes.clone()
+        ))))
+        .unwrap()
+            > 0
+    );
+    assert!(
+        restore::install::<Cursor<Vec<u8>>>(&mut target, &selected, None, |_| panic!(
+            "verification reused"
+        ))
+        .is_err()
+    );
+    selected.verify_source_blobs(|_| Ok(3)).unwrap();
+    assert!(
+        selected
+            .verify_source_blobs(|_| Err(crate::StoreError::Invalid("source disappeared".into())))
+            .is_err()
+    );
+    assert!(
+        restore::install::<Cursor<Vec<u8>>>(&mut target, &selected, None, |_| panic!(
+            "failed verification reused"
+        ))
+        .is_err()
+    );
+    selected.verify_source_blobs(|_| Ok(3)).unwrap();
+    assert_eq!(
+        restore::install(&mut target, &selected, None, |_| Ok(Some(Cursor::new(
+            bytes.clone()
+        ))))
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        serde_json::to_vec(&selected).unwrap(),
+        checkpoint,
+        "verification must not change checkpoint identity"
+    );
 }

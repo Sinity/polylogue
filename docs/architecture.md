@@ -389,15 +389,19 @@ serialization borrows canonical descriptor JSON from SQLite, preserving the
 previous ordered bytes without decoding source-reference lists again.
 
 The selected catalog enumerates distinct current source-blob references on disk.
-Restore verifies each once before installing rows; later restores verify them
-again. Retired references are excluded only by the selected replacements.
+Restore verifies each through EOF and records its actual byte count in the
+temporary catalog. Each install attempt requires a newly completed pass,
+including repeated restore; a failed pass invalidates earlier results. These
+counts do not change checkpoint identity. Retired references are excluded only
+by the selected replacements.
 Row batches retain their per-unit identity, row-count and integrity checks.
 Revision batches also match extent blob references, supplied plain-file catalog
 rows and the selected descriptor's source references as sets in the scratch
 catalog. Machine rows must be cited by this revision's observations; several
 host labels for one machine remain valid. Extents must belong to the owning
 chain and start within its length; their positive source slices must fit the
-supplied blob sizes. These checks do not reconstruct every earlier
+verified source sizes. Catalog sizes must equal those verified byte counts.
+These checks do not reconstruct every earlier
 revision interval.
 
 Selected row batches use the blob store's sequential plain reader. Restore
