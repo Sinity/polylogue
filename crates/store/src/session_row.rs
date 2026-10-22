@@ -90,14 +90,14 @@ pub(crate) fn remove(
     let text_ids: Vec<i64> = i
         .prepare(
             "SELECT DISTINCT text_id FROM block WHERE session_pk = ?1 AND text_id IS NOT NULL
-             UNION SELECT v.text_id FROM version_block v JOIN message_source ms ON ms.version_hash=v.version_hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.text_id IS NOT NULL",
+             UNION SELECT v.text_id FROM version_block v JOIN message_version mv ON mv.pk=v.version_pk JOIN message_source ms ON ms.version_hash=mv.hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.text_id IS NOT NULL",
         )?
         .query_map([pk], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let blobs: Vec<Vec<u8>> = i
         .prepare(
             "SELECT DISTINCT blob_hash FROM block WHERE session_pk = ?1 AND blob_hash IS NOT NULL
-             UNION SELECT v.blob_hash FROM version_block v JOIN message_source ms ON ms.version_hash=v.version_hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.blob_hash IS NOT NULL",
+             UNION SELECT v.blob_hash FROM version_block v JOIN message_version mv ON mv.pk=v.version_pk JOIN message_source ms ON ms.version_hash=mv.hash JOIN message m ON m.pk=ms.message_pk WHERE (m.session_pk=?1 OR ms.session_pk=?1) AND v.blob_hash IS NOT NULL",
         )?
         .query_map([pk], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;

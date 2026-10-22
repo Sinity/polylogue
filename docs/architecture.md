@@ -217,6 +217,9 @@ Within store, `encoding.rs` owns packed row bodies and block-text separation;
 `text_rows.rs` owns text deduplication, pending search entries and removal.
 Fixtures use the same text-storage path as ingestion.
 Retained message-version blocks own their encoded bodies and text references.
+Content hashes identify versions across sources; local integer row IDs place
+new attributes and blocks next to earlier inserts. Historical reads resolve the
+hash once, then read that version’s ordered blocks.
 Current blocks copy those retained rows and activate their search membership;
 historical-only versions do not enter search. Promotion uses the same path
 after clearing the previous current blocks.

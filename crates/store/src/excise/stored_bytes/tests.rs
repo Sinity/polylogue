@@ -23,7 +23,7 @@ fn inspection_finds_dictionary_metadata_and_refuses_damaged_frames() {
     let db = open_write(&archive.index_db(), cache::SETUP).unwrap();
     for bytes in [prepared.attrs.clone(), pack_json(&message).unwrap()] {
         db.execute(
-            "INSERT OR REPLACE INTO message_version VALUES (?1,?2)",
+            "INSERT OR REPLACE INTO message_version(hash,attrs) VALUES (?1,?2)",
             params![&prepared.hash[..], bytes],
         )
         .unwrap();

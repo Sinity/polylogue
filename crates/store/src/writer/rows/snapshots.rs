@@ -213,7 +213,7 @@ impl Ctx<'_, '_> {
         if already_shown {
             return Ok(());
         }
-        let message = crate::versions::load(self.tx, &version.hash)?;
+        let (version_pk, message) = crate::versions::load(self.tx, &version.hash)?;
         let session_pk: i64 = self.tx.query_row(
             "SELECT pk FROM session WHERE id=?1",
             [message.session.to_string()],
@@ -256,7 +256,7 @@ impl Ctx<'_, '_> {
             &version,
             (version.input_pk, version.order),
         )?;
-        ctx.insert_blocks(pk, session_pk, &message, &version.hash)?;
+        ctx.insert_blocks(pk, session_pk, &message, version_pk)?;
         self.tx
             .execute("UPDATE message SET present=1 WHERE pk=?1", [pk])?;
         self.tx.execute(
