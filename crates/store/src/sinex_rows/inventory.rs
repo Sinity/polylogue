@@ -65,7 +65,7 @@ impl<'a> Inventory<'a> {
                     return Err(StoreError::Invalid("invalid excision unit identity".into()));
                 }
                 has_excision = true;
-                for replacement in &publication.replacements {
+                publication.each_replacement(|replacement| {
                     let unit = &replacement.unit;
                     if unit >= owner {
                         return Err(StoreError::Invalid(
@@ -81,8 +81,8 @@ impl<'a> Inventory<'a> {
                         owner.commit_seq,
                         owner.key
                     ])?;
-                }
-                Ok(())
+                    Ok(())
+                })
             })?;
         }
         db.execute_batch("INSERT INTO position SELECT ROW_NUMBER() OVER (ORDER BY seq,kind,key),seq,kind,key FROM unit ORDER BY seq,kind,key;

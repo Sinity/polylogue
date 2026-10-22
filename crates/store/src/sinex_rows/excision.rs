@@ -118,12 +118,16 @@ impl Capture {
 /// identity to choose the latest replacement, independent of scan order.
 pub(super) fn visit_publications(
     conn: &Connection,
-    mut visit: impl FnMut(&Unit, &ExcisionPublication) -> Result<()>,
+    mut visit: impl FnMut(&Unit, &decode::View<'_>) -> Result<()>,
 ) -> Result<()> {
     let mut stmt = conn.prepare("SELECT commit_seq,id,refused_json FROM excision")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
-        if let Some(publication) = decode::publication(&row.get::<_, String>(2)?)? {
+        let json = row.get_ref(2)?;
+        let json = json
+            .as_str()
+            .map_err(|e| StoreError::Invalid(e.to_string()))?;
+        if let Some(publication) = decode::View::decode(json)? {
             let unit = Unit {
                 commit_seq: row.get(0)?,
                 kind: "excision".into(),
@@ -203,49 +207,53 @@ impl ExcisionPublication {
         }
         let mut previous = None;
         for replacement in &self.replacements {
-            let unit = &replacement.unit;
-            if unit.commit_seq < 1
-                || unit.key.is_empty()
-                || ![
-                    "revision",
-                    "note",
-                    "excision",
-                    "setting",
-                    "delivery",
-                    "observation",
-                    "delivery_event",
-                ]
-                .contains(&unit.kind.as_str())
-                || previous.is_some_and(|previous: &Unit| previous >= unit)
-            {
-                return Err(StoreError::Invalid(
-                    "replacement units are not unique known identities in archive order".into(),
-                ));
-            }
-            previous = Some(unit);
-            match &replacement.batch {
-                Some(hash) => {
-                    batch_hash(hash)?;
-                    if replacement.rows == 0 || replacement.bytes == 0 {
-                        return Err(StoreError::Invalid("a replacement batch is empty".into()));
-                    }
-                }
-                None if replacement.bytes != 0
-                    || replacement.rows != 0
-                    || !replacement.blobs.is_empty() =>
-                {
-                    return Err(StoreError::Invalid(
-                        "a tombstone cites retained bytes".into(),
-                    ));
-                }
-                None => {}
-            }
-            for blob in &replacement.blobs {
-                batch_hash(blob)?;
-            }
+            replacement.validate(previous)?;
+            previous = Some(&replacement.unit);
         }
         for hash in &self.retired_batches {
             batch_hash(hash)?;
+        }
+        Ok(())
+    }
+}
+
+impl Replacement {
+    fn validate(&self, previous: Option<&Unit>) -> Result<()> {
+        let unit = &self.unit;
+        if unit.commit_seq < 1
+            || unit.key.is_empty()
+            || ![
+                "revision",
+                "note",
+                "excision",
+                "setting",
+                "delivery",
+                "observation",
+                "delivery_event",
+            ]
+            .contains(&unit.kind.as_str())
+            || previous.is_some_and(|previous| previous >= unit)
+        {
+            return Err(StoreError::Invalid(
+                "replacement units are not unique known identities in archive order".into(),
+            ));
+        }
+        match &self.batch {
+            Some(hash) => {
+                batch_hash(hash)?;
+                if self.rows == 0 || self.bytes == 0 {
+                    return Err(StoreError::Invalid("a replacement batch is empty".into()));
+                }
+            }
+            None if self.bytes != 0 || self.rows != 0 || !self.blobs.is_empty() => {
+                return Err(StoreError::Invalid(
+                    "a tombstone cites retained bytes".into(),
+                ));
+            }
+            None => {}
+        }
+        for blob in &self.blobs {
+            batch_hash(blob)?;
         }
         Ok(())
     }
