@@ -40,6 +40,14 @@ started inside a queued job keeps that job occupied after the command exits.
 `/dev/shm` and remove it afterwards. Tests write fsync'd archives, and on the
 btrfs work disk those syncs dominated test time.
 
+Run throughput measurements with the declared `bench` operation, or
+`agentctl job start polylogue measure --workspace <worktree> -- <command>`
+for a performance driver. Both use the normal queue. The background bulk
+pool has a hard I/O bandwidth cap that can dominate disk-backed measurements;
+normal retains queue admission, memory controls and lower I/O priority without
+that cap. Record the actual pool and resource limits with timing results.
+Keep background package builds and integrated checks in their existing pool.
+
 Full-text indexing decodes one stored body at a time. First-build indexing
 streams marked rows; live indexing retains up to 2,000 pending IDs, then
 fetches their bodies individually. Transactions stop after 2,000 entries or
