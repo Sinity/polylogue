@@ -4,6 +4,7 @@
 
 use super::*;
 
+mod erasures;
 mod records;
 
 /// Blobs contributing a retained input-chain match of `needle`, including
@@ -169,8 +170,7 @@ pub(super) fn overwrite(
     delete_files: &mut Vec<BlobHash>,
     sessions: &[(i64, String)],
 ) -> Result<()> {
-    // Blob ranges by blob.
-    let mut by_blob: BTreeMap<Vec<u8>, Vec<(usize, usize)>> = BTreeMap::new();
+    let erasures = erasures::Erasures::new()?;
     let mut ext = t.archive.prepare(
         "SELECT offset, length, blob, blob_offset FROM extent
          WHERE input = ?1 AND chain = ?2 AND offset < ?4 AND offset + length > ?3",
@@ -188,33 +188,29 @@ pub(super) fn overwrite(
             let (offset, length, blob, blob_offset) = row?;
             let from = s.start.max(offset) - offset + blob_offset;
             let to = s.end.min(offset + length) - offset + blob_offset;
-            by_blob
-                .entry(blob)
-                .or_default()
-                .push((from as usize, to as usize));
+            erasures.request(&blob, from as usize, to as usize)?;
         }
     }
-    let planned = records::preflight(t, input, spans, by_blob, sessions)?;
+    records::preflight(t, input, spans, &erasures, sessions)?;
     if req.dry_run {
         return Ok(());
     }
     let mut spans_json = Vec::new();
-    for (hash, plan) in planned {
-        let ranges = plan.ranges;
-        let Ok(arr) = <[u8; 32]>::try_from(hash.as_slice()) else {
-            continue;
-        };
+    erasures.visit(|hash, ranges| {
+        let arr = <[u8; 32]>::try_from(hash)
+            .map_err(|_| StoreError::Invalid("invalid source blob hash".into()))?;
         let old = BlobHash(arr);
         let bytes = crate::blobs::read(t.archive, t.store, &old)?;
-        for &(s, e) in &ranges {
-            spans_json.push(serde_json::json!([hex(&hash), s, e - s]));
+        for &(s, e) in ranges {
+            spans_json.push(serde_json::json!([hex(hash), s, e - s]));
         }
-        if let Some(gone) = replace_blob(t, &old, bytes, &ranges)? {
+        if let Some(gone) = replace_blob(t, &old, bytes, ranges)? {
             refused.blobs.push(hex(&gone.hash));
             // The old file goes with the other deletions, after commit.
             delete_files.extend(gone.file);
         }
-    }
+        Ok(())
+    })?;
     insert_excised_observations(t, input, req, Some(&serde_json::Value::Array(spans_json)))?;
     Ok(())
 }

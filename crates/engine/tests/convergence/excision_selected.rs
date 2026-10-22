@@ -2,6 +2,45 @@ use super::*;
 use polylogue_store::{Delivery, UserRequest, UserWrite};
 
 #[test]
+fn session_excision_checks_all_append_pieces_before_rewriting_and_rebuilding() {
+    let w = ClaudeHome::new();
+    let (mut engine, lock) = w.engine(64 << 20);
+    let mut expected = Vec::new();
+    for n in 0..48 {
+        let keep = format!("retained public message number {n}");
+        w.append(
+            "shared.jsonl",
+            &(user(
+                &format!("remove-{n}"),
+                "remove",
+                &format!("removed private message {n}"),
+            ) + &user(&format!("keep-{n}"), "keep", &keep)),
+        );
+        assert!(engine.converge().unwrap().errors.is_empty());
+        expected.push(keep);
+    }
+    assert!(w.count("SELECT count(*) AS n FROM a.extent") >= 48);
+    let before = w.count("SELECT count(*) AS n FROM a.blob");
+    for dry_run in [true, false] {
+        let done = excise(&mut engine, "session:claude-code:remove", dry_run);
+        assert_eq!(done.messages, 48);
+        assert_eq!(done.inputs_overwritten.values().sum::<u64>(), 48);
+        assert_eq!(w.texts("keep"), expected);
+        assert_eq!(w.texts("remove").len(), if dry_run { 48 } else { 0 });
+        assert_eq!(w.count("SELECT count(*) AS n FROM a.blob"), before);
+    }
+    assert!(!stored(&w.root, "removed private message"));
+    drop(engine);
+    drop(lock);
+    fs::remove_file(w.file("shared.jsonl")).unwrap();
+    delete_index(&w.root);
+    let (mut restored, _lock) = w.engine(64 << 20);
+    assert!(restored.converge().unwrap().errors.is_empty());
+    assert_eq!(w.texts("keep"), expected);
+    assert!(w.texts("remove").is_empty());
+}
+
+#[test]
 fn input_excision_owns_text_shared_only_by_its_removed_sessions() {
     for (survivor, title_only) in [(false, false), (true, false), (false, true), (true, true)] {
         let shared = "shared synthetic evidence held by removed sessions";
