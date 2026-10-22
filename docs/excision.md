@@ -25,8 +25,15 @@ decoded text collection. Shared-input rewrites keep translated byte ranges and
 validated plans in a private SQLite file with a 1 MiB cache and mmap disabled.
 Every retained piece and surviving use is checked before the first replacement;
 unchanged pieces reuse their validation counts across chains. One blob and its
-ranges are loaded at a time. Logical source spans, message-ID lists, canonical
-JSON reports and a single retained blob can still exceed memory.
+ranges are processed at a time. Shared-input record rewrites verify plaintext
+into private scratch, parse one top-level JSON record at a time, then stream a
+single complete replacement blob. Citation endpoints are checked across the
+whole stream; array separators, lengths and newlines retain their existing
+rules. Scratch errors abort the operation.
+
+The largest individual JSON record, one blob's range list, logical source
+spans, message-ID lists and canonical JSON reports can still exceed memory.
+Text matching in shared whole documents still loads one complete blob.
 
 Removing a session from a retained JSON export erases its complete records and the necessary array separators. Other bytes, line breaks and offsets stay unchanged, so an index rebuilt from the retained export can still read the surviving sessions. Preview performs the same boundary and overlap checks as execution.
 

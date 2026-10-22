@@ -65,10 +65,12 @@ pub(super) fn preflight(
                         .as_slice()
                         .try_into()
                         .map_err(|_| refuse("invalid source blob hash".into()))?;
-                    let bytes = crate::blobs::read(t.archive, t.store, &BlobHash(hash_bytes))?;
+                    let bytes = super::plain_blob::PlainBlob::load(t, input, BlobHash(hash_bytes))?;
                     let ranges = erasures.requested(&hash)?;
-                    let checked =
-                        super::super::record_ranges::plan(&bytes, &ranges).map_err(&refuse)?;
+                    let checked = bytes.plan(&ranges).map_err(|error| match error {
+                        super::super::record_ranges::Error::Records(detail) => refuse(detail),
+                        super::super::record_ranges::Error::Io(error) => StoreError::Io(error),
+                    })?;
                     let counts = (checked.documents, checked.erased_documents);
                     erasures.checked(&hash, &checked)?;
                     counts

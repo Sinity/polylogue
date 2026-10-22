@@ -5,6 +5,7 @@
 use super::*;
 
 mod erasures;
+mod plain_blob;
 mod records;
 
 /// Blobs contributing a retained input-chain match of `needle`, including
@@ -135,6 +136,14 @@ pub(super) fn replace_blob(
         }
     }
     let piece = Piece::prepare(t.store, &bytes)?;
+    record_replacement(t, old, piece)
+}
+
+fn record_replacement(
+    t: &Transactions<'_, '_>,
+    old: &BlobHash,
+    piece: Piece,
+) -> Result<Option<Gone>> {
     if piece.hash == *old {
         return Ok(None);
     }
@@ -200,11 +209,11 @@ pub(super) fn overwrite(
         let arr = <[u8; 32]>::try_from(hash)
             .map_err(|_| StoreError::Invalid("invalid source blob hash".into()))?;
         let old = BlobHash(arr);
-        let bytes = crate::blobs::read(t.archive, t.store, &old)?;
+        let bytes = plain_blob::PlainBlob::load(t, input, old)?;
         for &(s, e) in ranges {
             spans_json.push(serde_json::json!([hex(hash), s, e - s]));
         }
-        if let Some(gone) = replace_blob(t, &old, bytes, ranges)? {
+        if let Some(gone) = bytes.replace(t, &old, ranges)? {
             refused.blobs.push(hex(&gone.hash));
             // The old file goes with the other deletions, after commit.
             delete_files.extend(gone.file);
