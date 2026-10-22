@@ -63,21 +63,25 @@ pub(super) fn write_rows(
             .get(i)
             .copied()
             .unwrap_or_else(|| message_hash(&row.message));
+        let prepared;
         let bodies = match p.bodies.get(i) {
-            Some(b) if b.len() == row.message.blocks.len() => b.clone(),
-            _ => row
-                .message
-                .blocks
-                .iter()
-                .map(pack_block)
-                .collect::<Result<_>>()?,
+            Some(b) if b.len() == row.message.blocks.len() => b,
+            _ => {
+                prepared = row
+                    .message
+                    .blocks
+                    .iter()
+                    .map(pack_block)
+                    .collect::<Result<Vec<_>>>()?;
+                &prepared
+            }
         };
         written += u64::from(
             ctx.write_message(
                 row,
                 session_pk,
                 hash,
-                &bodies,
+                bodies,
                 if let Some(from) = p.order_from {
                     (from + i as u64) as i64
                 } else if p.snapshot.is_some() {
@@ -85,13 +89,15 @@ pub(super) fn write_rows(
                 } else {
                     row.offset as i64
                 },
-                p.output
+                match p
+                    .output
                     .sessions
                     .iter()
                     .find(|s| s.id == row.message.session)
-                    .map_or(ctx.session_kind(session_pk)? == "main", |s| {
-                        s.kind == polylogue_model::SessionKind::Main
-                    }),
+                {
+                    Some(session) => session.kind == polylogue_model::SessionKind::Main,
+                    None => ctx.session_kind(session_pk)? == "main",
+                },
             )?,
         );
         if let Some(at) = ms(row.message.at) {
@@ -109,11 +115,15 @@ pub(super) fn write_rows(
     }
     for (i, e) in p.output.events.iter().enumerate() {
         let session_pk = ctx.session_pk(&mut sessions, &e.session)?;
+        let prepared;
         let packed = match p.events.get(i) {
-            Some(prepared) if p.events.len() == p.output.events.len() => prepared.clone(),
-            _ => pack_event(e)?,
+            Some(prepared) if p.events.len() == p.output.events.len() => prepared,
+            _ => {
+                prepared = pack_event(e)?;
+                &prepared
+            }
         };
-        ctx.write_event(e, session_pk, &packed, p.order_from)?;
+        ctx.write_event(e, session_pk, packed, p.order_from)?;
         if ctx.snapshot_current(session_pk)? {
             crate::live::apply(tx, session_pk, e, counter)?;
         }

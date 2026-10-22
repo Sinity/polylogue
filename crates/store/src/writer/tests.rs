@@ -902,3 +902,6 @@ mod reparse;
 mod metadata;
 
 mod statement_cache;
+
+#[cfg(test)]
+mod prepared;
