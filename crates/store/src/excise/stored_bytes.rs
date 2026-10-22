@@ -247,53 +247,49 @@ pub(super) fn blank_document(
     delete_files: &mut Vec<BlobHash>,
     done: &mut Excised,
 ) -> Result<u64> {
-    let blobs: Vec<Vec<u8>> = t
-        .archive
-        .prepare("SELECT DISTINCT blob FROM extent WHERE input = ?1")?
-        .query_map([input], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
+    let matches = erasures::Erasures::new()?;
+    matches.freeze_literals(t.archive, input)?;
     texts.reset_found()?;
     let mut spans_json = Vec::new();
-    for hash in blobs {
-        let Ok(arr) = <[u8; 32]>::try_from(hash.as_slice()) else {
-            continue;
-        };
+    matches.literal_blobs(|hash, ranges| {
+        ranges.begin()?;
+        let arr = <[u8; 32]>::try_from(hash)
+            .map_err(|_| StoreError::Invalid("invalid source blob hash".into()))?;
         let old = BlobHash(arr);
         let bytes = plain_blob::PlainBlob::load(t, input, old)?;
-        let mut ranges = Vec::new();
         texts.visit(MIN_BLANKED, |text| {
-            let mut hits = Vec::new();
+            let mut found = false;
             for needle in quoted(text) {
-                hits.extend(bytes.find(&needle)?);
+                bytes.find(&needle, |start, end| {
+                    // Keep quotes, and preserve every hit for counts and observations.
+                    ranges.insert(start + 1, end - 1)?;
+                    found = true;
+                    Ok(())
+                })?;
             }
-            if !hits.is_empty() {
+            if found {
                 texts.found(text)?;
             }
-            // The string's inside only: the quotes keep the document valid.
-            ranges.extend(hits.into_iter().map(|(s, e)| (s + 1, e - 1)));
             Ok(())
         })?;
-        if ranges.is_empty() {
-            continue;
+        let count = ranges.finish()?;
+        if count == 0 {
+            return Ok(());
         }
-        ranges.sort();
-        *done.inputs_overwritten.entry(input.to_owned()).or_default() += ranges.len() as u64;
+        *done.inputs_overwritten.entry(input.to_owned()).or_default() += count;
         if req.dry_run {
-            continue;
+            return Ok(());
         }
-        for &(s, e) in &ranges {
-            spans_json.push(serde_json::json!([hex(&hash), s, e - s]));
-        }
-        if let Some(gone) = bytes.replace(t, &old, |blank| {
-            for &(start, end) in &ranges {
-                blank(start, end)?;
-            }
+        ranges.ranges(|start, end| {
+            spans_json.push(serde_json::json!([hex(hash), start, end - start]));
             Ok(())
-        })? {
+        })?;
+        if let Some(gone) = bytes.replace(t, &old, |blank| ranges.ranges(blank))? {
             refused.blobs.push(hex(&gone.hash));
             delete_files.extend(gone.file);
         }
-    }
+        Ok(())
+    })?;
     if !req.dry_run && !spans_json.is_empty() {
         insert_excised_observations(t, input, req, Some(&serde_json::Value::Array(spans_json)))?;
     }

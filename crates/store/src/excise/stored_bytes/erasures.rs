@@ -3,6 +3,7 @@ use crate::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
 mod cursor;
+mod literal;
 
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Self {

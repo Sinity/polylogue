@@ -18,7 +18,7 @@ fn every_chunk_size_preserves_nonoverlapping_literal_matches() {
                 let expected = super::super::find_all(hay, &[needle.to_vec()]);
                 for chunk in 1..=hay.len() + 2 {
                     assert_eq!(
-                        literal_ranges(hay, needle, chunk).unwrap(),
+                        collected(hay, needle, chunk).unwrap(),
                         expected,
                         "hay={hay:?},needle={needle:?},chunk={chunk}"
                     );
@@ -35,7 +35,7 @@ fn long_patterns_and_partial_or_failed_reads_keep_their_meaning() {
     hay.push(b'y');
     hay.extend_from_slice(&needle);
     assert_eq!(
-        literal_ranges(hay.as_slice(), &needle, 8192).unwrap(),
+        collected(hay.as_slice(), &needle, 8192).unwrap(),
         [(0, 70_000), (70_001, 140_001)]
     );
     struct Fails(bool);
@@ -49,5 +49,17 @@ fn long_patterns_and_partial_or_failed_reads_keep_their_meaning() {
             Ok(1)
         }
     }
-    assert!(literal_ranges(Fails(false), b"x", 4).is_err());
+    assert!(collected(Fails(false), b"x", 4).is_err());
+    assert!(
+        matches!(literal_ranges(b"xx".as_slice(),b"x",1,|_,_| Err(StoreError::NotFound("synthetic".into()))), Err(StoreError::NotFound(message)) if message=="synthetic")
+    );
+}
+
+fn collected(reader: impl Read, needle: &[u8], chunk: usize) -> Result<Vec<(usize, usize)>> {
+    let mut ranges = Vec::new();
+    literal_ranges(reader, needle, chunk, |start, end| {
+        ranges.push((start, end));
+        Ok(())
+    })?;
+    Ok(ranges)
 }
