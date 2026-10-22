@@ -26,6 +26,30 @@ pub(super) fn install<R: Read>(
     let mut inserted = 0;
     if let Some(target) = target {
         rows.each(|value| {
+            let table = value["table"].as_str().unwrap_or("");
+            let key = match table {
+                "observation" if unit.unit.kind != "observation" => {
+                    value["row"]["id"].as_str().map(str::to_owned)
+                }
+                "delivery_event" if unit.unit.kind != "delivery_event" => {
+                    Some(serde_json::to_string(&(
+                        value["row"]["delivery"].clone(),
+                        value["row"]["what"].clone(),
+                        value["row"]["at"].clone(),
+                    ))?)
+                }
+                _ => None,
+            };
+            if let Some(key) = key {
+                let superseded: bool = scratch.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM selected WHERE kind=?1 AND key=?2)",
+                    [table, &key],
+                    |r| r.get(0),
+                )?;
+                if superseded {
+                    return Ok(());
+                }
+            }
             inserted += super::super::apply_row(target, value)?;
             Ok(())
         })?;
@@ -115,6 +139,41 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
             Ok(())
         })?;
     }
+    if unit.unit.kind == "observation" {
+        rows.each(|value| {
+            let row = &value["row"];
+            if value["table"] == "observation" && row["id"] == unit.unit.key {
+                if !row["revision"].is_null() {
+                    let number = row["revision"]
+                        .as_i64()
+                        .filter(|n| *n > 0)
+                        .ok_or_else(|| invalid("observation has an invalid revision"))?;
+                    let input = row["input"]
+                        .as_str()
+                        .ok_or_else(|| invalid("observation input missing"))?;
+                    let key = format!("{input}/{number}");
+                    // Historical observations survive excision. Its selected
+                    // revision tombstone retains the referenced identity.
+                    let retained: bool = scratch.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM selected WHERE kind='revision' AND key=?1)",
+                        [key],
+                        |r| r.get(0),
+                    )?;
+                    if !retained {
+                        return Err(invalid("observation names no selected revision"));
+                    }
+                }
+                for kind in ["input", "machine"] {
+                    let id = row[kind]
+                        .as_str()
+                        .ok_or_else(|| invalid("observation dependency missing"))?;
+                    scratch.execute("INSERT OR IGNORE INTO allowed VALUES (?1,?2)", [kind, id])?;
+                }
+            }
+            Ok(())
+        })?;
+    }
+    let mut observation_dependencies = [false; 2];
     let mut owning = 0;
     let mut count = 0;
     rows.each(|value| {
@@ -124,6 +183,37 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
             .ok_or_else(|| invalid("row names no table"))?;
         let row = &value["row"];
         let is_owner = match unit.unit.kind.as_str() {
+            "delivery_event" => {
+                owning += 1;
+                table == "delivery_event"
+                    && row["commit_seq"] == unit.unit.commit_seq
+                    && serde_json::to_string(&(
+                        row["delivery"].clone(),
+                        row["what"].clone(),
+                        row["at"].clone(),
+                    ))? == unit.unit.key
+            }
+            "observation" => match table {
+                "observation" => {
+                    owning += 1;
+                    row["id"] == unit.unit.key && row["commit_seq"] == unit.unit.commit_seq
+                }
+                "input" | "machine" => match row["id"].as_str() {
+                    Some(id) => {
+                        let allowed: bool = scratch.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM allowed WHERE kind=?1 AND id=?2)",
+                            [table, id],
+                            |r| r.get(0),
+                        )?;
+                        if allowed {
+                            observation_dependencies[usize::from(table == "machine")] = true;
+                        }
+                        allowed
+                    }
+                    None => false,
+                },
+                _ => false,
+            },
             "note" => match table {
                 "note" => {
                     owning += 1;
@@ -137,7 +227,12 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
                     owning += 1;
                     row["id"] == unit.unit.key && row["commit_seq"] == unit.unit.commit_seq
                 }
-                "delivery_event" => row["delivery"] == unit.unit.key,
+                "delivery_event" => {
+                    row["delivery"] == unit.unit.key
+                        && row
+                            .get("commit_seq")
+                            .is_none_or(|value| value.as_i64() == Some(0))
+                }
                 _ => false,
             },
             "setting" => {
@@ -163,7 +258,13 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
                     }
                     row["id"] == unit.unit.key && row["commit_seq"] == unit.unit.commit_seq
                 }
-                "observation" => row["class"] == "excised" && row["excision"] == unit.unit.key,
+                "observation" => {
+                    row["class"] == "excised"
+                        && row["excision"] == unit.unit.key
+                        && row
+                            .get("commit_seq")
+                            .is_none_or(|value| value.as_i64() == Some(0))
+                }
                 "input" | "machine" => match row["id"].as_str() {
                     Some(id) => scratch.query_row(
                         "SELECT EXISTS(SELECT 1 FROM allowed WHERE kind=?1 AND id=?2)",
@@ -185,7 +286,13 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
                     }
                     "input" => row["id"] == input,
                     "extent" => revision.as_ref().expect("revision prepared").extent(row),
-                    "observation" => row["input"] == input && row["revision"] == number,
+                    "observation" => {
+                        row["input"] == input
+                            && row["revision"] == number
+                            && row
+                                .get("commit_seq")
+                                .is_none_or(|value| value.as_i64() == Some(0))
+                    }
                     "blob" | "machine" => revision
                         .as_ref()
                         .expect("revision prepared")
@@ -205,6 +312,9 @@ fn validate(unit: &RestoreUnit, rows: &mut Rows, scratch: &Connection) -> Result
     }
     if owning != 1 {
         return Err(invalid("selected batch has no unique owning row"));
+    }
+    if unit.unit.kind == "observation" && observation_dependencies.iter().any(|present| !present) {
+        return Err(invalid("observation batch omits its input or machine"));
     }
     if let Some(revision) = revision {
         revision.finish()?;

@@ -150,6 +150,15 @@ pub(super) fn insert_blob(tx: &Transaction<'_>, piece: &Piece) -> Result<()> {
     Ok(())
 }
 
+/// New IDs sort by insertion within one transaction's shared sequence.
+/// Restored IDs remain opaque; migrations order those facts by their rowid.
+pub(crate) fn observation_id(tx: &Connection, seq: i64, input: &str) -> Result<String> {
+    let ordinal: i64 = tx
+        .prepare_cached("SELECT COALESCE(MAX(rowid),0)+1 FROM observation")?
+        .query_row([], |r| r.get(0))?;
+    Ok(format!("{seq:016x}-{ordinal:016x}-{input}"))
+}
+
 pub(super) fn insert_observation(
     tx: &Transaction<'_>,
     b: &Batch,
@@ -165,11 +174,11 @@ pub(super) fn insert_observation(
     let f = o.facts;
     tx.prepare_cached(
         "INSERT INTO observation(id, input, machine, path, class, revision, length, device, inode,
-             size, mtime_ns, ctime_ns, polylogue_version, seen_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+             size, mtime_ns, ctime_ns, polylogue_version, seen_at, commit_seq)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
     )?
     .execute(params![
-        format!("{:012x}-{:08x}-{}", o.seen_at_ms, seq, b.input.id),
+        observation_id(tx, seq, &b.input.id)?,
         b.input.id,
         o.machine,
         o.path,
@@ -183,6 +192,7 @@ pub(super) fn insert_observation(
         f.map(|f| f.ctime_ns as i64),
         env!("CARGO_PKG_VERSION"),
         o.seen_at_ms,
+        seq,
     ])?;
     Ok(())
 }

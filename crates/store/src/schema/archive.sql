@@ -93,7 +93,7 @@ CREATE INDEX extent_blob ON extent(blob);
 -- is the chain of the revision its location's latest observation produced or
 -- confirmed, for every kind of location.
 CREATE TABLE observation (
-  id            TEXT PRIMARY KEY,        -- UUIDv7
+  id            TEXT PRIMARY KEY,        -- opaque observation identity
   input         TEXT NOT NULL REFERENCES input(id),
   machine       TEXT NOT NULL,           -- machine.id; paths from two machines never collide
   path          TEXT NOT NULL,           -- filesystem path, 'drive:<file id>', 'repo-lookup:<dir>', 'agentctl-job:<id>',

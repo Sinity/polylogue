@@ -1,10 +1,10 @@
 //! Units of `archive.db` rows, as published to Sinex and restored from it.
 //!
 //! A unit is everything one archive write that Sinex must hold whole:
-//! a revision with its input, the extents it added, the observations that
-//! produced it and the blob rows (without inline bytes) it cites; a note with
-//! its targets and relations; an excision; a setting; a delivery with its
-//! events. Units are ordered by the archive's write counter (`commit_seq`).
+//! a revision with its input, extents and blob rows (without inline bytes);
+//! a note with its targets and relations; an excision; a setting; a delivery;
+//! an observation; or a delivery event. Appendable facts own separate units.
+//! Units are ordered by the archive's write counter (`commit_seq`).
 //! Rows travel as JSON lines, one `{"table": …, "row": {…}}` per line, with
 //! every column under its own name: integers and reals as numbers, text as
 //! strings, blobs as `{"hex": …}`, null as null.
@@ -30,8 +30,14 @@ use std::io::Seek;
 pub struct Unit {
     pub commit_seq: i64,
     pub kind: String,
-    /// `<input>/<number>` for a revision, the row ID otherwise.
+    /// `<input>/<number>` for a revision, a JSON `[delivery,what,at]` tuple
+    /// for a delivery event, and the row ID otherwise.
     pub key: String,
+}
+
+fn delivery_event_key(unit: &Unit) -> crate::Result<(String, String, i64)> {
+    serde_json::from_str(&unit.key)
+        .map_err(|_| crate::StoreError::Invalid("invalid delivery event unit key".into()))
 }
 
 /// Units strictly after `after`, in write order.
@@ -50,6 +56,8 @@ fn units(archive: &Connection, after: i64) -> crate::Result<Vec<Unit>> {
          UNION ALL SELECT commit_seq, 'excision', id FROM excision WHERE commit_seq > ?1
          UNION ALL SELECT commit_seq, 'setting', id FROM setting WHERE commit_seq > ?1
          UNION ALL SELECT commit_seq, 'delivery', id FROM delivery WHERE commit_seq > ?1
+                UNION ALL SELECT commit_seq,'observation',id FROM observation WHERE commit_seq>?1
+                UNION ALL SELECT commit_seq,'delivery_event',json_array(delivery,what,at) FROM delivery_event WHERE commit_seq>?1
          ORDER BY 1, 2, 3",
     )?;
     let rows = stmt.query_map([after], |r| {

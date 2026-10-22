@@ -4,6 +4,9 @@ use std::io::Cursor;
 fn source() -> Connection {
     let source = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&source).unwrap();
+    source
+        .execute_batch(include_str!("../../schema/migrations/005-append-facts.sql"))
+        .unwrap();
     source.execute_batch("PRAGMA foreign_keys=ON;
         INSERT INTO input VALUES ('input1','synthetic-text');
         INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input1',1,'first',1,3,1);
@@ -89,6 +92,9 @@ fn names() -> Vec<String> {
 fn target() -> Connection {
     let target = Connection::open_in_memory().unwrap();
     crate::schema::create_archive(&target).unwrap();
+    target
+        .execute_batch(include_str!("../../schema/migrations/005-append-facts.sql"))
+        .unwrap();
     target.execute_batch("PRAGMA foreign_keys=ON; INSERT INTO note(id,root,kind,value,author,machine,created_at,commit_seq) VALUES ('kept','kept','note','unchanged','operator','test',1,2);").unwrap();
     target
 }
