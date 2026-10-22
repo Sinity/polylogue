@@ -1,7 +1,7 @@
 //! Encoding of database row bodies. Original-input blob encoding belongs to `blobs`.
 
 use crate::{Result, StoreError};
-use polylogue_model::{Block, Event, Timestamp};
+use polylogue_model::{Block, Event, Message, MessageId, Timestamp};
 use serde::{Serialize, de::DeserializeOwned};
 
 // Fast row-body compression; the format remains readable across compression levels.
@@ -25,6 +25,34 @@ pub(crate) fn unpack_text(packed: &[u8]) -> Result<String> {
 
 pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(pack_bytes(&serde_json::to_vec(value)?)?)
+}
+
+/// One message's identity and packed rows, prepared together before its parsed
+/// payloads are released. The writer borrows these bytes without repacking.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedMessage {
+    pub(crate) id: MessageId,
+    pub(crate) hash: [u8; 32],
+    pub(crate) attrs: Vec<u8>,
+    pub(crate) blocks: Vec<Vec<u8>>,
+}
+
+impl PreparedMessage {
+    pub(crate) fn new(message: &Message) -> Result<Self> {
+        let hash = *blake3::hash(&serde_json::to_vec(message)?).as_bytes();
+        let mut attrs = message.clone();
+        attrs.blocks.clear();
+        Ok(Self {
+            id: message.id.clone(),
+            hash,
+            attrs: pack_json(&attrs)?,
+            blocks: message
+                .blocks
+                .iter()
+                .map(pack_block)
+                .collect::<Result<_>>()?,
+        })
+    }
 }
 
 pub(crate) fn unpack_json<T: DeserializeOwned>(packed: &[u8]) -> Result<T> {

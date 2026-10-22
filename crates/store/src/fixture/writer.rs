@@ -236,10 +236,7 @@ impl WriterWorld {
                 parsed_upto: self.offset,
                 parser_version: 1,
                 at_end: true,
-                hashes: vec![],
-                packed: Default::default(),
-                bodies: vec![],
-                events: vec![],
+                prepared: Default::default(),
             }],
         };
         self.writer.send(batch).expect("send the batch");

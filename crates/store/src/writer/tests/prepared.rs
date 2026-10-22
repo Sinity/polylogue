@@ -94,7 +94,7 @@ fn supplied_session_kinds_skip_the_database_fallback() {
 
 #[test]
 fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
-    for mode in ["unprepared", "prepared", "incomplete"] {
+    for mode in ["unprepared", "prepared", "repeated"] {
         let w = world();
         let mut message = text_message(
             "answer",
@@ -111,6 +111,17 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             command: Some("printf x".into()),
             path: None,
         });
+        message.blocks.push(Block::ToolResult {
+            call_id: Some("call-1".into()),
+            outcome: ToolOutcome::Ok,
+            output: Some("Synthetic Ω output".into()),
+            data: Some(serde_json::json!({"result":[false, "Ω"]})),
+            attachments: vec![],
+        });
+        message.blocks.push(Block::Other {
+            type_name: "synthetic".into(),
+            data: serde_json::json!({"opaque":[null, "Ω"]}),
+        });
         let event = Event {
             session: sid("s"),
             kind: "notice".into(),
@@ -123,11 +134,30 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
         b.parse[0].output.events.push(event.clone());
         match mode {
             "prepared" => b.parse[0].prepare(),
-            "incomplete" => {
-                b.parse[0].bodies = vec![vec![]];
-                b.parse[0].events = vec![("wrong event".into(), vec![]); 2];
+            "repeated" => {
+                b.parse[0].prepare();
+                b.parse[0].prepare();
             }
             _ => {}
+        }
+        if mode != "unprepared" {
+            let prepared = &b.parse[0].prepared.messages[0];
+            let mut attrs = message.clone();
+            attrs.blocks.clear();
+            assert_eq!(
+                prepared.hash,
+                *blake3::hash(&serde_json::to_vec(&message).unwrap()).as_bytes()
+            );
+            assert_eq!(prepared.attrs, crate::encoding::pack_json(&attrs).unwrap());
+            assert_eq!(
+                prepared.blocks,
+                message
+                    .blocks
+                    .iter()
+                    .map(pack_block)
+                    .collect::<Result<Vec<_>>>()
+                    .unwrap()
+            );
         }
         w.writer.send(b).unwrap();
         let report = w.writer.flush().unwrap();
@@ -144,4 +174,151 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
         assert_eq!(versions.len(), 1, "{mode}");
         assert_eq!(versions[0].message, message, "{mode}");
     }
+}
+
+#[test]
+fn filtering_prepared_messages_keeps_original_hashes_and_structured_payloads() {
+    for removed in [vec![0], vec![1], vec![0, 1, 2]] {
+        let w = world();
+        let messages = (0..3)
+            .map(|n| {
+                let mut m = text_message(
+                    &format!("m{n}"),
+                    "s",
+                    Role::Assistant,
+                    "Synthetic text",
+                    Some("end_turn"),
+                );
+                m.blocks.push(Block::Other {
+                    type_name: "synthetic".into(),
+                    data: serde_json::json!({"message":n,"nested":[false,"Ω"]}),
+                });
+                m
+            })
+            .collect::<Vec<_>>();
+        let mut b = batch(
+            "input1",
+            0,
+            0,
+            messages
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(i, m)| row(i as u64, m))
+                .collect(),
+            &["s"],
+        );
+        b.parse[0].prepare();
+        let mut refused = crate::excise::Refused::default();
+        for n in &removed {
+            refused.messages.insert(messages[*n].id.to_string());
+        }
+        let mut filtered = without_refused(&b, &refused);
+        filtered.parse[0].prepare();
+        w.writer.send(filtered).unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let expected = messages
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !removed.contains(i))
+            .map(|(_, m)| m.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(reader.messages(&sid("s"), false).unwrap(), expected);
+        for m in expected {
+            let versions = reader.message_versions(&m.id).unwrap();
+            assert_eq!(versions.len(), 1);
+            assert_eq!(versions[0].message, m);
+        }
+    }
+}
+
+#[test]
+fn misaligned_prepared_rows_refuse_before_writing() {
+    for change_id in [false, true] {
+        let w = world();
+        let mut b = batch(
+            "input1",
+            0,
+            0,
+            vec![row(
+                1,
+                text_message("m", "s", Role::User, "Synthetic", None),
+            )],
+            &["s"],
+        );
+        b.parse[0].prepare();
+        if change_id {
+            b.parse[0].output.messages[0].message.id =
+                polylogue_model::MessageId::parse("claude-code:other").unwrap();
+        } else {
+            b.parse[0].prepared.messages[0].blocks.clear();
+        }
+        b.parse[0].prepare();
+        w.writer.send(b).unwrap();
+        assert!(!w.writer.flush().unwrap().errors.is_empty());
+        let pool = ReadPool::open(&w.archive).unwrap();
+        assert_eq!(
+            pool.reader()
+                .unwrap()
+                .query("SELECT count(*) AS n FROM message", &[])
+                .unwrap()[0]["n"],
+            0
+        );
+    }
+}
+
+#[test]
+fn retiring_a_prepared_snapshot_promotes_the_complete_losing_payload() {
+    let w = world();
+    let mut preferred = text_message("m", "s", Role::Assistant, "Preferred", Some("end_turn"));
+    preferred.blocks.push(Block::Other {
+        type_name: "synthetic".into(),
+        data: serde_json::json!({"winner":true}),
+    });
+    let mut alternative = preferred.clone();
+    alternative.blocks[1] = Block::Other {
+        type_name: "synthetic".into(),
+        data: serde_json::json!({"alternative":[null,"Ω"]}),
+    };
+    for (input, rank, message) in [
+        ("preferred", 0, preferred.clone()),
+        ("alternative", 1, alternative.clone()),
+    ] {
+        let mut b = batch(input, rank, 0, vec![row(1, message)], &["s"]);
+        if rank == 0 {
+            b.parse[0].snapshot = Some(polylogue_model::Snapshot {
+                start: 0,
+                end: 100,
+                covered: vec![sid("s")],
+                complete: true,
+            });
+        }
+        b.parse[0].prepare();
+        w.writer.send(b).unwrap();
+    }
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let mut empty = batch("preferred", 0, 100, vec![], &["s"]);
+    empty.parse[0].snapshot = Some(polylogue_model::Snapshot {
+        start: 100,
+        end: 200,
+        covered: vec![sid("s")],
+        complete: true,
+    });
+    empty.parse[0].prepare();
+    w.writer.send(empty).unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader.messages(&sid("s"), false).unwrap(),
+        [alternative.clone()]
+    );
+    let versions = reader.message_versions(&alternative.id).unwrap();
+    assert_eq!(versions.len(), 2);
+    assert!(versions.iter().any(|v| v.message == preferred));
+    assert!(versions.iter().any(|v| v.message == alternative));
 }

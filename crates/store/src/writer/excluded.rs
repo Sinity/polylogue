@@ -50,32 +50,13 @@ pub(super) fn without_refused(b: &Batch, r: &crate::excise::Refused) -> Batch {
             i += 1;
             keep_msgs[i - 1]
         });
-        if p.hashes.len() == keep_msgs.len() {
-            let mut i = 0;
-            p.hashes.retain(|_| {
-                i += 1;
-                keep_msgs[i - 1]
-            });
-        }
-        if p.bodies.len() == keep_msgs.len() {
-            let mut i = 0;
-            p.bodies.retain(|_| {
-                i += 1;
-                keep_msgs[i - 1]
-            });
-        }
+        p.prepared.retain_messages(&keep_msgs);
         let mut i = 0;
         p.output.events.retain(|_| {
             i += 1;
             keep_events[i - 1]
         });
-        if p.events.len() == keep_events.len() {
-            let mut i = 0;
-            p.events.retain(|_| {
-                i += 1;
-                keep_events[i - 1]
-            });
-        }
+        p.prepared.retain_events(&keep_events);
         p.output
             .sessions
             .retain(|s| !r.sessions.contains(&s.id.to_string()));

@@ -15,6 +15,7 @@ pub(super) fn write_rows(
     counter: i64,
     bulk: bool,
 ) -> Result<u64> {
+    p.prepared.validate(&p.output)?;
     tx.prepare_cached("INSERT INTO input_ref(id,format) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format")?
         .execute(params![&b.input.id,&b.input.format])?;
     let input_pk: i64 = tx
@@ -42,7 +43,7 @@ pub(super) fn write_rows(
         rank: i64::from(b.input.route_rank),
         parser_version: i64::from(p.parser_version),
         counter,
-        packed: &p.packed,
+        packed: &p.prepared.texts,
         bulk,
     };
     let affected = ctx.begin_snapshot(p)?;
@@ -58,30 +59,19 @@ pub(super) fn write_rows(
     let mut activity: HashMap<i64, i64> = HashMap::new();
     for (i, row) in p.output.messages.iter().enumerate() {
         let session_pk = ctx.session_pk(&mut sessions, &row.message.session)?;
-        let hash = p
-            .hashes
-            .get(i)
-            .copied()
-            .unwrap_or_else(|| message_hash(&row.message));
-        let prepared;
-        let bodies = match p.bodies.get(i) {
-            Some(b) if b.len() == row.message.blocks.len() => b,
-            _ => {
-                prepared = row
-                    .message
-                    .blocks
-                    .iter()
-                    .map(pack_block)
-                    .collect::<Result<Vec<_>>>()?;
-                &prepared
+        let fallback;
+        let prepared = match p.prepared.messages.get(i) {
+            Some(prepared) => prepared,
+            None => {
+                fallback = PreparedMessage::new(&row.message)?;
+                &fallback
             }
         };
         written += u64::from(
             ctx.write_message(
                 row,
                 session_pk,
-                hash,
-                bodies,
+                prepared,
                 if let Some(from) = p.order_from {
                     (from + i as u64) as i64
                 } else if p.snapshot.is_some() {
@@ -116,8 +106,8 @@ pub(super) fn write_rows(
     for (i, e) in p.output.events.iter().enumerate() {
         let session_pk = ctx.session_pk(&mut sessions, &e.session)?;
         let prepared;
-        let packed = match p.events.get(i) {
-            Some(prepared) if p.events.len() == p.output.events.len() => prepared,
+        let packed = match p.prepared.events.get(i) {
+            Some(prepared) if p.prepared.events.len() == p.output.events.len() => prepared,
             _ => {
                 prepared = pack_event(e)?;
                 &prepared
@@ -380,8 +370,7 @@ impl Ctx<'_, '_> {
         &self,
         row: &MessageRow,
         session_pk: i64,
-        hash: [u8; 32],
-        bodies: &[Vec<u8>],
+        prepared: &PreparedMessage,
         position: i64,
         main: bool,
     ) -> Result<bool> {
@@ -400,7 +389,7 @@ impl Ctx<'_, '_> {
             main,
             complete: !(m.role == Role::Assistant && m.stop_reason.is_none()),
             rank: self.rank,
-            hash: hash.to_vec(),
+            hash: prepared.hash.to_vec(),
         };
         let cur = self
             .tx
@@ -439,10 +428,10 @@ impl Ctx<'_, '_> {
         let Some((pk, (order_input, order_seq, order_id), preferred, (cur_session, cur_kind))) =
             cur
         else {
-            crate::versions::retain(self.tx, &new.hash, m, bodies, self.packed, self.bulk)?;
+            crate::versions::retain(self.tx, prepared, m, self.packed, self.bulk)?;
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, position))?;
             self.upsert_source(pk, &new, true)?;
-            self.insert_blocks(pk, session_pk, m, bodies)?;
+            self.insert_blocks(pk, session_pk, m, &prepared.blocks)?;
             self.tx
                 .prepare_cached("UPDATE message SET present=?2 WHERE pk=?1")?
                 .execute(params![pk, i64::from(new.current)])?;
@@ -466,7 +455,7 @@ impl Ctx<'_, '_> {
         }) {
             return Ok(false);
         }
-        crate::versions::retain(self.tx, &new.hash, m, bodies, self.packed, self.bulk)?;
+        crate::versions::retain(self.tx, prepared, m, self.packed, self.bulk)?;
         if !new.current {
             self.upsert_source(pk, &new, false)?;
             return Ok(false);
@@ -518,7 +507,7 @@ impl Ctx<'_, '_> {
         self.tx
             .execute("UPDATE message SET present = 1 WHERE pk = ?1", [pk])?;
         if !unchanged {
-            self.insert_blocks(pk, session_pk, m, bodies)?;
+            self.insert_blocks(pk, session_pk, m, &prepared.blocks)?;
         }
         Ok(true)
     }

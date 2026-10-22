@@ -369,21 +369,15 @@ fn run(
                             }
                         }
                         out.parsed_upto = job.start + step.consumed;
-                        let mut p = ParseStep {
-                            order_from: parser.is_document().then_some(0),
-                            reset: job.start + step.start == 0,
-                            snapshot: step.snapshot,
-                            output: step.output,
-                            accounting: step.accounting,
-                            start: job.start + step.start,
-                            parsed_upto: job.start + step.consumed,
-                            parser_version: job.origin.parser_version,
-                            at_end: job.at_end,
-                            hashes: Vec::new(),
-                            packed: Default::default(),
-                            bodies: Vec::new(),
-                            events: Vec::new(),
-                        };
+                        let mut p = ParseStep::new(
+                            step.output,
+                            step.accounting,
+                            job.start + step.start..job.start + step.consumed,
+                            job.origin.parser_version,
+                            job.at_end,
+                        );
+                        p.order_from = parser.is_document().then_some(0);
+                        p.snapshot = step.snapshot;
                         // Packing for the writer is store work, not parsing.
                         let packed = std::time::Instant::now();
                         p.prepare();

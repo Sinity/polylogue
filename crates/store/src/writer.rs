@@ -31,8 +31,8 @@ mod rows;
 pub(crate) use rows::promote_current;
 mod search;
 
+use crate::encoding::PreparedMessage;
 use crate::encoding::{block_text, pack_block, pack_event, unpack_block};
-use batch::message_hash;
 pub use batch::{Batch, InFlight, InputKey, Observation, ParseStep, WriteReport};
 use bytes::*;
 use excluded::*;
