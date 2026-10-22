@@ -31,8 +31,16 @@ single complete replacement blob. Citation endpoints are checked across the
 whole stream; array separators, lengths and newlines retain their existing
 rules. Scratch errors abort the operation.
 
-The largest individual JSON record, one blob's range list, logical source
-spans, message-ID lists and canonical JSON reports can still exceed memory.
+Logical citations selected before index-row deletion are kept in a private
+SQLite catalog with a 1 MiB cache and mmap disabled. Input and chain traversal,
+chain membership and range checks use that catalog through replacement.
+Counts preserve equal citations contributed by separate selected sessions;
+physical byte requests are deduplicated separately. Whole-input removal clears
+its partial citations before reporting or rewriting. Scratch failures abort the
+operation, and the private text set uses one operation transaction.
+
+The largest individual JSON record, one blob's range list, selected
+session/message-ID lists and canonical JSON reports can still exceed memory.
 Shared-document text blanking scans the same verified scratch with a literal
 finder, retaining one quoted pattern and its chunk overlap. It preserves both
 supported JSON spellings and complete-string boundaries. The frozen blob-ID

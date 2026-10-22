@@ -111,3 +111,33 @@ fn failed_lookup_retries_in_the_same_engine_from_committed_progress() {
     assert_eq!(w.texts("retained"), ["admitted after retry"]);
     fault::clear();
 }
+
+#[test]
+fn logical_span_failures_roll_back_before_a_shared_input_is_replaced() {
+    for point in ["excision_spans.insert", "excision_spans.read"] {
+        fault::clear();
+        let w = ClaudeHome::new();
+        w.append(
+            "shared.jsonl",
+            &(user("one", "removed", "removed shared body")
+                + &user("two", "kept", "kept shared body")),
+        );
+        let (mut engine, _lock) = w.engine(64 << 20);
+        assert!(engine.converge().unwrap().errors.is_empty());
+        let observations = w.count("SELECT count(*) AS n FROM a.observation");
+        fault::arm(point, "", Action::Fail, 0, 1);
+        let error = engine.excise(remove("removed")).unwrap_err();
+        assert!(error.to_string().contains(point), "{error}");
+        assert_eq!(w.texts("removed"), ["removed shared body"]);
+        assert_eq!(w.texts("kept"), ["kept shared body"]);
+        assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
+        assert_eq!(
+            w.count("SELECT count(*) AS n FROM a.observation"),
+            observations
+        );
+        engine.excise(remove("removed")).unwrap();
+        assert!(w.texts("removed").is_empty());
+        assert_eq!(w.texts("kept"), ["kept shared body"]);
+    }
+    fault::clear();
+}

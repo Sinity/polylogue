@@ -153,7 +153,7 @@ fn record_replacement(
 pub(super) fn overwrite(
     t: &Transactions<'_, '_>,
     input: &str,
-    spans: &[Span],
+    spans: &Spans,
     req: &ExciseRequest,
     refused: &mut RefusedJson,
     delete_files: &mut Vec<BlobHash>,
@@ -164,7 +164,7 @@ pub(super) fn overwrite(
         "SELECT offset, length, blob, blob_offset FROM extent
          WHERE input = ?1 AND chain = ?2 AND offset < ?4 AND offset + length > ?3",
     )?;
-    for s in spans {
+    spans.visit(input, |s| {
         let rows = ext.query_map(params![input, s.chain, s.start, s.end], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -179,7 +179,8 @@ pub(super) fn overwrite(
             let to = s.end.min(offset + length) - offset + blob_offset;
             erasures.request(&blob, from as usize, to as usize)?;
         }
-    }
+        Ok(())
+    })?;
     records::preflight(t, input, spans, &erasures, sessions)?;
     if req.dry_run {
         return Ok(());
