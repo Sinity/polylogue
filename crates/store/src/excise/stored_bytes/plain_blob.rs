@@ -32,10 +32,10 @@ impl PlainBlob {
 
     pub fn plan(
         &self,
-        ranges: &[(usize, usize)],
-    ) -> std::result::Result<super::super::record_ranges::Erasure, super::super::record_ranges::Error>
-    {
-        super::super::record_ranges::plan_file(&self.0, ranges)
+        erasures: &super::erasures::Erasures,
+        hash: &[u8],
+    ) -> std::result::Result<(usize, usize), super::super::record_ranges::Error> {
+        erasures.plan_blob(hash, &self.0)
     }
 
     pub fn find(&self, needle: &[u8]) -> Result<Vec<(usize, usize)>> {
@@ -48,11 +48,11 @@ impl PlainBlob {
         mut self,
         t: &Transactions<'_, '_>,
         hash: &BlobHash,
-        ranges: &[(usize, usize)],
+        visit_ranges: impl FnOnce(&mut dyn FnMut(usize, usize) -> Result<()>) -> Result<()>,
     ) -> Result<Option<Gone>> {
         let length = self.0.metadata()?.len();
         let mut buffer = [0; 64 * 1024];
-        for &(start, end) in ranges {
+        visit_ranges(&mut |start, end| {
             if start > end || end as u64 > length {
                 return Err(StoreError::Invalid(
                     "replacement range is outside its blob".into(),
@@ -70,7 +70,8 @@ impl PlainBlob {
                 self.0.write_all_at(&buffer[..count], at as u64)?;
                 at += count;
             }
-        }
+            Ok(())
+        })?;
         self.0.seek(SeekFrom::Start(0))?;
         let piece = Piece::prepare_reader(t.store, self.0)?;
         record_replacement(t, hash, piece)

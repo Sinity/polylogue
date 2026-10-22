@@ -147,6 +147,14 @@ and populations unchanged while diagnosing. Record the candidate, command,
 stage times and remaining failures in the owning Bead. Recheck after changes
 to the runner, fixtures or dependency profiles, and at integration batches.
 
+Keep the package and feature set stable during a connected edit, and narrow
+execution with `-E`. Changing the selected packages can change Cargo's unified
+dependency features and force another library build even when the library's own
+features appear unchanged. For connected Store/Engine work, reuse
+`focused -- -p polylogue-store -p polylogue-engine --features faults -E '<filter>'`
+instead of alternating package sets for each filter. Inspect recorded build
+time before attributing a slow focused run to its tests.
+
 Use `xtask test` for focused tests too: it provides the same temporary storage
 and records results as the full suite. Raw `cargo test` or `cargo nextest`
 inherits the caller's temporary directory; filesystem sync costs and long

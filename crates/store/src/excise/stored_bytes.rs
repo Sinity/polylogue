@@ -186,15 +186,16 @@ pub(super) fn overwrite(
         return Ok(());
     }
     let mut spans_json = Vec::new();
-    erasures.visit(|hash, ranges| {
+    erasures.visit(|hash| {
         let arr = <[u8; 32]>::try_from(hash)
             .map_err(|_| StoreError::Invalid("invalid source blob hash".into()))?;
         let old = BlobHash(arr);
         let bytes = plain_blob::PlainBlob::load(t, input, old)?;
-        for &(s, e) in ranges {
+        erasures.visit_ranges(hash, |s, e| {
             spans_json.push(serde_json::json!([hex(hash), s, e - s]));
-        }
-        if let Some(gone) = bytes.replace(t, &old, ranges)? {
+            Ok(())
+        })?;
+        if let Some(gone) = bytes.replace(t, &old, |blank| erasures.visit_ranges(hash, blank))? {
             refused.blobs.push(hex(&gone.hash));
             // The old file goes with the other deletions, after commit.
             delete_files.extend(gone.file);
@@ -283,7 +284,12 @@ pub(super) fn blank_document(
         for &(s, e) in &ranges {
             spans_json.push(serde_json::json!([hex(&hash), s, e - s]));
         }
-        if let Some(gone) = bytes.replace(t, &old, &ranges)? {
+        if let Some(gone) = bytes.replace(t, &old, |blank| {
+            for &(start, end) in &ranges {
+                blank(start, end)?;
+            }
+            Ok(())
+        })? {
             refused.blobs.push(hex(&gone.hash));
             delete_files.extend(gone.file);
         }

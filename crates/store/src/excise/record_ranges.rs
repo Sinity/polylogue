@@ -4,8 +4,9 @@ use serde_json::value::RawValue;
 
 type Range = (usize, usize);
 mod file;
-pub(super) use file::{Error, plan_file};
+pub(super) use file::{Error, edge, plan_file};
 
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Erasure {
     pub ranges: Vec<Range>,
@@ -36,12 +37,16 @@ pub(super) fn plan(bytes: &[u8], requested: &[Range]) -> Result<Erasure, String>
             merged.push((start, end));
         }
     }
-    let mut plan = Plan {
+    let mut state = Memory {
         bytes,
-        base: 0,
         seen: vec![(false, false); merged.len()],
         requested: merged,
         output: Vec::new(),
+    };
+    let mut plan = Plan {
+        bytes,
+        base: 0,
+        ranges: &mut state,
     };
     let mut documents = 0;
     let mut erased_documents = 0;
@@ -50,32 +55,37 @@ pub(super) fn plan(bytes: &[u8], requested: &[Range]) -> Result<Erasure, String>
             raw.map_err(|e| format!("source piece is not a complete JSON record stream: {e}"))?;
         documents += 1;
         let range = plan.range(raw)?;
-        if let Some(index) = plan.covered(range) {
-            plan.mark(index, range);
-            plan.push(range);
+        if plan.ranges.covered(range)? {
+            plan.ranges.mark(range);
+            plan.ranges.push(range)?;
             erased_documents += 1;
-        } else if plan.touched(range) {
+        } else if plan.ranges.touched(range)? {
             plan.descend(raw)?;
         }
     }
-    if plan.seen.iter().any(|&(start, end)| !start || !end) {
+    if state.seen.iter().any(|&(start, end)| !start || !end) {
         return Err("source citation does not follow complete JSON value boundaries".into());
     }
     Ok(Erasure {
-        ranges: plan.output,
+        ranges: state.output,
         documents,
         erased_documents,
     })
 }
 
-struct Plan<'a> {
+pub(in crate::excise) trait Ranges {
+    fn covered(&mut self, range: Range) -> Result<bool, String>;
+    fn touched(&mut self, range: Range) -> Result<bool, String>;
+    fn mark(&mut self, range: Range);
+    fn push(&mut self, range: Range) -> Result<(), String>;
+}
+
+struct Plan<'a, 'b, R> {
     bytes: &'a [u8],
     base: usize,
-    requested: Vec<Range>,
-    seen: Vec<(bool, bool)>,
-    output: Vec<Range>,
+    ranges: &'b mut R,
 }
-impl Plan<'_> {
+impl<R: Ranges> Plan<'_, '_, R> {
     fn range(&self, raw: &RawValue) -> Result<Range, String> {
         let start = (raw.get().as_ptr() as usize)
             .checked_sub(self.bytes.as_ptr() as usize)
@@ -85,38 +95,6 @@ impl Plan<'_> {
             return Err("JSON value is outside this source".into());
         }
         Ok((self.base + start, self.base + end))
-    }
-    fn first(&self, range: Range) -> usize {
-        self.requested.partition_point(|r| r.1 <= range.0)
-    }
-    fn touched(&self, range: Range) -> bool {
-        self.requested
-            .get(self.first(range))
-            .is_some_and(|r| r.0 < range.1)
-    }
-    fn covered(&self, range: Range) -> Option<usize> {
-        let index = self.first(range);
-        self.requested
-            .get(index)
-            .filter(|r| r.0 <= range.0 && r.1 >= range.1)
-            .map(|_| index)
-    }
-    fn mark(&mut self, index: usize, range: Range) {
-        self.seen[index].0 |= self.requested[index].0 == range.0;
-        self.seen[index].1 |= self.requested[index].1 == range.1;
-    }
-    fn push(&mut self, range: Range) {
-        if let Some(last) = self.output.last_mut()
-            && last.1 <= range.0
-            && last.1 >= self.base
-            && self.bytes[last.1 - self.base..range.0 - self.base]
-                .iter()
-                .all(u8::is_ascii_whitespace)
-        {
-            last.1 = range.1;
-            return;
-        }
-        self.output.push(range);
     }
     fn comma(&self, start: usize, end: usize) -> Result<usize, String> {
         self.bytes[start - self.base..end - self.base]
@@ -136,13 +114,13 @@ impl Plan<'_> {
         de.end().map_err(|e| e.to_string())
     }
 }
-impl<'de> DeserializeSeed<'de> for &mut Plan<'_> {
+impl<'de, R: Ranges> DeserializeSeed<'de> for &mut Plan<'_, '_, R> {
     type Value = ();
     fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<(), D::Error> {
         de.deserialize_any(self)
     }
 }
-impl<'de> Visitor<'de> for &mut Plan<'_> {
+impl<'de, R: Ranges> Visitor<'de> for &mut Plan<'_, '_, R> {
     type Value = ();
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("a JSON container")
@@ -151,12 +129,12 @@ impl<'de> Visitor<'de> for &mut Plan<'_> {
         while map.next_key::<IgnoredAny>()?.is_some() {
             let raw = map.next_value::<&RawValue>()?;
             let range = self.range(raw).map_err(A::Error::custom)?;
-            if self.covered(range).is_some() {
+            if self.ranges.covered(range).map_err(A::Error::custom)? {
                 return Err(A::Error::custom(
                     "object-member removal needs complete key and value boundaries",
                 ));
             }
-            if self.touched(range) {
+            if self.ranges.touched(range).map_err(A::Error::custom)? {
                 self.descend(raw).map_err(A::Error::custom)?;
             }
         }
@@ -167,8 +145,8 @@ impl<'de> Visitor<'de> for &mut Plan<'_> {
         let mut run: Option<(usize, usize, Option<usize>)> = None;
         while let Some(raw) = seq.next_element::<&RawValue>()? {
             let range = self.range(raw).map_err(A::Error::custom)?;
-            if let Some(index) = self.covered(range) {
-                self.mark(index, range);
+            if self.ranges.covered(range).map_err(A::Error::custom)? {
+                self.ranges.mark(range);
                 if let Some(run) = &mut run {
                     run.1 = range.1;
                 } else {
@@ -181,16 +159,67 @@ impl<'de> Visitor<'de> for &mut Plan<'_> {
             } else {
                 if let Some((start, end, _)) = run.take() {
                     let comma = self.comma(end, range.0).map_err(A::Error::custom)?;
-                    self.push((start, comma + 1));
+                    self.ranges
+                        .push((start, comma + 1))
+                        .map_err(A::Error::custom)?;
                 }
-                if self.touched(range) {
+                if self.ranges.touched(range).map_err(A::Error::custom)? {
                     self.descend(raw).map_err(A::Error::custom)?;
                 }
             }
             previous_end = Some(range.1);
         }
         if let Some((start, end, left)) = run {
-            self.push((left.unwrap_or(start), end));
+            self.ranges
+                .push((left.unwrap_or(start), end))
+                .map_err(A::Error::custom)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+struct Memory<'a> {
+    bytes: &'a [u8],
+    requested: Vec<Range>,
+    seen: Vec<(bool, bool)>,
+    output: Vec<Range>,
+}
+#[cfg(test)]
+impl Memory<'_> {
+    fn first(&self, range: Range) -> usize {
+        self.requested.partition_point(|r| r.1 <= range.0)
+    }
+}
+#[cfg(test)]
+impl Ranges for Memory<'_> {
+    fn touched(&mut self, range: Range) -> Result<bool, String> {
+        Ok(self
+            .requested
+            .get(self.first(range))
+            .is_some_and(|r| r.0 < range.1))
+    }
+    fn covered(&mut self, range: Range) -> Result<bool, String> {
+        Ok(self
+            .requested
+            .get(self.first(range))
+            .is_some_and(|r| r.0 <= range.0 && r.1 >= range.1))
+    }
+    fn mark(&mut self, range: Range) {
+        let index = self.first(range);
+        self.seen[index].0 |= self.requested[index].0 == range.0;
+        self.seen[index].1 |= self.requested[index].1 == range.1;
+    }
+    fn push(&mut self, range: Range) -> Result<(), String> {
+        if let Some(last) = self.output.last_mut()
+            && last.1 <= range.0
+            && self.bytes[last.1..range.0]
+                .iter()
+                .all(u8::is_ascii_whitespace)
+        {
+            last.1 = range.1;
+        } else {
+            self.output.push(range);
         }
         Ok(())
     }
