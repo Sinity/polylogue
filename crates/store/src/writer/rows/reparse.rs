@@ -223,18 +223,16 @@ impl Ctx<'_, '_> {
 
 struct Affected {
     db: Connection,
-    _file: tempfile::NamedTempFile,
 }
 
 impl Affected {
     fn new() -> Result<Self> {
-        let file = tempfile::NamedTempFile::new()?;
-        let db = Connection::open(file.path())?;
+        let db = Connection::open("")?;
         db.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-1024;
             PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
             CREATE TABLE item(kind TEXT NOT NULL,id INTEGER NOT NULL,PRIMARY KEY(kind,id)) WITHOUT ROWID;
             CREATE TABLE scope(session_pk INTEGER,input_pk INTEGER,chain INTEGER,version INTEGER,input_id TEXT,PRIMARY KEY(session_pk,input_pk,chain)) WITHOUT ROWID; BEGIN;")?;
-        Ok(Self { db, _file: file })
+        Ok(Self { db })
     }
 
     fn add(&self, kind: &str, id: i64) -> Result<bool> {

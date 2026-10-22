@@ -20,15 +20,9 @@ pub(super) fn legacy_empty(value: &str) -> bool {
         .eq(b"[]".iter().copied())
 }
 
-#[derive(Debug)]
-struct State {
-    conn: Connection,
-    _file: tempfile::NamedTempFile,
-}
-
 /// Reconstructed writer lookup; canonical excision rows own the policy.
 #[derive(Debug, Default)]
-pub struct Refused(Option<State>);
+pub struct Refused(Option<Connection>);
 
 /// Only the excluded identities present in the current bounded writer group.
 #[derive(Debug, Default)]
@@ -73,8 +67,8 @@ impl Refused {
                     .map_err(|e| StoreError::Invalid(e.to_string()))?,
             )?;
         }
-        if let Some(state) = &out.0 {
-            state.conn.execute_batch("COMMIT")?;
+        if let Some(conn) = &out.0 {
+            conn.execute_batch("COMMIT")?;
         }
         Ok(out)
     }
@@ -85,9 +79,9 @@ impl Refused {
 
     pub(crate) fn matching(&self, sessions: &[String], messages: &[String]) -> Result<RefusedIds> {
         let mut out = RefusedIds::default();
-        if let Some(state) = &self.0 {
-            Self::find(&state.conn, "sessions", sessions, &mut out.sessions)?;
-            Self::find(&state.conn, "messages", messages, &mut out.messages)?;
+        if let Some(conn) = &self.0 {
+            Self::find(conn, "sessions", sessions, &mut out.sessions)?;
+            Self::find(conn, "messages", messages, &mut out.messages)?;
         }
         Ok(out)
     }
@@ -117,8 +111,7 @@ impl Refused {
     fn insert(&mut self, table: &str, id: &str) -> Result<()> {
         crate::fault::check("exclusion_cache.insert", id)?;
         if self.0.is_none() {
-            let file = tempfile::NamedTempFile::new()?;
-            let conn = Connection::open(file.path())?;
+            let conn = Connection::open("")?;
             conn.execute_batch(
                 "PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
                  PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
@@ -126,12 +119,11 @@ impl Refused {
                  CREATE TABLE messages(id TEXT PRIMARY KEY) WITHOUT ROWID;
                  BEGIN;",
             )?;
-            self.0 = Some(State { conn, _file: file });
+            self.0 = Some(conn);
         }
         self.0
             .as_ref()
             .expect("created exclusion lookup")
-            .conn
             .prepare_cached(&format!("INSERT OR IGNORE INTO {table} VALUES(?1)"))?
             .execute([id])?;
         Ok(())

@@ -5,7 +5,6 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct Inventory<'a> {
     db: Connection,
-    _file: tempfile::NamedTempFile,
     // Keep the source read transaction alive throughout this inventory's use.
     _source: &'a Published,
     length: u64,
@@ -22,8 +21,7 @@ impl<'a> Inventory<'a> {
         if legacy {
             return Err(StoreError::Invalid("primary publication cannot reconstruct unit identities for legacy excisions without replacement metadata".into()));
         }
-        let file = tempfile::NamedTempFile::new()?;
-        let db = Connection::open(file.path())?;
+        let db = Connection::open("")?;
         db.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-1024;
             PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
             CREATE TABLE unit(seq INTEGER NOT NULL,kind TEXT NOT NULL,key TEXT NOT NULL,
@@ -93,7 +91,6 @@ impl<'a> Inventory<'a> {
             db.query_row("SELECT COUNT(*) FROM position", [], |r| r.get::<_, i64>(0))? as u64;
         Ok(Self {
             db,
-            _file: file,
             _source: source,
             length,
             held: 0,

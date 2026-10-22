@@ -8,14 +8,12 @@ use std::cell::Cell;
 
 pub struct Catalog {
     pub(super) db: Connection,
-    _file: tempfile::NamedTempFile,
     failed: bool,
 }
 
 impl Catalog {
     pub fn new() -> Result<Self> {
-        let file = tempfile::NamedTempFile::new()?;
-        let db = Connection::open(file.path())?;
+        let db = Connection::open("")?;
         db.execute_batch(
             "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
             PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
@@ -31,11 +29,7 @@ impl Catalog {
                 PRIMARY KEY(kind,id)) WITHOUT ROWID;
             BEGIN;",
         )?;
-        Ok(Self {
-            db,
-            _file: file,
-            failed: false,
-        })
+        Ok(Self { db, failed: false })
     }
 
     /// Confirmations may arrive out of order. Exact repeats are harmless;

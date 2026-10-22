@@ -5,7 +5,6 @@ use rusqlite::{OptionalExtension, params};
 /// journal to disk; Rust retains one decoded row at a time.
 pub(super) struct Catalog {
     pub conn: Connection,
-    _file: tempfile::NamedTempFile,
     pub schema: Option<u64>,
 }
 
@@ -18,13 +17,8 @@ impl Catalog {
         out: &Path,
         checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
     ) -> Result<Self, ExportError> {
-        let file = tempfile::NamedTempFile::new()?;
-        let conn = Connection::open(file.path()).map_err(|e| ExportError::Sqlite(out.into(), e))?;
-        let mut catalog = Self {
-            conn,
-            _file: file,
-            schema: None,
-        };
+        let conn = Connection::open("").map_err(|e| ExportError::Sqlite(out.into(), e))?;
+        let mut catalog = Self { conn, schema: None };
         let sql_err = |e| ExportError::Sqlite(out.into(), e);
         catalog
             .conn
@@ -50,10 +44,7 @@ impl Catalog {
                     }
                     let value: Value =
                         serde_json::from_slice(&bytes).map_err(std::io::Error::from)?;
-                    catalog.replay(value).map_err(|e| match e {
-                        ExportError::Sqlite(_, e) => sql_err(e),
-                        e => e,
-                    })?;
+                    catalog.replay(out, value)?;
                     checkpoint()?;
                 }
             }
@@ -64,8 +55,8 @@ impl Catalog {
         Ok(catalog)
     }
 
-    fn replay(&mut self, v: Value) -> Result<(), ExportError> {
-        let sql_err = |e| ExportError::Sqlite(self._file.path().into(), e);
+    fn replay(&mut self, out: &Path, v: Value) -> Result<(), ExportError> {
+        let sql_err = |e| ExportError::Sqlite(out.into(), e);
         if let Some(schema) = v.get("schema").filter(|v| v.is_object()) {
             self.schema = Some(digest(&schema.to_string()));
             return Ok(());

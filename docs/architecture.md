@@ -58,14 +58,16 @@ committed byte length even when its source observation described a larger file.
 
 Retained-chain replay captures ordered extents and deduplicated compressed
 inline bytes from that same SQLite view into a private temporary database.
-Construction uses a 1 MiB page cache and closes its connection; clones share
-one file. Active readers open independent positions with 64 KiB caches and
-decode only the needed piece. Random file ranges select bytes during their
+Construction uses a 1 MiB page cache, then shrinks it to 64 KiB. Clones share
+one SQLite-owned unnamed temporary database and synchronized connection;
+readers keep independent positions and owned decoded pieces. The connection
+lock covers extent lookup and inline materialization, never file-blob reads. Random file ranges select bytes during their
 whole-hash verification pass; repeated range calls verify again. Sequential
 scans keep a forward reader. Historical oversized inline pieces are verified
 through a temporary file. File blobs stay in the blob store, with the complete
 single-file streaming path preserved. Replay releases the archive view after
-capture and removes scratch with the last owner. The Engine finishes and drops
+capture. SQLite unlinks spilled scratch on Linux when opened, so process death
+also releases its file; normal closure follows the last owner. The Engine finishes and drops
 replay work before servicing excision. Requested range output and an individual
 parser record can still require large allocations; this bounds retained replay
 ownership rather than every caller’s output.

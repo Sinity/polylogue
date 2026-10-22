@@ -37,7 +37,6 @@ pub(super) struct Cursor {
     access: Access,
     position: u64,
     end: u64,
-    conn: Option<Connection>,
     current: Option<Box<dyn Read>>,
     left: u64,
 }
@@ -55,7 +54,6 @@ impl Cursor {
             access: Access::Range,
             position,
             end,
-            conn: None,
             current: None,
             left: 0,
         }
@@ -71,15 +69,9 @@ impl Cursor {
             return Ok(0);
         }
         if self.left == 0 {
-            if self.conn.is_none() {
-                self.conn = Some(
-                    snapshot
-                        .ok_or_else(|| StoreError::Invalid("stored extent missing".into()))?
-                        .open()?,
-                );
-            }
-            let conn = self.conn.as_ref().unwrap();
-            let extent = Snapshot::extent(conn, self.position)?;
+            let (extent, inline) = snapshot
+                .ok_or_else(|| StoreError::Invalid("stored extent missing".into()))?
+                .select(self.position, store)?;
             if !extent.inline && self.access == Access::Range {
                 let length =
                     (extent.offset + extent.length - self.position).min(self.end - self.position);
@@ -88,7 +80,14 @@ impl Cursor {
                 self.position += want as u64;
                 return Ok(want);
             }
-            let mut reader = open(conn, store, &extent)?;
+            let mut reader: Box<dyn Read> = match inline {
+                Some(reader) => reader,
+                None => Box::new(store.read_plain(
+                    &hashed_blobs::Hash(extent.hash.0),
+                    Some(extent.size),
+                    || Ok(()),
+                )?),
+            };
             let skip = extent.blob_offset + self.position - extent.offset;
             let skipped = std::io::copy(&mut reader.by_ref().take(skip), &mut std::io::sink())?;
             if skipped != skip {
@@ -109,14 +108,11 @@ impl Cursor {
     }
 }
 
-fn open(conn: &Connection, store: &hashed_blobs::Store, extent: &Extent) -> Result<Box<dyn Read>> {
-    if !extent.inline {
-        return Ok(Box::new(store.read_plain(
-            &hashed_blobs::Hash(extent.hash.0),
-            Some(extent.size),
-            || Ok(()),
-        )?));
-    }
+pub(super) fn inline(
+    conn: &Connection,
+    store: &hashed_blobs::Store,
+    extent: &Extent,
+) -> Result<Box<dyn Read>> {
     if extent.size < super::super::INLINE_LIMIT as u64 {
         let mut bytes = Vec::with_capacity(extent.size as usize);
         super::super::copy_plain(conn, store, extent.hash, &mut bytes)?;

@@ -59,38 +59,30 @@ fn about(reference: &str, sessions: &[String], messages: &[String]) -> bool {
         })
 }
 
-struct State {
-    conn: Connection,
-    _file: tempfile::NamedTempFile,
-}
-
 #[derive(Default)]
-struct Targets(Option<State>);
+struct Targets(Option<Connection>);
 impl Targets {
     fn insert(&mut self, note: &str, reference: &str) -> Result<()> {
         if self.0.is_none() {
-            let file = tempfile::NamedTempFile::new()?;
-            let conn = Connection::open(file.path())?;
+            let conn = Connection::open("")?;
             conn.execute_batch("PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
                 PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
                 CREATE TABLE target(note TEXT NOT NULL,ref TEXT NOT NULL,PRIMARY KEY(note,ref)) WITHOUT ROWID;
                 BEGIN;")?;
-            self.0 = Some(State { conn, _file: file });
+            self.0 = Some(conn);
         }
         crate::fault::check("excision_targets.insert", note)?;
         self.0
             .as_ref()
             .unwrap()
-            .conn
             .prepare_cached("INSERT INTO target VALUES (?1,?2)")?
             .execute(params![note, reference])?;
         Ok(())
     }
 
     fn notes(&self, mut f: impl FnMut(&str, u64) -> Result<()>) -> Result<()> {
-        if let Some(state) = &self.0 {
-            let mut stmt = state
-                .conn
+        if let Some(conn) = &self.0 {
+            let mut stmt = conn
                 .prepare_cached("SELECT note,count(*) FROM target GROUP BY note ORDER BY note")?;
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
@@ -103,10 +95,9 @@ impl Targets {
     }
 
     fn refs(&self, note: &str, mut f: impl FnMut(&str) -> Result<()>) -> Result<()> {
-        if let Some(state) = &self.0 {
-            let mut stmt = state
-                .conn
-                .prepare_cached("SELECT ref FROM target WHERE note=?1 ORDER BY ref")?;
+        if let Some(conn) = &self.0 {
+            let mut stmt =
+                conn.prepare_cached("SELECT ref FROM target WHERE note=?1 ORDER BY ref")?;
             let mut rows = stmt.query([note])?;
             while let Some(row) = rows.next()? {
                 f(&row.get::<_, String>(0)?)?;

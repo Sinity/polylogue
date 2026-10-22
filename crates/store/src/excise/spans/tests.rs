@@ -26,8 +26,16 @@ fn many_citations_keep_multiplicity_order_and_whole_input_precedence_on_disk() {
         spans.insert(input, duplicate).unwrap();
         spans.insert(input, duplicate).unwrap();
     }
-    let file = spans.0.as_ref().unwrap()._file.path().to_owned();
-    assert!(file.metadata().unwrap().len() > 1 << 20);
+    let conn = spans.0.as_ref().unwrap();
+    let bytes: i64 = conn
+        .query_row(
+            "SELECT page_count*page_size FROM pragma_page_count(),pragma_page_size()",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(bytes > 1 << 20);
+    assert_eq!(conn.path(), Some(""));
     let mut total = 0;
     let mut previous: Option<String> = None;
     spans
@@ -89,7 +97,6 @@ fn many_citations_keep_multiplicity_order_and_whole_input_precedence_on_disk() {
     assert_eq!(remaining, 99_004);
 
     drop(spans);
-    assert!(!file.exists());
 }
 
 #[test]
@@ -111,7 +118,6 @@ fn invalid_bounds_and_query_errors_do_not_become_empty_selections() {
         .0
         .as_ref()
         .unwrap()
-        .conn
         .execute("DROP TABLE span", [])
         .unwrap();
     assert!(spans.visit("input", |_| Ok(())).is_err());

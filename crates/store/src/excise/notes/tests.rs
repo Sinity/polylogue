@@ -76,8 +76,16 @@ fn matching_targets_are_disk_backed_and_callback_or_lookup_errors_propagate() {
     for n in 0..100_000 {
         targets.insert("one-note", &format!("message:{n}")).unwrap();
     }
-    let file = targets.0.as_ref().unwrap()._file.path().to_owned();
-    assert!(file.metadata().unwrap().len() > 1 << 20);
+    let conn = targets.0.as_ref().unwrap();
+    let bytes: i64 = conn
+        .query_row(
+            "SELECT page_count*page_size FROM pragma_page_count(),pragma_page_size()",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(bytes > 1 << 20);
+    assert_eq!(conn.path(), Some(""));
     let mut total = 0;
     targets
         .notes(|id, n| {
@@ -104,13 +112,11 @@ fn matching_targets_are_disk_backed_and_callback_or_lookup_errors_propagate() {
         .0
         .as_ref()
         .unwrap()
-        .conn
         .execute("DROP TABLE target", [])
         .unwrap();
     assert!(targets.notes(|_, _| Ok(())).is_err());
     assert!(targets.refs("one-note", |_| Ok(())).is_err());
     drop(targets);
-    assert!(!file.exists());
 }
 
 #[cfg(feature = "faults")]
