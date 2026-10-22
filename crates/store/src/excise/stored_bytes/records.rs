@@ -5,9 +5,9 @@ pub(super) fn preflight(
     t: &Transactions<'_, '_>,
     input: &str,
     spans: &[Span],
-    mut requested: BTreeMap<Vec<u8>, Vec<(usize, usize)>>,
+    erasures: &super::erasures::Erasures,
     sessions: &[(i64, String)],
-) -> Result<BTreeMap<Vec<u8>, super::super::record_ranges::Erasure>> {
+) -> Result<()> {
     let format: String =
         t.archive
             .query_row("SELECT format FROM input WHERE id=?1", [input], |r| {
@@ -20,7 +20,6 @@ pub(super) fn preflight(
     };
     let excluded = serde_json::to_string(&sessions.iter().map(|(pk, _)| *pk).collect::<Vec<_>>())?;
     let chains: BTreeSet<i64> = spans.iter().map(|s| s.chain).collect();
-    let mut planned: BTreeMap<Vec<u8>, super::super::record_ranges::Erasure> = BTreeMap::new();
     for &chain in &chains {
         let length: Option<i64> = t.archive.query_row(
             "SELECT MAX(length) FROM revision WHERE input=?1 AND chain=?2",
@@ -59,27 +58,24 @@ pub(super) fn preflight(
                     "source pieces do not provide complete independently decodable records".into(),
                 ));
             }
-            if !planned.contains_key(&hash) {
-                let hash_bytes: [u8; 32] = hash
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| refuse("invalid source blob hash".into()))?;
-                let bytes = crate::blobs::read(t.archive, t.store, &BlobHash(hash_bytes))?;
-                let ranges = requested.remove(&hash);
-                let checked =
-                    super::super::record_ranges::plan(&bytes, ranges.as_deref().unwrap_or(&[]))
-                        .map_err(&refuse)?;
-                if ranges.is_some() {
-                    planned.insert(hash.clone(), checked);
-                } else {
-                    documents += checked.documents;
-                    erased += checked.erased_documents;
+            let (piece_documents, piece_erased) = match erasures.counts(&hash)? {
+                Some(counts) => counts,
+                None => {
+                    let hash_bytes: [u8; 32] = hash
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| refuse("invalid source blob hash".into()))?;
+                    let bytes = crate::blobs::read(t.archive, t.store, &BlobHash(hash_bytes))?;
+                    let ranges = erasures.requested(&hash)?;
+                    let checked =
+                        super::super::record_ranges::plan(&bytes, &ranges).map_err(&refuse)?;
+                    let counts = (checked.documents, checked.erased_documents);
+                    erasures.checked(&hash, &checked)?;
+                    counts
                 }
-            }
-            if let Some(checked) = planned.get(&hash) {
-                documents += checked.documents;
-                erased += checked.erased_documents;
-            }
+            };
+            documents += piece_documents;
+            erased += piece_erased;
             position += size;
         }
         if position != length {
@@ -92,10 +88,10 @@ pub(super) fn preflight(
             ));
         }
     }
-    if !requested.is_empty() {
+    if erasures.has_unchecked()? {
         return Err(refuse("source citation has no retained piece".into()));
     }
-    for (hash, checked) in &planned {
+    erasures.visit(|hash, ranges| {
         let mut uses = t
             .archive
             .prepare("SELECT input,chain,offset,length,blob_offset FROM extent WHERE blob=?1")?;
@@ -111,7 +107,7 @@ pub(super) fn preflight(
                     "source bytes are also held by a source outside this rewrite".into(),
                 ));
             }
-            for &(start, end) in &checked.ranges {
+            for &(start, end) in ranges {
                 let start = start as i64;
                 let end = end as i64;
                 let a = start.max(blob_offset) - blob_offset + offset;
@@ -133,6 +129,6 @@ pub(super) fn preflight(
                 }
             }
         }
-    }
-    Ok(planned)
+        Ok(())
+    })
 }

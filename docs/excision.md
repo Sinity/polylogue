@@ -19,10 +19,14 @@ Session bodies and titles are deduplicated in a private SQLite text set with a
 byte-based blanking thresholds and per-document match counts. Ownership is
 evaluated against all sessions the operation removes: text shared only among
 those sessions is removable, while an unselected session keeps its shared text.
-Delivered briefs are selected by exact session/message references and loaded one at a time;
-an unreadable referenced body refuses preview and execution. This bounds the
-decoded text collection, while a single retained blob, record-range catalogs
-and message-ID lists can still exceed memory.
+Delivered briefs are selected by exact session/message references and loaded
+one at a time; an unreadable referenced body refuses preview and execution. This bounds the
+decoded text collection. Shared-input rewrites keep translated byte ranges and
+validated plans in a private SQLite file with a 1 MiB cache and mmap disabled.
+Every retained piece and surviving use is checked before the first replacement;
+unchanged pieces reuse their validation counts across chains. One blob and its
+ranges are loaded at a time. Logical source spans, message-ID lists, canonical
+JSON reports and a single retained blob can still exceed memory.
 
 Removing a session from a retained JSON export erases its complete records and the necessary array separators. Other bytes, line breaks and offsets stay unchanged, so an index rebuilt from the retained export can still read the surviving sessions. Preview performs the same boundary and overlap checks as execution.
 
