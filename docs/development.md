@@ -17,10 +17,12 @@ started inside a queued job keeps that job occupied after the command exits.
 | Package build | `nix flake check` | after dependency or packaging changes | about 2.5 min |
 
 - **Fast check:** formatting, crate boundaries (`xtask boundaries`) and
-  clippy of every target, tests included, with warnings denied. The pre-push
+  clippy of every target, tests included, with warnings denied. It enables
+  `polylogue/sinex` so the optional daemon publisher is compiled too. The pre-push
   hook runs only its formatting and boundaries steps; clippy runs in the
   AgentCTL job so it queues with the rest of the machine's work.
-- **Full suite:** formatting, boundaries, clippy and `cargo nextest run --workspace`
+- **Full suite:** formatting, boundaries, clippy and
+  `cargo nextest run --workspace --features polylogue/sinex`
   (configuration in `.config/nextest.toml`). Each test runs in its own
   process, all binaries in parallel; a test still running after two minutes
   is terminated and fails. Then the laws that inject failures (laws 7, 45,

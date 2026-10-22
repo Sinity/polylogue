@@ -145,6 +145,8 @@ fn clippy(run: &mut Run) -> devkit::Result {
             "--locked",
             "--workspace",
             "--all-targets",
+            "--features",
+            "polylogue/sinex",
             "--",
             "-D",
             "warnings",
@@ -179,7 +181,11 @@ fn main() -> ExitCode {
             clippy(run)?;
             run.nextest(
                 "test",
-                &nextest(vec!["--locked".into(), "--workspace".into()]),
+                &nextest(
+                    ["--locked", "--workspace", "--features", "polylogue/sinex"]
+                        .map(String::from)
+                        .to_vec(),
+                ),
             )?;
             // The laws that inject failures, built with the test-only feature.
             run.nextest(
