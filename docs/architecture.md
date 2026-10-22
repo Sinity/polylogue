@@ -217,6 +217,10 @@ Within store, `encoding.rs` owns packed row bodies and block-text separation;
 `text_rows.rs` owns text deduplication, pending search entries and removal.
 Fixtures use the same text-storage path as ingestion.
 Retained message-version blocks own their encoded bodies and text references.
+Text rows place their small search-membership field before the compressed body,
+so membership checks do not need the body's SQLite overflow pages. This is a
+derived-index layout; changing it rebuilds the index through its version check.
+
 Content hashes identify versions across sources; local integer row IDs place
 new attributes and blocks next to earlier inserts. Historical reads resolve the
 hash once, then read that version’s ordered blocks.

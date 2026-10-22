@@ -183,9 +183,10 @@ CREATE INDEX message_source_input ON message_source(input_pk, chain);   -- forei
 CREATE TABLE text (
   id                INTEGER PRIMARY KEY,
   hash              BLOB NOT NULL UNIQUE,   -- BLAKE3 of the UTF-8 text; embeddings are keyed by it
-  body              BLOB NOT NULL,          -- the UTF-8 text, zstd-compressed (the search indexes are
+  -- Keep membership before the body: testing it must not read body overflow pages.
+  indexed           INTEGER NOT NULL DEFAULT 0, -- bit 1: in text_fts (prose); bit 2: in output_fts (tool output)
+  body              BLOB NOT NULL           -- the UTF-8 text, zstd-compressed (the search indexes are
                                             --   contentless, so this is the only copy in the index)
-  indexed           INTEGER NOT NULL DEFAULT 0  -- bit 1: in text_fts (prose); bit 2: in output_fts (tool output)
 ) STRICT;
 
 -- What the provider wrote, one row per content item. Facts derived about a tool
