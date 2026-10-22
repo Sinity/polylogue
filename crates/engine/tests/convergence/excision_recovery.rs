@@ -1,6 +1,45 @@
 use super::*;
 
 #[test]
+fn malformed_excision_locations_refuse_collection_after_index_rebuild() {
+    for malformed in [
+        "not json",
+        r#"{"locations":null}"#,
+        r#"{"locations":[{"machine":"test","path":7}]}"#,
+    ] {
+        let w = ClaudeHome::new();
+        w.append(
+            "victim.jsonl",
+            &user("v1", "victim", "synthetic removed message"),
+        );
+        {
+            let (mut engine, _lock) = w.engine(64 << 20);
+            engine.converge().unwrap();
+            engine
+                .excise(ExciseRequest {
+                    id: "removed".into(),
+                    scope: ExciseScope::Session(SessionId::parse("claude-code:victim").unwrap()),
+                    reason: None,
+                    dry_run: false,
+                })
+                .unwrap();
+        }
+        let canonical = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
+        canonical
+            .execute("UPDATE excision SET refused_json=?1", [malformed])
+            .unwrap();
+        drop(canonical);
+        delete_index(&w.root);
+        let (mut engine, _lock) = w.engine(64 << 20);
+        assert!(
+            engine.converge().is_err(),
+            "invalid removal metadata must not become an empty path list: {malformed}"
+        );
+        assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 0);
+    }
+}
+
+#[test]
 fn an_archive_committed_excision_recovers_when_the_index_commit_was_lost() {
     let w = ClaudeHome::new();
     w.append(

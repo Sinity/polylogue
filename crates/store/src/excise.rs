@@ -172,17 +172,21 @@ impl Refused {
     }
 }
 
-/// Paths (`(machine, path)`) the loop must never collect again, from every
-/// excision's refused locations.
-pub fn refused_paths(archive: &rusqlite::Connection) -> Result<Vec<(String, String)>> {
-    let mut stmt = archive.prepare("SELECT refused_json FROM excision")?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-    let mut out = Vec::new();
-    for row in rows {
-        let refused: RefusedJson = serde_json::from_str(&row?).unwrap_or_default();
-        out.extend(refused.locations.into_iter().map(|l| (l.machine, l.path)));
+impl crate::Reader<'_> {
+    /// Paths (`(machine, path)`) the loop must never collect again, from every
+    /// excision's refused locations. Invalid records refuse the read.
+    pub fn refused_paths(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn()?
+            .prepare("SELECT refused_json FROM a.excision")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let refused: RefusedJson = serde_json::from_str(&row?)?;
+            out.extend(refused.locations.into_iter().map(|l| (l.machine, l.path)));
+        }
+        Ok(out)
     }
-    Ok(out)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
