@@ -4,25 +4,41 @@
 
 use super::*;
 
-/// Whether a batch's rows name an excised session or message.
-pub(super) fn touches(b: &Batch, r: &crate::excise::Refused) -> bool {
-    b.parse.iter().any(|p| {
-        let o = &p.output;
-        o.sessions
-            .iter()
-            .any(|s| r.sessions.contains(&s.id.to_string()))
-            || o.messages.iter().any(|m| refused_message(&m.message, r))
-            || o.events
-                .iter()
-                .any(|e| r.sessions.contains(&e.session.to_string()))
-            || o.links.iter().any(|l| {
-                r.sessions.contains(&l.parent.to_string())
-                    || r.sessions.contains(&l.child.to_string())
-            })
-    })
+/// Include every identity the filter can remove; this is the only walk that
+/// decides whether a group needs filtering.
+pub(super) fn matching(
+    group: &[Box<Batch>],
+    cache: &crate::excise::Refused,
+) -> Result<crate::excise::RefusedIds> {
+    use std::collections::BTreeSet;
+    let mut sessions = BTreeSet::new();
+    let mut messages = BTreeSet::new();
+    for b in group {
+        for p in &b.parse {
+            let o = &p.output;
+            sessions.extend(o.sessions.iter().map(|s| s.id.to_string()));
+            for m in &o.messages {
+                sessions.insert(m.message.session.to_string());
+                messages.insert(m.message.id.to_string());
+            }
+            sessions.extend(o.events.iter().map(|e| e.session.to_string()));
+            for link in &o.links {
+                sessions.insert(link.parent.to_string());
+                sessions.insert(link.child.to_string());
+            }
+            sessions.extend(o.background.iter().map(|b| b.session.to_string()));
+            if let Some(snapshot) = &p.snapshot {
+                sessions.extend(snapshot.covered.iter().map(ToString::to_string));
+            }
+        }
+    }
+    cache.matching(
+        &sessions.into_iter().collect::<Vec<_>>(),
+        &messages.into_iter().collect::<Vec<_>>(),
+    )
 }
 
-pub(super) fn refused_message(m: &Message, r: &crate::excise::Refused) -> bool {
+pub(super) fn refused_message(m: &Message, r: &crate::excise::RefusedIds) -> bool {
     r.messages.contains(&m.id.to_string()) || r.sessions.contains(&m.session.to_string())
 }
 
@@ -30,7 +46,7 @@ pub(super) fn refused_message(m: &Message, r: &crate::excise::Refused) -> bool {
 /// they are never written again, from any input (architecture 5.6). The
 /// bytes and parse position stay, so the input is not parsed again for
 /// them.
-pub(super) fn without_refused(b: &Batch, r: &crate::excise::Refused) -> Batch {
+pub(super) fn without_refused(b: &Batch, r: &crate::excise::RefusedIds) -> Batch {
     let mut out = b.clone();
     for p in &mut out.parse {
         let keep_msgs: Vec<bool> = p

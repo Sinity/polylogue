@@ -38,6 +38,7 @@ mod record_ranges;
 pub(crate) mod recovery;
 mod refused;
 pub use refused::Refused;
+pub(crate) use refused::RefusedIds;
 mod session_texts;
 mod stored_bytes;
 mod stored_text;

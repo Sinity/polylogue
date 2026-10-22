@@ -270,7 +270,7 @@ fn filtering_prepared_messages_keeps_original_hashes_and_structured_payloads() {
             &["s"],
         );
         b.parse[0].prepare();
-        let mut refused = crate::excise::Refused::default();
+        let mut refused = crate::excise::RefusedIds::default();
         for n in &removed {
             refused.messages.insert(messages[*n].id.to_string());
         }
