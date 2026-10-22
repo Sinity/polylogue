@@ -157,7 +157,8 @@ in follow-up PRs.
 The writer reuses prepared SQL for message-version and source writes. Its
 work test counts SQLite preparation callbacks while checking exact message and
 tool-result counts; it has no elapsed-time assertion. Writer connections keep
-the library's existing statement-cache limit.
+the library's existing statement-cache limit. A first build releases its cached
+insert programs before the bulk search scan.
 
 ## Timing in tests
 
