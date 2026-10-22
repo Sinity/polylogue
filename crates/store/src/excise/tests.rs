@@ -27,6 +27,7 @@ fn finds_written_and_json_escaped_forms() {
     assert_eq!(find_all(hay, &n).len(), 2);
 }
 
+mod deliveries;
 mod retained;
 
 #[test]

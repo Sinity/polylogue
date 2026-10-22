@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn unreadable_delivered_brief_refuses_session_excision_before_commit() {
+    let w = ClaudeHome::new();
+    let brief = "synthetic private message in a delivered brief";
+    w.append("victim.jsonl", &user("v1", "victim", brief));
+    let (mut engine, _lock) = w.engine(64 << 20);
+    assert!(engine.converge().unwrap().errors.is_empty());
+    let before = w.export("claude-code:victim");
+    let canonical = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
+    canonical.execute("INSERT INTO delivery(id,recipient_kind,sender,event,at,content_hash,bytes,body,refs_json,commit_seq)
+        VALUES('bad-brief','operator','cli','recall',1,?1,?2,x'010203','[\"claude-code:victim\"]',1)",
+        rusqlite::params![&[0u8;32][..],brief.len() as i64]).unwrap();
+    for dry_run in [true, false] {
+        let error = engine
+            .excise(ExciseRequest {
+                id: "bad-delivery".into(),
+                scope: ExciseScope::Session(SessionId::parse("claude-code:victim").unwrap()),
+                reason: None,
+                dry_run,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                polylogue_engine::EngineError::Store(polylogue_store::StoreError::Io(_))
+            ),
+            "{error:?}"
+        );
+        assert_eq!(w.export("claude-code:victim"), before);
+        assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
+        assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 1);
+    }
+    let index = rusqlite::Connection::open(Archive::at(&w.root).index_db()).unwrap();
+    let (body, hash): (Vec<u8>, Vec<u8>) = index
+        .query_row("SELECT body,hash FROM text LIMIT 1", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    canonical
+        .execute(
+            "UPDATE delivery SET body=?1,content_hash=?2",
+            rusqlite::params![body, hash],
+        )
+        .unwrap();
+    let done = engine
+        .excise(ExciseRequest {
+            id: "bad-delivery".into(),
+            scope: ExciseScope::Session(SessionId::parse("claude-code:victim").unwrap()),
+            reason: None,
+            dry_run: false,
+        })
+        .unwrap();
+    assert_eq!(done.deliveries_redacted, 1);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 1);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 0);
+}
+
+#[test]
 fn malformed_excision_locations_refuse_collection_after_index_rebuild() {
     for malformed in [
         "not json",

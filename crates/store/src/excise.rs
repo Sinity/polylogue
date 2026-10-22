@@ -36,6 +36,7 @@ pub(crate) mod blob_cleanup;
 mod index_rows;
 mod record_ranges;
 pub(crate) mod recovery;
+mod session_texts;
 mod stored_bytes;
 mod stored_text;
 mod text_matches;
@@ -43,6 +44,7 @@ pub(crate) mod vector_cleanup;
 pub(crate) mod vector_policy;
 
 use index_rows::*;
+use session_texts::SessionTexts;
 use stored_bytes::*;
 pub use stored_bytes::{index_columns_containing, stored_blobs_containing};
 
@@ -294,7 +296,7 @@ struct Plan {
     message_ids: Vec<String>,
     /// Texts only the removed sessions hold (bodies and titles), for
     /// blanking shared whole documents and delivered briefs.
-    own_texts: BTreeSet<String>,
+    own_texts: SessionTexts,
     text: Option<String>,
 }
 
@@ -309,12 +311,13 @@ impl Plan {
         self.message_ids.extend(ids);
         // Its own texts: those no other session's block holds.
         let mut bodies = t.index.prepare(
-            "SELECT DISTINCT t.body FROM block b JOIN text t ON t.id = b.text_id
-                 WHERE b.session_pk = ?1 AND NOT EXISTS
-                   (SELECT 1 FROM block o WHERE o.text_id = b.text_id AND o.session_pk <> ?1)",
+            "SELECT t.body FROM text t WHERE t.id IN
+                 (SELECT text_id FROM block WHERE session_pk = ?1)
+                 AND NOT EXISTS
+                   (SELECT 1 FROM block o WHERE o.text_id = t.id AND o.session_pk <> ?1)",
         )?;
         for body in bodies.query_map([pk], |r| r.get::<_, Vec<u8>>(0))? {
-            self.own_texts.insert(unpack_text(&body?)?);
+            self.own_texts.insert(&unpack_text(&body?)?)?;
         }
         let title: Option<String> = t
             .index
@@ -326,7 +329,9 @@ impl Plan {
             )
             .optional()?
             .flatten();
-        self.own_texts.extend(title);
+        if let Some(title) = title {
+            self.own_texts.insert(&title)?;
+        }
         // Every input the session's rows came from.
         let inputs: Vec<(i64, String)> = t
             .index
@@ -386,6 +391,7 @@ impl Plan {
         req: &ExciseRequest,
         done: &mut Excised,
     ) -> Result<Excised> {
+        self.message_ids.sort_unstable();
         // Removing an input supersedes partial rewrites of its records.
         self.spans.retain(|input, _| !self.whole.contains(input));
         self.kept.retain(|input| !self.whole.contains(input));
@@ -486,8 +492,13 @@ impl Plan {
         if !self.sessions.is_empty() {
             let ids: Vec<String> = self.sessions.iter().map(|(_, id)| id.clone()).collect();
             done.notes_removed = remove_notes(t.archive, &ids, &self.message_ids, req.dry_run)?;
-            done.deliveries_redacted =
-                redact_deliveries(t.archive, &ids, &self.own_texts, req.dry_run)?;
+            done.deliveries_redacted = redact_deliveries(
+                t.archive,
+                &ids,
+                &self.message_ids,
+                &self.own_texts,
+                req.dry_run,
+            )?;
         }
         // Blobs nothing refers to any more: the removed inputs' and the
         // removed blocks' (inline images, large outputs).

@@ -254,7 +254,7 @@ pub(super) fn quoted(text: &str) -> Vec<Vec<u8>> {
 pub(super) fn blank_document(
     t: &Transactions<'_, '_>,
     input: &str,
-    texts: &BTreeSet<String>,
+    texts: &SessionTexts,
     req: &ExciseRequest,
     refused: &mut RefusedJson,
     delete_files: &mut Vec<BlobHash>,
@@ -265,13 +265,7 @@ pub(super) fn blank_document(
         .prepare("SELECT DISTINCT blob FROM extent WHERE input = ?1")?
         .query_map([input], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut left = texts.iter().filter(|s| s.len() < MIN_BLANKED).count() as u64;
-    let wanted: Vec<Vec<Vec<u8>>> = texts
-        .iter()
-        .filter(|s| s.len() >= MIN_BLANKED)
-        .map(|s| quoted(s))
-        .collect();
-    let mut found = vec![false; wanted.len()];
+    texts.reset_found()?;
     let mut spans_json = Vec::new();
     for hash in blobs {
         let Ok(arr) = <[u8; 32]>::try_from(hash.as_slice()) else {
@@ -280,14 +274,15 @@ pub(super) fn blank_document(
         let old = BlobHash(arr);
         let bytes = crate::blobs::read(t.archive, t.store, &old)?;
         let mut ranges = Vec::new();
-        for (n, forms) in wanted.iter().enumerate() {
-            let hits = find_all(&bytes, forms);
+        texts.visit(MIN_BLANKED, |text| {
+            let hits = find_all(&bytes, &quoted(text));
             if !hits.is_empty() {
-                found[n] = true;
+                texts.found(text)?;
             }
             // The string's inside only: the quotes keep the document valid.
             ranges.extend(hits.into_iter().map(|(s, e)| (s + 1, e - 1)));
-        }
+            Ok(())
+        })?;
         if ranges.is_empty() {
             continue;
         }
@@ -304,11 +299,10 @@ pub(super) fn blank_document(
             delete_files.extend(gone.file);
         }
     }
-    left += found.iter().filter(|f| !**f).count() as u64;
     if !req.dry_run && !spans_json.is_empty() {
         insert_excised_observations(t, input, req, Some(&serde_json::Value::Array(spans_json)))?;
     }
-    Ok(left)
+    texts.missing()
 }
 
 pub(super) fn record_piece(t: &Transactions<'_, '_>, piece: &Piece) -> Result<()> {
