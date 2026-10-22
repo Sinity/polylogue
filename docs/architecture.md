@@ -670,9 +670,11 @@ excisions cannot be reconciled retrospectively. One policy row remains the
 largest individual descriptor bound. Additive embeddings migrations preserve
 purchased vectors and reject newer unsupported schemas.
 
-Local file cleanup records the operation's exact deletion hashes in
-`pending_blob_excision` before committing. Replay uses only the primary blob
-store and bounded groups of 500 keys; a failed delete or queue commit leaves
+Local file cleanup records each authorized deletion directly in
+`pending_blob_excision` in the archive transaction. Replaced blobs, orphaned
+files and retired local batches feed that table without an operation-wide
+in-memory file list; rollback discards their intent with the canonical changes.
+Replay uses only the primary blob store and bounded groups of 500 keys; a failed delete or queue commit leaves
 recoverable intent and stops the writer. Missing local files permit retry.
 Before deletion, current catalog, extent and delta-base references refuse the
 operation. Current replacement batches and their source references are selected

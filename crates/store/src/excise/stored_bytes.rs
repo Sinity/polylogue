@@ -156,7 +156,6 @@ pub(super) fn overwrite(
     spans: &Spans,
     req: &ExciseRequest,
     refused: &mut RefusedJson,
-    delete_files: &mut Vec<BlobHash>,
 ) -> Result<()> {
     let erasures = erasures::Erasures::new()?;
     let mut ext = t.archive.prepare(
@@ -196,8 +195,9 @@ pub(super) fn overwrite(
         })?;
         if let Some(gone) = bytes.replace(t, &old, |blank| erasures.visit_ranges(hash, blank))? {
             refused.blobs.push(hex(&gone.hash));
-            // The old file goes with the other deletions, after commit.
-            delete_files.extend(gone.file);
+            if let Some(hash) = gone.file {
+                blob_cleanup::record(t.archive, &req.id, &hash)?;
+            }
         }
         Ok(())
     })?;
@@ -243,7 +243,6 @@ pub(super) fn blank_document(
     texts: &SessionTexts,
     req: &ExciseRequest,
     refused: &mut RefusedJson,
-    delete_files: &mut Vec<BlobHash>,
     done: &mut Excised,
 ) -> Result<u64> {
     let matches = erasures::Erasures::new()?;
@@ -285,7 +284,9 @@ pub(super) fn blank_document(
         })?;
         if let Some(gone) = bytes.replace(t, &old, |blank| ranges.ranges(blank))? {
             refused.blobs.push(hex(&gone.hash));
-            delete_files.extend(gone.file);
+            if let Some(hash) = gone.file {
+                blob_cleanup::record(t.archive, &req.id, &hash)?;
+            }
         }
         Ok(())
     })?;

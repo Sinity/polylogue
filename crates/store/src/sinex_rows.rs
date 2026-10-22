@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 mod excision;
-pub(crate) use excision::{Capture, CurrentBatches, retired_local};
+pub(crate) use excision::{Capture, CurrentBatches, visit_retired_local_batches};
 pub use excision::{ExcisionPublication, Replacement};
 mod restore;
 #[cfg(test)]

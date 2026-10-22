@@ -11,6 +11,17 @@ pub(crate) fn pending(conn: &Connection) -> Result<bool> {
     )?)
 }
 
+/// Records an authorized local retirement in the caller's archive transaction.
+/// File removal belongs to replay after commit.
+pub(super) fn record(tx: &Transaction<'_>, excision_id: &str, hash: &BlobHash) -> Result<()> {
+    tx.execute(
+        "INSERT INTO pending_blob_excision(hash,excision_id) VALUES (?1,?2)
+         ON CONFLICT(hash) DO UPDATE SET excision_id=excluded.excision_id",
+        rusqlite::params![&hash.0[..], excision_id],
+    )?;
+    Ok(())
+}
+
 pub(super) fn require_no_delta_base(conn: &Connection, hash: &BlobHash) -> Result<()> {
     let retained: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM blob WHERE base=?1)",

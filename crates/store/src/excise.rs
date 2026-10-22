@@ -416,7 +416,6 @@ impl<'a> Plan<'a> {
             Some(crate::sinex_rows::Capture::start(t.archive, &req.id)?)
         };
         let mut refused = RefusedJson::default();
-        let mut delete_files = Vec::new();
         let hashes = RemovalHashes::new(t.index)?;
         if !req.dry_run {
             // First, so the `excised` observations can name it; what it
@@ -436,7 +435,6 @@ impl<'a> Plan<'a> {
                 req,
                 done,
                 &mut refused,
-                &mut delete_files,
                 &hashes,
             )?;
         }
@@ -465,21 +463,12 @@ impl<'a> Plan<'a> {
         for input in &self.whole {
             remove_input(t, input, req, &mut refused, done, &hashes)?;
         }
-        self.spans.visit_inputs(|input, _| {
-            overwrite(t, input, &self.spans, req, &mut refused, &mut delete_files)
-        })?;
+        self.spans
+            .visit_inputs(|input, _| overwrite(t, input, &self.spans, req, &mut refused))?;
         if !self.kept.is_empty() {
             let mut still = BTreeSet::new();
             for input in &self.kept {
-                let left = blank_document(
-                    t,
-                    input,
-                    &self.own_texts,
-                    req,
-                    &mut refused,
-                    &mut delete_files,
-                    done,
-                )?;
+                let left = blank_document(t, input, &self.own_texts, req, &mut refused, done)?;
                 done.texts_left += left;
                 if left > 0 {
                     still.insert(input.clone());
@@ -541,7 +530,7 @@ impl<'a> Plan<'a> {
                 if place == "file"
                     && let Ok(arr) = <[u8; 32]>::try_from(hash)
                 {
-                    delete_files.push(BlobHash(arr));
+                    blob_cleanup::record(t.archive, &req.id, &BlobHash(arr))?;
                 }
                 Ok(())
             })?;
@@ -596,17 +585,12 @@ impl<'a> Plan<'a> {
 
         if let Some(capture) = capture {
             let publication = capture.finish(t.archive, t.store)?;
-            delete_files.extend(crate::sinex_rows::retired_local(t.archive, &publication)?);
+            crate::sinex_rows::visit_retired_local_batches(t.archive, &publication, |hash| {
+                blob_cleanup::record(t.archive, &req.id, &hash)
+            })?;
             refused.publication = Some(publication);
         }
         if !req.dry_run {
-            for hash in &delete_files {
-                t.archive.execute(
-                    "INSERT INTO pending_blob_excision(hash,excision_id) VALUES (?1,?2)
-                     ON CONFLICT(hash) DO UPDATE SET excision_id=excluded.excision_id",
-                    params![&hash.0[..], req.id],
-                )?;
-            }
             t.archive.execute(
                 "UPDATE excision SET refused_json = ?2, message_ids_json = ?3 WHERE id = ?1",
                 params![
@@ -635,7 +619,6 @@ impl<'a> Plan<'a> {
         req: &ExciseRequest,
         done: &mut Excised,
         refused: &mut RefusedJson,
-        _delete_files: &mut Vec<BlobHash>,
         hashes: &RemovalHashes<'_>,
     ) -> Result<()> {
         let reparse = matches.inputs();
