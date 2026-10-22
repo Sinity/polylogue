@@ -266,7 +266,9 @@ struct Plan {
 impl Plan {
     fn finished(&self) -> bool {
         self.failed
-            || (self.piece_pos >= self.size && (self.waiting || self.parse_pos >= self.size))
+            || (self.observation.is_none()
+                && self.piece_pos >= self.size
+                && (self.waiting || self.parse_pos >= self.size))
     }
 
     fn next_job(&mut self) -> Job {
@@ -274,8 +276,12 @@ impl Plan {
         let end = self.size.min(start + self.span);
         let piece_from = (end > self.piece_pos).then_some(self.piece_pos);
         let (change, observation, continues, length) = match piece_from {
+            None if self.size == 0 && self.observation.is_some() => {
+                // An empty acquisition still publishes its revision and file facts.
+                (self.change.clone(), self.observation.take(), false, end)
+            }
             Some(_) if !self.piece_started => {
-                (self.change.clone(), self.observation.clone(), false, end)
+                (self.change.clone(), self.observation.take(), false, end)
             }
             Some(_) => (self.change.clone(), None, true, end),
             None => (
@@ -329,7 +335,7 @@ impl Plan {
         } else {
             // Only an incomplete last record remains; it is parsed when the
             // file grows, from `parse_pos`, which stays before it.
-            self.waiting = true;
+            self.waiting = self.parse_pos < self.size;
         }
     }
 }

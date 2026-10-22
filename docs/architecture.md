@@ -41,6 +41,10 @@ worker pool feeds one bounded writer. Source interpretation stays
 in sources; SQLite access stays in store. Rebuilding a derived index must not
 replace the retained observations with a claim that a provider file is still
 available.
+Recognized empty live inputs still publish a zero-length revision and file
+observation. They create no empty extent or conversation. The same path handles
+truncation to empty and later growth; pending file facts are work even when
+there are no bytes to parse.
 
 Hook settings and reader credentials are replaced using
 `atomicwrites`, which owns temporary-file cleanup, file synchronization,
