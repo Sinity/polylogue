@@ -93,6 +93,58 @@ fn supplied_session_kinds_skip_the_database_fallback() {
 }
 
 #[test]
+fn new_messages_do_not_read_a_previous_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_write(&dir.path().join("index.db"), 1).unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    // With caching disabled, authorization sees every statement execution.
+    conn.set_prepared_statement_cache_capacity(0);
+    let tx = conn.transaction().unwrap();
+    let observed = Arc::new(AtomicU64::new(0));
+    let count = observed.clone();
+    tx.authorizer(Some(move |context: AuthContext<'_>| {
+        if matches!(
+            context.action,
+            AuthAction::Read {
+                table_name: "message_source",
+                column_name: "version_hash"
+            }
+        ) {
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+        Authorization::Allow
+    }))
+    .unwrap();
+    let messages = 32;
+    let rows = (0..messages)
+        .map(|n| {
+            row(
+                n,
+                text_message(&format!("new-{n}"), "main", Role::User, "Body", None),
+            )
+        })
+        .collect();
+    let mut b = batch("input1", 0, 100, rows, &["main"]);
+    b.parse[0].at_end = false;
+    assert_eq!(
+        write_rows(&tx, &b, &b.parse[0], 1, 1, true).unwrap(),
+        messages
+    );
+    tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+        .unwrap();
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM message_source", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        messages as i64
+    );
+    let reads = observed.load(Ordering::Relaxed);
+    println!("source-version reads for {messages} new messages: {reads}");
+    // The current-message lookup reads the preferred version once per message.
+    assert_eq!(reads, messages, "new sources still query a previous value");
+}
+
+#[test]
 fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
     for mode in ["unprepared", "prepared", "repeated"] {
         let w = world();
