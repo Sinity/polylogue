@@ -90,12 +90,17 @@ pub(in crate::excise) fn clear_for_reparse(
     let mut rows = selected.query([])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(1)?;
-        let (texts, session_blobs) = crate::session_row::remove(i, row.get(0)?, &id, t.counter)?;
-        for text in texts {
-            i.prepare_cached("INSERT OR IGNORE INTO temp.excision_reparse_text VALUES (?1)")?
-                .execute([text])?;
-        }
-        blobs.extend(session_blobs);
+        crate::session_row::remove_with_references(i, row.get(0)?, &id, t.counter, |references| {
+            references.visit_texts(|text| {
+                i.prepare_cached("INSERT OR IGNORE INTO temp.excision_reparse_text VALUES (?1)")?
+                    .execute([text])?;
+                Ok(())
+            })?;
+            references.visit_blobs(|hash| {
+                blobs.insert(hash.to_vec());
+                Ok(())
+            })
+        })?;
         crate::fault::check("excision_reparse.after_session", "")?;
     }
     drop(rows);

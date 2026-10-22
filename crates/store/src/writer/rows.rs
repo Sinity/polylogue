@@ -168,7 +168,11 @@ pub(super) fn write_rows(
     Ok(written)
 }
 
-pub(crate) fn promote_current(tx: &Transaction<'_>, messages: &[i64], counter: i64) -> Result<()> {
+pub(crate) fn promote_current(
+    tx: &Transaction<'_>,
+    messages: impl IntoIterator<Item = rusqlite::Result<i64>>,
+    counter: i64,
+) -> Result<()> {
     let packed = HashMap::new();
     let ctx = Ctx {
         tx,
@@ -183,7 +187,7 @@ pub(crate) fn promote_current(tx: &Transaction<'_>, messages: &[i64], counter: i
         bulk: false,
     };
     for message in messages {
-        ctx.promote_current(*message)?;
+        ctx.promote_current(message?)?;
     }
     Ok(())
 }

@@ -602,8 +602,14 @@ separately freezes candidate text IDs, affected sessions and all their input
 references in index TEMP tables before deletion. Input cleanup uses SQL
 membership, preserving process, run and link sources without an expanded SQL
 list. Orphan cleanup protects both current blocks and retained versions. Final
-public session and input lists, per-session removal outputs and canonical JSON
-strings remain memory bounds. Excision streams changed unit keys from
+public session and input lists and canonical JSON strings remain memory bounds.
+Session removal freezes copied-message IDs and, only for excision, the current
+and historical text/blob reference union on disk. It streams tool-call search
+cleanup and copy promotion through the existing writer context, then lets the
+caller process references after promotion and version pruning. The TEMP table
+definitions live with the index connection because dropping them would lock
+callers' active TEMP cursors; all staging rows are cleared before success and
+roll back on failure. Ordinary reparse skips reference capture. Excision streams changed unit keys from
 the canonical writer's temporary table and uses `sinex_rows/excision/retirement.rs` to select historical
 batches on disk.
 A batch remains protected while any current replacement references it, including

@@ -158,7 +158,7 @@ pub(super) fn remove_input(
         }
         t.index
             .execute("UPDATE input_ref SET excised = 1 WHERE pk = ?1", [pk])?;
-        crate::writer::promote_current(t.index, &messages, t.counter)?;
+        crate::writer::promote_current(t.index, messages.into_iter().map(Ok), t.counter)?;
     }
     let _ = done;
     crate::versions::prune(t.index)?;
@@ -218,40 +218,44 @@ pub(super) fn delete_session(
 ) -> Result<()> {
     let i = t.index;
     if dry_run {
-        let hashes: Vec<Vec<u8>> = i
-            .prepare(
-                "SELECT DISTINCT t.hash FROM block b JOIN text t ON t.id = b.text_id
-                 WHERE b.session_pk = ?1 AND NOT EXISTS
-                   (SELECT 1 FROM block o WHERE o.text_id = b.text_id AND o.session_pk <> ?1)",
-            )?
-            .query_map([pk], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        removed_texts.extend(hashes);
+        let mut hashes = i.prepare(
+            "SELECT DISTINCT t.hash FROM block b JOIN text t ON t.id = b.text_id
+             WHERE b.session_pk = ?1 AND NOT EXISTS
+               (SELECT 1 FROM block o WHERE o.text_id = b.text_id AND o.session_pk <> ?1)",
+        )?;
+        for hash in hashes.query_map([pk], |r| r.get::<_, Vec<u8>>(0))? {
+            removed_texts.insert(hash?);
+        }
         return Ok(());
     }
-    let (text_ids, session_blobs) = crate::session_row::remove(i, pk, id, t.counter)?;
-    blobs.extend(session_blobs);
-    i.execute(
-        "INSERT INTO removed_session(session_id, changed) VALUES (?1, ?2)
+    crate::session_row::remove_with_references(i, pk, id, t.counter, |references| {
+        references.visit_blobs(|hash| {
+            blobs.insert(hash.to_vec());
+            Ok(())
+        })?;
+        i.execute(
+            "INSERT INTO removed_session(session_id, changed) VALUES (?1, ?2)
          ON CONFLICT(session_id) DO UPDATE SET changed = excluded.changed",
-        params![id, t.counter],
-    )?;
-    // Texts no remaining block holds.
-    for tid in text_ids {
-        let row: Option<(Vec<u8>, i64)> = i
-            .query_row(
-                "SELECT hash, indexed FROM text WHERE id = ?1
+            params![id, t.counter],
+        )?;
+        // Texts no remaining block holds.
+        references.visit_texts(|tid| {
+            let row: Option<(Vec<u8>, i64)> = i
+                .query_row(
+                    "SELECT hash, indexed FROM text WHERE id = ?1
                  AND NOT EXISTS (SELECT 1 FROM block WHERE text_id = ?1)
                  AND NOT EXISTS (SELECT 1 FROM version_block WHERE text_id = ?1)",
-                [tid],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        if let Some((hash, indexed)) = row {
-            crate::text_rows::remove(i, tid, indexed)?;
-            removed_texts.insert(hash);
-        }
-    }
+                    [tid],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            if let Some((hash, indexed)) = row {
+                crate::text_rows::remove(i, tid, indexed)?;
+                removed_texts.insert(hash);
+            }
+            Ok(())
+        })
+    })?;
     Ok(())
 }
 
