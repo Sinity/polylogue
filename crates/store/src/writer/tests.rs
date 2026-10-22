@@ -900,3 +900,5 @@ mod parser_versions;
 mod reparse;
 
 mod metadata;
+
+mod statement_cache;

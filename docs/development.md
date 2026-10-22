@@ -154,6 +154,12 @@ Follow the forge's required review statuses when merging. There is no hosted
 test CI. Run the full suite on batches of merged work and fix what it finds
 in follow-up PRs.
 
+The writer reuses prepared SQL for message-version and source writes. Its
+work test counts SQLite preparation callbacks while checking exact message and
+tool-result counts; it has no elapsed-time assertion. Writer connections keep
+the library's existing statement-cache limit. A first build releases its cached
+insert programs before the bulk search scan.
+
 ## Timing in tests
 
 Tests do not assert on elapsed time. A test that checks a deadline arranges

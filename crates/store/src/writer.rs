@@ -538,6 +538,8 @@ impl Inner {
     /// indexes are written once instead of rewritten through the build.
     fn build_deferred(&mut self) -> Result<()> {
         use crate::timing::{Stage, add};
+        // Bulk inserts are finished; release their cached programs before the search scan.
+        self.index.flush_prepared_statement_cache();
         let started = std::time::Instant::now();
         crate::text_rows::index_marked(&self.index)?;
         add(Stage::SearchIndex, started.elapsed());
