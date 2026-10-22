@@ -23,6 +23,7 @@ impl Catalog {
             CREATE TABLE selected(seq INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
                 data TEXT NOT NULL, tombstone INTEGER NOT NULL,
                 PRIMARY KEY(seq,kind,key)) WITHOUT ROWID;
+            CREATE INDEX selected_fact ON selected(kind,key);
             CREATE TABLE excision_applied(id_hash BLOB PRIMARY KEY,policy_hash BLOB NOT NULL) WITHOUT ROWID;
             CREATE TABLE verified_source(hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL CHECK(bytes>=0)) WITHOUT ROWID;
             CREATE TABLE blob_range(hash TEXT PRIMARY KEY, needed INTEGER NOT NULL) WITHOUT ROWID;
@@ -97,8 +98,16 @@ impl Catalog {
                 let unit = &original.unit;
                 if unit.commit_seq < 1
                     || unit.key.is_empty()
-                    || !["revision", "note", "excision", "setting", "delivery"]
-                        .contains(&unit.kind.as_str())
+                    || ![
+                        "revision",
+                        "note",
+                        "excision",
+                        "setting",
+                        "delivery",
+                        "observation",
+                        "delivery_event",
+                    ]
+                    .contains(&unit.kind.as_str())
                     || previous.as_ref().is_some_and(|p: &Unit| p >= unit)
                 {
                     return Err(invalid(

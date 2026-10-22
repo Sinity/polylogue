@@ -356,13 +356,13 @@ pub(super) fn insert_excised_observations(
         .prepare("SELECT DISTINCT machine, path FROM observation WHERE input = ?1")?
         .query_map([input], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    for (n, (machine, path)) in rows.into_iter().enumerate() {
+    for (machine, path) in rows {
         t.archive.execute(
             "INSERT INTO observation(id, input, machine, path, class, excision, spans_json,
-                 polylogue_version, seen_at)
-             VALUES (?1, ?2, ?3, ?4, 'excised', ?5, ?6, ?7, ?8)",
+                 polylogue_version, seen_at, commit_seq)
+             VALUES (?1, ?2, ?3, ?4, 'excised', ?5, ?6, ?7, ?8, ?9)",
             params![
-                format!("{at:012x}-{:08x}-{n}-{input}", t.seq),
+                crate::writer::observation_id(t.archive, t.seq, input)?,
                 input,
                 machine,
                 path,
@@ -370,6 +370,7 @@ pub(super) fn insert_excised_observations(
                 spans.map(ToString::to_string),
                 env!("CARGO_PKG_VERSION"),
                 at,
+                t.seq,
             ],
         )?;
     }

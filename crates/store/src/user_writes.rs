@@ -238,9 +238,9 @@ pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<U
                 return Err(StoreError::NotFound(format!("delivery {delivery}")));
             }
             tx.execute(
-                "INSERT OR IGNORE INTO delivery_event(delivery, what, at, detail)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![delivery, what.as_str(), at, detail],
+                "INSERT OR IGNORE INTO delivery_event(delivery, what, at, detail, commit_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![delivery, what.as_str(), at, detail, seq],
             )?;
             Ok(UserOutcome {
                 id: delivery.clone(),

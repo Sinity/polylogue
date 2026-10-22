@@ -430,6 +430,103 @@ async fn excision_restores_current_units_after_retired_payloads_and_unknown_ack(
     assert_eq!(values(&incomplete), values(&source_archive));
     assert_eq!(values(&incomplete)[1].2, "unrelated exact text");
     assert_eq!(sinex.publish(&a).await.unwrap().units, 0);
+
+    // A later lifecycle fact has its own frame after its prepared delivery is held.
+    use polylogue_store::user_writes::{UserRequest, UserWrite};
+    writer
+        .user(UserRequest::now(
+            "prepared:[opaque]".into(),
+            UserWrite::Deliver(polylogue_store::Delivery {
+                recipient_kind: "operator".into(),
+                recipient_id: None,
+                sender: "cli".into(),
+                event: "advisory".into(),
+                cwd: None,
+                text: "Synthetic event fixture".into(),
+                refs: vec![],
+                left_out: vec![],
+            }),
+        ))
+        .unwrap();
+    assert_eq!(sinex.publish(&a).await.unwrap().units, 1);
+    assert_eq!(sinex.publish(&a).await.unwrap().units, 0);
+    writer
+        .user(UserRequest::now(
+            "late-event".into(),
+            UserWrite::DeliveryEvent {
+                delivery: "prepared:[opaque]".into(),
+                what: polylogue_store::DeliveryOutcome::Failed,
+                detail: Some("synthetic event-private-token evidence".into()),
+            },
+        ))
+        .unwrap();
+    let sent = sinex.publish(&a).await.unwrap();
+    assert_eq!(sent.units, 1, "late fact must append exactly one unit");
+    let published = polylogue_store::sinex_rows::Published::open(&a).unwrap();
+    let expected_units = published.inventory().unwrap().len();
+    let event = inventory_units(&published)
+        .into_iter()
+        .find(|u| u.kind == "delivery_event")
+        .unwrap();
+    let mut event_batch = published.read(&event).unwrap();
+    let mut digest = blake3::Hasher::new();
+    std::io::copy(&mut event_batch.file, &mut digest).unwrap();
+    let event_hash = hashed_blobs::Hash(*digest.finalize().as_bytes());
+    drop(published);
+    let event_values = |archive: &Archive| {
+        let db = polylogue_store::archive::open_read(&archive.archive_db()).unwrap();
+        db.query_row(
+            "SELECT delivery,what,at,detail,commit_seq FROM delivery_event",
+            [],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+    let deadline = Instant::now();
+    loop {
+        if sinex.restore(&incomplete, &id).await.unwrap().units == expected_units {
+            break;
+        }
+        assert!(deadline.elapsed() < Duration::from_secs(20));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(event_values(&incomplete), event_values(&source_archive));
+    writer
+        .excise(
+            polylogue_store::excise::ExciseRequest {
+                id: "redact-event".into(),
+                scope: polylogue_store::excise::Scope::Text("event-private-token".into()),
+                reason: None,
+                dry_run: false,
+            },
+            local.clone(),
+        )
+        .unwrap();
+    assert_eq!(sinex.publish(&a).await.unwrap().units, 1);
+    let deadline = Instant::now();
+    loop {
+        if sinex.restore(&incomplete, &id).await.unwrap().units == expected_units + 1 {
+            break;
+        }
+        assert!(deadline.elapsed() < Duration::from_secs(20));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    physical.delete(&event_hash).unwrap();
+    let (event_fresh, _event_lock) =
+        Archive::open_or_create(&dir.path().join("after-event-retirement")).unwrap();
+    sinex.restore(&event_fresh, &id).await.unwrap();
+    assert_eq!(event_values(&event_fresh), event_values(&source_archive));
+    assert!(!event_values(&event_fresh).3.contains("event-private-token"));
+    assert_eq!(sinex.restore(&event_fresh, &id).await.unwrap().rows, 0);
+    legacy::parent_retirement(&mut sinex, &store, dir.path()).await;
 }
 
 fn inventory_units(published: &super::ArchiveRows) -> Vec<polylogue_store::sinex_rows::Unit> {
@@ -440,3 +537,5 @@ fn inventory_units(published: &super::ArchiveRows) -> Vec<polylogue_store::sinex
 }
 
 mod placement;
+
+mod legacy;

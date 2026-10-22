@@ -386,6 +386,27 @@ The next pass asks Sinex which stable frame keys it holds before resending.
 Synchronous archive and blob operations finish before cancellation is polled;
 this does not impose a hard shutdown deadline or qualify primary mode.
 
+Each observation and delivery event has its own append-ordered publication
+unit. Its sequence is the inserting transaction's write counter; event keys
+are JSON `[delivery,what,at]` tuples because delivery IDs are opaque. Migration
+assigns existing facts deterministic sequences, preserving observation rowid order,
+after both the old write counter
+and every existing unit sequence, then advances the counter. Newly assigned
+observation IDs sort in insertion order within a shared transaction sequence;
+consumers treat IDs as opaque. Existing parent
+identities and confirmed positions remain unchanged. New revision, excision and
+delivery batches exclude independently owned observations and events.
+
+Historical parent batches retain their original hash and row count. Restore
+verifies their complete closure but skips a legacy embedded fact when the final
+selection includes that fact's independent unit, including a tombstone. General
+row equality remains strict. An observation batch includes its cited input and
+machine rows. A positive revision reference must name a selected revision
+identity, including an excision-authorized tombstone for historical observations.
+Same-archive restore refuses a view missing any
+local independently sequenced fact before removing rows. Excision replaces the
+independent units and the parents that could contain legacy embedded copies.
+
 Restore orders confirmations and folds later replacements in an operation-scoped
 SQLite file. It checks exact repeats, conflicting positions, gaps and unit order
 before opening payloads. The same scratch database holds excision's input and
@@ -404,8 +425,8 @@ by the selected replacements.
 Row batches retain their per-unit identity, row-count and integrity checks.
 Revision batches also match extent blob references, supplied plain-file catalog
 rows and the selected descriptor's source references as sets in the scratch
-catalog. Machine rows must be cited by this revision's observations; several
-host labels for one machine remain valid. Extents must belong to the owning
+catalog. Machine rows must be cited by the owning observation or a legacy revision's
+embedded observations; several host labels for one machine remain valid. Extents must belong to the owning
 chain and start within its length; their positive source slices must fit the
 verified source sizes. Catalog sizes must equal those verified byte counts.
 These checks do not reconstruct every earlier

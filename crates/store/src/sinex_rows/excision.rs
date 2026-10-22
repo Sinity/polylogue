@@ -172,12 +172,19 @@ fn triggers() -> Vec<(&'static str, &'static str, String)> {
             "OLD"
         };
         out.push(("delivery_event", event, format!(
-            "INSERT OR IGNORE INTO excision_units SELECT commit_seq, 'delivery', id FROM delivery WHERE id = {row}.delivery;"
+            "INSERT OR IGNORE INTO excision_units SELECT commit_seq, 'delivery', id FROM delivery WHERE id = {row}.delivery;
+ INSERT OR IGNORE INTO excision_units SELECT {row}.commit_seq,'delivery_event',json_array({row}.delivery,{row}.what,{row}.at) WHERE {row}.commit_seq>0;"
         )));
         out.push(("extent", event, format!(
             "INSERT OR IGNORE INTO excision_units SELECT commit_seq, 'revision', input || '/' || number
              FROM revision WHERE input = {row}.input AND chain = {row}.chain AND length > {row}.offset;"
         )));
+    }
+    for event in ["AFTER UPDATE", "BEFORE DELETE"] {
+        out.push(("observation",event,
+            "INSERT OR IGNORE INTO excision_units SELECT OLD.commit_seq,'observation',OLD.id WHERE OLD.commit_seq>0;
+             INSERT OR IGNORE INTO excision_units SELECT commit_seq,'revision',input||'/'||number FROM revision WHERE input=OLD.input AND number=OLD.revision;
+ INSERT OR IGNORE INTO excision_units SELECT commit_seq,'excision',id FROM excision WHERE id=OLD.excision AND id<>(SELECT id FROM excision_request);".into()));
     }
     out.push(("revision", "BEFORE DELETE", "INSERT OR IGNORE INTO excision_units SELECT OLD.commit_seq, 'revision', OLD.input || '/' || OLD.number;".into()));
     out
@@ -199,8 +206,16 @@ impl ExcisionPublication {
             let unit = &replacement.unit;
             if unit.commit_seq < 1
                 || unit.key.is_empty()
-                || !["revision", "note", "excision", "setting", "delivery"]
-                    .contains(&unit.kind.as_str())
+                || ![
+                    "revision",
+                    "note",
+                    "excision",
+                    "setting",
+                    "delivery",
+                    "observation",
+                    "delivery_event",
+                ]
+                .contains(&unit.kind.as_str())
                 || previous.is_some_and(|previous: &Unit| previous >= unit)
             {
                 return Err(StoreError::Invalid(

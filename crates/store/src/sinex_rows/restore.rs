@@ -55,6 +55,23 @@ pub(super) fn install<R: Read>(
         if current.as_deref() != Some(archive_id) && populated(&tx)? {
             return Err(invalid("restore target is a nonempty different archive"));
         }
+        // A confirmed prefix cannot discard accepted facts that have not yet
+        // been published. Refuse before removing any parent closure.
+        let mut facts=tx.prepare("SELECT commit_seq,'observation',id FROM observation WHERE commit_seq>0
+            UNION ALL SELECT commit_seq,'delivery_event',json_array(delivery,what,at) FROM delivery_event WHERE commit_seq>0")?;
+        for fact in facts.query_map([], |r| {
+            Ok(Unit {
+                commit_seq: r.get(0)?,
+                kind: r.get(1)?,
+                key: r.get(2)?,
+            })
+        })? {
+            if units.find(&fact?)?.is_none() {
+                return Err(invalid(
+                    "confirmed view omits a locally retained observation or delivery event",
+                ));
+            }
+        }
         // An originating archive need not have a restore checkpoint. Its local
         // excisions still take precedence over older confirmed row bodies.
         let mut local = tx.prepare("SELECT commit_seq,id FROM excision")?;
@@ -151,13 +168,26 @@ fn remove(conn: &Connection, unit: &Unit) -> Result<()> {
             }
             conn.execute("DELETE FROM note WHERE id=?1", key)?;
         }
+        "observation" => {
+            conn.execute("DELETE FROM observation WHERE id=?1", key)?;
+        }
+        "delivery_event" => {
+            let (delivery, what, at) = super::delivery_event_key(unit)?;
+            conn.execute(
+                "DELETE FROM delivery_event WHERE delivery=?1 AND what=?2 AND at=?3",
+                rusqlite::params![delivery, what, at],
+            )?;
+        }
         "delivery" => {
-            conn.execute("DELETE FROM delivery_event WHERE delivery=?1", key)?;
+            conn.execute(
+                "DELETE FROM delivery_event WHERE delivery=?1 AND commit_seq=0",
+                key,
+            )?;
             conn.execute("DELETE FROM delivery WHERE id=?1", key)?;
         }
         "excision" => {
             conn.execute(
-                "DELETE FROM observation WHERE class='excised' AND excision=?1",
+                "DELETE FROM observation WHERE class='excised' AND excision=?1 AND commit_seq=0",
                 key,
             )?;
             conn.execute("DELETE FROM excision WHERE id=?1", key)?;
@@ -169,7 +199,7 @@ fn remove(conn: &Connection, unit: &Unit) -> Result<()> {
             let (input, number) = revision_key(unit)?;
             conn.execute("DELETE FROM extent WHERE input=?1 AND offset IN (SELECT e.offset FROM extent e JOIN revision r ON r.input=e.input AND r.number=?2 AND r.chain=e.chain WHERE e.input=?1 AND e.offset<r.length AND e.offset>=COALESCE((SELECT MAX(p.length) FROM revision p WHERE p.input=r.input AND p.chain=r.chain AND p.number<r.number),0)) AND chain=(SELECT chain FROM revision WHERE input=?1 AND number=?2)",rusqlite::params![input,number])?;
             conn.execute(
-                "DELETE FROM observation WHERE input=?1 AND revision=?2",
+                "DELETE FROM observation WHERE input=?1 AND revision=?2 AND commit_seq=0",
                 rusqlite::params![input, number],
             )?;
             conn.execute(

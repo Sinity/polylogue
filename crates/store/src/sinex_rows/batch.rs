@@ -93,15 +93,56 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
                 &mut out,
                 "machine",
                 "SELECT m.* FROM machine m WHERE m.id IN
-                   (SELECT machine FROM observation WHERE input = ?1 AND revision = ?2)",
+                   (SELECT machine FROM observation WHERE input = ?1 AND revision = ?2 AND commit_seq=0)",
                 &args,
             )?;
             add(
                 archive,
                 &mut out,
                 "observation",
-                "SELECT * FROM observation WHERE input = ?1 AND revision = ?2",
+                "SELECT * FROM observation WHERE input = ?1 AND revision = ?2 AND commit_seq=0",
                 &args,
+            )?;
+        }
+        "observation" => {
+            let exists: bool = archive.query_row(
+                "SELECT EXISTS(SELECT 1 FROM observation WHERE id=?1)",
+                [&unit.key],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                return Ok(out);
+            }
+            add(
+                archive,
+                &mut out,
+                "input",
+                "SELECT * FROM input WHERE id IN (SELECT input FROM observation WHERE id=?1)",
+                &key,
+            )?;
+            add(
+                archive,
+                &mut out,
+                "machine",
+                "SELECT * FROM machine WHERE id IN (SELECT machine FROM observation WHERE id=?1)",
+                &key,
+            )?;
+            add(
+                archive,
+                &mut out,
+                "observation",
+                "SELECT * FROM observation WHERE id=?1",
+                &key,
+            )?;
+        }
+        "delivery_event" => {
+            let (delivery, what, at) = super::delivery_event_key(unit)?;
+            add(
+                archive,
+                &mut out,
+                "delivery_event",
+                "SELECT * FROM delivery_event WHERE delivery=?1 AND what=?2 AND at=?3",
+                &[Sql::Text(delivery), Sql::Text(what), Sql::Integer(at)],
             )?;
         }
         "note" => {
@@ -132,7 +173,7 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
             // with the excision rather than reopening a retired original batch.
             add(archive,&mut out,"input",
                 "SELECT * FROM input WHERE id IN (
-                    SELECT input FROM observation WHERE class='excised' AND excision=?1
+                    SELECT input FROM observation WHERE class='excised' AND excision=?1 AND commit_seq=0
                     UNION SELECT i.id FROM input i,excision x,json_each(x.refused_json,'$.publication.replacements') j
                     WHERE x.id=?1 AND json_extract(j.value,'$.unit.kind')='revision'
                       AND substr(json_extract(j.value,'$.unit.key'),1,length(i.id)+1)=i.id||'/'
@@ -141,7 +182,7 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
                 archive,
                 &mut out,
                 "machine",
-                "SELECT * FROM machine WHERE id IN (SELECT machine FROM observation WHERE class='excised' AND excision=?1)",
+                "SELECT * FROM machine WHERE id IN (SELECT machine FROM observation WHERE class='excised' AND excision=?1 AND commit_seq=0)",
                 &key,
             )?;
             add(
@@ -155,7 +196,7 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
                 archive,
                 &mut out,
                 "observation",
-                "SELECT * FROM observation WHERE class = 'excised' AND excision = ?1 ORDER BY rowid",
+                "SELECT * FROM observation WHERE class = 'excised' AND excision = ?1 AND commit_seq=0 ORDER BY rowid",
                 &key,
             )?;
         }
@@ -178,7 +219,7 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
                 archive,
                 &mut out,
                 "delivery_event",
-                "SELECT * FROM delivery_event WHERE delivery = ?1",
+                "SELECT * FROM delivery_event WHERE delivery = ?1 AND commit_seq=0",
                 &key,
             )?;
         }

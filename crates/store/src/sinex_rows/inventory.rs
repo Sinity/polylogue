@@ -48,7 +48,9 @@ impl<'a> Inventory<'a> {
                 UNION ALL SELECT commit_seq,'note',id FROM note WHERE commit_seq>0
                 UNION ALL SELECT commit_seq,'excision',id FROM excision WHERE commit_seq>0
                 UNION ALL SELECT commit_seq,'setting',id FROM setting WHERE commit_seq>0
-                UNION ALL SELECT commit_seq,'delivery',id FROM delivery WHERE commit_seq>0",
+                UNION ALL SELECT commit_seq,'delivery',id FROM delivery WHERE commit_seq>0
+                UNION ALL SELECT commit_seq,'observation',id FROM observation WHERE commit_seq>0
+                UNION ALL SELECT commit_seq,'delivery_event',json_array(delivery,what,at) FROM delivery_event WHERE commit_seq>0",
             )?;
             let mut rows = source_units.query([])?;
             while let Some(row) = rows.next()? {
