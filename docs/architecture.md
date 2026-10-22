@@ -504,8 +504,15 @@ whitespace-only gaps using bounded file reads. Complete EOF and all endpoints
 must validate before counts mark the plan usable. Failures leave unpublished
 ranges inaccessible, and retries clear that blob's partial state. Ownership
 checks and physical replacement stream the completed ranges. Memory still
-includes one decoded JSON record, final observation JSON and the separate
-whole-document text-blanking range list.
+includes one decoded JSON record and final observation JSON.
+
+Whole-document text blanking uses separate literal tables in that same erasure
+owner. Blob ordinals freeze the source query's traversal before extents change.
+Each text/form scan emits hits to a nonunique range index, preserving repeated
+counts and sorted observation bytes. Completed zero-hit scans are distinct from
+interrupted scans; readers refuse incomplete results. `SessionTexts` retains
+text identity and found/missing accounting. The per-blob scan/replace order,
+quoted encodings and minimum-length rule remain unchanged.
 
 Restore orders confirmations and folds later replacements in an operation-scoped
 SQLite file. It checks exact repeats, conflicting positions, gaps and unit order

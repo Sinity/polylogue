@@ -38,10 +38,10 @@ impl PlainBlob {
         erasures.plan_blob(hash, &self.0)
     }
 
-    pub fn find(&self, needle: &[u8]) -> Result<Vec<(usize, usize)>> {
+    pub fn find(&self, needle: &[u8], visit: impl FnMut(usize, usize) -> Result<()>) -> Result<()> {
         let mut reader = self.0.try_clone()?;
         reader.seek(SeekFrom::Start(0))?;
-        literal_ranges(reader, needle, 64 * 1024)
+        literal_ranges(reader, needle, 64 * 1024, visit)
     }
 
     pub fn replace(
@@ -83,15 +83,15 @@ fn literal_ranges(
     mut reader: impl Read,
     needle: &[u8],
     chunk: usize,
-) -> Result<Vec<(usize, usize)>> {
+    mut visit: impl FnMut(usize, usize) -> Result<()>,
+) -> Result<()> {
     if needle.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let finder = memchr::memmem::Finder::new(needle);
     let mut bytes = Vec::new();
     let mut base = 0;
     let mut next = 0usize;
-    let mut ranges = Vec::new();
     loop {
         let carry = bytes.len();
         bytes.resize(carry + chunk, 0);
@@ -109,7 +109,7 @@ fn literal_ranges(
         for at in finder.find_iter(&bytes[skip..]) {
             let start = base + skip + at;
             next = start + needle.len();
-            ranges.push((start, next));
+            visit(start, next)?;
         }
         let keep = bytes.len().min(needle.len() - 1);
         let discard = bytes.len() - keep;
@@ -117,7 +117,7 @@ fn literal_ranges(
         bytes.truncate(keep);
         base += discard;
     }
-    Ok(ranges)
+    Ok(())
 }
 
 #[cfg(test)]

@@ -22,6 +22,20 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
     ]);
     let file = donor.dir.path().join("shared.json");
     fs::write(&file, original.to_json().unwrap().replace('☺', "\\u263a")).unwrap();
+    let original_bytes = fs::read(&file).unwrap();
+    let needle = serde_json::to_string(&text)
+        .unwrap()
+        .replace('☺', "\\u263a");
+    let ranges: Vec<_> = std::str::from_utf8(&original_bytes)
+        .unwrap()
+        .match_indices(&needle)
+        .map(|(at, _)| (at + 1, at + needle.len() - 1))
+        .collect();
+    assert!(!ranges.is_empty());
+    let mut expected_bytes = original_bytes.clone();
+    for &(start, end) in &ranges {
+        expected_bytes[start..end].fill(b' ');
+    }
     let w = ClaudeHome::new();
     let (mut engine, lock) = w.engine(64 << 20);
     engine.import(std::slice::from_ref(&file)).unwrap();
@@ -35,11 +49,48 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
     drop(index);
     let archive = Archive::at(&w.root);
     let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600).unwrap();
+    {
+        let canonical = rusqlite::Connection::open(archive.archive_db()).unwrap();
+        let hash: Vec<u8> = canonical
+            .query_row("SELECT DISTINCT blob FROM extent", [], |row| row.get(0))
+            .unwrap();
+        // Inject malformed retained metadata only in this synthetic archive.
+        canonical.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        canonical
+            .execute("UPDATE extent SET blob=x'01'", [])
+            .unwrap();
+        let failed = engine.excise(ExciseRequest {
+            id: "malformed-source-hash".into(),
+            scope: ExciseScope::parse("session:claude-code:removed").unwrap(),
+            reason: None,
+            dry_run: false,
+        });
+        canonical
+            .execute("UPDATE extent SET blob=?1", [hash])
+            .unwrap();
+        canonical.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        assert!(
+            failed
+                .unwrap_err()
+                .to_string()
+                .contains("invalid source blob hash")
+        );
+        assert_eq!(
+            canonical
+                .query_row("SELECT count(*) FROM excision", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
     for dry in [true, false] {
         let done = excise(&mut engine, "session:claude-code:removed", dry);
         assert_eq!(done.inputs_kept.len(), 1);
         assert!(done.texts_left >= 1, "the short 'ok' value remains");
-        assert!(done.inputs_overwritten.values().sum::<u64>() > 0);
+        assert_eq!(
+            done.inputs_overwritten.values().sum::<u64>(),
+            ranges.len() as u64
+        );
         assert_eq!(w.texts("kept"), std::slice::from_ref(&kept));
         let canonical = rusqlite::Connection::open(archive.archive_db()).unwrap();
         let hash: Vec<u8> = canonical
@@ -47,6 +98,29 @@ fn shared_document_without_record_ranges_blanks_only_complete_long_values() {
             .unwrap();
         let hash = polylogue_model::BlobHash(hash.try_into().unwrap());
         let raw = polylogue_store::blobs::read(&canonical, &store, &hash).unwrap();
+        assert_eq!(
+            raw,
+            if dry {
+                &original_bytes
+            } else {
+                &expected_bytes
+            }
+            .as_slice()
+        );
+        if !dry {
+            let source_hash = blake3::hash(&original_bytes).to_hex().to_string();
+            let expected_spans: Vec<_> = ranges
+                .iter()
+                .map(|&(start, end)| serde_json::json!([source_hash, start, end - start]))
+                .collect();
+            let expected = serde_json::to_string(&expected_spans).unwrap();
+            let recorded:Vec<String>=canonical.prepare("SELECT spans_json FROM observation WHERE class='excised' AND spans_json IS NOT NULL").unwrap().query_map([],|row|row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            assert!(!recorded.is_empty());
+            assert!(
+                recorded.iter().all(|value| value == &expected),
+                "{recorded:?}"
+            );
+        }
         let document = Document::from_json(std::str::from_utf8(&raw).unwrap()).unwrap();
         let removed_text = document.sessions[0].messages[0].text();
         if dry {
