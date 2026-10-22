@@ -309,29 +309,6 @@ impl Plan {
             .query_map([pk], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         self.message_ids.extend(ids);
-        // Its own texts: those no other session's block holds.
-        let mut bodies = t.index.prepare(
-            "SELECT t.body FROM text t WHERE t.id IN
-                 (SELECT text_id FROM block WHERE session_pk = ?1)
-                 AND NOT EXISTS
-                   (SELECT 1 FROM block o WHERE o.text_id = t.id AND o.session_pk <> ?1)",
-        )?;
-        for body in bodies.query_map([pk], |r| r.get::<_, Vec<u8>>(0))? {
-            self.own_texts.insert(&unpack_text(&body?)?)?;
-        }
-        let title: Option<String> = t
-            .index
-            .query_row(
-                "SELECT title FROM session s WHERE pk = ?1 AND NOT EXISTS
-               (SELECT 1 FROM session o WHERE o.title = s.title AND o.pk <> ?1)",
-                [pk],
-                |r| r.get(0),
-            )
-            .optional()?
-            .flatten();
-        if let Some(title) = title {
-            self.own_texts.insert(&title)?;
-        }
         // Every input the session's rows came from.
         let inputs: Vec<(i64, String)> = t
             .index
@@ -385,12 +362,43 @@ impl Plan {
         Ok(())
     }
 
+    /// Ownership is relative to the complete removal set, not one session
+    /// at a time: another selected session is not a surviving owner.
+    fn collect_texts(&mut self, t: &Transactions<'_, '_>) -> Result<()> {
+        if self.sessions.is_empty() {
+            return Ok(());
+        }
+        let selected: Vec<i64> = self.sessions.iter().map(|(pk, _)| *pk).collect();
+        let selected = serde_json::to_string(&selected)?;
+        let mut bodies = t.index.prepare(
+            "SELECT t.body FROM text t WHERE t.id IN
+               (SELECT text_id FROM block WHERE session_pk IN (SELECT value FROM json_each(?1)))
+             AND NOT EXISTS
+               (SELECT 1 FROM block o WHERE o.text_id=t.id
+                  AND o.session_pk NOT IN (SELECT value FROM json_each(?1)))",
+        )?;
+        for body in bodies.query_map([&selected], |r| r.get::<_, Vec<u8>>(0))? {
+            self.own_texts.insert(&unpack_text(&body?)?)?;
+        }
+        let mut titles = t.index.prepare(
+            "SELECT title FROM session s WHERE pk IN (SELECT value FROM json_each(?1))
+               AND title IS NOT NULL AND NOT EXISTS
+               (SELECT 1 FROM session o WHERE o.title=s.title
+                  AND o.pk NOT IN (SELECT value FROM json_each(?1)))",
+        )?;
+        for title in titles.query_map([&selected], |r| r.get::<_, String>(0))? {
+            self.own_texts.insert(&title?)?;
+        }
+        Ok(())
+    }
+
     fn apply(
         mut self,
         t: &Transactions<'_, '_>,
         req: &ExciseRequest,
         done: &mut Excised,
     ) -> Result<Excised> {
+        self.collect_texts(t)?;
         self.message_ids.sort_unstable();
         // Removing an input supersedes partial rewrites of its records.
         self.spans.retain(|input, _| !self.whole.contains(input));

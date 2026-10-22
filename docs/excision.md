@@ -16,8 +16,10 @@ A scan keeps one verified copy of each unique plain blob in an unlinked, mode-06
 
 Session bodies and titles are deduplicated in a private SQLite text set with a
 1 MiB cache and mmap disabled. Cleanup visits texts in lexical order and keeps
-byte-based blanking thresholds and per-document match counts. Delivered briefs
-are selected by exact session/message references and loaded one at a time;
+byte-based blanking thresholds and per-document match counts. Ownership is
+evaluated against all sessions the operation removes: text shared only among
+those sessions is removable, while an unselected session keeps its shared text.
+Delivered briefs are selected by exact session/message references and loaded one at a time;
 an unreadable referenced body refuses preview and execution. This bounds the
 decoded text collection, while a single retained blob, record-range catalogs
 and message-ID lists can still exceed memory.
