@@ -1,6 +1,6 @@
 use super::*;
 use std::fs::File;
-use std::io::{Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
 
 /// One verified plain blob, isolated from the archive until replacement.
@@ -38,6 +38,12 @@ impl PlainBlob {
         super::super::record_ranges::plan_file(&self.0, ranges)
     }
 
+    pub fn find(&self, needle: &[u8]) -> Result<Vec<(usize, usize)>> {
+        let mut reader = self.0.try_clone()?;
+        reader.seek(SeekFrom::Start(0))?;
+        literal_ranges(reader, needle, 64 * 1024)
+    }
+
     pub fn replace(
         mut self,
         t: &Transactions<'_, '_>,
@@ -70,3 +76,48 @@ impl PlainBlob {
         record_replacement(t, hash, piece)
     }
 }
+
+/// Retain only the suffix that could start a match in the next chunk.
+fn literal_ranges(
+    mut reader: impl Read,
+    needle: &[u8],
+    chunk: usize,
+) -> Result<Vec<(usize, usize)>> {
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
+    let finder = memchr::memmem::Finder::new(needle);
+    let mut bytes = Vec::new();
+    let mut base = 0;
+    let mut next = 0usize;
+    let mut ranges = Vec::new();
+    loop {
+        let carry = bytes.len();
+        bytes.resize(carry + chunk, 0);
+        let n = loop {
+            match reader.read(&mut bytes[carry..]) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => break result?,
+            }
+        };
+        bytes.truncate(carry + n);
+        if n == 0 {
+            break;
+        }
+        let skip = next.saturating_sub(base).min(bytes.len());
+        for at in finder.find_iter(&bytes[skip..]) {
+            let start = base + skip + at;
+            next = start + needle.len();
+            ranges.push((start, next));
+        }
+        let keep = bytes.len().min(needle.len() - 1);
+        let discard = bytes.len() - keep;
+        bytes.copy_within(discard.., 0);
+        bytes.truncate(keep);
+        base += discard;
+    }
+    Ok(ranges)
+}
+
+#[cfg(test)]
+mod tests;

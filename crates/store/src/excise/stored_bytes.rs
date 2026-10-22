@@ -119,26 +119,6 @@ pub(super) struct Gone {
     pub(super) file: Option<BlobHash>,
 }
 
-/// Overwrites `ranges` of a blob's bytes with spaces (line breaks kept),
-/// stores the result, points every extent at it and drops the old row.
-pub(super) fn replace_blob(
-    t: &Transactions<'_, '_>,
-    old: &BlobHash,
-    mut bytes: Vec<u8>,
-    ranges: &[(usize, usize)],
-) -> Result<Option<Gone>> {
-    let len = bytes.len();
-    for &(s, e) in ranges {
-        for b in &mut bytes[s.min(len)..e.min(len)] {
-            if *b != b'\n' {
-                *b = b' ';
-            }
-        }
-    }
-    let piece = Piece::prepare(t.store, &bytes)?;
-    record_replacement(t, old, piece)
-}
-
 fn record_replacement(
     t: &Transactions<'_, '_>,
     old: &BlobHash,
@@ -277,10 +257,13 @@ pub(super) fn blank_document(
             continue;
         };
         let old = BlobHash(arr);
-        let bytes = crate::blobs::read(t.archive, t.store, &old)?;
+        let bytes = plain_blob::PlainBlob::load(t, input, old)?;
         let mut ranges = Vec::new();
         texts.visit(MIN_BLANKED, |text| {
-            let hits = find_all(&bytes, &quoted(text));
+            let mut hits = Vec::new();
+            for needle in quoted(text) {
+                hits.extend(bytes.find(&needle)?);
+            }
             if !hits.is_empty() {
                 texts.found(text)?;
             }
@@ -299,7 +282,7 @@ pub(super) fn blank_document(
         for &(s, e) in &ranges {
             spans_json.push(serde_json::json!([hex(&hash), s, e - s]));
         }
-        if let Some(gone) = replace_blob(t, &old, bytes, &ranges)? {
+        if let Some(gone) = bytes.replace(t, &old, &ranges)? {
             refused.blobs.push(hex(&gone.hash));
             delete_files.extend(gone.file);
         }

@@ -33,7 +33,11 @@ rules. Scratch errors abort the operation.
 
 The largest individual JSON record, one blob's range list, logical source
 spans, message-ID lists and canonical JSON reports can still exceed memory.
-Text matching in shared whole documents still loads one complete blob.
+Shared-document text blanking scans the same verified scratch with a literal
+finder, retaining one quoted pattern and its chunk overlap. It preserves both
+supported JSON spellings and complete-string boundaries. The frozen blob-ID
+list and matches for one blob still remain in memory; each pattern scans the
+blob, so this does not bound multi-pattern work.
 
 Removing a session from a retained JSON export erases its complete records and the necessary array separators. Other bytes, line breaks and offsets stay unchanged, so an index rebuilt from the retained export can still read the surviving sessions. Preview performs the same boundary and overlap checks as execution.
 
