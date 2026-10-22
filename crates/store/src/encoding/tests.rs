@@ -70,3 +70,49 @@ fn damaged_compression_and_json_are_distinct_failures() {
         value
     );
 }
+
+#[test]
+fn prepared_rows_match_previous_codec_for_every_block_kind() {
+    let blocks = vec![
+        json!({"type":"text","text":"Łódź prose"}),
+        json!({"type":"text","text":""}),
+        json!({"type":"thinking","text":null,"signature":"sig","redacted":true}),
+        json!({"type":"thinking","text":"reasoning","signature":"sig"}),
+        json!({"type":"tool_call","call_id":"call:1","tool":"shell","action":"shell","input":{"nested":[null,42,"payload"]},"command":"true","path":"/synthetic"}),
+        json!({"type":"tool_result","call_id":"call:1","outcome":{"kind":"ok"},"output":"large output","data":{"nested":[false,"kept"]},"attachments":[{"name":"file","direction":"output"}]}),
+        json!({"type":"tool_result","call_id":null,"outcome":{"kind":"no_result"},"output":null}),
+        json!({"type":"image","name":"image","direction":"input"}),
+        json!({"type":"file","name":"file","direction":"output"}),
+        json!({"type":"other","type_name":"future","data":{"kept":[1,null,"payload"]}}),
+    ];
+    let message: Message = serde_json::from_value(json!({
+        "id":"claude-code:message", "session":"claude-code:session",
+        "parent":"claude-code:parent", "role":"assistant", "model":"synthetic-model",
+        "prompt_kind":"model", "blocks":blocks, "usage":{}, "stop_reason":"end_turn",
+        "reported_cost_usd":0.25, "duration_ms":42,
+        "production":{"effort":"high","permission":{"decision":"allowed"},"request_id":"request"}
+    }))
+    .unwrap();
+    let prepared = PreparedMessage::new(&message).unwrap();
+    let mut old_metadata = message.clone();
+    old_metadata.blocks.clear();
+    assert_eq!(prepared.attrs, pack_json(&old_metadata).unwrap());
+    assert_eq!(
+        prepared.hash,
+        *blake3::hash(&serde_json::to_vec(&message).unwrap()).as_bytes()
+    );
+    for (block, packed) in message.blocks.iter().zip(&prepared.blocks) {
+        let mut old_body = block.clone();
+        match &mut old_body {
+            Block::Text { text }
+            | Block::Thinking {
+                text: Some(text), ..
+            }
+            | Block::ToolResult {
+                output: Some(text), ..
+            } => text.clear(),
+            _ => {}
+        }
+        assert_eq!(*packed, pack_json(&old_body).unwrap());
+    }
+}
