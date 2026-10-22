@@ -635,8 +635,8 @@ CREATE TABLE version_block (
   blob_hash BLOB,
   PRIMARY KEY (version_hash, idx)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX version_block_text ON version_block(text_id);
-CREATE INDEX version_block_blob ON version_block(blob_hash);
+CREATE INDEX version_block_text ON version_block(text_id) WHERE text_id IS NOT NULL;
+CREATE INDEX version_block_blob ON version_block(blob_hash) WHERE blob_hash IS NOT NULL;
 
 CREATE TABLE snapshot (
   pk INTEGER PRIMARY KEY,
