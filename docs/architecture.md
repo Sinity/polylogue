@@ -588,7 +588,11 @@ Temporary disk scales with the catalog and largest row batch. The canonical
 manifest JSON value, one replacement and its blob-reference list remain memory
 bounds; newly created and public manifests still own their lists. The canonical archive writer uses file-backed temporary tables with
 a 1 MiB temporary page-cache target. Excision freezes selected message IDs in an unnamed SQLite database before
-deleting index rows. Its nonunique ID index supports exact membership and sorted
+deleting index rows. Session selection stays in an index-transaction TEMP table,
+without foreign keys, so deleting source rows cannot change membership or order.
+Text ownership and surviving-source checks query that table directly. It is
+dropped before success; failure and preview roll back its creation with the index
+transaction. The message selection's nonunique ID index supports exact membership and sorted
 canonical serialization while preserving duplicate counts. Notes and deliveries
 use that same selection; matched note targets keep their separate disk owner.
 The public result's session lists and the final canonical JSON string remain

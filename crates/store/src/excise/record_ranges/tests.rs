@@ -1,3 +1,5 @@
+pub(super) mod oracle;
+
 use super::*;
 use serde_json::{Value, json};
 

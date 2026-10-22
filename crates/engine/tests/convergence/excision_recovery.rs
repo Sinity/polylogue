@@ -428,3 +428,39 @@ fn unreadable_stored_text_refuses_excision_and_a_repaired_fixture_can_retry() {
     assert!(messages_of(&w.root, "claude-code:victim").is_empty());
     assert_eq!(w.export("claude-code:kept"), kept);
 }
+
+#[test]
+fn session_excision_reuses_one_writer_after_preview_refusal_and_success() {
+    let w = ClaudeHome::new();
+    for id in ["first", "second", "kept"] {
+        w.append(&format!("{id}.jsonl"), &user(&format!("m-{id}"), id, id));
+    }
+    let (mut engine, _lock) = w.engine(64 << 20);
+    assert!(engine.converge().unwrap().errors.is_empty());
+    let expected = w.export("claude-code:kept");
+    let mut request = ExciseRequest {
+        id: "first-preview".into(),
+        scope: ExciseScope::Session(SessionId::parse("claude-code:first").unwrap()),
+        reason: None,
+        dry_run: true,
+    };
+    assert_eq!(
+        engine.excise(request.clone()).unwrap().sessions,
+        ["claude-code:first"]
+    );
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 0);
+    request.scope = ExciseScope::Session(SessionId::parse("claude-code:missing").unwrap());
+    assert!(engine.excise(request.clone()).is_err());
+    for id in ["first", "second"] {
+        request.id = format!("remove-{id}");
+        request.scope =
+            ExciseScope::Session(SessionId::parse(&format!("claude-code:{id}")).unwrap());
+        request.dry_run = false;
+        assert_eq!(
+            engine.excise(request.clone()).unwrap().sessions,
+            [format!("claude-code:{id}")]
+        );
+    }
+    assert_eq!(w.export("claude-code:kept"), expected);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.excision"), 2);
+}
