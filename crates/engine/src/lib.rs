@@ -22,7 +22,7 @@ mod watch;
 use polylogue_model::Json;
 use polylogue_sources::{Capture, ORIGINS, OriginSpec, Support};
 pub use polylogue_store::excise::{ExciseRequest, Excised, Scope as ExciseScope};
-use polylogue_store::tool_databases::Exporter;
+use polylogue_store::tool_databases::Captures;
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
 };
@@ -171,6 +171,7 @@ impl Config {
 /// What one pass of the loop found and did, for `status`.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Pass {
+    /// Input visits, summed across turns by synchronous convergence.
     pub inputs_seen: u64,
     pub inputs_changed: u64,
     /// Bytes read from input files (new bytes plus any parsed again).
@@ -183,6 +184,8 @@ pub struct Pass {
     pub seconds: f64,
     pub unreadable_roots: Vec<PathBuf>,
     pub errors: Vec<String>,
+    /// A SQLite capture has more cooperative work to do.
+    pub capture_pending: bool,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -348,7 +351,7 @@ pub struct Engine {
     blobs: Arc<hashed_blobs::Store>,
     inputs: HashMap<PathBuf, InputState>,
     loaded: bool,
-    exporter: Exporter,
+    exporter: Captures,
     /// Paths on this machine an excision removed: never collected again.
     refused: HashSet<PathBuf>,
     lookups: repo_lookup::Cache,
@@ -397,7 +400,7 @@ impl Engine {
             blobs,
             inputs: HashMap::new(),
             loaded: false,
-            exporter: Exporter::default(),
+            exporter: Captures::default(),
             refused: HashSet::new(),
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
@@ -450,23 +453,6 @@ impl Engine {
             }
         }
         Ok(done)
-    }
-
-    /// Brings a tool database's export up to date when due; returns the
-    /// export file, or `None` when there is none yet.
-    fn export(
-        &mut self,
-        db: &Path,
-        origin: &'static OriginSpec,
-        pass: &mut Pass,
-    ) -> Option<PathBuf> {
-        let name = polylogue_sources::origin::export_name(db)?;
-        let out = self.archive.exports_dir().join(origin.name).join(name);
-        if let Err(e) = self.exporter.export(db, &out) {
-            pass.errors.push(format!("export {}: {e}", db.display()));
-            return None;
-        }
-        out.is_file().then_some(out)
     }
 
     /// A location's input id: stable for one path on one machine.
@@ -590,35 +576,92 @@ impl Engine {
             .map(|e| format!("ai-studio collector: {e}"))
     }
 
-    /// Runs one pass of the loop to completion.
+    /// Completes a finite capture batch. The daemon also discovers source
+    /// changes and services controls between its turns.
     pub fn converge(&mut self) -> Result<Pass, EngineError> {
+        let mut total = self.converge_turn()?;
+        while total.capture_pending {
+            let next = self.converge_work(false)?;
+            total.inputs_seen += next.inputs_seen;
+            total.inputs_changed += next.inputs_changed;
+            total.bytes_read += next.bytes_read;
+            total.bytes_stored += next.bytes_stored;
+            total.messages_written += next.messages_written;
+            total.sessions_derived += next.sessions_derived;
+            total.seconds += next.seconds;
+            total.unreadable_roots = next.unreadable_roots;
+            total.errors.extend(next.errors);
+            total.capture_pending = next.capture_pending;
+        }
+        Ok(total)
+    }
+
+    /// Services ordinary inputs and one cooperative SQLite capture turn.
+    pub fn converge_turn(&mut self) -> Result<Pass, EngineError> {
+        self.converge_work(true)
+    }
+
+    fn converge_work(&mut self, discover: bool) -> Result<Pass, EngineError> {
         let started = Instant::now();
         self.load()?;
-        let drive_error = self.sync_drive();
-        let lookup_error = self.refresh_lookups().err();
-        let (found, unreadable) = collect::scan(&self.config);
+        let (found, unreadable, errors) = if discover {
+            let drive_error = self.sync_drive();
+            let lookup_error = self.refresh_lookups().err();
+            let (found, unreadable) = collect::scan(&self.config);
+            (
+                found,
+                unreadable,
+                drive_error.into_iter().chain(lookup_error).collect(),
+            )
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
         let mut pass = Pass {
             unreadable_roots: unreadable,
-            errors: drive_error.into_iter().chain(lookup_error).collect(),
+            errors,
             ..Pass::default()
         };
-        self.restore_snapshots(&mut pass)?;
+        if discover {
+            self.restore_snapshots(&mut pass)?;
+        }
+        let databases = found
+            .iter()
+            .filter(|f| f.origin.capture == Capture::LogicalExport)
+            .filter_map(|f| {
+                let name = polylogue_sources::origin::export_name(&f.path)?;
+                Some((
+                    f.path.clone(),
+                    self.archive.exports_dir().join(f.origin.name).join(name),
+                ))
+            })
+            .collect();
+        match self.exporter.turn(databases, 1024) {
+            Ok(turn) => {
+                pass.capture_pending = turn.pending;
+                pass.errors.extend(turn.errors);
+            }
+            Err(e) => pass.errors.push(format!("SQLite capture: {e}")),
+        }
+        let mut found: Vec<_> = found
+            .into_iter()
+            .filter(|f| f.origin.capture != Capture::LogicalExport)
+            .collect();
+        // Accepted captures remain inputs even if their provider disappears
+        // while a pinned source view is being read.
+        for out in self.exporter.paths() {
+            if let Some(origin) = ORIGINS.iter().find(|o| {
+                o.capture == Capture::LogicalExport
+                    && out.parent() == Some(self.archive.exports_dir().join(o.name).as_path())
+            }) {
+                found.push(collect::Found {
+                    path: out.into(),
+                    origin,
+                });
+            }
+        }
         let mut plans = Vec::new();
         let mut seen = HashSet::new();
         for f in found {
-            // A tool database is never stored as bytes: its logical export
-            // is the input (architecture 4.2).
-            let f = if f.origin.capture == Capture::LogicalExport {
-                let Some(export) = self.export(&f.path, f.origin, &mut pass) else {
-                    continue;
-                };
-                collect::Found {
-                    path: export,
-                    origin: f.origin,
-                }
-            } else {
-                f
-            };
             if self.refused.contains(&f.path) {
                 continue;
             }
@@ -658,7 +701,12 @@ impl Engine {
         let gone: Vec<PathBuf> = self
             .inputs
             .iter()
-            .filter(|(p, s)| s.facts.is_some() && !seen.contains(*p) && !p.exists())
+            .filter(|(p, s)| {
+                (discover || s.origin.capture == Capture::LogicalExport)
+                    && s.facts.is_some()
+                    && !seen.contains(*p)
+                    && !p.exists()
+            })
             .map(|(p, _)| p.clone())
             .collect();
         for path in gone {
@@ -691,9 +739,11 @@ impl Engine {
         // archive stored, when the index is behind it.
         let unseen: Vec<PathBuf> = self
             .inputs
-            .keys()
-            .filter(|p| !seen.contains(*p))
-            .cloned()
+            .iter()
+            .filter(|(p, s)| {
+                (discover || s.origin.capture == Capture::LogicalExport) && !seen.contains(*p)
+            })
+            .map(|(p, _)| p.clone())
             .collect();
         for path in unseen {
             if let Some(plan) = self.stored_plan(&path)? {
@@ -1069,37 +1119,73 @@ impl Engine {
         let mut watcher = watch::Roots::new(&self.config, tx.clone())?;
         drop(tx);
         ready();
+        let mut discover = true;
+        let mut discovered_at = Instant::now();
         loop {
             watcher.refresh(&self.config)?;
-            match self.converge() {
+            discover |= discovered_at.elapsed() >= Duration::from_secs(60);
+            if discover {
+                discovered_at = Instant::now();
+            }
+            let pending;
+            match self.converge_work(discover) {
                 Ok(pass) => {
+                    pending = pass.capture_pending;
                     if let Ok(mut s) = status.lock() {
                         *s = pass;
                     }
                 }
                 Err(e) => {
+                    pending = self.exporter.pending();
                     if let Ok(mut s) = status.lock() {
                         s.errors = vec![e.to_string()];
+                        s.capture_pending = pending;
                     }
                 }
             }
-            let mut msg = rx.recv_timeout(Duration::from_secs(60));
+            discover = false;
+            let delay = if pending {
+                Duration::ZERO
+            } else {
+                Duration::from_secs(60)
+            };
+            let mut msg = rx.recv_timeout(delay);
             let burst = Instant::now();
             loop {
                 match msg {
-                    Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                    Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                        self.exporter = Captures::default();
+                        return Ok(());
+                    }
                     Ok(LoopMsg::Import { paths, reply }) => {
                         let _ = reply.send(self.import(&paths).map_err(|e| e.to_string()));
+                        discover = true;
                     }
                     Ok(LoopMsg::Excise { request, reply }) => {
                         let _ = reply.send(self.excise(request).map_err(|e| e.to_string()));
+                        discover = true;
                     }
-                    Ok(LoopMsg::Changed) | Err(RecvTimeoutError::Timeout) => {}
+                    Ok(LoopMsg::Changed) => discover = true,
+                    Err(RecvTimeoutError::Timeout) => discover |= !pending,
                 }
-                // Coalesce a burst of file events into one pass.
                 if burst.elapsed() > COALESCE {
                     break;
                 }
+                // Pending captures continue after queued controls, without
+                // waiting for a watcher event or a coalescing delay.
+                if pending {
+                    msg = rx.try_recv().map_err(|e| match e {
+                        std::sync::mpsc::TryRecvError::Empty => RecvTimeoutError::Timeout,
+                        std::sync::mpsc::TryRecvError::Disconnected => {
+                            RecvTimeoutError::Disconnected
+                        }
+                    });
+                    if matches!(msg, Err(RecvTimeoutError::Timeout)) {
+                        break;
+                    }
+                    continue;
+                }
+                // Coalesce a burst of file events into one pass.
                 msg = rx.recv_timeout(Duration::from_millis(200));
                 if matches!(msg, Err(RecvTimeoutError::Timeout)) {
                     break;

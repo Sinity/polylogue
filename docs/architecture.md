@@ -56,7 +56,26 @@ export. The bytes are synced before `atomicwrites` replaces its adjacent
 the completed prefix and removes only an unpublished suffix. Altered completed
 bytes and malformed legacy exports refuse collection while preserving evidence.
 The Engine skips an export call that fails, even if its output file exists.
-The source scan is still synchronous; reusable capture turns remain planned.
+One capture worker keeps its source transaction, statements and row cursor on
+its stack. Permits bound cooperative turns across rows, replayed lines and
+64 KiB prefix-verification blocks. The worker pauses before returning control;
+it cannot append output while the Engine collects ordinary inputs. A finite
+discovery batch completes before a new batch starts, with one source snapshot
+active at a time. Accepted exports remain inputs if their provider disappears.
+Revalidation withholds the physical output until it succeeds; existing indexed
+and retained content stays readable. Dropping the driver closes permits and
+joins the worker, discarding unpublished work.
+
+Daemon convergence services controls and ordinary inputs between capture
+turns, then immediately continues pending capture without a filesystem event
+or minute timer. `last_pass.capture_pending` distinguishes unfinished capture
+from an idle pass. Synchronous convergence drives the same turns to completion.
+Idle continuations advance capture and collect its accepted exports; they do
+not rescan every provider directory. Source events, imports, excision and the
+periodic fallback request ordinary discovery.
+A single SQLite call, schema enumeration, record, final append/sync or error
+recovery can exceed the cooperative turn budget. Pausing also extends the
+source snapshot's WAL retention; this is not durable snapshot continuation.
 
 Hook settings and reader credentials are replaced using
 `atomicwrites`, which owns temporary-file cleanup, file synchronization,

@@ -10,6 +10,8 @@ use polylogue_testkit::{
 use std::fs;
 use std::path::Path;
 
+mod tool_captures;
+
 #[test]
 fn a_first_build_stores_and_parses_and_a_second_pass_reads_nothing() {
     let w = ClaudeHome::new();
