@@ -8,8 +8,16 @@ fn a_large_policy_stays_on_disk_and_only_current_candidates_return() {
     conn.execute_batch("WITH RECURSIVE n(value) AS (VALUES(0) UNION ALL SELECT value+1 FROM n WHERE value<99999)
         UPDATE excision SET message_ids_json=(SELECT json_group_array('codex:message:'||value) FROM n)").unwrap();
     let cache = Refused::load(&conn).unwrap();
-    let file = cache.0.as_ref().unwrap()._file.path().to_owned();
-    assert!(file.metadata().unwrap().len() > 1 << 20);
+    let conn = cache.0.as_ref().unwrap();
+    let bytes: i64 = conn
+        .query_row(
+            "SELECT page_count*page_size FROM pragma_page_count(),pragma_page_size()",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(bytes > 1 << 20);
+    assert_eq!(conn.path(), Some(""));
     let messages: Vec<_> = (0..1500)
         .map(|n| {
             if n % 3 == 0 {
@@ -28,7 +36,6 @@ fn a_large_policy_stays_on_disk_and_only_current_candidates_return() {
         assert!(hits.messages.contains(&format!("codex:message:{}", n * 53)));
     }
     drop(cache);
-    assert!(!file.exists());
 }
 
 #[test]
@@ -47,7 +54,6 @@ fn empty_history_stays_lazy_and_opaque_ids_keep_separate_namespaces() {
         .0
         .as_ref()
         .unwrap()
-        .conn
         .execute("DROP TABLE messages", [])
         .unwrap();
     assert!(cache.matching(&[], &candidates).is_err());

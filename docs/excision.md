@@ -37,7 +37,11 @@ chain membership and range checks use that catalog through replacement.
 Counts preserve equal citations contributed by separate selected sessions;
 physical byte requests are deduplicated separately. Whole-input removal clears
 its partial citations before reporting or rewriting. Scratch failures abort the
-operation, and the private text set uses one operation transaction.
+operation, and the private text set uses one operation transaction. Private
+SQLite selections use unnamed temporary databases with 1 MiB page caches and
+mmap disabled. SQLite unlinks spilled files on Linux, so process death closes
+them without relying on a cleanup scan. Live owners still retain their bytes;
+this does not securely erase filesystem blocks.
 
 Matching authored-note targets are selected into a private SQLite table before
 canonical note edits begin. Only matched reference pairs are staged. Notes

@@ -8,7 +8,6 @@ use std::ops::Range;
 
 pub struct ExportItems {
     db: Connection,
-    _index: tempfile::NamedTempFile,
     payload: File,
     ordinal: i64,
     cursor: Option<(Vec<u8>, i64)>,
@@ -22,8 +21,7 @@ pub struct Item {
 
 impl ExportItems {
     pub fn new() -> Result<Self> {
-        let index = tempfile::NamedTempFile::new()?;
-        let db = Connection::open(index.path())?;
+        let db = Connection::open("")?;
         db.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=OFF; PRAGMA cache_size=-1024;
             PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
             CREATE TABLE item(ordinal INTEGER PRIMARY KEY, source_key TEXT UNIQUE, sort BLOB NOT NULL,
@@ -33,7 +31,6 @@ impl ExportItems {
             CREATE TABLE previous(session TEXT PRIMARY KEY,message TEXT NOT NULL) WITHOUT ROWID; BEGIN;")?;
         Ok(Self {
             db,
-            _index: index,
             payload: tempfile::tempfile()?,
             ordinal: 0,
             cursor: None,

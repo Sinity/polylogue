@@ -3,7 +3,6 @@ use super::*;
 #[test]
 fn requests_and_checked_plans_are_exact_ordered_and_operation_local() {
     let plan = Erasures::new().unwrap();
-    let file = plan._file.path().to_owned();
     for n in (0..10_000_u32).rev() {
         let hash = blake3::hash(&n.to_le_bytes());
         for (start, end) in [(12, 24), (1, 9), (12, 24)] {
@@ -44,9 +43,17 @@ fn requests_and_checked_plans_are_exact_ordered_and_operation_local() {
         plan.visit(|_, _| Err(crate::StoreError::Invalid("stop".into())))
             .is_err()
     );
-    assert!(file.metadata().unwrap().len() > 1 << 20);
+    let bytes: i64 = plan
+        .conn
+        .query_row(
+            "SELECT page_count*page_size FROM pragma_page_count(),pragma_page_size()",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(bytes > 1 << 20);
+    assert_eq!(plan.conn.path(), Some(""));
     drop(plan);
-    assert!(!file.exists());
 }
 
 #[test]

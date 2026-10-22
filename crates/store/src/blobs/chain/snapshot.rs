@@ -1,9 +1,10 @@
 use super::*;
-use rusqlite::{MAIN_DB, OpenFlags, OptionalExtension, params};
+use rusqlite::{MAIN_DB, OptionalExtension, params};
+use std::sync::Mutex;
 
 #[derive(Debug)]
 pub(super) struct Snapshot {
-    file: tempfile::NamedTempFile,
+    conn: Mutex<Connection>,
 }
 
 pub(super) struct Extent {
@@ -24,8 +25,7 @@ impl Snapshot {
         start: u64,
         length: u64,
     ) -> Result<(Self, Option<BlobHash>)> {
-        let file = tempfile::NamedTempFile::new()?;
-        let target = Connection::open(file.path())?;
+        let target = Connection::open("")?;
         target.execute_batch("PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
             PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
             CREATE TABLE extent(offset INTEGER PRIMARY KEY,length INTEGER NOT NULL,hash BLOB NOT NULL,blob_offset INTEGER NOT NULL);
@@ -53,23 +53,37 @@ impl Snapshot {
                 && !extent.inline)
                 .then_some(extent.hash);
         }
-        target.execute_batch("COMMIT")?;
-        drop(target);
-        Ok((Self { file }, single))
+        target.execute_batch("COMMIT; PRAGMA cache_size=-64; PRAGMA shrink_memory;")?;
+        Ok((
+            Self {
+                conn: Mutex::new(target),
+            },
+            single,
+        ))
     }
 
     #[cfg(test)]
-    pub(super) fn path(&self) -> &std::path::Path {
-        self.file.path()
+    pub(super) fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap()
     }
 
-    pub fn open(&self) -> Result<Connection> {
-        let conn = Connection::open_with_flags(
-            self.file.path(),
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        conn.execute_batch("PRAGMA cache_size=-64; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;")?;
-        Ok(conn)
+    pub fn select(
+        &self,
+        at: u64,
+        store: &hashed_blobs::Store,
+    ) -> Result<(Extent, Option<Box<dyn std::io::Read>>)> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| invalid("stored snapshot lock poisoned"))?;
+        let extent = Self::extent(&conn, at)?;
+        let inline = if extent.inline {
+            Some(reader::inline(&conn, store, &extent)?)
+        } else {
+            None
+        };
+        // The owned inline reader needs no connection; file blobs open after unlock.
+        Ok((extent, inline))
     }
 
     pub fn extent(conn: &Connection, at: u64) -> Result<Extent> {

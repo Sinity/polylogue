@@ -6,13 +6,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// before any replacement is installed; the archive owns durable recovery.
 pub(super) struct Erasures {
     conn: Connection,
-    _file: tempfile::NamedTempFile,
 }
 
 impl Erasures {
     pub fn new() -> Result<Self> {
-        let file = tempfile::NamedTempFile::new()?;
-        let conn = Connection::open(file.path())?;
+        let conn = Connection::open("")?;
         conn.execute_batch(
             "PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
              PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
@@ -24,7 +22,7 @@ impl Erasures {
                  PRIMARY KEY(hash,start,end)) WITHOUT ROWID;
              BEGIN;",
         )?;
-        Ok(Self { conn, _file: file })
+        Ok(Self { conn })
     }
 
     pub fn request(&self, hash: &[u8], start: usize, end: usize) -> Result<()> {

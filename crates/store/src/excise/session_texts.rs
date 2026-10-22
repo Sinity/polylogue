@@ -1,32 +1,25 @@
 use crate::Result;
 use rusqlite::Connection;
 
-struct State {
-    conn: Connection,
-    _file: tempfile::NamedTempFile,
-}
-
 /// Exact session texts without retaining all decoded bodies in memory.
 #[derive(Default)]
-pub(super) struct SessionTexts(Option<State>);
+pub(super) struct SessionTexts(Option<Connection>);
 
 impl SessionTexts {
     pub fn insert(&mut self, value: &str) -> Result<()> {
         if self.0.is_none() {
-            let file = tempfile::NamedTempFile::new()?;
-            let conn = Connection::open(file.path())?;
+            let conn = Connection::open("")?;
             conn.execute_batch(
-                "PRAGMA cache_size=-1024; PRAGMA mmap_size=0;
+                "PRAGMA cache_size=-1024; PRAGMA mmap_size=0; PRAGMA temp_store=FILE;
                 PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
                 CREATE TABLE texts(value TEXT PRIMARY KEY) WITHOUT ROWID;
                 CREATE TABLE found(value TEXT PRIMARY KEY) WITHOUT ROWID; BEGIN;",
             )?;
-            self.0 = Some(State { conn, _file: file });
+            self.0 = Some(conn);
         }
         self.0
             .as_ref()
             .expect("created session text set")
-            .conn
             .prepare_cached("INSERT OR IGNORE INTO texts(value) VALUES(?1)")?
             .execute([value])?;
         Ok(())
@@ -35,10 +28,10 @@ impl SessionTexts {
     /// Preserve BINARY lexical order and byte-length semantics, including NULs.
     /// Match tracking uses another table, leaving this cursor's keys unchanged.
     pub fn visit(&self, minimum_bytes: usize, mut f: impl FnMut(&str) -> Result<()>) -> Result<()> {
-        let Some(state) = &self.0 else {
+        let Some(conn) = &self.0 else {
             return Ok(());
         };
-        let mut query = state.conn.prepare_cached(
+        let mut query = conn.prepare_cached(
             "SELECT value FROM texts WHERE length(CAST(value AS BLOB))>=?1 ORDER BY value",
         )?;
         let mut rows = query.query([minimum_bytes as i64])?;
@@ -50,29 +43,26 @@ impl SessionTexts {
     }
 
     pub fn reset_found(&self) -> Result<()> {
-        if let Some(state) = &self.0 {
-            state.conn.execute("DELETE FROM found", [])?;
+        if let Some(conn) = &self.0 {
+            conn.execute("DELETE FROM found", [])?;
         }
         Ok(())
     }
 
     pub fn found(&self, value: &str) -> Result<()> {
-        if let Some(state) = &self.0 {
-            state
-                .conn
-                .prepare_cached(
-                    "INSERT OR IGNORE INTO found SELECT value FROM texts WHERE value=?1",
-                )?
-                .execute([value])?;
+        if let Some(conn) = &self.0 {
+            conn.prepare_cached(
+                "INSERT OR IGNORE INTO found SELECT value FROM texts WHERE value=?1",
+            )?
+            .execute([value])?;
         }
         Ok(())
     }
 
     pub fn missing(&self) -> Result<u64> {
         match &self.0 {
-            Some(state) => {
-                Ok(state
-                    .conn
+            Some(conn) => {
+                Ok(conn
                     .query_row("SELECT count(*) FROM texts WHERE NOT EXISTS(SELECT 1 FROM found WHERE found.value=texts.value)", [], |r| {
                         r.get::<_, i64>(0)
                     })? as u64)
