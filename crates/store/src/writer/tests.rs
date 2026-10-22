@@ -904,3 +904,5 @@ mod statement_cache;
 mod prepared;
 
 mod publication_order;
+
+mod text_projection;

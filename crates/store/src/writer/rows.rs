@@ -6,6 +6,12 @@ mod snapshots;
 
 use super::*;
 
+/// The retained version owns both its encoded block and its text reference.
+struct StoredBlock {
+    body: Vec<u8>,
+    text_id: Option<i64>,
+}
+
 /// Writes a parse step's rows; returns the number of message rows written.
 pub(super) fn write_rows(
     tx: &Transaction<'_>,
@@ -431,7 +437,7 @@ impl Ctx<'_, '_> {
             crate::versions::retain(self.tx, prepared, m, self.packed, self.bulk)?;
             let pk = self.insert_message(m, session_pk, &new, (self.input_pk, position))?;
             self.upsert_source(pk, &new, true)?;
-            self.insert_blocks(pk, session_pk, m, &prepared.blocks)?;
+            self.insert_blocks(pk, session_pk, m, &prepared.hash)?;
             self.tx
                 .prepare_cached("UPDATE message SET present=?2 WHERE pk=?1")?
                 .execute(params![pk, i64::from(new.current)])?;
@@ -507,7 +513,7 @@ impl Ctx<'_, '_> {
         self.tx
             .execute("UPDATE message SET present = 1 WHERE pk = ?1", [pk])?;
         if !unchanged {
-            self.insert_blocks(pk, session_pk, m, &prepared.blocks)?;
+            self.insert_blocks(pk, session_pk, m, &prepared.hash)?;
         }
         Ok(true)
     }
@@ -716,17 +722,42 @@ impl Ctx<'_, '_> {
         Ok(())
     }
 
-    /// Inserts a message's blocks; `bodies` are their stored forms
-    /// ([`pack_block`]), in the same order.
+    /// Projects the retained version without resolving its text identities again.
     fn insert_blocks(
         &self,
         message_pk: i64,
         session_pk: i64,
         m: &Message,
-        bodies: &[Vec<u8>],
+        hash: &[u8],
     ) -> Result<()> {
-        for (idx, (block, body)) in m.blocks.iter().zip(bodies).enumerate() {
-            self.insert_block(message_pk, session_pk, idx as i64, block, body, ms(m.at))?;
+        let mut statement = self.tx.prepare_cached(
+            "SELECT idx, body, text_id FROM version_block WHERE version_hash=?1 ORDER BY idx",
+        )?;
+        let mut rows = statement.query([hash])?;
+        for (idx, block) in m.blocks.iter().enumerate() {
+            let row = rows
+                .next()?
+                .ok_or_else(|| StoreError::Invalid("retained version has too few blocks".into()))?;
+            if row.get::<_, i64>(0)? != idx as i64 {
+                return Err(StoreError::Invalid(
+                    "retained block indices are not consecutive".into(),
+                ));
+            }
+            let stored = StoredBlock {
+                body: row.get(1)?,
+                text_id: row.get(2)?,
+            };
+            if stored.text_id.is_some() != block_text(block).is_some() {
+                return Err(StoreError::Invalid(
+                    "retained block text reference disagrees with message".into(),
+                ));
+            }
+            self.insert_block(message_pk, session_pk, idx as i64, block, stored, ms(m.at))?;
+        }
+        if rows.next()?.is_some() {
+            return Err(StoreError::Invalid(
+                "retained version has too many blocks".into(),
+            ));
         }
         Ok(())
     }
@@ -737,7 +768,7 @@ impl Ctx<'_, '_> {
         session_pk: i64,
         idx: i64,
         block: &Block,
-        body: &[u8],
+        stored: StoredBlock,
         at: Option<i64>,
     ) -> Result<()> {
         let bit = if matches!(block, Block::ToolResult { .. }) {
@@ -745,16 +776,9 @@ impl Ctx<'_, '_> {
         } else {
             1
         };
-        let text_id = match block_text(block) {
-            Some(t) => Some(crate::text_rows::intern(
-                self.tx,
-                t,
-                bit,
-                Some(self.packed),
-                self.bulk,
-            )?),
-            None => None,
-        };
+        if let Some(id) = stored.text_id {
+            crate::text_rows::activate(self.tx, id, bit, self.bulk)?;
+        }
         let (kind, call_id, attachment) = match block {
             Block::Text { .. } => ("text", None, None),
             Block::Thinking { .. } => ("thinking", None, None),
@@ -788,8 +812,8 @@ impl Ctx<'_, '_> {
                 session_pk,
                 idx,
                 kind,
-                text_id,
-                body,
+                stored.text_id,
+                stored.body,
                 call_id,
                 attachment.and_then(|a| a.blob).map(|h| h.0.to_vec()),
                 attachment.and_then(|a| a.media_type.as_deref()),

@@ -32,7 +32,9 @@ pub(crate) use rows::promote_current;
 mod search;
 
 use crate::encoding::PreparedMessage;
-use crate::encoding::{block_text, pack_block, pack_event, unpack_block};
+#[cfg(test)]
+use crate::encoding::pack_block;
+use crate::encoding::{block_text, pack_event, unpack_block};
 pub use batch::{Batch, InFlight, InputKey, Observation, ParseStep, WriteReport};
 pub(crate) use bytes::observation_id;
 use bytes::*;

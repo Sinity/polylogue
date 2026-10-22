@@ -39,16 +39,25 @@ pub(crate) fn intern(
     // written after this transaction commits: by the search thread, or by
     // a first build in bulk when it ends.
     if bit != 0 && indexed & bit == 0 {
-        if !bulk {
-            conn.prepare_cached(
-                "INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (?1, ?2)",
-            )?
-            .execute(params![id, bit])?;
-        }
-        conn.prepare_cached("UPDATE text SET indexed = indexed | ?2 WHERE id = ?1")?
-            .execute(params![id, bit])?;
+        activate(conn, id, bit, bulk)?;
     }
     Ok(id)
+}
+
+/// Marks an already retained text for current-block search membership.
+pub(crate) fn activate(conn: &Connection, id: i64, bit: i64, bulk: bool) -> Result<()> {
+    let changed = conn
+        .prepare_cached(
+            "UPDATE text SET indexed = indexed | ?2 WHERE id = ?1 AND indexed & ?2 = 0",
+        )?
+        .execute(params![id, bit])?;
+    if changed != 0 && !bulk {
+        conn.prepare_cached(
+            "INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (?1, ?2)",
+        )?
+        .execute(params![id, bit])?;
+    }
+    Ok(())
 }
 
 // Limit transaction work independently of compressed row sizes. A single
