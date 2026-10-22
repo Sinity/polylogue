@@ -410,6 +410,8 @@ identity, including an excision-authorized tombstone for historical observations
 Same-archive restore refuses a view missing any
 local independently sequenced fact before removing rows. Excision replaces the
 independent units and the parents that could contain legacy embedded copies.
+The Engine loads refused locations through the typed store reader. Malformed
+location records stop collection rather than becoming an empty refusal list.
 
 Restore orders confirmations and folds later replacements in an operation-scoped
 SQLite file. It checks exact repeats, conflicting positions, gaps and unit order

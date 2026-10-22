@@ -476,17 +476,9 @@ impl Engine {
             return Ok(());
         }
         let reader = self.reads.reader()?;
-        for row in reader.query("SELECT refused_json AS r FROM a.excision", &[])? {
-            let refused: serde_json::Value = row["r"]
-                .as_str()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_default();
-            for l in refused["locations"].as_array().into_iter().flatten() {
-                if l["machine"].as_str() == Some(self.config.machine.as_str())
-                    && let Some(path) = l["path"].as_str()
-                {
-                    self.refused.insert(PathBuf::from(path));
-                }
+        for (machine, path) in reader.refused_paths()? {
+            if machine == self.config.machine {
+                self.refused.insert(PathBuf::from(path));
             }
         }
         let known: Vec<KnownInput> = reader.known_inputs(&self.config.machine)?;
