@@ -2,6 +2,8 @@
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension, params};
 
+mod hashes;
+
 fn invalid(message: &str) -> StoreError {
     StoreError::Invalid(message.into())
 }
@@ -10,38 +12,8 @@ pub(crate) fn exists(conn: &Connection) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='vector_deletion_policy')", [], |r|r.get(0))?)
 }
 
-pub(crate) fn hashes(version: i64, json: &str) -> Result<Vec<Vec<u8>>> {
-    if version != 1 {
-        return Err(invalid("unsupported vector deletion policy"));
-    }
-    let names: Vec<String> = serde_json::from_str(json)?;
-    let mut out = Vec::new();
-    for name in names {
-        let hash = crate::sinex_rows::unhex(&name)?;
-        if hash.len() != 32
-            || crate::sinex_rows::hex(&hash) != name
-            || out.last().is_some_and(|p| p >= &hash)
-        {
-            return Err(invalid(
-                "vector deletion hashes are not canonical sorted unique hashes",
-            ));
-        }
-        out.push(hash);
-    }
-    Ok(out)
-}
-
 pub(crate) fn digest(version: i64, json: &str) -> Result<blake3::Hash> {
-    let hashes = hashes(version, json)?;
-    if serde_json::to_string(
-        &hashes
-            .iter()
-            .map(|h| crate::sinex_rows::hex(h))
-            .collect::<Vec<_>>(),
-    )? != json
-    {
-        return Err(invalid("vector deletion policy JSON is not canonical"));
-    }
+    hashes::visit(version, json, |_| Ok(()))?;
     let mut h = blake3::Hasher::new();
     h.update(b"polylogue-vector-deletion-v1\0");
     h.update(json.as_bytes());
@@ -155,18 +127,21 @@ pub(crate) fn reconcile(vectors: &Connection, canonical: &Connection) -> Result<
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let version = row.get(1)?;
-        let json: String = row.get(2)?;
-        let hash = digest(version, &json)?;
+        let json = row.get_ref(2)?;
+        let json = json.as_str().map_err(|e| invalid(&e.to_string()))?;
+        let hash = digest(version, json)?;
         let applied: bool = vectors.query_row(
             "SELECT EXISTS(SELECT 1 FROM vector_policy_receipt WHERE excision_id=?1)",
             [&id],
             |r| r.get(0),
         )?;
         if !applied {
-            for hash in hashes(version, &json)? {
-                vectors.execute("DELETE FROM embedded WHERE text_hash=?1", [&hash])?;
-                vectors.execute("DELETE FROM embed_failure WHERE text_hash=?1", [&hash])?;
-            }
+            // The completed digest pass above validates the entire array before deletion.
+            hashes::visit(version, json, |hash| {
+                vectors.execute("DELETE FROM embedded WHERE text_hash=?1", [hash])?;
+                vectors.execute("DELETE FROM embed_failure WHERE text_hash=?1", [hash])?;
+                Ok(())
+            })?;
             let receipt = receipt_hash(&archive, &id, hash);
             vectors.execute(
                 "INSERT INTO vector_policy_receipt VALUES (?1,?2,?3)",
