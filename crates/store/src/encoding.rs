@@ -40,8 +40,21 @@ pub(crate) struct PreparedMessage {
 impl PreparedMessage {
     pub(crate) fn new(message: &Message) -> Result<Self> {
         let hash = *blake3::hash(&serde_json::to_vec(message)?).as_bytes();
-        let mut attrs = message.clone();
-        attrs.blocks.clear();
+        let attrs = Message {
+            id: message.id.clone(),
+            session: message.session.clone(),
+            parent: message.parent.clone(),
+            role: message.role,
+            at: message.at,
+            model: message.model.clone(),
+            prompt_kind: message.prompt_kind,
+            blocks: Vec::new(),
+            usage: message.usage.clone(),
+            stop_reason: message.stop_reason.clone(),
+            reported_cost_usd: message.reported_cost_usd.clone(),
+            duration_ms: message.duration_ms,
+            production: message.production.clone(),
+        };
         Ok(Self {
             id: message.id.clone(),
             hash,
@@ -74,8 +87,35 @@ impl TextPacker {
 
 /// A block as the `block.body` column stores it.
 pub(crate) fn pack_block(block: &Block) -> Result<Vec<u8>> {
-    let mut body = block.clone();
-    strip_text(&mut body);
+    let body = match block {
+        Block::Text { .. } => Block::Text {
+            text: String::new(),
+        },
+        Block::Thinking {
+            text: Some(_),
+            signature,
+            redacted,
+        } => Block::Thinking {
+            text: Some(String::new()),
+            signature: signature.clone(),
+            redacted: *redacted,
+        },
+        Block::ToolResult {
+            call_id,
+            outcome,
+            output: Some(_),
+            data,
+            attachments,
+        } => Block::ToolResult {
+            call_id: call_id.clone(),
+            outcome: outcome.clone(),
+            output: Some(String::new()),
+            data: data.clone(),
+            attachments: attachments.clone(),
+        },
+        // These values are stored whole, so serialization can borrow them.
+        _ => return pack_json(block),
+    };
     pack_json(&body)
 }
 
@@ -117,19 +157,6 @@ pub(crate) fn block_text(block: &Block) -> Option<&str> {
             output: Some(o), ..
         } if !o.is_empty() => Some(o),
         _ => None,
-    }
-}
-
-fn strip_text(block: &mut Block) {
-    match block {
-        Block::Text { text }
-        | Block::Thinking {
-            text: Some(text), ..
-        }
-        | Block::ToolResult {
-            output: Some(text), ..
-        } => text.clear(),
-        _ => {}
     }
 }
 
