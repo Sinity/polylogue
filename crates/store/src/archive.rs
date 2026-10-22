@@ -119,12 +119,11 @@ impl Archive {
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('archive_id', ?1)",
             [uuid::Uuid::now_v7().to_string()],
         )?;
-        let e = open_write(&archive.embeddings_db(), cache::SETUP)?;
-        if schema::version(&e)? == 0 {
-            schema::create_embeddings(&e)?;
-        }
+        let mut e = open_write(&archive.embeddings_db(), cache::SETUP)?;
+        schema::migrate_embeddings(&mut e)?;
         drop(e);
-        if (crate::excise::vector_cleanup::pending(&a)?
+        if (crate::excise::vector_policy::exists(&a)?
+            || crate::excise::vector_cleanup::pending(&a)?
             || crate::excise::blob_cleanup::pending(&a)?)
             && archive.index_db().exists()
         {
@@ -136,6 +135,19 @@ impl Archive {
         crate::excise::blob_cleanup::recover(&archive, &a)?;
         archive.prepare_index()?;
         Ok((archive, ArchiveLock { _file: file }))
+    }
+
+    pub(crate) fn reconcile_vectors(&self, canonical: &mut Connection) -> Result<()> {
+        if !crate::excise::vector_policy::exists(canonical)? {
+            return Ok(());
+        }
+        if self.index_db().exists() {
+            validate_index_excision(self, &open_read(&self.index_db())?)?;
+        }
+        let mut e = open_write(&self.embeddings_db(), cache::SETUP)?;
+        schema::migrate_embeddings(&mut e)?;
+        drop(e);
+        crate::excise::vector_cleanup::recover(self, canonical)
     }
 
     /// The caller holds the archive lock. A newly created index has no old

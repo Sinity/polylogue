@@ -57,7 +57,15 @@ pub(super) async fn parent_retirement(sinex: &mut Sinex, store: &Path, root: &Pa
         legacy.push(b'\n');
     }
     drop(source);
-    db.execute_batch("DROP INDEX observation_commit_seq; DROP INDEX delivery_event_commit_seq;
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM vector_deletion_policy", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute_batch("DROP TABLE vector_deletion_policy;
+        DELETE FROM meta WHERE key='vector_policy_revision';
+        DROP INDEX observation_commit_seq; DROP INDEX delivery_event_commit_seq;
         ALTER TABLE observation DROP COLUMN commit_seq; ALTER TABLE delivery_event DROP COLUMN commit_seq;
         PRAGMA user_version=4;").unwrap();
     // Publish the exact schema-4 closure, keeping its original frame and hash.

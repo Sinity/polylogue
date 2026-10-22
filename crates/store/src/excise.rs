@@ -40,6 +40,7 @@ mod stored_bytes;
 mod stored_text;
 mod text_matches;
 pub(crate) mod vector_cleanup;
+pub(crate) mod vector_policy;
 
 use index_rows::*;
 use stored_bytes::*;
@@ -544,6 +545,14 @@ impl Plan {
         }
 
         if !req.dry_run {
+            let hashes: Vec<String> = removed_texts
+                .iter()
+                .map(|h| crate::sinex_rows::hex(h))
+                .collect();
+            t.archive.execute(
+                "INSERT INTO vector_deletion_policy VALUES (?1,1,?2)",
+                params![req.id, serde_json::to_string(&hashes)?],
+            )?;
             for hash in &removed_texts {
                 t.archive.execute(
                     "INSERT INTO pending_vector_excision(text_hash,excision_id) VALUES (?1,?2)
@@ -568,6 +577,11 @@ impl Plan {
                     n
                 };
             }
+        }
+        if !req.dry_run
+            && let Some(e) = t.embeddings
+        {
+            vector_policy::acknowledge(e, t.archive, &req.id)?;
         }
         done.texts = removed_texts.len() as u64;
 

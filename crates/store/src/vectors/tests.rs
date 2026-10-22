@@ -167,3 +167,64 @@ fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
         .unwrap();
     assert_eq!(vectors.done("synthetic").unwrap().len(), 2);
 }
+
+#[test]
+fn writable_reads_pin_admission_and_data_then_release_the_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(reader.vectors().unwrap().done("test").unwrap().is_empty());
+    let mut vectors = reader.vectors_writer().unwrap();
+    vectors
+        .put(
+            "test",
+            &[Vector {
+                text_hash: vec![1; 32],
+                chunk: 0,
+                values: vec![1.0],
+            }],
+        )
+        .unwrap();
+    let snapshot = vectors.read_snapshot().unwrap();
+    let other = open_write(&archive.embeddings_db(), crate::archive::cache::SETUP).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE; DELETE FROM embedded; DELETE FROM vector_meta WHERE key='policy_revision'; COMMIT").unwrap();
+    crate::excise::vector_policy::check(&vectors.conn).unwrap();
+    let count: i64 = vectors
+        .conn
+        .query_row("SELECT count(*) FROM embedded", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+    drop(snapshot);
+    assert!(matches!(
+        vectors.done("test"),
+        Err(StoreError::ExcisionPending)
+    ));
+    assert!(matches!(
+        vectors.nearest("test", &[1.0], 1),
+        Err(StoreError::ExcisionPending)
+    ));
+    assert!(matches!(vectors.status(), Err(StoreError::ExcisionPending)));
+    archive
+        .reconcile_vectors(
+            &mut open_write(&archive.archive_db(), crate::archive::cache::SETUP).unwrap(),
+        )
+        .unwrap();
+    for _ in 0..2 {
+        assert!(vectors.done("test").unwrap().is_empty());
+        assert!(vectors.nearest("test", &[1.0], 1).unwrap().is_empty());
+        assert!(vectors.status().unwrap().keys.is_empty());
+    }
+    vectors
+        .put(
+            "test",
+            &[Vector {
+                text_hash: vec![2; 32],
+                chunk: 0,
+                values: vec![1.0],
+            }],
+        )
+        .unwrap();
+    vectors.fail("test", &[3; 32], "synthetic").unwrap();
+    assert_eq!(vectors.done("test").unwrap().len(), 2);
+}

@@ -21,17 +21,15 @@ pub(crate) fn clear(conn: &Connection, id: &str) -> Result<()> {
 /// Caller holds the archive lock. Commit exact vector deletions before clearing
 /// their intent; an interrupted attempt repeats those same deletions.
 pub(crate) fn recover(archive: &Archive, canonical: &mut Connection) -> Result<()> {
-    if !pending(canonical)? {
-        return Ok(());
-    }
     let mut vectors =
         crate::archive::open_write(&archive.embeddings_db(), crate::archive::cache::SETUP)?;
     vectors.pragma_update(None, "synchronous", "full")?;
     let vtx = vectors.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let atx = canonical.transaction()?;
+    super::vector_policy::reconcile(&vtx, &atx)?;
     {
         let mut select =
-            atx.prepare("SELECT text_hash FROM pending_vector_excision ORDER BY text_hash")?;
+            atx.prepare("SELECT text_hash FROM pending_vector_excision WHERE excision_id NOT IN (SELECT excision_id FROM vector_deletion_policy) ORDER BY text_hash")?;
         let mut rows = select.query([])?;
         while let Some(row) = rows.next()? {
             let hash: Vec<u8> = row.get(0)?;
@@ -60,5 +58,5 @@ pub(crate) fn check_writer(conn: &Connection, expected: &super::recovery::Revisi
     if super::recovery::Revision::decode(version, id)? != *expected || pending {
         return Err(StoreError::ExcisionPending);
     }
-    Ok(())
+    super::vector_policy::check(conn)
 }

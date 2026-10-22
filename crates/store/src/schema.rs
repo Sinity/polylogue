@@ -22,6 +22,7 @@ pub const ARCHIVE_MIGRATIONS: &[&str] = &[
     include_str!("schema/migrations/003-vector-excision.sql"),
     include_str!("schema/migrations/004-local-blob-excision.sql"),
     include_str!("schema/migrations/005-append-facts.sql"),
+    include_str!("schema/migrations/006-vector-deletion-policy.sql"),
 ];
 
 /// The `user_version` of a database: 0 for an empty file.
@@ -122,6 +123,29 @@ pub(crate) fn index_columns(
         out.push((name, cols));
     }
     Ok(out)
+}
+
+/// Additive embeddings migrations preserve purchased vectors.
+pub(crate) fn migrate_embeddings(conn: &mut Connection) -> Result<()> {
+    let found = version(conn)?;
+    if found > 2 {
+        return Err(StoreError::TooNew {
+            found,
+            supported: 2,
+        });
+    }
+    if found == 0 {
+        create_embeddings(conn)?;
+    }
+    if found < 2 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(include_str!(
+            "schema/migrations/002-vector-policy-receipts.sql"
+        ))?;
+        set_version(&tx, 2)?;
+        tx.commit()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

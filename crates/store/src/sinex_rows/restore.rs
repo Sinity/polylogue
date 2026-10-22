@@ -98,6 +98,8 @@ pub(super) fn install<R: Read>(
         )
         .optional()?;
     let repeated = held.as_deref() == Some(&fingerprint);
+    let vector_revision = crate::excise::vector_policy::revision(&tx)?;
+    let vector_before = crate::excise::vector_policy::fingerprint(&tx)?;
     let excision_before = if repeated {
         None
     } else {
@@ -140,6 +142,12 @@ pub(super) fn install<R: Read>(
     }
     if !repeated && !crate::excise::recovery::preserves_policies(&tx, &units.catalog.db)? {
         return Err(invalid("restored view changes an existing excision rule"));
+    }
+    if crate::excise::vector_policy::fingerprint(&tx)? == vector_before {
+        tx.execute(
+            "UPDATE meta SET value=?1 WHERE key='vector_policy_revision'",
+            [vector_revision],
+        )?;
     }
     tx.commit()?;
     Ok(inserted)
@@ -186,6 +194,12 @@ fn remove(conn: &Connection, unit: &Unit) -> Result<()> {
             conn.execute("DELETE FROM delivery WHERE id=?1", key)?;
         }
         "excision" => {
+            if crate::excise::vector_policy::exists(conn)? {
+                conn.execute(
+                    "DELETE FROM vector_deletion_policy WHERE excision_id=?1",
+                    key,
+                )?;
+            }
             conn.execute(
                 "DELETE FROM observation WHERE class='excised' AND excision=?1 AND commit_seq=0",
                 key,

@@ -192,6 +192,16 @@ pub fn read(archive: &Connection, unit: &Unit) -> crate::Result<Batch> {
                 "SELECT * FROM excision WHERE id = ?1",
                 &key,
             )?;
+            let has_policy:bool=archive.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='vector_deletion_policy')",[],|r|r.get(0))?;
+            if has_policy {
+                add(
+                    archive,
+                    &mut out,
+                    "vector_deletion_policy",
+                    "SELECT * FROM vector_deletion_policy WHERE excision_id=?1",
+                    &key,
+                )?;
+            }
             add(
                 archive,
                 &mut out,
