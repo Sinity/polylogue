@@ -586,17 +586,24 @@ digest, then feed one replacement at a time into the inventory and retirement
 catalogs. Unknown fields and incoming whitespace do not change the typed digest.
 Temporary disk scales with the catalog and largest row batch. The canonical
 manifest JSON value, one replacement and its blob-reference list remain memory
-bounds; newly created and public manifests still own their lists. The canonical archive writer uses file-backed temporary tables with
-a 1 MiB temporary page-cache target. Excision freezes selected message IDs in an unnamed SQLite database before
-deleting index rows. Session selection stays in an index-transaction TEMP table,
-without foreign keys, so deleting source rows cannot change membership or order.
-Text ownership and surviving-source checks query that table directly. It is
-dropped before success; failure and preview roll back its creation with the index
-transaction. The message selection's nonunique ID index supports exact membership and sorted
-canonical serialization while preserving duplicate counts. Notes and deliveries
-use that same selection; matched note targets keep their separate disk owner.
-The public result's session lists and the final canonical JSON string remain
-operation-sized values. Excision streams changed unit keys from
+bounds; newly created and public manifests still own their lists. The canonical
+archive writer uses file-backed temporary tables with a 1 MiB temporary
+page-cache target. Excision freezes selected message IDs in an unnamed SQLite
+database before deleting index rows. Its nonunique ID index supports exact
+membership and sorted canonical serialization while preserving duplicate counts.
+Notes and deliveries use that selection; matched note targets have a separate
+disk owner.
+
+Session selection stays in an index-transaction TEMP table without foreign keys,
+so deleting source rows cannot change membership or order. Text ownership and
+surviving-source checks query that table directly. Success drops it; failure and
+preview roll back its creation with the index transaction. Text-scope reparse
+separately freezes candidate text IDs, affected sessions and all their input
+references in index TEMP tables before deletion. Input cleanup uses SQL
+membership, preserving process, run and link sources without an expanded SQL
+list. Orphan cleanup protects both current blocks and retained versions. Final
+public session and input lists, per-session removal outputs and canonical JSON
+strings remain memory bounds. Excision streams changed unit keys from
 the canonical writer's temporary table and uses `sinex_rows/excision/retirement.rs` to select historical
 batches on disk.
 A batch remains protected while any current replacement references it, including
