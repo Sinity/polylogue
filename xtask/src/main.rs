@@ -203,6 +203,23 @@ fn main() -> ExitCode {
                     .map(String::from)
                     .to_vec(),
                 ),
+            )?;
+            run.nextest(
+                "restore faults",
+                &nextest(
+                    [
+                        "--locked",
+                        "-p",
+                        "polylogue-store",
+                        "--features",
+                        "faults",
+                        "--lib",
+                        "-E",
+                        "test(sinex_rows::tests::vector_policies::interrupted)",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                ),
             )
         }),
         Cli::Scenarios => run("scenarios", &[], |run| {
