@@ -335,7 +335,7 @@ fn hook_summary_preserves_supplied_context_even_when_continuation_is_prevented()
         "hookAdditionalContext": ["  Zażółć 🦀\n", "", "\tsecond  "],
         "hookCount": 2, "hasOutput": true, "stopReason": "hook stopped"}),
     );
-    let p = run(&[native.clone()]);
+    let p = run(std::slice::from_ref(&native));
     let hooks = events(&p, "stop_hook_summary");
     assert_eq!(hooks.len(), 1);
     assert_eq!(hooks[0]["data"], native);
@@ -398,7 +398,7 @@ fn hook_context_unsupported_shapes_keep_native_facts_and_diagnose_the_shape() {
         json!([null, "valid", 3]),
     ] {
         let native = hook_summary("sy1", json!({"hookAdditionalContext": value}));
-        let p = run(&[native.clone()]);
+        let p = run(std::slice::from_ref(&native));
         assert_eq!(events(&p, "stop_hook_summary")[0]["data"], native);
         assert_eq!(
             p["accounting"]["refused"]
