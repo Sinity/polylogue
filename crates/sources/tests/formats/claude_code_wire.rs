@@ -316,25 +316,147 @@ fn per_turn_effort_lands_as_the_turn_effort() {
     assert_eq!(message(&p, ":a1")["production"]["effort"], "high");
 }
 
+fn hook_summary(uuid: &str, extra: Value) -> Value {
+    let mut native = json!({"type": "system", "subtype": "stop_hook_summary",
+        "uuid": uuid, "sessionId": "s1", "timestamp": "2026-03-01T10:00:00Z"});
+    native
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    native
+}
+
 #[test]
-fn hook_summaries_keep_their_errors_and_injected_context() {
-    let p = run(&[
-        json!({"type": "system", "subtype": "stop_hook_summary", "uuid": "sy1", "sessionId": "s1",
-        "timestamp": "2026-03-01T10:00:00Z", "hookErrors": ["synthetic hook failed"],
-        "preventedContinuation": true, "hookAdditionalContext": ["Synthetic injected context."]}),
-    ]);
-    assert!(messages(&p).is_empty());
+fn hook_summary_preserves_supplied_context_even_when_continuation_is_prevented() {
+    let native = hook_summary(
+        "sy1",
+        json!({
+        "hookErrors": ["synthetic hook failed"], "preventedContinuation": true,
+        "hookAdditionalContext": ["  Zażółć 🦀\n", "", "\tsecond  "],
+        "hookCount": 2, "hasOutput": true, "stopReason": "hook stopped"}),
+    );
+    let p = run(std::slice::from_ref(&native));
     let hooks = events(&p, "stop_hook_summary");
     assert_eq!(hooks.len(), 1);
+    assert_eq!(hooks[0]["data"], native);
+    let m = message(&p, ":sy1");
+    assert_eq!(m["role"], "system");
+    assert_eq!(m["prompt_kind"], "harness");
+    assert!(m.get("model").is_none());
     assert_eq!(
-        hooks[0]["data"]["hookErrors"],
-        json!(["synthetic hook failed"])
+        m["blocks"],
+        json!([
+        {"type": "text", "text": "  Zażółć 🦀\n"},
+        {"type": "text", "text": ""},
+        {"type": "text", "text": "\tsecond  "}])
     );
-    assert_eq!(hooks[0]["data"]["preventedContinuation"], true);
-    assert_eq!(
-        hooks[0]["data"]["hookAdditionalContext"],
-        json!(["Synthetic injected context."])
+    assert_eq!(p["accounting"]["framed"], 1);
+}
+
+#[test]
+fn hook_context_uses_only_the_summary_carrier_without_content_deduplication() {
+    let p = run(&[
+        json!({"type": "attachment", "uuid": "attachment", "sessionId": "s1",
+            "attachment": {"type": "hook_additional_context", "content": ["same"]}}),
+        hook_summary("sy1", json!({"hookAdditionalContext": ["same", "same"]})),
+        hook_summary("sy2", json!({"hookAdditionalContext": ["same"]})),
+    ]);
+    assert_eq!(messages(&p).len(), 2);
+    assert_eq!(blocks(&p).len(), 3);
+    assert_eq!(events(&p, "attachment").len(), 1);
+    assert_eq!(events(&p, "stop_hook_summary").len(), 2);
+}
+
+#[test]
+fn hook_context_does_not_promote_generic_output_or_another_system_subtype() {
+    let p = run(&[
+        hook_summary(
+            "sy1",
+            json!({"stdout": "ordinary output", "hookErrors": ["error"],
+            "hasOutput": true, "hookAdditionalContext": []}),
+        ),
+        hook_summary("sy2", json!({"content": "ordinary content"})),
+        record(
+            "system",
+            "sy3",
+            Value::Null,
+            json!({"subtype": "informational",
+            "hookAdditionalContext": ["unrecognized carrier"]}),
+        ),
+    ]);
+    assert!(messages(&p).is_empty());
+    assert_eq!(events(&p, "stop_hook_summary").len(), 2);
+}
+
+#[test]
+fn hook_context_unsupported_shapes_keep_native_facts_and_diagnose_the_shape() {
+    for value in [
+        Value::Null,
+        json!("scalar"),
+        json!(true),
+        json!({"text": "object"}),
+        json!([null, "valid", 3]),
+    ] {
+        let native = hook_summary("sy1", json!({"hookAdditionalContext": value}));
+        let p = run(std::slice::from_ref(&native));
+        assert_eq!(events(&p, "stop_hook_summary")[0]["data"], native);
+        assert_eq!(
+            p["accounting"]["refused"]
+                .as_object()
+                .unwrap()
+                .values()
+                .map(|v| v.as_u64().unwrap())
+                .sum::<u64>(),
+            1
+        );
+        assert_eq!(blocks(&p).len(), usize::from(value.is_array()));
+    }
+}
+
+#[test]
+fn hook_context_keeps_native_identity_and_parent_links_outside_model_responses() {
+    let human = user("u1", json!("human prompt"));
+    let response = |uuid: &str, text: &str, parent: &str| {
+        record(
+            "assistant",
+            uuid,
+            json!({"id": "response", "content": text}),
+            json!({"parentUuid": parent}),
+        )
+    };
+    let hook = hook_summary(
+        "sy1",
+        json!({"parentUuid": "a1", "hookAdditionalContext": ["context"]}),
     );
+    let bytes = jsonl(&[
+        human.clone(),
+        response("a1", "first", "u1"),
+        hook.clone(),
+        response("a2", "second", "sy1"),
+        record(
+            "user",
+            "u2",
+            json!({"content": "next human"}),
+            json!({"parentUuid": "sy1"}),
+        ),
+    ]);
+    let p = parse("claude-code", PATH, &bytes);
+    assert_eq!(messages(&p).len(), 4);
+    assert_eq!(message(&p, ":a1")["role"], "assistant");
+    assert!(message(&p, ":a1").get("prompt_kind").is_none());
+    assert_eq!(message(&p, ":a1")["blocks"].as_array().unwrap().len(), 2);
+    assert_eq!(message(&p, ":sy1")["parent"], "claude-code:a1");
+    assert_eq!(message(&p, ":u2")["parent"], "claude-code:sy1");
+    assert_eq!(message(&p, ":u1")["prompt_kind"], "prose");
+    let row = p["output"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["message"]["id"] == "claude-code:sy1")
+        .unwrap();
+    let offset = jsonl(&[human, response("a1", "first", "u1")]).len();
+    assert_eq!(row["offset"], offset);
+    assert_eq!(row["end"], offset + jsonl(&[hook]).len() - 1);
 }
 
 #[test]
