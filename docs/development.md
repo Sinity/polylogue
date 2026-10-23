@@ -27,8 +27,11 @@ started inside a queued job keeps that job occupied after the command exits.
   process, all binaries in parallel; a test still running after two minutes
   is terminated and fails. Then the laws that inject failures (laws 7, 45,
   63): `cargo nextest run -p polylogue-engine --features faults --test
-  faults`. The `faults` feature arms the store's fault points
-  (`polylogue_store::fault`); nothing that ships enables it.
+  faults`, followed by the store's `vector_policies::interrupted` unit tests
+  with `faults` enabled. These exercise restore failures and abrupt process exits
+  between canonical commit, vector cleanup and index replacement. The `faults`
+  feature arms the store's fault points (`polylogue_store::fault`); nothing
+  that ships enables it.
 - **End-to-end scenarios:** the `e2e` tests in `crates/polylogue/tests/e2e/`
   start the real `polylogue` binary as a daemon over a temporary archive and
   drive it through the CLI, and as the browser extension's native messaging
