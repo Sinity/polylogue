@@ -74,7 +74,7 @@ fn independent_usage_is_measured_once_without_fabricating_response_or_missing_us
             ],
             events: vec![
                 event("usage_observation", T0 + 2, measured("original", 10)),
-                event("usage_observation", T0 + 3, measured("original", 10)),
+                event("usage_observation", T0 + DAY + 3, measured("original", 10)),
                 event("usage_observation", T0 + 4, unconfirmed),
             ],
             ..Output::default()
@@ -95,6 +95,33 @@ fn independent_usage_is_measured_once_without_fabricating_response_or_missing_us
     assert_eq!(report.recorded_usage.unconfirmed_observations, 1);
     assert_eq!(report.recorded_usage.known_usage.input, Some(10));
     assert_eq!(report.recorded_usage.untimed_observations, 2);
+    let daily = analysis::daily(
+        &reader,
+        &Scope::default(),
+        "tokens",
+        &polylogue_model::LogicalDay::named("UTC", 0).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(daily.days.iter().map(|d| d.1).sum::<f64>(), 12.0);
+    assert_eq!(daily.days.len(), 1);
+    assert_eq!(daily.basis, "recorded_known_subset");
+    assert_eq!(daily.time_basis, "source_record_time");
+    assert!(daily.incomplete && daily.unknown_spend_time && daily.response_completeness_unknown);
+    assert!(daily.baseline_7d.iter().all(Option::is_none));
+    assert!(daily.changes.is_empty());
+    let costs = analysis::daily(
+        &reader,
+        &Scope::default(),
+        "api_cost",
+        &polylogue_model::LogicalDay::named("UTC", 0).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        costs.days.iter().map(|d| d.1).sum::<f64>(),
+        report.recorded_usage.known_api_cost_usd.unwrap()
+    );
+    assert!(costs.incomplete);
+    assert!(costs.changes.is_empty());
     let sessions = super::super::sessions(&reader, &Scope::default()).unwrap();
     assert_eq!(sessions[0].physical.messages, None);
     assert_eq!(sessions[0].logical.messages, None);
@@ -270,4 +297,44 @@ fn an_unrelated_provider_scope_does_not_taint_known_boundary_counts() {
     assert_eq!(known.messages, Some(1));
     assert_eq!(known.recorded_model_items, 1);
     assert!(!known.api_cost.response_total_unknown);
+}
+
+#[test]
+fn ordinary_complete_request_usage_keeps_its_daily_values_and_baseline() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let s = session(&mut f, "claude-code:daily");
+    let usage = Usage {
+        input: Some(10),
+        cached_input: Some(0),
+        cache_write: Some(0),
+        output: Some(2),
+        reasoning: Some(0),
+        ..Usage::default()
+    };
+    for n in 0..8 {
+        model_message(
+            &mut f,
+            s,
+            &format!("m{n}"),
+            "gpt-6.1-sol",
+            T0 + n * DAY,
+            &usage,
+        );
+    }
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let daily = analysis::daily(
+        &reader,
+        &Scope::default(),
+        "tokens",
+        &polylogue_model::LogicalDay::named("UTC", 0).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(daily.days.len(), 8);
+    assert!(daily.days.iter().all(|d| d.1 == 12.0));
+    assert!(!daily.incomplete);
+    assert!(!daily.response_completeness_unknown);
+    assert!(!daily.unknown_spend_time);
+    assert_eq!(daily.baseline_7d[7], Some(12.0));
 }

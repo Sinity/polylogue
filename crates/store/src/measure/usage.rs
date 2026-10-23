@@ -311,7 +311,7 @@ pub struct RecordedUsage {
     pub untimed_observations: u64,
 }
 
-fn unknown_items(
+pub(super) fn unknown_items(
     reader: &Reader<'_>,
     cond: &str,
     params: &[rusqlite::types::Value],
@@ -348,12 +348,20 @@ pub(super) fn unknown_scope(reader: &Reader<'_>, scope: &Scope) -> Result<bool> 
 }
 
 pub(super) fn recorded(reader: &Reader<'_>, scope: &Scope) -> Result<RecordedUsage> {
+    recorded_with(reader, scope, |_, _, _| Ok(()))
+}
+
+pub(super) fn recorded_with(
+    reader: &Reader<'_>,
+    scope: &Scope,
+    mut visit: impl FnMut(Option<i64>, &polylogue_model::UsageObservation, Option<i64>) -> Result<()>,
+) -> Result<RecordedUsage> {
     let mut out = RecordedUsage::default();
     super::observations::visit::<polylogue_model::UsageObservation>(
         reader,
         scope,
         polylogue_model::observations::USAGE_OBSERVATION,
-        |_, _, value| {
+        |_, at, value| {
             out.observations += 1;
             if value.observed_at.is_none() {
                 out.untimed_observations += 1;
@@ -376,13 +384,14 @@ pub(super) fn recorded(reader: &Reader<'_>, scope: &Scope) -> Result<RecordedUsa
             add(&mut out.known_usage.cache_write, value.usage.cache_write)?;
             add(&mut out.known_usage.output, value.usage.output)?;
             add(&mut out.known_usage.reasoning, value.usage.reasoning)?;
-            if let Some(cost) =
-                polylogue_model::Catalog::builtin().cost_nusd(value.model.as_deref(), &value.usage)
-            {
+            let cost =
+                polylogue_model::Catalog::builtin().cost_nusd(value.model.as_deref(), &value.usage);
+            if let Some(cost) = cost {
                 *out.known_api_cost_usd.get_or_insert(0.0) += cost as f64 / 1e9;
             } else {
                 out.unpriced_observations += 1;
             }
+            visit(at, &value, cost)?;
             Ok(())
         },
     )?;

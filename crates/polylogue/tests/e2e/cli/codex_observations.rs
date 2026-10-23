@@ -41,6 +41,31 @@ fn native_codex_counts_usage_and_selected_items_keep_their_own_scope_and_masking
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("unknown responses"), "{text}");
     assert!(text.contains("2 recorded usage observations"), "{text}");
+    let daily = cli(&env, &["--json", "measure", "daily", "tokens"]);
+    assert!(daily.status.success(), "{daily:?}");
+    let daily = json(&daily);
+    let daily = &daily["data"];
+    assert_eq!(daily["basis"], "recorded_known_subset");
+    assert_eq!(daily["time_basis"], "source_record_time");
+    assert_eq!(daily["incomplete"], true);
+    assert_eq!(daily["unknown_spend_time"], true);
+    assert_eq!(
+        daily["days"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d[1].as_f64().unwrap())
+            .sum::<f64>(),
+        35.0
+    );
+    assert!(
+        daily["baseline_7d"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(serde_json::Value::is_null)
+    );
+    assert!(daily["changes"].as_array().unwrap().is_empty());
     let quota = cli(&env, &["--json", "measure", "quota"]);
     assert!(quota.status.success(), "{quota:?}");
     let quota = json(&quota);
