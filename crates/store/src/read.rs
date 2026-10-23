@@ -11,6 +11,7 @@ use polylogue_model::{
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::os::unix::fs::MetadataExt;
 use std::sync::{Condvar, Mutex};
 use std::thread::ThreadId;
 
@@ -27,7 +28,7 @@ pub struct ReadPool {
 
 #[derive(Default)]
 struct PoolState {
-    idle: Vec<Connection>,
+    idle: Vec<(Connection, IndexIdentity)>,
     closed: bool,
     /// Includes idle, checked-out and still-opening connections.
     live: usize,
@@ -43,6 +44,7 @@ struct PoolState {
 pub struct Reader<'a> {
     pool: &'a ReadPool,
     conn: Option<Connection>,
+    index_identity: Option<IndexIdentity>,
     snapshot: std::cell::Cell<SnapshotState>,
     owner: ThreadId,
     // ThreadId ownership detects self-exhaustion only if live readers stay
@@ -56,6 +58,12 @@ enum SnapshotState {
     Deferred,
     Ready,
     Refused,
+    IndexReplaced,
+}
+type IndexIdentity = (u64, u64);
+fn index_identity(archive: &Archive) -> Result<IndexIdentity> {
+    let metadata = std::fs::metadata(archive.index_db())?;
+    Ok((metadata.dev(), metadata.ino()))
 }
 
 /// What the loop knows about a path from its last look, for comparing
@@ -203,14 +211,27 @@ impl ReadPool {
         let mut reader = Reader {
             pool: self,
             conn: None,
+            index_identity: None,
             snapshot: std::cell::Cell::new(SnapshotState::Deferred),
             owner,
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
         };
-        let conn = match idle {
-            Some(conn) => conn,
-            None => connect()?,
+        // Store replacements retire old files, never reinstall their inodes.
+        // Compare around open without pinning SQLite or delaying an unused slot.
+        let current = index_identity(&self.archive);
+        let idle = idle.filter(|(_, identity)| current.as_ref().is_ok_and(|now| now == identity));
+        let (conn, identity) = match idle {
+            Some(connection) => connection,
+            None => {
+                let conn = connect()?;
+                let before = current?;
+                let after = index_identity(&self.archive)?;
+                if before != after {
+                    return Err(StoreError::ReadIndexReplaced);
+                }
+                (conn, after)
+            }
         };
         conn.execute_batch("BEGIN")?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
@@ -218,6 +239,7 @@ impl ReadPool {
             return Err(StoreError::ReadPoolClosed);
         }
         reader.conn = Some(conn);
+        reader.index_identity = Some(identity);
         drop(state);
         Ok(reader)
     }
@@ -241,7 +263,10 @@ impl Drop for Reader<'_> {
     fn drop(&mut self) {
         self.vectors.get_mut().take();
         let conn = self.conn.take().filter(|conn| {
-            self.snapshot.get() != SnapshotState::Refused && conn.execute_batch("COMMIT").is_ok()
+            matches!(
+                self.snapshot.get(),
+                SnapshotState::Deferred | SnapshotState::Ready
+            ) && conn.execute_batch("COMMIT").is_ok()
         });
         let mut state = self
             .pool
@@ -255,7 +280,11 @@ impl Drop for Reader<'_> {
             }
         }
         match conn {
-            Some(conn) if !state.closed => state.idle.push(conn),
+            Some(conn) if !state.closed => state.idle.push((
+                conn,
+                self.index_identity
+                    .expect("opened connection has an index identity"),
+            )),
             _ => state.live -= 1,
         }
         self.pool.available.notify_one();
@@ -337,11 +366,44 @@ impl Reader<'_> {
         match self.snapshot.get() {
             SnapshotState::Ready => {}
             SnapshotState::Refused => return Err(StoreError::ExcisionPending),
+            SnapshotState::IndexReplaced => return Err(StoreError::ReadIndexReplaced),
             SnapshotState::Deferred => {
                 // Merely reserving a slot must not pin the first-build index
                 // and block its transition from an in-memory journal to WAL.
                 // Validate both databases before the first actual read.
+                let waiting = std::time::Instant::now();
+                let _admission = crate::publication::admit(&self.pool.archive, || {
+                    if conn.is_interrupted() {
+                        return Err(rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+                            None,
+                        )
+                        .into());
+                    }
+                    let state = self.pool.state.lock().map_err(|_| pool_poisoned())?;
+                    if state.closed {
+                        return Err(StoreError::ReadPoolClosed);
+                    }
+                    if waiting.elapsed() >= std::time::Duration::from_secs(30) {
+                        return Err(rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                            None,
+                        )
+                        .into());
+                    }
+                    drop(
+                        self.pool
+                            .available
+                            .wait_timeout(state, std::time::Duration::from_millis(5))
+                            .map_err(|_| pool_poisoned())?,
+                    );
+                    Ok(())
+                })?;
                 self.snapshot.set(SnapshotState::Refused);
+                if Some(index_identity(&self.pool.archive)?) != self.index_identity {
+                    self.snapshot.set(SnapshotState::IndexReplaced);
+                    return Err(StoreError::ReadIndexReplaced);
+                }
                 crate::excise::recovery::check_snapshot(conn)?;
                 self.snapshot.set(SnapshotState::Ready);
             }

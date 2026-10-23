@@ -20,6 +20,7 @@ pub mod fixture;
 mod live;
 pub mod measure;
 pub mod notes;
+mod publication;
 pub mod read;
 mod repo_lookup;
 pub mod schema;
@@ -72,6 +73,8 @@ pub enum StoreError {
     ReadPoolClosed,
     #[error("read pool is full while this thread holds a reader; reuse or release it")]
     ReadPoolNested,
+    #[error("the index was replaced; acquire a new reader")]
+    ReadIndexReplaced,
     #[error("excision cleanup is incomplete; reopen the archive before reading or writing")]
     ExcisionPending,
     #[error("blob {0} is still referenced; excision cleanup requires reconciliation")]

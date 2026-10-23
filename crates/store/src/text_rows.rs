@@ -3,7 +3,7 @@
 
 use crate::Result;
 use crate::encoding::{pack_text, unpack_text};
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::collections::HashMap;
 
 /// The text row for `body`, stored once per distinct content, and its
@@ -71,7 +71,7 @@ pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
     for bit in [1, 2] {
         let mut after = 0;
         loop {
-            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+            let tx = crate::publication::transaction(conn, TransactionBehavior::Immediate)?;
             let mut bytes = 0;
             let mut last = after;
             {
@@ -115,7 +115,7 @@ pub(crate) fn index_pending(conn: &Connection) -> Result<u64> {
 
 fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
     // Immediate: a deferred reader cannot wait to upgrade its writer lock.
-    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let tx = crate::publication::transaction(conn, TransactionBehavior::Immediate)?;
     let before = tx.total_changes();
     // Finish the queue cursor before removing its entries. Bodies are fetched
     // individually, so the row-count limit does not multiply retained text.

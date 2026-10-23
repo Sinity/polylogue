@@ -42,7 +42,7 @@ pub(super) fn install<R: Read>(
     let mut fingerprint = blake3::Hasher::new();
     serde_json::to_writer(&mut fingerprint, &(identity, units))?;
     let fingerprint = fingerprint.finalize().to_hex().to_string();
-    let tx = conn.transaction()?;
+    let tx = crate::publication::transaction(conn, rusqlite::TransactionBehavior::Deferred)?;
     if let Some(archive_id) = identity {
         if archive_id.is_empty() {
             return Err(invalid("restored archive has no identity"));

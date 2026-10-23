@@ -41,9 +41,13 @@ started inside a queued job keeps that job occupied after the command exits.
   source. It does not run tests; the full suite covers them with incremental
   builds.
 
-`xtask check` and `xtask scenarios` set `TMPDIR` to a fresh directory under
-`/dev/shm` and remove it afterwards. Tests write fsync'd archives, and on the
-btrfs work disk those syncs dominated test time.
+Test operations declare AgentCTL-owned tmpfs scratch. Devkit creates its test
+child inside that root; normal Drop removes the child, and the native owner
+removes retained files after cancellation or SIGKILL. Long Linux paths use a
+short held-directory `/proc` view, so Unix sockets fit without putting files
+outside the owner. Standalone runs fall back to a temporary child with Drop
+cleanup only. Durability tests retain their separate real-filesystem root.
+Tests write fsync'd archives; on the btrfs work disk those syncs dominated time.
 
 Run throughput measurements with the declared `bench` operation, or
 `agentctl job start polylogue measure --workspace <worktree> -- <command>`

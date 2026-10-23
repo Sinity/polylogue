@@ -225,6 +225,27 @@ Each Reader owns one index connection with the archive attached and may open
 one auxiliary embeddings connection. Daemon reads therefore open at most
 `2 * workers + 1` connections; the engine does not open embeddings.
 
+Before the first database read, a Reader takes a shared OS lock on the existing
+`archive.db`, pins both attached snapshots and checks removal revisions and pending
+cleanup. Database publications take that same file's exclusive lock before SQLite
+write locks. Ordinary transactions own exclusion through commit/rollback; paired
+commits and index replacement use explicit scopes. The reader releases admission
+exclusion before executing its query, so admitted WAL snapshots do not stop later
+publications. A single attached SELECT alone does not make two WAL snapshots simultaneous.
+
+Unused reservations hold no snapshot. Idle connections refresh after index-file
+replacement; a reserved old handle refuses its first read with `ReadIndexReplaced`.
+Existing pinned readers retain their view, and can make index retirement refuse
+until released. Admission waits observe pool close and SQLite interruption, with
+the existing 30-second busy limit. Ordinary write batches are bounded; offline
+restore holds exclusion during its atomic row installation, with no fixed latency
+promise. Physical vector/blob cleanup keeps pending intent visible outside exclusion,
+then validates and acknowledges that intent in a fresh guarded transaction.
+
+The embeddings connection remains a separate snapshot checked against removal
+revisions. Its highest row ID is a vector position, not proof that all three databases
+were pinned at one instant. The attached-pair admission repair makes no such claim.
+
 The default `Config.reader_memory_bytes` is a 128 MiB page-cache target for
 these readers together. Each Reader gets an equal share, split between the
 main index, attached archive and optional embeddings caches (rounded down to

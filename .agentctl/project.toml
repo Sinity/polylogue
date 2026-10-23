@@ -23,6 +23,7 @@ exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask"
 pool = "bulk"
 result = "exit"
 timeout_seconds = 3600
+scratch = "tmpfs"
 cache = "none"
 
 [operations.scenarios]
@@ -31,6 +32,7 @@ exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask"
 pool = "bulk"
 result = "exit"
 timeout_seconds = 1800
+scratch = "tmpfs"
 cache = "none"
 
 [operations.compile]
@@ -49,6 +51,7 @@ arguments = "required"
 pool = "normal"
 result = "exit"
 timeout_seconds = 1800
+scratch = "tmpfs"
 cache = "none"
 
 [operations.package]

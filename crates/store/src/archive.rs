@@ -132,6 +132,7 @@ impl Archive {
         let archive = Self::at(root);
         fs::create_dir_all(archive.blobs_dir())?;
         let mut a = open_write(&archive.archive_db(), cache::SETUP)?;
+        let identity_publication = crate::publication::write(&a)?;
         if schema::version(&a)? == 0 {
             schema::create_archive(&a)?;
         }
@@ -142,6 +143,7 @@ impl Archive {
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('archive_id', ?1)",
             [uuid::Uuid::now_v7().to_string()],
         )?;
+        drop(identity_publication);
         let mut e = open_write(&archive.embeddings_db(), cache::SETUP)?;
         schema::migrate_embeddings(&mut e)?;
         drop(e);
@@ -175,6 +177,7 @@ impl Archive {
     /// content; future parses use the archive's standing excision rules.
     pub(crate) fn prepare_index(&self) -> Result<()> {
         let canonical = open_read(&self.archive_db())?;
+        let _publication = crate::publication::write(&canonical)?;
         self.validate_excision_indexes(&canonical)?;
         retired::remove(self, &canonical)?;
         retire_old_index(self, &canonical)?;
