@@ -504,7 +504,12 @@ fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
     archive
         .execute_batch("ALTER TABLE unavailable_setting RENAME TO setting")
         .unwrap();
-    assert_eq!(response.0, StatusCode::INTERNAL_SERVER_ERROR, "{}", response.2);
+    assert_eq!(
+        response.0,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        response.2
+    );
     let body: serde_json::Value = serde_json::from_str(&response.2).unwrap();
     assert_eq!(body["error"], "store");
 }
