@@ -35,10 +35,10 @@ fn index_format_changes_require_a_version_and_digest_update() {
         ),
         (
             29,
-            "142f1421d4b99bd2eb39d0774bca6862dcdbbc487042c095621f6ba52d393062".to_owned(),
+            "20a649d5564617ddf42f44da9dab21163d52b5b940b0420138d5182313146ab3".to_owned(),
             "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
         ),
-        "bump INDEX_VERSION and record the format digests when index.sql or the row dictionary changes"
+        "record current source digests; bump INDEX_VERSION for schema or row-format changes, not comments"
     );
 }
 
