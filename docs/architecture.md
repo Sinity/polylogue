@@ -97,12 +97,13 @@ batch; the largest decoded row and SQLite ordering remain separate costs.
 The feed emits `begin`, `change` and `complete` JSON lines. Event lines retain the
 previous completed position (null initially). Only `complete` offers the new
 position, after every reference was written. The receiver must apply or stage all
-preceding records before persisting it; that line proves neither receiver durability
-nor a server acknowledgement. Disconnects and unknown outcomes may replay references.
+preceding records before persisting it. The completion line identifies the entire
+batch; persistence remains the receiver's responsibility. A disconnect can leave
+the outcome unknown, and a later attempt may replay references.
 Archive notes/excisions come in their local order, followed by independent index
 session/removal references. Initial or changed-generation batches mark replacement:
-replace current session and note reference membership and replay every note and canonical
-excision before accepting completion. These are references and removal selections,
+replace current session and note reference membership and replay every note and
+canonical excision before accepting completion. These are references and removal selections,
 not session payload replication. Arbitrary `changes` queries retain ordinary
 composition and page semantics; they cannot be used as delivery acknowledgement.
 

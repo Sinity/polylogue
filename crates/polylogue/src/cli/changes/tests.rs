@@ -311,3 +311,33 @@ fn failed_final_flush_is_an_unknown_delivery_outcome_and_can_replay_from_the_pri
     assert!(receive(&input[..], &mut replay, Some("g:1:1")).unwrap());
     assert_eq!(replay, output.0);
 }
+
+#[test]
+fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments() {
+    use crate::commands::{Action, Caller, Surface};
+    for suffix in [
+        vec!["--cursor", "opaque"],
+        vec!["--fields", "ref"],
+        vec!["--why"],
+    ] {
+        let mut argv = vec!["polylogue", "changes"];
+        argv.extend(suffix);
+        let (command, values) = crate::cli::parse(&argv).unwrap();
+        let Action::Request(build) = command.action else {
+            unreachable!()
+        };
+        assert!(
+            build(
+                command,
+                &values,
+                &Caller {
+                    surface: Surface::Cli,
+                    cwd: None,
+                    json: false
+                }
+            )
+            .is_err(),
+            "{argv:?}"
+        );
+    }
+}

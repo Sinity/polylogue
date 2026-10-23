@@ -656,13 +656,17 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "changes",
         help: "A finite JSON-lines change feed; persist its new position only after applying the complete batch",
-        args: &[opt(
-            "since",
-            Kind::Text,
-            "The last fully applied feed position (GEN:COUNTER:ARCHIVE)",
-        )],
+        args: &[
+            opt(
+                "since",
+                Kind::Text,
+                "The last fully applied feed position (GEN:COUNTER:ARCHIVE)",
+            ),
+            WHY,
+            CURSOR,
+            FIELDS,
+        ],
         action: Action::Request(requests::changes),
-        print: print::query,
         ..CLI
     },
     Command {
