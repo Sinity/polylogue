@@ -107,7 +107,7 @@ impl Config {
                 .map(Some)
                 .map_err(|e| Error::Invalid(format!("{}: {e}", path.display()))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(Error::Invalid(format!("{}: {e}", path.display()))),
+            Err(e) => Err(std::io::Error::new(e.kind(), format!("{}: {e}", path.display())).into()),
         }
     }
 }
