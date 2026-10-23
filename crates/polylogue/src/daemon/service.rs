@@ -23,7 +23,8 @@ pub struct Daemon {
     /// the loop to read.
     pub config: Config,
     /// User writes (notes, deliveries, settings) through the one writer.
-    pub(crate) writes: WriterSender,
+    pub(crate) writes: Option<WriterSender>,
+    backing: BackingState,
     loop_tx: Mutex<Sender<LoopMsg>>,
     status: Arc<Mutex<Pass>>,
     started: Instant,
@@ -98,7 +99,11 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
             refs: prepared.refs.clone(),
             left_out: prepared.left_out.clone(),
         });
-        match d.writes.user(UserRequest::now(request_id, write)) {
+        let writes = match writer(d) {
+            Ok(writes) => writes,
+            Err(response) => return response,
+        };
+        match writes.user(UserRequest::now(request_id, write)) {
             Ok(out) => delivery = Some(out.id),
             Err(e) => return store_error(&e),
         }
@@ -106,8 +111,31 @@ fn context(d: &Daemon, request_id: String, ask: &Ask, sender: Option<String>) ->
     ok(serde_json::json!({ "delivery": delivery, "prepared": prepared }))
 }
 
+fn writes_paused(d: &Daemon) -> Response {
+    match &d.backing {
+        BackingState::Blocked {
+            path,
+            error: reason,
+            ..
+        } => Response::Error {
+            kind: "backing_unavailable".into(),
+            message: format!("archive writes are paused: {reason}"),
+            detail: Some(serde_json::json!({ "config_path": path, "error": reason })),
+        },
+        _ => store_error(&StoreError::WriterGone),
+    }
+}
+
+fn writer(d: &Daemon) -> Result<&WriterSender, Response> {
+    d.writes.as_ref().ok_or_else(|| writes_paused(d))
+}
+
 fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
-    match d.writes.user(UserRequest::now(request_id, w)) {
+    let writes = match writer(d) {
+        Ok(writes) => writes,
+        Err(response) => return response,
+    };
+    match writes.user(UserRequest::now(request_id, w)) {
         Ok(out) => ok(out),
         Err(e) => store_error(&e),
     }
@@ -139,6 +167,9 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             "the daemon has stopped accepting requests",
         );
     }
+    if matches!(d.backing, BackingState::Blocked { .. }) && !request.read_only() {
+        return writes_paused(d);
+    }
     let reader = match d.reads.reader() {
         Ok(r) => r,
         Err(StoreError::ReadPoolClosed) => {
@@ -160,6 +191,7 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 "store": store,
                 "last_pass": last_pass,
                 "signals": d.signals.lock().map(|s| s.clone()).unwrap_or_default(),
+                "backing": d.backing,
             }))
         }
         Request::Query {
@@ -559,11 +591,32 @@ impl Drop for Runtime {
     }
 }
 
-/// Backing selected by the caller, independently of source discovery paths.
+/// The persistence choice or a configuration failure, never a fallback mode.
 pub enum Backing {
     Standalone,
     #[cfg(feature = "sinex")]
-    Sinex(polylogue_sinex::Config),
+    Sinex {
+        config: polylogue_sinex::Config,
+        path: std::path::PathBuf,
+    },
+    Blocked {
+        mode: Option<&'static str>,
+        path: std::path::PathBuf,
+        error: String,
+    },
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum BackingState {
+    Standalone,
+    #[cfg(feature = "sinex")]
+    Primary,
+    Blocked {
+        mode: Option<&'static str>,
+        path: std::path::PathBuf,
+        error: String,
+    },
 }
 
 /// Opens the archive and starts owned application workers. Startup errors
@@ -575,14 +628,36 @@ pub fn start(root: &std::path::Path, config: Config, backing: Backing) -> std::i
     #[allow(unused_mut)]
     let mut config = config;
     #[cfg(feature = "sinex")]
-    let publisher = match backing {
-        Backing::Standalone => None,
-        Backing::Sinex(sinex) => Some(crate::sinex::start(&archive, &mut config, sinex)?),
+    let mut publisher = None;
+    let backing = match backing {
+        Backing::Standalone => BackingState::Standalone,
+        Backing::Blocked { mode, path, error } => BackingState::Blocked { mode, path, error },
+        #[cfg(feature = "sinex")]
+        Backing::Sinex {
+            config: sinex,
+            path,
+        } => match crate::sinex::start(&archive, &mut config, sinex) {
+            Ok(started) => {
+                publisher = Some(started);
+                BackingState::Primary
+            }
+            Err(error) => BackingState::Blocked {
+                mode: Some("primary"),
+                path,
+                error: error.to_string(),
+            },
+        },
     };
-    #[cfg(not(feature = "sinex"))]
-    let _ = backing;
-    let mut engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
-    let writes = engine.writer().map_err(|e| to_io(&e))?;
+    let mut engine = if matches!(backing, BackingState::Blocked { .. }) {
+        None
+    } else {
+        Some(Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?)
+    };
+    let writes = engine
+        .as_ref()
+        .map(Engine::writer)
+        .transpose()
+        .map_err(|e| to_io(&e))?;
     let per_reader = paths
         .reader_memory_per_connection()
         .map_err(|e| to_io(&e))?;
@@ -595,6 +670,7 @@ pub fn start(root: &std::path::Path, config: Config, backing: Backing) -> std::i
         reads,
         config: paths,
         writes,
+        backing,
         loop_tx: Mutex::new(tx.clone()),
         status: Arc::clone(&status),
         started: Instant::now(),
@@ -609,6 +685,9 @@ pub fn start(root: &std::path::Path, config: Config, backing: Backing) -> std::i
         #[cfg(feature = "sinex")]
         publisher,
         lock: Some(lock),
+    };
+    let Some(mut engine) = engine.take() else {
+        return Ok(runtime);
     };
     let (ready, wait) = sync_channel(1);
     runtime.engine = Some(

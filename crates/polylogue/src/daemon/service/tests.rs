@@ -185,7 +185,7 @@ fn standalone_start_does_not_resolve_operator_backing() {
     const CHILD: &str = "POLYLOGUE_TEST_STANDALONE_CHILD";
     if std::env::var_os(CHILD).is_some() {
         assert!(
-            crate::sinex::configured().is_some(),
+            matches!(crate::sinex::configured(), Backing::Sinex { .. }),
             "synthetic primary configuration was not loaded"
         );
         let dir = tempfile::tempdir().unwrap();
@@ -336,3 +336,6 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
     assert_eq!(export(), before);
     assert_eq!(std::fs::read(source).unwrap(), original);
 }
+
+#[cfg(feature = "sinex")]
+mod backing;
