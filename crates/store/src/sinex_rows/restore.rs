@@ -42,6 +42,7 @@ pub(super) fn install<R: Read>(
     let mut fingerprint = blake3::Hasher::new();
     serde_json::to_writer(&mut fingerprint, &(identity, units))?;
     let fingerprint = fingerprint.finalize().to_hex().to_string();
+    let _publication = crate::publication::write(conn)?;
     let tx = conn.transaction()?;
     if let Some(archive_id) = identity {
         if archive_id.is_empty() {

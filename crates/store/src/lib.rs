@@ -20,6 +20,7 @@ pub mod fixture;
 mod live;
 pub mod measure;
 pub mod notes;
+mod publication;
 pub mod read;
 mod repo_lookup;
 pub mod schema;

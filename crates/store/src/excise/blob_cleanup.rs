@@ -42,6 +42,7 @@ pub(crate) fn recover(archive: &Archive, conn: &Connection) -> Result<()> {
     let store = hashed_blobs::Store::open(archive.root.clone(), vec![], 0o600)?;
     let current = crate::sinex_rows::CurrentBatches::new(conn)?;
     loop {
+        let _publication = crate::publication::write(conn)?;
         let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
         let hashes: Vec<Vec<u8>> = tx
             .prepare("SELECT hash FROM pending_blob_excision ORDER BY hash LIMIT 500")?

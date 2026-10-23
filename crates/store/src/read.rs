@@ -341,6 +341,34 @@ impl Reader<'_> {
                 // Merely reserving a slot must not pin the first-build index
                 // and block its transition from an in-memory journal to WAL.
                 // Validate both databases before the first actual read.
+                let waiting = std::time::Instant::now();
+                let _admission = crate::publication::admit(&self.pool.archive, || {
+                    if conn.is_interrupted() {
+                        return Err(rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+                            None,
+                        )
+                        .into());
+                    }
+                    let state = self.pool.state.lock().map_err(|_| pool_poisoned())?;
+                    if state.closed {
+                        return Err(StoreError::ReadPoolClosed);
+                    }
+                    if waiting.elapsed() >= std::time::Duration::from_secs(30) {
+                        return Err(rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                            None,
+                        )
+                        .into());
+                    }
+                    drop(
+                        self.pool
+                            .available
+                            .wait_timeout(state, std::time::Duration::from_millis(5))
+                            .map_err(|_| pool_poisoned())?,
+                    );
+                    Ok(())
+                })?;
                 self.snapshot.set(SnapshotState::Refused);
                 crate::excise::recovery::check_snapshot(conn)?;
                 self.snapshot.set(SnapshotState::Ready);

@@ -26,6 +26,7 @@ fn begin(index: &Connection, boot: &str) -> Result<()> {
     let previous: i64 = index.pragma_query_value(None, "synchronous", |r| r.get(0))?;
     index.pragma_update(None, "synchronous", previous.max(2))?;
     let result = (|| {
+        let _publication = crate::publication::write(index)?;
         let tx = index.unchecked_transaction()?;
         let value = |key| -> Result<Option<String>> {
             Ok(tx

@@ -24,6 +24,7 @@ pub(crate) fn recover(archive: &Archive, canonical: &mut Connection) -> Result<(
     let mut vectors =
         crate::archive::open_write(&archive.embeddings_db(), crate::archive::cache::SETUP)?;
     vectors.pragma_update(None, "synchronous", "full")?;
+    let _publication = crate::publication::write(canonical)?;
     let vtx = vectors.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let atx = canonical.transaction()?;
     super::vector_policy::reconcile(&vtx, &atx)?;
