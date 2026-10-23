@@ -168,6 +168,7 @@ impl<'a> Compiler<'a> {
                     };
                     for (field, desc) in then {
                         let (expr, kind) = self.expr(field, &scope, stage.span.start)?;
+                        scalar(kind, field, stage.span.start)?;
                         self.show(field, &expr, kind);
                         let dir = if *desc { " DESC" } else { "" };
                         keys.push(format!("({expr}) IS NULL"));
@@ -534,6 +535,7 @@ impl<'a> Compiler<'a> {
             ranked: self.rank.is_some(),
             text_terms: self.text_terms,
             id_checks: self.id_checks,
+            change_generations: self.change_generations,
             attach,
             notes: self.notes,
             degraded: self.degraded,

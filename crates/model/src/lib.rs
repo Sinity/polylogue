@@ -6,6 +6,7 @@ mod stored_names;
 
 pub mod batch;
 mod block;
+mod change_position;
 pub mod command;
 mod event;
 pub mod export;
@@ -28,6 +29,7 @@ pub use block::{
     Attachment, AttachmentDirection, Block, BlockKind, ErrorReason, ToolAction, ToolOutcome,
     UnknownReason,
 };
+pub use change_position::ChangePosition;
 pub use event::{Event, LINK_HOW_NAMES, LINK_KIND_NAMES, Link, LinkKind};
 pub use id::{BlobHash, IdError, MessageId, NativeId, Origin, SessionId};
 pub use message::{ApiError, Attribution, Message, Production, PromptKind, Role};

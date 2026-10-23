@@ -484,7 +484,7 @@ pub fn json_answer(web: &Web, response: Response) -> HttpResponse {
             let status = match kind.as_str() {
                 "not_found" => StatusCode::NOT_FOUND,
                 "bad_request" | "query" | "sql" => StatusCode::BAD_REQUEST,
-                "conflict" => StatusCode::CONFLICT,
+                "conflict" | "resync_required" => StatusCode::CONFLICT,
                 "not_built" => StatusCode::NOT_IMPLEMENTED,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };

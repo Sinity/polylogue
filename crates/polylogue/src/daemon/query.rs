@@ -168,10 +168,10 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         fields: ask.fields.to_vec(),
     };
     let program = polylogue_query::compile(ask.text, &opts)?;
-    check_ids(reader, &program)?;
+    validate(reader, &program)?;
     let mut rows = reader.query(&program.sql, &values(&program.params))?;
     for row in &mut rows {
-        present(&program, row);
+        present(&program, row)?;
     }
     let mut kept = json!({
         "unit": if program.shape == Shape::Matches { "matches" } else { program.unit.name() },
@@ -184,9 +184,10 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     if !ask.text.contains('|')
         && let Ok(m) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
     {
+        validate(reader, &m)?;
         let mut matches = reader.query(&m.sql, &values(&m.params))?;
         for row in &mut matches {
-            present(&m, row);
+            present(&m, row)?;
         }
         kept["match_columns"] = json!(m.columns);
         kept["matches"] = json!(matches);
@@ -228,6 +229,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         fields: ask.fields.to_vec(),
     };
     let mut program = polylogue_query::compile(ask.text, &opts)?;
+    validate(reader, &program)?;
     if let (Some(near), Some(f)) = (program.near.clone(), ask.near) {
         let hits = f(&near.text).map_err(|message| Failure {
             kind: "embed".into(),
@@ -238,7 +240,6 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
             *p = Param::Text(hits);
         }
     }
-    check_ids(reader, &program)?;
     let params = values(&program.params);
     let view = view(reader)?;
     if let Some(m) = &program.measure {
@@ -273,7 +274,7 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         attach(reader, &program, &mut rows)?;
     }
     for row in &mut rows {
-        present(&program, row);
+        present(&program, row)?;
     }
     let next = (offset + page_size < count).then(|| {
         encode(&Cursor {
@@ -313,21 +314,12 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     Ok(out)
 }
 
-/// The state the query read (spec query.md, Results, `view`): the write
-/// counters of `index.db` and `archive.db`. `cursor` is the two as
-/// `INDEX.ARCHIVE`, which `changes where after:CURSOR` continues from.
+/// One pinned view, with independent counters scoped to the current index.
 fn view(reader: &Reader<'_>) -> Result<Value, Failure> {
-    let counter = |db: &str| -> Result<i64, Failure> {
-        let rows = reader.query(
-            &format!(
-                "SELECT CAST(value AS INTEGER) AS n FROM {db}meta WHERE key = 'write_counter'"
-            ),
-            &[],
-        )?;
-        Ok(rows.first().and_then(|r| r["n"].as_i64()).unwrap_or(0))
-    };
-    let (index, archive) = (counter("")?, counter("a.")?);
-    Ok(json!({ "index": index, "archive": archive, "cursor": format!("{index}.{archive}") }))
+    let position = reader.change_position()?;
+    Ok(
+        json!({ "generation": position.generation, "index": position.index, "archive": position.archive, "cursor": position.to_string() }),
+    )
 }
 
 pub(crate) fn values(params: &[Param]) -> Vec<SqlValue> {
@@ -339,6 +331,25 @@ pub(crate) fn values(params: &[Param]) -> Vec<SqlValue> {
             Param::Text(s) => SqlValue::Text(s.clone()),
         })
         .collect()
+}
+
+/// Every execution path validates its compiled references before reading rows.
+fn validate(reader: &Reader<'_>, program: &Program) -> Result<(), Failure> {
+    let position = reader.change_position()?;
+    for expected in &program.change_generations {
+        if expected != &position.generation {
+            return Err(Failure {
+                kind: "resync_required".into(),
+                message:
+                    "the index generation changed; read the current state and every excision again"
+                        .into(),
+                detail: Some(
+                    json!({"generation": position.generation, "excisions_query": "changes where kind:excision", "reason": "generation_changed"}),
+                ),
+            });
+        }
+    }
+    check_ids(reader, program)
 }
 
 /// A pasted ID is a reference only when it names exactly one session.
@@ -419,7 +430,7 @@ fn attach(reader: &Reader<'_>, program: &Program, rows: &mut [Value]) -> Result<
             }
             for c in &mut children {
                 for col in &a.columns {
-                    shape_value(col.kind, &mut c[col.name.as_str()]);
+                    shape_value(col.kind, &mut c[col.name.as_str()])?;
                 }
             }
             row[a.name.as_str()] = Value::Array(children);
@@ -429,17 +440,47 @@ fn attach(reader: &Reader<'_>, program: &Program, rows: &mut [Value]) -> Result<
 }
 
 /// Times as RFC 3339, booleans as booleans; `_pk` is the reader's own.
-fn present(program: &Program, row: &mut Value) {
+fn present(program: &Program, row: &mut Value) -> Result<(), Failure> {
     if let Some(obj) = row.as_object_mut() {
         obj.remove("_pk");
     }
     for col in &program.columns {
-        shape_value(col.kind, &mut row[col.name.as_str()]);
+        shape_value(col.kind, &mut row[col.name.as_str()])?;
     }
+    Ok(())
 }
 
-fn shape_value(kind: ColKind, v: &mut Value) {
+fn shape_value(kind: ColKind, v: &mut Value) -> Result<(), Failure> {
     match kind {
+        ColKind::Ids => {
+            if v.is_null() {
+                return Ok(());
+            }
+            let selection: Value = if let Some(text) = v.as_str() {
+                serde_json::from_str(text).map_err(|e| Failure {
+                    kind: "store".into(),
+                    message: format!("invalid retained selection: {e}"),
+                    detail: None,
+                })?
+            } else {
+                v.take()
+            };
+            if selection.is_null() {
+                *v = Value::Null;
+                return Ok(());
+            }
+            if !selection.as_array().is_some_and(|ids| {
+                ids.iter()
+                    .all(|id| id.as_str().is_some_and(|id| !id.is_empty()))
+            }) {
+                return Err(Failure {
+                    kind: "store".into(),
+                    message: "retained selection must be an array of IDs".into(),
+                    detail: None,
+                });
+            }
+            *v = selection;
+        }
         ColKind::Time => {
             if let Some(ms) = v.as_i64() {
                 *v = polylogue_model::Timestamp::from_unix_ms(ms)
@@ -453,6 +494,7 @@ fn shape_value(kind: ColKind, v: &mut Value) {
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Each top-level condition counted alone against the rows the defaults

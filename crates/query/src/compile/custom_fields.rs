@@ -171,21 +171,23 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
         .replace("{v}", &t.end().to_string()))
 }
 
-pub(crate) fn changes_after(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let cursor = x.one().and_then(|t| {
-        let (i, a) = t.split_once('.')?;
-        Some((i.parse::<i64>().ok()?, a.parse::<i64>().ok()?))
-    });
-    let Some((index, archive)) = cursor else {
+pub(crate) fn changes_after(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let cursor = x
+        .one()
+        .and_then(|text| polylogue_model::ChangePosition::parse(&text));
+    let Some(cursor) = cursor else {
         return Err(QueryError::Invalid {
-            message: "after: takes a cursor `INDEX.ARCHIVE`, two numbers".into(),
+            message: "after: takes a cursor `GEN:COUNTER:ARCHIVE`".into(),
             position: x.span.start,
         });
     };
+    c.change_generations.push(cursor.generation);
     Ok(format!(
-        "(({r}.kind = 'note' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
+        "(({r}.kind IN ('note','excision') AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
          OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index})))",
-        r = x.row()
+        r = x.row(),
+        index = cursor.index,
+        archive = cursor.archive,
     ))
 }
 
@@ -630,4 +632,15 @@ impl Compiler<'_> {
         let p = self.text_param(&like_prefix(v));
         (e, p)
     }
+}
+
+/// Retained selections are output data, not scalar query operands.
+pub(crate) fn selection(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    Err(QueryError::Invalid {
+        message: format!(
+            "{} is a selection array; predicates on it are not supported",
+            x.name
+        ),
+        position: x.span.start,
+    })
 }

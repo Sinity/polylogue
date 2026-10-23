@@ -19,6 +19,7 @@ impl<'a> Compiler<'a> {
             }
             SortKey::Field { field } => {
                 let (expr, kind) = self.expr(field, scope, at)?;
+                scalar(kind, field, at)?;
                 self.show(field, &expr, kind);
                 let dir = if desc { " DESC" } else { "" };
                 vec![
@@ -116,6 +117,7 @@ impl<'a> Compiler<'a> {
         at: usize,
     ) -> Result<(String, String, ColKind), QueryError> {
         let (expr, kind) = self.expr(&key.field, scope, at)?;
+        scalar(kind, &key.field, at)?;
         let name = flat(&key.field);
         Ok(match key.bucket {
             None => {
@@ -154,6 +156,7 @@ impl<'a> Compiler<'a> {
             return Ok(vec![(col, "count(*)".into(), ColKind::Number)]);
         };
         let (expr, kind) = self.expr(field, scope, at)?;
+        scalar(kind, field, at)?;
         let value = |e: String| match kind {
             ColKind::Money => format!("{e} / 1e9"),
             _ => e,

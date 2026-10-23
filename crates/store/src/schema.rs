@@ -44,6 +44,7 @@ pub fn create_archive(conn: &Connection) -> Result<()> {
 
 pub fn create_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(INDEX)?;
+    crate::archive::generation::create(conn)?;
     set_version(conn, INDEX_VERSION)?;
     Ok(())
 }

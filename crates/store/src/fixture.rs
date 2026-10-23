@@ -394,4 +394,21 @@ impl Fixture {
         )?;
         Ok(id)
     }
+    /// An excision receipt over this fixture's synthetic rows. Selections may
+    /// deliberately be malformed to exercise readers at the SQLite boundary.
+    pub fn excision(
+        &mut self,
+        id: &str,
+        scope: &str,
+        sessions: Option<&serde_json::Value>,
+        messages: &serde_json::Value,
+    ) -> Result<()> {
+        self.commit_seq += 1;
+        let mut refused = serde_json::json!({});
+        if let Some(sessions) = sessions {
+            refused["sessions"] = sessions.clone();
+        }
+        self.notes.execute("INSERT INTO excision(id,scope,refused_json,message_ids_json,created_at,commit_seq) VALUES (?1,?2,?3,?4,?5,?5)", params![id,scope,refused.to_string(),messages.to_string(),self.commit_seq])?;
+        crate::excise::recovery::acknowledge(&self.notes, &self.index)
+    }
 }

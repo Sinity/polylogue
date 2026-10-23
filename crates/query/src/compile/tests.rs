@@ -130,9 +130,9 @@ fn fields_choose_the_columns() {
 
 #[test]
 fn changes_continue_from_a_cursor() {
-    let p = c("changes where after:12.3");
+    let p = c("changes where after:generation:12:3");
     assert!(p.sql.contains("> 12") && p.sql.contains("> 3"), "{}", p.sql);
-    assert!(compile_err("changes where after:12").contains("INDEX.ARCHIVE"));
+    assert!(compile_err("changes where after:12").contains("GEN:COUNTER:ARCHIVE"));
 }
 
 #[test]
@@ -188,4 +188,24 @@ fn every_stored_value_can_be_queried() {
     c("sessions where link:resume");
     assert!(compile_err("sessions where kind:chat").contains("kind on sessions is one of"));
     assert!(compile_err("sessions where link:reference").contains("link is one of"));
+}
+
+#[test]
+fn change_selections_are_output_arrays_not_scalar_operands() {
+    for text in [
+        "changes where sessions:x",
+        "changes where messages > 0",
+        "changes | sort by sessions",
+        "changes | group by messages | count",
+        "changes | agg sum:messages",
+    ] {
+        assert!(compile_err(text).contains("selection array"), "{text}");
+    }
+    let generations = c("changes where after:generation:1:2 | limit 1").change_generations;
+    assert!(!generations.is_empty());
+    assert!(
+        generations
+            .iter()
+            .all(|generation| generation == "generation")
+    );
 }

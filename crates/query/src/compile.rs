@@ -83,6 +83,8 @@ pub enum Shape {
 #[serde(rename_all = "snake_case")]
 pub enum ColKind {
     Text,
+    /// Retained selection arrays, decoded from SQLite text at the result boundary.
+    Ids,
     Number,
     /// Dollars.
     Money,
@@ -152,6 +154,8 @@ pub struct Program {
     /// The full-text terms, for marking matches in snippets.
     pub text_terms: Vec<String>,
     pub id_checks: Vec<IdCheck>,
+    /// Required change-feed generations, validated before any result stages.
+    pub change_generations: Vec<String>,
     pub attach: Vec<Attach>,
     pub notes: Vec<String>,
     /// Parts that could not run; the outcome is then `degraded`.
@@ -295,6 +299,7 @@ pub(crate) struct Compiler<'a> {
     degraded: Vec<String>,
     text_terms: Vec<String>,
     id_checks: Vec<IdCheck>,
+    change_generations: Vec<String>,
     /// Fields shown beside each row because a condition or sort named them.
     shown: Vec<(String, String, ColKind)>,
     aliases: usize,
@@ -316,6 +321,7 @@ impl<'a> Compiler<'a> {
             degraded: vec![],
             text_terms: vec![],
             id_checks: vec![],
+            change_generations: vec![],
             shown: vec![],
             aliases: 0,
             saved_stack: vec![],
@@ -357,7 +363,8 @@ pub(crate) enum FieldOp<'q> {
 
 /// A column of `| matches` rows, by name.
 fn match_column(rel: &MatchRel, name: &str, at: usize) -> Result<(String, ColKind), QueryError> {
-    rel.columns
+    let column = rel
+        .columns
         .iter()
         .find(|(n, _)| n == name)
         .cloned()
@@ -371,7 +378,9 @@ fn match_column(rel: &MatchRel, name: &str, at: usize) -> Result<(String, ColKin
                     .join(", ")
             ),
             position: at,
-        })
+        })?;
+    scalar(column.1, name, at)?;
+    Ok(column)
 }
 
 /// An aggregate over `| matches` rows: computed over the pairs or tuples.
@@ -640,3 +649,13 @@ fn parse_pr(v: &str) -> Option<(Option<String>, i64)> {
 
 #[cfg(test)]
 mod tests;
+
+fn scalar(kind: ColKind, field: &str, at: usize) -> Result<(), QueryError> {
+    if kind == ColKind::Ids {
+        return Err(QueryError::Invalid {
+            message: format!("{field} is a selection array, not a scalar field"),
+            position: at,
+        });
+    }
+    Ok(())
+}
