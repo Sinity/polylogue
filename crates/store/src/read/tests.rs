@@ -238,3 +238,5 @@ fn nested_readers_keep_distinct_consistent_snapshots_when_connections_are_reused
 mod excision;
 
 mod snapshot_admission;
+
+mod messages;
