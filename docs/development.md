@@ -22,16 +22,17 @@ started inside a queued job keeps that job occupied after the command exits.
   hook runs only its formatting and boundaries steps; clippy runs in the
   AgentCTL job so it queues with the rest of the machine's work.
 - **Full suite:** formatting, boundaries, clippy and
-  `cargo nextest run --workspace --features polylogue/sinex`
-  (configuration in `.config/nextest.toml`). Each test runs in its own
-  process, all binaries in parallel; a test still running after two minutes
-  is terminated and fails. Then the laws that inject failures (laws 7, 45,
-  63): `cargo nextest run -p polylogue-engine --features faults --test
-  faults`, followed by the store's `vector_policies::interrupted` unit tests
-  with `faults` enabled. These exercise restore failures and abrupt process exits
-  between canonical commit, vector cleanup and index replacement. The `faults`
-  feature arms the store's fault points (`polylogue_store::fault`); nothing
-  that ships enables it.
+  `cargo nextest run --workspace --features
+  polylogue/sinex,polylogue-engine/faults,polylogue-store/faults`
+  (configuration in `.config/nextest.toml`). Ordinary tests and every gated fault
+  control share one test build. Each test runs in its own process, all binaries
+  in parallel; a test still running after two minutes is terminated and fails.
+  The fault controls cover failure and recovery, including restore interruption
+  after canonical commit, vector cleanup and index replacement. Enabling
+  `faults` adds an initially empty in-memory registry; only a test's explicit
+  `polylogue_store::fault::arm` call activates a point in that process. The
+  preceding strict Clippy step still compiles every ordinary target without
+  fault features. Shipped builds do not enable fault injection.
 - **End-to-end scenarios:** the `e2e` tests in `crates/polylogue/tests/e2e/`
   start the real `polylogue` binary as a daemon over a temporary archive and
   drive it through the CLI, and as the browser extension's native messaging

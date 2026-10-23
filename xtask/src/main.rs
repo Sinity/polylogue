@@ -182,40 +182,11 @@ fn main() -> ExitCode {
             run.nextest(
                 "test",
                 &nextest(
-                    ["--locked", "--workspace", "--features", "polylogue/sinex"]
-                        .map(String::from)
-                        .to_vec(),
-                ),
-            )?;
-            // The laws that inject failures, built with the test-only feature.
-            run.nextest(
-                "faults",
-                &nextest(
                     [
                         "--locked",
-                        "-p",
-                        "polylogue-engine",
+                        "--workspace",
                         "--features",
-                        "faults",
-                        "--test",
-                        "faults",
-                    ]
-                    .map(String::from)
-                    .to_vec(),
-                ),
-            )?;
-            run.nextest(
-                "restore faults",
-                &nextest(
-                    [
-                        "--locked",
-                        "-p",
-                        "polylogue-store",
-                        "--features",
-                        "faults",
-                        "--lib",
-                        "-E",
-                        "test(sinex_rows::tests::vector_policies::interrupted)",
+                        "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults",
                     ]
                     .map(String::from)
                     .to_vec(),
