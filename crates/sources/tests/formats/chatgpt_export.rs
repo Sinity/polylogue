@@ -432,3 +432,63 @@ fn a_temporary_chat_is_recorded_in_the_conversation_settings() {
         true
     );
 }
+
+#[test]
+fn overflowing_optional_duration_stays_unknown_without_losing_the_answer() {
+    for seconds in [1e308, 1e20, u64::MAX as f64 / 1000.0] {
+        let parsed = run(conversation(
+            vec![node(
+                "answer",
+                "assistant",
+                text(&["Neutral authored answer"]),
+                json!({"finished_duration_sec": seconds}),
+            )],
+            json!({}),
+        ));
+        let answer = message(&parsed, ":answer");
+        assert!(
+            answer.get("duration_ms").is_none(),
+            "overflowing seconds: {seconds}"
+        );
+        assert_eq!(answer["blocks"][0]["text"], "Neutral authored answer");
+        assert_eq!(messages(&parsed).len(), 1);
+    }
+}
+
+#[test]
+fn optional_duration_keeps_seconds_units_zero_and_unknown_distinct() {
+    for (supplied, expected) in [
+        (None, None),
+        (Some(json!(null)), None),
+        (Some(json!(true)), None),
+        (Some(json!("7")), None),
+        (Some(json!({})), None),
+        (Some(json!([])), None),
+        (Some(json!(-0.0001)), None),
+        (Some(json!(0)), Some(0)),
+        (Some(json!(0.0)), Some(0)),
+        (Some(json!(0.00049)), Some(0)),
+        (Some(json!(0.00051)), Some(1)),
+        (Some(json!(0.5)), Some(500)),
+        (Some(json!(7.0)), Some(7000)),
+        (Some(json!(1.2346)), Some(1235)),
+    ] {
+        let mut metadata = json!({});
+        if let Some(value) = supplied {
+            metadata["finished_duration_sec"] = value;
+        }
+        let parsed = run(conversation(
+            vec![node(
+                "answer",
+                "assistant",
+                text(&["Neutral authored answer"]),
+                metadata,
+            )],
+            json!({}),
+        ));
+        let answer = message(&parsed, ":answer");
+        assert_eq!(answer.get("duration_ms").and_then(Value::as_u64), expected);
+        assert_eq!(answer["blocks"][0]["text"], "Neutral authored answer");
+        assert_eq!(messages(&parsed).len(), 1);
+    }
+}
