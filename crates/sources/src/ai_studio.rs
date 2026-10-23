@@ -359,11 +359,20 @@ impl AiStudio {
             .map(Vec::as_slice)
             .unwrap_or_default();
         let mut calls = 0;
+        let mut pending_call = None;
+        let mut ambiguous_calls = false;
         for item in std::iter::once(chunk).chain(parts) {
             if let Some(code) = item.get("executableCode") {
                 calls += 1;
+                let call_id = format!("{native}:code{calls}");
+                if pending_call.is_some() || ambiguous_calls {
+                    pending_call = None;
+                    ambiguous_calls = true;
+                } else {
+                    pending_call = Some(call_id.clone());
+                }
                 blocks.push(Block::ToolCall {
-                    call_id: Some(format!("{native}:code{calls}")),
+                    call_id: Some(call_id),
                     tool: Some("code_execution".into()),
                     action: ToolAction::Code,
                     input: code.clone(),
@@ -372,6 +381,10 @@ impl AiStudio {
                 });
             }
             if let Some(result) = item.get("codeExecutionResult") {
+                // A result consumes the preceding candidate group. Zero or
+                // several unanswered calls do not establish a unique owner.
+                let call_id = pending_call.take();
+                ambiguous_calls = false;
                 let outcome = match str_of(result, "outcome") {
                     Some("OUTCOME_OK") => ToolOutcome::Ok,
                     Some("OUTCOME_FAILED") => ToolOutcome::Error { reason: None },
@@ -383,7 +396,7 @@ impl AiStudio {
                     },
                 };
                 blocks.push(Block::ToolResult {
-                    call_id: Some(format!("{native}:code{}", calls.max(1))),
+                    call_id,
                     outcome,
                     output: string_of(result, "output"),
                     data: Some(result.clone()),
