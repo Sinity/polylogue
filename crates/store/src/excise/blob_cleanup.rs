@@ -68,6 +68,10 @@ fn delete_pending(
     conn: &Connection,
     mut delete: impl FnMut(&BlobHash) -> Result<()>,
 ) -> Result<()> {
+    // Startup owns ArchiveLock; normal cleanup runs synchronously inside the
+    // serial Writer's excision. Search writes only index.db and paid-vector
+    // writers only embeddings.db, so no replacement manifest changes while
+    // this caller retains canonical writer custody.
     let current = crate::sinex_rows::CurrentBatches::new(conn)?;
     loop {
         let pending: Vec<(Vec<u8>, String)> = conn
