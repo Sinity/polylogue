@@ -533,7 +533,7 @@ fn export(
     let Some(format) = polylogue_render::Format::parse(format) else {
         return error("bad_request", format!("unknown export format {format:?}"));
     };
-    match polylogue_render::export(&doc, format) {
+    match polylogue_render::export(doc, format) {
         Ok(value) => ok(value),
         Err(error) => self::error("internal", error),
     }

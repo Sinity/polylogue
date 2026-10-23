@@ -2561,6 +2561,7 @@ dependencies = [
 name = "polylogue-model"
 version = "0.1.0"
 dependencies = [
+ "credential-masking",
  "blake3",
  "jiff",
  "serde",
@@ -2586,7 +2587,6 @@ dependencies = [
 name = "polylogue-render"
 version = "0.1.0"
 dependencies = [
- "credential-masking",
  "jiff",
  "polylogue-model",
  "serde_json",

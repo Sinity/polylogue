@@ -1,5 +1,12 @@
 use super::*;
-use crate::tests::conversation;
+fn conversation() -> Vec<polylogue_model::Message> {
+    let mut messages = crate::tests::conversation();
+    let mut masker = polylogue_model::masking::MessageMasker::default();
+    for message in &mut messages {
+        masker.message(message);
+    }
+    messages
+}
 
 #[test]
 fn document_and_reader_keep_the_selected_view_and_mask_credentials() {
