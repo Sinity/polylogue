@@ -91,6 +91,7 @@ pub enum Rendered<'a> {
     },
     Message(&'a Message),
     Event(&'a Event),
+    Notice(&'a str),
 }
 
 /// A word as the shell reads it back: bare when it is plain, else quoted.
@@ -214,6 +215,7 @@ pub fn session(
     mut messages: Vec<Message>,
     view: View,
     format: Format,
+    notices: &[String],
 ) -> io::Result<Value> {
     let mut masker = polylogue_model::masking::MessageMasker::default();
     for message in &mut messages {
@@ -229,6 +231,7 @@ pub fn session(
         session,
         title: display_title,
     }];
+    items.extend(notices.iter().map(|notice| Rendered::Notice(notice)));
     items.extend(selected.iter().map(Rendered::Message));
     formatted(&items, format, view)
 }
@@ -349,6 +352,7 @@ fn terminal(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
                 )?;
             }
             Rendered::Event(_) => {}
+            Rendered::Notice(notice) => writeln!(out, "{notice}\n")?,
         }
     }
     Ok(())
@@ -411,6 +415,7 @@ fn markdown(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Resu
             }
             Rendered::Event(e) if view == View::Full => writeln!(out, "*· {}*\n", e.kind)?,
             Rendered::Event(_) => {}
+            Rendered::Notice(notice) => writeln!(out, "{notice}\n")?,
         }
     }
     Ok(())

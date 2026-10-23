@@ -43,11 +43,17 @@ pub fn query(data: &Value) -> String {
 
 /// A session in a view, or one budgeted page with the cursor of the next.
 pub fn read(data: &Value) -> String {
-    match data["next"].as_str() {
+    let notice = if data["lineage"]["complete"] == false && !data["content"].is_string() {
+        "Incomplete session ancestry; --json describes the missing links.\n"
+    } else {
+        ""
+    };
+    let content = match data["next"].as_str() {
         _ if data["content"].is_string() => s(&data["content"]),
         Some(next) => format!("{}\n(next page: --cursor {next})\n", s(&data["text"])),
         None => s(&data["text"]),
-    }
+    };
+    format!("{notice}{content}")
 }
 
 /// A prepared brief, takeover or recall.

@@ -15,7 +15,10 @@ use std::os::unix::fs::MetadataExt;
 use std::sync::{Condvar, Mutex};
 use std::thread::ThreadId;
 
+mod lineage;
 mod rows;
+
+pub use lineage::{Lineage, LineageIssue, MessageSelection};
 
 /// Read-only connections to one archive, reused across requests.
 pub struct ReadPool {
@@ -487,98 +490,25 @@ impl Reader<'_> {
         logical: bool,
         mut visit: impl FnMut(Message) -> std::ops::ControlFlow<()>,
     ) -> Result<()> {
-        let Some(pk) = self.session_pk(id)? else {
-            return Ok(());
-        };
-        if logical {
-            let mut runs: Vec<(i64, SessionId, HashSet<i64>)> = Vec::new();
-            for (session_pk, session, message_pk) in self.inherited_keys(pk, id)? {
-                match runs.last_mut() {
-                    Some((s, _, set)) if *s == session_pk => {
-                        set.insert(message_pk);
-                    }
-                    _ => runs.push((session_pk, session, HashSet::from([message_pk]))),
-                }
-            }
-            for (session_pk, session, set) in runs {
-                if self
-                    .visit_messages_where(session_pk, &session, |m| set.contains(&m), &mut visit)?
-                    .is_break()
-                {
-                    return Ok(());
-                }
-            }
-        }
-        let _ = self.visit_messages_where(pk, id, |_| true, &mut visit)?;
-        Ok(())
+        let selected = self.select_messages(id, logical)?;
+        selected.require_complete()?;
+        selected.visit(&mut visit)
     }
 
-    /// Fingerprint selected stored message facts without decompressing bodies.
-    /// This scans packed content one value at a time. Identifier storage grows
-    /// with logical history; neither this scan nor the page budget bounds RSS.
+    /// Fingerprint stored message facts without decompressing bodies. A strict
+    /// caller cannot mistake incomplete ancestry for a complete selection.
     pub fn message_fingerprint(&self, id: &SessionId, logical: bool) -> Result<String> {
-        let keys = if logical {
-            self.logical_message_keys(id)?
-        } else if let Some(pk) = self.session_pk(id)? {
-            self.own_keys(pk)?.into_iter().map(|(pk, _)| pk).collect()
-        } else {
-            Vec::new()
-        };
-        let mut hash = blake3::Hasher::new();
-        let mut facts = self
-            .conn()?
-            .prepare_cached("SELECT * FROM current_message WHERE pk=?1")?;
-        let mut blocks = self.conn()?.prepare_cached(
-            "SELECT b.*, t.body FROM block b LEFT JOIN text t ON t.id=b.text_id
-             WHERE b.message_pk=?1 ORDER BY b.idx",
-        )?;
-        for pk in keys {
-            for stmt in [&mut facts, &mut blocks] {
-                let count = stmt.column_count();
-                let mut rows = stmt.query([pk])?;
-                while let Some(row) = rows.next()? {
-                    hash.update(b"row");
-                    for column in 0..count {
-                        use rusqlite::types::ValueRef;
-                        match row.get_ref(column)? {
-                            ValueRef::Null => {
-                                hash.update(b"n");
-                            }
-                            ValueRef::Integer(n) => {
-                                hash.update(b"i");
-                                hash.update(&n.to_le_bytes());
-                            }
-                            ValueRef::Real(n) => {
-                                hash.update(b"r");
-                                hash.update(&n.to_bits().to_le_bytes());
-                            }
-                            ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
-                                hash.update(b"b");
-                                hash.update(&(bytes.len() as u64).to_le_bytes());
-                                hash.update(bytes);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(hash.finalize().to_hex().to_string())
+        let selected = self.select_messages(id, logical)?;
+        selected.require_complete()?;
+        selected.fingerprint()
     }
 
-    /// The message keys a session shows: what it inherits through its
-    /// fork and resume links, in reading order, then its own. Each message
-    /// once.
+    /// Complete logical message keys, each once. Logical totals must refuse
+    /// missing ancestry rather than report the available subset as complete.
     pub fn logical_message_keys(&self, id: &SessionId) -> Result<Vec<i64>> {
-        let Some(pk) = self.session_pk(id)? else {
-            return Ok(Vec::new());
-        };
-        let mut keys: Vec<i64> = self
-            .inherited_keys(pk, id)?
-            .into_iter()
-            .map(|(_, _, m)| m)
-            .collect();
-        keys.extend(self.own_keys(pk)?.into_iter().map(|(m, _)| m));
-        Ok(keys)
+        let selected = self.select_messages(id, true)?;
+        selected.require_complete()?;
+        selected.keys()
     }
 
     fn session_pk(&self, id: &SessionId) -> Result<Option<i64>> {
@@ -598,78 +528,6 @@ impl Reader<'_> {
             )?
             .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// What a session inherits: `(session key, session, message key)` in
-    /// reading order. A fork shows its parent's view up to the branch
-    /// point; a resume shows the messages its own file copied.
-    fn inherited_keys(
-        &self,
-        child_pk: i64,
-        child: &SessionId,
-    ) -> Result<Vec<(i64, SessionId, i64)>> {
-        let mut out = Vec::new();
-        let mut seen = HashSet::new();
-        self.inherited(child_pk, child, &mut out, &mut seen, 0)?;
-        Ok(out)
-    }
-
-    fn inherited(
-        &self,
-        child_pk: i64,
-        child: &SessionId,
-        out: &mut Vec<(i64, SessionId, i64)>,
-        seen: &mut HashSet<i64>,
-        depth: usize,
-    ) -> Result<()> {
-        if depth > 64 {
-            return Ok(());
-        }
-        let links: Vec<(String, String, Option<String>)> = self
-            .conn()?
-            .prepare_cached(
-                "SELECT parent_id, how, branch_point FROM current_link
-                 WHERE child_id = ?1 AND kind = 'continuation' AND how IN ('fork', 'resume')
-                 ORDER BY pk",
-            )?
-            .query_map([child.to_string()], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        for (parent, kind, at) in links {
-            let Ok(parent) = SessionId::parse(&parent) else {
-                continue;
-            };
-            let Some(parent_pk) = self.session_pk(&parent)? else {
-                continue;
-            };
-            let keys: Vec<i64> = if kind == "fork" {
-                self.inherited(parent_pk, &parent, out, seen, depth + 1)?;
-                let mut own = self.own_keys(parent_pk)?;
-                if let Some(at) = at
-                    && let Some(i) = own.iter().position(|(_, id)| *id == at)
-                {
-                    own.truncate(i + 1);
-                }
-                own.into_iter().map(|(m, _)| m).collect()
-            } else {
-                self.conn()?
-                    .prepare_cached(
-                        "SELECT DISTINCT m.pk, m.order_input_id, m.seq FROM current_message m
-                         JOIN message_source s ON s.message_pk = m.pk
-                         JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
-                         WHERE m.session_pk = ?1 AND s.current=1 ORDER BY m.order_input_id, m.seq",
-                    )?
-                    .query_map(params![parent_pk, child_pk], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?
-            };
-            for m in keys {
-                if seen.insert(m) {
-                    out.push((parent_pk, parent.clone(), m));
-                }
-            }
-        }
-        Ok(())
     }
 
     fn message_blocks(&self, message_pk: i64) -> Result<Vec<Block>> {

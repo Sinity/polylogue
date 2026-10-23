@@ -102,6 +102,15 @@ Pass it as `--cursor`; the budget may change between pages. Changed selected
 content returns `stale_cursor` and requires starting again. See
 [session paging](docs/architecture.md) for cursor binding, masking and memory costs.
 
+Logical reads (`read SESSION --logical`) include only proven inherited prefixes.
+A fork's anchor is resolved in its parent's composed history, including that
+parent's inherited messages. Missing parents or anchors and session cycles keep
+available content readable with `lineage.complete: false` and typed `issues`.
+Every model page carries that status; prose formats show a notice. Continuation
+identity includes lineage status, so a changed missing link invalidates a page.
+Takeover context lists missing ancestry in its omissions. Logical totals refuse
+incomplete ancestry instead of presenting the available subset as complete.
+
 Session reads and query rows use the stored display title: the recorded title
 when present, otherwise the derived first-prompt title. JSON reads carry this
 as `display_title`, separate from the recorded `session` metadata. Importable

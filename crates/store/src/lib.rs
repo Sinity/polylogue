@@ -88,6 +88,8 @@ pub enum StoreError {
     ExcisionConflict { archive: u64, index: u64 },
     #[error("request {0} was already used for different content")]
     Conflict(String),
+    #[error("session ancestry is incomplete: {0}")]
+    IncompleteLineage(read::LineageIssue),
     #[error("{0} not found")]
     NotFound(String),
     #[error("text excision cannot inspect input {input} ({format}): {detail}")]

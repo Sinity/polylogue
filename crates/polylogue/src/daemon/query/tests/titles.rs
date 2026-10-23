@@ -76,6 +76,7 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
             vec![],
             polylogue_render::View::Full,
             polylogue_render::Format::Json,
+            &[],
         )
         .unwrap();
         assert_eq!(read["display_title"], shown["title"]);
