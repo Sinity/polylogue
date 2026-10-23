@@ -216,6 +216,11 @@ fn copied_token_records_keep_their_parent_scope_and_original_observation_identit
         readings(&child)[0].observation
     );
     assert_eq!(readings(&child)[0].response, None);
+    for scope in [PARENT, THREAD] {
+        assert!(child.output.events.iter().any(
+            |e| e.kind == "response_boundaries_unknown" && e.session.native().as_str() == scope
+        ));
+    }
     assert!(
         child
             .output
@@ -296,5 +301,23 @@ fn observation_identity_ignores_json_object_key_order_but_preserves_values_and_a
     assert_ne!(
         usage::identity(&a),
         usage::identity(&json!({"a":[1,2],"z":{"first":0,"second":2}}))
+    );
+}
+
+#[test]
+fn copied_usage_with_unknown_origin_is_not_charged_to_the_child() {
+    let trace = vec![
+        meta(json!({"subagent_history_start_ordinal":4})),
+        count(3, counters(10, 2), counters(10, 2)),
+        count(4, counters(30, 5), counters(20, 3)),
+    ];
+    let step = run(&rollout(), &mut Carry::default(), &jsonl(&trace), 0).unwrap();
+    assert_eq!(readings(&step).len(), 1);
+    assert_eq!(readings(&step)[0].usage.input, Some(20));
+    assert!(
+        step.output
+            .events
+            .iter()
+            .any(|e| e.kind == "copied_token_count" && e.data == trace[1]["payload"])
     );
 }

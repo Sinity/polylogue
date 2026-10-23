@@ -276,6 +276,17 @@ fn unwrap(v: &Json) -> Rec<'_> {
 }
 
 impl Rollout {
+    fn unknown_boundaries(session: SessionId, out: &mut Output) {
+        out.events.push(Event {
+            session,
+            kind: "response_boundaries_unknown".into(),
+            at: None,
+            after: None,
+            range: None,
+            data: serde_json::json!({}),
+        });
+    }
+
     fn own(&self, carry: &mut Carry) -> Option<SessionId> {
         if carry.session.is_none() {
             let id = session_id(self.thread.as_deref()?)?;
@@ -361,6 +372,9 @@ impl Rollout {
         {
             carry.copied_until = Some(start);
             carry.copied_from = forked.or(parent).map(str::to_owned);
+            if let Some(parent) = carry.copied_from.as_deref().and_then(session_id) {
+                Self::unknown_boundaries(parent, out);
+            }
         }
         Disposition::Materialized
     }
@@ -1024,6 +1038,14 @@ impl Parser for Rollout {
             .flatten();
         let token_observation =
             rec.ty == "event_msg" && str_field(p, "type") == Some("token_count");
+        if Self::copied(carry, rec.ordinal) && token_observation && carry.copied_from.is_none() {
+            if let Some(info) = p.get("info").filter(|info| !info.is_null()) {
+                // Advance the observed counters without charging an unknown
+                // original owner as usage of the child.
+                carry.usage.read(info, usage::identity(p), None, None);
+            }
+            return self.observation(carry, p, "copied_token_count", rec.at, out);
+        }
         if Self::copied(carry, rec.ordinal) && rec.ty != "response_item" && !token_observation {
             return Disposition::unknown("copied from the parent thread, which stores it");
         }
@@ -1136,21 +1158,12 @@ impl Parser for Rollout {
     }
 
     fn flush(&self, carry: &mut Carry, out: &mut Output) {
-        if !carry.scope_recorded && self.own(carry).is_some() {
-            // A source scope fact, not a timestamped occurrence or item.
-            let owner = carry.copied_observation.take();
-            self.observation(
-                carry,
-                &serde_json::json!({}),
-                "response_boundaries_unknown",
-                None,
-                out,
-            );
-            out.events.last_mut().expect("scope fact").range = None;
-            carry.copied_observation = owner;
+        if !carry.scope_recorded
+            && let Some(session) = self.own(carry)
+        {
+            Self::unknown_boundaries(session, out);
             carry.scope_recorded = true;
         }
-
         // The branch point is known once the copied history has been read.
         if let (Some(at), Some(s)) = (&carry.branch_point, &carry.session) {
             for l in &mut out.links {
