@@ -236,8 +236,10 @@ publications. A single attached SELECT alone does not make two WAL snapshots sim
 Unused reservations hold no snapshot. Idle connections refresh after index-file
 replacement; a reserved old handle refuses its first read with `ReadIndexReplaced`.
 Existing pinned readers retain their view, and can make index retirement refuse
-until released. Admission waits observe pool close and SQLite interruption, with
-the existing 30-second busy limit. Ordinary write batches are bounded; offline
+until released. Closing the pool refuses unused first-read reservations whether
+publication is free or contended. The state check under shared publication
+exclusion admits the first read; already pinned readers remain usable. Admission
+waits also observe SQLite interruption, with the existing 30-second busy limit. Ordinary write batches are bounded; offline
 restore holds exclusion during its atomic row installation, with no fixed latency
 promise. Physical vector/blob cleanup keeps pending intent visible outside exclusion,
 then validates and acknowledges that intent in a fresh guarded transaction.
@@ -498,7 +500,7 @@ socket input or response writes fail when peers close; already admitted store
 writes finish before the writer joins. Retained writer-sender handles refuse
 new work after shutdown. Shutdown closes the read pool and releases its idle
 connections even when an external `Arc<Daemon>` survives. A reader already
-admitted keeps its transaction until its caller drops it.
+pinned keeps its transaction until its caller drops it.
 
 The in-process `TestDaemon` follows that order on ordinary drop and panic,
 before removing its temporary archive. On Linux, test daemon subprocesses also

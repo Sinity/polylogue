@@ -68,6 +68,7 @@ fn close_wakes_all_full_pool_waiters_without_cancelling_the_admitted_snapshot() 
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
     let reader = pool.reader().unwrap();
+    reader.status().unwrap();
     std::thread::scope(|scope| {
         let mut threads = Vec::new();
         for _ in 0..4 {
