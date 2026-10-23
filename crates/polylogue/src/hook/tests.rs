@@ -91,3 +91,5 @@ fn install_preserves_permissions_and_ignores_an_old_temporary_name() {
     assert_eq!(settings["model"], "example");
     assert!(settings["hooks"]["SessionStart"].is_array());
 }
+
+mod settings;
