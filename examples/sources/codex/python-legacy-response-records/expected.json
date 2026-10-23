@@ -17,7 +17,13 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:legacy-response-session"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -46,6 +52,9 @@
             }
           ],
           "id": "codex:rs_sample_1",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:legacy-response-session"
         },
@@ -70,6 +79,9 @@
             }
           ],
           "id": "codex:legacy-response-session@579",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:legacy-response-session"
         },
@@ -114,6 +126,9 @@
             }
           ],
           "id": "codex:legacy-response-session@861",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:legacy-response-session"
         },
@@ -153,6 +168,9 @@
             }
           ],
           "id": "codex:legacy-response-session@1214",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:legacy-response-session"
         },

@@ -17,7 +17,13 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:retained-context-session"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -57,6 +63,9 @@
             }
           ],
           "id": "codex:retained-context-session@383",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:retained-context-session"
         },
@@ -94,6 +103,9 @@
             }
           ],
           "id": "codex:retained-context-session@1538",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:retained-context-session"
         },

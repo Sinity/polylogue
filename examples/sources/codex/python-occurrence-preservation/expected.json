@@ -16,7 +16,13 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:neutral-occurrences"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -64,6 +70,9 @@
             }
           ],
           "id": "codex:reasoning-one",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:neutral-occurrences"
         },
@@ -85,6 +94,9 @@
             }
           ],
           "id": "codex:code-one",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:neutral-occurrences"
         },

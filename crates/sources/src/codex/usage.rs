@@ -14,13 +14,20 @@ struct Counters {
 
 impl Counters {
     fn read(value: &Json) -> Option<Self> {
-        Some(Self {
+        let counters = Self {
             input: value.get("input_tokens")?.as_u64()?,
             cached: value.get("cached_input_tokens")?.as_u64()?,
             output: value.get("output_tokens")?.as_u64()?,
             reasoning: value.get("reasoning_output_tokens")?.as_u64()?,
             total: value.get("total_tokens")?.as_u64()?,
-        })
+        };
+        (counters.cached <= counters.input
+            && counters.reasoning <= counters.output
+            && counters
+                .input
+                .checked_add(counters.output)
+                .is_some_and(|sum| sum <= counters.total))
+        .then_some(counters)
     }
 
     fn ordinary(self) -> bool {

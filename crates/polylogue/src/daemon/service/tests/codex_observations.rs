@@ -28,8 +28,11 @@ fn native_codex_independent_usage_and_rate_only_quota_reach_mcp() {
     let usage: serde_json::Value = serde_json::from_str(
         &crate::mcp::call(
             &archive,
-            "measure_usage",
-            json!({}).as_object().unwrap().clone(),
+            "query",
+            json!({"query":"sessions | measure usage"})
+                .as_object()
+                .unwrap()
+                .clone(),
         )
         .unwrap(),
     )
@@ -43,8 +46,11 @@ fn native_codex_independent_usage_and_rate_only_quota_reach_mcp() {
     let quota: serde_json::Value = serde_json::from_str(
         &crate::mcp::call(
             &archive,
-            "measure_quota",
-            json!({}).as_object().unwrap().clone(),
+            "query",
+            json!({"query":"sessions | measure quota"})
+                .as_object()
+                .unwrap()
+                .clone(),
         )
         .unwrap(),
     )

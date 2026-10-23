@@ -328,7 +328,7 @@ fn unknown_items(
     )?)
 }
 
-fn unknown_scope(reader: &Reader<'_>, scope: &Scope) -> Result<bool> {
+pub(super) fn unknown_scope(reader: &Reader<'_>, scope: &Scope) -> Result<bool> {
     // Missing boundary evidence is a property of the selected source scope;
     // a later record-time window cannot turn it into known boundaries.
     let scope = Scope {

@@ -17,7 +17,13 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:019a0000-0000-7000-8000-000000000002"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -47,6 +53,9 @@
             }
           ],
           "id": "codex:rs_1",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000002"
         },
@@ -73,6 +82,9 @@
             }
           ],
           "id": "codex:fc_1",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000002"
         },
@@ -108,6 +120,9 @@
             }
           ],
           "id": "codex:msg_1",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000002"
         },

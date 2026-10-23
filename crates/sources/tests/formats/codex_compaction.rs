@@ -151,6 +151,6 @@ fn changed_turn_context_keeps_snapshots_and_returns_to_prior_settings() {
     assert!(contexts[0].get("after").is_none());
     assert_eq!(contexts[1]["after"], "codex:prompt");
     assert_eq!(contexts[2]["after"], "codex:prompt");
-    assert_eq!(parsed["output"]["events"].as_array().unwrap().len(), 3);
+    assert_eq!(parsed["output"]["events"].as_array().unwrap().len(), 4);
     assert_eq!(messages(&parsed).len(), 1);
 }

@@ -175,13 +175,16 @@ fn unresolved_item_and_harness_followups_do_not_prove_a_call_was_passed_without_
 #[test]
 fn boundary_scope_is_not_discarded_by_a_later_time_window_with_no_recorded_items() {
     let mut world = WriterWorld::new();
+    let unknown_id = polylogue_model::SessionId::parse("codex:observed").unwrap();
+    let mut fact = event("response_boundaries_unknown", T0, json!({}));
+    fact.session = unknown_id.clone();
     world.write_output(
         "unknown",
         "codex",
         "/synthetic/rollout.jsonl",
         Output {
-            sessions: vec![Session::new(sid("observed"), SessionKind::Main)],
-            events: vec![event("response_boundaries_unknown", T0, json!({}))],
+            sessions: vec![Session::new(unknown_id, SessionKind::Main)],
+            events: vec![fact],
             ..Output::default()
         },
         1,
@@ -202,11 +205,9 @@ fn boundary_scope_is_not_discarded_by_a_later_time_window_with_no_recorded_items
         reader
             .conn()
             .unwrap()
-            .query_row(
-                "SELECT pk FROM session WHERE id=?1",
-                [sid(id).to_string()],
-                |r| r.get::<_, i64>(0),
-            )
+            .query_row("SELECT pk FROM session WHERE id=?1", [id], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap()
     };
     let scope = |id: &str| Scope {
@@ -214,14 +215,59 @@ fn boundary_scope_is_not_discarded_by_a_later_time_window_with_no_recorded_items
         since: Some(T0 + 1),
         ..Scope::default()
     };
-    let unknown = usage(&reader, &scope("observed")).unwrap();
+    let unknown = usage(&reader, &scope("codex:observed")).unwrap();
     assert_eq!(unknown.messages, None);
     assert_eq!(unknown.recorded_model_items, 0);
     assert_eq!(unknown.unknown_boundary_items, 0);
     assert_eq!(unknown.recorded_usage.observations, 0);
     assert!(unknown.tokens.input.response_total_unknown);
-    let known = usage(&reader, &scope("known")).unwrap();
+    let known = usage(&reader, &scope("claude-code:known")).unwrap();
     assert_eq!(known.messages, Some(0));
     assert_eq!(known.recorded_model_items, 0);
     assert!(!known.tokens.input.response_total_unknown);
+}
+
+#[test]
+fn an_unrelated_provider_scope_does_not_taint_known_boundary_counts() {
+    let mut world = WriterWorld::new();
+    let unknown_id = polylogue_model::SessionId::parse("codex:unrelated").unwrap();
+    let mut fact = event("response_boundaries_unknown", T0, json!({}));
+    fact.session = unknown_id.clone();
+    world.write_output(
+        "unknown",
+        "codex",
+        "/synthetic/rollout.jsonl",
+        Output {
+            sessions: vec![Session::new(unknown_id, SessionKind::Main)],
+            events: vec![fact],
+            ..Output::default()
+        },
+        1,
+    );
+    world.write(
+        "known",
+        vec![message(
+            "known",
+            "known",
+            Role::Assistant,
+            T0 + 1,
+            vec![Block::Text {
+                text: "known response".into(),
+            }],
+        )],
+    );
+    let pool = crate::ReadPool::open(&world.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let known = usage(
+        &reader,
+        &Scope {
+            origins: Some(vec!["claude-code".into()]),
+            since: Some(T0 + 1),
+            ..Scope::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(known.messages, Some(1));
+    assert_eq!(known.recorded_model_items, 1);
+    assert!(!known.api_cost.response_total_unknown);
 }

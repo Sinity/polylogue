@@ -13,7 +13,26 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {
+          "input_tokens": 12,
+          "output_tokens": 8,
+          "type": "token_count"
+        },
+        "kind": "token_count_item",
+        "range": [
+          578,
+          671
+        ],
+        "session": "codex:text-only-session-1"
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:text-only-session-1"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -44,15 +63,11 @@
             }
           ],
           "id": "codex:msg-asst-1",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
-          "session": "codex:text-only-session-1",
-          "usage": {
-            "cache_write": null,
-            "cached_input": null,
-            "input": 12,
-            "output": 8,
-            "reasoning": null
-          }
+          "session": "codex:text-only-session-1"
         },
         "offset": 376
       }

@@ -269,6 +269,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                 ));
             }
         }
+        let boundaries_unknown = usage::unknown_scope(reader, &Scope::default().for_tool(tool))?;
         let mut windows = vec![];
         for (limit, minutes, from_first_response) in limits {
             let these: Vec<Observation> = mine
@@ -291,6 +292,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                         .into_iter()
                         .find(|&(_, s, e)| s <= now && now < e)
                 }
+                _ if boundaries_unknown => None,
                 _ => Some((WindowSource::Inferred, now - minutes * MINUTE, now)),
             };
             if let Some((source, start, end)) = window {
@@ -355,7 +357,9 @@ fn build(
         .collect();
     let last = inside.last();
     let used = last.and_then(|o| o.used_percent);
-    let burn = percent_burn(&inside);
+    let burn = last
+        .and_then(|o| o.observed_at)
+        .and_then(|_| percent_burn(&inside));
     let exhausted_at = inside
         .iter()
         .find(|o| o.used_percent.is_some_and(|p| p >= 100.0))

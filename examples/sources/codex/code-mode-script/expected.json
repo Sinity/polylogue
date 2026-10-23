@@ -14,7 +14,13 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -32,6 +38,9 @@
             }
           ],
           "id": "codex:ctc_1",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000001"
         },
@@ -69,6 +78,7 @@
           ],
           "duration_ms": 30,
           "id": "codex:call_inner",
+          "prompt_kind": "harness",
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000001"
         },
@@ -102,6 +112,7 @@
             }
           ],
           "id": "codex:call_patch",
+          "prompt_kind": "harness",
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000001"
         },
@@ -157,6 +168,7 @@
             }
           ],
           "id": "codex:ws_1",
+          "prompt_kind": "harness",
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000001"
         },

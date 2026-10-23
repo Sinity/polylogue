@@ -16,7 +16,13 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:tool-result-headers"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -53,6 +59,9 @@
             }
           ],
           "id": "codex:tool-result-headers@345",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },
@@ -96,6 +105,9 @@
             }
           ],
           "id": "codex:tool-result-headers@840",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },
@@ -143,6 +155,9 @@
             }
           ],
           "id": "codex:tool-result-headers@1353",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },
@@ -186,6 +201,9 @@
             }
           ],
           "id": "codex:tool-result-headers@1831",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },
@@ -227,6 +245,9 @@
             }
           ],
           "id": "codex:tool-result-headers@2326",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },
@@ -274,6 +295,9 @@
             }
           ],
           "id": "codex:tool-result-headers@2740",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },
@@ -315,6 +339,9 @@
             }
           ],
           "id": "codex:tool-result-headers@3177",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },
@@ -356,6 +383,9 @@
             }
           ],
           "id": "codex:tool-result-headers@3608",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },
@@ -399,6 +429,9 @@
             }
           ],
           "id": "codex:tool-result-headers@4062",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },
@@ -444,6 +477,9 @@
             }
           ],
           "id": "codex:tool-result-headers@4472",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },
@@ -481,6 +517,9 @@
             }
           ],
           "id": "codex:tool-result-headers@4903",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-result-headers"
         },

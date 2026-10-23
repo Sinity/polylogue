@@ -22,7 +22,13 @@
       }
     ],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -42,6 +48,9 @@
             }
           ],
           "id": "codex:019a0000-0000-7000-8000-000000000001@381",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000001"
         },
@@ -87,6 +96,9 @@
             }
           ],
           "id": "codex:019a0000-0000-7000-8000-000000000001@833",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000001"
         },
