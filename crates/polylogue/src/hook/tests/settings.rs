@@ -16,6 +16,9 @@ fn malformed_or_conflicting_settings_refuse_without_changing_bytes_or_permission
         r#"{"hooks":{"Stop":[{"hooks":{}}]}}"#,
         r#"{"hooks":{"Stop":[{"hooks":[null]}]}}"#,
         r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":42}]}]}}"#,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command"}]}]}}"#,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":1}]}]}}"#,
+        r#"{"hooks":{"Stop":[{"hooks":[{"command":"echo example"}]}]}}"#,
         r#"{"hooks":{},"hooks":{"Stop":[]}}"#,
         r#"{"hooks":{"Stop":[],"Stop":[]}}"#,
         r#"{"future":{"keep":1,"keep":2},"hooks":{}}"#,
@@ -76,4 +79,16 @@ fn unknown_hook_kinds_and_native_json_numbers_survive_setup() {
     install(&path, false).unwrap();
     let actual: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn uninstall_preserves_empty_containers_and_shell_programs_it_did_not_install() {
+    for original in [
+        json!({"model":"example"}),
+        json!({"hooks":{"Stop":[]}}),
+        json!({"hooks":{"Stop":[{"hooks":[]}]}}),
+        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"polylogue hook Stop && notify-send done"}]}]}}),
+    ] {
+        assert_eq!(merge_hooks(original.clone(), false).unwrap(), original);
+    }
 }

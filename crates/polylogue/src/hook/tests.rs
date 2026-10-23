@@ -1,3 +1,4 @@
+use super::settings::merge_hooks;
 use super::*;
 
 #[test]

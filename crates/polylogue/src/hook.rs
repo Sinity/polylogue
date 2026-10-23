@@ -235,7 +235,7 @@ pub fn run(event: &str) -> ExitCode {
 }
 
 mod settings;
-pub use settings::{install, merge_hooks, settings_path};
+pub use settings::{install, settings_path};
 
 #[cfg(test)]
 mod tests;
