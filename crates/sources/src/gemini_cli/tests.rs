@@ -1,4 +1,5 @@
 use super::*;
+use polylogue_model::ToolOutcome;
 use serde_json::json;
 
 fn session(messages: Vec<Json>) -> Vec<u8> {

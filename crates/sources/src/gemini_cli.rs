@@ -13,10 +13,12 @@ use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse};
 use crate::{Disposition, Records};
 use polylogue_model::{
-    Block, ErrorReason, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource,
-    ToolAction, ToolOutcome, Usage,
+    Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource, ToolAction,
+    Usage,
 };
 use std::path::Path;
+
+mod tool_output;
 
 pub const ORIGIN: &str = "gemini-cli";
 pub const LOCATIONS: &[&str] = &[".gemini/tmp/*/chats/*.json"];
@@ -77,10 +79,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
         "toolCalls[].timestamp",
         Rule::Excluded("the turn's time places the call"),
     ),
-    (
-        "toolCalls[].resultDisplay",
-        Rule::Excluded("the result as rendered; the result is read"),
-    ),
+    ("toolCalls[].resultDisplay", Rule::Read),
     (
         "toolCalls[].displayName",
         Rule::Excluded("label for the tool name"),
@@ -322,29 +321,7 @@ fn blocks(m: &Json) -> Vec<Block> {
                 .map(str::to_owned),
             input: args,
         });
-        let response = call
-            .get("result")
-            .and_then(Json::as_array)
-            .and_then(|r| r.first())
-            .and_then(|r| r.pointer("/functionResponse/response"));
-        let output = response
-            .and_then(|r| r.get("output").or_else(|| r.get("error")))
-            .and_then(Json::as_str)
-            .map(str::to_owned);
-        out.push(Block::ToolResult {
-            call_id: string_of(call, "id"),
-            outcome: match str_of(call, "status") {
-                Some("success") => ToolOutcome::Ok,
-                Some("cancelled") => ToolOutcome::Error {
-                    reason: Some(ErrorReason::Interrupted),
-                },
-                Some(_) => ToolOutcome::Error { reason: None },
-                None => ToolOutcome::NoResult,
-            },
-            output,
-            data: None,
-            attachments: Vec::new(),
-        });
+        out.push(tool_output::result(call));
     }
     out
 }

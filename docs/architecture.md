@@ -327,7 +327,14 @@ remain the memory bound, with the same retained-byte retry rules.
 
 Gemini CLI rewrites use that named `messages` reader too. The parser retains
 session ID and previous message ID after reading header facts; tool calls and
-results stay within their turn. Notices and errors remain events anchored to
+results stay within their turn. Inline results keep both output and error
+streams, with the supplied result/status/display JSON on the same tool-result
+block. Display text remains user-facing data: its length or a literal
+truncation marker cannot establish that it is the same model-facing output,
+so neither replaces native streams or creates a truncation claim. ANSI-cell
+and structured media displays remain tool data. Empty strings, explicit nulls
+and absent fields remain distinct. Unreadable or missing status on an existing
+result stays unknown. Notices and errors remain events anchored to
 the preceding message, with their own original record spans. Watched revisions
 are retained before parsing, and retries and rebuilds use those bytes after the
 source file disappears. Physical order is the default; ChatGPT uses its recorded conversation time.
