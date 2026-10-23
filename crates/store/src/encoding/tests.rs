@@ -71,10 +71,6 @@ fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
             unpack_block(&prepared.blocks[0]).unwrap(),
             unpack_block(&pack_block(&message.blocks[0]).unwrap()).unwrap()
         );
-        assert_eq!(
-            prepared.hash,
-            *blake3::hash(&serde_json::to_vec(&message).unwrap()).as_bytes()
-        );
         let mut metadata = message;
         metadata.blocks.clear();
         assert_eq!(unpack_json::<Message>(&prepared.attrs).unwrap(), metadata);
@@ -146,10 +142,6 @@ fn prepared_rows_preserve_values_for_every_block_kind() {
     assert_eq!(
         unpack_json::<Message>(&prepared.attrs).unwrap(),
         old_metadata
-    );
-    assert_eq!(
-        prepared.hash,
-        *blake3::hash(&serde_json::to_vec(&message).unwrap()).as_bytes()
     );
     for (block, packed) in message.blocks.iter().zip(&prepared.blocks) {
         let mut old_body = block.clone();

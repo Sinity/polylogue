@@ -197,10 +197,6 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             let mut attrs = message.clone();
             attrs.blocks.clear();
             assert_eq!(
-                prepared.hash,
-                *blake3::hash(&serde_json::to_vec(&message).unwrap()).as_bytes()
-            );
-            assert_eq!(
                 crate::encoding::unpack_json::<Message>(&prepared.attrs).unwrap(),
                 attrs
             );

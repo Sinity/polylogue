@@ -396,6 +396,17 @@ so parallel arrival and index rebuilds cannot change the message order or a
 title derived from its first prompt. Preferred message versions keep their
 existing source, completeness, route and content-hash rules.
 
+Message version keys hash a normalized Message as JSON with object keys sorted
+at every depth, independently of serde_json map features or insertion order.
+Array order, strings and number values remain unchanged. Preparation holds one
+additional Message-sized JSON value and its serialized bytes while hashing,
+then releases them before row encoding. Encoded message/block bodies retain
+their existing representation. Index generation 30 rebuilds the old derived version keys;
+authored natural-ID targets, recorded text hashes and exact anchors remain in
+archive.db unchanged, as do excision policies and text-keyed embeddings. The
+last hash tie-break can change which conflicting equal-rank version is
+preferred; that is a derived choice, never an authored-target rewrite.
+
 `store/derive.rs` orders session derivations and records the source-change counter
 and rule version for each. A consumer's version includes its complete declared
 dependency rules, so an upstream rule change also refreshes unchanged sessions.

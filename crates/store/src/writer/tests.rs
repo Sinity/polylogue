@@ -963,3 +963,5 @@ fn first_build_stays_in_wal_and_settles_while_a_snapshot_remains_pinned() {
 }
 
 mod authorship;
+
+mod hash_order;

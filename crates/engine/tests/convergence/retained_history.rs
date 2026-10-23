@@ -74,6 +74,50 @@ fn add_note(e: &Engine, id: &str, target: &str) {
         .unwrap();
 }
 
+// Install the pre-canonicalization row keys while keeping the actual retained
+// bodies and source associations. Reopening must replace this whole generation.
+fn legacy_hash_generation(
+    index: &mut rusqlite::Connection,
+    messages: impl Iterator<Item = Message>,
+) -> Vec<(String, String)> {
+    let transaction = index.transaction().unwrap();
+    let mut hashes = Vec::new();
+    for message in messages {
+        let legacy = blake3::hash(&serde_json::to_vec(&message).unwrap());
+        let mut canonical = serde_json::to_value(&message).unwrap();
+        canonical.sort_all_objects();
+        let canonical = blake3::hash(&serde_json::to_vec(&canonical).unwrap());
+        assert_ne!(legacy, canonical);
+        assert_eq!(
+            transaction
+                .execute(
+                    "UPDATE message_version SET hash=?1 WHERE hash=?2",
+                    rusqlite::params![
+                        legacy.as_bytes().as_slice(),
+                        canonical.as_bytes().as_slice()
+                    ],
+                )
+                .unwrap(),
+            1
+        );
+        for table in ["message", "message_source"] {
+            transaction
+                .execute(
+                    &format!("UPDATE {table} SET version_hash=?1 WHERE version_hash=?2"),
+                    rusqlite::params![
+                        legacy.as_bytes().as_slice(),
+                        canonical.as_bytes().as_slice()
+                    ],
+                )
+                .unwrap();
+        }
+        hashes.push((legacy.to_hex().to_string(), canonical.to_hex().to_string()));
+    }
+    transaction.pragma_update(None, "user_version", 29).unwrap();
+    transaction.commit().unwrap();
+    hashes
+}
+
 #[test]
 fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild() {
     for (remove_provider, replace_generation, truncate) in [
@@ -145,12 +189,20 @@ fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild(
             .unwrap()
             .query("SELECT value FROM meta WHERE key='generation'", &[])
             .unwrap();
-        if replace_generation {
-            let index = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
-            index.pragma_update(None, "user_version", 26).unwrap();
+        let legacy_hashes = if replace_generation {
+            let mut index = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+            legacy_hash_generation(
+                &mut index,
+                before
+                    .0
+                    .iter()
+                    .chain(&before.1)
+                    .map(|version| version.message.clone()),
+            )
         } else {
             delete_index(&w.root);
-        }
+            Vec::new()
+        };
         {
             let (mut rebuilt, _lock) = w.engine(64 << 20);
             let pass = rebuilt.converge().unwrap();
@@ -172,6 +224,43 @@ fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild(
             assert_eq!(versions(&w, "codex:current-m1"), before.1);
             let reads = w.reads();
             let r = reads.reader().unwrap();
+            if replace_generation {
+                let actual = r
+                    .query(
+                        "SELECT lower(hex(hash)) AS hash FROM message_version ORDER BY hash",
+                        &[],
+                    )
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row["hash"].as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>();
+                let mut expected = legacy_hashes
+                    .iter()
+                    .map(|(_, canonical)| canonical.clone())
+                    .collect::<Vec<_>>();
+                expected.sort();
+                assert_eq!(
+                    actual, expected,
+                    "every retained version gets its canonical key in the replacement generation"
+                );
+                assert!(
+                    legacy_hashes
+                        .iter()
+                        .all(|(legacy, _)| !actual.contains(legacy)),
+                    "old/new key schemes never mix in place"
+                );
+                let source_keys = r
+                    .query(
+                        "SELECT lower(hex(version_hash)) AS hash FROM message_source",
+                        &[],
+                    )
+                    .unwrap();
+                assert!(source_keys.iter().all(|row| {
+                    actual
+                        .iter()
+                        .any(|hash| row["hash"].as_str() == Some(hash.as_str()))
+                }));
+            }
             assert_eq!(
                 r.note("about-old-reasoning").unwrap().unwrap().targets,
                 [Target::Message(
