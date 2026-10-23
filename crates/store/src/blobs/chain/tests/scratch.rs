@@ -20,6 +20,9 @@ fn a_killed_snapshot_owner_leaves_no_named_payload() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
+    let alias_dir = tempfile::tempdir().unwrap();
+    let alias = alias_dir.path().join("snapshot");
+    std::os::unix::fs::symlink(dir.path(), &alias).unwrap();
     let mut child = OwnedChild(
         Command::new(std::env::current_exe().unwrap())
             .args([
@@ -27,9 +30,9 @@ fn a_killed_snapshot_owner_leaves_no_named_payload() {
                 "blobs::chain::tests::scratch::a_killed_snapshot_owner_leaves_no_named_payload",
                 "--nocapture",
             ])
-            .env(CHILD, dir.path())
-            .env("TMPDIR", dir.path())
-            .env("SQLITE_TMPDIR", dir.path())
+            .env(CHILD, &alias)
+            .env("TMPDIR", &alias)
+            .env("SQLITE_TMPDIR", &alias)
             .stdout(Stdio::null())
             .spawn()
             .unwrap(),
@@ -46,13 +49,13 @@ fn a_killed_snapshot_owner_leaves_no_named_payload() {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    // Kernel descriptor links use the underlying path, including when the
+    // temporary directory was reached through a proc-FD or symlink alias.
+    let physical = alias.canonicalize().unwrap();
     let descriptors = std::fs::read_dir(format!("/proc/{}/fd", child.0.id()))
         .unwrap()
         .filter_map(|e| std::fs::read_link(e.unwrap().path()).ok())
-        .filter(|p| {
-            p.to_string_lossy()
-                .starts_with(dir.path().to_str().unwrap())
-        })
+        .filter(|p| p.starts_with(&physical))
         .collect::<Vec<_>>();
     assert!(
         descriptors

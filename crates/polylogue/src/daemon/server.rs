@@ -1,5 +1,5 @@
 //! Unix socket framing and listener lifecycle. Application operations live
-//! in `service`; each complete JSON request receives one JSON response.
+//! in `service`; ordinary requests receive one response, finite feeds a batch.
 
 use super::Request;
 use super::service::{self, Daemon, error, handle};
