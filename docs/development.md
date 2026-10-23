@@ -101,6 +101,13 @@ The pre-push hook is `.githooks/pre-push`; enable it with
 `git config core.hooksPath .githooks`. It checks formatting and crate
 boundaries, and skips pushes that change no Rust build inputs.
 
+Keep source-only worktrees free of build outputs. After qualifying a candidate
+in a warm checkout, keep ownership of that checkout through the push and run
+`git push origin HEAD:refs/heads/<branch>` there, with `HEAD` at the exact
+qualified commit. This lets the preserved hook reuse its compiled tools and
+check the candidate it publishes. Release the checkout after the hook finishes;
+waiting for hosted review does not need the build slot.
+
 ## AgentCTL operations
 
 Long runs go through AgentCTL so they queue and keep their logs:
