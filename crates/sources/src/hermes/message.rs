@@ -217,17 +217,12 @@ pub(super) fn parse(
                 }
             }
         }
-        let mut projected_call_ids = HashSet::new();
+        let mut projected_calls = Vec::new();
         if let Some(calls) = decoded(row, "tool_calls") {
             if let Some(calls) = calls.as_array() {
                 for call in calls {
                     let block = tool_call(call);
-                    if let Block::ToolCall {
-                        call_id: Some(id), ..
-                    } = &block
-                    {
-                        projected_call_ids.insert(id.clone());
-                    }
+                    projected_calls.push(block.clone());
                     blocks.push(block);
                 }
             } else {
@@ -243,8 +238,7 @@ pub(super) fn parse(
             ));
         }
         for block in native_calls {
-            if matches!(&block, Block::ToolCall { call_id: Some(id), .. } if projected_call_ids.contains(id))
-            {
+            if projected_calls.contains(&block) {
                 continue;
             }
             blocks.push(block);

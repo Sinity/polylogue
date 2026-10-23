@@ -307,7 +307,7 @@ fn native_function_calls_reuse_known_projection_ids_and_keep_independent_calls()
     let mut row = message(1, "s", "assistant", "");
     row["r"]["tool_calls"] =
         json!(json!([{"id":"same","function":{"name":"terminal","arguments":"{}"}}]).to_string());
-    row["r"]["codex_message_items"]=json!(json!([{"type":"function_call","call_id":"same","name":"terminal","arguments":"{}"},{"type":"function_call","call_id":"other","name":"read_file","arguments":"{\"path\":\"synthetic.txt\"}"}]).to_string());
+    row["r"]["codex_message_items"]=json!(json!([{"type":"function_call","call_id":"same","name":"terminal","arguments":"{}"},{"type":"function_call","call_id":"other","name":"read_file","arguments":"{\"path\":\"synthetic.txt\"}"},{"type":"function_call","call_id":"same","name":"terminal","arguments":"{\"command\":\"different supplied input\"}"}]).to_string());
     let parsed = parse(vec![header("a"), session("s", None, None), row]);
     let calls = parsed.output.messages[0]
         .message
@@ -321,5 +321,5 @@ fn native_function_calls_reuse_known_projection_ids_and_keep_independent_calls()
             }
         })
         .collect::<Vec<_>>();
-    assert_eq!(calls, ["same", "other"]);
+    assert_eq!(calls, ["same", "other", "same"]);
 }
