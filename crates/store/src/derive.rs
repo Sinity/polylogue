@@ -179,7 +179,7 @@ fn run_one(
     loop {
         // Immediate, like the writer's and the search thread's: a deferred
         // transaction fails to upgrade while the search thread writes.
-        let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = crate::publication::transaction(index, TransactionBehavior::Immediate)?;
         let todo: Vec<(i64, i64)> = tx
             .prepare_cached(
                 "SELECT s.pk, s.changed FROM session s

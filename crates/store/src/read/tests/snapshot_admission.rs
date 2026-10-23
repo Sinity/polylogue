@@ -92,3 +92,52 @@ fn already_pinned_reads_do_not_hold_publication_exclusion() {
     assert!(after.index > before.index);
     assert_eq!(reader.change_position().unwrap(), before);
 }
+
+#[test]
+fn lazy_reservation_can_close_without_waiting_for_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let _publication = File::open(fixture.archive.archive_db()).unwrap();
+    _publication.lock().unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    pool.close();
+    assert!(matches!(
+        reader.change_position(),
+        Err(StoreError::ReadPoolClosed)
+    ));
+}
+
+#[test]
+fn interrupted_admission_does_not_wait_for_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let _publication = File::open(fixture.archive.archive_db()).unwrap();
+    _publication.lock().unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    reader
+        .conn
+        .as_ref()
+        .unwrap()
+        .get_interrupt_handle()
+        .interrupt();
+    assert!(
+        matches!(reader.change_position(),Err(StoreError::Sqlite(rusqlite::Error::SqliteFailure(error,_))) if error.code==rusqlite::ErrorCode::OperationInterrupted)
+    );
+}
+
+#[test]
+fn rejected_privacy_snapshot_releases_the_admission_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let canonical = open_write(&fixture.archive.archive_db(), cache::SETUP).unwrap();
+    canonical.execute("INSERT INTO meta(key,value) VALUES ('excision_version','1'),('excision_revision','synthetic') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
+    let pool = fixture.reads().unwrap();
+    assert!(matches!(
+        pool.reader().unwrap().change_position(),
+        Err(StoreError::ExcisionPending)
+    ));
+    let file = File::open(fixture.archive.archive_db()).unwrap();
+    file.try_lock().unwrap();
+}

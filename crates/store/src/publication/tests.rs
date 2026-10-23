@@ -27,10 +27,9 @@ fn both_database_handles_use_the_existing_canonical_file() {
 fn failed_or_dropped_transactions_release_publication() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
-    let mut canonical = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    let canonical = open_write(&archive.archive_db(), cache::SETUP).unwrap();
     {
-        let _guard = write(&canonical).unwrap();
-        let tx = canonical.transaction().unwrap();
+        let tx = transaction(&canonical, rusqlite::TransactionBehavior::Deferred).unwrap();
         assert!(
             tx.execute("INSERT INTO no_such_table VALUES (1)", [])
                 .is_err()
@@ -44,4 +43,21 @@ fn in_memory_derivations_have_no_shared_archive_file() {
     let conn = Connection::open_in_memory().unwrap();
     let _guard = write(&conn).unwrap();
     conn.execute("CREATE TABLE synthetic(value)", []).unwrap();
+}
+
+#[test]
+fn nested_publication_and_new_read_refuse_without_releasing_the_outer_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
+    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    let outer = write(&index).unwrap();
+    assert!(write(&index).is_err());
+    assert!(admit(&archive, || panic!("must refuse before waiting")).is_err());
+    let probe = File::open(archive.archive_db()).unwrap();
+    assert!(matches!(
+        probe.try_lock_shared(),
+        Err(TryLockError::WouldBlock)
+    ));
+    drop(outer);
+    probe.try_lock_shared().unwrap();
 }
