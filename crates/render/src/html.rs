@@ -65,6 +65,7 @@ pub fn fragment(items: &[Rendered<'_>], view: View, out: &mut dyn io::Write) -> 
                 write!(out, "<p class=\"event\">{}</p>", escape(&event.kind))?;
             }
             Rendered::Event(_) => {}
+            Rendered::Notice(notice) => write!(out, "<aside>{}</aside>", escape(notice))?,
         }
     }
     Ok(())

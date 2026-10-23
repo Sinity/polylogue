@@ -40,6 +40,16 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
         Ok(title) => title,
         Err(e) => return store_error(&e),
     };
+    let selected = match reader.select_messages(id, options.logical) {
+        Ok(selected) => selected,
+        Err(e) => return store_error(&e),
+    };
+    let notices: Vec<String> = selected
+        .lineage()
+        .issues
+        .iter()
+        .map(|issue| format!("Incomplete session ancestry: {issue}"))
+        .collect();
     let Some(budget) = options.budget else {
         if options.cursor.is_some() {
             return error("bad_request", "a cursor continues a read with a budget");
@@ -50,15 +60,29 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
                 format!("unknown format {:?}", options.format),
             );
         };
-        return match reader.messages(id, options.logical) {
-            Ok(messages) => {
-                match polylogue_render::session(&session, title.as_deref(), messages, view, format)
-                {
-                    Ok(value) => ok(value),
-                    Err(e) => error("internal", e),
+        let mut messages = Vec::new();
+        if let Err(e) = selected.visit(|message| {
+            messages.push(message);
+            ControlFlow::Continue(())
+        }) {
+            return store_error(&e);
+        }
+        return match polylogue_render::session(
+            &session,
+            title.as_deref(),
+            messages,
+            view,
+            format,
+            &notices,
+        ) {
+            Ok(mut value) => {
+                if options.logical {
+                    value["lineage"] =
+                        serde_json::to_value(selected.lineage()).expect("lineage is serializable");
                 }
+                ok(value)
             }
-            Err(e) => store_error(&e),
+            Err(e) => error("internal", e),
         };
     };
     let digest = |value: &serde_json::Value| {
@@ -69,7 +93,7 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
     // Tokens contain hashes and numeric positions, never private source text or
     // the masking state reconstructed by replay below.
     let binding = digest(&serde_json::json!([id, options.logical, options.view]));
-    let facts = match reader.message_fingerprint(id, options.logical) {
+    let facts = match selected.fingerprint() {
         Ok(facts) => facts,
         Err(e) => return store_error(&e),
     };
@@ -111,7 +135,7 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
     };
     let mut pager = Pager::new(view, budget, position);
     let mut failure = None;
-    let result = reader.visit_messages(id, options.logical, |message| match pager.push(message) {
+    let result = selected.visit(|message| match pager.push(message) {
         Ok(flow) => flow,
         Err(e) => {
             failure = Some(e);
@@ -144,7 +168,10 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
         }
         None => None,
     };
-    ok(
-        serde_json::json!({"session": session, "display_title": title, "text": page.text, "next": next}),
-    )
+    let mut value = serde_json::json!({"session": session, "display_title": title, "text": page.text, "next": next});
+    if options.logical {
+        value["lineage"] =
+            serde_json::to_value(selected.lineage()).expect("lineage is serializable");
+    }
+    ok(value)
 }

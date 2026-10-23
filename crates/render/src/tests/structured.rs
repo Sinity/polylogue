@@ -18,7 +18,15 @@ fn structured_read_keeps_message_metadata_and_original_tool_fields() {
         SessionId::parse("claude-code:s").unwrap(),
         SessionKind::Main,
     );
-    let value = crate::session(&session, None, messages.clone(), View::Full, Format::Json).unwrap();
+    let value = crate::session(
+        &session,
+        None,
+        messages.clone(),
+        View::Full,
+        Format::Json,
+        &[],
+    )
+    .unwrap();
     let mut expected = serde_json::to_value(&messages).unwrap();
     crate::mask_json(&mut expected);
     assert_eq!(value["messages"], expected);
@@ -29,6 +37,7 @@ fn structured_read_keeps_message_metadata_and_original_tool_fields() {
         messages.clone(),
         View::Actions,
         Format::Json,
+        &[],
     )
     .unwrap();
     assert_eq!(actions["messages"][0]["production"]["effort"], "high");
@@ -82,11 +91,20 @@ fn full_json_keeps_a_genuinely_empty_message_and_empty_text_block() {
         vec![empty, blank.clone()],
         View::Full,
         Format::Json,
+        &[],
     )
     .unwrap();
     assert_eq!(full["messages"].as_array().unwrap().len(), 2);
     assert_eq!(full["messages"][0]["blocks"], json!([]));
-    let prompts = crate::session(&session, None, vec![blank], View::Prompts, Format::Json).unwrap();
+    let prompts = crate::session(
+        &session,
+        None,
+        vec![blank],
+        View::Prompts,
+        Format::Json,
+        &[],
+    )
+    .unwrap();
     assert_eq!(prompts["messages"][0]["blocks"][0]["text"], "");
 }
 
@@ -106,14 +124,42 @@ fn explicit_harness_authorship_keeps_the_recorded_assistant_role() {
         SessionKind::Main,
     );
     for format in [Format::Terminal, Format::Markdown, Format::Html] {
-        let rendered =
-            crate::session(&session, None, vec![message.clone()], View::Full, format).unwrap();
+        let rendered = crate::session(
+            &session,
+            None,
+            vec![message.clone()],
+            View::Full,
+            format,
+            &[],
+        )
+        .unwrap();
         let text = rendered["content"].as_str().unwrap();
         assert!(text.contains("harness"), "{text}");
         assert!(!text.contains("assistant"), "{text}");
     }
-    let json = crate::session(&session, None, vec![message], View::Full, Format::Json).unwrap();
+    let json =
+        crate::session(&session, None, vec![message], View::Full, Format::Json, &[]).unwrap();
     assert_eq!(json["messages"][0]["role"], "assistant");
     assert_eq!(json["messages"][0]["prompt_kind"], "harness");
     assert!(json["messages"][0]["model"].is_null());
+}
+
+#[test]
+fn incomplete_ancestry_notices_are_visible_and_html_escaped() {
+    let session = Session::new(
+        SessionId::parse("claude-code:s").unwrap(),
+        SessionKind::Main,
+    );
+    let notices =
+        ["Incomplete session ancestry: parent <unknown> & its anchor are unavailable".to_owned()];
+    for format in [Format::Terminal, Format::Markdown, Format::Html] {
+        let rendered =
+            crate::session(&session, None, vec![], View::Prompts, format, &notices).unwrap();
+        let text = rendered["content"].as_str().unwrap();
+        assert!(text.contains("Incomplete session ancestry"));
+        if format == Format::Html {
+            assert!(text.contains("&lt;unknown&gt; &amp;"));
+            assert!(!text.contains("<unknown>"));
+        }
+    }
 }

@@ -80,7 +80,7 @@ fn render_to(format: Format, view: View) -> String {
         SessionKind::Main,
     );
     let ms = conversation();
-    let value = crate::session(&session, None, ms, view, format).unwrap();
+    let value = crate::session(&session, None, ms, view, format, &[]).unwrap();
     if format == Format::Json {
         value.to_string()
     } else {
@@ -135,7 +135,7 @@ fn html_escapes_text() {
             text: "<script>".into(),
         }],
     );
-    let value = crate::session(&session, None, vec![m], View::Full, Format::Html).unwrap();
+    let value = crate::session(&session, None, vec![m], View::Full, Format::Html, &[]).unwrap();
     let t = value["content"].as_str().unwrap();
     assert!(t.contains("&lt;script&gt;"));
     assert!(!t.contains("<script>"));

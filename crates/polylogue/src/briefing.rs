@@ -410,7 +410,12 @@ fn takeover(
         return Err(StoreError::NotFound(format!("session {session}")));
     };
     let prompts = reader.prompts(&id)?;
-    let messages = reader.messages(session, true)?;
+    let selected = reader.select_messages(session, true)?;
+    let mut messages = Vec::new();
+    selected.visit(|message| {
+        messages.push(message);
+        std::ops::ControlFlow::Continue(())
+    })?;
     let last_answer = messages.iter().rev().find_map(|m| {
         (m.role == polylogue_model::Role::Assistant).then(|| {
             m.blocks
@@ -442,7 +447,18 @@ fn takeover(
     if let Some(cwd) = s.cwd.last() {
         let _ = writeln!(text, "Working directory: {cwd}");
     }
-    let _ = writeln!(text, "Messages: {}", messages.len());
+    let _ = writeln!(text, "Messages available: {}", messages.len());
+    let mut left_out = vec![LeftOut {
+        what: "tool calls and their output".into(),
+        reason: "a takeover carries prompts, notes and the last answer".into(),
+    }];
+    for issue in &selected.lineage().issues {
+        let _ = writeln!(text, "Incomplete session ancestry: {issue}");
+        left_out.push(LeftOut {
+            what: "inherited session content".into(),
+            reason: issue.to_string(),
+        });
+    }
     if open_items.any() {
         let mut open = Vec::new();
         if open_items.unanswered_prompt {
@@ -481,10 +497,7 @@ fn takeover(
         event: "takeover",
         text,
         refs,
-        left_out: vec![LeftOut {
-            what: "tool calls and their output".into(),
-            reason: "a takeover carries prompts, notes and the last answer".into(),
-        }],
+        left_out,
         receipt: None,
         empty: false,
     })

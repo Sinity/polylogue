@@ -48,6 +48,11 @@ pub(crate) fn store_error(e: &StoreError) -> Response {
         StoreError::ReadPoolClosed => error("daemon_stopping", e),
         StoreError::NotFound(_) => error("not_found", e),
         StoreError::Invalid(_) => error("bad_request", e),
+        StoreError::IncompleteLineage(issue) => Response::Error {
+            kind: "incomplete_lineage".into(),
+            message: e.to_string(),
+            detail: Some(serde_json::json!({"issue": issue})),
+        },
         StoreError::ExcisionFormat { input, format, .. } => Response::Error {
             kind: "unsupported_excision".into(),
             message: e.to_string(),

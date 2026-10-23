@@ -1,0 +1,333 @@
+//! Message selection in one pinned read, with incomplete ancestry kept explicit.
+use super::*;
+use std::collections::VecDeque;
+use std::ops::ControlFlow;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, thiserror::Error)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LineageIssue {
+    #[error("session ancestry returns to {session}")]
+    Cycle { session: SessionId },
+    #[error("parent {parent} of {child} is not available")]
+    MissingParent { child: SessionId, parent: SessionId },
+    #[error("parent ID {parent:?} of {child} is invalid")]
+    InvalidParent { child: SessionId, parent: String },
+    #[error("fork from {parent} to {child} has no available branch anchor ({anchor:?})")]
+    MissingAnchor {
+        child: SessionId,
+        parent: SessionId,
+        anchor: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Lineage {
+    pub complete: bool,
+    pub issues: Vec<LineageIssue>,
+}
+
+struct Key {
+    session_pk: i64,
+    session: SessionId,
+    message_pk: i64,
+    id: String,
+}
+
+struct Link {
+    parent: String,
+    how: String,
+    anchor: Option<String>,
+}
+
+struct Frame {
+    pk: i64,
+    session: SessionId,
+    links: VecDeque<Link>,
+    keys: Vec<Key>,
+    issues: Vec<LineageIssue>,
+    /// The fork whose parent view this frame is constructing.
+    via: Option<(SessionId, Option<String>)>,
+}
+
+/// A message selection belongs to the Reader that admitted it. Bodies remain
+/// lazy; logical history retains keys for ordering, anchors and deduplication.
+pub struct MessageSelection<'r, 'a> {
+    reader: &'r Reader<'a>,
+    own: Option<(i64, SessionId)>,
+    logical: Option<Vec<Key>>,
+    lineage: Lineage,
+}
+
+impl<'a> Reader<'a> {
+    pub fn select_messages<'r>(
+        &'r self,
+        id: &SessionId,
+        logical: bool,
+    ) -> Result<MessageSelection<'r, 'a>> {
+        let own = self.session_pk(id)?.map(|pk| (pk, id.clone()));
+        let (keys, issues) = match own.as_ref().filter(|_| logical) {
+            Some((pk, _)) => self.lineage_keys(*pk, id)?,
+            None => (Vec::new(), Vec::new()),
+        };
+        Ok(MessageSelection {
+            reader: self,
+            own,
+            logical: logical.then_some(keys),
+            lineage: Lineage {
+                complete: issues.is_empty(),
+                issues,
+            },
+        })
+    }
+
+    fn lineage_frame(
+        &self,
+        pk: i64,
+        session: SessionId,
+        via: Option<(SessionId, Option<String>)>,
+    ) -> Result<Frame> {
+        let links = self
+            .conn()?
+            .prepare_cached(
+                "SELECT parent_id, how, branch_point FROM current_link
+                 WHERE child_id = ?1 AND kind = 'continuation' AND how IN ('fork', 'resume')
+                 ORDER BY pk",
+            )?
+            .query_map([session.to_string()], |r| {
+                Ok(Link {
+                    parent: r.get(0)?,
+                    how: r.get(1)?,
+                    anchor: r.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(Frame {
+            pk,
+            session,
+            links,
+            keys: Vec::new(),
+            issues: Vec::new(),
+            via,
+        })
+    }
+
+    fn lineage_keys(&self, pk: i64, id: &SessionId) -> Result<(Vec<Key>, Vec<LineageIssue>)> {
+        let mut frames = vec![self.lineage_frame(pk, id.clone(), None)?];
+        let mut active = HashSet::from([pk]);
+        loop {
+            let frame = frames
+                .last_mut()
+                .expect("the root frame remains until return");
+            if let Some(link) = frame.links.pop_front() {
+                let parent = match SessionId::parse(&link.parent) {
+                    Ok(parent) => parent,
+                    Err(_) => {
+                        frame.issues.push(LineageIssue::InvalidParent {
+                            child: frame.session.clone(),
+                            parent: link.parent,
+                        });
+                        continue;
+                    }
+                };
+                let parent_pk = self
+                    .conn()?
+                    .prepare_cached("SELECT pk FROM session WHERE id=?1 AND stub=0")?
+                    .query_row([parent.to_string()], |r| r.get::<_, i64>(0))
+                    .optional()?;
+                let Some(parent_pk) = parent_pk else {
+                    frame.issues.push(LineageIssue::MissingParent {
+                        child: frame.session.clone(),
+                        parent,
+                    });
+                    continue;
+                };
+                if active.contains(&parent_pk) {
+                    frame.issues.push(LineageIssue::Cycle { session: parent });
+                    continue;
+                }
+                if link.how == "resume" {
+                    let copied = self
+                        .conn()?
+                        .prepare_cached(
+                            "SELECT DISTINCT m.pk, m.id, m.order_input_id, m.seq FROM current_message m
+                             JOIN message_source s ON s.message_pk = m.pk
+                             JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
+                             WHERE m.session_pk = ?1 AND s.current=1 ORDER BY m.order_input_id, m.seq",
+                        )?
+                        .query_map(params![parent_pk, frame.pk], |r| {
+                            Ok(Key {
+                                session_pk: parent_pk,
+                                session: parent.clone(),
+                                message_pk: r.get(0)?,
+                                id: r.get(1)?,
+                            })
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    frame.keys.extend(copied);
+                } else if link.anchor.is_none() {
+                    frame.issues.push(LineageIssue::MissingAnchor {
+                        child: frame.session.clone(),
+                        parent,
+                        anchor: None,
+                    });
+                } else {
+                    let child = frame.session.clone();
+                    active.insert(parent_pk);
+                    frames.push(self.lineage_frame(
+                        parent_pk,
+                        parent,
+                        Some((child, link.anchor)),
+                    )?);
+                }
+                continue;
+            }
+            let mut done = frames.pop().expect("the current frame exists");
+            for (message_pk, id) in self.own_keys(done.pk)? {
+                done.keys.push(Key {
+                    session_pk: done.pk,
+                    session: done.session.clone(),
+                    message_pk,
+                    id,
+                });
+            }
+            active.remove(&done.pk);
+            let Some(parent) = frames.last_mut() else {
+                let mut seen = HashSet::new();
+                done.keys.retain(|key| seen.insert(key.message_pk));
+                return Ok((done.keys, done.issues));
+            };
+            let (child, anchor) = done.via.expect("only the root has no incoming fork");
+            match done
+                .keys
+                .iter()
+                .position(|key| Some(&key.id) == anchor.as_ref())
+            {
+                Some(at) => done.keys.truncate(at + 1),
+                None => {
+                    done.keys.clear();
+                    done.issues.push(LineageIssue::MissingAnchor {
+                        child,
+                        parent: done.session,
+                        anchor,
+                    });
+                }
+            }
+            // Move the common single-parent prefix rather than copying it at
+            // every ancestor of a long chain.
+            if parent.keys.is_empty() {
+                parent.keys = done.keys;
+            } else {
+                parent.keys.extend(done.keys);
+            }
+            parent.issues.extend(done.issues);
+        }
+    }
+}
+
+impl MessageSelection<'_, '_> {
+    pub fn lineage(&self) -> &Lineage {
+        &self.lineage
+    }
+
+    pub(super) fn require_complete(&self) -> Result<()> {
+        match self.lineage.issues.first() {
+            Some(issue) => Err(StoreError::IncompleteLineage(issue.clone())),
+            None => Ok(()),
+        }
+    }
+
+    pub fn visit(&self, mut visit: impl FnMut(Message) -> ControlFlow<()>) -> Result<()> {
+        if let Some(keys) = &self.logical {
+            let mut start = 0;
+            while start < keys.len() {
+                let key = &keys[start];
+                let end = start
+                    + keys[start..]
+                        .iter()
+                        .take_while(|k| k.session_pk == key.session_pk)
+                        .count();
+                let set: HashSet<_> = keys[start..end].iter().map(|k| k.message_pk).collect();
+                if self
+                    .reader
+                    .visit_messages_where(
+                        key.session_pk,
+                        &key.session,
+                        |m| set.contains(&m),
+                        &mut visit,
+                    )?
+                    .is_break()
+                {
+                    return Ok(());
+                }
+                start = end;
+            }
+        } else if let Some((pk, id)) = &self.own {
+            let _ = self
+                .reader
+                .visit_messages_where(*pk, id, |_| true, &mut visit)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn keys(&self) -> Result<Vec<i64>> {
+        match &self.logical {
+            Some(keys) => Ok(keys.iter().map(|key| key.message_pk).collect()),
+            None => match &self.own {
+                Some((pk, _)) => Ok(self
+                    .reader
+                    .own_keys(*pk)?
+                    .into_iter()
+                    .map(|(pk, _)| pk)
+                    .collect()),
+                None => Ok(Vec::new()),
+            },
+        }
+    }
+
+    /// Packed message facts and lineage status, without decoding bodies.
+    pub fn fingerprint(&self) -> Result<String> {
+        let mut hash = blake3::Hasher::new();
+        if self.logical.is_some() {
+            hash.update(&serde_json::to_vec(&self.lineage)?);
+        }
+        let mut facts = self
+            .reader
+            .conn()?
+            .prepare_cached("SELECT * FROM current_message WHERE pk=?1")?;
+        let mut blocks = self.reader.conn()?.prepare_cached(
+            "SELECT b.*, t.body FROM block b LEFT JOIN text t ON t.id=b.text_id
+             WHERE b.message_pk=?1 ORDER BY b.idx",
+        )?;
+        for pk in self.keys()? {
+            for stmt in [&mut facts, &mut blocks] {
+                let count = stmt.column_count();
+                let mut rows = stmt.query([pk])?;
+                while let Some(row) = rows.next()? {
+                    hash.update(b"row");
+                    for column in 0..count {
+                        use rusqlite::types::ValueRef;
+                        match row.get_ref(column)? {
+                            ValueRef::Null => {
+                                hash.update(b"n");
+                            }
+                            ValueRef::Integer(n) => {
+                                hash.update(b"i");
+                                hash.update(&n.to_le_bytes());
+                            }
+                            ValueRef::Real(n) => {
+                                hash.update(b"r");
+                                hash.update(&n.to_bits().to_le_bytes());
+                            }
+                            ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
+                                hash.update(b"b");
+                                hash.update(&(bytes.len() as u64).to_le_bytes());
+                                hash.update(bytes);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(hash.finalize().to_hex().to_string())
+    }
+}
