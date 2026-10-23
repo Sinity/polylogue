@@ -1125,3 +1125,5 @@ fn kept_results_without_match_rows_do_not_need_match_columns() {
     assert!(kept["empty"].match_columns.is_empty());
     assert_eq!(run(&reader, ask("result:empty")).unwrap()["count"], 0);
 }
+
+mod titles;

@@ -82,6 +82,11 @@ invalid request, 6 no daemon running.
 Credentials in session text (API keys, tokens, private keys) are masked in
 every output; the stored bytes are not changed.
 
+Session reads and query rows use the stored display title: the recorded title
+when present, otherwise the derived first-prompt title. JSON reads carry this
+as `display_title`, separate from the recorded `session` metadata. Importable
+exports retain source fields.
+
 ## Repository layout
 
 - `crates/model`: shared types (identities, sessions, messages, blocks,

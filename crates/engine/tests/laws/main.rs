@@ -8,3 +8,5 @@
 
 mod example_archive;
 mod generated;
+
+mod session_records;

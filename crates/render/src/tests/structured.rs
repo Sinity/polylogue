@@ -18,10 +18,17 @@ fn structured_read_keeps_message_metadata_and_original_tool_fields() {
         SessionId::parse("claude-code:s").unwrap(),
         SessionKind::Main,
     );
-    let value = crate::session(&session, messages.clone(), View::Full, Format::Json).unwrap();
+    let value = crate::session(&session, None, messages.clone(), View::Full, Format::Json).unwrap();
     assert_eq!(value["messages"], serde_json::to_value(&messages).unwrap());
     assert_eq!(value["session"], serde_json::to_value(&session).unwrap());
-    let actions = crate::session(&session, messages.clone(), View::Actions, Format::Json).unwrap();
+    let actions = crate::session(
+        &session,
+        None,
+        messages.clone(),
+        View::Actions,
+        Format::Json,
+    )
+    .unwrap();
     assert_eq!(actions["messages"][0]["production"]["effort"], "high");
     assert_eq!(actions["messages"][0]["duration_ms"], 0);
     assert!(actions["messages"][0]["blocks"][0]["input"].is_object());
@@ -64,6 +71,7 @@ fn full_json_keeps_a_genuinely_empty_message_and_empty_text_block() {
     );
     let full = crate::session(
         &session,
+        None,
         vec![empty, blank.clone()],
         View::Full,
         Format::Json,
@@ -71,6 +79,6 @@ fn full_json_keeps_a_genuinely_empty_message_and_empty_text_block() {
     .unwrap();
     assert_eq!(full["messages"].as_array().unwrap().len(), 2);
     assert_eq!(full["messages"][0]["blocks"], json!([]));
-    let prompts = crate::session(&session, vec![blank], View::Prompts, Format::Json).unwrap();
+    let prompts = crate::session(&session, None, vec![blank], View::Prompts, Format::Json).unwrap();
     assert_eq!(prompts["messages"][0]["blocks"][0]["text"], "");
 }

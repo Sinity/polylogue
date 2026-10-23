@@ -12,11 +12,13 @@ pub struct SessionSummary {
     pub lines: Vec<String>,
 }
 
-pub fn summarize(session: &Session, messages: &[Message]) -> SessionSummary {
-    let title = session
-        .title
-        .as_ref()
-        .map(|t| t.text.clone())
+pub fn summarize(
+    session: &Session,
+    display_title: Option<&str>,
+    messages: &[Message],
+) -> SessionSummary {
+    let title = display_title
+        .map(str::to_owned)
         .unwrap_or_else(|| session.id.to_string());
     let prompts = messages.iter().filter(|m| is_prompt(m)).count();
     let mut calls = 0usize;

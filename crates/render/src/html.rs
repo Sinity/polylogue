@@ -49,11 +49,11 @@ pub fn fragment(items: &[Rendered<'_>], view: View, out: &mut dyn io::Write) -> 
     let mut paired = std::collections::HashSet::new();
     for item in items {
         match item {
-            Rendered::SessionHeader(session) => {
+            Rendered::SessionHeader { session, title } => {
                 write!(
                     out,
                     "<h1>{}</h1><p class=\"id\"><code>{}</code></p>",
-                    escape(&super::title(session)),
+                    escape(&super::title(session, *title)),
                     escape(&session.id.to_string())
                 )?;
             }

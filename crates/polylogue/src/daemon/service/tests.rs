@@ -281,3 +281,58 @@ fn invalid_reader_resource_configuration_refuses_startup_and_releases_the_lock()
         assert!(Archive::open_or_create(&root).is_ok());
     }
 }
+
+#[test]
+fn read_and_session_query_share_stored_titles_without_changing_source_or_export() {
+    let prompt = "First human question\nMore details";
+    let w = test_daemon::start(prompt);
+    let source = w.home.join(".claude/projects/-p/s1.jsonl");
+    let original = std::fs::read(&source).unwrap();
+    let id = polylogue_model::SessionId::parse("claude-code:s1").unwrap();
+    let export = || match handle(
+        Request::Export {
+            sessions: vec![id.clone()],
+            format: "json".into(),
+        },
+        &w.daemon,
+    ) {
+        Response::Ok { data } => data,
+        other => panic!("export failed: {other:?}"),
+    };
+    let before = export();
+    let document = polylogue_model::export::Document::from_json(&before.to_string()).unwrap();
+    assert!(document.sessions[0].session.title.is_none());
+    let Response::Ok { data: listed } = handle(
+        Request::Query {
+            text: "sessions".into(),
+            cursor: None,
+            page_size: None,
+            why: false,
+            session: None,
+            fields: vec![],
+        },
+        &w.daemon,
+    ) else {
+        panic!("query failed")
+    };
+    assert_eq!(listed["rows"][0]["title"], "First human question");
+    for budget in [None, Some(4000)] {
+        let Response::Ok { data } = read(&w.daemon, "full", "json", budget, None) else {
+            panic!("read failed")
+        };
+        assert_eq!(data["display_title"], listed["rows"][0]["title"]);
+        assert!(data["session"]["title"].is_null());
+    }
+    for (format, prefix) in [
+        ("markdown", "# First human question"),
+        ("html", "<h1>First human question</h1>"),
+        ("terminal", "\u{1b}[1mFirst human question"),
+    ] {
+        let Response::Ok { data } = read(&w.daemon, "full", format, None, None) else {
+            panic!("{format} read failed")
+        };
+        assert!(data["content"].as_str().unwrap().contains(prefix), "{data}");
+    }
+    assert_eq!(export(), before);
+    assert_eq!(std::fs::read(source).unwrap(), original);
+}
