@@ -280,6 +280,7 @@ fn law_138_hiding_never_changes_a_usage_figure() {
             .unwrap()
             .usage
             .clone()
+            .unwrap()
     };
     assert_eq!(five(&o0).tokens, five(&o1).tokens);
     assert_eq!(five(&o1).hidden_sessions, 1);
@@ -398,7 +399,7 @@ fn process_keeps_transcript_order_and_outcomes_apart() {
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
     let p = analysis::process(&r, &Scope::default(), 10).unwrap();
-    assert_eq!((p.sessions, p.calls), (Some(1), Some(3)));
+    assert_eq!((p.sessions, p.calls), (1, 3));
     assert_eq!(p.outcomes.error, 1);
     assert_eq!(p.outcomes.ok, 2);
     assert_eq!(p.failure_examples.len(), 1);

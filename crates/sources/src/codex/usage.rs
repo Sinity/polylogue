@@ -99,7 +99,9 @@ impl Observer {
                 .zip(cached)
                 .and_then(|(input, cached)| input.checked_sub(cached)),
             cached_input: cached,
-            cache_write: n("cache_write_input_tokens"),
+            // OpenAI does not bill cache writes. The native token Event
+            // preserves any supplied field without inventing a charged lane.
+            cache_write: None,
             output: output
                 .zip(reasoning)
                 .and_then(|(output, reasoning)| output.checked_sub(reasoning)),

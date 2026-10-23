@@ -148,3 +148,26 @@ fn delayed_rate_only_snapshots_preserve_state_without_provider_time_or_window_sp
     assert_eq!(w.usage, None);
     assert_eq!(tool.recorded_usage.known_usage.input, Some(10));
 }
+
+#[test]
+fn unresolved_item_and_harness_followups_do_not_prove_a_call_was_passed_without_a_result() {
+    let mut world = WriterWorld::new();
+    let mut call =
+        crate::fixture::writer::bash("pending", 1, T0, "synthetic", true, "unused").remove(0);
+    call.production.response_boundary_unknown = Some(true);
+    let mut later = message(
+        "later",
+        "pending",
+        Role::Assistant,
+        T0 + 1,
+        vec![Block::Text {
+            text: "synthetic child event".into(),
+        }],
+    );
+    later.prompt_kind = Some(PromptKind::Harness);
+    world.write("pending", vec![call, later]);
+    assert_eq!(
+        world.rows("SELECT outcome_reason FROM tool_call")[0]["outcome_reason"],
+        "no_result"
+    );
+}

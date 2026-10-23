@@ -38,6 +38,13 @@ fn tokens(n: u64) -> String {
 
 fn money(m: &Value) -> String {
     let unpriced = m["unpriced_messages"].as_u64().unwrap_or(0);
+    let unknown = m["response_total_unknown"].as_bool() == Some(true);
+    if unknown {
+        return match m["known_usd"].as_f64() {
+            Some(usd) => format!("${usd:.2} known + unknown response usage"),
+            None => "unknown (response grouping unknown)".into(),
+        };
+    }
     match m["known_usd"].as_f64() {
         None if unpriced > 0 => format!("unknown ({unpriced} unpriced)"),
         None => "unknown".into(),
@@ -49,6 +56,13 @@ fn money(m: &Value) -> String {
 fn token_count(l: &Value) -> String {
     let n = l["tokens"].as_u64().unwrap_or(0);
     let unknown = l["unknown_messages"].as_u64().unwrap_or(0);
+    if l["response_total_unknown"].as_bool() == Some(true) {
+        return if n == 0 {
+            "unknown".into()
+        } else {
+            format!("{} known + unknown response usage", tokens(n))
+        };
+    }
     if unknown > 0 && n == 0 {
         "unknown".into()
     } else if unknown > 0 {
@@ -124,6 +138,13 @@ pub fn quota(o: &Value) -> String {
             ));
         }
         out.push('\n');
+        for reading in t["unplaced"].as_array().into_iter().flatten() {
+            out.push_str(&format!(
+                "  {}: {}% recorded use; provider time and reset unknown\n",
+                reading["limit"].as_str().unwrap_or(""),
+                reading["used_percent"]
+            ));
+        }
         for w in t["windows"].as_array().into_iter().flatten() {
             let minutes = w["window_minutes"].as_i64().unwrap_or(0);
             let name = match minutes {

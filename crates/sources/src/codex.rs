@@ -210,6 +210,8 @@ pub struct Carry {
     /// The byte range of the record being read, for events.
     #[serde(skip)]
     current: Option<(u64, u64)>,
+    #[serde(skip)]
+    copied_observation: Option<SessionId>,
     /// The previous record, when it was a stored user prompt: an item or a
     /// `user_message` event. Codex can write one prompt both ways in
     /// adjacent records; the second of the pair is the same prompt.
@@ -412,7 +414,11 @@ impl Rollout {
     ) -> Disposition {
         let disposition = self.event(carry, data, kind, at, out);
         if disposition == Disposition::Materialized {
-            out.events.last_mut().expect("new event").after = None;
+            let event = out.events.last_mut().expect("new event");
+            event.after = None;
+            if let Some(parent) = &carry.copied_observation {
+                event.session = parent.clone();
+            }
         }
         disposition
     }
@@ -817,6 +823,7 @@ impl Rollout {
                 let Some(session) = self.own(carry) else {
                     return Disposition::refused("no thread ID in the file name or its header");
                 };
+                let session = carry.copied_observation.clone().unwrap_or(session);
                 let observation = usage::identity(&(session, at, p));
                 if let Some(info) = p.get("info").filter(|info| !info.is_null())
                     && let Some(reading) =
@@ -1010,18 +1017,12 @@ impl Parser for Rollout {
         if record.offset == 0 {
             carry.usage.start(0, false);
         }
-        if Self::copied(carry, rec.ordinal) && rec.ty != "response_item" {
-            if rec.ty == "event_msg"
-                && str_field(p, "type") == Some("token_count")
-                && let Some(info) = p.get("info").filter(|info| !info.is_null())
-            {
-                carry.usage.read(
-                    info,
-                    usage::identity(p),
-                    carry.model.clone(),
-                    carry.tier.clone(),
-                );
-            }
+        carry.copied_observation = Self::copied(carry, rec.ordinal)
+            .then(|| carry.copied_from.as_deref().and_then(session_id))
+            .flatten();
+        let token_observation =
+            rec.ty == "event_msg" && str_field(p, "type") == Some("token_count");
+        if Self::copied(carry, rec.ordinal) && rec.ty != "response_item" && !token_observation {
             return Disposition::unknown("copied from the parent thread, which stores it");
         }
         let prev = carry.prompt.take();

@@ -236,3 +236,43 @@ fn unrelated_row_values_never_grow_relative_to_plain_encoding() {
         assert_eq!(unpack_json::<serde_json::Value>(&packed).unwrap(), value);
     }
 }
+
+#[test]
+fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
+    for boundary in [None, Some(true), Some(false)] {
+        let mut message: Message =
+            serde_json::from_value(json!({"id":"codex:item", "session":"codex:thread",
+            "role":"assistant", "blocks":[]}))
+            .unwrap();
+        message.production.response_boundary_unknown = boundary;
+        let prepared = RowPacker::new().unwrap().pack_message(&message).unwrap();
+        assert_eq!(unpack_json::<Message>(&prepared.attrs).unwrap(), message);
+    }
+    let reading = polylogue_model::UsageObservation {
+        observation: "synthetic-reading".into(),
+        usage: polylogue_model::Usage {
+            input: Some(0),
+            output: None,
+            ..Default::default()
+        },
+        model: None,
+        response: None,
+        completion_observed: None,
+        observed_at: None,
+        input_including_cache: Some(0),
+        output_including_reasoning: None,
+    };
+    let event = Event {
+        session: polylogue_model::SessionId::parse("codex:thread").unwrap(),
+        kind: "usage_observation".into(),
+        at: None,
+        after: None,
+        range: Some((1, 2)),
+        data: serde_json::to_value(&reading).unwrap(),
+    };
+    let (_, packed) = RowPacker::new().unwrap().pack_event(&event).unwrap();
+    assert_eq!(
+        unpack_json::<polylogue_model::UsageObservation>(&packed).unwrap(),
+        reading
+    );
+}

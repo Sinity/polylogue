@@ -417,3 +417,5 @@ mod search_snippets;
 mod hook_errors;
 
 mod grok_export;
+
+mod codex_observations;

@@ -19,7 +19,7 @@ pub const WEEK: i64 = 10_080;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Observation {
     /// Record/emission time, not necessarily provider observation time.
-    pub at: i64,
+    pub at: Option<i64>,
     pub observed_at: Option<i64>,
     /// The origin that reported it (`claude-code`, `codex`).
     pub tool: String,
@@ -101,13 +101,13 @@ pub struct Quota {
 }
 
 /// Every limit reading of one response.
-fn observations(tool: &str, at: i64, reading: &QuotaReading) -> Vec<Observation> {
+fn observations(tool: &str, at: Option<i64>, reading: &QuotaReading) -> Vec<Observation> {
     reading
         .windows
         .iter()
         .map(|w| Observation {
             at,
-            observed_at: Some(at),
+            observed_at: at,
             tool: tool.to_owned(),
             limit: w.limit.limit.to_string(),
             window_minutes: w.limit.minutes,
@@ -203,12 +203,12 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                     tool.clone(),
                     Credits {
                         balance: balance.clone(),
-                        observed_at: Some(at),
+                        observed_at: at,
                         recorded_at: Some(at),
                     },
                 ));
             }
-            obs.extend(observations(&tool, at, &reading));
+            obs.extend(observations(&tool, Some(at), &reading));
             if !tools.contains(&tool) {
                 tools.push(tool);
             }
@@ -234,7 +234,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
             }
             // Unknown emission time sorts before timed records; no provider
             // timing is inferred from it.
-            let mut readings = observations(tool, recorded_at.unwrap_or(i64::MIN), &value.reading);
+            let mut readings = observations(tool, recorded_at, &value.reading);
             for reading in &mut readings {
                 reading.observed_at = value.observed_at.map(Timestamp::unix_ms);
             }

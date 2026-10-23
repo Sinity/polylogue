@@ -8,6 +8,8 @@ use serde::Serialize;
 pub struct TokenCount {
     pub tokens: u64,
     pub unknown_messages: u64,
+    /// Unknown grouping prevents quantifying the missing request denominator.
+    pub response_total_unknown: bool,
 }
 
 /// The four tokens plus cache writes, which some tools bill apart.
@@ -30,11 +32,12 @@ pub struct Money {
     pub known_usd: Option<f64>,
     pub priced_messages: u64,
     pub unpriced_messages: u64,
+    pub response_total_unknown: bool,
 }
 
 impl Money {
     pub fn partial(&self) -> bool {
-        self.unpriced_messages > 0 && self.priced_messages > 0
+        (self.unpriced_messages > 0 || self.response_total_unknown) && self.priced_messages > 0
     }
 }
 
@@ -101,6 +104,7 @@ fn row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Row> {
         Ok(TokenCount {
             tokens: u(i)?,
             unknown_messages: u(i + 1)?,
+            response_total_unknown: false,
         })
     };
     let money = |i: usize| -> rusqlite::Result<Money> {
@@ -113,6 +117,7 @@ fn row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Row> {
                 .map(|n| n as f64 / 1e9),
             priced_messages: priced,
             unpriced_messages: u(i + 2)?,
+            response_total_unknown: false,
         })
     };
     Ok(Row {
@@ -132,7 +137,7 @@ fn row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Row> {
 pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> {
     let (cond, params) = scope.condition();
     let conn = reader.conn()?;
-    let total = conn.query_row(
+    let mut total = conn.query_row(
         &format!("SELECT {TOKEN_SUMS} FROM current_message m WHERE {RESPONSE_ROWS} AND {cond}"),
         rusqlite::params_from_iter(params.iter()),
         |r| row(r, 0),
@@ -168,12 +173,14 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
     let recorded_usage = recorded(reader, scope)?;
     let unknown_boundary_items = unknown_items(reader, &cond, &params)?;
     let unknown = unknown_boundary_items > 0 || recorded_usage.observations > 0;
+    mark_unknown(&mut total.tokens, &mut total.api, unknown);
+    total.reported.response_total_unknown = unknown;
     Ok(UsageReport {
         grain: "physical",
         sessions: conn.query_row(
-            &format!("SELECT count(DISTINCT m.session_pk) FROM current_message m WHERE {cond}"),
+            &format!("SELECT count(DISTINCT m.session_pk) FROM (SELECT session_pk,at FROM current_message UNION ALL SELECT session_pk,at FROM current_event) m WHERE {cond}"),
             rusqlite::params_from_iter(params.iter()),
-            |r| r.get(0),
+            |r| r.get::<_, i64>(0).map(|n| n as u64),
         )?,
         messages: (!unknown).then_some(total.messages),
         known_response_messages: total.messages,
@@ -218,7 +225,7 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
     let (cond, params) = scope.condition();
     let conn = reader.conn()?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT DISTINCT s.pk, s.id FROM current_message m JOIN session s ON s.pk = m.session_pk
+        "SELECT DISTINCT s.pk, s.id FROM (SELECT session_pk,at FROM current_message UNION ALL SELECT session_pk,at FROM current_event) m JOIN session s ON s.pk = m.session_pk
          WHERE {cond} ORDER BY s.started_at, s.id"
     ))?;
     let sessions: Vec<(i64, String)> = stmt
@@ -239,6 +246,7 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
         let observations = recorded(reader, &own_scope)?;
         if observations.observations > 0 {
             physical.messages = None;
+            mark_unknown(&mut physical.tokens, &mut physical.api_cost, true);
         }
         physical.recorded_usage = Some(observations);
         let keys = reader.logical_message_keys(&sid)?;
@@ -263,13 +271,15 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
 /// TokensByKind and cost over the model messages a condition on `m` selects. The
 /// condition holds only integer keys the store read itself.
 fn totals(reader: &Reader<'_>, cond: &str) -> Result<Totals> {
-    let x = reader.conn()?.query_row(
+    let mut x = reader.conn()?.query_row(
         &format!("SELECT {TOKEN_SUMS} FROM current_message m WHERE {RESPONSE_ROWS} AND {cond}"),
         [],
         |r| row(r, 0),
     )?;
+    let unknown = unknown_items(reader, cond, &[])? > 0;
+    mark_unknown(&mut x.tokens, &mut x.api, unknown);
     Ok(Totals {
-        messages: (unknown_items(reader, cond, &[])? == 0).then_some(x.messages),
+        messages: (!unknown).then_some(x.messages),
         known_response_messages: x.messages,
         recorded_usage: None,
         tokens: x.tokens,
@@ -303,7 +313,7 @@ fn unknown_items(
         json_extract(m.attrs_json,'$.production.response_boundary_unknown')=1)"
         ),
         rusqlite::params_from_iter(params.iter()),
-        |row| row.get(0),
+        |row| row.get::<_, i64>(0).map(|n| n as u64),
     )?)
 }
 
@@ -347,4 +357,17 @@ pub(super) fn recorded(reader: &Reader<'_>, scope: &Scope) -> Result<RecordedUsa
         },
     )?;
     Ok(out)
+}
+
+fn mark_unknown(tokens: &mut TokensByKind, money: &mut Money, unknown: bool) {
+    for lane in [
+        &mut tokens.input,
+        &mut tokens.cached_input,
+        &mut tokens.cache_write,
+        &mut tokens.output,
+        &mut tokens.reasoning,
+    ] {
+        lane.response_total_unknown = unknown;
+    }
+    money.response_total_unknown = unknown;
 }

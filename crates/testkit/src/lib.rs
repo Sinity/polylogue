@@ -8,6 +8,7 @@
 //!   ([`claude_user`], [`claude_assistant`]).
 
 mod claude_home;
+pub mod codex;
 mod morrow;
 mod process;
 

@@ -187,3 +187,40 @@ fn observation_state_survives_every_eof_restart_without_holding_item_bodies() {
         assert_eq!(got, expected, "split {cut}");
     }
 }
+
+#[test]
+fn copied_token_records_keep_their_parent_scope_and_original_observation_identity() {
+    let token = count(3, counters(10, 2), counters(10, 2));
+    let parent = vec![
+        env(1, "session_meta", json!({"id":PARENT})),
+        item(2, "parent-item", "reasoning"),
+        token.clone(),
+    ];
+    let child = vec![
+        meta(json!({"parent_thread_id":PARENT,"subagent_history_start_ordinal":4})),
+        item(2, "parent-item", "reasoning"),
+        token,
+    ];
+    let parent = run(
+        &Rollout {
+            thread: Some(PARENT.into()),
+        },
+        &mut Carry::default(),
+        &jsonl(&parent),
+        0,
+    )
+    .unwrap();
+    let child = run(&rollout(), &mut Carry::default(), &jsonl(&child), 0).unwrap();
+    assert_eq!(
+        readings(&parent)[0].observation,
+        readings(&child)[0].observation
+    );
+    assert_eq!(readings(&child)[0].response, None);
+    assert!(
+        child
+            .output
+            .events
+            .iter()
+            .all(|e| e.session.native().as_str() == PARENT)
+    );
+}

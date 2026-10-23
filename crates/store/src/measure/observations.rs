@@ -12,11 +12,14 @@ pub(super) fn visit<T: DeserializeOwned>(
     mut visit: impl FnMut(&str, Option<i64>, T) -> Result<()>,
 ) -> Result<()> {
     let conn = reader.conn()?;
-    conn.execute_batch(
-        "CREATE TEMP TABLE IF NOT EXISTS measurement_observation(
-        id TEXT PRIMARY KEY, origin TEXT NOT NULL, at INTEGER, data BLOB NOT NULL,
-        confirmed INTEGER NOT NULL) WITHOUT ROWID;
-        DELETE FROM measurement_observation;",
+    let scratch = tempfile::NamedTempFile::new()?;
+    let seen = rusqlite::Connection::open(scratch.path())?;
+    seen.execute_batch(
+        "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
+        PRAGMA mmap_size=0; PRAGMA cache_size=-1024; PRAGMA temp_store=FILE;
+        CREATE TABLE measurement_observation(
+        origin TEXT NOT NULL, id TEXT NOT NULL, at INTEGER, data BLOB NOT NULL,
+        confirmed INTEGER NOT NULL, PRIMARY KEY(origin,id)) WITHOUT ROWID;",
     )?;
     let (cond, mut params) = scope.condition();
     params.push(kind.to_owned().into());
@@ -36,13 +39,13 @@ pub(super) fn visit<T: DeserializeOwned>(
             .get("completion_observed")
             .and_then(serde_json::Value::as_bool)
             == Some(true);
-        conn.execute("INSERT INTO measurement_observation(id,origin,at,data,confirmed) VALUES (?1,?2,?3,?4,?5)
-            ON CONFLICT(id) DO UPDATE SET origin=excluded.origin,at=excluded.at,data=excluded.data,confirmed=excluded.confirmed
+        seen.execute("INSERT INTO measurement_observation(id,origin,at,data,confirmed) VALUES (?1,?2,?3,?4,?5)
+            ON CONFLICT(origin,id) DO UPDATE SET origin=excluded.origin,at=excluded.at,data=excluded.data,confirmed=excluded.confirmed
             WHERE excluded.confirmed > measurement_observation.confirmed",
             rusqlite::params![id, row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?, packed, confirmed])?;
     }
     let mut stmt =
-        conn.prepare("SELECT origin,at,data FROM measurement_observation ORDER BY at,id")?;
+        seen.prepare("SELECT origin,at,data FROM measurement_observation ORDER BY at,id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         visit(
@@ -51,6 +54,5 @@ pub(super) fn visit<T: DeserializeOwned>(
             crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(2)?)?,
         )?;
     }
-    conn.execute("DELETE FROM measurement_observation", [])?;
     Ok(())
 }
