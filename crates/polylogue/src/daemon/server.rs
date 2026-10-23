@@ -45,8 +45,7 @@ fn serve_client(stream: UnixStream, d: &Daemon) {
 pub fn serve() -> std::io::Result<()> {
     let root = Archive::default_root();
     #[cfg(feature = "sinex")]
-    let backing =
-        crate::sinex::configured().map_or(service::Backing::Standalone, service::Backing::Sinex);
+    let backing = crate::sinex::configured();
     #[cfg(not(feature = "sinex"))]
     let backing = service::Backing::Standalone;
     let runtime = service::start(&root, Config::from_env(), backing)?;

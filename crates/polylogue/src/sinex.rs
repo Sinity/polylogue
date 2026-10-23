@@ -73,14 +73,23 @@ impl Drop for Publisher {
 }
 
 /// Resolves operator configuration only at the production entry point.
-pub fn configured() -> Option<SinexConfig> {
-    match SinexConfig::load() {
-        Ok(Some(config)) if config.mode == Mode::Primary => Some(config),
-        Ok(_) => None,
-        Err(error) => {
-            eprintln!("polylogue: Sinex publishing paused: {error}");
-            None
-        }
+pub fn configured() -> crate::daemon::service::Backing {
+    configured_at(&SinexConfig::path())
+}
+
+pub fn configured_at(path: &std::path::Path) -> crate::daemon::service::Backing {
+    use crate::daemon::service::Backing;
+    match SinexConfig::load_from(path) {
+        Ok(Some(config)) if config.mode == Mode::Primary => Backing::Sinex {
+            config,
+            path: path.to_owned(),
+        },
+        Ok(_) => Backing::Standalone,
+        Err(error) => Backing::Blocked {
+            mode: None,
+            path: path.to_owned(),
+            error: error.to_string(),
+        },
     }
 }
 
@@ -95,7 +104,7 @@ pub fn start(
         .build()?;
     let empty = polylogue_store::sinex_rows::Published::open(&archive.root)
         .and_then(|p| p.inventory().map(|u| u.is_empty()))
-        .unwrap_or(false);
+        .map_err(|e| std::io::Error::other(format!("local Sinex inventory: {e}")))?;
     if empty && let Some(id) = &sinex.archive {
         let restored = runtime.block_on(async {
             let s = Sinex::connect(&sinex).await?;
@@ -106,7 +115,11 @@ pub fn start(
                 "polylogue: restored {} units ({} rows) of archive {id} from Sinex",
                 r.units, r.rows
             ),
-            Err(e) => eprintln!("polylogue: restoring archive {id} from Sinex failed: {e}"),
+            Err(e) => {
+                return Err(std::io::Error::other(format!(
+                    "restoring archive {id} from Sinex failed: {e}"
+                )));
+            }
         }
     }
     let root = archive.root.clone();

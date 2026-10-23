@@ -115,3 +115,17 @@ shared with Sinex.
 [docs/development.md](docs/development.md) describes the development checks
 and [docs/REPLACEMENT.md](docs/REPLACEMENT.md) says what replaced the Python
 version.
+
+## Sinex startup failures
+
+With the `sinex` feature, `sinex.toml` selects the backing. A missing file uses
+standalone. Malformed configuration, an unreadable local publication inventory,
+or a failed required restore pauses startup work without choosing another
+backing. `status.backing` shows `state: blocked`, the configuration path and the
+error. Existing reads, queries, exports, notes, read-only settings and context
+without a delivery sender remain available. Archive mutations return
+`backing_unavailable`; collection, signals and publishing do not start.
+
+Correct the configuration or restore failure and restart the daemon. Source
+capture spools remain pending until collection can run. An existing nonempty
+primary archive can start and serve reads while Sinex is offline.

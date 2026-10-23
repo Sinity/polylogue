@@ -137,6 +137,34 @@ pub enum Request {
     },
 }
 
+impl Request {
+    /// Whether the request can run without admitting archive writes.
+    /// Conditional delivery and setting writes are resolved from their values.
+    pub(crate) fn read_only(&self) -> bool {
+        match self {
+            Self::Status
+            | Self::Query { .. }
+            | Self::Read { .. }
+            | Self::Export { .. }
+            | Self::Notes { .. }
+            | Self::Resumable { .. }
+            | Self::Continue { .. }
+            | Self::Sql { .. } => true,
+            Self::Setting { value, .. } => value.is_none(),
+            Self::Context { sender, .. } => sender.is_none(),
+            Self::Embed { what, .. } => matches!(what.as_str(), "status" | "preview"),
+            Self::Import { .. }
+            | Self::AddNote { .. }
+            | Self::Keep { .. }
+            | Self::Withdraw { .. }
+            | Self::DeliveryEvent { .. }
+            | Self::Excise { .. }
+            | Self::Hook { .. }
+            | Self::Cancel { .. } => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum Response {

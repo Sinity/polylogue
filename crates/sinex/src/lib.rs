@@ -97,13 +97,17 @@ impl Config {
     /// file that does not parse is an error the caller shows; it never
     /// switches the mode silently.
     pub fn load() -> Result<Option<Self>> {
-        let path = Self::path();
-        match std::fs::read_to_string(&path) {
+        Self::load_from(&Self::path())
+    }
+
+    /// Reads one explicitly selected configuration file.
+    pub fn load_from(path: &Path) -> Result<Option<Self>> {
+        match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text)
                 .map(Some)
                 .map_err(|e| Error::Invalid(format!("{}: {e}", path.display()))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(Error::Invalid(format!("{}: {e}", path.display()))),
         }
     }
 }

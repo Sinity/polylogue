@@ -391,6 +391,9 @@ fn history(d: &Daemon) -> Vec<Sent> {
 /// every handoff as a delivery.
 pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
     use polylogue_model::LogicalDay;
+    let Some(writes) = &d.writes else {
+        return;
+    };
     let day = LogicalDay::system();
     let mut eval = Evaluator::new(&history(d));
     loop {
@@ -474,7 +477,7 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                 refs,
                 left_out: vec![],
             };
-            if d.writes
+            if writes
                 .user(UserRequest::now(id.clone(), UserWrite::Deliver(delivery)))
                 .is_err()
             {
@@ -495,7 +498,7 @@ pub fn run(d: &Daemon, stop: &std::sync::mpsc::Receiver<()>) {
                 )),
             };
             if let Some((what, detail)) = event {
-                let _ = d.writes.user(UserRequest::now(
+                let _ = writes.user(UserRequest::now(
                     polylogue_store::user_writes::new_request_id(),
                     UserWrite::DeliveryEvent {
                         delivery: id,
