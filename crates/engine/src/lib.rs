@@ -646,7 +646,12 @@ impl Engine {
                 let name = polylogue_sources::origin::export_name(&f.path)?;
                 Some((
                     f.path.clone(),
-                    self.archive.exports_dir().join(f.origin.name).join(name),
+                    self.archive
+                        .exports_dir()
+                        .join(f.origin.name)
+                        .join(self.location_id(&f.path))
+                        .join(name),
+                    Some(self.observation(&f.path, None)),
                 ))
             })
             .collect();
@@ -666,7 +671,7 @@ impl Engine {
         for out in self.exporter.paths() {
             if let Some(origin) = ORIGINS.iter().find(|o| {
                 o.capture == Capture::LogicalExport
-                    && out.parent() == Some(self.archive.exports_dir().join(o.name).as_path())
+                    && out.starts_with(self.archive.exports_dir().join(o.name))
             }) {
                 found.push(collect::Found {
                     path: out.into(),

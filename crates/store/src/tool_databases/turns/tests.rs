@@ -38,7 +38,9 @@ fn finish(captures: &mut Captures, mut turn: CaptureTurn) {
 fn turns_keep_one_source_view_and_continue_without_rediscovery() {
     let (_dir, db, out, source) = setup();
     let mut captures = Captures::default();
-    let first = captures.turn(vec![(db.clone(), out.clone())], 1).unwrap();
+    let first = captures
+        .turn(vec![(db.clone(), out.clone(), None)], 1)
+        .unwrap();
     assert!(first.pending);
     assert!(captures.paths().next().is_none());
     assert!(fs::read(&out).unwrap().is_empty());
@@ -55,10 +57,10 @@ fn turns_keep_one_source_view_and_continue_without_rediscovery() {
     assert!(!values.iter().any(|row| row["r"]["n"] == 20));
     assert_eq!(captures.paths().next(), Some(out.as_path()));
     let quiet = captures
-        .turn(vec![(db.clone(), out.clone())], 1000)
+        .turn(vec![(db.clone(), out.clone(), None)], 1000)
         .unwrap();
     finish(&mut captures, quiet);
-    let changed = captures.turn(vec![(db, out.clone())], 3).unwrap();
+    let changed = captures.turn(vec![(db, out.clone(), None)], 3).unwrap();
     assert!(changed.pending);
     assert_eq!(fs::read_to_string(&out).unwrap(), first);
     finish(&mut captures, changed);
@@ -79,7 +81,7 @@ fn dropping_paused_capture_releases_source_view_and_publishes_nothing() {
     let mut captures = Captures::default();
     assert!(
         captures
-            .turn(vec![(db.clone(), out.clone())], 1)
+            .turn(vec![(db.clone(), out.clone(), None)], 1)
             .unwrap()
             .pending
     );
@@ -92,7 +94,7 @@ fn dropping_paused_capture_releases_source_view_and_publishes_nothing() {
         .unwrap();
     assert_eq!(busy, 0);
     let mut fresh = Captures::default();
-    let turn = fresh.turn(vec![(db, out.clone())], 1000).unwrap();
+    let turn = fresh.turn(vec![(db, out.clone(), None)], 1000).unwrap();
     finish(&mut fresh, turn);
     assert_eq!(
         fs::read_to_string(&out)
@@ -116,14 +118,19 @@ fn an_existing_batch_cannot_be_displaced_by_new_discovery() {
     let mut captures = Captures::default();
     let mut turn = captures
         .turn(
-            vec![(db.clone(), out.clone()), (second, second_out.clone())],
+            vec![
+                (db.clone(), out.clone(), None),
+                (second, second_out.clone(), None),
+            ],
             1,
         )
         .unwrap();
     while turn.pending {
         assert!(turn.errors.is_empty());
         // A newly supplied batch does not replace the remaining second DB.
-        turn = captures.turn(vec![(db.clone(), out.clone())], 7).unwrap();
+        turn = captures
+            .turn(vec![(db.clone(), out.clone(), None)], 7)
+            .unwrap();
     }
     assert!(fs::read_to_string(second_out).unwrap().contains("42"));
 }
@@ -139,7 +146,7 @@ fn revalidation_withholds_an_earlier_output_until_its_bytes_are_verified() {
         .unwrap();
     let mut captures = Captures::default();
     let turn = captures
-        .turn(vec![(db.clone(), out.clone())], 1000)
+        .turn(vec![(db.clone(), out.clone(), None)], 1000)
         .unwrap();
     finish(&mut captures, turn);
     assert_eq!(captures.paths().next(), Some(out.as_path()));
@@ -147,7 +154,7 @@ fn revalidation_withholds_an_earlier_output_until_its_bytes_are_verified() {
     changed[0] = b'!';
     changed.extend_from_slice(b"unpublished tail");
     fs::write(&out, &changed).unwrap();
-    let mut turn = captures.turn(vec![(db, out.clone())], 1).unwrap();
+    let mut turn = captures.turn(vec![(db, out.clone(), None)], 1).unwrap();
     assert!(turn.pending);
     assert!(captures.paths().next().is_none());
     let mut errors = Vec::new();

@@ -23,7 +23,7 @@ fn exports_new_changed_and_gone_rows_only() {
     )
     .unwrap();
     let mut ex = Exporter::default();
-    let first = ex.export(&db, &out).unwrap().unwrap();
+    let first = ex.export(&db, &out, None).unwrap().unwrap();
     assert_eq!(first, Exported { rows: 3, gone: 0 });
     let l = lines(&out);
     assert!(
@@ -36,14 +36,14 @@ fn exports_new_changed_and_gone_rows_only() {
     assert_eq!(a["r"]["data"]["base64"], "AP8=");
     assert_eq!(a["r"]["n"], 1.5);
     // Unchanged files: nothing is due.
-    assert_eq!(ex.export(&db, &out).unwrap(), None);
+    assert_eq!(ex.export(&db, &out, None).unwrap(), None);
     c.execute_batch(
         "UPDATE threads SET title = 'renamed' WHERE id = 'a'; DELETE FROM threads WHERE id = 'b';",
     )
     .unwrap();
     // Changed: due once quiet, so the first look only notes the change.
-    assert_eq!(ex.export(&db, &out).unwrap(), None);
-    let second = ex.export(&db, &out).unwrap().unwrap();
+    assert_eq!(ex.export(&db, &out, None).unwrap(), None);
+    let second = ex.export(&db, &out, None).unwrap().unwrap();
     assert_eq!(second, Exported { rows: 1, gone: 1 });
     let l = lines(&out);
     assert_eq!(l.len(), 6);
@@ -65,10 +65,13 @@ fn a_restart_rebuilds_what_was_exported_from_the_file() {
         "CREATE TABLE g (id INTEGER PRIMARY KEY, s TEXT); INSERT INTO g VALUES (1, 'x');",
     )
     .unwrap();
-    Exporter::default().export(&db, &out).unwrap().unwrap();
+    Exporter::default()
+        .export(&db, &out, None)
+        .unwrap()
+        .unwrap();
     c.execute_batch("INSERT INTO g VALUES (2, 'y');").unwrap();
     let mut fresh = Exporter::default();
-    let done = fresh.export(&db, &out).unwrap().unwrap();
+    let done = fresh.export(&db, &out, None).unwrap().unwrap();
     assert_eq!(done, Exported { rows: 1, gone: 0 });
     // The schema line is not repeated.
     assert_eq!(
@@ -92,9 +95,12 @@ fn dropped_tables_publish_exact_removals_and_can_reappear() {
         INSERT INTO t VALUES('a',1),('a',2);",
         )
         .unwrap();
-    Exporter::default().export(&db, &out).unwrap();
+    Exporter::default().export(&db, &out, None).unwrap();
     source.execute_batch("DROP TABLE t").unwrap();
-    let gone = Exporter::default().export(&db, &out).unwrap().unwrap();
+    let gone = Exporter::default()
+        .export(&db, &out, None)
+        .unwrap()
+        .unwrap();
     assert_eq!(gone, Exported { rows: 0, gone: 2 });
     assert!(
         lines(&out)
@@ -108,7 +114,10 @@ fn dropped_tables_publish_exact_removals_and_can_reappear() {
         )
         .unwrap();
     assert_eq!(
-        Exporter::default().export(&db, &out).unwrap().unwrap(),
+        Exporter::default()
+            .export(&db, &out, None)
+            .unwrap()
+            .unwrap(),
         Exported { rows: 1, gone: 0 }
     );
 }
@@ -121,7 +130,7 @@ fn malformed_legacy_exports_are_preserved_and_refused() {
         fs::write(&out, suffix).unwrap();
         assert!(
             Exporter::default()
-                .export(&dir.path().join("missing.sqlite"), &out)
+                .export(&dir.path().join("missing.sqlite"), &out, None)
                 .is_err()
         );
         assert_eq!(fs::read_to_string(&out).unwrap(), suffix);
@@ -139,12 +148,12 @@ fn changed_completed_bytes_are_not_truncated_or_silently_replaced() {
         .execute_batch("CREATE TABLE t(id); INSERT INTO t VALUES(1)")
         .unwrap();
     let mut exporter = Exporter::default();
-    exporter.export(&db, &out).unwrap();
+    exporter.export(&db, &out, None).unwrap();
     let mut corrupt = fs::read(&out).unwrap();
     corrupt[0] = b'!';
     corrupt.extend_from_slice(b"unpublished tail");
     fs::write(&out, &corrupt).unwrap();
-    assert!(exporter.export(&db, &out).is_err());
+    assert!(exporter.export(&db, &out, None).is_err());
     assert_eq!(fs::read(&out).unwrap(), corrupt);
 }
 
@@ -159,7 +168,7 @@ fn valid_legacy_rows_and_hash_only_removals_replay_without_repeating_rows() {
             "CREATE TABLE t(id INTEGER PRIMARY KEY,n TEXT); INSERT INTO t VALUES(1,'a'),(2,'b')",
         )
         .unwrap();
-    Exporter::default().export(&db, &out).unwrap();
+    Exporter::default().export(&db, &out, None).unwrap();
     let mut legacy = lines(&out);
     legacy.push(json!({"t":"t","kh":format!("{:016x}",row_key("t",&json!([2]))),"gone":true}));
     let bytes = legacy.iter().map(|v| format!("{v}\n")).collect::<String>();
@@ -167,7 +176,10 @@ fn valid_legacy_rows_and_hash_only_removals_replay_without_repeating_rows() {
     fs::remove_file(publication::checkpoint(&out)).unwrap();
     source.execute("DELETE FROM t WHERE id=2", []).unwrap();
     assert_eq!(
-        Exporter::default().export(&db, &out).unwrap().unwrap(),
+        Exporter::default()
+            .export(&db, &out, None)
+            .unwrap()
+            .unwrap(),
         Exported::default()
     );
     assert_eq!(fs::read_to_string(&out).unwrap(), bytes);
@@ -185,7 +197,7 @@ fn duplicate_nullable_primary_keys_refuse_the_whole_capture() {
         INSERT INTO t VALUES(NULL,'a'),(NULL,'b')",
         )
         .unwrap();
-    assert!(Exporter::default().export(&db, &out).is_err());
+    assert!(Exporter::default().export(&db, &out, None).is_err());
     assert_eq!(fs::read(&out).unwrap(), b"");
 }
 
@@ -202,7 +214,7 @@ fn sqlite_values_are_exact_or_the_capture_is_refused() {
         INSERT INTO t VALUES('shadowed',-9223372036854775808,NULL,x'',-1.25);",
         )
         .unwrap();
-    Exporter::default().export(&db, &out).unwrap();
+    Exporter::default().export(&db, &out, None).unwrap();
     let captured = lines(&out);
     assert_eq!(captured[1]["k"], json!([1]));
     assert_eq!(captured[2]["k"], json!([2]));
@@ -217,7 +229,7 @@ fn sqlite_values_are_exact_or_the_capture_is_refused() {
         "UPDATE t SET rowid='valid',f=1e999",
     ] {
         source.execute_batch(statement).unwrap();
-        assert!(Exporter::default().export(&db, &out).is_err());
+        assert!(Exporter::default().export(&db, &out, None).is_err());
         assert_eq!(fs::read(&out).unwrap(), before);
     }
 }
@@ -236,12 +248,19 @@ fn a_large_row_population_replays_and_compares_without_repeating_unchanged_rows(
         )
         .unwrap();
     assert_eq!(
-        Exporter::default().export(&db, &out).unwrap().unwrap().rows,
+        Exporter::default()
+            .export(&db, &out, None)
+            .unwrap()
+            .unwrap()
+            .rows,
         20000
     );
     let length = fs::metadata(&out).unwrap().len();
     assert_eq!(
-        Exporter::default().export(&db, &out).unwrap().unwrap(),
+        Exporter::default()
+            .export(&db, &out, None)
+            .unwrap()
+            .unwrap(),
         Exported::default()
     );
     assert_eq!(fs::metadata(&out).unwrap().len(), length);
@@ -252,11 +271,19 @@ fn a_large_row_population_replays_and_compares_without_repeating_unchanged_rows(
         )
         .unwrap();
     assert_eq!(
-        Exporter::default().export(&db, &out).unwrap().unwrap(),
+        Exporter::default()
+            .export(&db, &out, None)
+            .unwrap()
+            .unwrap(),
         Exported { rows: 20, gone: 20 }
     );
     assert_eq!(
-        Exporter::default().export(&db, &out).unwrap().unwrap(),
+        Exporter::default()
+            .export(&db, &out, None)
+            .unwrap()
+            .unwrap(),
         Exported::default()
     );
 }
+
+mod source_binding;
