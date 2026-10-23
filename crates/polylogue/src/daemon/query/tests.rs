@@ -1127,3 +1127,5 @@ fn kept_results_without_match_rows_do_not_need_match_columns() {
 }
 
 mod titles;
+
+mod page_binding;
