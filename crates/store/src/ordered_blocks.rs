@@ -21,7 +21,7 @@ pub(crate) fn visit(
         "SELECT b.pk, m.written_by, m.prompt_kind, b.body, t.body
          FROM current_message m JOIN block b ON b.message_pk=m.pk
          LEFT JOIN text t ON t.id=b.text_id WHERE m.session_pk=?1
-         ORDER BY m.order_input_id, m.seq, b.idx",
+         ORDER BY m.order_input_id, m.seq, m.id, b.idx",
     )?;
     let mut rows = statement.query([session])?;
     while let Some(row) = rows.next()? {

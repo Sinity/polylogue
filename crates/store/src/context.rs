@@ -152,7 +152,7 @@ impl Reader<'_> {
                JOIN text t ON t.id = b.text_id
               WHERE s.id = ?1 AND m.written_by = 'human'
                 AND coalesce(m.prompt_kind, 'prose') = 'prose'
-              ORDER BY m.order_input_id, m.seq, b.idx",
+              ORDER BY m.order_input_id, m.seq, m.id, b.idx",
         )?;
         let rows = stmt.query_map([session], |r| {
             Ok((
@@ -189,9 +189,9 @@ impl Reader<'_> {
             .prepare_cached(
                 "SELECT s.live_open_tool_pk IS NOT NULL, s.live_todo, s.live_waiting_on,
                         (SELECT m.written_by FROM current_message m WHERE m.session_pk = s.pk
-                          ORDER BY m.order_input_id DESC, m.seq DESC LIMIT 1),
+                          ORDER BY m.order_input_id DESC, m.seq DESC, m.id DESC LIMIT 1),
                         (SELECT m.prompt_kind FROM current_message m WHERE m.session_pk = s.pk
-                          ORDER BY m.order_input_id DESC, m.seq DESC LIMIT 1),
+                          ORDER BY m.order_input_id DESC, m.seq DESC, m.id DESC LIMIT 1),
                         coalesce((SELECT c.result_block_pk IS NULL FROM tool_call c
                                    WHERE c.session_pk = s.pk ORDER BY c.pk DESC LIMIT 1), 0)
                    FROM session s WHERE s.id = ?1",

@@ -443,6 +443,13 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
     );
     f.link("claude-code:p", "claude-code:c", "continuation", "fork")
         .unwrap();
+    crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
+        .unwrap()
+        .execute(
+            "UPDATE link SET branch_point='b' WHERE parent_id='claude-code:p' AND child_id='claude-code:c'",
+            [],
+        )
+        .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
     let all = super::sessions(&r, &Scope::default()).unwrap();

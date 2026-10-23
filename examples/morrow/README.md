@@ -36,3 +36,12 @@ tests read an archive built by the real parsers and writer.
   as real carriers do (the generator wrote `provider`, `session_id` and
   `proc` first, which no real carrier does, so collection did not recognize
   them). Every field is kept.
+
+## Cost evidence
+
+Codex token totals in `FACTS.md` are a recorded known subset from independent
+usage observations. They do not establish complete request or session costs;
+#5 and #6 therefore match `cost:unknown`. The complete-session known total is
+5.8626 USD under the example prices, with four sessions' total cost unknown.
+The separately priced observation subset is 0.333 USD; its record times do
+not establish daily spend. The expected oracle keeps these units separate.

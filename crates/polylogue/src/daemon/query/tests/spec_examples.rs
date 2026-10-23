@@ -17,8 +17,7 @@ const NOW: i64 = 1_791_453_600_000;
 const GAPS: &[(&str, &str)] = &[
     (
         "3",
-        "cost: the example prices from its own table (FACTS.md), not the published catalog, \
-         and counts Codex usage per response where the archive holds one message per item (see 11)",
+        "cost: the example prices from its own table (FACTS.md), not the published catalog",
     ),
     (
         "6",

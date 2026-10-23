@@ -393,7 +393,11 @@ whole prepared messages aligned by identity. A mismatch refuses the batch
 instead of recomputing from released values. Unprepared inputs retain the normal
 packing path on the writer.
 
-Message ordering uses the existing opaque input ID and the record's wire offset.
+Message reading order uses the existing opaque input ID and the record's wire
+offset, then the opaque message ID when those source positions tie. This final
+tie-break keeps reads, logical selection, cursor fingerprints and first-prompt
+titles stable across insertion order and index rebuilds; it does not supply an
+otherwise unknown event time.
 The index keeps that ID in `message.order_input_id` beside its local input
 foreign key. Source selection and every order consumer compare the stable ID,
 so parallel arrival and index rebuilds cannot change the message order or a

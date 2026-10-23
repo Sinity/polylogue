@@ -9,6 +9,8 @@ use polylogue_store::fault::{self, Action};
 use polylogue_testkit::{Morrow, Set, session};
 use std::fs;
 
+mod retained_history;
+
 /// Law 7: a failure at any step of a write loses nothing. The writer fails
 /// at its n-th archive commit, between its archive and index commits, or at
 /// its index commit; the engine is dropped as a crashed process would leave
@@ -83,6 +85,10 @@ fn law_63_a_panicking_parser_loses_only_its_input() {
         again.errors.is_empty(),
         "retried an unchanged failing input: {:?}",
         again.errors
+    );
+    assert_eq!(
+        again.bytes_read, 0,
+        "unchanged failing input is not read again"
     );
     // Changed, with the parser working again: parsed.
     fault::clear();
