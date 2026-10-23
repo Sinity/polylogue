@@ -45,6 +45,15 @@ source selection and hook-derived live state. A disposable SQLite file holds
 affected IDs with a 1 MiB cache and mmap disabled. Derived session-row removal
 is shared with excision; it does not change raw bytes, authored rows or embeddings.
 
+A fresh derived index stays in WAL while it is built, including while readers
+retain earlier snapshots. Its `unsynced` rebuild marker commits with FULL
+synchronization before build writes disable syncing. Deferred secondary indexes
+and search entries are completed as before. A final FULL WAL commit clears the
+marker and synchronizes earlier build frames, then ordinary NORMAL syncing
+resumes. No journal-mode change or blocking checkpoint is needed to finish or
+stop the writer. An unfinished marked index is rebuilt when reopened. WAL and
+later checkpoints retain their normal write I/O cost.
+
 Queries read an index generation together with the independent index and archive
 write counters. Their change cursor is `GEN:COUNTER:ARCHIVE`. A new index gets a
 random generation. Archive startup also changes it whenever the operating-system

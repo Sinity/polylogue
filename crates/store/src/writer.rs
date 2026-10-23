@@ -159,18 +159,16 @@ impl Writer {
                 r.get(0)
             })?;
         if empty {
+            // Make the rebuild marker durable before unsynchronized writes.
+            // Keep WAL throughout: a retained snapshot must not prevent the
+            // first build from finishing or the writer from stopping.
+            index.pragma_update(None, "synchronous", "full")?;
             index.execute(
                 "INSERT INTO meta(key, value) VALUES ('unsynced', '1')
                  ON CONFLICT(key) DO UPDATE SET value = '1'",
                 [],
             )?;
             index.pragma_update(None, "synchronous", "off")?;
-            // Pages go straight to the database file, once, instead of to
-            // the WAL and again at checkpoint: a first build wrote 2.2 times
-            // what it kept in WAL mode. The rollback journal stays in memory,
-            // so a failed transaction still rolls back; a crash leaves the
-            // mark set and the index is rebuilt.
-            index.pragma_update(None, "journal_mode", "memory")?;
         }
         // A first build inserts rows without maintaining the indexes only
         // reads use; each is built once from a sorted scan when the build
@@ -534,9 +532,8 @@ impl Inner {
         let synced = std::time::Instant::now();
         let i = &self.index;
         i.pragma_update(None, "synchronous", "full")?;
-        // Back to WAL, so readers and the writer stop waiting on each
-        // other; the switch syncs the database file.
-        i.query_row("PRAGMA journal_mode = wal", [], |_| Ok(()))?;
+        // The FULL WAL commit synchronizes preceding build frames together
+        // with marker removal. No journal-mode switch can wait on old readers.
         i.execute("UPDATE meta SET value = '0' WHERE key = 'unsynced'", [])?;
         i.pragma_update(None, "synchronous", "normal")?;
         crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());

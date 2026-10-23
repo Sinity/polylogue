@@ -909,3 +909,55 @@ mod excluded;
 mod text_projection;
 
 mod failed_inputs;
+
+#[test]
+fn first_build_stays_in_wal_and_settles_while_a_snapshot_remains_pinned() {
+    let w = world();
+    let reader_pool = ReadPool::open(&w.archive).unwrap();
+    let reader = reader_pool.reader().unwrap();
+    assert_eq!(
+        reader.query("PRAGMA main.journal_mode", &[]).unwrap()[0]["journal_mode"],
+        "wal"
+    );
+    assert_eq!(
+        reader
+            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .unwrap()[0]["value"],
+        "1"
+    );
+    // This retained snapshot predates both the write and the durable build
+    // completion. Neither publication may require it to be dropped.
+    w.writer
+        .send(batch(
+            "first",
+            0,
+            0,
+            vec![MessageRow {
+                offset: 0,
+                end: 100,
+                message: text_message("m1", "a", Role::User, "synthetic first build", None),
+            }],
+            &["a"],
+        ))
+        .unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let current = reader_pool.reader().unwrap();
+    assert_eq!(
+        current
+            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .unwrap()[0]["value"],
+        "0"
+    );
+    assert_eq!(current.status().unwrap().messages, 1);
+    assert_eq!(
+        reader
+            .query("SELECT value FROM meta WHERE key='unsynced'", &[])
+            .unwrap()[0]["value"],
+        "1"
+    );
+    assert_eq!(reader.status().unwrap().messages, 0);
+    drop(current);
+    drop(w.writer);
+    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+}
