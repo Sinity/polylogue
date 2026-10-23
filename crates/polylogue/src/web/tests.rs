@@ -482,6 +482,34 @@ fn browser_commands_keep_origin_token_and_binary_body_limits() {
 }
 
 #[test]
+fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
+    let r = reader();
+    let archive = rusqlite::Connection::open(r.w.daemon.archive.archive_db()).unwrap();
+    archive
+        .execute_batch("ALTER TABLE setting RENAME TO unavailable_setting")
+        .unwrap();
+    let body = serde_json::json!({
+        "provider": "chatgpt",
+        "operation": "conversation.create",
+        "text": "Neutral synthetic draft",
+        "presentation": {"model_slug": "x", "model_label": "X", "effort_label": "standard"}
+    });
+    let response = rt().block_on(async {
+        let request = own_origin(authed(post("/api/v1/browser-actions")))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        send(&r, request).await
+    });
+    archive
+        .execute_batch("ALTER TABLE unavailable_setting RENAME TO setting")
+        .unwrap();
+    assert_eq!(response.0, StatusCode::INTERNAL_SERVER_ERROR, "{}", response.2);
+    let body: serde_json::Value = serde_json::from_str(&response.2).unwrap();
+    assert_eq!(body["error"], "store");
+}
+
+#[test]
 fn an_unobserved_enqueue_reply_reconciles_without_repeating_the_action() {
     let r = reader();
     r.w.set("browser.actions", "on");
