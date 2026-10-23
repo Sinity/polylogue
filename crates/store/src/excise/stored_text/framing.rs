@@ -59,9 +59,9 @@ pub(super) fn rewrite(
     archive: &rusqlite::Connection,
     store: &hashed_blobs::Store,
     bytes: &mut PlainBytes,
+    plan: &Plan,
     chain_key: &Chain,
     frames: &[Frame],
-    ranges: &Ranges,
     fill: u8,
 ) -> Result<Vec<(u64, Vec<u8>)>> {
     let (input, chain) = chain_key;
@@ -84,20 +84,10 @@ pub(super) fn rewrite(
             e.blob_offset += from - e.offset;
             e.offset = from;
             e.length = to - from;
-            bytes.visit(archive, store, &e, |chunk, at| {
+            bytes.visit(plan, archive, store, &e, |chunk, at| {
                 before.update(chunk);
                 let mut chunk = chunk.to_vec();
-                for &(from, to) in ranges {
-                    let from = from.max(at);
-                    let to = to.min(at + chunk.len() as u64);
-                    if from < to {
-                        for byte in &mut chunk[(from - at) as usize..(to - at) as usize] {
-                            if *byte != b'\n' {
-                                *byte = fill;
-                            }
-                        }
-                    }
-                }
+                plan.blank(chain_key, at, &mut chunk, fill)?;
                 after.update(&chunk);
                 Ok(())
             })?;

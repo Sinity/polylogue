@@ -1,5 +1,6 @@
 use super::*;
 use crate::schema;
+use polylogue_model::BlobHash;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 fn row(index: &Connection, bytes: &[u8], place: &str, data: Option<&[u8]>) -> Extent {
@@ -39,13 +40,14 @@ fn oversized_file_frames_decode_once_for_all_shared_and_reordered_extents() {
     schema::create_archive(&index).unwrap();
     let mut extent = row(&index, &bytes, "file", None);
     let mut cache = PlainBytes::new().unwrap();
+    let plan = Plan::new().unwrap();
     let mut calls = 0;
     for chunk in (0..128).rev().chain(0..128) {
         extent.blob_offset = chunk * READ_CHUNK as u64;
         extent.length = READ_CHUNK as u64;
         extent.offset = 57;
         cache
-            .visit(&index, &store, &extent, |found, at| {
+            .visit(&plan, &index, &store, &extent, |found, at| {
                 assert!(found.len() <= READ_CHUNK);
                 let from = (extent.blob_offset + at - extent.offset) as usize;
                 assert_eq!(found, &bytes[from..from + found.len()]);
@@ -55,7 +57,10 @@ fn oversized_file_frames_decode_once_for_all_shared_and_reordered_extents() {
             .unwrap();
     }
     assert_eq!(calls, 256);
-    assert_eq!(cache.places.len(), 1);
+    assert_eq!(
+        plan.placement(&extent.blob).unwrap(),
+        Some((0, bytes.len() as u64))
+    );
     assert_eq!(cache.length, bytes.len() as u64);
     // One shared-library integrity pass and one sequential copy, irrespective
     // of the number or order of logical visits to an oversized frame.
@@ -75,12 +80,13 @@ fn oversized_historical_inline_rows_use_incremental_blob_io_and_one_decode() {
     schema::create_archive(&index).unwrap();
     let mut extent = row(&index, &bytes, "inline", Some(&compressed));
     let mut cache = PlainBytes::new().unwrap();
+    let plan = Plan::new().unwrap();
     let mut total = 0;
     for offset in [0, 3 * 1024 * 1024, 1024 * 1024, 0] {
         extent.blob_offset = offset;
         extent.length = 1024 * 1024;
         cache
-            .visit(&index, &store, &extent, |found, _| {
+            .visit(&plan, &index, &store, &extent, |found, _| {
                 assert!(found.len() <= READ_CHUNK);
                 assert!(found.iter().all(|b| *b == b'a'));
                 total += found.len();
@@ -108,9 +114,10 @@ fn inline_corruption_and_extent_overflow_expose_no_bytes() {
         extent.blob_offset = offset;
         extent.length = length;
         let mut cache = PlainBytes::new().unwrap();
+        let plan = Plan::new().unwrap();
         let mut exposed = false;
         let error = cache
-            .visit(&index, &store, &extent, |_, _| {
+            .visit(&plan, &index, &store, &extent, |_, _| {
                 exposed = true;
                 Ok(())
             })
@@ -118,7 +125,7 @@ fn inline_corruption_and_extent_overflow_expose_no_bytes() {
         assert!(!exposed);
         if corrupt {
             assert!(matches!(error, StoreError::BlobCorrupt(_)));
-            assert!(cache.places.is_empty());
+            assert!(plan.placement(&extent.blob).unwrap().is_none());
         } else {
             assert!(matches!(error, StoreError::Invalid(_)));
         }
@@ -135,13 +142,50 @@ fn visitor_errors_stop_without_reading_more_logical_chunks() {
     schema::create_archive(&index).unwrap();
     let extent = row(&index, &bytes, "inline", Some(&compressed));
     let mut cache = PlainBytes::new().unwrap();
+    let plan = Plan::new().unwrap();
     let mut calls = 0;
     let error = cache
-        .visit(&index, &store, &extent, |_, _| {
+        .visit(&plan, &index, &store, &extent, |_, _| {
             calls += 1;
             Err(StoreError::Invalid("stop".into()))
         })
         .unwrap_err();
     assert!(matches!(error, StoreError::Invalid(_)));
     assert_eq!(calls, 1);
+}
+
+#[test]
+fn failed_verified_copy_publishes_no_placement_and_can_retry_exact_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = hashed_blobs::Store::open(dir.path(), vec![], 0o600).unwrap();
+    let index = Connection::open_in_memory().unwrap();
+    schema::create_archive(&index).unwrap();
+    let wrong = zstd::bulk::compress(b"public", 1).unwrap();
+    let extent = row(&index, b"secret", "inline", Some(&wrong));
+    let mut cache = PlainBytes::new().unwrap();
+    let plan = Plan::new().unwrap();
+    assert!(matches!(
+        cache.visit(&plan, &index, &store, &extent, |_, _| {
+            panic!("a failed copy must expose no bytes")
+        }),
+        Err(StoreError::BlobCorrupt(_))
+    ));
+    assert!(plan.placement(&extent.blob).unwrap().is_none());
+    assert_eq!(cache.length, 0);
+    index
+        .execute(
+            "UPDATE blob SET data=?1",
+            [zstd::bulk::compress(b"secret", 1).unwrap()],
+        )
+        .unwrap();
+    let mut actual = Vec::new();
+    cache
+        .visit(&plan, &index, &store, &extent, |bytes, _| {
+            actual.extend_from_slice(bytes);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(actual, b"secret");
+    assert_eq!(plan.placement(&extent.blob).unwrap(), Some((0, 6)));
+    assert_eq!(cache.length, 6);
 }
