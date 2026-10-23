@@ -2,10 +2,10 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 -- INDEX_VERSION, generation, the write counter, unsynced, facts_version,
 -- the status counters count.sessions, count.messages, count.tool_calls,
 -- count.tool_calls_failed, count.unrecognized (behavior.md, status totals),
--- preamble_set, boot_id (the boot the file was last opened in), clean_stop
--- (1 after an orderly stop, removed at start), last_stop (signal name or
--- `clean`). No cursors for derived products: a product's work is the sessions
--- whose stored version differs (convergence.md, Derive).
+-- preamble_set, boot_id (the boot of this generation). A changed boot
+-- always starts a new generation, including after a clean shutdown.
+-- No cursors for derived products: a product's work is the sessions whose
+-- stored version differs (convergence.md, Derive).
 
 -- Inputs as index.db sees them: a small local key for each archive.db input.
 CREATE TABLE input_ref (
