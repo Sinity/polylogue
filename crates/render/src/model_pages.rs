@@ -1,7 +1,7 @@
 //! Reading for models, consuming one message at a time. Whole original blocks
 //! are masked before splitting; no unmasked text is carried in a position.
 
-use crate::{View, mask, unmasked_piece};
+use crate::{View, unmasked_piece};
 use polylogue_model::Message;
 use std::ops::ControlFlow;
 
@@ -60,16 +60,10 @@ impl Pager {
             let Some(mut piece) = unmasked_piece(block) else {
                 continue;
             };
-            let mut bytes = Vec::new();
-            self.masker
-                .push(&piece.text, &mut bytes)
-                .expect("Vec writes cannot fail");
-            self.masker
-                .block_boundary(&mut bytes)
-                .expect("Vec writes cannot fail");
+            piece.label = piece.label.map(|label| self.mask_fragment(&label));
+            let text = self.mask_fragment(&piece.text);
             if self.view.keeps(message, block) {
-                piece.text = String::from_utf8(bytes).expect("masking preserves UTF-8");
-                piece.label = piece.label.map(|label| mask(&label));
+                piece.text = text;
                 ps.push(piece);
             }
         }
@@ -115,6 +109,17 @@ impl Pager {
         self.at.message += 1;
         self.at.piece = 0;
         Ok(ControlFlow::Continue(()))
+    }
+
+    fn mask_fragment(&mut self, text: &str) -> String {
+        let mut bytes = Vec::new();
+        self.masker
+            .push(text, &mut bytes)
+            .expect("Vec writes cannot fail");
+        self.masker
+            .block_boundary(&mut bytes)
+            .expect("Vec writes cannot fail");
+        String::from_utf8(bytes).expect("masking preserves UTF-8")
     }
 
     pub fn finish(self) -> Result<Page, &'static str> {

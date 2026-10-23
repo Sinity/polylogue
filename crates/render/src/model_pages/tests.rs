@@ -138,3 +138,27 @@ fn a_hidden_block_still_masks_a_visible_continuation_of_a_private_key() {
     assert!(!output.contains("secret-tail"));
     assert!(output.contains("visible"));
 }
+
+#[test]
+fn masking_context_continues_from_a_tool_label_into_its_body() {
+    use crate::tests::message;
+    use polylogue_model::{Block, Role, ToolAction};
+    let messages = vec![message(
+        "1",
+        Role::Assistant,
+        None,
+        vec![Block::ToolCall {
+            call_id: None,
+            tool: Some("-----BEGIN PRIVATE KEY-----".into()),
+            action: ToolAction::Shell,
+            input: serde_json::json!({}),
+            command: Some("private-tail-----END PRIVATE KEY----- visible".into()),
+            path: None,
+        }],
+    )];
+    for budget in [1, usize::MAX] {
+        let output = joined(&messages, View::Full, budget);
+        assert!(!output.contains("private-tail"));
+        assert!(output.contains("visible"));
+    }
+}
