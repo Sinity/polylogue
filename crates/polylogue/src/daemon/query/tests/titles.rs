@@ -41,7 +41,7 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
     assert_eq!(row("claude-code:recorded")["title"], "Provider title");
     assert_eq!(row("claude-code:empty")["title"], "");
     assert!(row("claude-code:unknown")["title"].is_null());
-    let filtered = q(&w, r#"sessions title:"First human question""#);
+    let filtered = q(&w, r#"sessions where title:"First human question""#);
     assert_eq!(filtered["count"], 1);
     assert_eq!(filtered["rows"][0]["id"], "claude-code:derived");
     let fields = vec!["id".into(), "title".into()];
@@ -65,6 +65,22 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
             &[],
         )
         .unwrap();
+    for shown in &rows {
+        let id = polylogue_model::SessionId::parse(shown["id"].as_str().unwrap()).unwrap();
+        let title = reader.display_title(&id).unwrap();
+        assert_eq!(serde_json::to_value(&title).unwrap(), shown["title"]);
+        let source = reader.session(&id).unwrap().unwrap();
+        let read = polylogue_render::session(
+            &source,
+            title.as_deref(),
+            vec![],
+            polylogue_render::View::Full,
+            polylogue_render::Format::Json,
+        )
+        .unwrap();
+        assert_eq!(read["display_title"], shown["title"]);
+        assert_eq!(read["session"], serde_json::to_value(&source).unwrap());
+    }
     assert!(recorded[0]["title"].is_null());
     assert_eq!(recorded[0]["derived_title"], "First human question");
 }

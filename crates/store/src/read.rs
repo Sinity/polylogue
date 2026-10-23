@@ -362,6 +362,20 @@ impl Reader<'_> {
             .optional()?)
     }
 
+    /// The stored title selected for display, separate from source metadata.
+    /// A recorded empty string stays present; a missing title stays unknown.
+    pub fn display_title(&self, id: &SessionId) -> Result<Option<String>> {
+        Ok(self
+            .conn()?
+            .query_row(
+                "SELECT coalesce(title, derived_title) FROM session WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     /// The session's messages in order, the preferred version of each. With
     /// `logical`, messages it inherited come first: a fork's parent prefix up
     /// to the branch point, and messages its file copied from another

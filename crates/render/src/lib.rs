@@ -85,7 +85,10 @@ pub fn is_prompt(m: &Message) -> bool {
 
 /// One rendered unit of the stream every format is built from.
 pub enum Rendered<'a> {
-    SessionHeader(&'a Session),
+    SessionHeader {
+        session: &'a Session,
+        title: Option<&'a str>,
+    },
     Message(&'a Message),
     Event(&'a Event),
 }
@@ -209,15 +212,21 @@ fn when(m: &Message) -> String {
 /// JSON is structured data, while the other formats display the selected stream.
 pub fn session(
     session: &Session,
+    display_title: Option<&str>,
     messages: Vec<Message>,
     view: View,
     format: Format,
 ) -> io::Result<Value> {
     let selected = project(messages, view);
     if format == Format::Json {
-        return Ok(json!({ "session": session, "messages": selected }));
+        return Ok(
+            json!({ "session": session, "display_title": display_title, "messages": selected }),
+        );
     }
-    let mut items = vec![Rendered::SessionHeader(session)];
+    let mut items = vec![Rendered::SessionHeader {
+        session,
+        title: display_title,
+    }];
     items.extend(selected.iter().map(Rendered::Message));
     formatted(&items, format, view)
 }
@@ -230,7 +239,10 @@ pub fn export(doc: &polylogue_model::export::Document, format: Format) -> io::Re
     }
     let mut items = Vec::new();
     for session in &doc.sessions {
-        items.push(Rendered::SessionHeader(&session.session));
+        items.push(Rendered::SessionHeader {
+            session: &session.session,
+            title: session.session.title.as_ref().map(|t| t.text.as_str()),
+        });
         items.extend(session.messages.iter().map(Rendered::Message));
         items.extend(session.events.iter().map(Rendered::Event));
     }
@@ -268,20 +280,18 @@ fn formatted(items: &[Rendered<'_>], format: Format, view: View) -> io::Result<V
     )
 }
 
-fn title(s: &Session) -> String {
-    mask(
-        &s.title
-            .as_ref()
-            .map(|t| t.text.clone())
-            .unwrap_or_else(|| s.id.to_string()),
-    )
+fn title(s: &Session, selected: Option<&str>) -> String {
+    mask(selected.unwrap_or(&s.id.to_string()))
 }
 
 fn terminal(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Result<()> {
     for item in items {
         match item {
-            Rendered::SessionHeader(s) => {
-                writeln!(out, "\x1b[1m{}\x1b[0m", title(s))?;
+            Rendered::SessionHeader {
+                session: s,
+                title: selected,
+            } => {
+                writeln!(out, "\x1b[1m{}\x1b[0m", title(s, *selected))?;
                 writeln!(
                     out,
                     "\x1b[2m{}  {}\x1b[0m",
@@ -347,8 +357,11 @@ fn fence(text: &str) -> String {
 fn markdown(items: &[Rendered<'_>], view: View, out: &mut dyn Write) -> io::Result<()> {
     for item in items {
         match item {
-            Rendered::SessionHeader(s) => {
-                writeln!(out, "# {}\n", title(s))?;
+            Rendered::SessionHeader {
+                session: s,
+                title: selected,
+            } => {
+                writeln!(out, "# {}\n", title(s, *selected))?;
                 writeln!(
                     out,
                     "`{}`{}\n",
