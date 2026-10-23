@@ -1,58 +1,112 @@
-//! Structural frame bytes are never text matches. Redaction changes the active
-//! payload digest while keeping observed identity and all logical offsets.
+//! Snapshot headers are structural bytes. Payloads share the operation's verified
+//! plaintext owner; each header and digest is checked before replacement begins.
 use super::*;
 use polylogue_model::snapshot_log::{HEADER_LEN, Header, MAGIC};
 
-pub(super) struct Frame {
-    at: u64,
-    header: Header,
-}
-
-pub(super) fn read(
+pub(super) fn scan(
     archive: &rusqlite::Connection,
     store: &hashed_blobs::Store,
-    input: &str,
-    chain: i64,
+    bytes: &mut PlainBytes,
+    plan: &Plan,
+    key: &Chain,
     length: u64,
-) -> Result<Vec<Frame>> {
-    let bytes = crate::blobs::StoredChain::load(archive, "", input, chain, length)?;
-    let prefix = bytes.read_range(store, 0, length.min(MAGIC.len() as u64))?;
-    if prefix != MAGIC {
-        if !prefix.is_empty() && MAGIC.starts_with(&prefix) {
-            return Err(StoreError::Invalid("incomplete snapshot log magic".into()));
+    needle: &str,
+) -> Result<()> {
+    let format: String =
+        archive.query_row("SELECT format FROM input WHERE id=?1", [&key.0], |r| {
+            r.get(0)
+        })?;
+    let unsupported = |detail: String| StoreError::ExcisionFormat {
+        input: key.0.clone(),
+        format: format.clone(),
+        detail,
+    };
+    let mut scanner = TextMatches::new(needle)?;
+    let mut reader = bytes.reader(plan, archive, store, key, 0..length)?;
+    let mut prefix = [0; MAGIC.len()];
+    let n = length.min(prefix.len() as u64) as usize;
+    reader.read_exact(&mut prefix[..n])?;
+    let prefix = &prefix[..n];
+    if prefix.starts_with(b"SQLite format 3\0") {
+        return Err(unsupported("SQLite page images need a structural text-value rewrite; logical JSON row exports are supported".into()));
+    }
+    if prefix.starts_with(b"PK\x03\x04")
+        || prefix.starts_with(b"PK\x05\x06")
+        || prefix.starts_with(b"PK\x07\x08")
+    {
+        return Err(unsupported("ZIP containers need member decoding and rewriting; imported plain member inputs are supported".into()));
+    }
+    if prefix.starts_with(b"%PDF-") {
+        return Err(unsupported(
+            "PDF streams need text decoding and rewriting".into(),
+        ));
+    }
+    if prefix.starts_with(&[0x1f, 0x8b]) {
+        return Err(unsupported(
+            "gzip streams need decoding and rewriting".into(),
+        ));
+    }
+    let mut buffer = [0; READ_CHUNK];
+    {
+        let mut feed = |chunk: &[u8]| {
+            scanner
+                .feed(chunk)
+                .map_err(|e| unsupported(e.to_string()))?;
+            plan.collect(&key.0, key.1, scanner.drain())
+        };
+        if prefix == MAGIC {
+            plan.framed(key)?;
+            feed(&[b' '; MAGIC.len()])?;
+            let mut ordinal = 0;
+            while reader.position() < length {
+                let at = reader.position();
+                let mut encoded = [0; HEADER_LEN];
+                reader.read_exact(&mut encoded)?;
+                let header = Header::decode(&encoded).map_err(StoreError::Invalid)?;
+                let end = reader
+                    .position()
+                    .checked_add(header.length)
+                    .filter(|end| *end <= length)
+                    .ok_or_else(|| StoreError::Invalid("incomplete snapshot payload".into()))?;
+                plan.frame(key, ordinal, at, &header)?;
+                feed(&[b' '; HEADER_LEN])?;
+                let mut before = blake3::Hasher::new();
+                while reader.position() < end {
+                    let take = buffer.len().min((end - reader.position()) as usize);
+                    let n = reader.read(&mut buffer[..take])?;
+                    if n == 0 {
+                        return Err(StoreError::Invalid("incomplete snapshot payload".into()));
+                    }
+                    before.update(&buffer[..n]);
+                    feed(&buffer[..n])?;
+                }
+                if before.finalize().to_hex().as_str() != header.digest {
+                    return Err(StoreError::Invalid(
+                        "snapshot payload digest mismatch".into(),
+                    ));
+                }
+                ordinal += 1;
+            }
+        } else {
+            if !prefix.is_empty() && MAGIC.starts_with(prefix) {
+                return Err(StoreError::Invalid("incomplete snapshot log magic".into()));
+            }
+            feed(prefix)?;
+            loop {
+                let n = reader.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                feed(&buffer[..n])?;
+            }
         }
-        return Ok(Vec::new());
     }
-    let mut frames = Vec::new();
-    let mut at = MAGIC.len() as u64;
-    while at < length {
-        let body = at + HEADER_LEN as u64;
-        if body > length {
-            return Err(StoreError::Invalid("incomplete snapshot header".into()));
-        }
-        let header =
-            Header::decode(&bytes.read_range(store, at, body)?).map_err(StoreError::Invalid)?;
-        let end = body
-            .checked_add(header.length)
-            .filter(|end| *end <= length)
-            .ok_or_else(|| StoreError::Invalid("incomplete snapshot payload".into()))?;
-        frames.push(Frame { at, header });
-        at = end;
-    }
-    Ok(frames)
-}
-
-pub(super) fn headers(frames: &[Frame]) -> Ranges {
-    let mut ranges = Vec::new();
-    if !frames.is_empty() {
-        ranges.push((0, MAGIC.len() as u64));
-    }
-    ranges.extend(
-        frames
-            .iter()
-            .map(|frame| (frame.at, frame.at + HEADER_LEN as u64)),
-    );
-    ranges
+    plan.collect(
+        &key.0,
+        key.1,
+        scanner.complete().map_err(|e| unsupported(e.to_string()))?,
+    )?;
+    plan.normalize(&key.0, key.1)
 }
 
 pub(super) fn rewrite(
@@ -60,49 +114,30 @@ pub(super) fn rewrite(
     store: &hashed_blobs::Store,
     bytes: &mut PlainBytes,
     plan: &Plan,
-    chain_key: &Chain,
-    frames: &[Frame],
+    key: &Chain,
     fill: u8,
-) -> Result<Vec<(u64, Vec<u8>)>> {
-    let (input, chain) = chain_key;
-    let mut patches = Vec::new();
-    for frame in frames {
-        let start = frame.at + HEADER_LEN as u64;
-        let end = start + frame.header.length;
-        let mut before = blake3::Hasher::new();
+) -> Result<()> {
+    plan.visit_frames(key, |ordinal, at, mut header| {
+        let start = at + HEADER_LEN as u64;
+        let end = start + header.length;
+        let mut reader = bytes.reader(plan, archive, store, key, start..end)?;
+        let mut edits = plan.edits(key, start)?;
         let mut after = blake3::Hasher::new();
-        let mut extents = archive.prepare("SELECT input, chain, offset, length, blob, blob_offset FROM extent
-            WHERE input = ?1 AND chain = ?2 AND offset < ?4 AND offset + length > ?3 ORDER BY offset")?;
-        let mut upto = start;
-        for row in extents.query_map(params![input, chain, start as i64, end as i64], extent)? {
-            let mut e = row?;
-            let from = e.offset.max(start);
-            let to = (e.offset + e.length).min(end);
-            if from != upto {
-                return Err(StoreError::Invalid("snapshot payload extent gap".into()));
+        let mut buffer = [0; READ_CHUNK];
+        loop {
+            let at = reader.position();
+            let n = reader.read(&mut buffer)?;
+            if n == 0 {
+                break;
             }
-            e.blob_offset += from - e.offset;
-            e.offset = from;
-            e.length = to - from;
-            bytes.visit(plan, archive, store, &e, |chunk, at| {
-                before.update(chunk);
-                let mut chunk = chunk.to_vec();
-                plan.blank(chain_key, at, &mut chunk, fill)?;
-                after.update(&chunk);
-                Ok(())
-            })?;
-            upto = to;
+            edits.blank(at, &mut buffer[..n], fill)?;
+            after.update(&buffer[..n]);
         }
-        if upto != end || before.finalize().to_hex().as_str() != frame.header.digest {
-            return Err(StoreError::Invalid(
-                "snapshot payload digest mismatch".into(),
-            ));
+        let digest = after.finalize().to_hex().to_string();
+        if digest != header.digest {
+            header.digest = digest;
+            plan.patch(&key.0, key.1, ordinal, at, &header.encode())?;
         }
-        let mut header = frame.header.clone();
-        header.digest = after.finalize().to_hex().to_string();
-        if header != frame.header {
-            patches.push((frame.at, header.encode()));
-        }
-    }
-    Ok(patches)
+        Ok(())
+    })
 }

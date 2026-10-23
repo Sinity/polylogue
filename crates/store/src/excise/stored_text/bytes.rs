@@ -6,7 +6,11 @@ use crate::{Result, StoreError};
 use rusqlite::Connection;
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
+use std::ops::Range;
 use std::os::unix::fs::{FileExt, PermissionsExt};
+
+mod reader;
+pub(super) use reader::Reader;
 
 type Place = (u64, u64);
 
@@ -60,6 +64,17 @@ impl PlainBytes {
             at += take as u64;
         }
         Ok(())
+    }
+
+    pub(super) fn reader<'a>(
+        &'a mut self,
+        plan: &'a Plan,
+        archive: &'a Connection,
+        store: &'a hashed_blobs::Store,
+        key: &'a super::Chain,
+        range: Range<u64>,
+    ) -> Result<Reader<'a>> {
+        Reader::new(self, plan, archive, store, key, range)
     }
 
     fn load(

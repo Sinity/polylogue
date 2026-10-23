@@ -34,6 +34,14 @@ impl Plan {
     /// Counts and observations keep exact hits. Writes use a separate ordered,
     /// nonoverlapping stream so chunk readers need retain at most one interval.
     pub(in super::super) fn normalize(&self, input: &str, chain: i64) -> Result<()> {
+        // Header masking keeps scanner state and positions; structural-only or
+        // crossing hits must never become excision counts or write ranges.
+        self.conn.execute("DELETE FROM matches AS m WHERE input=?1 AND chain=?2
+            AND EXISTS(SELECT 1 FROM chains WHERE input=?1 AND chain=?2 AND framed=1)
+            AND (start<?3 OR EXISTS(SELECT 1 FROM frames AS f INDEXED BY frames_start WHERE f.input=m.input AND f.chain=m.chain
+                AND f.start=(SELECT max(start) FROM frames INDEXED BY frames_start WHERE input=m.input AND chain=m.chain AND start<m.end)
+                AND f.start+?4>m.start))",
+            params![input,chain,polylogue_model::snapshot_log::MAGIC.len() as i64,polylogue_model::snapshot_log::HEADER_LEN as i64])?;
         self.conn.execute(
             "DELETE FROM write_ranges WHERE input=?1 AND chain=?2",
             params![input, chain],

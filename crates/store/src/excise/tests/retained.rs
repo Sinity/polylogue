@@ -415,3 +415,56 @@ fn a_late_corrupt_snapshot_payload_refuses_before_installing_earlier_text_change
         0
     );
 }
+
+#[cfg(feature = "faults")]
+#[test]
+fn a_later_text_replacement_piece_failure_rolls_back_rows_and_retries() {
+    let w = World::new();
+    let mut original = vec![b'x'; 2 * 1024 * 1024 + 32];
+    original[..6].copy_from_slice(b"secret");
+    let end = original.len();
+    original[end - 6..].copy_from_slice(b"secret");
+    w.seed("many-pieces", 1, &[&original]);
+    let writer = crate::Writer::start(&w.archive).unwrap();
+    let request = ExciseRequest {
+        id: "piece-retry".into(),
+        scope: Scope::Text("secret".into()),
+        reason: None,
+        dry_run: false,
+    };
+    crate::fault::clear();
+    crate::fault::arm(
+        "excision_text.before_piece",
+        "piece-retry",
+        crate::fault::Action::Fail,
+        1,
+        1,
+    );
+    let error = writer.excise(request.clone(), w.store.clone()).unwrap_err();
+    assert!(error.to_string().contains("injected fault"));
+    crate::fault::clear();
+    assert_eq!(w.bytes("many-pieces", 1), original);
+    let archive = open_read(&w.archive.archive_db()).unwrap();
+    assert_eq!(
+        archive
+            .query_row("SELECT count(*) FROM excision", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        archive
+            .query_row("SELECT count(*) FROM extent", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    writer.excise(request, w.store.clone()).unwrap();
+    original[..6].fill(b' ');
+    original[end - 6..].fill(b' ');
+    assert_eq!(w.bytes("many-pieces", 1), original);
+    assert_eq!(
+        archive
+            .query_row("SELECT count(*) FROM extent", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+}

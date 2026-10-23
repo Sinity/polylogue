@@ -681,8 +681,18 @@ recorded only after the full copy succeeds. The plan visits matches before heade
 patches within each chain, preserving duplicate extent intersections and counts
 of overlapping unequal matches. Rewrites blank text before applying header
 patches, preserve unrelated shared fragments and discard unused blob padding.
-One chain's matcher results and frame metadata, one extent's pending replacement
-pieces and required final result/observation JSON remain memory bounds.
+The matcher drains completed values to the plan. Leading-whitespace hits remain
+on disk until JSON/plain selection accepts or discards them; the current tentative
+string and nested JSON remain a value-sized memory cost. Snapshot headers are
+read one at a time through the verified plaintext owner and kept as plan rows,
+with every payload digest checked. Header/magic bytes never contribute text hits.
+A separate normalized write-range stream carries one interval across output
+chunks, while exact unequal overlaps retain their counts and observations.
+Replacement pieces become durable and enter the canonical transaction one at a
+time. A preparation failure before canonical commit rolls back the extent rows;
+prepared files may remain unreferenced. Interrupted commits use the existing
+recovery path. Required final result, policy and per-input observation JSON remain
+individual memory bounds.
 
 Local file cleanup records each authorized deletion directly in
 `pending_blob_excision` in the archive transaction. Replaced blobs, orphaned
