@@ -16,6 +16,16 @@ array occurrences; it does not rescan every declaration for each wire field.
 Line parsing supplies an independent framed total; document parsers submit the items they
 discover. Finishing either path checks the same accounting invariant.
 
+Codex compaction events retain the native payload, including replacement
+history and supplied unknown shapes. These entries provide context evidence;
+they do not create authored messages or populate subsequent message settings.
+An identified replacement item can still anchor an existing fork link.
+Changed turn-context settings retain their native payload as events; consecutive
+settings that differ only in turn identifiers share one event. Returning to an
+earlier setting after a change emits it again. Parsing and serializing these
+events requires the whole native record and resulting event in memory, including
+a large replacement history.
+
 Each message-source occurrence records its parser version. Within the same
 input, revision chain and capture, a newer parser may replace an older
 interpretation even if the logical position moves later. Same-version
