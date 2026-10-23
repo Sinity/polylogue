@@ -76,8 +76,11 @@ fn message_version_identity_ignores_nested_json_member_order() {
         let pool = ReadPool::open(&w.archive).unwrap();
         let reader = pool.reader().unwrap();
         assert_eq!(
-            reader.messages(&sid("hash-order"), false).unwrap(),
-            [first.clone()]
+            reader
+                .messages(&sid("hash-order"), false)
+                .unwrap()
+                .as_slice(),
+            std::slice::from_ref(&first)
         );
         let sources = reader.message_versions(&first.id).unwrap();
         assert_eq!(
