@@ -21,7 +21,12 @@ pub(super) fn scan(
         format: format.clone(),
         detail,
     };
-    let mut scanner = TextMatches::new(needle)?;
+    let matching_error = |error| match error {
+        text_matches::Error::Syntax(detail) => unsupported(detail),
+        text_matches::Error::Sink(error) => error,
+    };
+    let mut hits = plan.hits(&key.0, key.1);
+    let mut scanner = TextMatches::new(needle, &mut hits)?;
     let mut reader = bytes.reader(plan, archive, store, key, 0..length)?;
     let mut prefix = [0; MAGIC.len()];
     let n = length.min(prefix.len() as u64) as usize;
@@ -48,12 +53,7 @@ pub(super) fn scan(
     }
     let mut buffer = [0; READ_CHUNK];
     {
-        let mut feed = |chunk: &[u8]| {
-            scanner
-                .feed(chunk)
-                .map_err(|e| unsupported(e.to_string()))?;
-            plan.collect(&key.0, key.1, scanner.drain())
-        };
+        let mut feed = |chunk: &[u8]| scanner.feed(chunk, &mut hits).map_err(&matching_error);
         if prefix == MAGIC {
             plan.framed(key)?;
             feed(&[b' '; MAGIC.len()])?;
@@ -101,11 +101,8 @@ pub(super) fn scan(
             }
         }
     }
-    plan.collect(
-        &key.0,
-        key.1,
-        scanner.complete().map_err(|e| unsupported(e.to_string()))?,
-    )?;
+    let accepted = scanner.finish(&mut hits).map_err(matching_error)?;
+    hits.finish(accepted.scope)?;
     plan.normalize(&key.0, key.1)
 }
 

@@ -66,15 +66,61 @@ impl Matcher {
     }
 }
 
+mod hits;
+pub(super) use hits::{Collected, HitSink, Scope};
+
+#[derive(Debug)]
+pub(super) enum Error {
+    Syntax(String),
+    Sink(StoreError),
+}
+
+impl From<StoreError> for Error {
+    fn from(error: StoreError) -> Self {
+        Self::Sink(error)
+    }
+}
+
+impl Error {
+    fn into_store(self) -> StoreError {
+        match self {
+            Self::Syntax(message) => StoreError::Invalid(message),
+            Self::Sink(error) => error,
+        }
+    }
+}
+
+type MatchResult<T> = std::result::Result<T, Error>;
+
+pub(super) struct Candidate {
+    pub(super) scope: Scope,
+    has_hits: bool,
+}
+
+impl Candidate {
+    fn new(sink: &mut impl HitSink) -> Result<Self> {
+        Ok(Self {
+            scope: sink.scope()?,
+            has_hits: false,
+        })
+    }
+
+    fn accept(self, parent: &mut Self, sink: &mut impl HitSink) -> Result<()> {
+        sink.accept(self.scope, parent.scope)?;
+        parent.has_hits |= self.has_hits;
+        Ok(())
+    }
+}
+
 pub(super) struct TextMatches {
     raw: Matcher,
     decoded: Matcher,
-    raw_ranges: Vec<(u64, u64)>,
-    decoded_ranges: Vec<(u64, u64)>,
+    output: Candidate,
+    raw_candidate: Option<Candidate>,
+    string: Option<Candidate>,
+    pending_key: Option<Candidate>,
     json: Option<bool>,
     quoted: bool,
-    string_ranges_start: usize,
-    pending_key: Option<usize>,
     escape: Vec<u8>,
     escape_start: u64,
     offset: u64,
@@ -86,35 +132,27 @@ pub(super) struct TextMatches {
     unhandled_key: bool,
 }
 
-/// Raw hits before the first non-whitespace byte remain tentative: later JSON
-/// selection discards them. JSON batches contain only completed value hits.
-pub(super) enum Matches {
-    Undecided(Vec<(u64, u64)>),
-    Plain(Vec<(u64, u64)>),
-    Json(Vec<(u64, u64)>),
-}
-
 impl TextMatches {
-    pub(super) fn new(needle: &str) -> Result<Self> {
+    pub(super) fn new(needle: &str, sink: &mut impl HitSink) -> Result<Self> {
         if needle.is_empty() {
             return Err(StoreError::Invalid(
                 "an excised text must not be empty".into(),
             ));
         }
         replacement(needle)?;
-        Ok(Self::at_depth(Pattern::new(needle), 0))
+        Self::at_depth(Pattern::new(needle), 0, sink)
     }
 
-    fn at_depth(pattern: Arc<Pattern>, depth: usize) -> Self {
-        Self {
+    fn at_depth(pattern: Arc<Pattern>, depth: usize, sink: &mut impl HitSink) -> Result<Self> {
+        Ok(Self {
             raw: Matcher::new(pattern.clone()),
             decoded: Matcher::new(pattern),
-            raw_ranges: Vec::new(),
-            decoded_ranges: Vec::new(),
+            output: Candidate::new(sink)?,
+            raw_candidate: Some(Candidate::new(sink)?),
+            string: None,
+            pending_key: None,
             json: None,
             quoted: false,
-            string_ranges_start: 0,
-            pending_key: None,
             escape: Vec::new(),
             escape_start: 0,
             offset: 0,
@@ -124,38 +162,38 @@ impl TextMatches {
             depth,
             depth_limited: false,
             unhandled_key: false,
-        }
+        })
     }
 
-    pub(super) fn plain(needle: &str) -> Result<Self> {
-        let mut s = Self::new(needle)?;
-        s.json = Some(false);
-        Ok(s)
-    }
-
-    pub(super) fn feed(&mut self, bytes: &[u8]) -> Result<()> {
+    pub(super) fn feed(&mut self, bytes: &[u8], sink: &mut impl HitSink) -> MatchResult<()> {
         let mut utf8 = std::mem::take(&mut self.utf8_tail);
         utf8.extend_from_slice(bytes);
         if let Err(e) = std::str::from_utf8(&utf8) {
             if e.error_len().is_some() {
-                return Err(StoreError::Invalid(
-                    "retained bytes are not UTF-8 text".into(),
-                ));
+                return Err(Error::Syntax("retained bytes are not UTF-8 text".into()));
             }
             self.utf8_tail.extend_from_slice(&utf8[e.valid_up_to()..]);
         }
         for &byte in bytes {
             let at = self.offset;
             self.offset += 1;
-            self.unit(byte, at, at + 1)?;
+            self.unit(byte, at, at + 1, sink)?;
             self.check_key()?;
         }
         Ok(())
     }
 
-    fn decoded_byte(&mut self, byte: u8, start: u64, end: u64) {
-        if let Some(range) = self.decoded.push(byte, start, end) {
-            self.decoded_ranges.push(range);
+    fn decoded_byte(
+        &mut self,
+        byte: u8,
+        start: u64,
+        end: u64,
+        sink: &mut impl HitSink,
+    ) -> MatchResult<()> {
+        if let Some((start, end)) = self.decoded.push(byte, start, end) {
+            let value = self.string.as_mut().expect("inside a string");
+            sink.hit(value.scope, start, end)?;
+            value.has_hits = true;
         }
         if self.nested_mode.is_none() && !byte.is_ascii_whitespace() {
             let json = matches!(byte, b'{' | b'[' | b'"');
@@ -164,55 +202,66 @@ impl TextMatches {
                 self.nested = Some(Box::new(Self::at_depth(
                     self.decoded.pattern.clone(),
                     self.depth + 1,
-                )));
+                    sink,
+                )?));
             }
         }
         if let Some(nested) = &mut self.nested {
-            let ok = nested.unit(byte, start, end).is_ok();
+            let result = nested.unit(byte, start, end, sink);
             self.depth_limited |= nested.depth_limited;
             self.unhandled_key |= nested.unhandled_key;
-            // A prose value may begin with an incomplete JSON example. It is
-            // still searched directly; only valid embedded JSON adds matches.
-            if !ok {
-                self.nested = None;
+            match result {
+                Ok(()) => {}
+                Err(Error::Syntax(_)) => {
+                    // Invalid embedded JSON still contributes direct outer
+                    // string matches, but none of its decoded candidate hits.
+                    self.nested.take().unwrap().discard(sink)?;
+                }
+                Err(error @ Error::Sink(_)) => return Err(error),
             }
         }
+        Ok(())
     }
 
-    fn unit(&mut self, byte: u8, at: u64, end: u64) -> Result<()> {
+    fn unit(&mut self, byte: u8, at: u64, end: u64, sink: &mut impl HitSink) -> MatchResult<()> {
         if self.json != Some(true)
-            && let Some(range) = self.raw.push(byte, at, end)
+            && let Some((start, end)) = self.raw.push(byte, at, end)
         {
-            self.raw_ranges.push(range);
+            let candidate = self.raw_candidate.as_mut().unwrap_or(&mut self.output);
+            sink.hit(candidate.scope, start, end)?;
+            candidate.has_hits = true;
         }
         if self.json.is_none() && !byte.is_ascii_whitespace() {
             self.json = Some(matches!(byte, b'{' | b'[' | b'"'));
+            let raw = self.raw_candidate.take().unwrap();
             if self.json == Some(true) {
-                self.raw_ranges.clear();
+                sink.discard(raw.scope)?;
+            } else {
+                raw.accept(&mut self.output, sink)?;
             }
         }
         if self.json != Some(true) {
             return Ok(());
         }
-        // Like serde_json, refuse excessive nesting instead of silently
-        // missing payloads encoded repeatedly as JSON strings.
         if self.depth > 128 {
             self.depth_limited = true;
             return Ok(());
         }
         if !self.quoted {
             if !byte.is_ascii_whitespace()
-                && let Some(start) = self.pending_key.take()
-                && byte == b':'
+                && let Some(pending) = self.pending_key.take()
             {
-                self.unhandled_key |= self.decoded_ranges.len() > start;
-                self.decoded_ranges.truncate(start);
+                if byte == b':' {
+                    self.unhandled_key |= pending.has_hits;
+                    sink.discard(pending.scope)?;
+                } else {
+                    pending.accept(&mut self.output, sink)?;
+                }
             }
             if byte == b'"' {
                 self.quoted = true;
-                self.nested = None;
                 self.nested_mode = None;
-                self.string_ranges_start = self.decoded_ranges.len();
+                self.string = Some(Candidate::new(sink)?);
                 self.decoded.reset();
             }
             return Ok(());
@@ -239,100 +288,105 @@ impl TextMatches {
             token.extend_from_slice(&self.escape);
             token.push(b'"');
             let value: String = serde_json::from_slice(&token).map_err(|e| {
-                StoreError::Invalid(format!(
+                Error::Syntax(format!(
                     "invalid JSON string escape at {}: {e}",
                     self.escape_start
                 ))
             })?;
             for b in value.bytes() {
-                self.decoded_byte(b, self.escape_start, end);
+                self.decoded_byte(b, self.escape_start, end, sink)?;
             }
             self.escape.clear();
         } else if byte == b'\\' {
             self.escape.push(byte);
             self.escape_start = at;
         } else if byte == b'"' {
-            if let Some(nested) = self.nested.take()
-                && let Ok(ranges) = nested.finish()
-            {
-                self.decoded_ranges.extend(ranges);
+            if let Some(nested) = self.nested.take() {
+                match nested.finish(sink) {
+                    Ok(candidate) => candidate.accept(self.string.as_mut().unwrap(), sink)?,
+                    Err(Error::Syntax(_)) => {}
+                    Err(error @ Error::Sink(_)) => return Err(error),
+                }
             }
             self.quoted = false;
-            self.pending_key = Some(self.string_ranges_start);
+            self.pending_key = self.string.take();
         } else {
-            self.decoded_byte(byte, at, end);
+            self.decoded_byte(byte, at, end, sink)?;
         }
         Ok(())
     }
 
-    fn check_key(&self) -> Result<()> {
+    fn check_key(&self) -> MatchResult<()> {
         if self.unhandled_key {
-            return Err(StoreError::Invalid("a JSON object key contains the excised text; it needs the owning format's rewrite to preserve structural meaning".into()));
+            return Err(Error::Syntax("a JSON object key contains the excised text; it needs the owning format's rewrite to preserve structural meaning".into()));
         }
         Ok(())
     }
 
-    /// Release irrevocable hits without retaining all earlier values. A current
-    /// string and its nested JSON stay tentative until value/key classification.
-    pub(super) fn drain(&mut self) -> Matches {
-        match self.json {
-            None => Matches::Undecided(std::mem::take(&mut self.raw_ranges)),
-            Some(false) => Matches::Plain(std::mem::take(&mut self.raw_ranges)),
-            Some(true) => {
-                let ready = if self.quoted {
-                    self.string_ranges_start
-                } else {
-                    self.pending_key.unwrap_or(self.decoded_ranges.len())
-                };
-                let ranges = self.decoded_ranges.drain(..ready).collect();
-                self.string_ranges_start = self.string_ranges_start.saturating_sub(ready);
-                if let Some(start) = &mut self.pending_key {
-                    *start -= ready;
-                }
-                Matches::Json(ranges)
-            }
-        }
+    #[cfg(test)]
+    pub(super) fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + (self.raw.positions.capacity() + self.decoded.positions.capacity())
+                * std::mem::size_of::<(u64, u64)>()
+            + self.escape.capacity()
+            + self.utf8_tail.capacity()
+            + self
+                .nested
+                .as_ref()
+                .map_or(0, |nested| nested.retained_bytes())
     }
 
-    pub(super) fn complete(self) -> Result<Matches> {
+    fn validate(&self) -> MatchResult<()> {
         self.check_key()?;
         if self.depth_limited {
-            return Err(StoreError::Invalid(
+            return Err(Error::Syntax(
                 "embedded JSON string nesting exceeds 128 levels".into(),
             ));
         }
         if !self.utf8_tail.is_empty() {
-            return Err(StoreError::Invalid(
+            return Err(Error::Syntax(
                 "retained UTF-8 text ends inside a character".into(),
             ));
         }
         if self.json == Some(true) && self.quoted {
-            return Err(StoreError::Invalid(
+            return Err(Error::Syntax(
                 "retained JSON ends inside a string value".into(),
             ));
         }
-        Ok(if self.json == Some(true) {
-            Matches::Json(self.decoded_ranges)
-        } else {
-            Matches::Plain(self.raw_ranges)
-        })
+        Ok(())
     }
 
-    /// Whole-value users already own the value, and need its final hit list.
-    pub(super) fn finish(self) -> Result<Vec<(u64, u64)>> {
-        let mut ranges = match self.complete()? {
-            Matches::Undecided(_) => unreachable!("EOF chooses plain text"),
-            Matches::Plain(ranges) | Matches::Json(ranges) => ranges,
-        };
-        ranges.sort_unstable();
-        ranges.dedup();
-        Ok(ranges)
+    fn discard(self, sink: &mut impl HitSink) -> Result<()> {
+        if let Some(nested) = self.nested {
+            nested.discard(sink)?;
+        }
+        for candidate in [self.raw_candidate, self.string, self.pending_key]
+            .into_iter()
+            .flatten()
+        {
+            sink.discard(candidate.scope)?;
+        }
+        sink.discard(self.output.scope)
+    }
+
+    pub(super) fn finish(mut self, sink: &mut impl HitSink) -> MatchResult<Candidate> {
+        if let Err(error) = self.validate() {
+            self.discard(sink)?;
+            return Err(error);
+        }
+        if let Some(raw) = self.raw_candidate.take() {
+            raw.accept(&mut self.output, sink)?;
+        }
+        if let Some(value) = self.pending_key.take() {
+            value.accept(&mut self.output, sink)?;
+        }
+        Ok(self.output)
     }
 }
 
 #[cfg(test)]
 pub(super) fn in_bytes(bytes: &[u8], needle: &str) -> Result<Vec<(u64, u64)>> {
-    let mut scan = TextMatches::new(needle)?;
+    let mut scan = Collected::new(needle)?;
     scan.feed(bytes)?;
     scan.finish()
 }

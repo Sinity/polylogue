@@ -1,9 +1,10 @@
 //! Private staging for one text excision, discarded with its verified bytes.
 
-use super::{Chain, Ranges};
+use super::Chain;
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension, params};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod edits;
@@ -14,6 +15,7 @@ mod rewrite;
 
 pub(super) struct Plan {
     conn: Connection,
+    next_scope: Cell<u64>,
 }
 
 fn position(value: u64) -> Result<i64> {
@@ -29,8 +31,8 @@ impl Plan {
              PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
              CREATE TABLE matches(input TEXT,chain INTEGER,start INTEGER,end INTEGER,
                 PRIMARY KEY(input,chain,start,end)) WITHOUT ROWID;
-             CREATE TABLE raw_matches(input TEXT,chain INTEGER,start INTEGER,end INTEGER,
-                PRIMARY KEY(input,chain,start,end)) WITHOUT ROWID;
+             CREATE TABLE candidate_matches(scope INTEGER,start INTEGER,end INTEGER,
+                PRIMARY KEY(scope,start,end)) WITHOUT ROWID;
              CREATE TABLE write_ranges(input TEXT,chain INTEGER,start INTEGER,end INTEGER,
                 PRIMARY KEY(input,chain,start)) WITHOUT ROWID;
              CREATE TABLE patches(input TEXT,chain INTEGER,ordinal INTEGER,start INTEGER,
@@ -49,10 +51,14 @@ impl Plan {
                 offset INTEGER,length INTEGER,blob BLOB,blob_offset INTEGER);
              BEGIN;",
         )?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            next_scope: Cell::new(0),
+        })
     }
 
-    pub(super) fn matches(&self, input: &str, chain: i64, ranges: &Ranges) -> Result<()> {
+    #[cfg(test)]
+    pub(super) fn matches(&self, input: &str, chain: i64, ranges: &[(u64, u64)]) -> Result<()> {
         let mut insert = self.conn.prepare_cached(
             "INSERT OR IGNORE INTO matches(input,chain,start,end) VALUES (?1,?2,?3,?4)",
         )?;
