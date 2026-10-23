@@ -245,7 +245,8 @@ impl ReadPool {
     }
 
     /// Refuses new reads, wakes waiting checkouts and releases idle connections.
-    /// Readers already admitted keep their transaction until dropped.
+    /// Pinned readers keep their snapshot; unused reservations must enter
+    /// first-read admission before closure.
     pub fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.closed = true;
@@ -368,9 +369,11 @@ impl Reader<'_> {
             SnapshotState::Refused => return Err(StoreError::ExcisionPending),
             SnapshotState::IndexReplaced => return Err(StoreError::ReadIndexReplaced),
             SnapshotState::Deferred => {
-                // Merely reserving a slot must not pin the first-build index
-                // and block its transition from an in-memory journal to WAL.
-                // Validate both databases before the first actual read.
+                // Unused reservations hold no snapshot or publication lock.
+                // Pin and validate both databases at the first actual read.
+                if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
+                    return Err(StoreError::ReadPoolClosed);
+                }
                 let waiting = std::time::Instant::now();
                 let _admission = crate::publication::admit(&self.pool.archive, || {
                     if conn.is_interrupted() {
@@ -399,6 +402,11 @@ impl Reader<'_> {
                     );
                     Ok(())
                 })?;
+                // The guarded state check is first-read admission. Closing
+                // before it refuses; a read admitted here may finish afterward.
+                if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
+                    return Err(StoreError::ReadPoolClosed);
+                }
                 self.snapshot.set(SnapshotState::Refused);
                 if Some(index_identity(&self.pool.archive)?) != self.index_identity {
                     self.snapshot.set(SnapshotState::IndexReplaced);

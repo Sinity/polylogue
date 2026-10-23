@@ -94,18 +94,29 @@ fn already_pinned_reads_do_not_hold_publication_exclusion() {
 }
 
 #[test]
-fn lazy_reservation_can_close_without_waiting_for_publication() {
-    let dir = tempfile::tempdir().unwrap();
-    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
-    let _publication = File::open(fixture.archive.archive_db()).unwrap();
-    _publication.lock().unwrap();
-    let pool = fixture.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    pool.close();
-    assert!(matches!(
-        reader.change_position(),
-        Err(StoreError::ReadPoolClosed)
-    ));
+fn lazy_reservation_refuses_after_close_with_or_without_a_publication_wait() {
+    for contended in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+        let publication = File::open(fixture.archive.archive_db()).unwrap();
+        if contended {
+            publication.lock().unwrap();
+        }
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        pool.close();
+        assert!(
+            matches!(reader.change_position(), Err(StoreError::ReadPoolClosed)),
+            "contended={contended}"
+        );
+        assert!(
+            matches!(
+                reader.query("SELECT 42 AS n", &[]),
+                Err(StoreError::ReadPoolClosed)
+            ),
+            "repeat contended={contended}"
+        );
+    }
 }
 
 #[test]

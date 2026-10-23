@@ -99,6 +99,7 @@ fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held(
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
+    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     let mut server = Server::start(Arc::clone(&daemon)).unwrap();
     let mut stream = UnixStream::connect(daemon.archive.socket()).unwrap();
     writeln!(
@@ -128,6 +129,7 @@ fn listener_wait_stops_application_admission_before_joining_clients() {
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
+    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     let server = Server::start(Arc::clone(&daemon)).unwrap();
     let mut stream = UnixStream::connect(daemon.archive.socket()).unwrap();
     writeln!(

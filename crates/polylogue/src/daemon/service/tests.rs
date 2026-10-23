@@ -245,6 +245,7 @@ fn admission_stop_releases_full_pool_requests_before_workers_or_admitted_readers
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
+    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     let mut requests = Vec::new();
     let entered = Arc::new(std::sync::Barrier::new(9));
     for _ in 0..8 {
