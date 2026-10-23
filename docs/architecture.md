@@ -84,17 +84,35 @@ logical mode and view to a fingerprint of the selected stored message facts and
 packed block/text values, plus the index generation and returned session metadata.
 Unrelated writes leave this cursor usable. Replaced indexes and changed selected
 content refuse with `stale_cursor`; malformed and out-of-range positions refuse
-with `bad_request`. Each attempt uses one admitted Reader throughout.
+with `bad_request`. Each attempt uses one admitted Reader throughout. The current
+wire version is 2; version 1 offsets refuse because source masking changed their
+rendered coordinates.
+
+`polylogue-model::masking` owns pure value masking for Store and Render. One
+request-local masker processes source Message/Block content before view filtering,
+HTML result pairing or structured encoding. Text, thinking and displayed tool
+label/body fragments advance it once. Exact command/output aliases in the same
+block's input/data reuse their masked result. Other structured values remain
+independent complete values; object key order does not establish source chronology.
+Arbitrary split secrets across independently authored unordered fields cannot be
+inferred from these model values. Recorded source content remains unchanged.
+
+The derived display title uses the same masker over ordered physical source blocks
+through the selected first human/prose Text, then selects its first nonblank line
+and truncates it. The original recorded title stays separate and is exported as
+recorded. A title rule-version change rederives older display products. Read,
+QUERY and context share this display fallback.
 
 The store visits one decoded message at a time and stops when the renderer has a
 continuation. Fingerprinting scans packed values without decompressing them.
-Rendering replays preceding source blocks to reconstruct the shared credential
-masker's state, preserving private-key masking across blocks and messages even
-when a view hides an earlier block. The token carries numeric positions and
-hashes only. Each page therefore scans selected packed content and replays earlier
-messages; it does not retain a transaction between requests. Memory includes
-identifier metadata, the largest decoded and rendered message, and the requested
-output. The output budget does not bound input memory or process RSS.
+Paging replays the earlier source prefix through the same masker, including blocks
+hidden by a view. The token carries numeric positions and hashes only. Each page
+therefore scans selected packed content and replays earlier messages; it does not
+retain a transaction between requests. Memory includes identifier metadata, the
+largest decoded and rendered message, and the requested output. The output budget
+does not bound input memory or process RSS. Unbudgeted formats retain their existing
+complete-output allocation. Search snippet shortening has its own masking boundary;
+this session/title path does not establish snippet safety.
 
 Derived publication advances the session's public change value and forwards only
 already-current cache markers. Raw writes still leave stale products to derive,

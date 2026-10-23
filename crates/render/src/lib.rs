@@ -1,11 +1,11 @@
 //! Session output: one typed view projection, prose rendered as blocks, and
 //! structured JSON preserving model fields and the importable export codec.
-//! Credentials are masked on output, block by block and at the response boundary.
+//! Source content is masked before views or formatting; response metadata is
+//! also masked at the application boundary.
 
 pub mod html;
-mod masking;
 pub mod measures;
-pub use masking::{mask, mask_json};
+pub use polylogue_model::masking::{mask, mask_json};
 pub mod model_pages;
 pub mod results;
 pub mod session_summary;
@@ -114,7 +114,7 @@ pub struct Piece {
 }
 
 /// The pieces a block renders to under a view.
-pub fn pieces(message: &Message, view: View) -> Vec<Piece> {
+fn pieces(message: &Message, view: View) -> Vec<Piece> {
     message
         .blocks
         .iter()
@@ -124,12 +124,6 @@ pub fn pieces(message: &Message, view: View) -> Vec<Piece> {
 }
 
 fn piece(block: &Block) -> Option<Piece> {
-    let mut piece = unmasked_piece(block)?;
-    piece.text = mask(&piece.text);
-    Some(piece)
-}
-
-fn unmasked_piece(block: &Block) -> Option<Piece> {
     Some(match block {
         Block::Text { text } => Piece {
             kind: "text",
@@ -217,10 +211,14 @@ fn when(m: &Message) -> String {
 pub fn session(
     session: &Session,
     display_title: Option<&str>,
-    messages: Vec<Message>,
+    mut messages: Vec<Message>,
     view: View,
     format: Format,
 ) -> io::Result<Value> {
+    let mut masker = polylogue_model::masking::MessageMasker::default();
+    for message in &mut messages {
+        masker.message(message);
+    }
     let selected = project(messages, view);
     if format == Format::Json {
         return Ok(
@@ -237,9 +235,15 @@ pub fn session(
 
 /// Export JSON uses the model's importable Document codec, including fields
 /// such as links that have no prose rendering. It never serializes Pieces.
-pub fn export(doc: &polylogue_model::export::Document, format: Format) -> io::Result<Value> {
+pub fn export(mut doc: polylogue_model::export::Document, format: Format) -> io::Result<Value> {
+    for session in &mut doc.sessions {
+        let mut masker = polylogue_model::masking::MessageMasker::default();
+        for message in &mut session.messages {
+            masker.message(message);
+        }
+    }
     if format == Format::Json {
-        return serde_json::to_value(doc).map_err(io::Error::other);
+        return serde_json::to_value(&doc).map_err(io::Error::other);
     }
     let mut items = Vec::new();
     for session in &doc.sessions {

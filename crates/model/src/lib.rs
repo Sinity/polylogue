@@ -11,6 +11,7 @@ pub mod command;
 mod event;
 pub mod export;
 mod id;
+pub mod masking;
 mod message;
 mod note;
 pub mod price;

@@ -8,7 +8,6 @@ publish.workspace = true
 
 [dependencies]
 polylogue-model.workspace = true
-credential-masking.workspace = true
 serde_json.workspace = true
 jiff.workspace = true
 

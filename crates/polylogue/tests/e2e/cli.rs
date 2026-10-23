@@ -409,3 +409,5 @@ fn the_hook_spools_where_the_daemon_reads_never_outside_polylogue_home() {
 mod structured_json;
 
 mod read_pages;
+
+mod read_masking;

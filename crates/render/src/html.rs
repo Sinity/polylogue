@@ -37,6 +37,7 @@ pub fn encode_path_segment(id: &str) -> String {
 
 /// Render content without a document frame. Tool calls and their results
 /// share one rendering policy on the command line and in the web reader.
+/// Source content is masked before this function filters and pairs messages.
 pub fn fragment(items: &[Rendered<'_>], view: View, out: &mut dyn io::Write) -> io::Result<()> {
     let messages: Vec<&Message> = items
         .iter()
@@ -150,7 +151,7 @@ fn message(
                     results.get(id)
                 });
                 let (label, output) = result.map_or(("no result", String::new()), |r| {
-                    (r.label.as_str(), super::mask(r.text))
+                    (r.label.as_str(), r.text.to_owned())
                 });
                 let class = if label == "ok" {
                     "ok"

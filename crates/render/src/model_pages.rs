@@ -1,8 +1,9 @@
 //! Reading for models, consuming one message at a time. Whole original blocks
 //! are masked before splitting; no unmasked text is carried in a position.
 
-use crate::{View, unmasked_piece};
+use crate::{View, pieces};
 use polylogue_model::Message;
+use polylogue_model::masking::MessageMasker;
 use std::ops::ControlFlow;
 
 const CHARS_PER_TOKEN: usize = 4;
@@ -27,7 +28,7 @@ pub struct Pager {
     at: Position,
     resumed: bool,
     message: usize,
-    masker: credential_masking::Masker,
+    masker: MessageMasker,
     validated: bool,
     used: usize,
     text: String,
@@ -42,7 +43,7 @@ impl Pager {
             at: position.unwrap_or_default(),
             resumed: position.is_some(),
             message: 0,
-            masker: credential_masking::Masker::new(),
+            masker: MessageMasker::default(),
             validated: position.is_none(),
             used: 0,
             text: String::new(),
@@ -52,21 +53,11 @@ impl Pager {
 
     /// Consume the message at the requested position, then following messages.
     /// Break as soon as a continuation is known, before decoding later bodies.
-    pub fn push(&mut self, message: &Message) -> Result<ControlFlow<()>, &'static str> {
-        let mut ps = Vec::new();
-        // Replay prior source blocks to reconstruct PEM state on every request.
-        // Hidden blocks still establish the context of following visible text.
-        for block in &message.blocks {
-            let Some(mut piece) = unmasked_piece(block) else {
-                continue;
-            };
-            piece.label = piece.label.map(|label| self.mask_fragment(&label));
-            let text = self.mask_fragment(&piece.text);
-            if self.view.keeps(message, block) {
-                piece.text = text;
-                ps.push(piece);
-            }
-        }
+    pub fn push(&mut self, mut message: Message) -> Result<ControlFlow<()>, &'static str> {
+        // Replay prior source messages on resume. Hidden blocks establish the
+        // same context ordinary and structured outputs use before projection.
+        self.masker.message(&mut message);
+        let ps = pieces(&message, self.view);
         let current = self.message;
         self.message += 1;
         if current < self.at.message {
@@ -85,7 +76,7 @@ impl Pager {
             };
             if self.at.piece == 0 {
                 let sep = if self.at.message > 0 { "\n" } else { "" };
-                body = format!("{sep}{}{body}", header(message));
+                body = format!("{sep}{}{body}", header(&message));
             }
             let length = body.chars().count();
             if self.at.character >= length {
@@ -109,17 +100,6 @@ impl Pager {
         self.at.message += 1;
         self.at.piece = 0;
         Ok(ControlFlow::Continue(()))
-    }
-
-    fn mask_fragment(&mut self, text: &str) -> String {
-        let mut bytes = Vec::new();
-        self.masker
-            .push(text, &mut bytes)
-            .expect("Vec writes cannot fail");
-        self.masker
-            .block_boundary(&mut bytes)
-            .expect("Vec writes cannot fail");
-        String::from_utf8(bytes).expect("masking preserves UTF-8")
     }
 
     pub fn finish(self) -> Result<Page, &'static str> {

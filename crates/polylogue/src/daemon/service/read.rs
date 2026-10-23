@@ -7,6 +7,8 @@ use polylogue_store::Reader;
 use serde::{Deserialize, Serialize};
 use std::ops::ControlFlow;
 
+const CURSOR_VERSION: u8 = 2;
+
 pub(super) struct Options<'a> {
     pub view: &'a str,
     pub format: &'a str,
@@ -81,7 +83,7 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
             .decode(text)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Cursor>(&bytes).ok());
-        let Some(cursor) = decoded.filter(|cursor| cursor.version == 1) else {
+        let Some(cursor) = decoded.filter(|cursor| cursor.version == CURSOR_VERSION) else {
             return error(
                 "bad_request",
                 "the read cursor is invalid or from an unsupported version",
@@ -109,7 +111,7 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
     };
     let mut pager = Pager::new(view, budget, position);
     let mut failure = None;
-    let result = reader.visit_messages(id, options.logical, |message| match pager.push(&message) {
+    let result = reader.visit_messages(id, options.logical, |message| match pager.push(message) {
         Ok(flow) => flow,
         Err(e) => {
             failure = Some(e);
@@ -129,7 +131,7 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
     let next = match page.next {
         Some(position) => {
             let cursor = Cursor {
-                version: 1,
+                version: CURSOR_VERSION,
                 binding,
                 content,
                 generation,

@@ -19,7 +19,9 @@ fn structured_read_keeps_message_metadata_and_original_tool_fields() {
         SessionKind::Main,
     );
     let value = crate::session(&session, None, messages.clone(), View::Full, Format::Json).unwrap();
-    assert_eq!(value["messages"], serde_json::to_value(&messages).unwrap());
+    let mut expected = serde_json::to_value(&messages).unwrap();
+    crate::mask_json(&mut expected);
+    assert_eq!(value["messages"], expected);
     assert_eq!(value["session"], serde_json::to_value(&session).unwrap());
     let actions = crate::session(
         &session,
@@ -49,9 +51,14 @@ fn structured_export_uses_the_whole_importable_document_without_reinterpreting_b
         events: vec![serde_json::from_value(json!({"session": "claude-code:s", "kind": "synthetic", "data": {"empty": "", "nested": [false, null]}})).unwrap()],
         links: vec![serde_json::from_value(json!({"kind": "spawn", "parent": "claude-code:parent", "child": "claude-code:s", "evidence": "synthetic marker"})).unwrap()],
     }]);
-    let value = crate::export(&doc, Format::Json).unwrap();
-    assert_eq!(value, serde_json::to_value(&doc).unwrap());
-    assert_eq!(Document::from_json(&value.to_string()).unwrap(), doc);
+    let value = crate::export(doc.clone(), Format::Json).unwrap();
+    let mut expected = serde_json::to_value(&doc).unwrap();
+    crate::mask_json(&mut expected);
+    assert_eq!(value, expected);
+    assert_eq!(
+        Document::from_json(&value.to_string()).unwrap(),
+        serde_json::from_value::<Document>(expected).unwrap()
+    );
 }
 
 #[test]

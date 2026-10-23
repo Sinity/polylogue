@@ -8,7 +8,7 @@ fn all_pages(budget: usize) -> Vec<Page> {
     loop {
         let mut pager = Pager::new(View::Full, budget, c);
         for m in &ms {
-            if pager.push(m).unwrap().is_break() {
+            if pager.push(m.clone()).unwrap().is_break() {
                 break;
             }
         }
@@ -54,7 +54,7 @@ fn joined(messages: &[Message], view: View, budget: usize) -> String {
     for _ in 0..10000 {
         let mut pager = Pager::new(view, budget, position);
         for message in messages {
-            if pager.push(message).unwrap().is_break() {
+            if pager.push(message.clone()).unwrap().is_break() {
                 break;
             }
         }
