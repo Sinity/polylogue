@@ -4,6 +4,27 @@ use serde_json::json;
 const SECRET: &str = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-AAAAAAAA";
 
 #[test]
+fn crossing_quoted_credentials_mask_nested_values_and_colliding_keys() {
+    let label = "--secret=[credential: CLI secret, masked] tail";
+    let double = "--secret=\"unfinished --token=\"synthetic-later-value\" tail";
+    let single = "--secret='unfinished --token='synthetic-later-value' tail";
+    let raw =
+        json!({"nested": [{double: 1, single: 2, "ordinary": 3, "value": double}], "empty": ""});
+    let mut output = raw.clone();
+    mask_json(&mut output);
+    let nested = output["nested"][0].as_object().unwrap();
+    assert_eq!(nested.len(), 4);
+    assert_eq!(nested["ordinary"], 3);
+    assert!(nested.values().any(|v| v == 1));
+    assert!(nested.values().any(|v| v == 2));
+    assert_eq!(nested["value"], label);
+    assert_eq!(output["empty"], "");
+    assert!(!output.to_string().contains("synthetic-later-value"));
+    assert_eq!(raw["nested"][0]["value"], double);
+    assert!(raw["nested"][0].get(single).is_some());
+}
+
+#[test]
 fn decoded_nested_strings_are_masked_without_changing_json_types_or_empty_fields() {
     let encoded = format!(
         r#"{{"nested":["\u0073{}","quotes \" and slash \\ and newline\n"],"empty":"","array":[],"object":{{}},"unknown":null,"zero":0,"flag":false}}"#,
