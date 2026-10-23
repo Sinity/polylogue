@@ -54,7 +54,13 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
         cwd: None,
         for_session: None,
     };
-    let requests = vec![
+    let requests =
+        vec![
+        Request::BrowserUpload { bytes: vec![1, 2, 3] },
+        Request::BrowserEnqueue { action: serde_json::from_value(serde_json::json!({
+            "provider":"chatgpt", "operation":"conversation.create", "text":"Synthetic draft",
+            "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}
+        })).unwrap() },
         Request::Import {
             request_id: "import".into(),
             paths: vec![],

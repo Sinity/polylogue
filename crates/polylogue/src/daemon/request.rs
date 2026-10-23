@@ -11,6 +11,12 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    BrowserEnqueue {
+        action: Box<crate::browser::actions::ActionRequest>,
+    },
+    BrowserUpload {
+        bytes: Vec<u8>,
+    },
     Status,
     /// A query in the query language. `cursor` continues a previous page;
     /// `page_size` overrides the unit's default page; `why` explains an
@@ -153,7 +159,9 @@ impl Request {
             Self::Setting { value, .. } => value.is_none(),
             Self::Context { sender, .. } => sender.is_none(),
             Self::Embed { what, .. } => matches!(what.as_str(), "status" | "preview"),
-            Self::Import { .. }
+            Self::BrowserEnqueue { .. }
+            | Self::BrowserUpload { .. }
+            | Self::Import { .. }
             | Self::AddNote { .. }
             | Self::Keep { .. }
             | Self::Withdraw { .. }

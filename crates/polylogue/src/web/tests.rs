@@ -17,13 +17,11 @@ struct Reader {
 
 fn reader() -> Reader {
     let w = test_daemon::start("look at <script>alert(1)</script> & the parser");
-    let browser = Arc::new(crate::browser::Ctx::at(&w.daemon.config, &w.daemon.archive).unwrap());
     let web = Arc::new(Web {
         daemon: Arc::clone(&w.daemon),
         key: "abc123def456".into(),
         token: TOKEN.into(),
         port: PORT,
-        browser,
     });
     Reader { w, web }
 }
@@ -414,4 +412,115 @@ fn session_html_and_json_read_routes_mask_titles_and_message_content() {
         assert!(!body.contains(&secret));
         assert!(body.contains("masked"));
     });
+}
+
+#[test]
+fn binary_attachments_and_enqueue_use_the_daemon_action_owner() {
+    let r = reader();
+    let bytes = vec![0, 255, 13, 10, 42];
+    rt().block_on(async {
+        let upload = || own_origin(authed(post("/api/v1/browser-actions/attachments")))
+            .header(header::CONTENT_TYPE, "application/octet-stream").body(Body::from(bytes.clone())).unwrap();
+        let (status, _, raw) = send(&r, upload()).await;
+        assert_eq!(status, StatusCode::OK, "{raw}");
+        let attachment: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(attachment["size_bytes"], bytes.len());
+        let (_, _, retry) = send(&r, upload()).await;
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&retry).unwrap(), attachment);
+        r.w.set("browser.actions", "on");
+        let body = serde_json::json!({"idempotency_key":"synthetic-key", "provider":"chatgpt", "operation":"conversation.create", "text":"Neutral draft", "attachments":[{"name":"sample.bin","attachment_ref":attachment["attachment_ref"]}], "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}});
+        let enqueue = |body: &serde_json::Value| own_origin(authed(post("/api/v1/browser-actions"))).header(header::CONTENT_TYPE, "application/json").body(Body::from(body.to_string())).unwrap();
+        let (status, _, raw) = send(&r, enqueue(&body)).await;
+        assert_eq!(status, StatusCode::CREATED, "{raw}");
+        let action: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let ctx = crate::browser::Ctx::at(&r.w.daemon.config, &r.w.daemon.archive).unwrap();
+        let (_, retained) = crate::browser::actions::attachment(&ctx, action["action"]["action_id"].as_str().unwrap(), action["action"]["attachments"][0]["attachment_id"].as_str().unwrap()).unwrap();
+        assert_eq!(retained, bytes);
+        let mut changed = body;
+        changed["text"] = "Different draft".into();
+        let (status, _, raw) = send(&r, enqueue(&changed)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(raw.contains("idempotency_key_reused"));
+    });
+}
+
+#[test]
+fn browser_commands_keep_origin_token_and_binary_body_limits() {
+    let r = reader();
+    rt().block_on(async {
+        for path in [
+            "/api/v1/browser-actions",
+            "/api/v1/browser-actions/attachments",
+        ] {
+            assert_eq!(
+                send(&r, own_origin(post(path)).body(Body::from("{}")).unwrap())
+                    .await
+                    .0,
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(
+                send(&r, authed(post(path)).body(Body::from("{}")).unwrap())
+                    .await
+                    .0,
+                StatusCode::FORBIDDEN
+            );
+            let body = vec![b' '; crate::browser::actions::BODY_LIMIT + 1];
+            let request = own_origin(authed(post(path)))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap();
+            assert_eq!(send(&r, request).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        let response = crate::daemon::service::handle(
+            Request::BrowserUpload {
+                bytes: vec![0; crate::browser::actions::BODY_LIMIT + 1],
+            },
+            &r.w.daemon,
+        );
+        assert!(matches!(response, Response::Error { kind, .. } if kind == "attachment_too_large"));
+    });
+}
+
+#[test]
+fn an_unobserved_enqueue_reply_reconciles_without_repeating_the_action() {
+    let r = reader();
+    r.w.set("browser.actions", "on");
+    let body = serde_json::json!({"idempotency_key":"lost-reply", "provider":"chatgpt", "operation":"conversation.create", "text":"Neutral pending draft", "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}});
+    let action = serde_json::from_value(body.clone()).unwrap();
+    drop(crate::daemon::service::handle(
+        Request::BrowserEnqueue { action },
+        &r.w.daemon,
+    ));
+    rt().block_on(async {
+        let request = own_origin(authed(post("/api/v1/browser-actions")))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        assert_eq!(send(&r, request).await.0, StatusCode::OK);
+    });
+    let ctx = crate::browser::Ctx::at(&r.w.daemon.config, &r.w.daemon.archive).unwrap();
+    let retained = crate::browser::actions::list(&ctx);
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].text, "Neutral pending draft");
+}
+
+#[test]
+fn enqueue_response_masks_credentials_without_changing_the_queued_draft() {
+    let r = reader();
+    r.w.set("browser.actions", "on");
+    let text = format!("Keep this draft {}", "AKIAIOSFODNN7EXAMPLE");
+    let body = serde_json::json!({"provider":"chatgpt", "operation":"conversation.create", "text":text, "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}});
+    rt().block_on(async {
+        let request = own_origin(authed(post("/api/v1/browser-actions")))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let (status, _, shown) = send(&r, request).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert!(!shown.contains("AKIAIOSFODNN7EXAMPLE"));
+    });
+    let ctx = crate::browser::Ctx::at(&r.w.daemon.config, &r.w.daemon.archive).unwrap();
+    let queued = crate::browser::actions::list(&ctx);
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].text, text);
 }

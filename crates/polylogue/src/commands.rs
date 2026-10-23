@@ -5,9 +5,9 @@
 //!
 //! An argument has one name everywhere: `--name` on the command line (with
 //! `-` for `_`), the property of an MCP tool's input, the field of an HTTP
-//! request. Values from every surface become one JSON object ([`Values`]),
-//! checked against the table, and a command's function turns that object
-//! into the daemon request.
+//! request. Ordinary arguments become one checked JSON object ([`Values`]).
+//! HTTP-only structured bodies use their owning request type; binary inputs
+//! reach the daemon directly as bytes.
 
 mod requests;
 
@@ -93,6 +93,8 @@ const fn opt(name: &'static str, kind: Kind, help: &'static str) -> Arg {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cli {
+    /// Not offered on the command line.
+    Absent,
     Subcommand,
     /// A subcommand left out of help: programs run it, people do not.
     Hidden,
@@ -104,6 +106,10 @@ pub enum Cli {
 pub enum Action {
     /// Sent to the daemon as the request this builds.
     Request(fn(&Command, &Values, &Caller) -> Result<Request, String>),
+    /// An HTTP-only structured body, decoded by its typed request owner.
+    JsonRequest(fn(Value) -> Result<Request, String>),
+    /// An HTTP-only binary body, passed directly to the daemon in process.
+    BytesRequest(fn(Vec<u8>) -> Request),
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),
 }
@@ -119,9 +125,9 @@ pub struct Command {
     pub cli: Cli,
     pub mcp: bool,
     pub http: bool,
-    /// Changes the archive: POST over HTTP, where the origin is checked,
-    /// and MCP and HTTP callers may pass a `request_id` so a resent call
-    /// applies once.
+    /// Mutates state: POST over HTTP, where the origin is checked.
+    /// Requests built from arguments may supply `request_id`; typed bodies
+    /// keep their own retry fields.
     pub writes: bool,
     /// The answer as text for a person on the command line; `--json`
     /// prints the answer itself.
@@ -741,6 +747,24 @@ const WRITTEN: &[Command] = &[
         name: "sinex cutover",
         help: "Make Sinex the primary store, once (not built yet)",
         cli: Cli::Hidden,
+        ..CLI
+    },
+    Command {
+        name: "browser-actions",
+        help: "Queue one operator chat action while browser.actions is enabled",
+        action: Action::JsonRequest(requests::browser_action),
+        cli: Cli::Absent,
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "browser-actions attachments",
+        help: "Store binary attachment bytes for a later operator chat action",
+        action: Action::BytesRequest(requests::browser_attachment),
+        cli: Cli::Absent,
+        http: true,
+        writes: true,
         ..CLI
     },
     Command {

@@ -54,8 +54,8 @@ fn request_json(c: &Command, v: &Values, caller: &Caller) -> serde_json::Value {
 }
 
 #[test]
-fn every_command_is_reachable_on_the_command_line() {
-    for c in COMMANDS.iter() {
+fn every_declared_cli_command_is_reachable() {
+    for c in COMMANDS.iter().filter(|c| c.cli != Cli::Absent) {
         let argv = argv(c);
         let (found, _) = crate::cli::parse(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
         assert_eq!(found.name, c.name, "{argv:?}");
@@ -106,7 +106,10 @@ fn mcp_offers_exactly_the_table_commands_marked_for_it() {
 fn only_daemon_requests_go_over_mcp_and_http() {
     for c in COMMANDS.iter().filter(|c| c.mcp || c.http) {
         assert!(
-            matches!(c.action, Action::Request(_)),
+            matches!(
+                c.action,
+                Action::Request(_) | Action::JsonRequest(_) | Action::BytesRequest(_)
+            ),
             "{} runs locally",
             c.name
         );
@@ -346,4 +349,35 @@ fn every_measurement_is_a_command_and_named_in_the_query_help() {
     let (c, v) = crate::cli::parse(&["polylogue", "measure", "daily", "tokens"]).unwrap();
     let r = request_json(c, &v, &cli_caller());
     assert_eq!(r["text"], "sessions | measure daily:tokens");
+}
+
+#[test]
+fn browser_body_commands_are_http_only_and_build_typed_requests() {
+    for name in ["browser-actions", "browser-actions attachments"] {
+        let command = command(name).unwrap();
+        assert_eq!(command.cli, Cli::Absent);
+        assert!(!command.mcp);
+        assert!(command.http && command.writes);
+        assert!(
+            crate::cli::command()
+                .find_subcommand("browser-actions")
+                .is_none()
+        );
+        assert!(
+            !crate::mcp::tools()
+                .iter()
+                .any(|tool| tool.name == command.mcp_name())
+        );
+    }
+    let Action::JsonRequest(build) = command("browser-actions").unwrap().action else {
+        panic!("wrong body codec")
+    };
+    let request = build(json!({"provider":"chatgpt","operation":"conversation.create","text":"Synthetic draft", "presentation":{"model_slug":"x","model_label":"X","effort_label":"standard"}})).unwrap();
+    assert!(
+        matches!(request, Request::BrowserEnqueue { action } if action.text == "Synthetic draft")
+    );
+    let Action::BytesRequest(build) = command("browser-actions attachments").unwrap().action else {
+        panic!("wrong body codec")
+    };
+    assert!(matches!(build(vec![0,255,1]), Request::BrowserUpload { bytes } if bytes == [0,255,1]));
 }

@@ -3,35 +3,59 @@
 //! HTTP, at its words joined by `/` (`/api/v1/note/add`). A command that
 //! writes is a POST with a JSON object body; one that reads is a GET with
 //! its arguments as query parameters (a list argument repeats its name).
-//! The browser's chat actions are the only other routes. Other programs
-//! use the socket.
+//! Binary attachment inputs stay binary until their in-process daemon request.
 
 use super::{Web, ask, json_answer};
 use crate::commands::{Action, COMMANDS, Caller, Command, Surface, Values};
-use crate::daemon::Request;
-use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde_json::Value;
 use std::sync::Arc;
-
-/// Routes that are not table commands: the operator's chat actions, which
-/// the browser host carries out rather than the daemon.
-pub const BROWSER_ROUTES: &[&str] = &["/browser-actions", "/browser-actions/attachments"];
 
 /// The commands offered over HTTP.
 pub fn http_commands() -> impl Iterator<Item = &'static Command> {
     COMMANDS
         .iter()
-        .filter(|c| c.http && matches!(c.action, Action::Request(_)))
+        .filter(|c| c.http && !matches!(c.action, Action::Local(_)))
 }
 
 pub fn routes() -> Router<Arc<Web>> {
-    let mut router = Router::new()
-        .route(BROWSER_ROUTES[0], post(browser_action))
-        .route(BROWSER_ROUTES[1], post(browser_attachment));
+    let mut router = Router::new();
     for c in http_commands() {
+        match c.action {
+            Action::JsonRequest(build) => {
+                router = router.route(
+                    &c.http_path(),
+                    post(
+                        move |State(web): State<Arc<Web>>, Json(value): Json<Value>| async move {
+                            json_body(web, build, value).await
+                        },
+                    )
+                    .layer(axum::extract::DefaultBodyLimit::max(
+                        crate::browser::actions::BODY_LIMIT,
+                    )),
+                );
+                continue;
+            }
+            Action::BytesRequest(build) => {
+                router = router.route(
+                    &c.http_path(),
+                    post(
+                        move |State(web): State<Arc<Web>>, body: axum::body::Bytes| async move {
+                            browser_answer(&web, ask(&web, build(body.to_vec())).await)
+                        },
+                    )
+                    .layer(axum::extract::DefaultBodyLimit::max(
+                        crate::browser::actions::BODY_LIMIT,
+                    )),
+                );
+                continue;
+            }
+            _ => {}
+        }
         router = if c.writes {
             router.route(
                 &c.http_path(),
@@ -63,6 +87,21 @@ pub fn routes() -> Router<Arc<Web>> {
     router
 }
 
+async fn json_body(
+    web: Arc<Web>,
+    build: fn(serde_json::Value) -> Result<crate::daemon::Request, String>,
+    value: serde_json::Value,
+) -> HttpResponse {
+    match build(value) {
+        Ok(request) => browser_answer(&web, ask(&web, request).await),
+        Err(message) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json_answer(&web, crate::daemon::service::error("bad_request", message)),
+        )
+            .into_response(),
+    }
+}
+
 /// Builds the command's request and answers with the daemon's.
 async fn answer(
     web: &Arc<Web>,
@@ -83,55 +122,34 @@ async fn answer(
     }
 }
 
-/// The operator queues a chat action for the extension. It runs only while
-/// the `browser.actions` setting is on.
-async fn browser_action(
-    State(web): State<Arc<Web>>,
-    axum::Json(req): axum::Json<crate::browser::actions::ActionRequest>,
-) -> HttpResponse {
-    let ctx = Arc::clone(&web.browser);
-    let setting = Request::Setting {
-        request_id: None,
-        key: "browser.actions".into(),
-        value: None,
-        machine: false,
-    };
-    let enabled = matches!(
-        ask(&web, setting).await,
-        crate::daemon::Response::Ok { data } if data["value"] == "on"
-    );
-    let done =
-        tokio::task::spawn_blocking(move || crate::browser::actions::enqueue(&ctx, &req, enabled))
-            .await;
-    match done {
-        Ok(Ok((new, action))) => (
-            if new {
-                StatusCode::CREATED
-            } else {
-                StatusCode::OK
-            },
-            axum::Json(serde_json::json!({ "ok": true, "action": action })),
+/// Keeps the existing browser response envelope; action decisions live in the daemon.
+fn browser_answer(web: &super::Web, response: crate::daemon::Response) -> HttpResponse {
+    match response {
+        crate::daemon::Response::Ok { mut data } => {
+            let created = data
+                .as_object_mut()
+                .and_then(|data| data.remove("created"))
+                .is_some_and(|created| created == true);
+            (
+                if created {
+                    StatusCode::CREATED
+                } else {
+                    StatusCode::OK
+                },
+                axum::Json(super::scrubbed(web, data)),
+            )
+                .into_response()
+        }
+        crate::daemon::Response::Error {
+            kind,
+            detail: Some(detail),
+            ..
+        } if detail["http_status"].as_u64().is_some() => (
+            StatusCode::from_u16(detail["http_status"].as_u64().unwrap_or(500) as u16)
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            axum::Json(serde_json::json!({ "ok": false, "error": kind })),
         )
             .into_response(),
-        Ok(Err(r)) => (
-            StatusCode::from_u16(r.0).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            axum::Json(serde_json::json!({ "ok": false, "error": r.1 })),
-        )
-            .into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-
-/// Stores an attachment's bytes for a later chat action.
-async fn browser_attachment(State(web): State<Arc<Web>>, body: axum::body::Bytes) -> HttpResponse {
-    let ctx = Arc::clone(&web.browser);
-    match tokio::task::spawn_blocking(move || crate::browser::actions::upload(&ctx, &body)).await {
-        Ok(Ok(v)) => axum::Json(v).into_response(),
-        Ok(Err(r)) => (
-            StatusCode::from_u16(r.0).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-            axum::Json(serde_json::json!({ "ok": false, "error": r.1 })),
-        )
-            .into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        other => json_answer(web, other),
     }
 }

@@ -27,8 +27,6 @@ pub struct Web {
     pub key: String,
     pub token: String,
     pub port: u16,
-    /// The extension's files, for the operator's action requests.
-    pub browser: Arc<crate::browser::Ctx>,
 }
 
 /// Owns the HTTP runtime. Dropping it aborts unfinished network input and
@@ -94,14 +92,12 @@ fn start_on(daemon: Arc<Daemon>, port: u16) -> std::io::Result<Server> {
     };
     let token = access::new_token()?;
     let directory = access::runtime_dir(&key);
-    let browser = Arc::new(crate::browser::Ctx::at(&daemon.config, &daemon.archive)?);
     let uid = access::my_uid().ok_or_else(|| std::io::Error::other("cannot read this uid"))?;
     let web = Arc::new(Web {
         daemon,
         key,
         token: token.clone(),
         port,
-        browser,
     });
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let mut server = Server {
