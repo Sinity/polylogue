@@ -76,8 +76,10 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
             &notices,
         ) {
             Ok(mut value) => {
-                value["lineage"] =
-                    serde_json::to_value(selected.lineage()).expect("lineage is serializable");
+                if options.logical {
+                    value["lineage"] =
+                        serde_json::to_value(selected.lineage()).expect("lineage is serializable");
+                }
                 ok(value)
             }
             Err(e) => error("internal", e),
@@ -166,7 +168,9 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
         }
         None => None,
     };
-    ok(
-        serde_json::json!({"session": session, "display_title": title, "text": page.text, "next": next, "lineage": selected.lineage()}),
-    )
+    let mut value = serde_json::json!({"session": session, "display_title": title, "text": page.text, "next": next});
+    if options.logical {
+        value["lineage"] = serde_json::to_value(selected.lineage()).expect("lineage is serializable");
+    }
+    ok(value)
 }
