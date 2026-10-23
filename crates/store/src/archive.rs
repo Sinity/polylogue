@@ -156,9 +156,11 @@ impl Archive {
         self.validate_excision_indexes(&canonical)?;
         retired::remove(self, &canonical)?;
         retire_old_index(self, &canonical)?;
+        crate::fault::check("index.after_retirement", "")?;
         let index = open_write(&self.index_db(), cache::SETUP)?;
         let fresh = schema::version(&index)? == 0;
         schema::ensure_index(&index)?;
+        crate::fault::check("index.after_creation", "")?;
         if fresh {
             let tx = index.unchecked_transaction()?;
             crate::excise::recovery::acknowledge(&canonical, &tx)?;

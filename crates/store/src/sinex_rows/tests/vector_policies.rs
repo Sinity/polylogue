@@ -195,3 +195,6 @@ fn valid_publication_metadata_changes_do_not_replay_an_immutable_policy() {
         1
     );
 }
+
+#[cfg(feature = "faults")]
+mod interrupted;
