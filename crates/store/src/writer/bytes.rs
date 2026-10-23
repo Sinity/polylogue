@@ -3,25 +3,6 @@
 
 use super::*;
 
-/// Increments the database's write counter; one value per transaction.
-pub(super) fn bump_counter(tx: &Transaction<'_>) -> Result<i64> {
-    let next: i64 = tx
-        .query_row(
-            "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'write_counter'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?
-        .unwrap_or(0)
-        + 1;
-    tx.execute(
-        "INSERT INTO meta(key, value) VALUES ('write_counter', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [next.to_string()],
-    )?;
-    Ok(next)
-}
-
 /// Stores the bytes' rows and returns the revision chain the batch's
 /// records are in, or `None` when there is none (a disappearance).
 pub(super) fn write_bytes(tx: &Transaction<'_>, b: &Batch, seq: i64) -> Result<Option<i64>> {

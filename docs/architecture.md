@@ -53,6 +53,22 @@ avoids trusting a stale clean-stop marker after counter writes may have been los
 Generation and boot metadata commit together with full SQLite synchronization.
 Same-boot restarts preserve the generation.
 
+Ordinary query pages bind their index generation, index/archive counters and
+resolved question. Compiled defaults, fields, caller, zone/day boundary and
+ranking settings are hashed; query text and ranking carry are not stored in the
+cursor. The first query clock and a nonsecret random seed continue across pages.
+Page size may change, while semantic selection remains part of the question.
+Any intervening publication refuses continuation with `stale_cursor`, including
+derivation and full-text publication. This can require frequent restarts on an
+active archive. No reader transaction survives between requests; mutable keyset
+continuation is not implemented. Semantic ranking currently returns only complete
+single-page answers; it cannot be continued against a changing vector set.
+
+Derived publication advances the session's public change value and forwards only
+already-current cache markers. Raw writes still leave stale products to derive,
+and rule/dependency versions remain checked. Idle derivation/indexing does not
+advance the view. Full-text publication changes availability, not session content.
+
 A change query validates its cursor generation before filters, grouping or limits
 run. A mismatch returns `resync_required`, with no replacement cursor; consumers
 must reread their current state and every canonical excision. The `changes` unit

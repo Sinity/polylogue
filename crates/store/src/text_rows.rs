@@ -88,6 +88,9 @@ pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
                     }
                 }
             }
+            if last != after {
+                crate::archive::bump_counter(&tx)?;
+            }
             tx.commit()?;
             if last == after {
                 break;
@@ -113,6 +116,7 @@ pub(crate) fn index_pending(conn: &Connection) -> Result<u64> {
 fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
     // Immediate: a deferred reader cannot wait to upgrade its writer lock.
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let before = tx.total_changes();
     // Finish the queue cursor before removing its entries. Bodies are fetched
     // individually, so the row-count limit does not multiply retained text.
     let ids: Vec<(i64, i64)> = tx
@@ -144,6 +148,9 @@ fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
         if bytes >= byte_limit {
             break;
         }
+    }
+    if tx.total_changes() != before {
+        crate::archive::bump_counter(&tx)?;
     }
     tx.commit()?;
     Ok(written)

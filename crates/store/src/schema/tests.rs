@@ -35,7 +35,7 @@ fn index_format_changes_require_a_version_and_digest_update() {
         ),
         (
             29,
-            "20a649d5564617ddf42f44da9dab21163d52b5b940b0420138d5182313146ab3".to_owned(),
+            "ead21c52de64b4979a0c337ad16148e67e0ae7031a92eda5ef1f3d6d5fb7cae7".to_owned(),
             "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
         ),
         "record current source digests; bump INDEX_VERSION for schema or row-format changes, not comments"

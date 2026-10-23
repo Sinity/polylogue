@@ -11,6 +11,7 @@ fn opts(saved: &[(&str, &str)]) -> Options {
         origins: vec!["claude-code".into(), "codex".into()],
         command_words: vec!["list".into(), "brief".into()],
         page_size: None,
+        random_seed: None,
         embeddings: false,
         self_session: None,
         saved: saved

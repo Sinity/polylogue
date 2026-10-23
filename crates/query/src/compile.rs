@@ -33,6 +33,8 @@ pub struct Options {
     pub command_words: Vec<String>,
     /// Rows per page when the query sets none: 20 sessions, 50 otherwise.
     pub page_size: Option<u64>,
+    /// One seed for otherwise unseeded random order across pages.
+    pub random_seed: Option<u64>,
     /// Whether vectors exist to rank `near:` by.
     pub embeddings: bool,
     /// The calling session, for `self`.
@@ -547,26 +549,48 @@ fn group_sort(
     desc: bool,
     keys: Option<&[(String, String, ColKind)]>,
     aggs: Option<&[(String, String, ColKind)]>,
+    random_seed: Option<u64>,
 ) -> Result<Vec<String>, QueryError> {
-    let SortKey::Field { field } = key else {
-        return Ok(vec!["random()".into()]);
+    let keys = keys.unwrap_or(&[]);
+    let mut order = match key {
+        SortKey::Random { seed } => {
+            if let Some(seed) = seed.or(random_seed) {
+                let identity = format!(
+                    "json_array({})",
+                    keys.iter()
+                        .map(|(n, _, _)| format!("g.{n}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+                vec![format!("pl_random({identity}, '{seed}')")]
+            } else {
+                vec!["random()".into()]
+            }
+        }
+        SortKey::Field { field } => {
+            let name = flat(field);
+            if !keys
+                .iter()
+                .chain(aggs.unwrap_or(&[]).iter())
+                .any(|(n, _, _)| *n == name)
+            {
+                return Err(QueryError::Invalid {
+                    message: format!(
+                        "after grouping, sort by one of the group's columns; {field:?} is not one"
+                    ),
+                    position: 0,
+                });
+            }
+            let dir = if desc { " DESC" } else { "" };
+            vec![format!("g.{name} IS NULL"), format!("g.{name}{dir}")]
+        }
     };
-    let name = flat(field);
-    let known = keys
-        .unwrap_or(&[])
-        .iter()
-        .chain(aggs.unwrap_or(&[]).iter())
-        .any(|(n, _, _)| *n == name);
-    if !known {
-        return Err(QueryError::Invalid {
-            message: format!(
-                "after grouping, sort by one of the group's columns; {field:?} is not one"
-            ),
-            position: 0,
-        });
-    }
-    let dir = if desc { " DESC" } else { "" };
-    Ok(vec![format!("g.{name} IS NULL"), format!("g.{name}{dir}")])
+    // A group's complete key is its stable identity, even when counts tie.
+    order.extend(
+        keys.iter()
+            .map(|(name, _, _)| format!("g.{name} IS NULL, g.{name}")),
+    );
+    Ok(order)
 }
 
 /// The FROM clause of a unit over the given aliases.

@@ -187,3 +187,21 @@ fn previous_row_format_is_retired_before_a_new_index_is_opened() {
         value
     );
 }
+
+#[test]
+fn an_exhausted_counter_refuses_instead_of_reusing_a_position() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO meta VALUES ('write_counter','9223372036854775807')").unwrap();
+    let tx = conn.transaction().unwrap();
+    assert!(
+        bump_counter(&tx)
+            .unwrap_err()
+            .to_string()
+            .contains("counter exhausted")
+    );
+    assert_eq!(
+        tx.query_row("SELECT value FROM meta", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "9223372036854775807"
+    );
+}

@@ -64,7 +64,7 @@ CREATE TABLE session (
   live_todo         TEXT,                   -- the harness's in-progress todo item, as text (Claude Code: the last TodoWrite)
   live_task         TEXT,                   -- job ID or Bead ID (model.md, live task)
   live_task_evidence TEXT,                  -- job_env | claim_command
-  changed           INTEGER NOT NULL,       -- write counter value of the last write to this session's records
+  changed           INTEGER NOT NULL,       -- write counter of the last records or derived-product publication
                                             --   or derived products (not its live columns)
   live_changed      INTEGER                 -- write counter value of the last change to its live columns
 ) STRICT;

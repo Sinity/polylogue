@@ -11,7 +11,7 @@
 //! behind its bytes; the loop parses them again, and every write here is an
 //! upsert, so that changes nothing.
 
-use crate::archive::{Archive, open_write};
+use crate::archive::{Archive, bump_counter, open_write};
 use crate::blobs::{Change, FileFacts, Piece, Stored};
 use crate::{Result, StoreError};
 use polylogue_model::{
@@ -450,8 +450,12 @@ impl Inner {
             for (versions, reply) in parsers.drain(..) {
                 let result = (|| {
                     let tx = self.index.transaction()?;
+                    let before = tx.total_changes();
                     for (format, version) in versions {
                         rows::require_parser(&tx, &format, version)?;
+                    }
+                    if tx.total_changes() != before {
+                        bump_counter(&tx)?;
                     }
                     tx.commit()?;
                     Ok(())
