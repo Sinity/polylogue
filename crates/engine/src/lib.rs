@@ -868,7 +868,12 @@ impl Engine {
             .inputs
             .iter()
             .filter(|(path, st)| {
-                st.origin.support == Support::Parsed && (st.origin.open)(path).is_some()
+                matches!(
+                    (st.origin.open)(path),
+                    Some(
+                        polylogue_sources::Parse::Lines(_) | polylogue_sources::Parse::Snapshots(_)
+                    )
+                )
             })
             .map(|(path, st)| (path.clone(), st.input_id.clone(), st.origin, st.chain))
             .collect();
