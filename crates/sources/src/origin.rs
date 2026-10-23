@@ -221,7 +221,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "codex-database",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Live,
         root: crate::codex::database::ROOT,

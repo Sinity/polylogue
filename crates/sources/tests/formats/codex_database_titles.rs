@@ -12,9 +12,7 @@ fn thread(fields: Value) -> Session {
         .unwrap()
         .extend(fields.as_object().unwrap().clone());
     let bytes = jsonl(&[json!({"t":"threads","k":[ID],"h":"synthetic","r":row})]);
-    let original = bytes.clone();
     let parsed = parse("codex-database", PATH, &bytes);
-    assert_eq!(bytes, original);
     assert!(parsed["output"]["messages"].as_array().unwrap().is_empty());
     serde_json::from_value(parsed["output"]["sessions"][0].clone()).unwrap()
 }
