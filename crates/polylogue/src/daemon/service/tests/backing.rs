@@ -208,7 +208,9 @@ fn required_empty_restore_failure_never_collects_fresh_sources() {
 fn inventory_errors_are_blocked_startup_not_a_nonempty_primary() {
     let w = seeded();
     let archive = rusqlite::Connection::open(w.root.join("archive.db")).unwrap();
-    archive.execute("INSERT INTO excision(id,scope,refused_json,created_at,commit_seq) VALUES ('legacy','session:claude-code:absent','{}',1,1)", []).unwrap();
+    // An invalid publication identity does not change the excision generation
+    // or invalidate the retained read index.
+    archive.execute("INSERT INTO note(id,root,kind,author,machine,created_at,commit_seq) VALUES ('','','note','operator','synthetic',1,1)", []).unwrap();
     drop(archive);
     let runtime = start(&w.root, w.config(64 << 20), primary(&w, false)).unwrap();
     blocked(&runtime, &w.dir.path().join("sinex.toml"));
@@ -223,7 +225,7 @@ fn inventory_errors_are_blocked_startup_not_a_nonempty_primary() {
         state["error"]
             .as_str()
             .unwrap()
-            .contains("legacy excisions")
+            .contains("invalid publication unit identity")
     );
     assert_eq!(w.texts("s1"), ["Retained question"]);
 }
