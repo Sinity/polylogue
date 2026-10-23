@@ -2,8 +2,8 @@
 
 Polylogue keeps every AI conversation and agent session your tools leave
 behind (Claude Code, Codex, Gemini CLI, Grok CLI, Hermes, and exports from
-ChatGPT, claude.ai, AI Studio, the Gemini app and others) in one local
-archive, exactly as written, and lets you and your agents search, read,
+ChatGPT, claude.ai, AI Studio, the Gemini app, Grok account exports and others)
+in one local archive, exactly as written, and lets you and your agents search, read,
 measure and annotate it from the command line, over MCP or in a web reader.
 
 This repository is the Rust rewrite. The Python predecessor is kept for
@@ -37,6 +37,14 @@ The daemon reads each tool's files where the tool writes them
 (`$CLAUDE_CONFIG_DIR` or `~/.claude`, `$CODEX_HOME` or `~/.codex`, and so on);
 exports come in only by `import`. Every version of every input is kept, so
 a file the tool deletes or rewrites stays in the archive.
+
+Grok account JSON exports retain native conversation and response IDs when
+supplied. Without a conversation ID, complete conversation content determines
+a marked derived ID: filenames and response ordering do not change it, while
+an append or edit can create another session because continuity is unproved.
+Repeated identical turns remain distinct. Unknown authors or structured message
+shapes remain in the retained input with import diagnostics, rather than being
+coerced into text messages.
 
 The archive is `$XDG_DATA_HOME/polylogue` (`~/.local/share/polylogue`). It
 holds `archive.db` (what cannot be recomputed: inputs and their revisions,

@@ -13,6 +13,13 @@ impl Timestamp {
     }
 
     pub fn from_unix_ns(ns: i128) -> Option<Self> {
+        // The current jiff nanosecond constructor checks i64 seconds but
+        // reaches its internal unchecked constructor outside timestamp bounds.
+        if !(jiff::Timestamp::MIN.as_nanosecond()..=jiff::Timestamp::MAX.as_nanosecond())
+            .contains(&ns)
+        {
+            return None;
+        }
         jiff::Timestamp::from_nanosecond(ns).ok().map(Self)
     }
 

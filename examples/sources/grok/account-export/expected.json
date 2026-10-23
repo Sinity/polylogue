@@ -1,0 +1,67 @@
+{
+  "accounting": {
+    "framed": 4,
+    "materialized": {
+      "conversation": 1,
+      "export": 1,
+      "response": 2
+    },
+    "refused": {},
+    "unknown": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "end": 505,
+        "message": {
+          "at": "2024-04-01T19:33:21Z",
+          "blocks": [
+            {
+              "text": "Explain a synthetic example.",
+              "type": "text"
+            }
+          ],
+          "id": "grok:synthetic-question",
+          "prompt_kind": "prose",
+          "role": "user",
+          "session": "grok:synthetic-account"
+        },
+        "offset": 18
+      },
+      {
+        "end": 505,
+        "message": {
+          "at": "2024-04-01T19:33:22Z",
+          "blocks": [
+            {
+              "text": "A synthetic answer λ🙂.",
+              "type": "text"
+            }
+          ],
+          "id": "grok:synthetic-answer",
+          "model": "supplied-model",
+          "parent": "grok:synthetic-question",
+          "role": "assistant",
+          "session": "grok:synthetic-account"
+        },
+        "offset": 18
+      }
+    ],
+    "sessions": [
+      {
+        "id": "grok:synthetic-account",
+        "kind": "main",
+        "started": "2024-04-01T19:33:20Z",
+        "title": {
+          "source": "generated",
+          "text": "Synthetic conversation"
+        }
+      }
+    ]
+  }
+}

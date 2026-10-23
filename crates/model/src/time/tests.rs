@@ -19,3 +19,20 @@ fn serializes_as_rfc3339() {
         "\"1970-01-01T00:00:00Z\""
     );
 }
+
+#[test]
+fn nanosecond_creation_refuses_values_outside_supported_instants() {
+    let min = jiff::Timestamp::MIN.as_nanosecond();
+    let max = jiff::Timestamp::MAX.as_nanosecond();
+    assert_eq!(Timestamp::from_unix_ns(min).unwrap().unix_ns(), min);
+    assert_eq!(Timestamp::from_unix_ns(max).unwrap().unix_ns(), max);
+    for value in [
+        i128::MIN,
+        min - 1,
+        max + 1,
+        i128::MAX,
+        1712000001000i128 * 1_000_000_000,
+    ] {
+        assert!(Timestamp::from_unix_ns(value).is_none());
+    }
+}
