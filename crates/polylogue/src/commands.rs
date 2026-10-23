@@ -5,9 +5,9 @@
 //!
 //! An argument has one name everywhere: `--name` on the command line (with
 //! `-` for `_`), the property of an MCP tool's input, the field of an HTTP
-//! request. Values from every surface become one JSON object ([`Values`]),
-//! checked against the table, and a command's function turns that object
-//! into the daemon request.
+//! request. Ordinary arguments become one checked JSON object ([`Values`]).
+//! HTTP-only structured bodies use their owning request type; binary inputs
+//! reach the daemon directly as bytes.
 
 mod requests;
 
@@ -125,9 +125,9 @@ pub struct Command {
     pub cli: Cli,
     pub mcp: bool,
     pub http: bool,
-    /// Changes the archive: POST over HTTP, where the origin is checked,
-    /// and MCP and HTTP callers may pass a `request_id` so a resent call
-    /// applies once.
+    /// Mutates state: POST over HTTP, where the origin is checked.
+    /// Requests built from arguments may supply `request_id`; typed bodies
+    /// keep their own retry fields.
     pub writes: bool,
     /// The answer as text for a person on the command line; `--json`
     /// prints the answer itself.

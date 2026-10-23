@@ -54,7 +54,7 @@ fn request_json(c: &Command, v: &Values, caller: &Caller) -> serde_json::Value {
 }
 
 #[test]
-fn every_command_is_reachable_on_the_command_line() {
+fn every_declared_cli_command_is_reachable() {
     for c in COMMANDS.iter().filter(|c| c.cli != Cli::Absent) {
         let argv = argv(c);
         let (found, _) = crate::cli::parse(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
