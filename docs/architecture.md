@@ -111,8 +111,20 @@ therefore scans selected packed content and replays earlier messages; it does no
 retain a transaction between requests. Memory includes identifier metadata, the
 largest decoded and rendered message, and the requested output. The output budget
 does not bound input memory or process RSS. Unbudgeted formats retain their existing
-complete-output allocation. Search snippet shortening has its own masking boundary;
-this session/title path does not establish snippet safety.
+complete-output allocation.
+
+Search snippet selection keeps its raw FTS scope, ranking and source citations.
+The chosen blocks are grouped by actual source session; one ordered prefix pass per
+chosen session feeds the same masker before shortening and computing highlight
+byte ranges. Duplicate row scopes retain separate answers while sharing the masked
+chosen block. Terms absent from the masked text have no surviving highlight. The
+source pass reuses the same admitted Reader and stops after its last chosen block;
+corrupt required context refuses, while later or unselected bodies are not decoded.
+
+This costs the existing per-row FTS selections plus linear prefix decoding for each
+chosen source session, one block at a time. Short snippets do not bound this I/O or
+process memory. The shared private Connection-level block visitor also supplies
+title derivation, keeping source order and decoding in one place.
 
 Derived publication advances the session's public change value and forwards only
 already-current cache markers. Raw writes still leave stale products to derive,

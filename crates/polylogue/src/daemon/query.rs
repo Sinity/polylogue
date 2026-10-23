@@ -383,17 +383,23 @@ fn snippets(reader: &Reader<'_>, program: &Program, rows: &mut [Value]) -> Resul
         return Ok(());
     }
     let fts = fts.join(" AND ");
-    for row in rows {
-        let Some(pk) = row["_pk"].as_i64() else {
-            continue;
-        };
-        let within = match program.unit {
-            polylogue_query::ast::Unit::Sessions => Within::Session(pk),
-            polylogue_query::ast::Unit::Messages => Within::Message(pk),
-            _ => continue,
-        };
-        if let Some(s) = reader.snippet(&fts, within, &program.text_terms)? {
-            row["snippet"] = serde_json::to_value(s).unwrap_or(Value::Null);
+    let scope: fn(i64) -> Within = match program.unit {
+        polylogue_query::ast::Unit::Sessions => Within::Session,
+        polylogue_query::ast::Unit::Messages => Within::Message,
+        _ => return Ok(()),
+    };
+    let (indices, scopes): (Vec<_>, Vec<_>) = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| row["_pk"].as_i64().map(|pk| (index, scope(pk))))
+        .unzip();
+    for (index, snippet) in
+        indices
+            .into_iter()
+            .zip(reader.snippets(&fts, &scopes, &program.text_terms)?)
+    {
+        if let Some(snippet) = snippet {
+            rows[index]["snippet"] = serde_json::to_value(snippet).unwrap_or(Value::Null);
         }
     }
     Ok(())
