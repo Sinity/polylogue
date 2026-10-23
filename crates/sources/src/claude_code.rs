@@ -824,6 +824,7 @@ fn production(v: &Json, msg: &Json) -> Production {
     let s = |k: &str| str_field(v, k).map(str::to_owned);
     let kept = |x: Option<&Json>| x.filter(|x| !x.is_null()).cloned();
     Production {
+        response_boundary_unknown: None,
         effort: s("effort").or_else(|| s("perTurnEffort")),
         requested_model: s("requestedModel"),
         advisor_model: s("advisorModel"),
