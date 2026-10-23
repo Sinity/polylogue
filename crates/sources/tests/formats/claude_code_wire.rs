@@ -429,7 +429,7 @@ fn hook_context_keeps_native_identity_and_parent_links_outside_model_responses()
     };
     let hook = hook_summary(
         "sy1",
-        json!({"parentUuid": "a1", "hookAdditionalContext": ["context"]}),
+        json!({"parentUuid": "a1", "hookAdditionalContext": ["context"], "hookErrors": ["native error"]}),
     );
     let bytes = jsonl(&[
         human.clone(),
