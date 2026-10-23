@@ -5,6 +5,7 @@
 mod attachment_direction;
 mod chatgpt_export;
 mod claude_code_wire;
+mod codex_compaction;
 mod codex_rollout;
 mod gemini_cli_tool_output;
 mod golden;
