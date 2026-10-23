@@ -369,9 +369,8 @@ impl Reader<'_> {
             SnapshotState::Refused => return Err(StoreError::ExcisionPending),
             SnapshotState::IndexReplaced => return Err(StoreError::ReadIndexReplaced),
             SnapshotState::Deferred => {
-                // Merely reserving a slot must not pin the first-build index
-                // and block its transition from an in-memory journal to WAL.
-                // Validate both databases before the first actual read.
+                // Unused reservations hold no snapshot or publication lock.
+                // Pin and validate both databases at the first actual read.
                 if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
                     return Err(StoreError::ReadPoolClosed);
                 }
