@@ -222,7 +222,7 @@ fn run_one(
                  VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(name, session_pk) DO UPDATE SET version = ?3, from_changed = ?4",
             )?
-            .execute(params![d.name, pk, version, changed])?;
+            .execute(params![d.name, pk, version, counter])?;
         }
         tx.commit()?;
         done += todo.len() as u64;
