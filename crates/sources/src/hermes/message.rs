@@ -79,12 +79,14 @@ pub(super) fn system(id: MessageId, session: SessionId, text: String) -> Message
     }
 }
 
+type Diagnostics = Vec<(String, Json)>;
+
 pub(super) fn parse(
     row: &Json,
     id: MessageId,
     session: SessionId,
     model: Option<String>,
-) -> Result<(Message, Vec<(String, Json)>), &'static str> {
+) -> Result<(Message, Diagnostics), &'static str> {
     let role = match row.get("role").and_then(Json::as_str) {
         Some("user") => Role::User,
         Some("assistant") => Role::Assistant,
