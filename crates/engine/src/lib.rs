@@ -239,6 +239,14 @@ struct InputState {
     /// The file facts and parser version a parse failed at: the input is
     /// tried again only when its bytes or its parser change (law 63).
     failed: Option<(FileFacts, u32)>,
+    /// Failed immutable chains wait for changed bytes, parser, or a restart.
+    failed_history: HashMap<i64, RetainedFailure>,
+}
+
+#[derive(PartialEq, Eq)]
+struct RetainedFailure {
+    length: u64,
+    parser_version: u32,
 }
 
 /// One input's work in this pass, advanced job by job.
@@ -439,6 +447,7 @@ impl Engine {
                 st.carry = None;
                 st.tail = None;
                 st.failed = None;
+                st.failed_history.clear();
             }
             if let Some(plan) = self.stored_plan(&path)? {
                 plans.push(plan);
@@ -501,6 +510,7 @@ impl Engine {
                     tail: None,
                     chain: k.chain,
                     failed: None,
+                    failed_history: HashMap::new(),
                 },
             );
         }
@@ -695,6 +705,7 @@ impl Engine {
                         tail: None,
                         chain: None,
                         failed: None,
+                        failed_history: HashMap::new(),
                     },
                 );
             }
@@ -875,11 +886,26 @@ impl Engine {
                     )
                 )
             })
-            .map(|(path, st)| (path.clone(), st.input_id.clone(), st.origin, st.chain))
+            .map(|(path, st)| (path.clone(), st.input_id.clone(), st.origin))
             .collect();
-        for (path, id, origin, current) in inputs {
+        for (path, id, origin) in inputs {
             let chains = self.reads.reader()?.retained_chains(&id)?;
+            // A first parse can commit bytes but fail before InputState learns
+            // its chain. Classify history from canonical revisions instead.
+            let current = chains.last().map(|(chain, _)| *chain);
             for (chain, state) in chains {
+                let failure = RetainedFailure {
+                    length: state.length,
+                    parser_version: origin.parser_version,
+                };
+                if self
+                    .inputs
+                    .get(&path)
+                    .and_then(|st| st.failed_history.get(&chain))
+                    == Some(&failure)
+                {
+                    continue;
+                }
                 if Some(chain) == current
                     || state.length == 0
                     || (state.parser_version == Some(origin.parser_version)
@@ -1117,6 +1143,21 @@ impl Engine {
     /// state is rebuilt by parsing it again if it ever grows.
     fn settle(&mut self, plan: Plan) {
         if !plan.tracked {
+            if let Change::Reparse { chain } = plan.change
+                && let Some(st) = self.inputs.get_mut(&plan.path)
+            {
+                if plan.failed {
+                    st.failed_history.insert(
+                        chain,
+                        RetainedFailure {
+                            length: plan.size,
+                            parser_version: plan.origin.parser_version,
+                        },
+                    );
+                } else {
+                    st.failed_history.remove(&chain);
+                }
+            }
             return;
         }
         if let Some(st) = self.inputs.get_mut(&plan.path) {
