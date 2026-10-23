@@ -53,9 +53,30 @@ fn versions(w: &ClaudeHome, id: &str) -> Vec<polylogue_store::read::MessageVersi
         .unwrap()
 }
 
+fn add_note(e: &Engine, id: &str, target: &str) {
+    e.writer()
+        .unwrap()
+        .user(UserRequest::now(
+            id.into(),
+            UserWrite::AddNote {
+                note: NewNote {
+                    kind: NoteKind::Note,
+                    key: None,
+                    value: Some("Keep this exact reference".into()),
+                    author: Author::Operator,
+                    targets: vec![Target::Message(MessageId::parse(target).unwrap())],
+                    relations: vec![],
+                    revises: None,
+                    valid_until: None,
+                },
+            },
+        ))
+        .unwrap();
+}
+
 #[test]
 fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild() {
-    for remove_provider in [false, true] {
+    for (remove_provider, replace_generation) in [(false, false), (true, false), (true, true)] {
         let w = ClaudeHome::new();
         let file = path(&w);
         let historic = line(
@@ -69,26 +90,26 @@ fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild(
         {
             let (mut e, _lock) = w.engine(64 << 20);
             assert!(e.converge().unwrap().errors.is_empty());
-            e.writer()
+            add_note(&e, "about-old-reasoning", "codex:historic-r1");
+            add_note(&e, "cites-old-answer", "codex:current-m1");
+            let basis = versions(&w, "codex:current-m1").remove(0);
+            // A fixture with explicitly supplied citation fields, distinct from
+            // the ordinary write above, whose author-read basis stays unknown.
+            let hash = blake3::hash(basis.message.text().as_bytes());
+            let parser = w
+                .reads()
+                .reader()
                 .unwrap()
-                .user(UserRequest::now(
-                    "about-old-reasoning".into(),
-                    UserWrite::AddNote {
-                        note: NewNote {
-                            kind: NoteKind::Note,
-                            key: None,
-                            value: Some("Keep this exact reference".into()),
-                            author: Author::Operator,
-                            targets: vec![Target::Message(
-                                MessageId::parse("codex:historic-r1").unwrap(),
-                            )],
-                            relations: vec![],
-                            revises: None,
-                            valid_until: None,
-                        },
-                    },
-                ))
+                .query(
+                    "SELECT parser_version AS version FROM message_source LIMIT 1",
+                    &[],
+                )
+                .unwrap()[0]["version"]
+                .as_i64()
                 .unwrap();
+            let canonical = rusqlite::Connection::open(w.root.join("archive.db")).unwrap();
+            canonical.execute("UPDATE note_target SET seen_hash=?1,anchor_input=?2,anchor_chain=?3,anchor_start=?4,anchor_end=?5,anchor_parser=?6 WHERE note_id='cites-old-answer'", rusqlite::params![hash.as_bytes().as_slice(),basis.input,basis.chain as i64,basis.start as i64,basis.end as i64,parser]).unwrap();
+            drop(canonical);
             fs::write(&file, header() + &message("current-v2")).unwrap();
             assert!(e.converge().unwrap().errors.is_empty());
             assert_eq!(messages(&w).len(), 2);
@@ -108,12 +129,35 @@ fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild(
         if remove_provider {
             fs::remove_file(&file).unwrap();
         }
-        delete_index(&w.root);
+        let generation = w
+            .reads()
+            .reader()
+            .unwrap()
+            .query("SELECT value FROM meta WHERE key='generation'", &[])
+            .unwrap();
+        if replace_generation {
+            let index = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+            index.pragma_update(None, "user_version", 26).unwrap();
+        } else {
+            delete_index(&w.root);
+        }
         {
             let (mut rebuilt, _lock) = w.engine(64 << 20);
             let pass = rebuilt.converge().unwrap();
             assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-            assert_eq!(messages(&w).len(), 2, "provider removed={remove_provider}");
+            assert_ne!(
+                w.reads()
+                    .reader()
+                    .unwrap()
+                    .query("SELECT value FROM meta WHERE key='generation'", &[])
+                    .unwrap(),
+                generation
+            );
+            assert_eq!(
+                messages(&w).len(),
+                2,
+                "provider removed={remove_provider}, generation replaced={replace_generation}"
+            );
             assert_eq!(versions(&w, "codex:historic-r1"), before.0);
             assert_eq!(versions(&w, "codex:current-m1"), before.1);
             let reads = w.reads();
@@ -123,6 +167,14 @@ fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild(
                 [Target::Message(
                     MessageId::parse("codex:historic-r1").unwrap()
                 )]
+            );
+            assert!(
+                r.query(
+                    "SELECT seen_hash FROM a.note_target WHERE note_id='about-old-reasoning'",
+                    &[]
+                )
+                .unwrap()[0]["seen_hash"]
+                    .is_null()
             );
             assert_eq!(
                 r.query("SELECT * FROM a.note_target ORDER BY ref", &[])
