@@ -64,7 +64,9 @@ pub(super) struct Observer {
 }
 
 pub(super) fn identity(value: &impl Serialize) -> String {
-    BlobHash::of(&serde_json::to_vec(value).expect("serializable reading")).to_string()
+    let mut value = serde_json::to_value(value).expect("serializable reading");
+    value.sort_all_objects();
+    BlobHash::of(&serde_json::to_vec(&value).expect("serializable reading")).to_string()
 }
 
 impl Observer {
