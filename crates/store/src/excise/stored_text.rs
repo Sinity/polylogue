@@ -86,7 +86,7 @@ pub(super) fn find_in(
         let mut scanner = TextMatches::new(needle)?;
         let mut header = Vec::with_capacity(16);
         let mut pos = 0;
-        let scan = (|| {
+        (|| {
             let mut extents = archive.prepare(
                 "SELECT input, chain, offset, length, blob, blob_offset FROM extent
                  WHERE input = ?1 AND chain = ?2 AND offset < ?3 ORDER BY offset",
@@ -131,7 +131,8 @@ pub(super) fn find_in(
                         let upto = (*end - at).min(bytes.len() as u64) as usize;
                         copy[from..upto].fill(b' ');
                     }
-                    scanner.feed(masked.as_deref().unwrap_or(bytes)).map_err(|e| unsupported(e.to_string()))
+                    scanner.feed(masked.as_deref().unwrap_or(bytes)).map_err(|e| unsupported(e.to_string()))?;
+                    plan.collect(&input, chain, scanner.drain())
                 })?;
                 pos += e.length;
             }
@@ -140,9 +141,13 @@ pub(super) fn find_in(
                     "revision ends at {pos}, before {length}"
                 )));
             }
-            scanner.finish().map_err(|e| unsupported(e.to_string()))
+            plan.collect(
+                &input,
+                chain,
+                scanner.complete().map_err(|e| unsupported(e.to_string()))?,
+            )
         })()?;
-        plan.matches(&input, chain, &scan)?;
+        plan.normalize(&input, chain)?;
         let rewritten = framing::rewrite(
             archive,
             store,

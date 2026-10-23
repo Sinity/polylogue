@@ -6,6 +6,7 @@ use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod matching;
 mod rewrite;
 
 pub(super) struct Plan {
@@ -25,6 +26,10 @@ impl Plan {
              PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
              CREATE TABLE matches(input TEXT,chain INTEGER,start INTEGER,end INTEGER,
                 PRIMARY KEY(input,chain,start,end)) WITHOUT ROWID;
+             CREATE TABLE raw_matches(input TEXT,chain INTEGER,start INTEGER,end INTEGER,
+                PRIMARY KEY(input,chain,start,end)) WITHOUT ROWID;
+             CREATE TABLE write_ranges(input TEXT,chain INTEGER,start INTEGER,end INTEGER,
+                PRIMARY KEY(input,chain,start)) WITHOUT ROWID;
              CREATE TABLE patches(input TEXT,chain INTEGER,ordinal INTEGER,start INTEGER,
                 end INTEGER,bytes BLOB,PRIMARY KEY(input,chain,ordinal)) WITHOUT ROWID;
              CREATE TABLE places(hash BLOB PRIMARY KEY,start INTEGER,length INTEGER) WITHOUT ROWID;
