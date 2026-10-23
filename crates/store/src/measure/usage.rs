@@ -49,11 +49,15 @@ pub struct ModelUsage {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct UsageReport {
-    /// Always `physical`: each model response once.
+    /// Physical records, with known response rows and independent observations apart.
     pub grain: &'static str,
     pub sessions: u64,
-    /// Model messages (the ones that can carry usage).
-    pub messages: u64,
+    /// Response total, unknown when source items lack response boundaries.
+    pub messages: Option<u64>,
+    /// Known response rows; this subset is not the total when messages is None.
+    pub known_response_messages: u64,
+    pub unknown_boundary_items: u64,
+    pub recorded_usage: RecordedUsage,
     pub tokens: TokensByKind,
     /// What the responses would have cost at API list prices, from the price
     /// catalog. Subscription credit is never added to it.
@@ -68,6 +72,9 @@ pub struct UsageReport {
     pub hidden_sessions: u64,
 }
 
+pub(super) const RESPONSE_ROWS: &str = "m.role = 'assistant' AND m.written_by = 'model'
+ AND coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) = 0";
+
 const TOKEN_SUMS: &str = "
     count(*), count(DISTINCT m.session_pk),
     coalesce(sum(m.input_tokens), 0), sum(m.input_tokens IS NULL),
@@ -81,7 +88,6 @@ const TOKEN_SUMS: &str = "
 
 struct Row {
     messages: u64,
-    sessions: u64,
     tokens: TokensByKind,
     api: Money,
     reported: Money,
@@ -111,7 +117,6 @@ fn row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Row> {
     };
     Ok(Row {
         messages: u(0)?,
-        sessions: u(1)?,
         tokens: TokensByKind {
             input: token_count(2)?,
             cached_input: token_count(4)?,
@@ -128,15 +133,13 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
     let (cond, params) = scope.condition();
     let conn = reader.conn()?;
     let total = conn.query_row(
-        &format!(
-            "SELECT {TOKEN_SUMS} FROM current_message m WHERE m.role = 'assistant' AND {cond}"
-        ),
+        &format!("SELECT {TOKEN_SUMS} FROM current_message m WHERE {RESPONSE_ROWS} AND {cond}"),
         rusqlite::params_from_iter(params.iter()),
         |r| row(r, 0),
     )?;
     let mut by_model = vec![];
     let mut stmt = conn.prepare(&format!(
-        "SELECT m.model, {TOKEN_SUMS} FROM current_message m WHERE m.role = 'assistant' AND {cond}
+        "SELECT m.model, {TOKEN_SUMS} FROM current_message m WHERE {RESPONSE_ROWS} AND {cond}
          GROUP BY m.model ORDER BY sum(m.cost_nusd) DESC NULLS LAST, count(*) DESC"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
@@ -162,10 +165,20 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
                 .then(|| (name.to_owned(), m.messages))
         })
         .collect();
+    let recorded_usage = recorded(reader, scope)?;
+    let unknown_boundary_items = unknown_items(reader, &cond, &params)?;
+    let unknown = unknown_boundary_items > 0 || recorded_usage.observations > 0;
     Ok(UsageReport {
         grain: "physical",
-        sessions: total.sessions,
-        messages: total.messages,
+        sessions: conn.query_row(
+            &format!("SELECT count(DISTINCT m.session_pk) FROM current_message m WHERE {cond}"),
+            rusqlite::params_from_iter(params.iter()),
+            |r| r.get(0),
+        )?,
+        messages: (!unknown).then_some(total.messages),
+        known_response_messages: total.messages,
+        unknown_boundary_items,
+        recorded_usage,
         tokens: total.tokens,
         api_cost: total.api,
         reported_cost: total.reported,
@@ -190,8 +203,12 @@ pub struct SessionUsage {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Totals {
-    /// Model messages counted.
-    pub messages: u64,
+    /// Response total, unknown when source items lack response boundaries.
+    pub messages: Option<u64>,
+    pub known_response_messages: u64,
+    /// None at logical grain: unassociated physical observations cannot be
+    /// assigned to inherited response history.
+    pub recorded_usage: Option<RecordedUsage>,
     pub tokens: TokensByKind,
     pub api_cost: Money,
 }
@@ -214,14 +231,26 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
         let Ok(sid) = polylogue_model::SessionId::parse(&id) else {
             continue;
         };
-        let physical = totals(reader, &format!("m.session_pk = {pk}"))?;
+        let mut physical = totals(reader, &format!("m.session_pk = {pk}"))?;
+        let own_scope = Scope {
+            sessions: Some(vec![pk]),
+            ..Scope::default()
+        };
+        let observations = recorded(reader, &own_scope)?;
+        if observations.observations > 0 {
+            physical.messages = None;
+        }
+        physical.recorded_usage = Some(observations);
         let keys = reader.logical_message_keys(&sid)?;
         let list = keys
             .iter()
             .map(i64::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let logical = totals(reader, &format!("m.pk IN ({list})"))?;
+        let mut logical = totals(reader, &format!("m.pk IN ({list})"))?;
+        if physical.messages.is_none() {
+            logical.messages = None;
+        }
         out.push(SessionUsage {
             session: id,
             physical,
@@ -235,15 +264,87 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
 /// condition holds only integer keys the store read itself.
 fn totals(reader: &Reader<'_>, cond: &str) -> Result<Totals> {
     let x = reader.conn()?.query_row(
-        &format!(
-            "SELECT {TOKEN_SUMS} FROM current_message m WHERE m.role = 'assistant' AND {cond}"
-        ),
+        &format!("SELECT {TOKEN_SUMS} FROM current_message m WHERE {RESPONSE_ROWS} AND {cond}"),
         [],
         |r| row(r, 0),
     )?;
     Ok(Totals {
-        messages: x.messages,
+        messages: (unknown_items(reader, cond, &[])? == 0).then_some(x.messages),
+        known_response_messages: x.messages,
+        recorded_usage: None,
         tokens: x.tokens,
         api_cost: x.api,
     })
+}
+
+/// Independent readings have their own denominator. Known sums cover only
+/// validated fresh measured reports; unconfirmed readings remain in Events.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct RecordedUsage {
+    pub observations: u64,
+    pub measured_completion_observations: u64,
+    pub unconfirmed_observations: u64,
+    pub known_usage: polylogue_model::Usage,
+    pub known_api_cost_usd: Option<f64>,
+    pub unpriced_observations: u64,
+    /// Observations whose provider spend/measurement time is absent.
+    pub untimed_observations: u64,
+}
+
+fn unknown_items(
+    reader: &Reader<'_>,
+    cond: &str,
+    params: &[rusqlite::types::Value],
+) -> Result<u64> {
+    Ok(reader.conn()?.query_row(
+        &format!(
+            "SELECT count(*) FROM current_message m
+        WHERE m.role='assistant' AND m.written_by='model' AND {cond} AND (
+        json_extract(m.attrs_json,'$.production.response_boundary_unknown')=1)"
+        ),
+        rusqlite::params_from_iter(params.iter()),
+        |row| row.get(0),
+    )?)
+}
+
+pub(super) fn recorded(reader: &Reader<'_>, scope: &Scope) -> Result<RecordedUsage> {
+    let mut out = RecordedUsage::default();
+    super::observations::visit::<polylogue_model::UsageObservation>(
+        reader,
+        scope,
+        polylogue_model::observations::USAGE_OBSERVATION,
+        |_, _, value| {
+            out.observations += 1;
+            if value.observed_at.is_none() {
+                out.untimed_observations += 1;
+            }
+            if value.completion_observed != Some(true) {
+                out.unconfirmed_observations += 1;
+                return Ok(());
+            }
+            out.measured_completion_observations += 1;
+            let add = |sum: &mut Option<u64>, next: Option<u64>| -> Result<()> {
+                if let Some(next) = next {
+                    *sum = Some(sum.unwrap_or(0).checked_add(next).ok_or_else(|| {
+                        crate::StoreError::Invalid("recorded usage sum exceeds u64".into())
+                    })?);
+                }
+                Ok(())
+            };
+            add(&mut out.known_usage.input, value.usage.input)?;
+            add(&mut out.known_usage.cached_input, value.usage.cached_input)?;
+            add(&mut out.known_usage.cache_write, value.usage.cache_write)?;
+            add(&mut out.known_usage.output, value.usage.output)?;
+            add(&mut out.known_usage.reasoning, value.usage.reasoning)?;
+            if let Some(cost) =
+                polylogue_model::Catalog::builtin().cost_nusd(value.model.as_deref(), &value.usage)
+            {
+                *out.known_api_cost_usd.get_or_insert(0.0) += cost as f64 / 1e9;
+            } else {
+                out.unpriced_observations += 1;
+            }
+            Ok(())
+        },
+    )?;
+    Ok(out)
 }

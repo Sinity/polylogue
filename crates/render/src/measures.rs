@@ -63,7 +63,9 @@ fn usage_at(u: &Value, indent: &str) -> String {
     let mut out = format!(
         "{indent}{} responses in {} sessions · input {} · cached {} · cache write {} · output {} · reasoning {}\n\
          {indent}API-equivalent {} · tool-reported {}",
-        u["messages"],
+        u["messages"]
+            .as_u64()
+            .map_or_else(|| "unknown".into(), |n| n.to_string()),
         u["sessions"],
         token_count(&l["input"]),
         token_count(&l["cached_input"]),
@@ -77,6 +79,18 @@ fn usage_at(u: &Value, indent: &str) -> String {
         out.push_str(&format!(" · includes {h} hidden session(s)"));
     }
     out.push('\n');
+    if let Some(n) = u["recorded_usage"]["observations"]
+        .as_u64()
+        .filter(|n| *n > 0)
+    {
+        out.push_str(&format!("{indent}{n} recorded usage observations ({} measured completion observations); response membership and spend time may be unknown\n",
+            u["recorded_usage"]["measured_completion_observations"]));
+        let known = &u["recorded_usage"]["known_usage"];
+        out.push_str(&format!(
+            "{indent}recorded known tokens: input {}, cached {}, output {}, reasoning {}\n",
+            known["input"], known["cached_input"], known["output"], known["reasoning"]
+        ));
+    }
     if indent.is_empty() {
         for m in u["by_model"].as_array().into_iter().flatten() {
             out.push_str(&format!(
@@ -150,7 +164,13 @@ pub fn quota(o: &Value) -> String {
                 }
                 out.push('\n');
             }
-            out.push_str(&usage_at(&w["usage"], "    "));
+            if w["usage"].is_object() {
+                out.push_str(&usage_at(&w["usage"], "    "));
+            } else {
+                out.push_str(
+                    "    window usage unknown (recorded usage has no provider spend time)\n",
+                );
+            }
         }
     }
     out

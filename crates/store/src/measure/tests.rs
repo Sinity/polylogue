@@ -122,7 +122,7 @@ fn law_14_usage_counts_each_response_once() {
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
     let u = usage(&r, &Scope::default()).unwrap();
-    assert_eq!(u.messages, 2);
+    assert_eq!(u.messages, Some(2));
     assert_eq!(u.tokens.input.tokens, 11);
     assert_eq!(u.tokens.cached_input.tokens, 102);
     assert_eq!(u.tokens.cache_write.tokens, 8);
@@ -226,7 +226,7 @@ fn law_70_unpriced_models_and_credits() {
     assert_eq!(codex.credits.as_ref().unwrap().balance, "38816.6156015000");
     assert_eq!(codex.plan.as_deref(), Some("pro"));
     let window = &codex.windows[0];
-    assert_eq!(window.usage.api_cost.known_usd, None);
+    assert_eq!(window.usage.as_ref().unwrap().api_cost.known_usd, None);
 }
 
 /// Law 138: hiding a session never changes a usage figure; the figures say
@@ -398,7 +398,7 @@ fn process_keeps_transcript_order_and_outcomes_apart() {
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
     let p = analysis::process(&r, &Scope::default(), 10).unwrap();
-    assert_eq!((p.sessions, p.calls), (1, 3));
+    assert_eq!((p.sessions, p.calls), (Some(1), Some(3)));
     assert_eq!(p.outcomes.error, 1);
     assert_eq!(p.outcomes.ok, 2);
     assert_eq!(p.failure_examples.len(), 1);
@@ -449,10 +449,13 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
     let (p, c) = (get("claude-code:p"), get("claude-code:c"));
     assert_eq!(
         (p.physical.messages, p.logical.messages),
-        (2, 2),
+        (Some(2), Some(2)),
         "a session with no parent shows only its own"
     );
-    assert_eq!((c.physical.messages, c.logical.messages), (1, 3));
+    assert_eq!(
+        (c.physical.messages, c.logical.messages),
+        (Some(1), Some(3))
+    );
     assert_eq!(c.physical.tokens.input.tokens, 40);
     assert_eq!(c.logical.tokens.input.tokens, 70);
     let physical: u64 = all.iter().map(|s| s.physical.tokens.input.tokens).sum();
@@ -639,3 +642,5 @@ fn drift_lists_new_unknowns_first_and_design_counts_last() {
         ]
     );
 }
+
+mod observations;

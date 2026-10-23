@@ -77,6 +77,11 @@ pub struct Message {
 /// reads these; none of it is content.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Production {
+    /// These recorded items have no evidenced model-response grouping.
+    /// None is an absent update; a supplied false remains distinct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_boundary_unknown: Option<bool>,
+
     /// Reasoning effort the request asked for (`low`, `medium`, `high`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
@@ -137,6 +142,10 @@ impl Production {
                 *into = from;
             }
         }
+        take(
+            &mut self.response_boundary_unknown,
+            later.response_boundary_unknown,
+        );
         take(&mut self.effort, later.effort);
         take(&mut self.requested_model, later.requested_model);
         take(&mut self.advisor_model, later.advisor_model);
@@ -195,3 +204,6 @@ impl Message {
         parts.join("\n\n")
     }
 }
+
+#[cfg(test)]
+mod tests;
