@@ -961,3 +961,5 @@ fn first_build_stays_in_wal_and_settles_while_a_snapshot_remains_pinned() {
     drop(w.writer);
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
 }
+
+mod authorship;

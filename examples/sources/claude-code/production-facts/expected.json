@@ -216,7 +216,6 @@
             }
           ],
           "id": "claude-code:p4",
-          "model": "<synthetic>",
           "parent": "claude-code:p3",
           "production": {
             "api_error": {
@@ -224,6 +223,7 @@
               "status": 429
             }
           },
+          "prompt_kind": "harness",
           "role": "assistant",
           "session": "claude-code:s4",
           "stop_reason": "stop_sequence"

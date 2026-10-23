@@ -303,6 +303,11 @@ fn an_api_error_turn_carries_its_kind_and_status() {
         message(&p, ":a1")["production"]["api_error"],
         json!({"kind": "rate_limit_error", "status": 429})
     );
+    let notice = message(&p, ":a1");
+    assert_eq!(notice["role"], "assistant");
+    assert_eq!(notice["prompt_kind"], "harness");
+    assert!(notice.get("model").is_none());
+    assert_eq!(notice["blocks"][0]["text"], "API Error: 429 rate limited");
 }
 
 #[test]
@@ -418,4 +423,108 @@ fn result_prose_never_decides_the_outcome() {
     // An absent `is_error` is the API's default, false: Claude Code omits it
     // on successful results and has not been seen omitting it on a failure.
     assert_eq!(outcomes, [json!("error"), json!("ok"), json!("ok")]);
+}
+
+#[test]
+fn a_synthetic_no_response_notice_is_harness_text_without_an_api_error() {
+    let parsed = run(&[record(
+        "assistant",
+        "notice",
+        json!({"role": "assistant", "model": "<synthetic>", "content": text("No response requested.")}),
+        json!({}),
+    )]);
+    let notice = message(&parsed, ":notice");
+    assert_eq!(notice["role"], "assistant");
+    assert_eq!(notice["prompt_kind"], "harness");
+    assert!(notice.get("model").is_none());
+    assert!(notice["production"].get("api_error").is_none());
+    assert_eq!(notice["blocks"][0]["text"], "No response requested.");
+}
+
+#[test]
+fn ordinary_assistant_text_or_a_missing_model_does_not_mark_a_harness_notice() {
+    for model in [
+        None,
+        Some("actual-model"),
+        Some("<synthetic>-suffix"),
+        Some("prefix-<synthetic>"),
+    ] {
+        let mut native = json!({"role": "assistant", "content": text("The prose quotes <synthetic> and API Error.")});
+        if let Some(model) = model {
+            native["model"] = json!(model);
+        }
+        let parsed = run(&[record("assistant", "real", native, json!({}))]);
+        let real = message(&parsed, ":real");
+        assert_eq!(real["role"], "assistant");
+        assert!(real.get("prompt_kind").is_none());
+        assert_eq!(real.get("model").and_then(Value::as_str), model);
+        assert_eq!(
+            real["blocks"][0]["text"],
+            "The prose quotes <synthetic> and API Error."
+        );
+    }
+}
+
+#[test]
+fn synthetic_notices_do_not_join_real_response_fragments_even_without_a_model() {
+    for model in [None, Some("actual-model")] {
+        let mut real = json!({"id": "shared-response", "role": "assistant", "content": text("Real first fragment.")});
+        if let Some(model) = model {
+            real["model"] = json!(model);
+        }
+        let mut later = real.clone();
+        later["content"] = text("Real final fragment.");
+        let records = [
+            record(
+                "assistant",
+                "first",
+                real,
+                json!({"requestId": "shared-request"}),
+            ),
+            record(
+                "assistant",
+                "notice",
+                json!({"id": "shared-response", "role": "assistant", "model": "<synthetic>", "content": text("Harness API notice.")}),
+                json!({"requestId": "shared-request", "isApiErrorMessage": true, "error": "rate_limit_error", "apiErrorStatus": 429}),
+            ),
+            record(
+                "assistant",
+                "last",
+                later,
+                json!({"requestId": "shared-request"}),
+            ),
+        ];
+        let parsed = run(&records);
+        assert_eq!(messages(&parsed).len(), 2);
+        let real = message(&parsed, ":first");
+        assert_eq!(real.get("model").and_then(Value::as_str), model);
+        assert!(real.get("prompt_kind").is_none());
+        assert!(real["production"].get("api_error").is_none());
+        assert_eq!(
+            real["blocks"],
+            json!([
+            {"type": "text", "text": "Real first fragment."},
+            {"type": "text", "text": "Real final fragment."}])
+        );
+        let notice = message(&parsed, ":notice");
+        assert_eq!(notice["role"], "assistant");
+        assert_eq!(notice["prompt_kind"], "harness");
+        assert!(notice.get("model").is_none());
+        assert_eq!(
+            notice["production"]["api_error"],
+            json!({"kind": "rate_limit_error", "status": 429})
+        );
+        let row = parsed["output"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["message"]["id"] == "claude-code:notice")
+            .unwrap();
+        let start = jsonl(&records[..1]).len();
+        assert_eq!(row["offset"], start);
+        assert_eq!(
+            row["end"],
+            start + serde_json::to_vec(&records[1]).unwrap().len()
+        );
+    }
 }
