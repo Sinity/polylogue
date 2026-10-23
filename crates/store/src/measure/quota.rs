@@ -203,7 +203,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                     tool.clone(),
                     Credits {
                         balance: balance.clone(),
-                        observed_at: at,
+                        observed_at: Some(at),
                         recorded_at: Some(at),
                     },
                 ));

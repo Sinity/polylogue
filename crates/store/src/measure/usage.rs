@@ -54,6 +54,8 @@ pub struct ModelUsage {
 pub struct UsageReport {
     /// Physical records, with known response rows and independent observations apart.
     pub grain: &'static str,
+    /// Bounds select source record times, not established API spend times.
+    pub time_basis: &'static str,
     pub sessions: u64,
     /// Response total, unknown when source items lack response boundaries.
     pub messages: Option<u64>,
@@ -177,6 +179,7 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
     total.reported.response_total_unknown = unknown;
     Ok(UsageReport {
         grain: "physical",
+        time_basis: "source_record_time",
         sessions: conn.query_row(
             &format!("SELECT count(DISTINCT m.session_pk) FROM (SELECT session_pk,at FROM current_message UNION ALL SELECT session_pk,at FROM current_event) m WHERE {cond}"),
             rusqlite::params_from_iter(params.iter()),
