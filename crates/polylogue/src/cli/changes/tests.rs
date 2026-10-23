@@ -276,3 +276,38 @@ fn baseline_receiver_stages_current_reference_replacement_until_complete_after_a
         ChangePosition::parse(&checkpoint).unwrap().generation
     );
 }
+
+#[test]
+fn prepared_delivery_survives_daemon_close_without_retaining_its_read_snapshot() {
+    use std::io::Read;
+    let world = crate::test_daemon::start("synthetic finite delivery");
+    let mut file = crate::daemon::service::change_feed(&world.daemon, None).unwrap();
+    drop(world);
+    let mut wire = Vec::new();
+    file.read_to_end(&mut wire).unwrap();
+    let mut output = Vec::new();
+    assert!(receive(&wire[..], &mut output, None).unwrap());
+    assert_eq!(completed(&output).len(), 1);
+}
+
+#[test]
+fn failed_final_flush_is_an_unknown_delivery_outcome_and_can_replay_from_the_prior_position() {
+    struct FlushFails(Vec<u8>);
+    impl Write for FlushFails {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("synthetic flush failure"))
+        }
+    }
+    let input = wire(&example());
+    let mut output = FlushFails(Vec::new());
+    assert!(receive(&input[..], &mut output, Some("g:1:1")).is_err());
+    // Bytes may have escaped. Failure does not prove the receiver rejected
+    // them; replay retains the same IDs and the prior completed position.
+    let mut replay = Vec::new();
+    assert!(receive(&input[..], &mut replay, Some("g:1:1")).unwrap());
+    assert_eq!(replay, output.0);
+}

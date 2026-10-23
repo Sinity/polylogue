@@ -26,11 +26,8 @@ impl Reader<'_> {
     where
         E: From<StoreError>,
     {
-        let read = || -> Result<_> {
-            crate::fault::check("read.query", sql)?;
-            self.conn()
-        };
-        let conn = read().map_err(E::from)?;
+        crate::fault::check("read.query", sql).map_err(E::from)?;
+        let conn = self.conn().map_err(E::from)?;
         let mut stmt = conn.prepare_cached(sql).map_err(StoreError::from)?;
         let names: Vec<String> = stmt
             .column_names()
