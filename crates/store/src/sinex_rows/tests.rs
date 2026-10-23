@@ -62,6 +62,50 @@ fn a_row_for_an_unknown_table_is_refused() {
 }
 
 #[test]
+fn restored_integer_tokens_never_round_into_real_values() {
+    for token in [
+        "9223372036854775808",
+        "18446744073709551615",
+        "18446744073709551616",
+        "-9223372036854775809",
+        "1e999",
+    ] {
+        let target = archive();
+        let line = format!(r#"{{"table":"note","row":{{"id":"n1","commit_seq":{token}}}}}"#);
+        assert!(apply(&target, line.as_bytes()).is_err(), "accepted {token}");
+        assert_eq!(
+            target
+                .query_row("SELECT count(*) FROM note", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    for value in [
+        i64::MIN,
+        -9_007_199_254_740_993,
+        0,
+        9_007_199_254_740_993,
+        i64::MAX,
+    ] {
+        let target = archive();
+        let line = serde_json::to_vec(&json!({
+            "table": "note", "row": {"id": "n1", "commit_seq": value}
+        }))
+        .unwrap();
+        apply(&target, &line).unwrap();
+        let stored = target
+            .query_row("SELECT commit_seq FROM note", [], |row| {
+                row.get::<_, Sql>(0)
+            })
+            .unwrap();
+        assert_eq!(stored, Sql::Integer(value));
+    }
+    for value in [-0.0_f64, 1.25, f64::MAX] {
+        assert_eq!(to_sql(&json!(value)).unwrap(), Sql::Real(value));
+    }
+}
+
+#[test]
 fn excision_unit_updates_a_previously_restored_note_without_changing_its_identity() {
     use crate::archive::{Archive, cache, open_read, open_write};
     use crate::excise::{ExciseRequest, Scope};
