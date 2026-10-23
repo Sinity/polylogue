@@ -11,13 +11,18 @@ fn parsed(result: &Value, in_parts: bool) -> Value {
         json!({"inlineData": {"mimeType": "image/png", "data": "aGVsbG8="}}),
         json!({"fileData": {"mimeType": "text/plain", "fileUri": "drive://synthetic-output"}}),
     ];
+    let mut parts = vec![json!({"text": "Authored explanation"})];
     if in_parts {
-        chunk["parts"] = json!([{ "executableCode": code }, { "codeExecutionResult": result }, media[0], media[1]]);
+        parts.extend([
+            json!({"executableCode": code}),
+            json!({"codeExecutionResult": result}),
+        ]);
     } else {
         chunk["executableCode"] = code;
         chunk["codeExecutionResult"] = result.clone();
-        chunk["parts"] = json!(media);
     }
+    parts.extend(media);
+    chunk["parts"] = json!(parts);
     let prompt = json!({"chunkedPrompt": {"chunks": [chunk]}});
     let parsed = parse(
         "ai-studio",
