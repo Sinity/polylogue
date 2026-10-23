@@ -26,6 +26,12 @@ earlier setting after a change emits it again. Parsing and serializing these
 events requires the whole native record and resulting event in memory, including
 a large replacement history.
 
+ChatGPT's optional `finished_duration_sec` is a nonnegative JSON number in
+seconds, converted to milliseconds by rounding. Missing, nonnumeric or
+unrepresentable durations stay unknown while the authored message survives.
+Google token counters accept integer JSON numbers; numeric text remains
+unknown. Native input bytes retain the supplied representation in either case.
+
 Each message-source occurrence records its parser version. Within the same
 input, revision chain and capture, a newer parser may replace an older
 interpretation even if the logical position moves later. Same-version

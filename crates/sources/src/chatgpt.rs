@@ -506,7 +506,10 @@ fn message(
             .get("finished_duration_sec")
             .and_then(Json::as_f64)
             .filter(|s| s.is_finite() && *s >= 0.0)
-            .map(|s| (s * 1000.0).round() as u64),
+            .map(|s| (s * 1000.0).round())
+            // u64::MAX rounds to 2^64 as f64, so that boundary is exclusive.
+            .filter(|ms| ms.is_finite() && *ms < u64::MAX as f64)
+            .map(|ms| ms as u64),
         production: production(meta),
     })
 }
