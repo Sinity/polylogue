@@ -448,6 +448,8 @@ same renderer owns the format and view names. HTML exports and the web reader
 share the content renderer; framing, navigation and transport remain with
 callers. HTML output returns write errors.
 
+The shared masker uses `credential-output-v2`, recognizing valid overlapping
+starts independently so a quoted value cannot hide a later credential.
 The public application response boundary masks decoded JSON strings before
 transport escaping, including nested metadata, error text and object keys.
 Ordinary IDs, field names, types and empty values stay unchanged. If credential
