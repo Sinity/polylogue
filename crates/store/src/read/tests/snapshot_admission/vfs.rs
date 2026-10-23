@@ -2,7 +2,7 @@
 #![allow(unsafe_code)]
 use rusqlite::ffi;
 use std::collections::BTreeMap;
-use std::ffi::{CString, c_char, c_int};
+use std::ffi::{c_char, c_int};
 use std::ptr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -24,7 +24,6 @@ static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
 
 pub(super) struct Registration {
     vfs: Box<ffi::sqlite3_vfs>,
-    _name: CString,
 }
 impl Registration {
     pub(super) fn install() -> Self {
@@ -34,12 +33,11 @@ impl Registration {
             assert!(!base.is_null());
             BASE.store(base, Ordering::SeqCst);
             let mut vfs = Box::new(ptr::read(base));
-            let name = CString::new("polylogue-snapshot-admission-test").unwrap();
-            vfs.zName = name.as_ptr();
+            vfs.zName = c"polylogue-snapshot-admission-test".as_ptr();
             vfs.pNext = ptr::null_mut();
             vfs.xOpen = Some(open);
             assert_eq!(ffi::sqlite3_vfs_register(&mut *vfs, 1), ffi::SQLITE_OK);
-            Self { vfs, _name: name }
+            Self { vfs }
         }
     }
     pub(super) fn pause(

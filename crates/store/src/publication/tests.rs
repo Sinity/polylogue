@@ -120,3 +120,41 @@ fn publication_excludes_other_processes_and_releases_on_exit() {
     assert!(child.0.wait().unwrap().success());
     probe.try_lock_shared().unwrap();
 }
+
+#[test]
+fn panic_and_failed_begin_clear_ownership_before_another_transaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
+    let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    let existing = conn.unchecked_transaction().unwrap();
+    assert!(transaction(&conn, rusqlite::TransactionBehavior::Deferred).is_err());
+    existing.rollback().unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _transaction = transaction(&conn, rusqlite::TransactionBehavior::Deferred).unwrap();
+        panic!("synthetic application failure");
+    }));
+    assert!(panic.is_err());
+    transaction(&conn, rusqlite::TransactionBehavior::Deferred)
+        .unwrap()
+        .commit()
+        .unwrap();
+}
+
+#[test]
+fn aliases_share_file_identity_and_other_archives_can_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _writer) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
+    let (other, _other_writer) = Archive::open_or_create(&dir.path().join("other")).unwrap();
+    let alias = dir.path().join("alias");
+    std::os::unix::fs::symlink(&archive.root, &alias).unwrap();
+    let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    let _publication = write(&conn).unwrap();
+    assert!(
+        admit(&Archive::at(&alias), || panic!(
+            "same-file read must refuse before waiting"
+        ))
+        .is_err()
+    );
+    let pool = crate::ReadPool::open(&other).unwrap();
+    pool.reader().unwrap().change_position().unwrap();
+}

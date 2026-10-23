@@ -175,9 +175,8 @@ fn physical_cleanup_keeps_intent_visible_without_blocking_read_admission() {
     release.send(()).unwrap();
     deletion.join().unwrap().unwrap();
     reading.join().unwrap();
-    assert_eq!(
+    assert!(
         prompt.unwrap(),
-        true,
         "pending cleanup must refuse instead of waiting for physical work"
     );
     pool.reader().unwrap().change_position().unwrap();

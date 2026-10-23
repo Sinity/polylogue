@@ -141,3 +141,79 @@ fn rejected_privacy_snapshot_releases_the_admission_lock() {
     let file = File::open(fixture.archive.archive_db()).unwrap();
     file.try_lock().unwrap();
 }
+
+fn replace_index(archive: &Archive) {
+    let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    let tx =
+        crate::publication::transaction(&conn, rusqlite::TransactionBehavior::Immediate).unwrap();
+    tx.execute("INSERT INTO meta(key,value) VALUES ('unsynced','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
+    tx.commit().unwrap();
+    drop(conn);
+    archive.prepare_index().unwrap();
+}
+
+#[test]
+fn reserved_old_index_refuses_while_idle_connections_refresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reserved = pool.reader().unwrap();
+    replace_index(&fixture.archive);
+    assert!(matches!(
+        reserved.change_position(),
+        Err(StoreError::ReadIndexReplaced)
+    ));
+    assert!(matches!(
+        reserved.change_position(),
+        Err(StoreError::ReadIndexReplaced)
+    ));
+    drop(reserved);
+    let current = pool.reader().unwrap().change_position().unwrap();
+    replace_index(&fixture.archive);
+    let refreshed = pool.reader().unwrap().change_position().unwrap();
+    assert_ne!(current.generation, refreshed.generation);
+}
+
+#[test]
+fn already_pinned_pair_survives_index_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let old = reader.change_position().unwrap();
+    replace_index(&fixture.archive);
+    assert_eq!(reader.change_position().unwrap(), old);
+    let current = pool.reader().unwrap().change_position().unwrap();
+    assert_ne!(current.generation, old.generation);
+}
+
+#[test]
+fn first_pin_creates_no_file_in_a_read_only_archive_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let names = || {
+        let mut names: Vec<_> = std::fs::read_dir(&fixture.archive.root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = names();
+    let original = std::fs::metadata(&fixture.archive.root)
+        .unwrap()
+        .permissions();
+    std::fs::set_permissions(
+        &fixture.archive.root,
+        std::fs::Permissions::from_mode(0o555),
+    )
+    .unwrap();
+    let result = (|| -> Result<_> {
+        let pool = fixture.reads()?;
+        pool.reader()?.change_position()
+    })();
+    std::fs::set_permissions(&fixture.archive.root, original).unwrap();
+    result.unwrap();
+    assert_eq!(names(), before);
+}
