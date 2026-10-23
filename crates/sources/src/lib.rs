@@ -21,6 +21,7 @@ pub mod fields;
 pub mod frame;
 pub mod gemini_app;
 pub mod gemini_cli;
+pub mod grok;
 pub mod grok_cli;
 pub mod hermes;
 pub mod hook_spool;
