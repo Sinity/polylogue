@@ -627,7 +627,7 @@ impl Engine {
             ..Pass::default()
         };
         if discover {
-            self.restore_snapshots(&mut pass)?;
+            self.restore_history(&mut pass)?;
         }
         let databases = found
             .iter()
@@ -863,11 +863,13 @@ impl Engine {
     /// stored bytes as from files, so a rebuild needs no command of its own.
     /// Historical chains share the ordinary parser and writer. Their scope
     /// ordering prevents replay from replacing a newer current observation.
-    fn restore_snapshots(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
+    fn restore_history(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
         let inputs: Vec<_> = self
             .inputs
             .iter()
-            .filter(|(path, st)| (st.origin.open)(path).is_some_and(|parser| parser.is_snapshots()))
+            .filter(|(path, st)| {
+                st.origin.support == Support::Parsed && (st.origin.open)(path).is_some()
+            })
             .map(|(path, st)| (path.clone(), st.input_id.clone(), st.origin, st.chain))
             .collect();
         for (path, id, origin, current) in inputs {
@@ -880,7 +882,11 @@ impl Engine {
                 {
                     continue;
                 }
-                let start = if state.parser_version == Some(origin.parser_version) {
+                // Independent snapshots can resume at their record boundary.
+                // Line parsers need the prefix to reconstruct their carry.
+                let start = if state.parser_version == Some(origin.parser_version)
+                    && (origin.open)(&path).is_some_and(|parser| parser.is_snapshots())
+                {
                     state.parsed_upto
                 } else {
                     0

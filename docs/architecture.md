@@ -263,7 +263,13 @@ can retire absent members; current browser acquisitions supply partial
 coverage, including native payloads. Session facts merge with earlier supplied
 facts; complete population coverage does not clear omitted metadata. Historical
 chains replay through the same parser and writer, with chain and snapshot
-range ordering preserving the latest projection.
+range ordering preserving the latest projection. Rebuilds include earlier
+line-based chains, even when their provider files have disappeared. Appends
+share a chain and replay its final retained bytes once; rewrites and truncations
+start separate chains. Line parsers reconstruct their carry from the chain's
+start, while independent snapshots can resume at a committed record boundary.
+Same-chain open-item updates retain the existing latest projection; distinct
+rewrite-chain versions keep their native IDs and source ranges.
 
 Before selected parse jobs emit rows, the engine supplies their required
 format versions to the writer. The index retains those requirements and each

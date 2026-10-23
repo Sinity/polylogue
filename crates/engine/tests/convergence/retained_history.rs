@@ -138,7 +138,7 @@ fn retained_codex_rewrite_items_versions_and_note_targets_survive_index_rebuild(
 }
 
 #[test]
-fn retained_append_boundaries_rebuild_open_item_versions_without_full_prefix_rereads() {
+fn retained_append_chains_rebuild_the_observed_versions_without_full_prefix_rereads() {
     let w = ClaudeHome::new();
     let file = path(&w);
     let mut total = 0;
@@ -180,9 +180,10 @@ fn retained_append_boundaries_rebuild_open_item_versions_without_full_prefix_rer
                 &[],
             )
             .unwrap();
-        assert!(
-            hashes.len() > before.len(),
-            "appends retain changed open-item bodies"
+        assert_eq!(
+            hashes.len(),
+            before.len(),
+            "same-chain open-item updates replace their earlier projection"
         );
     }
     fs::remove_file(file).unwrap();
