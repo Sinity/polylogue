@@ -38,6 +38,7 @@ use std::time::{Duration, Instant};
 /// While a database keeps changing, it is still exported this often.
 const BUSY_EXPORT: Duration = Duration::from_secs(3600);
 
+mod binding;
 mod catalog;
 mod publication;
 mod turns;
@@ -99,30 +100,42 @@ pub struct Exported {
 impl Exporter {
     /// Exports `db` into `out` when due. Returns `None` when nothing was
     /// due.
-    pub fn export(&mut self, db: &Path, out: &Path) -> Result<Option<Exported>, ExportError> {
-        self.export_with(db, out, &mut || Ok(()))
+    pub fn export(
+        &mut self,
+        db: &Path,
+        out: &Path,
+        observation: Option<&crate::Observation>,
+    ) -> Result<Option<Exported>, ExportError> {
+        self.export_with(db, out, observation, &mut || Ok(()))
     }
 
     fn export_with(
         &mut self,
         db: &Path,
         out: &Path,
+        observation: Option<&crate::Observation>,
         checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
     ) -> Result<Option<Exported>, ExportError> {
         if let Some(dir) = out.parent() {
             fs::create_dir_all(dir)?;
         }
+        let requested = observation.map(binding::Binding::observed).transpose()?;
         let st = self.dbs.entry(db.to_path_buf()).or_default();
         if st.publication.as_ref().is_none_or(|p| !p.current(out)) {
             st.catalog = None;
             st.publication = None;
             st.exported = None;
             let mut publication = Publication::open(out, checkpoint)?;
-            let catalog = Catalog::load(out, checkpoint)?;
+            let mut catalog = Catalog::load(out, checkpoint)?;
+            catalog.bind(requested.clone())?;
             publication.establish(out)?;
             st.publication = Some(publication);
             st.catalog = Some(catalog);
         }
+        st.catalog
+            .as_mut()
+            .expect("loaded catalog")
+            .bind(requested)?;
         let now = DbFacts::of(db);
         let quiet = st.last_seen == Some(now);
         st.last_seen = Some(now);
@@ -265,11 +278,11 @@ fn write_export(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as i64);
         let name = db.file_name().map(|n| n.to_string_lossy().into_owned());
-        serde_json::to_writer(
-            &mut w,
-            &json!({ "db": name, "at_ms": at_ms, "schema": schema }),
-        )
-        .map_err(std::io::Error::from)?;
+        let mut header = json!({ "db": name, "at_ms": at_ms, "schema": schema });
+        if let Some(binding) = &catalog.binding {
+            header["source"] = serde_json::to_value(binding).map_err(std::io::Error::from)?;
+        }
+        serde_json::to_writer(&mut w, &header).map_err(std::io::Error::from)?;
         w.write_all(b"\n")?;
     }
     let mut done = Exported::default();

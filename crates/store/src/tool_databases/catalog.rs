@@ -6,6 +6,8 @@ use rusqlite::{OptionalExtension, params};
 pub(super) struct Catalog {
     pub conn: Connection,
     pub schema: Option<u64>,
+    pub binding: Option<super::binding::Binding>,
+    unbound: bool,
 }
 
 fn invalid(reason: &str) -> ExportError {
@@ -18,7 +20,12 @@ impl Catalog {
         checkpoint: &mut dyn FnMut() -> Result<(), ExportError>,
     ) -> Result<Self, ExportError> {
         let conn = Connection::open("").map_err(|e| ExportError::Sqlite(out.into(), e))?;
-        let mut catalog = Self { conn, schema: None };
+        let mut catalog = Self {
+            conn,
+            schema: None,
+            binding: None,
+            unbound: false,
+        };
         let sql_err = |e| ExportError::Sqlite(out.into(), e);
         catalog
             .conn
@@ -55,12 +62,37 @@ impl Catalog {
         Ok(catalog)
     }
 
+    pub(super) fn bind(
+        &mut self,
+        requested: Option<super::binding::Binding>,
+    ) -> Result<(), ExportError> {
+        match (&self.binding, requested) {
+            (Some(previous), Some(current)) if previous == &current => Ok(()),
+            (None, None) => Ok(()),
+            (None, Some(current)) if !self.unbound => {
+                self.binding = Some(current);
+                Ok(())
+            }
+            _ => Err(invalid(
+                "logical export source binding differs or is historically unbound",
+            )),
+        }
+    }
+
     fn replay(&mut self, out: &Path, v: Value) -> Result<(), ExportError> {
         let sql_err = |e| ExportError::Sqlite(out.into(), e);
         if let Some(schema) = v.get("schema").filter(|v| v.is_object()) {
+            let binding = v
+                .get("source")
+                .filter(|value| !value.is_null())
+                .map(|value| serde_json::from_value(value.clone()).map_err(std::io::Error::from))
+                .transpose()?;
+            self.bind(binding)?;
+            self.unbound |= self.binding.is_none();
             self.schema = Some(digest(&schema.to_string()));
             return Ok(());
         }
+        self.unbound |= self.binding.is_none();
         let t = v
             .get("t")
             .and_then(Value::as_str)

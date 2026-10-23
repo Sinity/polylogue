@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread::JoinHandle;
 
-type Inputs = Vec<(PathBuf, PathBuf)>;
+type Inputs = Vec<(PathBuf, PathBuf, Option<crate::Observation>)>;
 
 enum Command {
     Start(Inputs, usize),
@@ -181,12 +181,12 @@ fn run(commands: Receiver<Command>, replies: SyncSender<Reply>) {
             updates: Updates::default(),
             cancelled: false,
         };
-        for (db, out) in inputs {
+        for (db, out, observation) in inputs {
             // Revalidation may itself yield. Do not let an earlier acceptance
             // authorize physically changed bytes while their hash is checked.
             budget.updates.paths.push((db.clone(), None));
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                exporter.export_with(&db, &out, &mut || budget.checkpoint())
+                exporter.export_with(&db, &out, observation.as_ref(), &mut || budget.checkpoint())
             }));
             if budget.cancelled {
                 return;

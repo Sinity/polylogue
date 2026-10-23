@@ -16,17 +16,17 @@ fn failed_database_capture_keeps_only_the_completed_prefix() {
         )
         .unwrap();
     let mut exporter = Exporter::default();
-    exporter.export(&db, &out).unwrap();
+    exporter.export(&db, &out, None).unwrap();
     let before = fs::read(&out).unwrap();
     source
         .execute_batch("UPDATE threads SET title = 'new';")
         .unwrap();
-    exporter.export(&db, &out).unwrap();
+    exporter.export(&db, &out, None).unwrap();
     fault::arm("tool_export.after_row", "threads", Action::Fail, 0, 1);
-    assert!(exporter.export(&db, &out).is_err());
+    assert!(exporter.export(&db, &out, None).is_err());
     fault::clear();
     assert_eq!(fs::read(&out).unwrap(), before);
-    let done = exporter.export(&db, &out).unwrap().unwrap();
+    let done = exporter.export(&db, &out, None).unwrap().unwrap();
     assert_eq!(done.rows, 2);
     let after = fs::read_to_string(&out).unwrap();
     assert_eq!(after.lines().filter(|line| line.contains("new")).count(), 2);
@@ -54,7 +54,7 @@ fn interrupted_capture_recovers_before_reusing_its_output() {
                 )
                 .unwrap();
             let mut exporter = Exporter::default();
-            exporter.export(&db, &out).unwrap();
+            exporter.export(&db, &out, None).unwrap();
             let before = fs::read(&out).unwrap();
             source
                 .execute_batch(
@@ -62,10 +62,10 @@ fn interrupted_capture_recovers_before_reusing_its_output() {
                 DELETE FROM threads WHERE id=2;",
                 )
                 .unwrap();
-            exporter.export(&db, &out).unwrap();
+            exporter.export(&db, &out, None).unwrap();
             fault::arm(point, "", action, 0, 1);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                exporter.export(&db, &out)
+                exporter.export(&db, &out, None)
             }));
             assert!(matches!(result, Err(_) | Ok(Err(_))), "{point}/{action:?}");
             fault::clear();
@@ -75,7 +75,7 @@ fn interrupted_capture_recovers_before_reusing_its_output() {
                 .unwrap();
             drop(exporter);
             let mut fresh = Exporter::default();
-            let done = fresh.export(&db, &out).unwrap().unwrap();
+            let done = fresh.export(&db, &out, None).unwrap().unwrap();
             assert_eq!(done.rows, 1, "{point}/{action:?}");
             let after = fs::read(&out).unwrap();
             assert!(after.starts_with(&before));
@@ -125,7 +125,11 @@ fn engine_never_collects_a_failed_database_export() {
         .unwrap();
     let (mut engine, _lock) = w.engine();
     assert!(engine.converge().unwrap().errors.is_empty());
-    let out = w.root.join("exports/codex-database/state_99.sqlite.jsonl");
+    let out = fs::read_dir(w.root.join("exports/codex-database"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("state_99.sqlite.jsonl"))
+        .find(|path| path.is_file())
+        .unwrap();
     let before = w.stored_bytes(&out).unwrap();
     source
         .execute_batch("UPDATE threads SET title='failed';")

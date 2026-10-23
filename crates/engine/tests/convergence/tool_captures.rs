@@ -33,7 +33,11 @@ fn ordinary_inputs_are_serviced_between_database_capture_turns() {
         w.count("SELECT count(*) AS n FROM input_ref WHERE format='codex-database'"),
         1
     );
-    let out = w.root.join("exports/codex-database/state_5.sqlite.jsonl");
+    let out = fs::read_dir(w.root.join("exports/codex-database"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("state_5.sqlite.jsonl"))
+        .find(|path| path.is_file())
+        .unwrap();
     assert_eq!(fs::read_to_string(out).unwrap().lines().count(), 3001);
 }
 
