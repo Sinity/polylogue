@@ -43,14 +43,14 @@ fn hook_install_merges_and_is_idempotent() {
             "Stop": [{"hooks": [{"type": "command", "command": "notify-send done"}]}]
         }
     });
-    let once = merge_hooks(other.clone(), true);
-    let twice = merge_hooks(once.clone(), true);
+    let once = merge_hooks(other.clone(), true).unwrap();
+    let twice = merge_hooks(once.clone(), true).unwrap();
     assert_eq!(once, twice);
     assert_eq!(once["model"], "opus");
     let stop = once["hooks"]["Stop"].as_array().unwrap();
     assert_eq!(stop.len(), 2);
     assert_eq!(stop[0]["hooks"][0]["command"], "notify-send done");
-    let removed = merge_hooks(once, false);
+    let removed = merge_hooks(once, false).unwrap();
     assert_eq!(removed["hooks"]["Stop"].as_array().unwrap().len(), 1);
     assert!(removed["hooks"].get("SessionStart").is_none());
 }

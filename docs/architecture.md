@@ -234,7 +234,11 @@ source snapshot's WAL retention; this is not durable snapshot continuation.
 Hook settings and reader credentials are replaced using
 `atomicwrites`, which owns temporary-file cleanup, file synchronization,
 rename and directory synchronization. Each caller still owns its path and
-permissions; hook installation refuses managed symlinks.
+permissions; hook installation refuses managed symlinks. Hook settings must be
+JSON objects with valid hook containers and unique object keys; a refusal leaves
+the file unchanged. Install and removal edit only the exact command hooks the
+installer writes, preserving other hooks and metadata in mixed matcher entries.
+Unknown hook kinds and settings remain uninterpreted and retain their values.
 
 Browser captures use the provider's existing ChatGPT or Claude parser; Grok
 endpoint bundles adapt native responses and attachment metadata to the shared

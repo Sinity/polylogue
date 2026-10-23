@@ -1,0 +1,148 @@
+//! Merge only the hook commands this installer owns.
+
+use super::EVENTS;
+use serde_json::{Value, json};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+mod parse;
+
+/// Claude Code's settings file in its configured directory.
+pub fn settings_path() -> PathBuf {
+    polylogue_engine::Config::from_env()
+        .root(polylogue_sources::claude_code::ROOT)
+        .join("settings.json")
+}
+
+fn invalid(path: &str, expected: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{path}: expected {expected}"),
+    )
+}
+
+fn validate(settings: &Value) -> io::Result<()> {
+    let settings = settings
+        .as_object()
+        .ok_or_else(|| invalid("settings", "an object"))?;
+    let Some(hooks) = settings.get("hooks") else {
+        return Ok(());
+    };
+    let events = hooks
+        .as_object()
+        .ok_or_else(|| invalid("hooks", "an object"))?;
+    for (event, entries) in events {
+        let path = format!("hooks.{event}");
+        let entries = entries
+            .as_array()
+            .ok_or_else(|| invalid(&path, "an array"))?;
+        for (index, entry) in entries.iter().enumerate() {
+            let path = format!("{path}[{index}]");
+            let entry = entry
+                .as_object()
+                .ok_or_else(|| invalid(&path, "an object"))?;
+            let hooks = entry
+                .get("hooks")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid(&format!("{path}.hooks"), "an array"))?;
+            for (index, hook) in hooks.iter().enumerate() {
+                let path = format!("{path}.hooks[{index}]");
+                let hook = hook
+                    .as_object()
+                    .ok_or_else(|| invalid(&path, "an object"))?;
+                let kind = hook
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid(&format!("{path}.type"), "a string"))?;
+                if kind == "command" && !hook.get("command").is_some_and(Value::is_string) {
+                    return Err(invalid(&format!("{path}.command"), "a string"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ours(hook: &Value) -> bool {
+    hook["type"] == "command"
+        && hook["command"].as_str().is_some_and(|command| {
+            EVENTS
+                .iter()
+                .any(|event| command == format!("polylogue hook {event}"))
+        })
+}
+
+/// Merge Polylogue's commands while retaining other hooks and entry metadata.
+/// Refuse invalid containers instead of replacing their contents.
+pub fn merge_hooks(mut settings: Value, install: bool) -> io::Result<Value> {
+    validate(&settings)?;
+    let settings_object = settings.as_object_mut().expect("validated settings object");
+    if !install && !settings_object.contains_key("hooks") {
+        return Ok(settings);
+    }
+    let events = settings_object
+        .entry("hooks")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("validated hooks object");
+    for event in EVENTS {
+        if let Some(entries) = events.get_mut(*event) {
+            let entries = entries.as_array_mut().expect("validated event array");
+            entries.retain_mut(|entry| {
+                let hooks = entry["hooks"].as_array_mut().expect("validated hook array");
+                let before = hooks.len();
+                hooks.retain(|hook| !ours(hook));
+                // Preserve pre-existing empty entries; only remove entries
+                // made empty by removing our commands.
+                before == hooks.len() || !hooks.is_empty()
+            });
+            if entries.is_empty() && !install {
+                events.remove(*event);
+            }
+        }
+        if install {
+            events.entry(*event).or_insert_with(|| json!([]))
+                .as_array_mut().expect("validated event array").push(json!({
+                    "hooks": [{"type":"command", "command":format!("polylogue hook {event}"),
+                        "timeout":if *event=="SessionStart" || *event=="UserPromptSubmit" {10} else {2}}]
+                }));
+        }
+    }
+    Ok(settings)
+}
+
+/// Installs or removes the hooks in a settings file, atomically. A file
+/// that is a symlink (managed by Home Manager or similar) is refused: the
+/// hooks belong in the file's declared source.
+pub fn install(path: &Path, install: bool) -> std::io::Result<()> {
+    if path.is_symlink() {
+        return Err(std::io::Error::other(format!(
+            "{} is a symlink to a managed file; add the hooks in its source instead",
+            path.display()
+        )));
+    }
+    let current = match std::fs::read_to_string(path) {
+        Ok(text) => parse::settings(&text)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(e),
+    };
+    let merged = merge_hooks(current, install)?;
+    let mut text = serde_json::to_string_pretty(&merged).map_err(std::io::Error::other)?;
+    text.push('\n');
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    use std::os::unix::fs::PermissionsExt;
+    let permissions = match std::fs::metadata(path) {
+        Ok(meta) => meta.permissions(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::Permissions::from_mode(0o600)
+        }
+        Err(e) => return Err(e),
+    };
+    atomicwrites::AtomicFile::new(path, atomicwrites::AllowOverwrite)
+        .write(|file| {
+            file.set_permissions(permissions)?;
+            file.write_all(text.as_bytes())
+        })
+        .map_err(Into::into)
+}
