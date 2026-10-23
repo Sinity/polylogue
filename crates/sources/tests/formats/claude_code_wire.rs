@@ -317,14 +317,13 @@ fn per_turn_effort_lands_as_the_turn_effort() {
 }
 
 fn hook_summary(uuid: &str, extra: Value) -> Value {
-    record("system", uuid, Value::Null, {
-        let mut fields = json!({"subtype": "stop_hook_summary"});
-        fields
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        fields
-    })
+    let mut native = json!({"type": "system", "subtype": "stop_hook_summary",
+        "uuid": uuid, "sessionId": "s1", "timestamp": "2026-03-01T10:00:00Z"});
+    native
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    native
 }
 
 #[test]
@@ -347,9 +346,9 @@ fn hook_summary_preserves_supplied_context_even_when_continuation_is_prevented()
     assert_eq!(
         m["blocks"],
         json!([
-        {"kind": "text", "text": "  Zażółć 🦀\n"},
-        {"kind": "text", "text": ""},
-        {"kind": "text", "text": "\tsecond  "}])
+        {"type": "text", "text": "  Zażółć 🦀\n"},
+        {"type": "text", "text": ""},
+        {"type": "text", "text": "\tsecond  "}])
     );
     assert_eq!(p["accounting"]["framed"], 1);
 }
