@@ -141,6 +141,14 @@ fn write(d: &Daemon, request_id: String, w: UserWrite) -> Response {
     }
 }
 
+fn browser_refusal(refused: crate::browser::actions::Refused) -> Response {
+    Response::Error {
+        kind: refused.1.into(),
+        message: refused.1.into(),
+        detail: Some(serde_json::json!({ "http_status": refused.0 })),
+    }
+}
+
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -178,6 +186,31 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
         Err(e) => return error("store", e),
     };
     match request {
+        Request::BrowserEnqueue { action } => {
+            let enabled = reader
+                .setting("browser.actions", &machine_id())
+                .is_ok_and(|value| value.as_deref() == Some("on"));
+            let ctx = match crate::browser::Ctx::at(&d.config, &d.archive) {
+                Ok(ctx) => ctx,
+                Err(error) => return self::error("store", error),
+            };
+            match crate::browser::actions::enqueue(&ctx, &action, enabled) {
+                Ok((created, action)) => {
+                    ok(serde_json::json!({ "ok": true, "created": created, "action": action }))
+                }
+                Err(refused) => browser_refusal(refused),
+            }
+        }
+        Request::BrowserUpload { bytes } => {
+            let ctx = match crate::browser::Ctx::at(&d.config, &d.archive) {
+                Ok(ctx) => ctx,
+                Err(error) => return self::error("store", error),
+            };
+            match crate::browser::actions::upload(&ctx, &bytes) {
+                Ok(value) => ok(value),
+                Err(refused) => browser_refusal(refused),
+            }
+        }
         Request::Status => {
             let store = match reader.status() {
                 Ok(s) => s,

@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// HTTP and daemon attachment input bound.
+pub const BODY_LIMIT: usize = 2 << 20;
+
 /// How long a claimed action stays with the extension instance that took
 /// it without a report.
 const CLAIM_MS: i64 = 180_000;
@@ -492,6 +495,9 @@ pub fn decide(
 /// Stores an attachment's bytes for a later action, named by their
 /// SHA-256.
 pub fn upload(ctx: &Ctx, bytes: &[u8]) -> Result<Value> {
+    if bytes.len() > BODY_LIMIT {
+        return Err(Refused(413, "attachment_too_large"));
+    }
     let digest = sha256_hex(bytes);
     let p = input_path(ctx, &digest).ok_or(Refused(500, "write_failed"))?;
     if !p.exists() {

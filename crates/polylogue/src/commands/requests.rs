@@ -5,6 +5,7 @@ use crate::briefing::{Ask, StartSource};
 use crate::daemon::Request;
 use polylogue_model::{Author, NewNote, NoteKind, Target};
 use polylogue_store::NoteFilter;
+use serde_json::Value;
 use std::path::PathBuf;
 
 type Built = Result<Request, String>;
@@ -316,4 +317,14 @@ pub fn embed(c: &Command, v: &Values, _: &Caller) -> Built {
         limit: v.integer("limit"),
         yes: v.flag("yes"),
     })
+}
+
+pub fn browser_action(value: Value) -> Built {
+    serde_json::from_value(value)
+        .map(|action| Request::BrowserEnqueue { action })
+        .map_err(|error| format!("invalid browser action: {error}"))
+}
+
+pub fn browser_attachment(bytes: Vec<u8>) -> Request {
+    Request::BrowserUpload { bytes }
 }

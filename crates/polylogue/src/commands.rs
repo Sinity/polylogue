@@ -93,6 +93,8 @@ const fn opt(name: &'static str, kind: Kind, help: &'static str) -> Arg {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cli {
+    /// Not offered on the command line.
+    Absent,
     Subcommand,
     /// A subcommand left out of help: programs run it, people do not.
     Hidden,
@@ -104,6 +106,10 @@ pub enum Cli {
 pub enum Action {
     /// Sent to the daemon as the request this builds.
     Request(fn(&Command, &Values, &Caller) -> Result<Request, String>),
+    /// An HTTP-only structured body, decoded by its typed request owner.
+    JsonRequest(fn(Value) -> Result<Request, String>),
+    /// An HTTP-only binary body, passed directly to the daemon in process.
+    BytesRequest(fn(Vec<u8>) -> Request),
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(fn(&Command, &Values, bool) -> ExitCode),
 }
@@ -741,6 +747,24 @@ const WRITTEN: &[Command] = &[
         name: "sinex cutover",
         help: "Make Sinex the primary store, once (not built yet)",
         cli: Cli::Hidden,
+        ..CLI
+    },
+    Command {
+        name: "browser-actions",
+        help: "Queue one operator chat action while browser.actions is enabled",
+        action: Action::JsonRequest(requests::browser_action),
+        cli: Cli::Absent,
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "browser-actions attachments",
+        help: "Store binary attachment bytes for a later operator chat action",
+        action: Action::BytesRequest(requests::browser_attachment),
+        cli: Cli::Absent,
+        http: true,
+        writes: true,
         ..CLI
     },
     Command {

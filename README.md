@@ -46,10 +46,16 @@ changes), `embeddings.db` and `blobs/`.
 
 ## Commands
 
-`polylogue --help` lists them all; each takes `--json`. One command table
+`polylogue --help` lists CLI commands; each takes `--json`. One command table
 (`crates/polylogue/src/commands.rs`) declares them; the CLI, its
 completions, the MCP tools and the HTTP API under `/api/v1/` are built from
 it.
+
+The browser action commands are HTTP-only table entries: JSON enqueue at
+`/api/v1/browser-actions` and binary upload at `/api/v1/browser-actions/attachments`.
+They retain token/origin checks and a 2 MiB body limit. The daemon owns enqueue
+permission and idempotence; the extension still cannot enqueue. Uploads remain
+binary through the HTTP adapter, and neither operation is offered through CLI or MCP.
 
 | Command | What it does |
 |---|---|
