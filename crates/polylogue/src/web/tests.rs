@@ -345,6 +345,7 @@ fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held()
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
+    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     let mut server = start_on(Arc::clone(&daemon), 0).unwrap();
     let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     write!(

@@ -245,8 +245,8 @@ impl ReadPool {
     }
 
     /// Refuses new reads, wakes waiting checkouts and releases idle connections.
-    /// Pinned readers keep their snapshot; unused reservations cannot first-pin
-    /// after closure.
+    /// Pinned readers keep their snapshot; unused reservations must enter
+    /// first-read admission before closure.
     pub fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.closed = true;
