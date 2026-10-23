@@ -1,5 +1,5 @@
 {
-  "_about": "Expected results of the spec's main-archive examples on the Morrow archive (examples/archive/): query.md examples 1-38, the overview, search chrono, and the by-model and by-day reports. Sessions are named by their FACTS.md number; rows are in result order (newest activity first) unless the query has no order, where they are sorted. Times are local (Europe/Warsaw, CEST); costs are exact USD. check_facts.py recomputes every value in this file from the raw files and fails on any difference; edit build.py, never this file by hand, and re-record with: python3 check_facts.py --record-main",
+  "_about": "Expected results of the spec's main-archive examples on the Morrow archive (examples/archive/): query.md examples 1-38, the overview, search chrono, and the by-model and by-day reports. Sessions are named by their FACTS.md number; rows are in result order (newest activity first) unless the query has no order, where they are sorted. Times are local (Europe/Warsaw, CEST); costs cover sessions with known totals in exact USD. Codex token columns are recorded observation subsets, not complete session usage. check_facts.py recomputes every value in this file from the raw files and fails on any difference; edit build.py, never this file by hand, and re-record with: python3 check_facts.py --record-main",
   "queries": {
     "1 origin:claude-code": [
       "#4",
@@ -11,8 +11,8 @@
     ],
     "3 kind:* | agg count, sum:cost": {
       "count": 8,
-      "sum_cost": 6.1956,
-      "unknown_cost": 2,
+      "sum_cost": 5.8626,
+      "unknown_cost": 4,
       "partial_cost": 0
     },
     "4 sessions | group by origin | count": {
@@ -42,6 +42,8 @@
     ],
     "9 cost:unknown": [
       "#8",
+      "#6",
+      "#5",
       "#7"
     ],
     "10 sessions where human_prompts >= 3": [
@@ -262,8 +264,8 @@
     },
     "prompts": 17,
     "tool_calls": 37,
-    "known_cost": 6.2,
-    "unknown_cost_sessions": 2
+    "known_cost": 5.86,
+    "unknown_cost_sessions": 4
   },
   "search chrono": {
     "sessions": [
@@ -317,7 +319,7 @@
       "output": 9000,
       "cache_read": 180000,
       "cache_write": null,
-      "cost": 0.333
+      "cost": null
     }
   },
   "analyze --by day": {
@@ -349,13 +351,13 @@
       "sessions": 1,
       "prompts": 2,
       "tool_calls": 3,
-      "sum_cost": 0.216
+      "sum_cost": null
     },
     "2026-10-06": {
       "sessions": 1,
       "prompts": 1,
       "tool_calls": 3,
-      "sum_cost": 0.117
+      "sum_cost": null
     },
     "2026-10-07": {
       "sessions": 1,

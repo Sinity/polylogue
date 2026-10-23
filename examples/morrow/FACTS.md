@@ -129,12 +129,22 @@ million tokens):
 | #2 | 2,000 | 21,100 | 900,000 | 70,000 | 2.85 |
 | #3 | 400 | 3,000 | 60,000 | 15,000 | 0.16 |
 | #4 (own messages) | 1,500 | 14,000 | 500,000 | 30,000 | 1.59 |
-| #5 | 30,000 | 6,000 | 120,000 | — | 0.22 |
-| #6 | 18,000 | 3,000 | 60,000 | — | 0.12 |
+| #5 (recorded observations) | 30,000 | 6,000 | 120,000 | — | unknown |
+| #6 (recorded observations) | 18,000 | 3,000 | 60,000 | — | unknown |
 | #7, #8 | unknown | unknown | unknown | unknown | unknown (subscription) |
 
-Archive total, known: **6.20 USD** (exact 6.1956; costs are computed exactly and rounded to cents only for display); 2 sessions with unknown cost. #4's
-inherited messages are not counted again.
+The four token-count observations in #5 and two in #6 supply the Codex
+figures above. Their validated cumulative increments equal their last-usage
+counters; at the example prices these observations price to 0.216 and 0.117
+USD. These are recorded known subsets, not complete session or request costs:
+item-only rollouts cannot establish response membership or all API attempts.
+Observation record times also do not establish spend times. The observations
+remain evidence independently of message attachment (`spec/sources/codex.md`).
+
+Archive total from sessions with known cost: **5.86 USD** (exact 5.8626;
+rounded to cents only for display); 4 sessions have unknown total cost
+(#5–#8). The 0.333 USD observation subset is not added as if those sessions
+were complete. #4's inherited messages are not counted again.
 
 ## Notes in archive.db
 
