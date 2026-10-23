@@ -9,4 +9,5 @@ mod codex_compaction;
 mod codex_rollout;
 mod gemini_cli_tool_output;
 mod golden;
+mod optional_numeric;
 mod support;
