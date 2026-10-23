@@ -15,23 +15,29 @@ fn result(label: &str) -> Value {
 fn run(mut chunk: Value) -> Value {
     chunk["id"] = json!("turn");
     chunk["role"] = json!("model");
-    let bytes = serde_json::to_vec(&json!({"chunkedPrompt": {"chunks": [chunk.clone()]}})).unwrap();
+    let parsed = run_chunks(&[chunk]);
+    assert_eq!(parsed["output"]["messages"].as_array().unwrap().len(), 1);
+    parsed
+}
+
+fn run_chunks(chunks: &[Value]) -> Value {
+    let bytes = serde_json::to_vec(&json!({"chunkedPrompt": {"chunks": chunks}})).unwrap();
     let parsed = parse(
         "ai-studio",
         "polylogue/drive/ai-studio/pairing.json",
         &bytes,
     );
-    let rows = parsed["output"]["messages"].as_array().unwrap();
-    assert_eq!(rows.len(), 1);
-    let row = &rows[0];
-    let start = row["offset"].as_u64().unwrap() as usize;
-    let end = row["end"].as_u64().unwrap() as usize;
-    assert_eq!(
-        serde_json::from_slice::<Value>(&bytes[start..end]).unwrap(),
-        chunk
-    );
-    assert_eq!(row["message"]["session"], "ai-studio:pairing");
-    assert_eq!(row["message"]["id"], "ai-studio:pairing#turn");
+    for row in parsed["output"]["messages"].as_array().unwrap() {
+        let start = row["offset"].as_u64().unwrap() as usize;
+        let end = row["end"].as_u64().unwrap() as usize;
+        let chunk = serde_json::from_slice::<Value>(&bytes[start..end]).unwrap();
+        assert!(chunks.contains(&chunk));
+        assert_eq!(row["message"]["session"], "ai-studio:pairing");
+        assert_eq!(
+            row["message"]["id"],
+            format!("ai-studio:pairing#{}", chunk["id"].as_str().unwrap())
+        );
+    }
     parsed
 }
 
@@ -128,4 +134,61 @@ fn multiple_unanswered_executions_do_not_establish_a_unique_result_owner() {
     assert_eq!(calls[0]["call_id"], "pairing#turn:code1");
     assert_eq!(calls[1]["call_id"], "pairing#turn:code2");
     assert_eq!(calls[2]["call_id"], "pairing#turn:code3");
+}
+
+#[test]
+fn consecutive_model_chunks_keep_the_actual_preceding_call_identity() {
+    let native = result("owned across chunks");
+    let parsed = run_chunks(&[
+        json!({"id": "call", "role": "model", "executableCode": code(1)["executableCode"]}),
+        json!({"id": "explanation", "role": "model", "text": "Continuing explanation"}),
+        json!({"id": "answer", "role": "model", "codeExecutionResult": native["codeExecutionResult"]}),
+    ]);
+    check_results(&parsed, &[(&native, Some("pairing#call:code1"))]);
+    let rows = parsed["output"]["messages"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[1]["message"]["parent"], rows[0]["message"]["id"]);
+    assert_eq!(rows[2]["message"]["parent"], rows[1]["message"]["id"]);
+}
+
+#[test]
+fn user_or_unreadable_chunks_end_the_preceding_execution_witness() {
+    let native = result("unowned after boundary");
+    for boundary in [
+        json!({"id": "boundary", "role": "user", "text": "new prompt"}),
+        json!({"id": "boundary", "role": "future-role", "text": "unknown role"}),
+        json!({"id": "boundary", "role": null}),
+        json!({"id": "boundary", "role": "model", "parts": []}),
+    ] {
+        let expected_rows = if boundary["role"] == "user" { 3 } else { 2 };
+        let parsed = run_chunks(&[
+            json!({"id": "call", "role": "model", "executableCode": code(1)["executableCode"]}),
+            boundary,
+            json!({"id": "answer", "role": "model", "codeExecutionResult": native["codeExecutionResult"]}),
+        ]);
+        check_results(&parsed, &[(&native, None)]);
+        assert_eq!(
+            parsed["output"]["messages"].as_array().unwrap().len(),
+            expected_rows
+        );
+    }
+}
+
+#[test]
+fn several_unanswered_calls_across_chunks_do_not_establish_a_unique_owner() {
+    let native = result("ambiguous across chunks");
+    let parsed = run_chunks(&[
+        json!({"id": "first", "role": "model", "executableCode": code(1)["executableCode"]}),
+        json!({"id": "second", "role": "model", "executableCode": code(2)["executableCode"]}),
+        json!({"id": "third", "role": "model", "executableCode": code(3)["executableCode"]}),
+        json!({"id": "answer", "role": "model", "codeExecutionResult": native["codeExecutionResult"]}),
+    ]);
+    check_results(&parsed, &[(&native, None)]);
+    assert_eq!(
+        blocks(&parsed)
+            .into_iter()
+            .filter(|b| b["type"] == "tool_call")
+            .count(),
+        3
+    );
 }

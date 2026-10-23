@@ -103,6 +103,8 @@ struct PromptState {
     metadata: Option<Json>,
     model: Option<String>,
     previous: Option<polylogue_model::MessageId>,
+    pending_call: Option<String>,
+    ambiguous_calls: bool,
     position: usize,
     started: bool,
 }
@@ -282,14 +284,7 @@ impl ExportParser for AiStudio {
                 evidence: "branchParent.promptId".into(),
             });
         }
-        match self.message(
-            &sid,
-            i,
-            chunk,
-            self.state.model.as_deref(),
-            self.state.previous.clone(),
-            sink,
-        ) {
+        match self.message(&sid, i, chunk, sink) {
             Ok(message) => {
                 self.state.previous = Some(message.id.clone());
                 let offset = sink.position();
@@ -300,7 +295,11 @@ impl ExportParser for AiStudio {
                 });
                 sink.records.record(&kind, &Disposition::Materialized);
             }
-            Err(d) => sink.records.record(&kind, &d),
+            Err(d) => {
+                self.state.pending_call = None;
+                self.state.ambiguous_calls = false;
+                sink.records.record(&kind, &d);
+            }
         }
         Ok(())
     }
@@ -328,15 +327,18 @@ fn system_text(value: Option<&Json>) -> Option<String> {
 
 impl AiStudio {
     fn message(
-        &self,
+        &mut self,
         sid: &polylogue_model::SessionId,
         position: usize,
         chunk: &Json,
-        model: Option<&str>,
-        parent: Option<polylogue_model::MessageId>,
         sink: &mut Sink<'_>,
     ) -> Result<Message, Disposition> {
-        let role = match chunk_role(chunk) {
+        let native_role = chunk_role(chunk);
+        if native_role != Some("model") {
+            self.state.pending_call = None;
+            self.state.ambiguous_calls = false;
+        }
+        let role = match native_role {
             Some("user") => Role::User,
             Some("model") => Role::Assistant,
             Some(other) => return Err(Disposition::refused(format!("unknown role {other}"))),
@@ -359,17 +361,15 @@ impl AiStudio {
             .map(Vec::as_slice)
             .unwrap_or_default();
         let mut calls = 0;
-        let mut pending_call = None;
-        let mut ambiguous_calls = false;
         for item in std::iter::once(chunk).chain(parts) {
             if let Some(code) = item.get("executableCode") {
                 calls += 1;
                 let call_id = format!("{native}:code{calls}");
-                if pending_call.is_some() || ambiguous_calls {
-                    pending_call = None;
-                    ambiguous_calls = true;
+                if self.state.pending_call.is_some() || self.state.ambiguous_calls {
+                    self.state.pending_call = None;
+                    self.state.ambiguous_calls = true;
                 } else {
-                    pending_call = Some(call_id.clone());
+                    self.state.pending_call = Some(call_id.clone());
                 }
                 blocks.push(Block::ToolCall {
                     call_id: Some(call_id),
@@ -383,8 +383,8 @@ impl AiStudio {
             if let Some(result) = item.get("codeExecutionResult") {
                 // A result consumes the preceding candidate group. Zero or
                 // several unanswered calls do not establish a unique owner.
-                let call_id = pending_call.take();
-                ambiguous_calls = false;
+                let call_id = self.state.pending_call.take();
+                self.state.ambiguous_calls = false;
                 let outcome = match str_of(result, "outcome") {
                     Some("OUTCOME_OK") => ToolOutcome::Ok,
                     Some("OUTCOME_FAILED") => ToolOutcome::Error { reason: None },
@@ -431,10 +431,10 @@ impl AiStudio {
         }
 
         let mut message = plain(id, sid.clone(), role, blocks);
-        message.parent = parent;
+        message.parent = self.state.previous.clone();
         message.at = chunk.get("createTime").and_then(time_of);
         if role == Role::Assistant {
-            message.model = model.map(str::to_owned);
+            message.model = self.state.model.clone();
             message.stop_reason = string_of(chunk, "finishReason");
             let tokens = chunk.get("tokenCount").and_then(Json::as_u64);
             message.usage = Usage {
