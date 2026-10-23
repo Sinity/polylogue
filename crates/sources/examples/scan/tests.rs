@@ -153,3 +153,16 @@ fn coalesced_snapshots_use_end_offsets_not_a_sum_of_ends() {
     assert_eq!(scanned.counts.accounting.framed, 2);
     assert_eq!(scanned.counts.bytes, bytes.len() as u64);
 }
+
+#[test]
+fn parser_failures_are_not_unknown_dispositions_or_source_diagnostics() {
+    let parser = (polylogue_sources::origin::by_name("chatgpt").unwrap().open)(
+        Path::new("conversations.json")).unwrap();
+    let scanned = scan_reader(&parser, std::io::Cursor::new(b"PRIVATE_BODY_MARKER"));
+    assert!(matches!(scanned.outcome, Outcome::Failed { stage: "parse",
+        error: Failure::Parse { kind: "retained_export_reader_required" } }));
+    assert_eq!(scanned.counts.bytes, 19);
+    assert_eq!(scanned.counts.accounting.framed, 0);
+    let diagnostic = Failure::parse(ParseError::Snapshot("PRIVATE_BODY_MARKER".into()));
+    assert!(!serde_json::to_string(&diagnostic).unwrap().contains("PRIVATE_BODY_MARKER"));
+}
