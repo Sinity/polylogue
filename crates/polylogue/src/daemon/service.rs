@@ -187,9 +187,10 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
     };
     match request {
         Request::BrowserEnqueue { action } => {
-            let enabled = reader
-                .setting("browser.actions", &machine_id())
-                .is_ok_and(|value| value.as_deref() == Some("on"));
+            let enabled = match reader.setting("browser.actions", &machine_id()) {
+                Ok(value) => value.as_deref() == Some("on"),
+                Err(error) => return store_error(&error),
+            };
             let ctx = match crate::browser::Ctx::at(&d.config, &d.archive) {
                 Ok(ctx) => ctx,
                 Err(error) => return self::error("store", error),
