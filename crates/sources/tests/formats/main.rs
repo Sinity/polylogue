@@ -3,6 +3,7 @@
 //! expected rows of every case under `examples/sources/`.
 
 mod ai_studio_outcomes;
+mod ai_studio_pairing;
 mod attachment_direction;
 mod chatgpt_export;
 mod claude_code_wire;
