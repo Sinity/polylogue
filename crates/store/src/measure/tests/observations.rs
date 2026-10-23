@@ -171,3 +171,57 @@ fn unresolved_item_and_harness_followups_do_not_prove_a_call_was_passed_without_
         "no_result"
     );
 }
+
+#[test]
+fn boundary_scope_is_not_discarded_by_a_later_time_window_with_no_recorded_items() {
+    let mut world = WriterWorld::new();
+    world.write_output(
+        "unknown",
+        "codex",
+        "/synthetic/rollout.jsonl",
+        Output {
+            sessions: vec![Session::new(sid("observed"), SessionKind::Main)],
+            events: vec![event("response_boundaries_unknown", T0, json!({}))],
+            ..Output::default()
+        },
+        1,
+    );
+    let known = message(
+        "known",
+        "known",
+        Role::Assistant,
+        T0,
+        vec![Block::Text {
+            text: "known response".into(),
+        }],
+    );
+    world.write("known", vec![known]);
+    let pool = crate::ReadPool::open(&world.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let pk = |id: &str| {
+        reader
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT pk FROM session WHERE id=?1",
+                [sid(id).to_string()],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let scope = |id: &str| Scope {
+        sessions: Some(vec![pk(id)]),
+        since: Some(T0 + 1),
+        ..Scope::default()
+    };
+    let unknown = usage(&reader, &scope("observed")).unwrap();
+    assert_eq!(unknown.messages, None);
+    assert_eq!(unknown.recorded_model_items, 0);
+    assert_eq!(unknown.unknown_boundary_items, 0);
+    assert_eq!(unknown.recorded_usage.observations, 0);
+    assert!(unknown.tokens.input.response_total_unknown);
+    let known = usage(&reader, &scope("known")).unwrap();
+    assert_eq!(known.messages, Some(0));
+    assert_eq!(known.recorded_model_items, 0);
+    assert!(!known.tokens.input.response_total_unknown);
+}

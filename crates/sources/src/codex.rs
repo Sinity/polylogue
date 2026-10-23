@@ -191,6 +191,8 @@ pub struct Carry {
     model: Option<String>,
     #[serde(default)]
     usage: usage::Observer,
+    #[serde(default)]
+    scope_recorded: bool,
     calls: BTreeMap<String, Call>,
     /// Commands left running, by handle (`process 123`, `cell 4`), to the
     /// call that started them.
@@ -1134,6 +1136,21 @@ impl Parser for Rollout {
     }
 
     fn flush(&self, carry: &mut Carry, out: &mut Output) {
+        if !carry.scope_recorded && self.own(carry).is_some() {
+            // A source scope fact, not a timestamped occurrence or item.
+            let owner = carry.copied_observation.take();
+            self.observation(
+                carry,
+                &serde_json::json!({}),
+                "response_boundaries_unknown",
+                None,
+                out,
+            );
+            out.events.last_mut().expect("scope fact").range = None;
+            carry.copied_observation = owner;
+            carry.scope_recorded = true;
+        }
+
         // The branch point is known once the copied history has been read.
         if let (Some(at), Some(s)) = (&carry.branch_point, &carry.session) {
             for l in &mut out.links {

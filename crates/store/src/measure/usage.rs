@@ -62,6 +62,8 @@ pub struct UsageReport {
     /// Known response rows; this subset is not the total when messages is None.
     pub known_response_messages: u64,
     pub unknown_boundary_items: u64,
+    /// Stored assistant contributions written by a model, not API requests.
+    pub recorded_model_items: u64,
     pub recorded_usage: RecordedUsage,
     pub tokens: TokensByKind,
     /// What the responses would have cost at API list prices, from the price
@@ -78,7 +80,8 @@ pub struct UsageReport {
 }
 
 pub(super) const RESPONSE_ROWS: &str = "m.role = 'assistant' AND m.written_by = 'model'
- AND coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) = 0";
+ AND coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) = 0
+ AND NOT EXISTS(SELECT 1 FROM current_event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown')";
 
 const TOKEN_SUMS: &str = "
     count(*), count(DISTINCT m.session_pk),
@@ -174,7 +177,9 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
         .collect();
     let recorded_usage = recorded(reader, scope)?;
     let unknown_boundary_items = unknown_items(reader, &cond, &params)?;
-    let unknown = unknown_boundary_items > 0 || recorded_usage.observations > 0;
+    let unknown = unknown_boundary_items > 0
+        || recorded_usage.observations > 0
+        || unknown_scope(reader, scope)?;
     mark_unknown(&mut total.tokens, &mut total.api, unknown);
     total.reported.response_total_unknown = unknown;
     Ok(UsageReport {
@@ -188,6 +193,7 @@ pub(super) fn report(reader: &Reader<'_>, scope: &Scope) -> Result<UsageReport> 
         messages: (!unknown).then_some(total.messages),
         known_response_messages: total.messages,
         unknown_boundary_items,
+        recorded_model_items: total.messages + unknown_boundary_items,
         recorded_usage,
         tokens: total.tokens,
         api_cost: total.api,
@@ -247,7 +253,7 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
             ..Scope::default()
         };
         let observations = recorded(reader, &own_scope)?;
-        if observations.observations > 0 {
+        if observations.observations > 0 || unknown_scope(reader, &own_scope)? {
             physical.messages = None;
             mark_unknown(&mut physical.tokens, &mut physical.api_cost, true);
         }
@@ -261,6 +267,7 @@ pub(super) fn per_session(reader: &Reader<'_>, scope: &Scope) -> Result<Vec<Sess
         let mut logical = totals(reader, &format!("m.pk IN ({list})"))?;
         if physical.messages.is_none() {
             logical.messages = None;
+            mark_unknown(&mut logical.tokens, &mut logical.api_cost, true);
         }
         out.push(SessionUsage {
             session: id,
@@ -313,10 +320,30 @@ fn unknown_items(
         &format!(
             "SELECT count(*) FROM current_message m
         WHERE m.role='assistant' AND m.written_by='model' AND {cond} AND (
-        json_extract(m.attrs_json,'$.production.response_boundary_unknown')=1)"
+        json_extract(m.attrs_json,'$.production.response_boundary_unknown')=1 OR
+        EXISTS(SELECT 1 FROM current_event e WHERE e.session_pk=m.session_pk AND e.kind='response_boundaries_unknown'))"
         ),
         rusqlite::params_from_iter(params.iter()),
         |row| row.get::<_, i64>(0).map(|n| n as u64),
+    )?)
+}
+
+fn unknown_scope(reader: &Reader<'_>, scope: &Scope) -> Result<bool> {
+    // Missing boundary evidence is a property of the selected source scope;
+    // a later record-time window cannot turn it into known boundaries.
+    let scope = Scope {
+        since: None,
+        until: None,
+        ..scope.clone()
+    };
+    let (cond, params) = scope.condition();
+    Ok(reader.conn()?.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM current_event m
+        WHERE m.kind='response_boundaries_unknown' AND {cond})"
+        ),
+        rusqlite::params_from_iter(params.iter()),
+        |r| r.get(0),
     )?)
 }
 

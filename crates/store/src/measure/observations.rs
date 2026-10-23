@@ -21,6 +21,7 @@ pub(super) fn visit<T: DeserializeOwned>(
         origin TEXT NOT NULL, id TEXT NOT NULL, at INTEGER, data BLOB NOT NULL,
         confirmed INTEGER NOT NULL, PRIMARY KEY(origin,id)) WITHOUT ROWID;",
     )?;
+    let transaction = seen.unchecked_transaction()?;
     let (cond, mut params) = scope.condition();
     params.push(kind.to_owned().into());
     let mut stmt = conn.prepare(&format!(
@@ -39,20 +40,23 @@ pub(super) fn visit<T: DeserializeOwned>(
             .get("completion_observed")
             .and_then(serde_json::Value::as_bool)
             == Some(true);
-        seen.execute("INSERT INTO measurement_observation(id,origin,at,data,confirmed) VALUES (?1,?2,?3,?4,?5)
+        transaction.execute("INSERT INTO measurement_observation(id,origin,at,data,confirmed) VALUES (?1,?2,?3,?4,?5)
             ON CONFLICT(origin,id) DO UPDATE SET origin=excluded.origin,at=excluded.at,data=excluded.data,confirmed=excluded.confirmed
             WHERE excluded.confirmed > measurement_observation.confirmed",
             rusqlite::params![id, row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?, packed, confirmed])?;
     }
-    let mut stmt =
-        seen.prepare("SELECT origin,at,data FROM measurement_observation ORDER BY at,id")?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        visit(
-            &row.get::<_, String>(0)?,
-            row.get(1)?,
-            crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(2)?)?,
-        )?;
+    {
+        let mut stmt = transaction
+            .prepare("SELECT origin,at,data FROM measurement_observation ORDER BY at,id")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            visit(
+                &row.get::<_, String>(0)?,
+                row.get(1)?,
+                crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(2)?)?,
+            )?;
+        }
     }
+    transaction.commit()?;
     Ok(())
 }

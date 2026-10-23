@@ -221,6 +221,65 @@ fn copied_token_records_keep_their_parent_scope_and_original_observation_identit
             .output
             .events
             .iter()
+            .filter(|e| e.kind != "response_boundaries_unknown")
             .all(|e| e.session.native().as_str() == PARENT)
     );
+}
+
+#[test]
+fn header_only_and_rate_only_rollouts_keep_the_unknown_boundary_scope_fact() {
+    for rows in [
+        vec![meta(json!({}))],
+        vec![
+            meta(json!({})),
+            env(
+                2,
+                "event_msg",
+                json!({"type":"token_count","info":null,
+        "rate_limits":{"primary":{"window_minutes":300,"used_percent":1}}}),
+            ),
+        ],
+    ] {
+        let step = run(&rollout(), &mut Carry::default(), &jsonl(&rows), 0).unwrap();
+        assert!(step.output.messages.is_empty());
+        let fact = step
+            .output
+            .events
+            .iter()
+            .find(|e| e.kind == "response_boundaries_unknown")
+            .unwrap();
+        assert_eq!(fact.data, json!({}));
+        assert_eq!(fact.at, None);
+        assert_eq!(fact.after, None);
+        assert_eq!(fact.range, None);
+    }
+}
+
+#[test]
+fn regressive_snapshots_cannot_recharge_an_old_delta_or_prove_a_new_counter_epoch() {
+    let trace = vec![
+        meta(json!({})),
+        count(2, counters(10, 2), counters(10, 2)),
+        count(3, counters(30, 5), counters(20, 3)),
+        count(4, counters(10, 2), counters(10, 2)),
+        count(5, counters(30, 5), counters(20, 3)),
+        count(6, counters(50, 8), counters(20, 3)),
+    ];
+    let step = run(&rollout(), &mut Carry::default(), &jsonl(&trace), 0).unwrap();
+    let r = readings(&step);
+    assert_eq!(
+        r.iter()
+            .filter(|r| r.completion_observed == Some(true))
+            .count(),
+        2
+    );
+    assert_eq!(
+        r.iter()
+            .filter(|r| r.completion_observed == Some(true))
+            .filter_map(|r| r.usage.input)
+            .sum::<u64>(),
+        30
+    );
+    assert_eq!(r.last().unwrap().usage.input, Some(20));
+    assert_eq!(r.last().unwrap().completion_observed, None);
 }

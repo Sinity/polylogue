@@ -30,6 +30,14 @@ impl Counters {
             && self.total > 0
     }
 
+    fn dominates(self, previous: Self) -> bool {
+        self.input >= previous.input
+            && self.cached >= previous.cached
+            && self.output >= previous.output
+            && self.reasoning >= previous.reasoning
+            && self.total >= previous.total
+    }
+
     fn follows(self, previous: Self, last: Self) -> bool {
         previous.input.checked_add(last.input) == Some(self.input)
             && previous.cached.checked_add(last.cached) == Some(self.cached)
@@ -44,6 +52,8 @@ pub(super) struct Observer {
     observed: Option<Counters>,
     report: Option<String>,
     recorded: Option<String>,
+    consumed: Option<Counters>,
+    continuous: bool,
 }
 
 pub(super) fn identity(value: &impl Serialize) -> String {
@@ -54,6 +64,7 @@ impl Observer {
     pub(super) fn start(&mut self, offset: u64, copied: bool) {
         if offset == 0 && !copied {
             self.observed = Some(Counters::default());
+            self.continuous = true;
         }
     }
 
@@ -71,6 +82,16 @@ impl Observer {
         // An orphan still advances the observed baseline. Missing/malformed
         // state invalidates it instead of retaining a stale associated one.
         self.observed = total;
+        if let Some(total) = total
+            && [previous, self.consumed]
+                .into_iter()
+                .flatten()
+                .any(|p| !total.dominates(p))
+        {
+            // A lower state does not prove a new counter epoch. Subsequent
+            // numeric reports remain available without charging a replay.
+            self.continuous = false;
+        }
         let report = identity(info);
         if self.report.replace(report.clone()).as_ref() == Some(&report) {
             return None;
@@ -125,10 +146,16 @@ impl Observer {
         }
         let completion = match (total, previous, last) {
             (Some(total), Some(previous), Some(last)) => {
-                last.ordinary() && total.follows(previous, last)
+                self.continuous
+                    && last.ordinary()
+                    && total.follows(previous, last)
+                    && self.consumed != Some(total)
             }
             _ => false,
         };
+        if completion {
+            self.consumed = total;
+        }
         self.recorded = Some(observation.clone());
         Some(UsageObservation {
             observation,
