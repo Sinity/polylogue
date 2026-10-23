@@ -449,6 +449,10 @@ impl AiStudio {
                 ..Usage::default()
             };
         }
+        if role == Role::User {
+            self.state.pending_call = None;
+            self.state.ambiguous_calls = false;
+        }
         Ok(message)
     }
 }

@@ -156,6 +156,7 @@ fn user_or_unreadable_chunks_end_the_preceding_execution_witness() {
     let native = result("unowned after boundary");
     for boundary in [
         json!({"id": "boundary", "role": "user", "text": "new prompt"}),
+        json!({"id": "boundary", "role": "user", "executableCode": code(2)["executableCode"]}),
         json!({"id": "boundary", "role": "future-role", "text": "unknown role"}),
         json!({"id": "boundary", "role": null}),
         json!({"id": "boundary", "role": "model", "parts": []}),
