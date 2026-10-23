@@ -170,10 +170,15 @@ fn to_sql(v: &Value) -> crate::Result<Sql> {
     Ok(match v {
         Value::Null => Sql::Null,
         Value::Bool(b) => Sql::Integer(i64::from(*b)),
-        Value::Number(n) => match n.as_i64() {
-            Some(i) => Sql::Integer(i),
-            None => Sql::Real(n.as_f64().unwrap_or(f64::NAN)),
-        },
+        Value::Number(n) if n.is_f64() => Sql::Real(
+            n.as_f64()
+                .ok_or_else(|| crate::StoreError::Invalid("restored REAL must be finite".into()))?,
+        ),
+        // Integer tokens cannot pass through f64: that would round values
+        // outside SQLite's signed range rather than refuse them.
+        Value::Number(n) => Sql::Integer(n.as_i64().ok_or_else(|| {
+            crate::StoreError::Invalid("restored number is outside SQLite's numeric range".into())
+        })?),
         Value::String(s) => Sql::Text(s.clone()),
         Value::Object(o) => match o.get("hex").and_then(Value::as_str) {
             Some(h) => Sql::Blob(unhex(h)?),
