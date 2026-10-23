@@ -165,7 +165,7 @@ macro_rules! reserved {
 pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-code",
-        parser_version: 10,
+        parser_version: 11,
         support: Support::Parsed,
         route: Route::Live,
         root: crate::claude_code::ROOT,
