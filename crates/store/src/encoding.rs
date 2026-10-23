@@ -105,7 +105,13 @@ impl RowPacker {
     }
 
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
-        let hash = *blake3::hash(&serde_json::to_vec(message)?).as_bytes();
+        // Only the derived identity is canonicalized; encoded row values stay
+        // unchanged. Release the one-message Value before preparing rows.
+        let hash = {
+            let mut canonical = serde_json::to_value(message)?;
+            canonical.sort_all_objects();
+            *blake3::hash(&serde_json::to_vec(&canonical)?).as_bytes()
+        };
         let attrs = Message {
             id: message.id.clone(),
             session: message.session.clone(),

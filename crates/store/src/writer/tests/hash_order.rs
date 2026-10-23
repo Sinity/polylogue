@@ -45,10 +45,16 @@ fn structured_message(reverse: bool) -> Message {
 }
 
 #[test]
-#[ignore = "discriminating probe requires --features serde_json/preserve_order"]
 fn message_version_identity_ignores_nested_json_member_order() {
     let first = structured_message(false);
     let second = structured_message(true);
+    assert_eq!(
+        blake3::Hash::from_bytes(crate::encoding::PreparedMessage::new(&first).unwrap().hash)
+            .to_hex()
+            .as_str(),
+        "6522639c8fb221f38200c544778f220c0b2f739f9961f65cd06218cd2d93652e",
+        "the canonical fixture stays stable across JSON map features"
+    );
     assert_eq!(first, second, "member order does not change JSON values");
     assert_ne!(
         serde_json::to_vec(&first).unwrap(),
@@ -103,29 +109,37 @@ fn message_version_identity_ignores_nested_json_member_order() {
 }
 
 #[test]
-#[ignore = "migration probe; does not change production hash semantics"]
-fn fully_sorted_message_json_changes_legacy_struct_hash_even_without_json_blocks() {
-    let message = text_message(
-        "legacy",
-        "legacy",
-        Role::User,
-        "Synthetic unchanged text",
-        None,
-    );
-    let legacy = serde_json::to_vec(&message).unwrap();
-    let mut canonical = serde_json::to_value(&message).unwrap();
-    canonical.sort_all_objects();
-    let canonical = serde_json::to_vec(&canonical).unwrap();
-    assert_ne!(legacy, canonical);
-    let old_hash = blake3::hash(&legacy);
-    let new_hash = blake3::hash(&canonical);
-    println!("plain-text legacy={old_hash} fully-sorted={new_hash}");
-    assert_ne!(
-        old_hash, new_hash,
-        "a full canonical rule needs an explicit index-generation boundary"
-    );
-    assert_eq!(
-        serde_json::from_slice::<Message>(&canonical).unwrap(),
-        message
-    );
+fn distinct_structured_values_remain_inspectable_versions() {
+    for prepared in [false, true] {
+        let first = structured_message(false);
+        let mut different = first.clone();
+        if let Some(Block::Other { data, .. }) = different.blocks.last_mut() {
+            data["array"].as_array_mut().unwrap().reverse();
+        }
+        assert_ne!(first, different);
+        let w = world();
+        for (input, rank, message) in [
+            ("first", 0, first.clone()),
+            ("different", 1, different.clone()),
+        ] {
+            let mut b = batch(input, rank, 0, vec![row(1, message)], &["hash-order"]);
+            if prepared {
+                b.parse[0].prepare();
+            }
+            w.writer.send(b).unwrap();
+        }
+        assert!(w.writer.flush().unwrap().errors.is_empty());
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let versions = reader.message_versions(&first.id).unwrap();
+        assert_eq!(versions.len(), 2);
+        assert!(versions.iter().any(|version| version.message == first));
+        assert!(versions.iter().any(|version| version.message == different));
+        assert_eq!(
+            reader
+                .query("SELECT count(*) AS n FROM message_version", &[])
+                .unwrap()[0]["n"],
+            2
+        );
+    }
 }

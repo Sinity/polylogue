@@ -34,7 +34,7 @@ fn index_format_changes_require_a_version_and_digest_update() {
                 .to_string()
         ),
         (
-            29,
+            30,
             "ead21c52de64b4979a0c337ad16148e67e0ae7031a92eda5ef1f3d6d5fb7cae7".to_owned(),
             "e27529a9578815c3ee02058decc971ecf7c7125774a6d0e9b885eddd8a928490".to_owned()
         ),

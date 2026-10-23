@@ -13,7 +13,7 @@ pub const EMBEDDINGS: &str = include_str!("schema/embeddings.sql");
 
 /// Bumped when the index schema or row format changes; a different version means the
 /// index is rebuilt into a new file.
-pub const INDEX_VERSION: u32 = 29;
+pub const INDEX_VERSION: u32 = 30;
 
 /// Migrations for `archive.db`, applied in order after the base schema.
 /// Each is additive; an archive at a higher number than this list is refused.

@@ -205,3 +205,5 @@ fn an_exhausted_counter_refuses_instead_of_reusing_a_position() {
         "9223372036854775807"
     );
 }
+
+mod hash_order;
