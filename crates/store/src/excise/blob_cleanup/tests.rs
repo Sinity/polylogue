@@ -137,3 +137,75 @@ fn a_later_retirement_visit_error_rolls_back_staged_intent_and_retries() {
         "prior"
     );
 }
+
+#[test]
+fn physical_cleanup_keeps_intent_visible_without_blocking_read_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
+    let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    let hash = [7u8; 32];
+    conn.execute(
+        "INSERT INTO pending_blob_excision VALUES (?1,'synthetic')",
+        [&hash[..]],
+    )
+    .unwrap();
+    drop(conn);
+    let pool = std::sync::Arc::new(crate::ReadPool::open(&archive).unwrap());
+    let (physical, reached) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let location = archive.clone();
+    let deletion = std::thread::spawn(move || {
+        let conn = open_write(&location.archive_db(), cache::SETUP).unwrap();
+        delete_pending(&conn, |_| {
+            physical.send(()).unwrap();
+            resume.recv().unwrap();
+            Ok(())
+        })
+    });
+    reached.recv().unwrap();
+    let (reply, result) = std::sync::mpsc::channel();
+    let reads = pool.clone();
+    let reading = std::thread::spawn(move || {
+        let outcome = reads.reader().unwrap().change_position();
+        reply
+            .send(matches!(outcome, Err(StoreError::ExcisionPending)))
+            .unwrap();
+    });
+    let prompt = result.recv_timeout(std::time::Duration::from_secs(5));
+    release.send(()).unwrap();
+    deletion.join().unwrap().unwrap();
+    reading.join().unwrap();
+    assert_eq!(
+        prompt.unwrap(),
+        true,
+        "pending cleanup must refuse instead of waiting for physical work"
+    );
+    pool.reader().unwrap().change_position().unwrap();
+}
+
+#[test]
+fn acknowledgment_cannot_erase_a_changed_cleanup_intent() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
+    let conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();
+    let hash = [8u8; 32];
+    conn.execute(
+        "INSERT INTO pending_blob_excision VALUES (?1,'before')",
+        [&hash[..]],
+    )
+    .unwrap();
+    let outcome = delete_pending(&conn, |_| {
+        conn.execute("UPDATE pending_blob_excision SET excision_id='changed'", [])?;
+        Ok(())
+    });
+    assert!(
+        matches!(outcome,Err(StoreError::Invalid(message)) if message.contains("changed during deletion"))
+    );
+    assert_eq!(
+        conn.query_row("SELECT excision_id FROM pending_blob_excision", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap(),
+        "changed"
+    );
+}

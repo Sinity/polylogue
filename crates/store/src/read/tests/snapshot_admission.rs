@@ -49,7 +49,7 @@ fn first_pin_cannot_combine_states_separated_by_two_publications() {
                 conn.query_row(
                     "SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'",
                     [],
-                    |row| row.get::<_, u64>(0),
+                    |row| row.get::<_, i64>(0),
                 )
                 .unwrap_or(0)
             };
