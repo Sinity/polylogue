@@ -26,11 +26,12 @@ fn cli_read_shows_native_hook_errors_without_an_injected_context_message() {
     loop {
         let ready = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive))
             .and_then(|pool| {
-                Ok(pool
+                let ready = pool
                     .reader()?
                     .events(&id)?
                     .iter()
-                    .any(|event| event.data == summary))
+                    .any(|event| event.data == summary);
+                Ok(ready)
             })
             .unwrap_or(false);
         if ready {
