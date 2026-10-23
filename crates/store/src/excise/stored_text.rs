@@ -5,7 +5,9 @@ use text_matches::TextMatches;
 
 mod bytes;
 mod framing;
+mod plan;
 use bytes::PlainBytes;
+use plan::Plan;
 
 const READ_CHUNK: usize = 64 * 1024;
 const WRITE_CHUNK: usize = 1024 * 1024;
@@ -13,8 +15,7 @@ type Chain = (String, i64);
 type Ranges = Vec<(u64, u64)>;
 
 pub(super) struct StoredText {
-    ranges: BTreeMap<Chain, Ranges>,
-    patches: BTreeMap<Chain, Vec<(u64, Vec<u8>)>>,
+    plan: Plan,
     fill: u8,
     bytes: PlainBytes,
 }
@@ -53,8 +54,7 @@ pub(super) fn find_in(
     store: &hashed_blobs::Store,
     needle: &str,
 ) -> Result<StoredText> {
-    let mut ranges = BTreeMap::new();
-    let mut patches = BTreeMap::new();
+    let plan = Plan::new()?;
     let fill = text_matches::replacement(needle)?;
     let mut bytes = PlainBytes::new()?;
     let mut chains = archive.prepare(
@@ -99,7 +99,7 @@ pub(super) fn find_in(
                     )));
                 }
                 e.length = e.length.min(length - pos);
-                bytes.visit(archive, store, &e, |bytes, at| {
+                bytes.visit(&plan, archive, store, &e, |bytes, at| {
                     if header.len() < 16 {
                         header.extend_from_slice(&bytes[..bytes.len().min(16 - header.len())]);
                         if header.starts_with(b"SQLite format 3\0") {
@@ -142,69 +142,38 @@ pub(super) fn find_in(
             }
             scanner.finish().map_err(|e| unsupported(e.to_string()))
         })()?;
-        if !scan.is_empty() {
-            let rewritten = framing::rewrite(
-                archive,
-                store,
-                &mut bytes,
-                &(input.clone(), chain),
-                &frames,
-                &scan,
-                fill,
-            )?;
-            patches.insert((input.clone(), chain), rewritten);
-            ranges.insert((input, chain), scan);
-        }
+        plan.matches(&input, chain, &scan)?;
+        let rewritten = framing::rewrite(
+            archive,
+            store,
+            &mut bytes,
+            &plan,
+            &(input.clone(), chain),
+            &frames,
+            fill,
+        )?;
+        plan.patches(&input, chain, &rewritten)?;
     }
-    Ok(StoredText {
-        ranges,
-        patches,
-        fill,
-        bytes,
-    })
+    Ok(StoredText { plan, fill, bytes })
 }
 
 impl StoredText {
-    fn changed_ranges(&self) -> BTreeMap<Chain, Ranges> {
-        let mut changed = self.ranges.clone();
-        for (chain, patches) in &self.patches {
-            changed.entry(chain.clone()).or_default().extend(
-                patches
-                    .iter()
-                    .map(|(at, bytes)| (*at, *at + bytes.len() as u64)),
-            );
-        }
-        changed
-    }
-
     pub(super) fn blobs(&self, archive: &rusqlite::Connection) -> Result<Vec<BlobHash>> {
-        let mut hashes = BTreeSet::new();
-        let mut stmt = archive.prepare("SELECT DISTINCT blob FROM extent WHERE input = ?1 AND chain = ?2 AND offset < ?4 AND offset + length > ?3")?;
-        for ((input, chain), ranges) in self.changed_ranges() {
-            for (start, end) in ranges {
-                for row in stmt.query_map(params![input, chain, start as i64, end as i64], |r| {
-                    r.get::<_, Vec<u8>>(0)
-                })? {
-                    let hash = row?
-                        .try_into()
-                        .map_err(|_| StoreError::Invalid("blob hash is not 32 bytes".into()))?;
-                    hashes.insert(BlobHash(hash));
-                }
-            }
-        }
-        Ok(hashes.into_iter().collect())
+        self.plan.stage_affected(archive)?;
+        let mut hashes = Vec::new();
+        self.plan.visit_blobs(|hash| {
+            hashes.push(hash);
+            Ok(())
+        })?;
+        Ok(hashes)
     }
 
-    pub(super) fn inputs(&self) -> BTreeSet<String> {
-        self.ranges.keys().map(|(input, _)| input.clone()).collect()
+    pub(super) fn inputs(&self) -> Result<BTreeSet<String>> {
+        self.plan.inputs()
     }
 
-    pub(super) fn counts(&self) -> BTreeMap<String, u64> {
-        let mut out = BTreeMap::new();
-        for ((input, _), ranges) in &self.ranges {
-            *out.entry(input.clone()).or_default() += ranges.len() as u64;
-        }
-        out
+    pub(super) fn counts(&self) -> Result<BTreeMap<String, u64>> {
+        self.plan.counts()
     }
 
     pub(super) fn overwrite(
@@ -213,83 +182,28 @@ impl StoredText {
         req: &ExciseRequest,
         refused: &mut RefusedJson,
     ) -> Result<()> {
-        let mut blobs = BTreeSet::new();
-        let mut observations: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
-        let mut affected = t.archive.prepare(
-            "SELECT blob, offset, length, blob_offset FROM extent WHERE input = ?1 AND chain = ?2
-             AND offset < ?4 AND offset + length > ?3",
-        )?;
-        for ((input, chain), ranges) in self.changed_ranges() {
-            for (start, end) in ranges {
-                for row in
-                    affected.query_map(params![input, chain, start as i64, end as i64], |r| {
-                        Ok((
-                            r.get::<_, Vec<u8>>(0)?,
-                            r.get::<_, i64>(1)? as u64,
-                            r.get::<_, i64>(2)? as u64,
-                            r.get::<_, i64>(3)? as u64,
-                        ))
-                    })?
-                {
-                    let (hash, offset, length, blob_offset) = row?;
-                    let from = start.max(offset) - offset + blob_offset;
-                    let to = end.min(offset + length) - offset + blob_offset;
-                    observations
-                        .entry(input.clone())
-                        .or_default()
-                        .push(serde_json::json!([hex(&hash), from, to - from]));
-                    blobs.insert(hash);
-                }
-            }
-        }
-        drop(affected);
+        self.plan.stage_affected(t.archive)?;
         // A shared blob may contribute only a fragment of a match to one input.
         // Copy each referring extent, applying only that chain's matches. This
         // leaves unrelated input bytes exact and drops unused blob padding.
-        for hash in blobs {
-            let extents: Vec<Extent> = t.archive.prepare(
-                "SELECT input, chain, offset, length, blob, blob_offset FROM extent WHERE blob = ?1")?
-                .query_map([&hash], extent)?.collect::<rusqlite::Result<_>>()?;
-            for e in extents {
+        self.plan.visit_blobs(|hash| {
+            self.plan.freeze_extents(t.archive, hash)?;
+            self.plan.visit_extents(|e| {
                 let key = (e.input.clone(), e.chain);
-                let ranges = self.ranges.get(&key);
-                let patches = self.patches.get(&key);
                 let mut batch = t.store.batch(hashed_blobs::Durability::PerFile);
                 let mut buffer = Vec::with_capacity(WRITE_CHUNK);
                 let mut pieces = Vec::new();
-                self.bytes.visit(t.archive, t.store, &e, |bytes, at| {
-                    let mut bytes = bytes.to_vec();
-                    if let Some(ranges) = ranges {
-                        for &(start, end) in ranges {
-                            let start = start.max(at);
-                            let end = end.min(at + bytes.len() as u64);
-                            if start < end {
-                                for b in &mut bytes[(start - at) as usize..(end - at) as usize] {
-                                    if *b != b'\n' {
-                                        *b = self.fill;
-                                    }
-                                }
-                            }
+                self.bytes
+                    .visit(&self.plan, t.archive, t.store, &e, |bytes, at| {
+                        let mut bytes = bytes.to_vec();
+                        self.plan.rewrite(&key, at, &mut bytes, self.fill)?;
+                        buffer.extend_from_slice(&bytes);
+                        if buffer.len() == WRITE_CHUNK {
+                            pieces.push(Piece::prepare_in(&mut batch, &buffer)?);
+                            buffer.clear();
                         }
-                    }
-                    if let Some(patches) = patches {
-                        for (start, patch) in patches {
-                            let from = (*start).max(at);
-                            let end = (*start + patch.len() as u64).min(at + bytes.len() as u64);
-                            if from < end {
-                                bytes[(from - at) as usize..(end - at) as usize].copy_from_slice(
-                                    &patch[(from - start) as usize..(end - start) as usize],
-                                );
-                            }
-                        }
-                    }
-                    buffer.extend_from_slice(&bytes);
-                    if buffer.len() == WRITE_CHUNK {
-                        pieces.push(Piece::prepare_in(&mut batch, &buffer)?);
-                        buffer.clear();
-                    }
-                    Ok(())
-                })?;
+                        Ok(())
+                    })?;
                 if !buffer.is_empty() {
                     pieces.push(Piece::prepare_in(&mut batch, &buffer)?);
                 }
@@ -315,12 +229,14 @@ impl StoredText {
                     )?;
                     offset += piece.size;
                 }
-            }
-            refused.blobs.push(hex(&hash));
-        }
-        for (input, spans) in observations {
-            insert_excised_observations(t, &input, req, Some(&serde_json::Value::Array(spans)))?;
-        }
+                Ok(())
+            })?;
+            refused.blobs.push(hex(&hash.0));
+            Ok(())
+        })?;
+        self.plan.visit_observations(|input, spans| {
+            insert_excised_observations(t, input, req, Some(&spans))
+        })?;
         Ok(())
     }
 }

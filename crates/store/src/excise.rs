@@ -621,8 +621,8 @@ impl<'a> Plan<'a> {
         refused: &mut RefusedJson,
         hashes: &RemovalHashes<'_>,
     ) -> Result<()> {
-        let reparse = matches.inputs();
-        done.inputs_overwritten = matches.counts();
+        let reparse = matches.inputs()?;
+        done.inputs_overwritten = matches.counts()?;
         if !req.dry_run {
             matches.overwrite(t, req, refused)?;
         }

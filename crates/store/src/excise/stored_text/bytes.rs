@@ -1,11 +1,9 @@
 //! One verified copy of each physical blob for this excision attempt. Logical
 //! extents may revisit or reorder shared slices without decoding frames again.
 
-use super::{Extent, READ_CHUNK};
+use super::{Extent, Plan, READ_CHUNK};
 use crate::{Result, StoreError};
-use polylogue_model::BlobHash;
 use rusqlite::Connection;
-use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
 use std::os::unix::fs::{FileExt, PermissionsExt};
@@ -16,7 +14,6 @@ pub(super) struct PlainBytes {
     // Unlinked, mode 0600, under the process's managed temporary directory.
     file: File,
     length: u64,
-    places: BTreeMap<BlobHash, Place>,
     #[cfg(test)]
     decoded: u64,
 }
@@ -28,7 +25,6 @@ impl PlainBytes {
         Ok(Self {
             file,
             length: 0,
-            places: BTreeMap::new(),
             #[cfg(test)]
             decoded: 0,
         })
@@ -36,12 +32,13 @@ impl PlainBytes {
 
     pub(super) fn visit(
         &mut self,
+        plan: &Plan,
         archive: &Connection,
         store: &hashed_blobs::Store,
         extent: &Extent,
         mut f: impl FnMut(&[u8], u64) -> Result<()>,
     ) -> Result<()> {
-        let (start, length) = self.load(archive, store, extent)?;
+        let (start, length) = self.load(plan, archive, store, extent)?;
         let end = extent
             .blob_offset
             .checked_add(extent.length)
@@ -67,12 +64,13 @@ impl PlainBytes {
 
     fn load(
         &mut self,
+        plan: &Plan,
         archive: &Connection,
         store: &hashed_blobs::Store,
         extent: &Extent,
     ) -> Result<Place> {
-        if let Some(place) = self.places.get(&extent.blob) {
-            return Ok(*place);
+        if let Some(place) = plan.placement(&extent.blob)? {
+            return Ok(place);
         }
         let encoding: String = archive.query_row(
             "SELECT encoding FROM blob WHERE hash=?1",
@@ -98,10 +96,11 @@ impl PlainBytes {
         {
             self.decoded += copied.decoded_bytes;
         }
-        self.length = start
+        let end = start
             .checked_add(copied.bytes)
             .ok_or_else(|| StoreError::Invalid("temporary blob offsets overflow".into()))?;
-        self.places.insert(extent.blob, (start, copied.bytes));
+        plan.remember(&extent.blob, start, copied.bytes)?;
+        self.length = end;
         Ok((start, copied.bytes))
     }
 }

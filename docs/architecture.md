@@ -670,6 +670,18 @@ excisions cannot be reconciled retrospectively. One policy row remains the
 largest individual descriptor bound. Additive embeddings migrations preserve
 purchased vectors and reject newer unsupported schemas.
 
+Text excision preflights every retained logical chain before replacing bytes.
+Its unique logical matches, ordered frame-header patches, verified plaintext
+placements, affected blob keys, frozen referring extents and observation fragments
+share one disposable SQLite file with a 1 MiB page-cache target and mmap disabled.
+One unlinked mode-0600 plaintext file holds verified copies; a placement is
+recorded only after the full copy succeeds. The plan visits matches before header
+patches within each chain, preserving duplicate extent intersections and counts
+of overlapping unequal matches. Rewrites blank text before applying header
+patches, preserve unrelated shared fragments and discard unused blob padding.
+One chain's matcher results and frame metadata, one extent's pending replacement
+pieces and required final result/observation JSON remain memory bounds.
+
 Local file cleanup records each authorized deletion directly in
 `pending_blob_excision` in the archive transaction. Replaced blobs, orphaned
 files and retired local batches feed that table without an operation-wide

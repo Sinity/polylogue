@@ -389,3 +389,29 @@ fn a_retained_delta_base_refuses_text_excision_without_changing_canonical_bytes(
         base.0
     );
 }
+
+#[test]
+fn a_late_corrupt_snapshot_payload_refuses_before_installing_earlier_text_changes() {
+    use polylogue_model::snapshot_log::{Header, MAGIC};
+    let w = World::new();
+    w.seed("a-matched", 1, &[b"secret"]);
+    let payload = b"public";
+    let mut header = Header::of(payload);
+    header.digest = blake3::hash(b"different").to_hex().to_string();
+    let mut framed = MAGIC.to_vec();
+    framed.extend(header.encode());
+    framed.extend(payload);
+    w.seed("z-corrupt", 1, &[&framed[..27], &framed[27..]]);
+    assert!(
+        matches!(w.excise("secret", false), Err(StoreError::Invalid(message)) if message.contains("snapshot payload digest mismatch"))
+    );
+    assert_eq!(w.bytes("a-matched", 1), b"secret");
+    assert_eq!(w.bytes("z-corrupt", 1), framed);
+    let archive = open_read(&w.archive.archive_db()).unwrap();
+    assert_eq!(
+        archive
+            .query_row("SELECT count(*) FROM excision", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
