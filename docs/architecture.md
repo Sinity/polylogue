@@ -35,6 +35,26 @@ source selection and hook-derived live state. A disposable SQLite file holds
 affected IDs with a 1 MiB cache and mmap disabled. Derived session-row removal
 is shared with excision; it does not change raw bytes, authored rows or embeddings.
 
+Queries read an index generation together with the independent index and archive
+write counters. Their change cursor is `GEN:COUNTER:ARCHIVE`. A new index gets a
+random generation. Archive startup also changes it whenever the operating-system
+boot ID differs, including after a clean reboot. This conservative extra resync
+avoids trusting a stale clean-stop marker after counter writes may have been lost.
+Generation and boot metadata commit together with full SQLite synchronization.
+Same-boot restarts preserve the generation.
+
+A change query validates its cursor generation before filters, grouping or limits
+run. A mismatch returns `resync_required`, with no replacement cursor; consumers
+must reread their current state and every canonical excision. The `changes` unit
+includes each excision's scope and retained session/message selection. An unknown
+session selection stays null; an empty array means no selected IDs. Selection
+arrays are output data, not scalar predicates, sort keys or aggregates. Notes and
+excisions use the archive counter, sessions and removals the index counter; their
+combined presentation order is not a total causal order. `view.cursor` describes
+the query's view, not acknowledgement that all change pages were consumed. The
+CLI still uses ordinary query pages; automatic JSON-lines replay and per-entry
+resume acknowledgement are not implemented.
+
 `polylogue-engine` discovers changes, retains input bytes and coordinates
 parsing. Existing input directories are watched recursively. A missing location
 keeps a nonrecursive watch on its nearest existing ancestor; directory creation

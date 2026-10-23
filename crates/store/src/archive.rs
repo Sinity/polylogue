@@ -1,5 +1,6 @@
 //! The archive directory, its single-writer lock and connection settings.
 
+pub(crate) mod generation;
 pub(crate) mod retired;
 
 use crate::{Result, StoreError, schema};
@@ -128,6 +129,7 @@ impl Archive {
         crate::excise::vector_cleanup::recover(&archive, &mut a)?;
         crate::excise::blob_cleanup::recover(&archive, &a)?;
         archive.prepare_index()?;
+        generation::open(&archive)?;
         Ok((archive, ArchiveLock { _file: file }))
     }
 

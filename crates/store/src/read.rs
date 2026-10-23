@@ -349,6 +349,23 @@ impl Reader<'_> {
         Ok(conn)
     }
 
+    /// Both counters and the index identity from this reader's pinned view.
+    pub fn change_position(&self) -> Result<polylogue_model::ChangePosition> {
+        Ok(self.conn()?.query_row(
+            "SELECT (SELECT value FROM main.meta WHERE key='generation'),
+             COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0),
+             COALESCE((SELECT CAST(value AS INTEGER) FROM a.meta WHERE key='write_counter'),0)",
+            [],
+            |r| {
+                Ok(polylogue_model::ChangePosition {
+                    generation: r.get(0)?,
+                    index: r.get(1)?,
+                    archive: r.get(2)?,
+                })
+            },
+        )?)
+    }
+
     pub fn session(&self, id: &SessionId) -> Result<Option<Session>> {
         Ok(self
             .conn()?

@@ -365,3 +365,5 @@ fn the_change_feed_continues_from_its_cursor() {
     // A malformed cursor is refused, not read as "from the start".
     assert!(run(&r, ask("changes where after:12", T0)).is_err());
 }
+
+mod change_generation;

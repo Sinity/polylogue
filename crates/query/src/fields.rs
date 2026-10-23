@@ -96,6 +96,11 @@ impl Field {
         self
     }
 
+    const fn ids(mut self) -> Self {
+        self.value_kind = Some(ColKind::Ids);
+        self
+    }
+
     /// The field's value over `a` at `now`.
     pub fn expr(&self, a: &Aliases, now: i64) -> Option<String> {
         self.sql.map(|e| e.render(a, now))
@@ -724,24 +729,27 @@ pub static FIELDS: &[Field] = &[
     sp(Deliveries, "left_out", "a reference left out for budget", custom::left_out),
     f(Deliveries, "at", Time, "").sql("{r}.at"),
     f(Deliveries, "bytes", Number, "").sql("{r}.bytes"),
-    // changes (the change feed): sessions written, sessions removed, notes
+    // changes: sessions written/removed, notes and permanent removal rules
     v(
         Changes,
         "kind",
-        &["session", "removed", "note"],
+        &["session", "removed", "note", "excision"],
         "what changed",
     )
     .sql("{r}.kind"),
-    f(Changes, "ref", Prefix, "the session or note ID").sql("{r}.ref"),
+    f(Changes, "ref", Prefix, "the session, note or excision ID").sql("{r}.ref"),
     f(
         Changes,
         "seq",
         Number,
-        "the write counter of the change: index.db's for sessions, archive.db's for notes",
+        "the write counter of the change: index.db's for sessions, archive.db's for notes and excisions",
     )
     .sql("{r}.seq"),
     f(Changes, "note_kind", Match, "a note's kind").sql("{r}.note_kind"),
-    sp(Changes, "after", "changes after a cursor `INDEX.ARCHIVE`: the `view` of an earlier answer", custom::changes_after),
+    f(Changes, "scope", Prefix, "an excision's session/input scope or text hash").sql("{r}.scope"),
+    sp(Changes, "sessions", "an excision's retained session selection; null when unknown", custom::selection).sql("{r}.sessions").ids(),
+    sp(Changes, "messages", "an excision's retained message selection", custom::selection).sql("{r}.messages").ids(),
+    sp(Changes, "after", "changes after a cursor `GEN:COUNTER:ARCHIVE`: the `view` of an earlier answer", custom::changes_after),
     // turns (spec query.md, turns): computed along the active path
     f(Turns, "id", Prefix, "its first prompt's message ID").sql("{r}.id"),
     f(Turns, "start", Time, "the first message's time").sql("{r}.start"),

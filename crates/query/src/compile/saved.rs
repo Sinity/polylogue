@@ -118,7 +118,13 @@ pub(super) fn compile_kept(text: &str, opts: &Options) -> Result<Option<Program>
     let id_param = c.text_param(id);
     let select: Vec<String> = columns
         .iter()
-        .map(|col| format!("json_extract(j.value, '$.\"{0}\"') AS \"{0}\"", col.name))
+        .map(|col| {
+            if col.kind == ColKind::Ids {
+                format!("(j.value -> '$.\"{0}\"') AS \"{0}\"", col.name)
+            } else {
+                format!("json_extract(j.value, '$.\"{0}\"') AS \"{0}\"", col.name)
+            }
+        })
         .collect();
     let rel = MatchRel {
         sql: format!(

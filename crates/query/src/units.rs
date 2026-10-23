@@ -861,10 +861,12 @@ pub static UNITS: &[UnitSpec] = &[
         from: Expr::Template(
             "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
                MAX(cs.changed, COALESCE(cs.live_changed, 0)) AS seq, cs.changed AS changed, \
-               cs.live_changed AS live_changed, NULL AS note_kind FROM session cs \
-             UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL \
+               cs.live_changed AS live_changed, NULL AS note_kind, NULL AS scope, NULL AS sessions, NULL AS messages FROM session cs \
+             UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL, NULL, NULL, NULL \
                FROM removed_session rs \
-             UNION ALL SELECT 'note', cn.id, NULL, cn.commit_seq, NULL, NULL, cn.kind FROM a.note cn) {r}",
+             UNION ALL SELECT 'note', cn.id, NULL, cn.commit_seq, NULL, NULL, cn.kind, NULL, NULL, NULL FROM a.note cn \
+             UNION ALL SELECT 'excision', ce.id, NULL, ce.commit_seq, NULL, NULL, NULL, ce.scope, \
+               (ce.refused_json -> '$.sessions'), ce.message_ids_json FROM a.excision ce) {r}",
         ),
         key: "({r}.kind || ':' || {r}.ref)",
         columns: &[
@@ -873,6 +875,9 @@ pub static UNITS: &[UnitSpec] = &[
             ("seq", T("{r}.seq"), Number),
             ("live_changed", T("{r}.live_changed"), Number),
             ("note_kind", T("{r}.note_kind"), Text),
+            ("scope", T("{r}.scope"), Text),
+            ("sessions", T("{r}.sessions"), Ids),
+            ("messages", T("{r}.messages"), Ids),
         ],
         time: "{r}.seq",
         newest_first: false,
