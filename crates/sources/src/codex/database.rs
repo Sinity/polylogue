@@ -122,6 +122,9 @@ impl Parser for Database {
                 if let Some(name) = str_field(row, "name") {
                     s.offer_title(name, TitleSource::Generated);
                 }
+                if let Some(title) = str_field(row, "title") {
+                    s.offer_title(title, TitleSource::Summary);
+                }
                 if let Some(nick) = str_field(row, "agent_nickname") {
                     s.offer_title(nick, TitleSource::AgentName);
                 }
