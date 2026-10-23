@@ -217,6 +217,8 @@ impl ReadPool {
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
         };
+        // Store replacements retire old files, never reinstall their inodes.
+        // Compare around open without pinning SQLite or delaying an unused slot.
         let current = index_identity(&self.archive);
         let idle = idle.filter(|(_, identity)| current.as_ref().is_ok_and(|now| now == identity));
         let (conn, identity) = match idle {

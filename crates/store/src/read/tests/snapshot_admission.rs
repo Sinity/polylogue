@@ -142,13 +142,16 @@ fn rejected_privacy_snapshot_releases_the_admission_lock() {
     file.try_lock().unwrap();
 }
 
-fn replace_index(archive: &Archive) {
+fn mark_index_unsynced(archive: &Archive) {
     let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
     let tx =
         crate::publication::transaction(&conn, rusqlite::TransactionBehavior::Immediate).unwrap();
     tx.execute("INSERT INTO meta(key,value) VALUES ('unsynced','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value",[]).unwrap();
     tx.commit().unwrap();
     drop(conn);
+}
+fn replace_index(archive: &Archive) {
+    mark_index_unsynced(archive);
     archive.prepare_index().unwrap();
 }
 
@@ -175,14 +178,19 @@ fn reserved_old_index_refuses_while_idle_connections_refresh() {
 }
 
 #[test]
-fn already_pinned_pair_survives_index_replacement() {
+fn pinned_pair_preserves_the_existing_index_retirement_refusal() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let old = reader.change_position().unwrap();
-    replace_index(&fixture.archive);
+    mark_index_unsynced(&fixture.archive);
+    assert!(
+        matches!(fixture.archive.prepare_index(),Err(StoreError::Invalid(message)) if message.contains("still in use"))
+    );
     assert_eq!(reader.change_position().unwrap(), old);
+    drop(reader);
+    fixture.archive.prepare_index().unwrap();
     let current = pool.reader().unwrap().change_position().unwrap();
     assert_ne!(current.generation, old.generation);
 }
