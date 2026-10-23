@@ -210,6 +210,22 @@ export. The bytes are synced before `atomicwrites` replaces its adjacent
 the completed prefix and removes only an unpublished suffix. Altered completed
 bytes and malformed legacy exports refuse collection while preserving evidence.
 The Engine skips an export call that fails, even if its output file exists.
+Runtime captures bind the retained header to the first observed machine and
+lexically normalized native database path. Capture clocks and host names are
+not identity fields. Per-location output directories separate equal database
+basenames. Catalog replay validates this binding before append; legacy unbound
+exports remain retained without an inferred native profile.
+
+Hermes interprets these bound logical rows through the shared export parser.
+It stages latest positive rows in session/native insertion order and records
+`gone` without erasing the retained value. A changed export requires a linear
+prefix scan; memory includes session/row identifier metadata and a decoded row,
+not a session's message bodies. Native call/platform IDs and canonical content
+fallbacks survive rowid reinsertion; repeated equal turns retain occurrences.
+Native compression links retain supplied ancestry and its parent leaf. Copy
+accounting, steers, companion session documents and observer/verification
+interpretation remain separate source work.
+
 One capture worker keeps its source transaction, statements and row cursor on
 its stack. Permits bound cooperative turns across rows, replayed lines and
 64 KiB prefix-verification blocks. The worker pauses before returning control;

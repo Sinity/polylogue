@@ -250,7 +250,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     reserved!("antigravity", Live, [".gemini/antigravity/**"]),
     OriginSpec {
         name: "hermes",
-        parser_version: 1,
+        parser_version: 2,
         support: Support::Parsed,
         route: Route::Live,
         root: Root::HOME,
