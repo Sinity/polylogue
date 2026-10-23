@@ -306,29 +306,18 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
             logical,
             budget,
             cursor,
-        } => {
-            let s = match reader.session(&session) {
-                Ok(Some(s)) => s,
-                Ok(None) => return error("not_found", format!("no session {session}")),
-                Err(e) => return error("store", e),
-            };
-            let display_title = match reader.display_title(&session) {
-                Ok(title) => title,
-                Err(e) => return error("store", e),
-            };
-            match reader.messages(&session, logical) {
-                Ok(messages) => read(
-                    &s,
-                    display_title.as_deref(),
-                    messages,
-                    &view,
-                    &format,
-                    budget,
-                    cursor.as_deref(),
-                ),
-                Err(e) => error("store", e),
-            }
-        }
+        } => read::run(
+            &reader,
+            &session,
+            read::Options {
+                view: &view,
+                format: &format,
+                logical,
+                budget,
+                cursor: cursor.as_deref(),
+            },
+        ),
+
         Request::Import { paths, .. } => {
             drop(reader);
             let (reply, wait) = sync_channel(1);
@@ -522,39 +511,6 @@ fn handle_inner(request: Request, d: &Daemon) -> Response {
                 .unwrap_or_default();
             error("not_built", format!("`{op}` is not built yet"))
         }
-    }
-}
-
-/// One session in a view: as JSON messages, rendered in a format, or, with
-/// a token budget, as one page of text for a model with the cursor of the
-/// next.
-fn read(
-    session: &polylogue_model::Session,
-    display_title: Option<&str>,
-    messages: Vec<polylogue_model::Message>,
-    view: &str,
-    format: &str,
-    budget: Option<usize>,
-    cursor: Option<&str>,
-) -> Response {
-    let Some(v) = polylogue_render::View::parse(view) else {
-        return error("bad_request", format!("unknown view {view:?}"));
-    };
-    if let Some(budget) = budget {
-        let page = polylogue_render::model_pages::page(&messages, v, budget, cursor);
-        return ok(
-            serde_json::json!({ "session": session, "display_title": display_title, "text": page.text, "next": page.next }),
-        );
-    }
-    if cursor.is_some() {
-        return error("bad_request", "a cursor continues a read with a budget");
-    }
-    let Some(format) = polylogue_render::Format::parse(format) else {
-        return error("bad_request", format!("unknown format {format:?}"));
-    };
-    match polylogue_render::session(session, display_title, messages, v, format) {
-        Ok(value) => ok(value),
-        Err(error) => self::error("internal", error),
     }
 }
 
@@ -776,6 +732,8 @@ pub fn start(root: &std::path::Path, config: Config, backing: Backing) -> std::i
     );
     Ok(runtime)
 }
+
+mod read;
 
 #[cfg(test)]
 mod tests;

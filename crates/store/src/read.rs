@@ -470,12 +470,27 @@ impl Reader<'_> {
     /// to the branch point, and messages its file copied from another
     /// session, which are stored once, in the session they came from.
     pub fn messages(&self, id: &SessionId, logical: bool) -> Result<Vec<Message>> {
-        let Some(pk) = self.session_pk(id)? else {
-            return Ok(Vec::new());
-        };
         let mut out = Vec::new();
+        self.visit_messages(id, logical, |message| {
+            out.push(message);
+            std::ops::ControlFlow::Continue(())
+        })?;
+        Ok(out)
+    }
+
+    /// Visit messages in reading order, decoding only the current message's
+    /// bodies. Breaking stops before later bodies are loaded. Logical reads
+    /// retain inherited message identifiers for ordering and deduplication.
+    pub fn visit_messages(
+        &self,
+        id: &SessionId,
+        logical: bool,
+        mut visit: impl FnMut(Message) -> std::ops::ControlFlow<()>,
+    ) -> Result<()> {
+        let Some(pk) = self.session_pk(id)? else {
+            return Ok(());
+        };
         if logical {
-            // Inherited messages come in runs, one per ancestor session.
             let mut runs: Vec<(i64, SessionId, HashSet<i64>)> = Vec::new();
             for (session_pk, session, message_pk) in self.inherited_keys(pk, id)? {
                 match runs.last_mut() {
@@ -486,11 +501,68 @@ impl Reader<'_> {
                 }
             }
             for (session_pk, session, set) in runs {
-                out.extend(self.messages_where(session_pk, &session, |m| set.contains(&m))?);
+                if self
+                    .visit_messages_where(session_pk, &session, |m| set.contains(&m), &mut visit)?
+                    .is_break()
+                {
+                    return Ok(());
+                }
             }
         }
-        out.extend(self.own_messages(pk, id)?);
-        Ok(out)
+        let _ = self.visit_messages_where(pk, id, |_| true, &mut visit)?;
+        Ok(())
+    }
+
+    /// Fingerprint selected stored message facts without decompressing bodies.
+    /// This scans packed content one value at a time. Identifier storage grows
+    /// with logical history; neither this scan nor the page budget bounds RSS.
+    pub fn message_fingerprint(&self, id: &SessionId, logical: bool) -> Result<String> {
+        let keys = if logical {
+            self.logical_message_keys(id)?
+        } else if let Some(pk) = self.session_pk(id)? {
+            self.own_keys(pk)?.into_iter().map(|(pk, _)| pk).collect()
+        } else {
+            Vec::new()
+        };
+        let mut hash = blake3::Hasher::new();
+        let mut facts = self
+            .conn()?
+            .prepare_cached("SELECT * FROM current_message WHERE pk=?1")?;
+        let mut blocks = self.conn()?.prepare_cached(
+            "SELECT b.*, t.body FROM block b LEFT JOIN text t ON t.id=b.text_id
+             WHERE b.message_pk=?1 ORDER BY b.idx",
+        )?;
+        for pk in keys {
+            for stmt in [&mut facts, &mut blocks] {
+                let count = stmt.column_count();
+                let mut rows = stmt.query([pk])?;
+                while let Some(row) = rows.next()? {
+                    hash.update(b"row");
+                    for column in 0..count {
+                        use rusqlite::types::ValueRef;
+                        match row.get_ref(column)? {
+                            ValueRef::Null => {
+                                hash.update(b"n");
+                            }
+                            ValueRef::Integer(n) => {
+                                hash.update(b"i");
+                                hash.update(&n.to_le_bytes());
+                            }
+                            ValueRef::Real(n) => {
+                                hash.update(b"r");
+                                hash.update(&n.to_bits().to_le_bytes());
+                            }
+                            ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
+                                hash.update(b"b");
+                                hash.update(&(bytes.len() as u64).to_le_bytes());
+                                hash.update(bytes);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(hash.finalize().to_hex().to_string())
     }
 
     /// The message keys a session shows: what it inherits through its
@@ -600,40 +672,33 @@ impl Reader<'_> {
         Ok(())
     }
 
-    fn own_messages(&self, session_pk: i64, session: &SessionId) -> Result<Vec<Message>> {
-        self.messages_where(session_pk, session, |_| true)
+    fn message_blocks(&self, message_pk: i64) -> Result<Vec<Block>> {
+        let mut stmt = self.conn()?.prepare_cached(
+            "SELECT b.body, t.body FROM block b LEFT JOIN text t ON t.id=b.text_id
+             WHERE b.message_pk=?1 ORDER BY b.idx",
+        )?;
+        let rows = stmt.query_map([message_pk], |r| {
+            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+        })?;
+        let mut blocks = Vec::new();
+        for row in rows {
+            let (body, text) = row?;
+            let mut block = unpack_block(&body)?;
+            if let Some(text) = text {
+                restore_text(&mut block, unpack_text(&text)?);
+            }
+            blocks.push(block);
+        }
+        Ok(blocks)
     }
 
-    fn messages_where(
+    fn visit_messages_where(
         &self,
         session_pk: i64,
         session: &SessionId,
         keep: impl Fn(i64) -> bool,
-    ) -> Result<Vec<Message>> {
-        let mut blocks: HashMap<i64, Vec<Block>> = HashMap::new();
-        {
-            let mut stmt = self.conn()?.prepare_cached(
-                "SELECT b.message_pk, b.body, t.body FROM block b
-                 JOIN current_message cm ON cm.pk = b.message_pk
-                 LEFT JOIN text t ON t.id = b.text_id
-                 WHERE b.session_pk = ?1 ORDER BY b.message_pk, b.idx",
-            )?;
-            let rows = stmt.query_map([session_pk], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, Vec<u8>>(1)?,
-                    r.get::<_, Option<Vec<u8>>>(2)?,
-                ))
-            })?;
-            for row in rows {
-                let (pk, body, text) = row?;
-                let mut block: Block = unpack_block(&body)?;
-                if let Some(packed) = text {
-                    restore_text(&mut block, unpack_text(&packed)?);
-                }
-                blocks.entry(pk).or_default().push(block);
-            }
-        }
+        visit: &mut impl FnMut(Message) -> std::ops::ControlFlow<()>,
+    ) -> Result<std::ops::ControlFlow<()>> {
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT pk, id, role, prompt_kind, model, at, parent_id, input_tokens, cache_read_tokens,
                     cache_write_tokens, output_tokens, reasoning_tokens, service_tier, stop_reason,
@@ -666,7 +731,6 @@ impl Reader<'_> {
                 ),
             ))
         })?;
-        let mut out = Vec::new();
         for row in rows {
             let (
                 pk,
@@ -692,7 +756,7 @@ impl Reader<'_> {
             let n = |x: Option<i64>| x.map(|x| x as u64);
             let attrs: Option<serde_json::Value> =
                 attrs.and_then(|a| serde_json::from_str(&a).ok());
-            out.push(Message {
+            let message = Message {
                 id,
                 session: session.clone(),
                 parent: parent.and_then(|p| MessageId::parse(&p).ok()),
@@ -700,7 +764,7 @@ impl Reader<'_> {
                 at: ts(at),
                 model,
                 prompt_kind: kind.as_deref().and_then(parse_name::<PromptKind>),
-                blocks: blocks.remove(&pk).unwrap_or_default(),
+                blocks: self.message_blocks(pk)?,
                 usage: Usage {
                     input: n(tokens[0]),
                     cached_input: n(tokens[1]),
@@ -723,9 +787,12 @@ impl Reader<'_> {
                     .and_then(|a| a.get("production"))
                     .and_then(|p| serde_json::from_value(p.clone()).ok())
                     .unwrap_or_default(),
-            });
+            };
+            if visit(message).is_break() {
+                return Ok(std::ops::ControlFlow::Break(()));
+            }
         }
-        Ok(out)
+        Ok(std::ops::ControlFlow::Continue(()))
     }
 
     pub fn status(&self) -> Result<Status> {

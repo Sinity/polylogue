@@ -82,3 +82,31 @@ fn full_json_keeps_a_genuinely_empty_message_and_empty_text_block() {
     let prompts = crate::session(&session, None, vec![blank], View::Prompts, Format::Json).unwrap();
     assert_eq!(prompts["messages"][0]["blocks"][0]["text"], "");
 }
+
+#[test]
+fn explicit_harness_authorship_keeps_the_recorded_assistant_role() {
+    let message = super::message(
+        "harness",
+        Role::Assistant,
+        Some(PromptKind::Harness),
+        vec![Block::Text {
+            text: "synthetic harness context".into(),
+        }],
+    );
+    assert!(message.model.is_none());
+    let session = Session::new(
+        SessionId::parse("claude-code:s").unwrap(),
+        SessionKind::Main,
+    );
+    for format in [Format::Terminal, Format::Markdown, Format::Html] {
+        let rendered =
+            crate::session(&session, None, vec![message.clone()], View::Full, format).unwrap();
+        let text = rendered["content"].as_str().unwrap();
+        assert!(text.contains("harness"), "{text}");
+        assert!(!text.contains("assistant"), "{text}");
+    }
+    let json = crate::session(&session, None, vec![message], View::Full, Format::Json).unwrap();
+    assert_eq!(json["messages"][0]["role"], "assistant");
+    assert_eq!(json["messages"][0]["prompt_kind"], "harness");
+    assert!(json["messages"][0]["model"].is_null());
+}

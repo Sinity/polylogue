@@ -89,6 +89,11 @@ invalid request, 6 no daemon running.
 Credentials in session text (API keys, tokens, private keys) are masked in
 every output; the stored bytes are not changed.
 
+Budgeted session reads (`read SESSION --budget N`) return a continuation in `next`.
+Pass it as `--cursor`; the budget may change between pages. Changed selected
+content returns `stale_cursor` and requires starting again. See
+[session paging](docs/architecture.md) for cursor binding, masking and memory costs.
+
 Session reads and query rows use the stored display title: the recorded title
 when present, otherwise the derived first-prompt title. JSON reads carry this
 as `display_title`, separate from the recorded `session` metadata. Importable

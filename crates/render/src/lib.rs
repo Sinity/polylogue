@@ -124,17 +124,23 @@ pub fn pieces(message: &Message, view: View) -> Vec<Piece> {
 }
 
 fn piece(block: &Block) -> Option<Piece> {
+    let mut piece = unmasked_piece(block)?;
+    piece.text = mask(&piece.text);
+    Some(piece)
+}
+
+fn unmasked_piece(block: &Block) -> Option<Piece> {
     Some(match block {
         Block::Text { text } => Piece {
             kind: "text",
             label: None,
-            text: mask(text),
+            text: text.clone(),
         },
         Block::Thinking { text, redacted, .. } => Piece {
             kind: "thinking",
             label: None,
             text: match text {
-                Some(t) => mask(t),
+                Some(t) => t.clone(),
                 None if *redacted => "(redacted)".into(),
                 None => "(encrypted)".into(),
             },
@@ -148,19 +154,17 @@ fn piece(block: &Block) -> Option<Piece> {
         } => Piece {
             kind: "tool_call",
             label: Some(tool.clone().unwrap_or_else(|| "tool".into())),
-            text: mask(
-                &command
-                    .clone()
-                    .or_else(|| path.clone())
-                    .unwrap_or_else(|| input.to_string()),
-            ),
+            text: command
+                .clone()
+                .or_else(|| path.clone())
+                .unwrap_or_else(|| input.to_string()),
         },
         Block::ToolResult {
             outcome, output, ..
         } => Piece {
             kind: "tool_result",
             label: Some(outcome_label(outcome)),
-            text: mask(output.as_deref().unwrap_or("")),
+            text: output.clone().unwrap_or_default(),
         },
         Block::Image(a) | Block::File(a) => Piece {
             kind: if matches!(block, Block::Image(_)) {
@@ -196,9 +200,9 @@ pub fn outcome_label(o: &ToolOutcome) -> String {
 
 fn who(m: &Message) -> &'static str {
     match (m.role, m.prompt_kind) {
+        (_, Some(PromptKind::Harness)) => "harness",
         (Role::Assistant, _) => "assistant",
         (Role::System, _) => "system",
-        (Role::User, Some(PromptKind::Harness)) => "harness",
         (Role::User, Some(PromptKind::Model)) => "model",
         (Role::User, _) => "user",
     }

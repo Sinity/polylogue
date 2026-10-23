@@ -55,3 +55,5 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     .unwrap_err();
     assert!(e.starts_with("error (not_found)"), "{e}");
 }
+
+mod read_pages;

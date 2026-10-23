@@ -340,3 +340,5 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_export(
 
 #[cfg(feature = "sinex")]
 mod backing;
+
+mod read_pages;

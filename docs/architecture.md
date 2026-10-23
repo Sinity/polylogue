@@ -79,6 +79,23 @@ active archive. No reader transaction survives between requests; mutable keyset
 continuation is not implemented. Semantic ranking currently returns only complete
 single-page answers; it cannot be continued against a changing vector set.
 
+Budgeted session reads use a separate stateless cursor. It binds the session,
+logical mode and view to a fingerprint of the selected stored message facts and
+packed block/text values, plus the index generation and returned session metadata.
+Unrelated writes leave this cursor usable. Replaced indexes and changed selected
+content refuse with `stale_cursor`; malformed and out-of-range positions refuse
+with `bad_request`. Each attempt uses one admitted Reader throughout.
+
+The store visits one decoded message at a time and stops when the renderer has a
+continuation. Fingerprinting scans packed values without decompressing them.
+Rendering replays preceding source blocks to reconstruct the shared credential
+masker's state, preserving private-key masking across blocks and messages even
+when a view hides an earlier block. The token carries numeric positions and
+hashes only. Each page therefore scans selected packed content and replays earlier
+messages; it does not retain a transaction between requests. Memory includes
+identifier metadata, the largest decoded and rendered message, and the requested
+output. The output budget does not bound input memory or process RSS.
+
 Derived publication advances the session's public change value and forwards only
 already-current cache markers. Raw writes still leave stale products to derive,
 and rule/dependency versions remain checked. Idle derivation/indexing does not
