@@ -20,6 +20,11 @@
     "blobs": [],
     "events": [
       {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:019a0000-0000-7000-8000-0000000000aa"
+      },
+      {
         "at": "2026-03-01T10:00:06Z",
         "data": {
           "trigger_turn": true
