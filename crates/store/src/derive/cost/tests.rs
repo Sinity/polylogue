@@ -110,7 +110,18 @@ fn catalog_changes_reprice_cost_without_resetting_other_derivations() {
                 ("test:zero".into(), Some(0))
             ]
         );
-        assert_eq!(states(&index, None), before);
+        let after = states(&index, None);
+        assert_eq!(
+            after
+                .iter()
+                .map(|(name, pk, version, _)| (name, pk, version))
+                .collect::<Vec<_>>(),
+            before
+                .iter()
+                .map(|(name, pk, version, _)| (name, pk, version))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(index.query_row("SELECT count(*) FROM derive_state d JOIN session s ON s.pk=d.session_pk WHERE d.from_changed<>s.changed", [], |r|r.get::<_,i64>(0)).unwrap(), 0);
         assert_eq!(
             super::super::run_with_catalog(&mut index, &catalog).unwrap(),
             0
@@ -165,10 +176,15 @@ fn changed_usage_derives_only_its_session_and_preserves_cache_and_tier_fields() 
         ]
     );
     assert_eq!(states(&index, Some(unrelated)), before);
+    let changed_value: i64 = index
+        .query_row("SELECT changed FROM session WHERE pk=?1", [changed], |r| {
+            r.get(0)
+        })
+        .unwrap();
     assert!(
         states(&index, Some(changed))
             .iter()
-            .all(|(_, _, _, changed)| *changed == 3)
+            .all(|(_, _, _, from_changed)| *from_changed == changed_value)
     );
     assert_eq!(
         index

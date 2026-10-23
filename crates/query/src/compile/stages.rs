@@ -13,10 +13,10 @@ impl<'a> Compiler<'a> {
     ) -> Result<Vec<String>, QueryError> {
         let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now);
         Ok(match key {
-            SortKey::Random { seed: None } => vec!["random()".into()],
-            SortKey::Random { seed: Some(seed) } => {
-                vec![format!("(({pk} * 2654435761 + {seed}) % 4294967296)"), pk]
-            }
+            SortKey::Random { seed } => match seed.or(self.opts.random_seed) {
+                Some(seed) => vec![format!("pl_random(CAST({pk} AS TEXT), '{seed}')"), pk],
+                None => vec!["random()".into()],
+            },
             SortKey::Field { field } => {
                 let (expr, kind) = self.expr(field, scope, at)?;
                 scalar(kind, field, at)?;

@@ -4,12 +4,11 @@
 //! asked. Every step reads through one reader, so the count, the page and
 //! the attachments agree.
 
-use base64::Engine as _;
 use polylogue_model::LogicalDay;
 use polylogue_query::{ColKind, Options, Param, Program, QueryError, Shape};
 use polylogue_store::search::Within;
 use polylogue_store::{Reader, SqlValue};
-use serde::{Deserialize, Serialize};
+
 use serde_json::{Value, json};
 
 /// A failed query, as the response's error and its detail.
@@ -40,32 +39,8 @@ impl From<QueryError> for Failure {
     }
 }
 
-/// What a page carries forward: where the next page starts, and the
-/// instant the query's times were resolved against, so every page answers
-/// the same question.
-#[derive(Debug, Serialize, Deserialize)]
-struct Cursor {
-    offset: u64,
-    now: i64,
-    /// BLAKE3 of the query text: a cursor continues only its own query.
-    query: String,
-}
-
-fn encode(c: &Cursor) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(c).unwrap_or_default())
-}
-
-fn decode(text: &str) -> Option<Cursor> {
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(text)
-        .ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-fn query_hash(text: &str) -> String {
-    blake3::hash(text.as_bytes()).to_hex()[..16].to_owned()
-}
+mod page;
+use page::Cursor;
 
 /// What a request asks besides the text.
 pub struct Ask<'a> {
@@ -149,24 +124,31 @@ fn kept_results(
         .collect()
 }
 
-/// Runs a query in full for keeping: its rows, and, when it has one
-/// top-level exists or seq and no stages, its match rows too. The values
-/// are what was shown; a kept result is read back, never re-run.
-pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
-    let opts = Options {
-        clock: polylogue_query::Clock::new(ask.now, ask.day.clone()),
+fn options(reader: &Reader<'_>, ask: &Ask<'_>, now: i64, seed: u64) -> Result<Options, Failure> {
+    Ok(Options {
+        clock: polylogue_query::Clock::new(now, ask.day.clone()),
         origins: polylogue_sources::origin::ORIGINS
             .iter()
             .map(|o| o.name.to_owned())
             .collect(),
         command_words: crate::commands::command_words(),
-        page_size: None,
-        embeddings: false,
-        self_session: ask.session,
+        page_size: ask.page_size,
+        random_seed: Some(seed),
+        embeddings: ask.embeddings,
+        self_session: ask.session.clone(),
         saved: saved_queries(reader)?,
         kept: kept_results(reader)?,
         fields: ask.fields.to_vec(),
-    };
+    })
+}
+
+/// Runs a query in full for keeping: its rows, and, when it has one
+/// top-level exists or seq and no stages, its match rows too. The values
+/// are what was shown; a kept result is read back, never re-run.
+pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
+    let mut opts = options(reader, &ask, ask.now, uuid::Uuid::now_v7().as_u128() as u64)?;
+    opts.page_size = None;
+    opts.embeddings = false;
     let program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
     let mut rows = reader.query(&program.sql, &values(&program.params))?;
@@ -196,40 +178,26 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
 }
 
 pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
-    let cursor = match ask.cursor {
-        Some(c) => {
-            let c = decode(c).ok_or_else(|| Failure {
-                kind: "bad_request".into(),
-                message: "the cursor is not one this daemon issued".into(),
-                detail: None,
-            })?;
-            if c.query != query_hash(ask.text) {
-                return Err(Failure {
-                    kind: "bad_request".into(),
-                    message: "the cursor belongs to another query".into(),
-                    detail: None,
-                });
-            }
-            Some(c)
-        }
-        None => None,
-    };
-    let opts = Options {
-        clock: polylogue_query::Clock::new(cursor.as_ref().map_or(ask.now, |c| c.now), ask.day),
-        origins: polylogue_sources::origin::ORIGINS
-            .iter()
-            .map(|o| o.name.to_owned())
-            .collect(),
-        command_words: crate::commands::command_words(),
-        page_size: ask.page_size,
-        embeddings: ask.embeddings,
-        self_session: ask.session,
-        saved: saved_queries(reader)?,
-        kept: kept_results(reader)?,
-        fields: ask.fields.to_vec(),
-    };
+    let cursor = ask.cursor.map(Cursor::decode).transpose()?;
+    let seed = cursor
+        .as_ref()
+        .map_or_else(|| uuid::Uuid::now_v7().as_u128() as u64, |c| c.seed);
+    let opts = options(
+        reader,
+        &ask,
+        cursor.as_ref().map_or(ask.now, |c| c.now),
+        seed,
+    )?;
     let mut program = polylogue_query::compile(ask.text, &opts)?;
     validate(reader, &program)?;
+    let position = reader.change_position()?;
+    if let Some(cursor) = &cursor {
+        cursor.check_view(&position)?;
+        cursor.check_question(&page::question(&program, &opts, ask.why)?)?;
+        if program.near.is_some() {
+            return Err(page::semantic_paging());
+        }
+    }
     if let (Some(near), Some(f)) = (program.near.clone(), ask.near) {
         let hits = f(&near.text).map_err(|message| Failure {
             kind: "embed".into(),
@@ -264,6 +232,32 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         .unwrap_or(0);
     let offset = cursor.as_ref().map_or(0, |c| c.offset);
     let page_size = program.page_size.max(1);
+    if cursor.is_some() && offset >= count {
+        return Err(Failure {
+            kind: "bad_request".into(),
+            message: "the page cursor position is outside its answer".into(),
+            detail: None,
+        });
+    }
+    let end = offset.saturating_add(page_size);
+    let more = end < count;
+    if more && program.near.is_some() {
+        return Err(page::semantic_paging());
+    }
+    let next = if more {
+        Some(
+            Cursor::new(
+                end,
+                program.now,
+                seed,
+                position,
+                page::question(&program, &opts, ask.why)?,
+            )
+            .encode()?,
+        )
+    } else {
+        None
+    };
     let mut page_params = params.clone();
     page_params.push(SqlValue::Int(i64::try_from(page_size).unwrap_or(i64::MAX)));
     page_params.push(SqlValue::Int(i64::try_from(offset).unwrap_or(i64::MAX)));
@@ -276,13 +270,6 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     for row in &mut rows {
         present(&program, row)?;
     }
-    let next = (offset + page_size < count).then(|| {
-        encode(&Cursor {
-            offset: offset + page_size,
-            now: program.now,
-            query: query_hash(ask.text),
-        })
-    });
     let outcome = if !program.degraded.is_empty() {
         "degraded"
     } else if count == 0 {

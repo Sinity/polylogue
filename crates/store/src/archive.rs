@@ -4,9 +4,29 @@ pub(crate) mod generation;
 pub(crate) mod retired;
 
 use crate::{Result, StoreError, schema};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+
+/// Increments the database's write counter; one value per transaction.
+pub(crate) fn bump_counter(tx: &Transaction<'_>) -> Result<i64> {
+    let next: i64 = tx
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'write_counter'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0_i64)
+        .checked_add(1)
+        .ok_or_else(|| StoreError::Invalid("write counter exhausted".into()))?;
+    tx.execute(
+        "INSERT INTO meta(key, value) VALUES ('write_counter', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [next.to_string()],
+    )?;
+    Ok(next)
+}
 
 /// An opened archive directory (`$XDG_DATA_HOME/polylogue`). The directory
 /// has copy-on-write turned off on btrfs; Polylogue checks its own data

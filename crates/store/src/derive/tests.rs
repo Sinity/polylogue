@@ -282,11 +282,19 @@ fn upstream_rule_change_invalidates_unchanged_dependents_only() {
             .unwrap(),
         "after"
     );
+    let changed: i64 = index
+        .query_row("SELECT changed FROM session", [], |r| r.get(0))
+        .unwrap();
+    assert!(changed > 1);
     assert_eq!(
         index
-            .query_row("SELECT changed FROM session", [], |r| r.get::<_, i64>(0))
+            .query_row(
+                "SELECT count(*) FROM derive_state WHERE from_changed<>?1",
+                [changed],
+                |r| r.get::<_, i64>(0)
+            )
             .unwrap(),
-        1
+        0
     );
     assert_eq!(
         super::run_all(&mut index, &catalog, &versioned_rules(2)).unwrap(),
@@ -379,4 +387,80 @@ fn invalid_dependency_declarations_are_refused_before_any_rows_change() {
             None
         );
     }
+}
+
+#[test]
+fn failed_derived_publication_rolls_back_values_counters_and_cache_markers() {
+    use super::{Derivation, Version};
+    let mut index = rusqlite::Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&index).unwrap();
+    index.execute_batch("INSERT INTO session(id,origin,native_id,kind,changed) VALUES ('test:a','test','a','main',1),('test:b','test','b','main',1); INSERT INTO meta VALUES ('write_counter','1')").unwrap();
+    let mut rule = Derivation {
+        name: "synthetic",
+        version: Version::Rules(1),
+        after: &[],
+        run: |tx, pk, _| {
+            tx.execute(
+                "UPDATE session SET derived_title='before' WHERE pk=?1",
+                [pk],
+            )?;
+            Ok(())
+        },
+        finish: None,
+    };
+    let catalog = synthetic_catalog("same");
+    assert_eq!(
+        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule)).unwrap(),
+        2
+    );
+    let before: String = index
+        .query_row(
+            "SELECT value FROM meta WHERE key='write_counter'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    rule.version = Version::Rules(2);
+    rule.run = |tx, pk, _| {
+        tx.execute("UPDATE session SET derived_title='after' WHERE pk=?1", [pk])?;
+        let changed: i64 = tx.query_row(
+            "SELECT count(*) FROM session WHERE derived_title='after'",
+            [],
+            |r| r.get(0),
+        )?;
+        if changed == 2 {
+            return Err(crate::StoreError::Invalid("late derived failure".into()));
+        }
+        Ok(())
+    };
+    assert!(
+        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule))
+            .unwrap_err()
+            .to_string()
+            .contains("late derived failure")
+    );
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT value FROM meta WHERE key='write_counter'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        before
+    );
+    assert_eq!(index.query_row("SELECT count(*) FROM session WHERE derived_title='before' AND changed=CAST(?1 AS INTEGER)", [&before], |r|r.get::<_,i64>(0)).unwrap(), 2);
+    assert_eq!(index.query_row("SELECT count(*) FROM derive_state WHERE version='1' AND from_changed=CAST(?1 AS INTEGER)", [&before], |r|r.get::<_,i64>(0)).unwrap(), 2);
+    rule.run = |tx, pk, _| {
+        tx.execute("UPDATE session SET derived_title='after' WHERE pk=?1", [pk])?;
+        Ok(())
+    };
+    assert_eq!(
+        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule)).unwrap(),
+        2
+    );
+    assert_eq!(
+        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule)).unwrap(),
+        0
+    );
 }

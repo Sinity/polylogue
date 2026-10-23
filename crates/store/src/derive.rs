@@ -193,14 +193,30 @@ fn run_one(
             )?
             .collect::<rusqlite::Result<_>>()?;
         if todo.is_empty() {
+            let before = tx.total_changes();
             if let Some(finish) = d.finish {
                 finish(&tx)?;
+            }
+            if tx.total_changes() != before {
+                crate::archive::bump_counter(&tx)?;
             }
             tx.commit()?;
             return Ok(done);
         }
+        let counter = crate::archive::bump_counter(&tx)?;
         for (pk, changed) in &todo {
             (d.run)(&tx, *pk, catalog)?;
+            // Derived publication changes the visible session, not its raw
+            // inputs. Forward already-current cache markers so it does not dirty
+            // earlier products; stale inputs or rule versions remain stale.
+            tx.execute(
+                "UPDATE derive_state SET from_changed=?3 WHERE session_pk=?1 AND from_changed=?2",
+                params![pk, changed, counter],
+            )?;
+            tx.execute(
+                "UPDATE session SET changed=?2 WHERE pk=?1",
+                params![pk, counter],
+            )?;
             tx.prepare_cached(
                 "INSERT INTO derive_state(name, session_pk, version, from_changed)
                  VALUES (?1, ?2, ?3, ?4)

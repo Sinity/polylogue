@@ -8,6 +8,7 @@
 //! - `pl_fold(text)`: letters with a stroke folded, as the index does;
 //! - `pl_key(text)`: [`polylogue_model::text::key`], for case- and
 //!   accent-blind substring tests;
+//! - `pl_random(text_key, decimal_seed)`: a seeded integer order value;
 //! - `pl_day(ms, zone, start_minutes)`, `pl_week(…)`, `pl_month(…)`: the
 //!   logical date, ISO week or month label of an instant.
 //!
@@ -36,6 +37,23 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
         Ok(ctx
             .get::<Option<String>>(0)?
             .map(|t| polylogue_model::text::key(&t)))
+    })?;
+    conn.create_scalar_function("pl_random", 2, FLAGS, |ctx| {
+        // Callers cast numeric row keys to TEXT. Hash opaque string IDs as
+        // bytes so numeric-looking IDs retain their spelling and precision.
+        let key: String = ctx.get(0)?;
+        let seed: String = ctx.get(1)?;
+        let seed: u64 = seed
+            .parse()
+            .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"polylogue-random-order-v1\0");
+        digest.update(&seed.to_le_bytes());
+        digest.update(key.as_bytes());
+        let bytes: [u8; 8] = digest.finalize().as_bytes()[..8]
+            .try_into()
+            .expect("eight hash bytes");
+        Ok(i64::from_le_bytes(bytes))
     })?;
     conn.create_aggregate_function("pl_percentile", 2, FLAGS, Percentile)?;
     conn.create_scalar_function("pl_day", 3, FLAGS, |ctx| label(ctx, LogicalDay::day_label))?;
