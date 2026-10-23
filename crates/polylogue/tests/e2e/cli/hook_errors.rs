@@ -72,3 +72,31 @@ fn cli_read_shows_native_hook_errors_without_an_injected_context_message() {
     );
     assert_eq!(std::fs::read_to_string(source).unwrap(), original);
 }
+
+#[test]
+fn hook_setup_cli_refuses_malformed_settings_without_replacing_them() {
+    for original in [
+        "null",
+        r#"{"hooks":[]}"#,
+        r#"{"hooks":{},"hooks":{"Stop":[]}}"#,
+    ] {
+        for action in ["install", "uninstall"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("settings.json");
+            std::fs::write(&path, original).unwrap();
+            let out = cli(
+                &[],
+                &[
+                    "--json",
+                    "hooks",
+                    action,
+                    "--settings",
+                    path.to_str().unwrap(),
+                ],
+            );
+            assert_eq!(out.status.code(), Some(1), "{out:?}");
+            assert_eq!(json(&out)["error"]["kind"], "io", "{out:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        }
+    }
+}
