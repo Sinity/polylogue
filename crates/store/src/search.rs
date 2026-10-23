@@ -8,16 +8,18 @@
 //! every waiting entry before it returns.
 //!
 //! The indexes are contentless: a hit is a `text.id`, and its snippet is
-//! cut from the stored (compressed) text. Text is folded the same way when
+//! selected from raw stored text, then masked in source context before cutting.
+//! Text is folded the same way when
 //! indexed and when searched ([`polylogue_model::text`]): the tokenizer
 //! folds case and accents, and letters with a stroke are folded first, so
 //! `lodz` finds `Łódź`.
 
-use crate::encoding::unpack_text;
-use crate::{Reader, Result};
+use crate::{Reader, Result, StoreError};
 use polylogue_model::text::{key, tokens};
 use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::ControlFlow;
 
 /// The words of `text` as the index splits them: runs of letters and
 /// digits, lowercased, letters with a stroke folded as the index folds
@@ -56,11 +58,85 @@ pub enum Within {
     Message(i64),
 }
 
+struct Hit {
+    block: i64,
+    session_pk: i64,
+    session: String,
+    message: String,
+}
+
 impl Reader<'_> {
+    /// Keep raw FTS selection, then mask chosen source blocks before cutting.
+    /// Each chosen session's prefix is decoded once, through its last hit.
+    /// This is linear prefix I/O, not a bound supplied by snippet length.
+    pub fn snippets(
+        &self,
+        fts: &str,
+        scopes: &[Within],
+        terms: &[String],
+    ) -> Result<Vec<Option<Snippet>>> {
+        let hits = scopes
+            .iter()
+            .map(|scope| self.snippet_hit(fts, *scope))
+            .collect::<Result<Vec<_>>>()?;
+        let mut sessions: BTreeMap<i64, HashMap<i64, Vec<usize>>> = BTreeMap::new();
+        for (index, hit) in hits.iter().enumerate() {
+            if let Some(hit) = hit {
+                sessions
+                    .entry(hit.session_pk)
+                    .or_default()
+                    .entry(hit.block)
+                    .or_default()
+                    .push(index);
+            }
+        }
+        let mut snippets = vec![None; scopes.len()];
+        for (session, mut pending) in sessions {
+            let mut masker = polylogue_model::masking::MessageMasker::default();
+            crate::ordered_blocks::visit(self.conn()?, session, |mut source| {
+                masker.block(&mut source.block);
+                if let Some(indices) = pending.remove(&source.pk) {
+                    let text = match &source.block {
+                        polylogue_model::Block::Text { text } => text.as_str(),
+                        polylogue_model::Block::ToolResult {
+                            output: Some(text), ..
+                        } => text.as_str(),
+                        _ => {
+                            return Err(StoreError::Invalid(
+                                "selected snippet block has no matching source text".into(),
+                            ));
+                        }
+                    };
+                    let (text, marks) = cut(text, terms);
+                    for index in indices {
+                        let hit = hits[index].as_ref().expect("chosen hit index");
+                        snippets[index] = Some(Snippet {
+                            text: text.clone(),
+                            marks: marks.clone(),
+                            session: hit.session.clone(),
+                            message: hit.message.clone(),
+                        });
+                    }
+                }
+                Ok(if pending.is_empty() {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                })
+            })?;
+            if !pending.is_empty() {
+                return Err(StoreError::Invalid(
+                    "selected snippet blocks are absent from the admitted source view".into(),
+                ));
+            }
+        }
+        Ok(snippets)
+    }
+
     /// The best-ranked text matching `fts` (an FTS5 expression) within
-    /// `within`, cut around the first of `terms`: prose first, then tool
-    /// output when no prose matches.
-    pub fn snippet(&self, fts: &str, within: Within, terms: &[String]) -> Result<Option<Snippet>> {
+    /// `within`: prose first, then tool output when no prose matches.
+    /// Selection stays raw; decoding and source masking happen after the batch.
+    fn snippet_hit(&self, fts: &str, within: Within) -> Result<Option<Hit>> {
         let (scope, pk) = match within {
             Within::Session(pk) => (
                 "m.inherited_from IS NULL AND COALESCE(m.on_active_path, 1) = 1 \
@@ -81,26 +157,26 @@ impl Reader<'_> {
             ("output_fts", "tool_result", ""),
         ] {
             let sql = format!(
-                "SELECT tx.body, s.id, m.id FROM {table} JOIN text tx ON tx.id = {table}.rowid \
+                "SELECT b.pk, s.pk, s.id, m.id FROM {table} JOIN text tx ON tx.id = {table}.rowid \
                  JOIN block b ON b.text_id = tx.id AND b.kind = '{block}' \
                  JOIN current_message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk \
                  WHERE {table} MATCH ?1 AND {scope}{writer} \
                  ORDER BY bm25({table}), m.at DESC LIMIT 1"
             );
-            let hit: Option<(Vec<u8>, String, String)> = self
+            let hit: Option<Hit> = self
                 .conn()?
                 .prepare_cached(&sql)?
-                .query_row(params![fts, pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .query_row(params![fts, pk], |r| {
+                    Ok(Hit {
+                        block: r.get(0)?,
+                        session_pk: r.get(1)?,
+                        session: r.get(2)?,
+                        message: r.get(3)?,
+                    })
+                })
                 .optional()?;
-            if let Some((body, session, message)) = hit {
-                let text = unpack_text(&body)?;
-                let (text, marks) = cut(&text, terms);
-                return Ok(Some(Snippet {
-                    text,
-                    marks,
-                    session,
-                    message,
-                }));
+            if hit.is_some() {
+                return Ok(hit);
             }
         }
         Ok(None)

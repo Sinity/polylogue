@@ -411,3 +411,5 @@ mod structured_json;
 mod read_pages;
 
 mod read_masking;
+
+mod search_snippets;
