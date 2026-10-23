@@ -118,7 +118,10 @@ fn ordinary_cli_reads_deep_lineage_and_reports_incomplete_parent_prefixes() {
     let own = cli(&env, &["--json", "read", "claude-code:missing-anchor"]);
     assert!(own.status.success());
     let own = json(&own);
-    assert!(own["lineage"].is_null(), "a physical read does not inspect ancestry");
+    assert!(
+        own["lineage"].is_null(),
+        "a physical read does not inspect ancestry"
+    );
     assert_eq!(own["messages"].as_array().unwrap().len(), 1);
     for format in ["terminal", "markdown", "html"] {
         let rendered = logical(&env, "claude-code:missing-anchor", format);

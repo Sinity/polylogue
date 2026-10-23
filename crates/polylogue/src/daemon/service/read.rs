@@ -170,7 +170,8 @@ pub(super) fn run(reader: &Reader<'_>, id: &SessionId, options: Options<'_>) -> 
     };
     let mut value = serde_json::json!({"session": session, "display_title": title, "text": page.text, "next": next});
     if options.logical {
-        value["lineage"] = serde_json::to_value(selected.lineage()).expect("lineage is serializable");
+        value["lineage"] =
+            serde_json::to_value(selected.lineage()).expect("lineage is serializable");
     }
     ok(value)
 }
