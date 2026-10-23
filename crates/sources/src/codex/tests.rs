@@ -181,33 +181,53 @@ fn a_turn_becomes_one_message_per_item() {
     assert_eq!(session.tool_version.as_deref(), Some("0.160.0"));
 }
 
-#[test]
-fn usage_lands_on_the_item_before_the_count_with_each_token_counted_once() {
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&turn()), 0).unwrap();
-    let msgs = final_messages(&[step]);
-    let call = &msgs[3];
-    assert_eq!(
-        call.usage,
-        Usage {
-            input: Some(400),
-            cached_input: Some(600),
-            cache_write: None,
-            output: Some(30),
-            reasoning: Some(20),
-            ..Usage::default()
-        }
-    );
-    assert_eq!(msgs[5].usage.input, Some(200));
-    assert!(msgs[2].usage.is_empty());
+fn readings(step: &Step) -> Vec<polylogue_model::UsageObservation> {
+    step.output
+        .events
+        .iter()
+        .filter(|e| e.kind == polylogue_model::observations::USAGE_OBSERVATION)
+        .map(|e| serde_json::from_value(e.data.clone()).unwrap())
+        .collect()
 }
 
 #[test]
-fn rate_limits_are_stored_when_they_change() {
-    let mut carry = Carry::default();
-    let step = run(&rollout(), &mut carry, &jsonl(&turn()), 0).unwrap();
-    let kinds: Vec<_> = step.output.events.iter().map(|e| e.kind.as_str()).collect();
-    assert_eq!(kinds, ["turn_context", "rate_limits", "task_complete"]);
+fn usage_is_independent_of_items_and_partial_counters_do_not_prove_completion() {
+    let step = run(&rollout(), &mut Carry::default(), &jsonl(&turn()), 0).unwrap();
+    let readings = readings(&step);
+    assert_eq!(readings.len(), 2);
+    assert_eq!(readings[0].usage.input, Some(400));
+    assert_eq!(readings[0].usage.output, Some(30));
+    assert_eq!(readings[1].usage.input, Some(200));
+    assert!(readings.iter().all(|r| r.response.is_none()
+        && r.completion_observed.is_none()
+        && r.observed_at.is_none()));
+    assert!(
+        step.output
+            .messages
+            .iter()
+            .all(|row| row.message.usage.is_empty())
+    );
+}
+
+#[test]
+fn rate_limits_are_stored_independently_when_they_change() {
+    let step = run(&rollout(), &mut Carry::default(), &jsonl(&turn()), 0).unwrap();
+    assert_eq!(
+        step.output
+            .events
+            .iter()
+            .filter(|e| e.kind == "quota_observation")
+            .count(),
+        1
+    );
+    assert_eq!(
+        step.output
+            .events
+            .iter()
+            .filter(|e| e.kind == "token_count")
+            .count(),
+        2
+    );
 }
 
 #[test]
@@ -554,8 +574,8 @@ fn the_thread_settings_give_later_usage_its_service_tier() {
     );
     let mut carry = Carry::default();
     let step = run(&rollout(), &mut carry, &jsonl(&records), 0).unwrap();
-    let msgs = final_messages(&[step]);
-    let priced: Vec<_> = msgs.iter().filter(|m| !m.usage.is_empty()).collect();
+    let readings = readings(&step);
+    let priced: Vec<_> = readings.iter().collect();
     assert!(!priced.is_empty());
     assert!(
         priced
@@ -566,11 +586,10 @@ fn the_thread_settings_give_later_usage_its_service_tier() {
 
 #[test]
 fn rate_limits_read_as_windows_classified_by_length_not_name() {
-    let at = polylogue_model::Timestamp::from_unix_ms(1_790_000_000_000);
     let q = json!({"limit_id": "codex", "plan_type": "pro", "credits": {"balance": "12.5"},
         "primary": {"used_percent": 42.0, "window_minutes": 10080, "resets_at": 1_790_600_000},
         "secondary": null});
-    let r = quota(&q, at).unwrap();
+    let r = quota(&q).unwrap();
     assert_eq!(
         (r.plan.as_deref(), r.credits.as_deref()),
         (Some("pro"), Some("12.5"))
@@ -584,17 +603,17 @@ fn rate_limits_read_as_windows_classified_by_length_not_name() {
     // Older rollouts give the reset in seconds after the record.
     let q =
         json!({"primary": {"used_percent": "1", "window_minutes": 300, "resets_in_seconds": 60}});
-    let w = &quota(&q, at).unwrap().windows[0];
-    assert_eq!(w.resets_at.map(|t| t.unix_ms()), Some(1_790_000_060_000));
+    let w = &quota(&q).unwrap().windows[0];
+    assert_eq!(w.resets_at.map(|t| t.unix_ms()), None);
     assert_eq!(w.used_percent, Some(1.0));
 }
 
 #[test]
 fn absent_quota_facts_remain_absent_and_extreme_resets_do_not_overflow() {
-    assert!(quota(&json!({}), None).is_none());
+    assert!(quota(&json!({})).is_none());
     for field in ["resets_at", "resets_in_seconds"] {
         let q = json!({"primary": {"window_minutes": 300, field: i64::MAX}});
-        let reading = quota(&q, polylogue_model::Timestamp::from_unix_ms(1000)).unwrap();
+        let reading = quota(&q).unwrap();
         let window = &reading.windows[0];
         assert_eq!(window.used_percent, None);
         assert_eq!(window.resets_at, None);
@@ -602,3 +621,5 @@ fn absent_quota_facts_remain_absent_and_extreme_resets_do_not_overflow() {
         assert_eq!(reading.credits, None);
     }
 }
+
+mod observations;

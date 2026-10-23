@@ -17,7 +17,8 @@ pub struct Event {
     /// places the event among the input's messages and cites its bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<(u64, u64)>,
-    /// The record's own fields, kept as written.
+    /// Native fields kept as written, or the typed data of a normalized
+    /// observation (`observations`). Native events remain authoritative.
     pub data: Json,
 }
 

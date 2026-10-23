@@ -6,8 +6,9 @@
 //! A rollout is one thread. Each line is an envelope
 //! `{timestamp, type, payload}`; files from mid-2025 write the items bare
 //! after a header line. Items arrive complete, so a parser never holds a
-//! whole turn: each response item is one message, and only the latest
-//! assistant item stays open until the token count that follows it.
+//! whole turn: each response item is one addressable contribution. Rollouts
+//! do not identify complete response membership across stream retries.
+//! Usage and quota are independent observations, not item attributes.
 //!
 //! A subagent's rollout starts with its parent's history copied in
 //! (`subagent_history_start_ordinal` says where its own begins). The copy
@@ -18,6 +19,7 @@ pub mod database;
 mod fields;
 mod index;
 mod items;
+mod usage;
 
 use crate::frame::Record;
 use crate::origin::Root;
@@ -57,8 +59,9 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 
 /// A token count's `rate_limits`: the plan, credits, and a `primary` and
 /// `secondary` window of the limit `limit_id`. A window's reset is epoch
-/// seconds, or seconds after the record in older rollouts.
-fn quota(q: &Json, at: Option<polylogue_model::Timestamp>) -> Option<QuotaReading> {
+/// seconds. Relative resets lack the provider observation time needed to
+/// place them: token records can be emitted after draining tools.
+fn quota(q: &Json) -> Option<QuotaReading> {
     let limit = str_field(q, "limit_id").unwrap_or("codex");
     let windows = ["primary", "secondary"]
         .iter()
@@ -69,10 +72,6 @@ fn quota(q: &Json, at: Option<polylogue_model::Timestamp>) -> Option<QuotaReadin
                 .get("resets_at")
                 .and_then(Json::as_i64)
                 .and_then(|s| s.checked_mul(1000))
-                .or_else(|| {
-                    let after = w.get("resets_in_seconds").and_then(Json::as_i64)?;
-                    at?.unix_ms().checked_add(after.checked_mul(1000)?)
-                })
                 .and_then(polylogue_model::Timestamp::from_unix_ms);
             let used = w.get("used_percent").and_then(|u| {
                 u.as_f64()
@@ -190,8 +189,10 @@ pub struct Carry {
     /// The last copied item, where the child branched.
     branch_point: Option<MessageId>,
     model: Option<String>,
-    /// The latest assistant item, open until the token count after it.
-    open: Option<MessageRow>,
+    #[serde(default)]
+    usage: usage::Observer,
+    #[serde(default)]
+    scope_recorded: bool,
     calls: BTreeMap<String, Call>,
     /// Commands left running, by handle (`process 123`, `cell 4`), to the
     /// call that started them.
@@ -201,7 +202,7 @@ pub struct Carry {
     /// Digests of the last stored turn settings and rate limits; a repeat
     /// is not stored again.
     settings: Option<u64>,
-    limits: Option<u64>,
+    limits: Option<String>,
     /// Reasoning effort the current turn asked for.
     effort: Option<String>,
     /// The service tier the thread runs at (`default`, `flex`, `priority`),
@@ -211,6 +212,8 @@ pub struct Carry {
     /// The byte range of the record being read, for events.
     #[serde(skip)]
     current: Option<(u64, u64)>,
+    #[serde(skip)]
+    copied_observation: Option<SessionId>,
     /// The previous record, when it was a stored user prompt: an item or a
     /// `user_message` event. Codex can write one prompt both ways in
     /// adjacent records; the second of the pair is the same prompt.
@@ -273,6 +276,17 @@ fn unwrap(v: &Json) -> Rec<'_> {
 }
 
 impl Rollout {
+    fn unknown_boundaries(session: SessionId, out: &mut Output) {
+        out.events.push(Event {
+            session,
+            kind: "response_boundaries_unknown".into(),
+            at: None,
+            after: None,
+            range: None,
+            data: serde_json::json!({}),
+        });
+    }
+
     fn own(&self, carry: &mut Carry) -> Option<SessionId> {
         if carry.session.is_none() {
             let id = session_id(self.thread.as_deref()?)?;
@@ -358,6 +372,9 @@ impl Rollout {
         {
             carry.copied_until = Some(start);
             carry.copied_from = forked.or(parent).map(str::to_owned);
+            if let Some(parent) = carry.copied_from.as_deref().and_then(session_id) {
+                Self::unknown_boundaries(parent, out);
+            }
         }
         Disposition::Materialized
     }
@@ -403,17 +420,29 @@ impl Rollout {
         Disposition::Materialized
     }
 
+    fn observation(
+        &self,
+        carry: &mut Carry,
+        data: &Json,
+        kind: &str,
+        at: Option<polylogue_model::Timestamp>,
+        out: &mut Output,
+    ) -> Disposition {
+        let disposition = self.event(carry, data, kind, at, out);
+        if disposition == Disposition::Materialized {
+            let event = out.events.last_mut().expect("new event");
+            event.after = None;
+            if let Some(parent) = &carry.copied_observation {
+                event.session = parent.clone();
+            }
+        }
+        disposition
+    }
+
     /// Whether a record belongs to history a subagent copied from its
     /// parent.
     fn copied(carry: &Carry, ordinal: Option<u64>) -> bool {
         matches!((carry.copied_until, ordinal), (Some(until), Some(o)) if o > 1 && o < until)
-    }
-
-    /// Sends the open assistant item and keeps nothing open.
-    fn close(carry: &mut Carry, out: &mut Output) {
-        if let Some(row) = carry.open.take() {
-            out.messages.push(row);
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -429,7 +458,6 @@ impl Rollout {
     ) -> Disposition {
         let ty = str_field(item, "type").unwrap_or("?");
         records.fields(&format!("response_item/{ty}"), item, fields::for_item(ty));
-        Self::close(carry, out);
         let copied = Self::copied(carry, ordinal);
         let session = if copied {
             // Stored once, in the parent; only items with an ID can be
@@ -473,6 +501,7 @@ impl Rollout {
             reported_cost_usd: None,
             duration_ms: None,
             production: Production {
+                response_boundary_unknown: (role == Role::Assistant).then_some(true),
                 effort: (role == Role::Assistant && !copied)
                     .then(|| carry.effort.clone())
                     .flatten(),
@@ -490,11 +519,7 @@ impl Rollout {
             return Disposition::Materialized;
         }
         carry.last = Some(id);
-        if role == Role::Assistant {
-            carry.open = Some(row);
-        } else {
-            out.messages.push(row);
-        }
+        out.messages.push(row);
         Disposition::Materialized
     }
 
@@ -748,7 +773,6 @@ impl Rollout {
                 let Some(mid) = message_id(id) else {
                     return Disposition::refused("item ID is empty");
                 };
-                Self::close(carry, out);
                 let duration = items::completed(item).and_then(|c| c.duration_ms);
                 out.messages.push(MessageRow {
                     offset: record.offset,
@@ -759,8 +783,8 @@ impl Rollout {
                         parent: None,
                         role: Role::Assistant,
                         at,
-                        model: carry.model.clone(),
-                        prompt_kind: None,
+                        model: None,
+                        prompt_kind: Some(PromptKind::Harness),
                         blocks,
                         usage: Usage::default(),
                         stop_reason: None,
@@ -798,30 +822,6 @@ impl Rollout {
         }
     }
 
-    fn usage(carry: &mut Carry, usage: &Json) {
-        let n = |k: &str| usage.get(k).and_then(Json::as_u64);
-        let (Some(input), cached) = (n("input_tokens"), n("cached_input_tokens")) else {
-            return;
-        };
-        let output = n("output_tokens");
-        let reasoning = n("reasoning_output_tokens");
-        // OpenAI counts cached input inside input and reasoning inside
-        // output; each kind of token is counted once.
-        let u = Usage {
-            input: Some(input.saturating_sub(cached.unwrap_or(0))),
-            cached_input: cached,
-            cache_write: n("cache_write_input_tokens").filter(|&w| w > 0),
-            output: output.map(|o| o.saturating_sub(reasoning.unwrap_or(0))),
-            reasoning,
-            cache_write_1h: None,
-            service_tier: carry.tier.clone(),
-            speed: None,
-        };
-        if let Some(open) = &mut carry.open {
-            open.message.usage = u;
-        }
-    }
-
     fn event_msg(
         &self,
         carry: &mut Carry,
@@ -833,25 +833,47 @@ impl Rollout {
         let sub = str_field(p, "type").unwrap_or("?");
         match sub {
             "token_count" => {
-                if let Some(last) = p.get("info").and_then(|i| i.get("last_token_usage")) {
-                    Self::usage(carry, last);
+                // Keep the native observation authoritative, including malformed,
+                // rate-only and context-size reports. Its time is emission time.
+                self.observation(carry, p, "token_count", at, out);
+                let Some(session) = self.own(carry) else {
+                    return Disposition::refused("no thread ID in the file name or its header");
+                };
+                let session = carry.copied_observation.clone().unwrap_or(session);
+                let observation = usage::identity(&(session, at, p));
+                if let Some(info) = p.get("info").filter(|info| !info.is_null())
+                    && let Some(reading) =
+                        carry
+                            .usage
+                            .read(info, observation, carry.model.clone(), carry.tier.clone())
+                {
+                    self.observation(
+                        carry,
+                        &serde_json::to_value(reading).expect("usage reading"),
+                        polylogue_model::observations::USAGE_OBSERVATION,
+                        at,
+                        out,
+                    );
                 }
-                // The subscription window state the API returned with the
-                // response this count follows.
-                if let (Some(open), Some(limits)) = (
-                    &mut carry.open,
-                    p.get("rate_limits").filter(|r| !r.is_null()),
-                ) {
-                    open.message.production.quota = quota(limits, at);
-                }
-                Self::close(carry, out);
-                match p.get("rate_limits").filter(|r| !r.is_null()) {
-                    Some(limits) if carry.limits != Some(digest(limits)) => {
-                        carry.limits = Some(digest(limits));
-                        self.event(carry, p, "rate_limits", at, out)
+                if let Some(reading) = p.get("rate_limits").and_then(quota) {
+                    let identity = usage::identity(&reading);
+                    if carry.limits.as_ref() != Some(&identity) {
+                        carry.limits = Some(identity.clone());
+                        let reading = polylogue_model::QuotaObservation {
+                            observation: identity,
+                            reading,
+                            observed_at: None,
+                        };
+                        self.observation(
+                            carry,
+                            &serde_json::to_value(reading).expect("quota reading"),
+                            polylogue_model::observations::QUOTA_OBSERVATION,
+                            at,
+                            out,
+                        );
                     }
-                    _ => Disposition::Materialized,
                 }
+                Disposition::Materialized
             }
             "item_completed" => self.item_completed(carry, record, p, at, out),
             "agent_message"
@@ -881,7 +903,6 @@ impl Rollout {
                 self.event(carry, p, sub, at, out)
             }
             "task_complete" | "turn_aborted" => {
-                Self::close(carry, out);
                 // Calls do not outlive their turn; commands still running do.
                 carry.calls.clear();
                 self.event(carry, p, sub, at, out)
@@ -1009,16 +1030,28 @@ impl Parser for Rollout {
         let rec = unwrap(v);
         let p = rec.payload;
         carry.current = Some((record.offset, record.offset + record.bytes.len() as u64));
-        if Self::copied(carry, rec.ordinal) && rec.ty != "response_item" {
+        if record.offset == 0 {
+            carry.usage.start(0, false);
+        }
+        carry.copied_observation = Self::copied(carry, rec.ordinal)
+            .then(|| carry.copied_from.as_deref().and_then(session_id))
+            .flatten();
+        let token_observation =
+            rec.ty == "event_msg" && str_field(p, "type") == Some("token_count");
+        if Self::copied(carry, rec.ordinal) && token_observation && carry.copied_from.is_none() {
+            if let Some(info) = p.get("info").filter(|info| !info.is_null()) {
+                // Advance the observed counters without charging an unknown
+                // original owner as usage of the child.
+                carry.usage.read(info, usage::identity(p), None, None);
+            }
+            return self.observation(carry, p, "copied_token_count", rec.at, out);
+        }
+        if Self::copied(carry, rec.ordinal) && rec.ty != "response_item" && !token_observation {
             return Disposition::unknown("copied from the parent thread, which stores it");
         }
         let prev = carry.prompt.take();
         if rec.ty == "response_item" && str_field(p, "type") == Some("token_count") {
-            // Some writers record usage as an item: it belongs to the
-            // answer it follows, like an event_msg token count.
-            Self::usage(carry, p);
-            Self::close(carry, out);
-            return Disposition::Materialized;
+            return self.observation(carry, p, "token_count_item", rec.at, out);
         }
         let same = |text: &str, from_event: bool| {
             prev.as_ref()
@@ -1104,12 +1137,7 @@ impl Parser for Rollout {
                 carry.settings = Some(d);
                 self.event(carry, p, "turn_context", rec.at, out)
             }
-            "token_usage_record" => {
-                if let Some(u) = p.get("usage") {
-                    Self::usage(carry, u);
-                }
-                Disposition::Materialized
-            }
+            "token_usage_record" => self.observation(carry, p, "token_usage_record", rec.at, out),
             "compacted" => {
                 // A fork starts from its parent's history: the last
                 // identified item is where it branched. Keep that history
@@ -1130,20 +1158,12 @@ impl Parser for Rollout {
     }
 
     fn flush(&self, carry: &mut Carry, out: &mut Output) {
-        if let Some(open) = &carry.open {
-            out.messages.push(open.clone());
+        if !carry.scope_recorded
+            && let Some(session) = self.own(carry)
+        {
+            Self::unknown_boundaries(session, out);
+            carry.scope_recorded = true;
         }
-        // An item re-sent within one step (the open item, then with its
-        // usage) keeps its last form. Rows go out in file order.
-        let mut seen = BTreeSet::new();
-        let mut kept: Vec<MessageRow> = Vec::with_capacity(out.messages.len());
-        for row in out.messages.drain(..).rev() {
-            if seen.insert((row.message.id.clone(), row.offset)) {
-                kept.push(row);
-            }
-        }
-        kept.sort_by_key(|row| row.offset);
-        out.messages = kept;
         // The branch point is known once the copied history has been read.
         if let (Some(at), Some(s)) = (&carry.branch_point, &carry.session) {
             for l in &mut out.links {

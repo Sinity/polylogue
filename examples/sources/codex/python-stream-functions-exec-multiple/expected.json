@@ -13,7 +13,13 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:codex-functions-exec-multiple"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -31,6 +37,9 @@
             }
           ],
           "id": "codex:fc-multiple",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:codex-functions-exec-multiple"
         },

@@ -8,7 +8,7 @@ use rusqlite::{Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "tool_calls",
-    version: Version::Rules(2),
+    version: Version::Rules(3),
     after: &[],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
@@ -43,7 +43,9 @@ fn passed_without_result(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
         "UPDATE tool_call SET outcome_reason = CASE WHEN EXISTS (
              SELECT 1 FROM block cb JOIN current_message cm ON cm.pk = cb.message_pk
              JOIN current_message later ON later.session_pk = cm.session_pk
-             WHERE cb.pk = tool_call.call_block_pk AND later.role = 'assistant'
+             WHERE cb.pk = tool_call.call_block_pk AND later.role = 'assistant' AND later.written_by='model'
+               AND coalesce(json_extract(later.attrs_json,'$.production.response_boundary_unknown'),0)=0
+               AND coalesce(json_extract(cm.attrs_json,'$.production.response_boundary_unknown'),0)=0
                AND (later.order_input_id, later.seq) > (cm.order_input_id, cm.seq))
            THEN 'passed_without_result' ELSE 'no_result' END
          WHERE session_pk = ?1 AND result_block_pk IS NULL AND outcome = 'unknown'

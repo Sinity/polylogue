@@ -18,8 +18,9 @@ pub const WEEK: i64 = 10_080;
 /// The subscription a window belongs to: the tool's limit name.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Observation {
-    /// Unix ms of the response that carried it.
-    pub at: i64,
+    /// Record/emission time, not necessarily provider observation time.
+    pub at: Option<i64>,
+    pub observed_at: Option<i64>,
     /// The origin that reported it (`claude-code`, `codex`).
     pub tool: String,
     /// The tool's name for the limit (`codex`, `five_hour`, `seven_day`, …).
@@ -38,7 +39,8 @@ pub struct Observation {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Credits {
     pub balance: String,
-    pub observed_at: i64,
+    pub observed_at: Option<i64>,
+    pub recorded_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -71,7 +73,7 @@ pub struct Window {
     /// Burn known and the window lasts to its reset.
     pub lasts_to_reset: bool,
     pub status: Option<String>,
-    pub usage: UsageReport,
+    pub usage: Option<UsageReport>,
     /// Tokens of every kind per hour since the window's first response.
     pub tokens_per_hour: Option<f64>,
     /// API-equivalent USD per hour, over priced responses.
@@ -86,6 +88,10 @@ pub struct ToolQuota {
     pub plan: Option<String>,
     pub credits: Option<Credits>,
     pub windows: Vec<Window>,
+    /// Readings that cannot be placed in a provider window.
+    pub unplaced: Vec<Observation>,
+    /// Physical usage whose spend time cannot be assigned to a window.
+    pub recorded_usage: usage::RecordedUsage,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -95,12 +101,13 @@ pub struct Quota {
 }
 
 /// Every limit reading of one response.
-fn observations(tool: &str, at: i64, reading: &QuotaReading) -> Vec<Observation> {
+fn observations(tool: &str, at: Option<i64>, reading: &QuotaReading) -> Vec<Observation> {
     reading
         .windows
         .iter()
         .map(|w| Observation {
             at,
+            observed_at: at,
             tool: tool.to_owned(),
             limit: w.limit.limit.to_string(),
             window_minutes: w.limit.minutes,
@@ -196,16 +203,49 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                     tool.clone(),
                     Credits {
                         balance: balance.clone(),
-                        observed_at: at,
+                        observed_at: Some(at),
+                        recorded_at: Some(at),
                     },
                 ));
             }
-            obs.extend(observations(&tool, at, &reading));
+            obs.extend(observations(&tool, Some(at), &reading));
             if !tools.contains(&tool) {
                 tools.push(tool);
             }
         }
     }
+    super::observations::visit::<polylogue_model::QuotaObservation>(
+        reader,
+        &Scope::default(),
+        polylogue_model::observations::QUOTA_OBSERVATION,
+        |tool, recorded_at, value| {
+            if let Some(plan) = &value.reading.plan {
+                plans.push((tool.to_owned(), plan.clone()));
+            }
+            if let Some(balance) = &value.reading.credits {
+                credits.push((
+                    tool.to_owned(),
+                    Credits {
+                        balance: balance.clone(),
+                        observed_at: value.observed_at.map(Timestamp::unix_ms),
+                        recorded_at,
+                    },
+                ));
+            }
+            // Unknown emission time sorts before timed records; no provider
+            // timing is inferred from it.
+            let mut readings = observations(tool, recorded_at, &value.reading);
+            for reading in &mut readings {
+                reading.observed_at = value.observed_at.map(Timestamp::unix_ms);
+            }
+            obs.extend(readings);
+            if !tools.iter().any(|t| t == tool) {
+                tools.push(tool.to_owned());
+            }
+            Ok(())
+        },
+    )?;
+    obs.sort_by_key(|o| o.at);
     let mut out = vec![];
     for tool in &tools {
         let tool = tool.as_str();
@@ -229,6 +269,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                 ));
             }
         }
+        let boundaries_unknown = usage::unknown_scope(reader, &Scope::default().for_tool(tool))?;
         let mut windows = vec![];
         for (limit, minutes, from_first_response) in limits {
             let these: Vec<Observation> = mine
@@ -251,6 +292,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                         .into_iter()
                         .find(|&(_, s, e)| s <= now && now < e)
                 }
+                _ if boundaries_unknown => None,
                 _ => Some((WindowSource::Inferred, now - minutes * MINUTE, now)),
             };
             if let Some((source, start, end)) = window {
@@ -272,17 +314,24 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                 .find(|c| c.0 == tool)
                 .map(|c| c.1.clone()),
             windows,
+            unplaced: mine
+                .iter()
+                .filter(|o| o.resets_at.is_none() && o.observed_at.is_none())
+                .map(|o| (*o).clone())
+                .collect(),
+            recorded_usage: usage::recorded(reader, &Scope::default().for_tool(tool))?,
         });
     }
     Ok(Quota { now, tools: out })
 }
 
 fn response_times(reader: &Reader<'_>, tool: &str, since: i64, until: i64) -> Result<Vec<i64>> {
-    let mut stmt = reader.conn()?.prepare_cached(
+    let mut stmt = reader.conn()?.prepare_cached(&format!(
         "SELECT m.at FROM current_message m JOIN session s ON s.pk = m.session_pk
-         WHERE s.origin = ?1 AND m.role = 'assistant' AND m.at >= ?2 AND m.at < ?3
+         WHERE s.origin = ?1 AND {} AND m.at >= ?2 AND m.at < ?3
          ORDER BY m.at",
-    )?;
+        usage::RESPONSE_ROWS
+    ))?;
     let rows = stmt.query_map(rusqlite::params![tool, since, until], |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
@@ -299,19 +348,31 @@ fn build(
     now: i64,
     obs: &[Observation],
 ) -> Result<Window> {
-    let inside: Vec<&Observation> = obs.iter().filter(|o| start <= o.at && o.at < end).collect();
+    let inside: Vec<&Observation> = obs
+        .iter()
+        .filter(|o| match o.observed_at {
+            Some(at) => start <= at && at < end,
+            None => o.resets_at == Some(end),
+        })
+        .collect();
     let last = inside.last();
     let used = last.and_then(|o| o.used_percent);
-    let burn = percent_burn(&inside);
+    let burn = last
+        .and_then(|o| o.observed_at)
+        .and_then(|_| percent_burn(&inside));
     let exhausted_at = inside
         .iter()
         .find(|o| o.used_percent.is_some_and(|p| p >= 100.0))
-        .map(|o| o.at)
+        .and_then(|o| o.observed_at)
         .or_else(|| {
             let (rate, o) = (burn?, last?);
             let left = 100.0 - o.used_percent?;
             (rate > 0.0)
-                .then(|| o.at + (left / rate * HOUR as f64) as i64)
+                .then(|| {
+                    o.observed_at
+                        .map(|at| at + (left / rate * HOUR as f64) as i64)
+                })
+                .flatten()
                 .filter(|&t| t < end)
         });
     let usage = usage::report(
@@ -329,8 +390,14 @@ fn build(
     let hours = first.map(|f| (now.min(end) - f) as f64 / HOUR as f64);
     let tokens = total_tokens(&usage);
     let per_hour = |x: f64| hours.filter(|&h| h > 0.0).map(|h| x / h);
-    let tokens_per_hour = per_hour(tokens as f64);
-    let api_usd_per_hour = usage.api_cost.known_usd.and_then(per_hour);
+    let unknown_time =
+        usage::recorded(reader, &Scope::default().for_tool(tool))?.untimed_observations > 0;
+    let tokens_per_hour = (!unknown_time && usage.messages.is_some())
+        .then(|| per_hour(tokens as f64))
+        .flatten();
+    let api_usd_per_hour = (!unknown_time && usage.messages.is_some())
+        .then(|| usage.api_cost.known_usd.and_then(per_hour))
+        .flatten();
     let projected_tokens =
         tokens_per_hour.map(|r| tokens + (r * (end - now).max(0) as f64 / HOUR as f64) as u64);
     Ok(Window {
@@ -340,14 +407,14 @@ fn build(
         source,
         starts_at: start,
         resets_at: end,
-        observed_at: last.map(|o| o.at),
+        observed_at: last.and_then(|o| o.observed_at),
         used_percent: used,
         remaining_percent: used.map(|u| (100.0 - u).max(0.0)),
         burn_percent_per_hour: burn,
         lasts_to_reset: burn.is_some() && exhausted_at.is_none(),
         exhausted_at,
         status: last.and_then(|o| o.status.clone()),
-        usage,
+        usage: (!unknown_time).then_some(usage),
         tokens_per_hour,
         api_usd_per_hour,
         projected_tokens,
@@ -357,9 +424,12 @@ fn build(
 /// Percent per hour between the first and last reported use in the window,
 /// when they are at least five minutes apart.
 fn percent_burn(inside: &[&Observation]) -> Option<f64> {
-    let with: Vec<&&Observation> = inside.iter().filter(|o| o.used_percent.is_some()).collect();
+    let with: Vec<&&Observation> = inside
+        .iter()
+        .filter(|o| o.used_percent.is_some() && o.observed_at.is_some())
+        .collect();
     let (a, b) = (with.first()?, with.last()?);
-    let span = b.at - a.at;
+    let span = b.observed_at? - a.observed_at?;
     (span >= 5 * MINUTE).then(|| {
         (b.used_percent.unwrap_or(0.0) - a.used_percent.unwrap_or(0.0)).max(0.0)
             / (span as f64 / HOUR as f64)

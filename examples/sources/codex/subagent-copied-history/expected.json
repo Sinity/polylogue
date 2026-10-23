@@ -20,6 +20,11 @@
     "blobs": [],
     "events": [
       {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:019a0000-0000-7000-8000-0000000000aa"
+      },
+      {
         "at": "2026-03-01T10:00:06Z",
         "data": {
           "trigger_turn": true
@@ -29,6 +34,11 @@
           1615,
           1743
         ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
         "session": "codex:019a0000-0000-7000-8000-000000000001"
       }
     ],
@@ -53,6 +63,9 @@
             }
           ],
           "id": "codex:msg_p2",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-0000000000aa"
         },
@@ -94,6 +107,9 @@
             }
           ],
           "id": "codex:msg_c1",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000001"
         },

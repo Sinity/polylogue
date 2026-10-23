@@ -344,3 +344,5 @@ mod backing;
 mod read_pages;
 
 mod hook_errors;
+
+mod codex_observations;

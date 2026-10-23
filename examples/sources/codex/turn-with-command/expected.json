@@ -59,7 +59,6 @@
         "session": "codex:019a0000-0000-7000-8000-000000000001"
       },
       {
-        "after": "codex:019a0000-0000-7000-8000-000000000001@1631",
         "at": "2026-03-01T10:00:09Z",
         "data": {
           "info": {
@@ -80,10 +79,111 @@
           },
           "type": "token_count"
         },
-        "kind": "rate_limits",
+        "kind": "token_count",
         "range": [
           1853,
           2193
+        ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      },
+      {
+        "at": "2026-03-01T10:00:09Z",
+        "data": {
+          "completion_observed": null,
+          "input_including_cache": 5000,
+          "model": "gpt-6.1-sol",
+          "observation": "b415c383eeb67002c0bce67b9ff2d267a52abd4f7267a5dbb5a1e0e2621ab800",
+          "observed_at": null,
+          "output_including_reasoning": 80,
+          "response": null,
+          "usage": {
+            "cache_write": null,
+            "cached_input": 3000,
+            "input": 2000,
+            "output": 40,
+            "reasoning": 40
+          }
+        },
+        "kind": "usage_observation",
+        "range": [
+          1853,
+          2193
+        ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      },
+      {
+        "at": "2026-03-01T10:00:09Z",
+        "data": {
+          "observation": "514524aab8c68e71f46c4e8f7397192545fed67294291020645972980b363375",
+          "observed_at": null,
+          "reading": {
+            "windows": [
+              {
+                "limit": "codex",
+                "minutes": 300,
+                "resets_at": "2026-03-01T13:00:00Z",
+                "used_percent": 4.0
+              }
+            ]
+          }
+        },
+        "kind": "quota_observation",
+        "range": [
+          1853,
+          2193
+        ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      },
+      {
+        "at": "2026-03-01T10:00:14Z",
+        "data": {
+          "info": {
+            "last_token_usage": {
+              "cached_input_tokens": 5000,
+              "input_tokens": 5200,
+              "output_tokens": 12,
+              "reasoning_output_tokens": 0,
+              "total_tokens": 5212
+            }
+          },
+          "rate_limits": {
+            "primary": {
+              "resets_at": 1772370000,
+              "used_percent": 4.0,
+              "window_minutes": 300
+            }
+          },
+          "type": "token_count"
+        },
+        "kind": "token_count",
+        "range": [
+          3433,
+          3773
+        ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      },
+      {
+        "at": "2026-03-01T10:00:14Z",
+        "data": {
+          "completion_observed": null,
+          "input_including_cache": 5200,
+          "model": "gpt-6.1-sol",
+          "observation": "7fb4309c88521a5bdb3401c8aa9070ca4714c284ed256c2ccc1d636d948317ce",
+          "observed_at": null,
+          "output_including_reasoning": 12,
+          "response": null,
+          "usage": {
+            "cache_write": null,
+            "cached_input": 5000,
+            "input": 200,
+            "output": 12,
+            "reasoning": 0
+          }
+        },
+        "kind": "usage_observation",
+        "range": [
+          3433,
+          3773
         ],
         "session": "codex:019a0000-0000-7000-8000-000000000001"
       },
@@ -101,6 +201,11 @@
           3774,
           3967
         ],
+        "session": "codex:019a0000-0000-7000-8000-000000000001"
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
         "session": "codex:019a0000-0000-7000-8000-000000000001"
       }
     ],
@@ -169,7 +274,8 @@
           "id": "codex:019a0000-0000-7000-8000-000000000001@1419",
           "model": "gpt-6.1-sol",
           "production": {
-            "effort": "medium"
+            "effort": "medium",
+            "response_boundary_unknown": true
           },
           "role": "assistant",
           "session": "codex:019a0000-0000-7000-8000-000000000001"
@@ -197,26 +303,10 @@
           "model": "gpt-6.1-sol",
           "production": {
             "effort": "medium",
-            "quota": {
-              "windows": [
-                {
-                  "limit": "codex",
-                  "minutes": 300,
-                  "resets_at": "2026-03-01T13:00:00Z",
-                  "used_percent": 4.0
-                }
-              ]
-            }
+            "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001",
-          "usage": {
-            "cache_write": null,
-            "cached_input": 3000,
-            "input": 2000,
-            "output": 40,
-            "reasoning": 40
-          }
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
         },
         "offset": 1631
       },
@@ -262,26 +352,10 @@
           "model": "gpt-6.1-sol",
           "production": {
             "effort": "medium",
-            "quota": {
-              "windows": [
-                {
-                  "limit": "codex",
-                  "minutes": 300,
-                  "resets_at": "2026-03-01T13:00:00Z",
-                  "used_percent": 4.0
-                }
-              ]
-            }
+            "response_boundary_unknown": true
           },
           "role": "assistant",
-          "session": "codex:019a0000-0000-7000-8000-000000000001",
-          "usage": {
-            "cache_write": null,
-            "cached_input": 5000,
-            "input": 200,
-            "output": 12,
-            "reasoning": 0
-          }
+          "session": "codex:019a0000-0000-7000-8000-000000000001"
         },
         "offset": 3212
       }

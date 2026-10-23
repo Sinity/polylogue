@@ -5,10 +5,13 @@
 //! changes what is listed, not what was used.
 
 pub mod analysis;
+mod observations;
 pub mod quota;
 mod usage;
 
-pub use usage::{ModelUsage, Money, SessionUsage, TokenCount, TokensByKind, Totals, UsageReport};
+pub use usage::{
+    ModelUsage, Money, RecordedUsage, SessionUsage, TokenCount, TokensByKind, Totals, UsageReport,
+};
 
 use crate::{Reader, Result};
 

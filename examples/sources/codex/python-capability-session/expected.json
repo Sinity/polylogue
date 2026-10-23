@@ -12,7 +12,13 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:origin-matrix-codex"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -43,6 +49,9 @@
             }
           ],
           "id": "codex:matrix-assistant",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:origin-matrix-codex"
         },

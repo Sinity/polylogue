@@ -481,7 +481,9 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<InlineBlob>) -> Option<Vec<Bl
             let changes = item.get("changes").cloned().unwrap_or(Json::Null);
             // Keyed by path; older items wrote a list of `{path, …}`.
             let path = match &changes {
-                Json::Object(map) => map.keys().next().cloned(),
+                // Objects have no semantic path order; keep this convenience
+                // projection stable with or without serde's preserve_order.
+                Json::Object(map) => map.keys().min().cloned(),
                 Json::Array(list) => list
                     .first()
                     .and_then(|c| str_field(c, "path"))

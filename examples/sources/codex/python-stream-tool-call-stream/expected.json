@@ -15,7 +15,26 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
+    "events": [
+      {
+        "data": {
+          "input_tokens": 42,
+          "output_tokens": 18,
+          "type": "token_count"
+        },
+        "kind": "token_count_item",
+        "range": [
+          802,
+          896
+        ],
+        "session": "codex:tool-call-session-1"
+      },
+      {
+        "data": {},
+        "kind": "response_boundaries_unknown",
+        "session": "codex:tool-call-session-1"
+      }
+    ],
     "links": [],
     "messages": [
       {
@@ -51,6 +70,9 @@
             }
           ],
           "id": "codex:fc_1",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
           "session": "codex:tool-call-session-1"
         },
@@ -88,15 +110,11 @@
             }
           ],
           "id": "codex:msg-asst-1",
+          "production": {
+            "response_boundary_unknown": true
+          },
           "role": "assistant",
-          "session": "codex:tool-call-session-1",
-          "usage": {
-            "cache_write": null,
-            "cached_input": null,
-            "input": 42,
-            "output": 18,
-            "reasoning": null
-          }
+          "session": "codex:tool-call-session-1"
         },
         "offset": 586
       }

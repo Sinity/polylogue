@@ -148,3 +148,20 @@ fn completed_items_give_exit_codes_and_durations() {
     assert_eq!(c.duration_ms, Some(1500));
     assert!(completed(&json!({"type": "Reasoning"})).is_none());
 }
+
+#[test]
+fn a_multi_file_change_path_projection_does_not_depend_on_json_object_order() {
+    for changes in [r#"{"z.rs":{},"a.rs":{}}"#, r#"{"a.rs":{},"z.rs":{}}"#] {
+        let changes: Json = serde_json::from_str(changes).unwrap();
+        let blocks = recovered_call(
+            &json!({"type":"FileChange","id":"synthetic-change","changes":changes}),
+            &mut vec![],
+        )
+        .unwrap();
+        let Block::ToolCall { path, input, .. } = &blocks[0] else {
+            panic!()
+        };
+        assert_eq!(path.as_deref(), Some("a.rs"));
+        assert_eq!(input, &changes);
+    }
+}

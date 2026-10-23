@@ -38,6 +38,13 @@ fn tokens(n: u64) -> String {
 
 fn money(m: &Value) -> String {
     let unpriced = m["unpriced_messages"].as_u64().unwrap_or(0);
+    let unknown = m["response_total_unknown"].as_bool() == Some(true);
+    if unknown {
+        return match m["known_usd"].as_f64() {
+            Some(usd) => format!("${usd:.2} known + unknown response usage"),
+            None => "unknown (response grouping unknown)".into(),
+        };
+    }
     match m["known_usd"].as_f64() {
         None if unpriced > 0 => format!("unknown ({unpriced} unpriced)"),
         None => "unknown".into(),
@@ -49,6 +56,13 @@ fn money(m: &Value) -> String {
 fn token_count(l: &Value) -> String {
     let n = l["tokens"].as_u64().unwrap_or(0);
     let unknown = l["unknown_messages"].as_u64().unwrap_or(0);
+    if l["response_total_unknown"].as_bool() == Some(true) {
+        return if n == 0 {
+            "unknown".into()
+        } else {
+            format!("{} known + unknown response usage", tokens(n))
+        };
+    }
     if unknown > 0 && n == 0 {
         "unknown".into()
     } else if unknown > 0 {
@@ -63,7 +77,9 @@ fn usage_at(u: &Value, indent: &str) -> String {
     let mut out = format!(
         "{indent}{} responses in {} sessions · input {} · cached {} · cache write {} · output {} · reasoning {}\n\
          {indent}API-equivalent {} · tool-reported {}",
-        u["messages"],
+        u["messages"]
+            .as_u64()
+            .map_or_else(|| "unknown".into(), |n| n.to_string()),
         u["sessions"],
         token_count(&l["input"]),
         token_count(&l["cached_input"]),
@@ -77,6 +93,7 @@ fn usage_at(u: &Value, indent: &str) -> String {
         out.push_str(&format!(" · includes {h} hidden session(s)"));
     }
     out.push('\n');
+    out.push_str(&recorded_usage(&u["recorded_usage"], indent));
     if indent.is_empty() {
         for m in u["by_model"].as_array().into_iter().flatten() {
             out.push_str(&format!(
@@ -95,6 +112,36 @@ fn usage_at(u: &Value, indent: &str) -> String {
     out
 }
 
+fn recorded_usage(reading: &Value, indent: &str) -> String {
+    let Some(n) = reading["observations"].as_u64().filter(|n| *n > 0) else {
+        return String::new();
+    };
+    let known = &reading["known_usage"];
+    let count = |value: &Value| {
+        value
+            .as_u64()
+            .map(tokens)
+            .unwrap_or_else(|| "unknown".into())
+    };
+    let mut text = format!(
+        "{indent}{n} recorded usage observations ({} measured completion observations, {} unconfirmed); {} have unknown spend time\n{indent}recorded known tokens: input {}, cached {}, output {}, reasoning {}\n",
+        reading["measured_completion_observations"],
+        reading["unconfirmed_observations"],
+        reading["untimed_observations"],
+        count(&known["input"]),
+        count(&known["cached_input"]),
+        count(&known["output"]),
+        count(&known["reasoning"])
+    );
+    if let Some(usd) = reading["known_api_cost_usd"].as_f64() {
+        text.push_str(&format!(
+            "{indent}recorded known API-equivalent ${usd:.2} ({} unpriced observations)\n",
+            reading["unpriced_observations"]
+        ));
+    }
+    text
+}
+
 pub fn quota(o: &Value) -> String {
     let mut out = String::new();
     for t in o["tools"].as_array().into_iter().flatten() {
@@ -110,6 +157,16 @@ pub fn quota(o: &Value) -> String {
             ));
         }
         out.push('\n');
+        out.push_str(&recorded_usage(&t["recorded_usage"], "  "));
+        for reading in t["unplaced"].as_array().into_iter().flatten() {
+            out.push_str(&format!(
+                "  {}: {} recorded use; provider time and reset unknown\n",
+                reading["limit"].as_str().unwrap_or(""),
+                reading["used_percent"]
+                    .as_f64()
+                    .map_or_else(|| "unknown".into(), |p| format!("{p:.1}%"))
+            ));
+        }
         for w in t["windows"].as_array().into_iter().flatten() {
             let minutes = w["window_minutes"].as_i64().unwrap_or(0);
             let name = match minutes {
@@ -150,7 +207,13 @@ pub fn quota(o: &Value) -> String {
                 }
                 out.push('\n');
             }
-            out.push_str(&usage_at(&w["usage"], "    "));
+            if w["usage"].is_object() {
+                out.push_str(&usage_at(&w["usage"], "    "));
+            } else {
+                out.push_str(
+                    "    window usage unknown (recorded usage has no provider spend time)\n",
+                );
+            }
         }
     }
     out

@@ -2,7 +2,7 @@
 //! each one used stated beside it. Code selects and structures; it never
 //! reads meaning into text.
 
-use super::Scope;
+use super::{Scope, usage};
 use crate::{Reader, Result};
 use polylogue_model::LogicalDay;
 use serde::Serialize;
@@ -196,6 +196,13 @@ pub struct Change {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Series {
     pub metric: String,
+    pub basis: &'static str,
+    pub time_basis: &'static str,
+    pub incomplete: bool,
+    pub response_completeness_unknown: bool,
+    pub unknown_spend_time: bool,
+    /// Validated measured observations lacking a source record time.
+    pub unplaced_observations: u64,
     pub days: Vec<(String, f64)>,
     /// Mean of the 7 days before each day; `None` for the first week.
     pub baseline_7d: Vec<Option<f64>>,
@@ -247,14 +254,14 @@ const DAILY: [(&str, &str, &str); 5] = [
         "tokens",
         "coalesce(m.input_tokens,0)+coalesce(m.cache_read_tokens,0)+coalesce(m.cache_write_tokens,0)
          +coalesce(m.output_tokens,0)+coalesce(m.reasoning_tokens,0)",
-        "message m",
+        "current_message m",
     ),
-    ("api_cost", "coalesce(m.cost_nusd, 0) / 1e9", "message m"),
-    ("sessions", "0", "message m"),
+    ("api_cost", "coalesce(m.cost_nusd, 0) / 1e9", "current_message m"),
+    ("sessions", "0", "current_message m"),
     (
         "prompts",
         "(m.written_by = 'human' AND m.prompt_kind = 'prose')",
-        "message m",
+        "current_message m",
     ),
     (
         "tool_errors",
@@ -288,23 +295,92 @@ pub fn daily(reader: &Reader<'_>, scope: &Scope, metric: &str, day: &LogicalDay)
             DAILY_METRICS.join(", ")
         )));
     };
+    let measured = matches!(metric, "tokens" | "api_cost");
+    let mut response_unknown = measured
+        && (usage::unknown_scope(reader, scope)?
+            || usage::unknown_items(reader, &cond, &params)? > 0);
+    let mut incomplete = response_unknown;
+    let mut unknown_spend_time = false;
+    let mut unplaced_observations = 0;
+    let known_rows = if measured { usage::RESPONSE_ROWS } else { "1" };
+    let missing = match metric {
+        "tokens" => {
+            "m.input_tokens IS NULL OR m.output_tokens IS NULL OR m.cache_read_tokens IS NULL OR m.cache_write_tokens IS NULL OR m.reasoning_tokens IS NULL"
+        }
+        "api_cost" => "m.cost_nusd IS NULL",
+        _ => "0",
+    };
+    if measured {
+        let untimed = Scope {
+            since: None,
+            until: None,
+            ..scope.clone()
+        };
+        let (condition, values) = untimed.condition();
+        incomplete |= reader.conn()?.query_row(&format!("SELECT EXISTS(SELECT 1 FROM current_message m WHERE {known_rows} AND m.at IS NULL AND {condition})"),rusqlite::params_from_iter(values.iter()),|r|r.get::<_,bool>(0))?;
+    }
     let mut by_day: BTreeMap<jiff::civil::Date, f64> = BTreeMap::new();
     let mut sessions: BTreeMap<jiff::civil::Date, std::collections::HashSet<i64>> = BTreeMap::new();
     let mut stmt = reader.conn()?.prepare(&format!(
-        "SELECT m.at, {expr}, m.session_pk FROM {from} WHERE m.at IS NOT NULL AND {cond}"
+        "SELECT m.at, {expr}, m.session_pk, ({missing}) FROM {from} WHERE m.at IS NOT NULL AND {known_rows} AND {cond}"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
         Ok((
             r.get::<_, i64>(0)?,
             r.get::<_, f64>(1)?,
             r.get::<_, i64>(2)?,
+            r.get::<_, bool>(3)?,
         ))
     })?;
     for row in rows {
-        let (at, v, session) = row?;
+        let (at, v, session, missing) = row?;
+        incomplete |= missing;
         let d = day.date_of(at);
         *by_day.entry(d).or_default() += v;
-        sessions.entry(d).or_default().insert(session);
+        if metric == "sessions" {
+            sessions.entry(d).or_default().insert(session);
+        }
+    }
+    if measured {
+        let recorded = usage::recorded_with(reader, scope, |at, observation, cost| {
+            let Some(at) = at else {
+                unplaced_observations += 1;
+                return Ok(());
+            };
+            let value = if metric == "api_cost" {
+                cost.map(|cost| cost as f64 / 1e9)
+            } else {
+                let u = &observation.usage;
+                let mut sum = None::<u64>;
+                for n in [
+                    u.input,
+                    u.cached_input,
+                    u.cache_write,
+                    u.output,
+                    u.reasoning,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    sum = Some(sum.unwrap_or(0).checked_add(n).ok_or_else(|| {
+                        crate::StoreError::Invalid("daily recorded token sum exceeds u64".into())
+                    })?);
+                }
+                sum.map(|n| n as f64)
+            };
+            if let Some(value) = value {
+                *by_day.entry(day.date_of(at)).or_default() += value;
+            } else {
+                incomplete = true;
+            }
+            Ok(())
+        })?;
+        unknown_spend_time = recorded.untimed_observations > 0;
+        response_unknown |= recorded.observations > 0;
+        incomplete |= response_unknown
+            || unknown_spend_time
+            || recorded.unconfirmed_observations > 0
+            || unplaced_observations > 0;
     }
     if metric == "sessions" {
         for (d, s) in &sessions {
@@ -325,9 +401,13 @@ pub fn daily(reader: &Reader<'_>, scope: &Scope, metric: &str, day: &LogicalDay)
     }
     let xs: Vec<f64> = days.iter().map(|d| d.1).collect();
     let baseline_7d = (0..xs.len())
-        .map(|i| (i >= 7).then(|| xs[i - 7..i].iter().sum::<f64>() / 7.0))
+        .map(|i| (!incomplete && i >= 7).then(|| xs[i - 7..i].iter().sum::<f64>() / 7.0))
         .collect();
-    let cuts = changepoints(&xs, 7);
+    let cuts = if incomplete {
+        vec![]
+    } else {
+        changepoints(&xs, 7)
+    };
     let mut edges = vec![0];
     edges.extend(&cuts);
     edges.push(xs.len());
@@ -343,6 +423,16 @@ pub fn daily(reader: &Reader<'_>, scope: &Scope, metric: &str, day: &LogicalDay)
         .collect();
     Ok(Series {
         metric: metric.to_owned(),
+        basis: if measured {
+            "recorded_known_subset"
+        } else {
+            "recorded"
+        },
+        time_basis: "source_record_time",
+        incomplete,
+        response_completeness_unknown: response_unknown,
+        unknown_spend_time,
+        unplaced_observations,
         days,
         baseline_7d,
         changes,
