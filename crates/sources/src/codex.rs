@@ -1111,23 +1111,16 @@ impl Parser for Rollout {
                 Disposition::Materialized
             }
             "compacted" => {
-                // The history the model continues from replaces the old
-                // one; its items are already stored, so the event keeps
-                // only their count.
-                let mut data = p.clone();
-                if let Some(m) = data.as_object_mut()
-                    && let Some(Json::Array(history)) = m.remove("replacement_history")
+                // A fork starts from its parent's history: the last
+                // identified item is where it branched. Keep that history
+                // as native evidence, without creating authored messages.
+                if carry.last.is_none()
+                    && let Some(history) = p.get("replacement_history").and_then(Json::as_array)
+                    && let Some(at) = history.iter().rev().find_map(|i| str_field(i, "id"))
                 {
-                    m.insert("replacement_history_items".into(), history.len().into());
-                    // A fork starts from its parent's history: the last
-                    // item is where it branched.
-                    if carry.last.is_none()
-                        && let Some(at) = history.iter().rev().find_map(|i| str_field(i, "id"))
-                    {
-                        carry.branch_point = message_id(at);
-                    }
+                    carry.branch_point = message_id(at);
                 }
-                self.event(carry, &data, "compaction", rec.at, out)
+                self.event(carry, p, "compaction", rec.at, out)
             }
             "world_state" | "inter_agent_communication_metadata" => {
                 self.event(carry, p, rec.ty, rec.at, out)

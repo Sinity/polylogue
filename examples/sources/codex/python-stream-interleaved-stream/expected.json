@@ -34,7 +34,11 @@
         "at": "2025-01-15T12:05:00Z",
         "data": {
           "message": "Conversation compacted",
-          "replacement_history_items": 1
+          "replacement_history": [
+            {
+              "id": "summary-1"
+            }
+          ]
         },
         "kind": "compaction",
         "range": [
