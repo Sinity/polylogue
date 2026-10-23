@@ -483,12 +483,17 @@ impl ExportParser for Database {
                 if let Some((parent, kind)) = self.parent(&raw)
                     && let Some(parent_id) = self.sid(&parent)
                 {
-                    let anchor = self.sessions.get(&parent).and_then(|facts| {
-                        facts
-                            .leaf
-                            .clone()
-                            .or_else(|| facts.system.then(|| self.mid(&parent, "system")).flatten())
-                    });
+                    // A live fork/spawn parent can have advanced since the child
+                    // began. Its present leaf is not a supplied branch point.
+                    let anchor = self
+                        .sessions
+                        .get(&parent)
+                        .filter(|_| kind == LinkKind::Continuation)
+                        .and_then(|facts| {
+                            facts.leaf.clone().or_else(|| {
+                                facts.system.then(|| self.mid(&parent, "system")).flatten()
+                            })
+                        });
                     sink.out.links.push(Link {
                         kind,
                         parent: parent_id,

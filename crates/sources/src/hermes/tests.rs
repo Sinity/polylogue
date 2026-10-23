@@ -323,3 +323,21 @@ fn native_function_calls_reuse_known_projection_ids_and_keep_independent_calls()
         .collect::<Vec<_>>();
     assert_eq!(calls, ["same", "other", "same"]);
 }
+
+#[test]
+fn fork_marker_does_not_invent_an_anchor_from_a_parent_that_can_continue() {
+    let mut child = session("child", Some("parent"), None);
+    child["r"]["model_config"] = json!("{\"_branched_from\":\"parent\"}");
+    let parsed = parse(vec![
+        header("a"),
+        session("parent", None, None),
+        child,
+        message(1, "parent", "user", "earlier parent"),
+        message(2, "child", "assistant", "own fork tail"),
+        message(3, "parent", "assistant", "parent continued later"),
+    ]);
+    assert_eq!(parsed.output.links.len(), 1);
+    assert_eq!(parsed.output.links[0].kind, LinkKind::Fork);
+    assert!(parsed.output.links[0].at.is_none());
+    assert_eq!(parsed.output.messages.len(), 3);
+}
