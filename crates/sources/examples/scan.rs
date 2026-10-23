@@ -216,7 +216,10 @@ fn run(selection: input::Selection) -> (serde_json::Value, bool) {
                 }
             }) {
                 Ok(worker) => workers.push(worker),
-                Err(failure) => { error = Some(Failure::io(failure)); break; }
+                Err(failure) => {
+                    error = Some(Failure::io(failure));
+                    break;
+                }
             }
         }
         for worker in workers {
