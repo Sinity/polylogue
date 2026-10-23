@@ -19,8 +19,9 @@ use crate::parse::{InlineBlob, MessageRow, Output, Parse};
 use crate::{Disposition, Records};
 use base64::Engine as _;
 use polylogue_model::{
-    Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Link, LinkKind, Message,
-    PromptKind, Role, Session, SessionKind, TitleSource, ToolAction, ToolOutcome, Usage,
+    Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Event, Json, Link, LinkKind,
+    Message, PromptKind, Role, Session, SessionKind, TitleSource, ToolAction, ToolOutcome,
+    UnknownReason, Usage,
 };
 use std::path::Path;
 
@@ -372,8 +373,14 @@ impl AiStudio {
             }
             if let Some(result) = item.get("codeExecutionResult") {
                 let outcome = match str_of(result, "outcome") {
-                    Some("OUTCOME_OK") | None => ToolOutcome::Ok,
-                    Some(_) => ToolOutcome::Error { reason: None },
+                    Some("OUTCOME_OK") => ToolOutcome::Ok,
+                    Some("OUTCOME_FAILED") => ToolOutcome::Error { reason: None },
+                    Some("OUTCOME_DEADLINE_EXCEEDED") => ToolOutcome::Error {
+                        reason: Some(ErrorReason::TimedOut),
+                    },
+                    _ => ToolOutcome::Unknown {
+                        reason: UnknownReason::StatusFieldUnreadable,
+                    },
                 };
                 blocks.push(Block::ToolResult {
                     call_id: Some(format!("{native}:code{}", calls.max(1))),

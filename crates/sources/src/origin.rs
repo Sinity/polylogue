@@ -390,7 +390,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
-        parser_version: 5,
+        parser_version: 6,
         support: Support::Parsed,
         route: Route::Spool,
         root: Root::STATE,
