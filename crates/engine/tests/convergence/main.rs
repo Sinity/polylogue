@@ -12,6 +12,7 @@ use std::path::Path;
 
 mod excision_documents;
 mod excision_selected;
+mod retained_history;
 mod tool_captures;
 
 #[test]
