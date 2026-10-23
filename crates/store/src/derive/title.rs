@@ -9,7 +9,7 @@ use rusqlite::{Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "title",
-    version: Version::Rules(2),
+    version: Version::Rules(3),
     after: &["session"],
     run: |tx, pk, _| run(tx, pk),
     finish: None,
