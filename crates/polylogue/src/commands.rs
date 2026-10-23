@@ -655,15 +655,18 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "changes",
-        help: "What changed since a cursor: the query `changes where after:CURSOR`",
+        help: "A finite JSON-lines change feed; persist its new position only after applying the complete batch",
         args: &[
-            opt("since", Kind::Text, "A previous answer's `view.cursor`"),
+            opt(
+                "since",
+                Kind::Text,
+                "The last fully applied feed position (GEN:COUNTER:ARCHIVE)",
+            ),
             WHY,
             CURSOR,
             FIELDS,
         ],
         action: Action::Request(requests::changes),
-        print: print::query,
         ..CLI
     },
     Command {

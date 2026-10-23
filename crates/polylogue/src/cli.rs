@@ -2,6 +2,7 @@
 //! (`polylogue repo:x since:7d`) runs the query language; subcommands cover
 //! everything else. Every command takes `--json` for programs and agents.
 
+mod changes;
 pub mod local;
 pub mod print;
 
@@ -193,6 +194,13 @@ pub fn run(matches: &ArgMatches) -> ExitCode {
         Err(message) => return fail(json, "bad_request", &message, 2),
     };
     let root = Archive::default_root();
+    if matches!(request, Request::Changes { .. }) {
+        return match changes::send(&Archive::at(&root), &request, &mut std::io::stdout().lock()) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => fail(true, "io", &e.to_string(), 1),
+        };
+    }
     let response = match send_when_ready(&Archive::at(&root), &request) {
         Ok(r) => r,
         Err(e) if is_down(&e) => {
@@ -316,10 +324,17 @@ fn is_down(e: &std::io::Error) -> bool {
 /// large archive takes seconds). With no daemon at all, the error is
 /// returned at once.
 pub fn send_when_ready(archive: &Archive, request: &Request) -> std::io::Result<Response> {
+    when_ready(archive, || send(&archive.socket(), request))
+}
+
+fn when_ready<T>(
+    archive: &Archive,
+    mut call: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
     let mut pause = std::time::Duration::from_millis(50);
     let mut told = false;
     loop {
-        match send(&archive.socket(), request) {
+        match call() {
             Err(e) if is_down(&e) && archive.lock_held() => {
                 if !told {
                     eprintln!("polylogue: waiting for the daemon to finish opening the archive");
@@ -335,6 +350,12 @@ pub fn send_when_ready(archive: &Archive, request: &Request) -> std::io::Result<
 
 /// Sends one request and reads its response.
 pub fn send(socket: &std::path::Path, request: &Request) -> std::io::Result<Response> {
+    if matches!(request, Request::Changes { .. }) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the change feed requires its finite stream consumer",
+        ));
+    }
     let mut stream = UnixStream::connect(socket)?;
     let mut line = serde_json::to_string(request).map_err(std::io::Error::other)?;
     line.push('\n');

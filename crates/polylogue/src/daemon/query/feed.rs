@@ -1,0 +1,204 @@
+//! A finite change-reference batch, prepared completely before delivery.
+use super::{Failure, present, validate, values};
+use crate::daemon::Response;
+use polylogue_model::{ChangePosition, LogicalDay};
+use polylogue_query::{Clock, Options};
+use polylogue_store::Reader;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::fs::File;
+use std::io::{Seek, SeekFrom, Write};
+
+/// Positions on event lines remain the prior completed checkpoint. Only
+/// Complete offers a new checkpoint, after every preceding reference.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum Line {
+    Begin {
+        position: Option<String>,
+        generation: String,
+        replacement: bool,
+        generation_changed: bool,
+    },
+    Change {
+        position: Option<String>,
+        component: Component,
+        change: Value,
+    },
+    Complete {
+        position: String,
+        count: u64,
+        replacement: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Component {
+    Archive,
+    Index,
+}
+
+fn invalid(message: &str) -> Failure {
+    Failure {
+        kind: "bad_request".into(),
+        message: message.into(),
+        detail: None,
+    }
+}
+
+fn io(error: impl ToString) -> Failure {
+    Failure {
+        kind: "io".into(),
+        message: error.to_string(),
+        detail: None,
+    }
+}
+
+fn write(file: &mut File, line: Line) -> Result<(), Failure> {
+    let response = Response::Ok {
+        data: serde_json::to_value(line).map_err(io)?,
+    }
+    .masked();
+    serde_json::to_writer(&mut *file, &response).map_err(io)?;
+    file.write_all(b"\n").map_err(io)
+}
+
+fn check_change(
+    change: &Value,
+    component: Component,
+    target: &ChangePosition,
+) -> Result<(), Failure> {
+    let kind = change["kind"].as_str();
+    let allowed = match component {
+        Component::Archive => matches!(kind, Some("note" | "excision")),
+        Component::Index => matches!(kind, Some("session" | "removed")),
+    };
+    let bound = match component {
+        Component::Archive => target.archive,
+        Component::Index => target.index,
+    };
+    if !allowed
+        || !change["ref"].as_str().is_some_and(|s| !s.is_empty())
+        || !change["seq"].as_i64().is_some_and(|n| n >= 0 && n <= bound)
+        || (kind == Some("excision") && !change["scope"].as_str().is_some_and(|s| !s.is_empty()))
+    {
+        return Err(Failure {
+            kind: "store".into(),
+            message: "a change reference is outside its declared component or view".into(),
+            detail: None,
+        });
+    }
+    Ok(())
+}
+
+/// The caller owns the unnamed file. No bytes escape until every row has
+/// passed the query's shape checks and the complete batch is written and validated. Dropping
+/// the Reader before sending this file keeps network backpressure out of WAL
+/// snapshot lifetime. One decoded row and disk ordering are separate costs.
+pub(crate) fn prepare(
+    reader: &Reader<'_>,
+    since: Option<&str>,
+    now: i64,
+    mut file: File,
+) -> Result<File, Failure> {
+    let previous = since
+        .map(|s| ChangePosition::parse(s).ok_or_else(|| invalid("since takes GEN:COUNTER:ARCHIVE")))
+        .transpose()?;
+    let target = reader.change_position()?;
+    let generation_changed = previous
+        .as_ref()
+        .is_some_and(|p| p.generation != target.generation);
+    let replacement = previous.is_none() || generation_changed;
+    if !replacement
+        && previous
+            .as_ref()
+            .is_some_and(|p| p.index > target.index || p.archive > target.archive)
+    {
+        return Err(invalid("the change position is ahead of the archive"));
+    }
+    let position = previous.as_ref().map(ToString::to_string);
+    write(
+        &mut file,
+        Line::Begin {
+            position: position.clone(),
+            generation: target.generation.clone(),
+            replacement,
+            generation_changed,
+        },
+    )?;
+    // Archive local order is meaningful only within archive.db. Index-side
+    // references follow as a separate component, never a combined chronology.
+    let components = [
+        (Component::Archive, "(kind:note OR kind:excision)"),
+        (
+            Component::Index,
+            if replacement {
+                "kind:session"
+            } else {
+                "(kind:session OR kind:removed)"
+            },
+        ),
+    ];
+    let mut count = 0_u64;
+    for (component, condition) in components {
+        let after = if replacement {
+            String::new()
+        } else {
+            format!(
+                " AND after:{}",
+                position.as_deref().expect("delta has a prior position")
+            )
+        };
+        let text = format!("changes where {condition}{after} | sort by seq, kind, ref");
+        // This fixed internal query has neither saved sources nor kept
+        // results, so compilation need not load either archive-wide catalog.
+        let opts = Options {
+            clock: Clock::new(now, LogicalDay::system()),
+            origins: Vec::new(),
+            command_words: Vec::new(),
+            page_size: None,
+            random_seed: Some(0),
+            embeddings: false,
+            self_session: None,
+            saved: Default::default(),
+            fields: Vec::new(),
+            kept: Default::default(),
+        };
+        let program = polylogue_query::compile(&text, &opts)?;
+        validate(reader, &program)?;
+        reader.query_each(
+            &program.sql,
+            &values(&program.params),
+            |mut change| -> Result<(), Failure> {
+                present(&program, &mut change)?;
+                check_change(&change, component, &target)?;
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| io("change count exhausted"))?;
+                write(
+                    &mut file,
+                    Line::Change {
+                        position: position.clone(),
+                        component,
+                        change,
+                    },
+                )
+            },
+        )?;
+    }
+    write(
+        &mut file,
+        Line::Complete {
+            position: target.to_string(),
+            count,
+            replacement,
+        },
+    )?;
+    file.flush().map_err(io)?;
+    file.seek(SeekFrom::Start(0)).map_err(io)?;
+    Ok(file)
+}
+
+#[cfg(test)]
+mod tests;

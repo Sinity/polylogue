@@ -270,10 +270,12 @@ pub fn live(_: &Command, v: &Values, _: &Caller) -> Built {
 }
 
 pub fn changes(_: &Command, v: &Values, _: &Caller) -> Built {
-    let text = v
-        .text("since")
-        .map_or_else(|| "changes".into(), |c| format!("changes where after:{c}"));
-    Ok(query_request(text, None, v))
+    if v.text("cursor").is_some() || v.0.contains_key("fields") || v.0.contains_key("why") {
+        return Err("the change feed takes --since; use a changes query for filtering, fields or ordinary pages".into());
+    }
+    Ok(Request::Changes {
+        since: v.text("since"),
+    })
 }
 
 pub fn notices(_: &Command, v: &Values, _: &Caller) -> Built {
