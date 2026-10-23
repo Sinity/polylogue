@@ -420,14 +420,14 @@ impl ClaudeCode {
         carry: &mut Carry,
         record: Record<'_>,
         v: &Json,
-        material: (Vec<Block>, Option<&'static str>),
+        summary: (Vec<Block>, Option<&'static str>),
         out: &mut Output,
     ) -> Disposition {
         let disposition = self.event(carry, record, v, "stop_hook_summary", out);
         if disposition != Disposition::Materialized {
             return disposition;
         }
-        let (blocks, invalid) = material;
+        let (blocks, invalid) = summary;
         if !blocks.is_empty() {
             let Some(session) = self.session(carry, v, out).map(|s| s.id.clone()) else {
                 return Disposition::refused("session ID is empty");
@@ -873,8 +873,8 @@ fn usage(u: &Json) -> Usage {
     }
 }
 
-/// Provider-labelled diagnostics and supplied context share the summary's
-/// native record identity. All original fields remain in its event.
+/// Polylogue labels typed diagnostics for readers; the error and reason
+/// strings stay unchanged. The complete native summary remains in its event.
 fn hook_text(v: &Json) -> (Vec<Block>, Option<&'static str>) {
     let mut blocks = Vec::new();
     let mut invalid = None;
