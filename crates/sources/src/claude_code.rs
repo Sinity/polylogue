@@ -420,25 +420,14 @@ impl ClaudeCode {
         carry: &mut Carry,
         record: Record<'_>,
         v: &Json,
+        summary: (Vec<Block>, Option<&'static str>),
         out: &mut Output,
     ) -> Disposition {
         let disposition = self.event(carry, record, v, "stop_hook_summary", out);
         if disposition != Disposition::Materialized {
             return disposition;
         }
-        let Some(context) = v.get("hookAdditionalContext") else {
-            return disposition;
-        };
-        let Some(context) = context.as_array() else {
-            return Disposition::refused("hookAdditionalContext is not an array of strings");
-        };
-        let blocks: Vec<_> = context
-            .iter()
-            .filter_map(Json::as_str)
-            .map(|text| Block::Text {
-                text: text.to_owned(),
-            })
-            .collect();
+        let (blocks, invalid) = summary;
         if !blocks.is_empty() {
             let Some(session) = self.session(carry, v, out).map(|s| s.id.clone()) else {
                 return Disposition::refused("session ID is empty");
@@ -473,10 +462,9 @@ impl ClaudeCode {
             });
             carry.last = Some(id);
         }
-        if context.iter().any(|item| !item.is_string()) {
-            Disposition::refused("hookAdditionalContext contains a non-string value")
-        } else {
-            disposition
+        match invalid {
+            Some(reason) => Disposition::refused(reason),
+            None => disposition,
         }
     }
 
@@ -885,6 +873,62 @@ fn usage(u: &Json) -> Usage {
     }
 }
 
+/// Polylogue labels typed diagnostics for readers; the error and reason
+/// strings stay unchanged. The complete native summary remains in its event.
+fn hook_text(v: &Json) -> (Vec<Block>, Option<&'static str>) {
+    let mut blocks = Vec::new();
+    let mut invalid = None;
+    if let Some(errors) = v.get("hookErrors") {
+        match errors.as_array() {
+            Some(errors) => {
+                for error in errors {
+                    match error.as_str() {
+                        Some(error) => blocks.push(Block::Text {
+                            text: format!("Stop hook error:\n{error}"),
+                        }),
+                        None => invalid = Some("hookErrors contains a non-string value"),
+                    }
+                }
+            }
+            None => invalid = Some("hookErrors is not an array of strings"),
+        }
+    }
+    let prevented = v.get("preventedContinuation");
+    if prevented.is_some_and(|value| !value.is_boolean()) {
+        invalid = Some("preventedContinuation is not a boolean");
+    }
+    let reason = v.get("stopReason");
+    if reason.is_some_and(|value| !value.is_string()) {
+        invalid = Some("stopReason is not a string");
+    }
+    if prevented.and_then(Json::as_bool) == Some(true) {
+        blocks.push(Block::Text {
+            text: "Stop hook prevented continuation.".into(),
+        });
+        if let Some(reason) = reason.and_then(Json::as_str) {
+            blocks.push(Block::Text {
+                text: format!("Stop hook reason:\n{reason}"),
+            });
+        }
+    }
+    if let Some(context) = v.get("hookAdditionalContext") {
+        match context.as_array() {
+            Some(context) => {
+                for text in context {
+                    match text.as_str() {
+                        Some(text) => blocks.push(Block::Text {
+                            text: text.to_owned(),
+                        }),
+                        None => invalid = Some("hookAdditionalContext contains a non-string value"),
+                    }
+                }
+            }
+            None => invalid = Some("hookAdditionalContext is not an array of strings"),
+        }
+    }
+    (blocks, invalid)
+}
+
 /// A background task's completion, from the notification the harness
 /// queues for the model.
 fn background_update(v: &Json) -> Option<(String, ToolOutcome, Option<String>, Option<String>)> {
@@ -951,13 +995,11 @@ impl Parser for ClaudeCode {
         if let File::Journal { .. } = self.file {
             return self.journal(carry, record, v, ty, out);
         }
+        let hook = (ty == "system" && str_field(v, "subtype") == Some("stop_hook_summary"))
+            .then(|| hook_text(v));
         let message_record = (matches!(ty, "user" | "assistant")
             && v.get("isCompactSummary").and_then(Json::as_bool) != Some(true))
-            || (ty == "system"
-                && str_field(v, "subtype") == Some("stop_hook_summary")
-                && v.get("hookAdditionalContext")
-                    .and_then(Json::as_array)
-                    .is_some_and(|items| items.iter().any(Json::is_string)));
+            || hook.as_ref().is_some_and(|(blocks, _)| !blocks.is_empty());
         if !message_record && let Some(uuid) = str_field(v, "uuid") {
             // A child naming this record as its parent belongs under the
             // nearest message above it; a compaction boundary points there
@@ -975,7 +1017,13 @@ impl Parser for ClaudeCode {
             "user" => self.message(carry, record, v, Role::User, out, records),
             "assistant" => self.message(carry, record, v, Role::Assistant, out, records),
             "system" => match str_field(v, "subtype") {
-                Some("stop_hook_summary") => self.hook_summary(carry, record, v, out),
+                Some("stop_hook_summary") => self.hook_summary(
+                    carry,
+                    record,
+                    v,
+                    hook.expect("recognized stop-hook summary"),
+                    out,
+                ),
                 Some("compact_boundary") => self.event(carry, record, v, "compaction", out),
                 Some("microcompact_boundary") => {
                     self.event(carry, record, v, "microcompaction", out)
