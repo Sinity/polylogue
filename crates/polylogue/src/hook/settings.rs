@@ -65,11 +65,10 @@ fn validate(settings: &Value) -> io::Result<()> {
 
 fn ours(hook: &Value) -> bool {
     hook["type"] == "command"
-        && hook["command"].as_str().is_some_and(|command| {
-            EVENTS
-                .iter()
-                .any(|event| command == format!("polylogue hook {event}"))
-        })
+        && hook["command"]
+            .as_str()
+            .and_then(|command| command.strip_prefix("polylogue hook "))
+            .is_some_and(|event| EVENTS.contains(&event))
 }
 
 /// Merge Polylogue's commands while retaining other hooks and entry metadata.

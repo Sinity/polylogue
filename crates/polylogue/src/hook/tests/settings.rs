@@ -22,6 +22,8 @@ fn malformed_or_conflicting_settings_refuse_without_changing_bytes_or_permission
         r#"{"hooks":{},"hooks":{"Stop":[]}}"#,
         r#"{"hooks":{"Stop":[],"Stop":[]}}"#,
         r#"{"future":{"keep":1,"keep":2},"hooks":{}}"#,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo keep","command":"polylogue hook Stop"}]}]}}"#,
+        r#"{"hooks":{},"\u0068ooks":{"Stop":[]}}"#,
     ] {
         for on in [true, false] {
             let dir = tempfile::tempdir().unwrap();

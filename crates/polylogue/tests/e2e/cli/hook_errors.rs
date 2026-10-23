@@ -95,7 +95,7 @@ fn hook_setup_cli_refuses_malformed_settings_without_replacing_them() {
                 ],
             );
             assert_eq!(out.status.code(), Some(1), "{out:?}");
-            assert_eq!(json(&out)["error"]["code"], "io", "{out:?}");
+            assert_eq!(json(&out)["error"]["kind"], "io", "{out:?}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         }
     }
