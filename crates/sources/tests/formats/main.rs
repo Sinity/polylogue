@@ -2,6 +2,7 @@
 //! format knowledge ported from the Python predecessor's tests, and the
 //! expected rows of every case under `examples/sources/`.
 
+mod ai_studio_outcomes;
 mod attachment_direction;
 mod chatgpt_export;
 mod claude_code_wire;
