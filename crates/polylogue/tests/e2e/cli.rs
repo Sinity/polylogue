@@ -413,3 +413,5 @@ mod read_pages;
 mod read_masking;
 
 mod search_snippets;
+
+mod hook_errors;

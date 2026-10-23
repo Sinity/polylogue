@@ -346,6 +346,9 @@ fn hook_summary_preserves_supplied_context_even_when_continuation_is_prevented()
     assert_eq!(
         m["blocks"],
         json!([
+        {"type": "text", "text": "Stop hook error:\nsynthetic hook failed"},
+        {"type": "text", "text": "Stop hook prevented continuation."},
+        {"type": "text", "text": "Stop hook reason:\nhook stopped"},
         {"type": "text", "text": "  Zażółć 🦀\n"},
         {"type": "text", "text": ""},
         {"type": "text", "text": "\tsecond  "}])
@@ -372,7 +375,7 @@ fn hook_context_does_not_promote_generic_output_or_another_system_subtype() {
     let p = run(&[
         hook_summary(
             "sy1",
-            json!({"stdout": "ordinary output", "hookErrors": ["error"],
+            json!({"stdout": "ordinary output", "hookErrors": [],
             "hasOutput": true, "hookAdditionalContext": []}),
         ),
         hook_summary("sy2", json!({"content": "ordinary content"})),
@@ -457,6 +460,91 @@ fn hook_context_keeps_native_identity_and_parent_links_outside_model_responses()
     let offset = jsonl(&[human, response("a1", "first", "u1")]).len();
     assert_eq!(row["offset"], offset);
     assert_eq!(row["end"], offset + jsonl(&[hook]).len() - 1);
+}
+
+#[test]
+fn hook_errors_and_prevented_continuation_are_one_harness_record_with_context() {
+    let native = hook_summary(
+        "sy1",
+        json!({"hookErrors": ["  synthetic failure λ\n", ""],
+        "preventedContinuation": true, "stopReason": "  stopped 🦀\n",
+        "hookAdditionalContext": ["  supplied context\n"], "hookCount": 2,
+        "hookInfos": [{"command": "synthetic-check", "durationMs": 2}]}),
+    );
+    let p = run(std::slice::from_ref(&native));
+    assert_eq!(messages(&p).len(), 1);
+    let m = message(&p, ":sy1");
+    assert_eq!(m["role"], "system");
+    assert_eq!(m["prompt_kind"], "harness");
+    assert!(m.get("model").is_none());
+    assert_eq!(
+        m["blocks"],
+        json!([
+        {"type":"text", "text":"Stop hook error:\n  synthetic failure λ\n"},
+        {"type":"text", "text":"Stop hook error:\n"},
+        {"type":"text", "text":"Stop hook prevented continuation."},
+        {"type":"text", "text":"Stop hook reason:\n  stopped 🦀\n"},
+        {"type":"text", "text":"  supplied context\n"}])
+    );
+    assert_eq!(events(&p, "stop_hook_summary")[0]["data"], native);
+}
+
+#[test]
+fn hook_prevention_and_errors_do_not_require_additional_context_or_each_other() {
+    for (extra, expected) in [
+        (
+            json!({"hookErrors":["synthetic failure"],"preventedContinuation":false}),
+            "Stop hook error:\nsynthetic failure",
+        ),
+        (
+            json!({"hookErrors":[],"preventedContinuation":true}),
+            "Stop hook prevented continuation.",
+        ),
+    ] {
+        let p = run(&[hook_summary("sy1", extra)]);
+        assert_eq!(message(&p, ":sy1")["blocks"][0]["text"], expected);
+    }
+    let p = run(&[hook_summary(
+        "sy1",
+        json!({"hookErrors":[], "preventedContinuation":false,
+        "stopReason":"error-looking prose", "stdout":"failure", "hasOutput":true,
+        "hookInfos":[{"command":"exit 1"}], "hookCount":1}),
+    )]);
+    assert!(messages(&p).is_empty());
+}
+
+#[test]
+fn malformed_hook_diagnostics_preserve_valid_context_and_native_evidence() {
+    for extra in [
+        json!({"hookErrors":"scalar"}),
+        json!({"hookErrors":[false,"valid error"]}),
+        json!({"preventedContinuation":"true"}),
+        json!({"preventedContinuation":null}),
+        json!({"preventedContinuation":true,"stopReason":3}),
+        json!({"hookAdditionalContext":null,"hookErrors":["valid error"]}),
+    ] {
+        let native = hook_summary("sy1", extra);
+        let p = run(std::slice::from_ref(&native));
+        assert_eq!(events(&p, "stop_hook_summary")[0]["data"], native);
+        assert_eq!(
+            p["accounting"]["refused"]
+                .as_object()
+                .unwrap()
+                .values()
+                .map(|v| v.as_u64().unwrap())
+                .sum::<u64>(),
+            1
+        );
+        if let Some(items) = native["hookErrors"].as_array() {
+            for error in items.iter().filter_map(Value::as_str) {
+                assert!(
+                    blocks(&p)
+                        .iter()
+                        .any(|b| b["text"].as_str().unwrap().contains(error))
+                );
+            }
+        }
+    }
 }
 
 #[test]
